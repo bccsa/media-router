@@ -1,0 +1,23 @@
+{
+  "name": "audio-translation",
+  "version": "1.0.0",
+  "description": "Remote audio translation for live events",
+  "main": "router.js",
+  "dependencies": {
+    "audio-mixer": "^2.1.4"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bccsa/audio-translation.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/bccsa/audio-translation/issues"
+  },
+  "homepage": "https://github.com/bccsa/audio-translation#readme"
+}
