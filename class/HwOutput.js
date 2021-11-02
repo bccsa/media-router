@@ -5,21 +5,12 @@
 // Copyright BCC South Africa
 // =====================================
 
-// Set DISPLAY environmental variable to allow FFPlay to display on Display 0
-process.env['DISPLAY'] = ':0'
-
 // -------------------------------------
 // External libraries
 // -------------------------------------
 
 const { spawn } = require('child_process');
 const events = require('events');
-
-// -------------------------------------
-// Global variables
-// -------------------------------------
-
-var ffplay;
 
 // -------------------------------------
 // Class declaration
@@ -30,6 +21,7 @@ class HwOutput {
         this.inputFormat = 's16le';
         this.stdin = undefined;
         this.log = new events.EventEmitter();
+        this.ffplay = undefined;
     }
 
     // public properties
@@ -39,14 +31,14 @@ class HwOutput {
 
     // Start the playback process
     Start() {
-        if (ffplay == undefined) {
+        if (this.ffplay == undefined) {
             try {
-                let args = `-hide_banner -fflags nobuffer -f ${this.inputFormat} -i -`;
-                ffplay = spawn('ffplay', args.split(" "));
-                this.stdin = ffplay.stdin;
+                let args = `-hide_banner -nodisp -fflags nobuffer -f ${this.inputFormat} -i -`;
+                this.ffplay = spawn('ffplay', args.split(" "));
+                this.stdin = this.ffplay.stdin;
     
                 // Handle stderr
-                ffplay.stderr.on('data', (data) => {
+                this.ffplay.stderr.on('data', (data) => {
                     // parse ffplay output here
                 });
             }
@@ -58,12 +50,12 @@ class HwOutput {
 
     // Stop the playback process
     Stop() {
-        if (ffplay != undefined) {
+        if (this.ffplay != undefined) {
             this.log.emit(`ffplay: Stopping ffplay...`);
-            ffplay.kill('SIGTERM');
+            this.ffplay.kill('SIGTERM');
 
             // Send SIGKILL to quit process
-            ffplay.kill('SIGKILL');
+            this.ffplay.kill('SIGKILL');
         }
     }
 }
