@@ -33,7 +33,7 @@ class HwOutput {
     Start() {
         if (this.ffplay == undefined) {
             try {
-                let args = `-hide_banner -nodisp -fflags nobuffer -f ${this.inputFormat} -i -`;
+                let args = `-hide_banner -nodisp -framedrop -fflags nobuffer -f ${this.inputFormat} -i -`;
                 this.ffplay = spawn('ffplay', args.split(" "));
                 this.stdin = this.ffplay.stdin;
     
