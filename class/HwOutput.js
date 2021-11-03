@@ -41,6 +41,16 @@ class HwOutput {
                 this.ffplay.stderr.on('data', (data) => {
                     // parse ffplay output here
                 });
+
+                // Handle process exit event
+                this.ffplay.on('close', code => {
+
+                });
+
+                // Handle process error events
+                this.ffplay.on('error', code => {
+                    
+                });
             }
             catch (err) {
                 this.log.emit(`ffplay: ${err.message}`);
