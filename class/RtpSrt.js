@@ -1,5 +1,5 @@
 // ======================================
-// SRT to RTP UDP socket
+// RTP UDP socket to SRT
 //
 // Copyright BCC South Africa
 // =====================================
@@ -15,7 +15,7 @@ const events = require('events');
 // Class declaration
 // -------------------------------------
 
-class SrtRtp {
+class RtpSrt {
     constructor() {
         this.rtpIP = '224.0.0.100';
         this.rtpPort = 3000;
@@ -43,13 +43,12 @@ class SrtRtp {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
-                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto} udp://${this.rtpIP}:${this.rtpPort}`;
+                let args = `udp://${this.rtpIP}:${this.rtpPort} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto}`;
                 this.srtLiveTransmit = spawn('srt-live-transmit', args.split(" "));
 
                 // Handle stdout
                 this.srtLiveTransmit.stdout.on('data', data => {
                     // parse stdout output here
-                    console.log(data.toString());
                 });
 
                 // Handle stderr
@@ -89,4 +88,4 @@ class SrtRtp {
 }
 
 // Export class
-module.exports.SrtRtp = SrtRtp;
+module.exports.RtpSrt = RtpSrt;

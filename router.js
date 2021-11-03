@@ -7,12 +7,13 @@
 // -------------------------------------
 // External libraries
 // -------------------------------------
+const AudioMixer = require('audio-mixer');
 const { HwInput } = require('./class/HwInput');
 const { HwOutput } = require('./class/HwOutput');
 const { RtpInput } = require('./class/RtpInput');
-
-var AudioMixer = require('audio-mixer');
 const { RtpOutput } = require('./class/RtpOutput');
+const { SrtRtp } = require('./class/SrtRtp');
+const { RtpSrt } = require('./class/RtpSrt');
 
 var hw1 = new HwInput();
 hw1.hwInput = 'hw:0';
@@ -31,10 +32,25 @@ rtpOut1.rtpPort = 3000;
 var rtpOut2 = new RtpOutput();
 rtpOut2.rtpPort = 3002;
 
+var srtOut1 = new RtpSrt();
+srtOut1.srtHost = '0.0.0.0';
+srtOut1.srtPort = 4000;
+srtOut1.rtpPort = 3000;
+srtOut1.srtMode = 'listener';
+srtOut1.Start();
+
+var srtIn1 = new SrtRtp();
+srtIn1.srtHost = '127.0.0.1';
+srtIn1.srtPort = 4000;
+srtIn1.rtpPort = 3004;
+srtIn1.srtMode = 'caller';
+srtIn1.Start();
+
 var rtpIn1 = new RtpInput();
-rtpIn1.rtpPort = 3000;
+rtpIn1.rtpPort = 3004;
 var rtpIn2 = new RtpInput();
 rtpIn2.rtpPort = 3002;
+
 
 // Mixer does not work well with bit depth of more than 16 bit
 let mixer = new AudioMixer.Mixer({
