@@ -46,6 +46,16 @@ class HwInput {
                 this.ffmpeg.stderr.on('data', (data) => {
                     // parse ffmpeg output here
                 });
+
+                // Handle process exit event
+                this.ffmpeg.on('close', code => {
+
+                });
+
+                // Handle process error events
+                this.ffmpeg.on('error', code => {
+                    
+                });
             }
             catch (err) {
                 this.log.emit(`ffmpeg ${this.hwInput}: ${err.message}`);
