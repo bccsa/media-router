@@ -58,7 +58,7 @@ class HwOutput {
                 });
             }
             catch (err) {
-                this.log.emit(`ffplay: ${err.message}`);
+                this.log.emit('log', `ffplay: ${err.message}`);
             }
         }
     }
@@ -67,7 +67,7 @@ class HwOutput {
     Stop() {
         if (this.ffplay != undefined) {
             this.exitFlag = true;   // prevent automatic restarting of the process
-            this.log.emit(`ffplay: Stopping ffplay...`);
+            this.log.emit('log', `ffplay: Stopping ffplay...`);
             this.ffplay.kill('SIGTERM');
 
             // Send SIGKILL to quit process

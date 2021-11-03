@@ -18,9 +18,9 @@ const events = require('events');
 
 class HwInput {
     constructor() {
-        this.hwInput = 'hw:1';
+        this.hwInput = 'pulse';
         this.inputSampleRate = 44100;
-        this.inputChannels = 1;
+        this.inputChannels = 2;
         this.outputChannels = 1;
         this.outputCodec = 'pcm_s16le';
         this.outputFormat = 's16le';
@@ -64,7 +64,7 @@ class HwInput {
                 });
             }
             catch (err) {
-                this.log.emit(`ffmpeg ${this.hwInput}: ${err.message}`);
+                this.log.emit('log', `ffmpeg ${this.hwInput}: ${err.message}`);
             }
         }
     }
@@ -73,7 +73,7 @@ class HwInput {
     Stop() {
         if (this.ffmpeg != undefined) {
             this.exitFlag = true;   // prevent automatic restarting of the process
-            this.log.emit(`ffmpeg ${this.hwInput}: Stopping ffmpeg...`);
+            this.log.emit('log', `ffmpeg ${this.hwInput}: Stopping ffmpeg...`);
             this.ffmpeg.kill('SIGTERM');
     
             // ffmpeg stops on SIGTERM, but does not exit.

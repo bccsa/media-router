@@ -15,10 +15,14 @@ var AudioMixer = require('audio-mixer');
 const { RtpOutput } = require('./class/RtpOutput');
 
 var hw1 = new HwInput();
-hw1.hwInput = 'hw:1';
+hw1.hwInput = 'hw:0';
 
 var hw2 = new HwInput();
-hw2.hwInput = 'hw:2';
+hw2.hwInput = 'pulse';
+hw2.inputChannels = 2;
+hw2.log.on('log', data => {
+   console.log(data);
+})
 
 var hwOut = new HwOutput();
 

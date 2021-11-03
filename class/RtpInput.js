@@ -82,7 +82,7 @@ a=rtpmap:97 opus/48000/${this.inputChannels}`);
                 });
             }
             catch (err) {
-                this.log.emit(`ffmpeg ${this.hwInput}: ${err.message}`);
+                this.log.emit('log', `ffmpeg ${this.hwInput}: ${err.message}`);
             }
         }
     }
@@ -91,7 +91,7 @@ a=rtpmap:97 opus/48000/${this.inputChannels}`);
     Stop() {
         if (this.ffmpeg != undefined) {
             this.exitFlag = true;   // prevent automatic restarting of the process
-            this.log.emit(`ffmpeg ${this.rtpIP}:${this.rtpPort}: Stopping ffmpeg...`);
+            this.log.emit('log', `ffmpeg ${this.rtpIP}:${this.rtpPort}: Stopping ffmpeg...`);
             this.ffmpeg.kill('SIGTERM');
     
             // ffmpeg stops on SIGTERM, but does not exit.
