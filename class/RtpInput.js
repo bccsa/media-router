@@ -10,6 +10,7 @@
 
 const { spawn } = require('child_process');
 const events = require('events');
+const fs = require('fs');
 
 // -------------------------------------
 // Class declaration
@@ -28,6 +29,7 @@ class RtpInput {
         this.stdout = undefined;
         this.log = new events.EventEmitter();
         this.ffmpeg = undefined;
+        this.exitFlag = false;      // flag used to prevent restarting of the process on normal stop
     }
 
     // public properties
@@ -38,31 +40,40 @@ class RtpInput {
     // Start the input capture process
     Start() {
         if (this.ffmpeg == undefined) {
+            this.exitFlag = false;   // Reset the exit flag
             try {
-                let sdp =
-                `v=0
-                o=- 0 0 IN IP4 127.0.0.1
-                s=No Name
-                c=IN IP4 ${this.rtpIP}
-                t=0 0
-                a=tool:libavformat 58.20.100
-                m=audio ${this.rtpPort} RTP/AVP 97
-                b=AS:${this.inputBitrate}
-                a=rtpmap:97 opus/48000/${this.inputChannels}`
+                // Write sdp file to disk
+                if (!fs.existsSync('sdp')) {
+                    fs.mkdirSync('sdp')
+                }
 
-                let args = `-hide_banner -fflags nobuffer -f rtp -i "data:application/sdp;charset=UTF8,${sdp}" \
-                -c:a ${this.outputCodec} -ac ${this.outputChannels} -f ${this.outputFormat} -`;
+                let sdpFile = 'sdp/' + this.rtpIP + "_" + this.rtpPort + ".sdp";
+                fs.writeFileSync(sdpFile, `v=0
+o=- 0 0 IN IP4 127.0.0.1
+s=No Name
+c=IN IP4 ${this.rtpIP}
+t=0 0
+a=tool:libavformat 58.20.100
+m=audio ${this.rtpPort} RTP/AVP 97
+b=AS:${this.inputBitrate}
+a=rtpmap:97 opus/48000/${this.inputChannels}`);
+
+                let args = `-hide_banner -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -i ${sdpFile} -c:a ${this.outputCodec} -sample_rate ${this.outputSampleRate} -ac ${this.outputChannels} -f ${this.outputFormat} -`
                 this.ffmpeg = spawn('ffmpeg', args.split(" "));
-                this.stdout = this.ffmpeg.stdout;
-    
+
                 // Handle stderr
                 this.ffmpeg.stderr.on('data', data => {
                     // parse ffmpeg output here
                 });
 
+                this.stdout = this.ffmpeg.stdout;
+
                 // Handle process exit event
                 this.ffmpeg.on('close', code => {
-                    // ++++++++++++++++ To do: Restart ffmpeg if stopped ++++++++++++++++++
+                    if (!this.exitFlag) {
+                        // Restart after 1 second
+                        setTimeout(() => { this.Start(); }, 1000);
+                    }
                 });
 
                 // Handle process error events
@@ -79,6 +90,7 @@ class RtpInput {
     // Stop the input capture process
     Stop() {
         if (this.ffmpeg != undefined) {
+            this.exitFlag = true;   // prevent automatic restarting of the process
             this.log.emit(`ffmpeg ${this.rtpIP}:${this.rtpPort}: Stopping ffmpeg...`);
             this.ffmpeg.kill('SIGTERM');
     

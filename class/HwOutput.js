@@ -22,6 +22,7 @@ class HwOutput {
         this.stdin = undefined;
         this.log = new events.EventEmitter();
         this.ffplay = undefined;
+        this.exitFlag = false;      // flag used to prevent restarting of the process on normal stop
     }
 
     // public properties
@@ -31,6 +32,7 @@ class HwOutput {
 
     // Start the playback process
     Start() {
+        this.exitFlag = false;   // Reset the exit flag
         if (this.ffplay == undefined) {
             try {
                 let args = `-hide_banner -nodisp -framedrop -fflags nobuffer -f ${this.inputFormat} -i -`;
@@ -44,7 +46,10 @@ class HwOutput {
 
                 // Handle process exit event
                 this.ffplay.on('close', code => {
-
+                    if (!this.exitFlag) {
+                        // Restart after 1 second
+                        setTimeout(() => { this.Start(); }, 1000);
+                    }
                 });
 
                 // Handle process error events
@@ -61,6 +66,7 @@ class HwOutput {
     // Stop the playback process
     Stop() {
         if (this.ffplay != undefined) {
+            this.exitFlag = true;   // prevent automatic restarting of the process
             this.log.emit(`ffplay: Stopping ffplay...`);
             this.ffplay.kill('SIGTERM');
 

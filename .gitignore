@@ -102,3 +102,7 @@ dist
 
 # TernJS port file
 .tern-port
+
+# SDP files and folder
+sdp/
+*.sdp

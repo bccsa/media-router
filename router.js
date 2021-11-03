@@ -12,6 +12,7 @@ const { HwOutput } = require('./class/HwOutput');
 const { RtpInput } = require('./class/RtpInput');
 
 var AudioMixer = require('audio-mixer');
+const { RtpOutput } = require('./class/RtpOutput');
 
 var hw1 = new HwInput();
 hw1.hwInput = 'hw:1';
@@ -21,9 +22,15 @@ hw2.hwInput = 'hw:2';
 
 var hwOut = new HwOutput();
 
-var rtp1 = new RtpInput();
-rtp1.rtpIP = '127.0.0.1';
-rtp1.rtpPort = 1234;
+var rtpOut1 = new RtpOutput();
+rtpOut1.rtpPort = 3000;
+var rtpOut2 = new RtpOutput();
+rtpOut2.rtpPort = 3002;
+
+var rtpIn1 = new RtpInput();
+rtpIn1.rtpPort = 3000;
+var rtpIn2 = new RtpInput();
+rtpIn2.rtpPort = 3002;
 
 // Mixer does not work well with bit depth of more than 16 bit
 let mixer = new AudioMixer.Mixer({
@@ -36,35 +43,36 @@ let mixer = new AudioMixer.Mixer({
 let mixIn1 = new AudioMixer.Input({
    channels: 1,
    bitDepth: 16,
-   sampleRate: 44100,
+   sampleRate: 48000,
    volume: 100
 });
 
 let mixIn2 = new AudioMixer.Input({
    channels: 1,
    bitDepth: 16,
-   sampleRate: 44100,
-   volume: 100
-});
-
-let mixRtp1 = new AudioMixer.Input({
-   channels: 1,
-   bitDepth: 16,
    sampleRate: 48000,
    volume: 100
 });
 
-// mixer.addInput(mixIn1);
-// hw1.Start();
-// hw1.stdout.pipe(mixIn1);
 
-// mixer.addInput(mixIn2);
-// hw2.Start();
-// hw2.stdout.pipe(mixIn2);
 
-mixer.addInput(mixRtp1);
-rtp1.Start();
-rtp1.stdout.pipe(mixRtp1);
+mixer.addInput(mixIn1);
+mixer.addInput(mixIn2);
+
+hw1.Start();
+rtpOut1.Start();
+hw1.stdout.pipe(rtpOut1.stdin);
+
+hw2.Start();
+rtpOut2.Start();
+hw2.stdout.pipe(rtpOut2.stdin);
+
+rtpIn1.Start();
+rtpIn1.stdout.pipe(mixIn1);
+
+rtpIn2.Start();
+rtpIn2.stdout.pipe(mixIn2);
 
 hwOut.Start();
 mixer.pipe(hwOut.stdin);
+
