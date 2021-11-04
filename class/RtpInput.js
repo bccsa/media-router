@@ -22,6 +22,7 @@ class RtpInput {
         this.rtpPort = 3000;
         this.inputChannels = 1;
         this.inputBitrate = 32; //kbps
+        this.inputSampleRate = 48000;
         this.outputSampleRate = 48000;
         this.outputCodec = 'pcm_s16le';
         this.outputFormat = 's16le';
@@ -56,7 +57,7 @@ t=0 0
 a=tool:libavformat 58.20.100
 m=audio ${this.rtpPort} RTP/AVP 97
 b=AS:${this.inputBitrate}
-a=rtpmap:97 opus/48000/${this.inputChannels}`);
+a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
 
                 let args = `-hide_banner -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -i ${sdpFile} -c:a ${this.outputCodec} -sample_rate ${this.outputSampleRate} -ac ${this.outputChannels} -f ${this.outputFormat} -`
                 this.ffmpeg = spawn('ffmpeg', args.split(" "));

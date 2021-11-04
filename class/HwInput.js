@@ -19,7 +19,7 @@ const events = require('events');
 class HwInput {
     constructor() {
         this.hwInput = 'pulse';
-        this.inputSampleRate = 44100;
+        this.inputSampleRate = 48000;
         this.inputChannels = 2;
         this.outputChannels = 1;
         this.outputCodec = 'pcm_s16le';

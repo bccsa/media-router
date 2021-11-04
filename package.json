@@ -4,7 +4,8 @@
   "description": "Remote audio translation for live events",
   "main": "router.js",
   "dependencies": {
-    "audio-mixer": "^2.1.4"
+    "audio-mixer": "^2.1.4",
+    "speaker": "^0.5.3"
   },
   "devDependencies": {},
   "scripts": {

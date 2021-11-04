@@ -3,6 +3,7 @@ Remote audio translation for live events
 
 ## Dependencies
 ### install srt-live-transmit
+```
 sudo apt-get -y update
 sudo apt-get -y install git
 sudo apt-get -y install tclsh
@@ -20,3 +21,6 @@ cd srt-1.4.3/
 ./configure
 make
 sudo make install
+```
+### Install dependencies for node-speaker
+sudo apt-get install libasound2-dev

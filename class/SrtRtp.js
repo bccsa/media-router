@@ -55,7 +55,7 @@ class SrtRtp {
                 // Handle stderr
                 this.srtLiveTransmit.stderr.on('data', data => {
                     // parse stderr output here
-                    console.log(data.toString());
+                    console.log("SrtRtp: " + data.toString());
                 });
 
                 // Handle process exit event
