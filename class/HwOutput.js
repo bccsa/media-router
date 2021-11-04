@@ -19,6 +19,8 @@ const events = require('events');
 class HwOutput {
     constructor() {
         this.inputFormat = 's16le';
+        this.inputSampleRate = 48000;
+        this.inputChannels = 1;
         this.stdin = undefined;
         this.log = new events.EventEmitter();
         this.ffplay = undefined;
@@ -35,7 +37,7 @@ class HwOutput {
         this.exitFlag = false;   // Reset the exit flag
         if (this.ffplay == undefined) {
             try {
-                let args = `-hide_banner -nodisp -framedrop -fflags nobuffer -f ${this.inputFormat} -i -`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -sync ext -nodisp -framedrop -fflags nobuffer -ac ${this.inputChannels} -sample_rate ${this.inputSampleRate} -f ${this.inputFormat} -i -`;
                 this.ffplay = spawn('ffplay', args.split(" "));
                 this.stdin = this.ffplay.stdin;
     

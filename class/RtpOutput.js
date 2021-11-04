@@ -60,6 +60,7 @@ class RtpOutput {
 
                 // Handle process exit event
                 this.ffmpeg.on('close', code => {
+                    this.log.emit('log', `ffmpeg output ${this.rtpIP}:${this.rtpPort}: Closed (${code})`);
                     if (!this.exitFlag) {
                         // Restart after 1 second
                         setTimeout(() => { this.Start(); }, 1000);
@@ -68,11 +69,11 @@ class RtpOutput {
 
                 // Handle process error events
                 this.ffmpeg.on('error', code => {
-                    
+                    this.log.emit('log', `ffmpeg output ${this.rtpIP}:${this.rtpPort}: Error ${code}`);
                 });
             }
             catch (err) {
-                this.log.emit('log', `ffmpeg ${this.hwInput}: ${err.message}`);
+                this.log.emit('log', `ffmpeg output ${this.rtpIP}:${this.rtpPort}: ${err.message}`);
             }
         }
     }
@@ -81,7 +82,7 @@ class RtpOutput {
     Stop() {
         if (this.ffmpeg != undefined) {
             this.exitFlag = true;   // prevent automatic restarting of the process
-            this.log.emit('log', `ffmpeg ${this.rtpIP}:${this.rtpPort}: Stopping ffmpeg...`);
+            this.log.emit('log', `ffmpeg output ${this.rtpIP}:${this.rtpPort}: Stopping ffmpeg...`);
             this.ffmpeg.kill('SIGTERM');
     
             // ffmpeg stops on SIGTERM, but does not exit.

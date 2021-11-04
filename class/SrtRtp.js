@@ -48,24 +48,22 @@ class SrtRtp {
 
                 // Handle stdout
                 this.srtLiveTransmit.stdout.on('data', data => {
-                    // parse stdout output here
-                    console.log(data.toString());
+                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
                 });
 
                 // Handle stderr
                 this.srtLiveTransmit.stderr.on('data', data => {
-                    // parse stderr output here
-                    console.log("SrtRtp: " + data.toString());
+                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
                 });
 
                 // Handle process exit event
                 this.srtLiveTransmit.on('close', code => {
-
+                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Closed (${code})`);
                 });
 
                 // Handle process error events
                 this.srtLiveTransmit.on('error', code => {
-
+                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Error ${code}`);
                 });
             }
             catch (err) {
@@ -77,7 +75,7 @@ class SrtRtp {
     // Stop the input capture process
     Stop() {
         if (this.srtLiveTransmit != undefined) {
-            this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort} Stopping srt-live-transmit...`);
+            this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Stopping srt-live-transmit...`);
             this.srtLiveTransmit.kill('SIGTERM');
     
             // Send SIGKILL to quit process

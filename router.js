@@ -28,13 +28,14 @@ hw2.log.on('log', data => {
    console.log(data);
 })
 
-//var hwOut = new HwOutput();
-
 // var rtpOut1 = new RtpOutput();
 // rtpOut1.rtpPort = 3000;
 //rtpOut1.rtpIP = '127.0.0.1';
 var rtpOut2 = new RtpOutput();
 rtpOut2.rtpPort = 3002;
+rtpOut2.log.on('log', data => {
+   console.log(data);
+})
 
 var srtOut2 = new RtpSrt();
 srtOut2.srtHost = '';
@@ -42,7 +43,11 @@ srtOut2.srtPort = 4002;
 srtOut2.rtpPort = 3002;
 srtOut2.srtMode = 'listener';
 srtOut2.srtLatency = 1;
+srtOut2.log.on('log', data => {
+   console.log(data);
+})
 srtOut2.Start();
+
 
 var srtIn2 = new SrtRtp();
 srtIn2.srtHost = '127.0.0.1';
@@ -50,12 +55,18 @@ srtIn2.srtPort = 4002;
 srtIn2.rtpPort = 3004;
 srtIn2.srtMode = 'caller';
 srtIn2.srtLatency = 1;
+srtIn2.log.on('log', data => {
+   console.log(data);
+})
 srtIn2.Start();
 
 // var rtpIn1 = new RtpInput();
 // rtpIn1.rtpPort = 3000;
 var rtpIn2 = new RtpInput();
 rtpIn2.rtpPort = 3004;
+rtpIn2.log.on('log', data => {
+   console.log(data);
+})
 
 
 // Mixer does not work well with bit depth of more than 16 bit
@@ -99,13 +110,14 @@ hw2.stdout.pipe(rtpOut2.stdin);
 rtpIn2.Start();
 rtpIn2.stdout.pipe(mixIn2);
 
-//hwOut.Start();
-//mixer.pipe(hwOut.stdin);
+var hwOut = new HwOutput();
+hwOut.Start();
+mixer.pipe(hwOut.stdin);
 
-const speaker = new Speaker({
-   channels: 1,
-   bitDepth: 16,
-   sampleRate: 48000
- });
- mixer.pipe(speaker);
+// const speaker = new Speaker({
+//    channels: 1,
+//    bitDepth: 16,
+//    sampleRate: 48000
+//  });
+//  mixer.pipe(speaker);
 

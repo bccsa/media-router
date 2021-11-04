@@ -41,7 +41,7 @@ class HwInput {
         if (this.ffmpeg == undefined) {
             this.exitFlag = false;   // Reset the exit flag
             try {
-                let args = `-hide_banner -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.inputChannels} -sample_rate ${this.inputSampleRate} -i ${this.hwInput} -c:a ${this.outputCodec} -ac ${this.outputChannels} -sample_rate ${this.outputSampleRate} -f ${this.outputFormat} -`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.inputChannels} -sample_rate ${this.inputSampleRate} -i ${this.hwInput} -c:a ${this.outputCodec} -ac ${this.outputChannels} -sample_rate ${this.outputSampleRate} -f ${this.outputFormat} -`;
                 this.ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdout = this.ffmpeg.stdout;
     
@@ -52,6 +52,7 @@ class HwInput {
 
                 // Handle process exit event
                 this.ffmpeg.on('close', code => {
+                    this.log.emit('log', `ffmpeg ${this.hwInput}: Closed (${code})`);
                     if (!this.exitFlag) {
                         // Restart after 1 second
                         setTimeout(() => { this.Start(); }, 1000);
@@ -60,7 +61,7 @@ class HwInput {
 
                 // Handle process error events
                 this.ffmpeg.on('error', code => {
-                    
+                    this.log.emit('log', `ffmpeg ${this.hwInput}: Error ${code}`);
                 });
             }
             catch (err) {
