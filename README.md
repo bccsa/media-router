@@ -22,5 +22,3 @@ cd srt-1.4.3/
 make
 sudo make install
 ```
-### Install dependencies for node-speaker
-sudo apt-get install libasound2-dev
