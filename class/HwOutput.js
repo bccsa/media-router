@@ -1,6 +1,6 @@
 // ======================================
 // Hardware Pulse-Code Modulation output
-// via ffplay
+// via aplay
 //
 // Copyright BCC South Africa
 // =====================================
@@ -18,13 +18,15 @@ const events = require('events');
 
 class HwOutput {
     constructor() {
-        this.inputFormat = 's16le';
-        this.inputSampleRate = 48000;
-        this.inputChannels = 1;
-        this.stdin = undefined;
+        this.format = 'S16_LE';             // For valid formats, see aplay
+        this.sampleRate = 48000;            // PCM sample rate
+        this.channels = 1;                  // Channel count
+        this.device = 'Headphones';         // Device name - see aplay -L
+        this.buffer = 50000;                // Buffer in microseconds
+        this.stdin = undefined;             // stdin mapped to aplay process stdin
         this.log = new events.EventEmitter();
-        this.ffplay = undefined;
-        this.exitFlag = false;      // flag used to prevent restarting of the process on normal stop
+        this.aplay = undefined;             // aplay process
+        this.exitFlag = false;              // flag used to prevent restarting of the process on normal stop
     }
 
     // public properties
@@ -35,45 +37,55 @@ class HwOutput {
     // Start the playback process
     Start() {
         this.exitFlag = false;   // Reset the exit flag
-        if (this.ffplay == undefined) {
+        if (this.aplay == undefined) {
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -sync ext -nodisp -framedrop -fflags nobuffer -ac ${this.inputChannels} -sample_rate ${this.inputSampleRate} -f ${this.inputFormat} -i -`;
-                this.ffplay = spawn('ffplay', args.split(" "));
-                this.stdin = this.ffplay.stdin;
+                //let args = `-v --nonblock -D plughw:CARD=${this.device},DEV=0 -c ${this.channels} -r ${this.sampleRate} -f ${this.format} -B ${this.buffer} --buffer-size 256 --period-size 128 -`;
+                let args = `--nonblock -D plughw:CARD=${this.device},DEV=0 -c ${this.channels} -r ${this.sampleRate} -f ${this.format} -B ${this.buffer} --buffer-size 1024 --period-size 512 -`;
+                this.aplay = spawn('aplay', args.split(" "));
+                this.stdin = this.aplay.stdin;
     
                 // Handle stderr
-                this.ffplay.stderr.on('data', (data) => {
-                    // parse ffplay output here
+                this.aplay.stderr.on('data', (data) => {
+                    this.log.emit('log', `aplay (${this.device}): ${data.toString()}`); 
+                });
+
+                // Handle stdout
+                this.aplay.stdout.on('data', (data) => {
+                    this.log.emit('log', `aplay (${this.device}): ${data.toString()}`); 
                 });
 
                 // Handle process exit event
-                this.ffplay.on('close', code => {
+                this.aplay.on('close', code => {
                     if (!this.exitFlag) {
+                        this.log.emit('log', `aplay (${this.device}): Closed (${code})`);  
                         // Restart after 1 second
-                        setTimeout(() => { this.Start(); }, 1000);
+                        setTimeout(() => {
+                            this.log.emit('log', `aplay (${this.device}): Restarting aplay...`);  
+                            this.Start();
+                        }, 1000);
                     }
                 });
 
                 // Handle process error events
-                this.ffplay.on('error', code => {
-                    
+                this.aplay.on('error', code => {
+                    this.log.emit('log', `aplay (${this.device}): Error ${code}`);    
                 });
             }
             catch (err) {
-                this.log.emit('log', `ffplay: ${err.message}`);
+                this.log.emit('log', `aplay (${this.device}): ${err.message}`);
             }
         }
     }
 
     // Stop the playback process
     Stop() {
-        if (this.ffplay != undefined) {
+        if (this.aplay != undefined) {
             this.exitFlag = true;   // prevent automatic restarting of the process
-            this.log.emit('log', `ffplay: Stopping ffplay...`);
-            this.ffplay.kill('SIGTERM');
+            this.log.emit('log', `aplay (${this.device}): Stopping aplay...`);
+            this.aplay.kill('SIGTERM');
 
             // Send SIGKILL to quit process
-            this.ffplay.kill('SIGKILL');
+            this.aplay.kill('SIGKILL');
         }
     }
 }

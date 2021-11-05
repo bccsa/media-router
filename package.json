@@ -4,7 +4,10 @@
   "description": "Remote audio translation for live events",
   "main": "router.js",
   "dependencies": {
+    "audify": "^1.6.3",
     "audio-mixer": "^2.1.4",
+    "naudiodon": "^2.3.5",
+    "node-portaudio": "^0.4.10",
     "speaker": "^0.5.3"
   },
   "devDependencies": {},
