@@ -7,27 +7,51 @@
 // -------------------------------------
 // External libraries
 // -------------------------------------
+
+const fs = require('fs');
 const AudioMixer = require('audio-mixer');
-const { HwInput } = require('./class/HwInput');
-const { HwOutput } = require('./class/HwOutput');
+const { AlsaInput } = require('./class/AlsaInput');
+const { AlsaOutput } = require('./class/AlsaOutput');
 const { RtpInput } = require('./class/RtpInput');
 const { RtpOutput } = require('./class/RtpOutput');
 const { SrtRtp } = require('./class/SrtRtp');
 const { RtpSrt } = require('./class/RtpSrt');
 
-var hwIn = new HwInput();
-hwIn.device = 'S2';
-hwIn.log.on('log', data => { console.log(data) });
+// -------------------------------------
+// Global variables
+// -------------------------------------
 
-var hwOut = new HwOutput();
-hwOut.device = 'Headphones';
-hwOut.log.on('log', data => { console.log(data) });
+var config = {};
 
-hwOut.Start();
-hwIn.Start();
-hwIn.stdout.pipe(hwOut.stdin);
 
-// hwOut.Start();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+var AlsaIn = new AlsaInput();
+AlsaIn.device = 'S2';
+AlsaIn.log.on('log', data => { console.log(data) });
+
+var AlsaOut = new AlsaOutput();
+AlsaOut.device = 'Headphones';
+AlsaOut.log.on('log', data => { console.log(data) });
+
+AlsaOut.Start();
+AlsaIn.Start();
+AlsaIn.stdout.pipe(AlsaOut.stdin);
+
+// AlsaOut.Start();
 
 // var rtpOut2 = new RtpOutput();
 // rtpOut2.rtpPort = 3002;
@@ -85,16 +109,16 @@ hwIn.stdout.pipe(hwOut.stdin);
 
 
 // rtpOut2.Start();
-// hw2.Start();
-// //hw2.stdout.pipe(rtpOut2.stdin);
-// hw2.stdout.pipe(mixIn2);
+// Alsa2.Start();
+// //Alsa2.stdout.pipe(rtpOut2.stdin);
+// Alsa2.stdout.pipe(mixIn2);
 
 // // rtpIn2.Start();
 // // rtpIn2.stdout.pipe(mixIn2);
 
-// var hwOut = new HwOutput();
-// hwOut.Start();
-// mixer.pipe(hwOut.stdin);
+// var AlsaOut = new AlsaOutput();
+// AlsaOut.Start();
+// mixer.pipe(AlsaOut.stdin);
 
 // // const speaker = new Speaker({
 // //    channels: 1,
@@ -106,7 +130,47 @@ hwIn.stdout.pipe(hwOut.stdin);
 
  
 
+// // Load settings from file
+// function loadConfig() {
+//     try {
+//         var raw = fs.readFileSync('config.json');
 
+//         // Parse JSON file
+//         config = JSON.parse(raw);
+
+//         // Template client data for comparison
+//         var template = clientTemplate();
+
+//         // Loop through clientData array
+//         Object.keys(clientData).forEach(key => {
+//             // Create blank clientStatus objects for all array entries
+//             clientStatus[key] = newClientStatus();
+
+//             // Upgrade helper: Compare loaded object with template object, and add missing values to loaded object
+//             Object.keys(template.settings).forEach(k => {
+//                 if (clientData[key].settings[k] == undefined) {
+//                     clientData[key].settings[k] = template.settings[k];
+//                 }
+//             });
+//         });
+
+//     } catch (err) {
+//         console.log('Unable to load clientData.json from file: ' + err.message);
+
+//         // Add a new client
+//         newClient();
+//     }
+// }
+
+// // Save settings to file
+// function saveSettings() {
+//     var data = JSON.stringify(clientData, null, 2); //pretty print
+//     try {
+//         fs.writeFileSync('clientData.json', data);
+//     } catch (err) {
+//         console.log('Unable to write clientData.json to disk: ' + err.message);
+//     }
+// }
 
 
 // #################################

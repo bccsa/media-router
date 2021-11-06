@@ -17,6 +17,7 @@ const events = require('events');
 
 class RtpSrt {
     constructor() {
+        this.name = 'New RTP to SRT output';   // Display name
         this.rtpIP = '224.0.0.100';
         this.rtpPort = 3000;
         this.srtHost = 'srt.invalid';
@@ -26,62 +27,85 @@ class RtpSrt {
         this.srtPassphrase = '';
         this.srtLatency = '200';
 
-        this.log = new events.EventEmitter();
-        this.srtLiveTransmit = undefined;
+        this._log = new events.EventEmitter();
+        this._srt = undefined;
     }
 
-    // public properties
-    get Log() {
-        return this.log;
+    get type() {
+        return this.constructor.name;
+    }
+
+    get log() {
+        return this._log;
+    }
+
+    SetConfig(config) {
+        Object.keys(config).forEach(k => {
+            // Only update "public" properties excluding stdin and stdout properties
+            if (this[k] != undefined && k[0] != '_' && k != 'type' && (typeof k == Number || typeof k == String)) {
+                this[k] = config[k];
+            }
+        });
+    }
+
+    GetConfig() {
+        let c = {};
+        Object.keys(this).forEach(k => {
+            // Only return "public" properties
+            if (k[0] != '_' && (typeof k == Number || typeof k == String)) {
+                c[k] = this[k];
+            }
+        });
+        return c;
     }
 
     // Start the process
     Start() {
-        if (this.srtLiveTransmit == undefined) {
+        if (this._srt == undefined) {
             try {
                 let crypto = "";
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
                 let args = `udp://${this.rtpIP}:${this.rtpPort} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto}`;
-                this.srtLiveTransmit = spawn('srt-live-transmit', args.split(" "));
+                this._srt = spawn('srt-live-transmit', args.split(" "));
 
                 // Handle stdout
-                this.srtLiveTransmit.stdout.on('data', data => {
-                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
+                this._srt.stdout.on('data', data => {
+                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
                 });
 
                 // Handle stderr
-                this.srtLiveTransmit.stderr.on('data', data => {
-                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
+                this._srt.stderr.on('data', data => {
+                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
                 });
 
                 // Handle process exit event
-                this.srtLiveTransmit.on('close', code => {
-                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Closed (${code})`);
+                this._srt.on('close', code => {
+                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Closed (${code})`);
                 });
 
                 // Handle process error events
-                this.srtLiveTransmit.on('error', code => {
-                    this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Error ${code}`);
+                this._srt.on('error', code => {
+                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Error ${code}`);
                 });
             }
             catch (err) {
-                this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${err.message}`);
+                this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${err.message}`);
             }
         }
     }
 
     // Stop the input capture process
     Stop() {
-        if (this.srtLiveTransmit != undefined) {
-            this.log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Stopping srt-live-transmit...`);
-            this.srtLiveTransmit.kill('SIGTERM');
+        if (this._srt != undefined) {
+            this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Stopping srt-live-transmit...`);
+            this._srt.kill('SIGTERM');
     
             // Send SIGKILL to quit process
-            this.srtLiveTransmit.kill('SIGKILL');
+            this._srt.kill('SIGKILL');
 
-            this.srtLiveTransmit = undefined;
+            this._srt = undefined;
         }
     }
 }
