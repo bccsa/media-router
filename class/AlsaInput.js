@@ -17,7 +17,7 @@ const events = require('events');
 // -------------------------------------
 
 class AlsaInput {
-    constructor(config) {
+    constructor() {
         this.name = 'New Alsa Input';       // Display name
         this.format = 'S16_LE';             // For valid formats, see arecord
         this.sampleRate = 48000;            // PCM sample rate
@@ -35,9 +35,9 @@ class AlsaInput {
     }
 
     SetConfig(config) {
-        Object.keys(config).forEach(k => {
-            // Only update "public" properties excluding stdin and stdout properties
-            if (this[k] != undefined && k[0] != '_' && (typeof k == Number || typeof k == String)) {
+        Object.getOwnPropertyNames(config).forEach(k => {
+            // Only update "public" properties
+            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
                 this[k] = config[k];
             }
         });
@@ -45,9 +45,9 @@ class AlsaInput {
 
     GetConfig() {
         let c = {};
-        Object.keys(this).forEach(k => {
+        Object.getOwnPropertyNames(this).forEach(k => {
             // Only return "public" properties
-            if (k[0] != '_' && (typeof k == Number || typeof k == String)) {
+            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
                 c[k] = this[k];
             }
         });

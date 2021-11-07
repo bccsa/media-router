@@ -102,7 +102,7 @@ function loadConfig() {
 
         var data = JSON.stringify(defaultConfig(), null, 2); //pretty print
         try {
-            //fs.writeFileSync('config.json', data);
+            fs.writeFileSync('config.json', data);
         }
         catch (err) {
             console.log('Unable to write config.json to disk: ' + err.message);
