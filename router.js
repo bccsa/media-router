@@ -41,11 +41,11 @@ var config = {};
 
 
 var AlsaIn = new AlsaInput();
-AlsaIn.device = 'S2';
+AlsaIn.device = 'AudioPCI';
 AlsaIn.log.on('log', data => { console.log(data) });
 
 var AlsaOut = new AlsaOutput();
-AlsaOut.device = 'Headphones';
+AlsaOut.device = 'AudioPCI';
 AlsaOut.log.on('log', data => { console.log(data) });
 
 var ffplayOut = new ffplayOutput();
