@@ -12,17 +12,103 @@ const fs = require('fs');
 const AudioMixer = require('audio-mixer');
 const { AlsaInput } = require('./class/AlsaInput');
 const { AlsaOutput } = require('./class/AlsaOutput');
+const { ffmpegInput } = require('./class/ffmpegInput');
 const { ffplayOutput } = require('./class/ffplayOutput');
 const { RtpInput } = require('./class/RtpInput');
 const { RtpOutput } = require('./class/RtpOutput');
-const { SrtRtp } = require('./class/SrtRtp');
-const { RtpSrt } = require('./class/RtpSrt');
+const { SrtInput } = require('./class/SrtInput');
+const { SrtOutput } = require('./class/SrtOutput');
 
 // -------------------------------------
 // Global variables
 // -------------------------------------
 
-var config = {};
+var devices = {};
+
+// -------------------------------------
+// Startup logic
+// -------------------------------------
+
+// Load config file from disk
+loadConfig();
+
+// -------------------------------------
+// Configuration management
+// -------------------------------------
+
+// Create default (template) configuration
+function defaultConfig() {
+    var conf = {};
+
+    let alsaIn = new AlsaInput();
+    conf.AlsaInput = [ alsaIn.GetConfig() ];
+
+    let alsaOut = new AlsaOutput();
+    conf.AlsaOutput = [ alsaOut.GetConfig() ];
+
+    let ffmpegIn = new ffmpegInput();
+    conf.ffmpegInput = [ ffmpegIn.GetConfig() ];
+
+    let ffplayOut = new ffplayOutput();
+    conf.ffplayOutput = [ ffplayOut.GetConfig() ];
+
+    let rtpIn = new RtpInput();
+    conf.RtpInput = [ rtpIn.GetConfig() ];
+
+    let rtpOut = new RtpOutput();
+    conf.RtpOutput = [ rtpOut.GetConfig() ];
+
+    let srtIn = new SrtInput();
+    conf.SrtInput = [ srtIn.GetConfig() ];
+
+    let srtOut = new SrtOutput();
+    conf.SrtOutput = [ srtOut.GetConfig() ];  
+    
+    return conf;
+}
+
+// Load settings from file
+function loadConfig() {
+    try {
+        var raw = fs.readFileSync('config.json');
+
+        // Parse JSON file
+        let config = JSON.parse(raw);
+
+        // Generate devices
+        if (devices.AlsaInput ==  undefined) { devices.AlsaInput = [] }
+        if (config.AlsaInput != undefined) {
+            config.AlsaInput.forEach(c => {
+                let d = new AlsaInput();
+                d.SetConfig(c);
+                devices.AlsaInput.push(d);
+            });
+        }
+
+        // Generate devices
+        if (devices.AlsaOutput ==  undefined) { devices.AlsaOutput = [] }
+        if (config.AlsaOutput != undefined) {
+            config.AlsaOutput.forEach(c => {
+                let d = new AlsaOutput();
+                d.SetConfig(c);
+                devices.AlsaOutput.push(d);
+            });
+        }
+
+    }
+    catch (err) {
+        console.log('Unable to load config.json from file: ' + err.message);
+        console.log('Generating a template config file...')
+
+        var data = JSON.stringify(defaultConfig(), null, 2); //pretty print
+        try {
+            //fs.writeFileSync('config.json', data);
+        }
+        catch (err) {
+            console.log('Unable to write config.json to disk: ' + err.message);
+        }
+    }
+}
 
 
 
@@ -36,27 +122,23 @@ var config = {};
 
 
 
+// var AlsaIn = new AlsaInput();
+// AlsaIn.device = 'AudioPCI';
+// AlsaIn.log.on('log', data => { console.log(data) });
 
+// var AlsaOut = new AlsaOutput();
+// AlsaOut.device = 'AudioPCI';
+// AlsaOut.log.on('log', data => { console.log(data) });
 
+// var ffplayOut = new ffplayOutput();
+// ffplayOut.log.on('log', data => { console.log(data) });
 
-
-var AlsaIn = new AlsaInput();
-AlsaIn.device = 'AudioPCI';
-AlsaIn.log.on('log', data => { console.log(data) });
-
-var AlsaOut = new AlsaOutput();
-AlsaOut.device = 'AudioPCI';
-AlsaOut.log.on('log', data => { console.log(data) });
-
-var ffplayOut = new ffplayOutput();
-ffplayOut.log.on('log', data => { console.log(data) });
-
-//AlsaOut.Start();
-ffplayOut.Start()
-AlsaIn.Start();
-//AlsaIn.stdout.pipe(AlsaOut.stdin);
-AlsaIn.stdout.pipe(ffplayOut.stdin);
-// AlsaOut.Start();
+// //AlsaOut.Start();
+// ffplayOut.Start()
+// AlsaIn.Start();
+// //AlsaIn.stdout.pipe(AlsaOut.stdin);
+// AlsaIn.stdout.pipe(ffplayOut.stdin);
+// // AlsaOut.Start();
 
 // var rtpOut2 = new RtpOutput();
 // rtpOut2.rtpPort = 3002;

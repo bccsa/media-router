@@ -30,10 +30,6 @@ class AlsaOutput {
         this._exitFlag = false;              // flag used to prevent restarting of the process on normal stop
     }
 
-    get type() {
-        return this.constructor.name;
-    }
-
     get log() {
         return this._log;
     }
@@ -41,7 +37,7 @@ class AlsaOutput {
     SetConfig(config) {
         Object.keys(config).forEach(k => {
             // Only update "public" properties excluding stdin and stdout properties
-            if (this[k] != undefined && k[0] != '_' && k != 'type' && (typeof k == Number || typeof k == String)) {
+            if (this[k] != undefined && k[0] != '_' && (typeof k == Number || typeof k == String)) {
                 this[k] = config[k];
             }
         });

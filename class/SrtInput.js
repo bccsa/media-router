@@ -1,5 +1,5 @@
 // ======================================
-// RTP UDP socket to SRT
+// SRT to RTP UDP socket
 //
 // Copyright BCC South Africa
 // =====================================
@@ -15,9 +15,9 @@ const events = require('events');
 // Class declaration
 // -------------------------------------
 
-class RtpSrt {
+class SrtInput {
     constructor() {
-        this.name = 'New RTP to SRT output';   // Display name
+        this.name = 'New SRT to RTP input';   // Display name
         this.rtpIP = '224.0.0.100';
         this.rtpPort = 3000;
         this.srtHost = 'srt.invalid';
@@ -31,10 +31,6 @@ class RtpSrt {
         this._srt = undefined;
     }
 
-    get type() {
-        return this.constructor.name;
-    }
-
     get log() {
         return this._log;
     }
@@ -42,7 +38,7 @@ class RtpSrt {
     SetConfig(config) {
         Object.keys(config).forEach(k => {
             // Only update "public" properties excluding stdin and stdout properties
-            if (this[k] != undefined && k[0] != '_' && k != 'type' && (typeof k == Number || typeof k == String)) {
+            if (this[k] != undefined && k[0] != '_' && (typeof k == Number || typeof k == String)) {
                 this[k] = config[k];
             }
         });
@@ -67,7 +63,7 @@ class RtpSrt {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
-                let args = `udp://${this.rtpIP}:${this.rtpPort} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto}`;
+                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto} udp://${this.rtpIP}:${this.rtpPort}`;
                 this._srt = spawn('srt-live-transmit', args.split(" "));
 
                 // Handle stdout
@@ -111,4 +107,4 @@ class RtpSrt {
 }
 
 // Export class
-module.exports.RtpSrt = RtpSrt;
+module.exports.SrtInput = SrtInput;

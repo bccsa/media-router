@@ -1,5 +1,5 @@
 // ======================================
-// SRT to RTP UDP socket
+// RTP UDP socket to SRT
 //
 // Copyright BCC South Africa
 // =====================================
@@ -15,9 +15,9 @@ const events = require('events');
 // Class declaration
 // -------------------------------------
 
-class SrtRtp {
+class SrtOutput {
     constructor() {
-        this.name = 'New SRT to RTP input';   // Display name
+        this.name = 'New RTP to SRT output';   // Display name
         this.rtpIP = '224.0.0.100';
         this.rtpPort = 3000;
         this.srtHost = 'srt.invalid';
@@ -31,10 +31,6 @@ class SrtRtp {
         this._srt = undefined;
     }
 
-    get type() {
-        return this.constructor.name;
-    }
-
     get log() {
         return this._log;
     }
@@ -42,7 +38,7 @@ class SrtRtp {
     SetConfig(config) {
         Object.keys(config).forEach(k => {
             // Only update "public" properties excluding stdin and stdout properties
-            if (this[k] != undefined && k[0] != '_' && k != 'type' && (typeof k == Number || typeof k == String)) {
+            if (this[k] != undefined && k[0] != '_' && (typeof k == Number || typeof k == String)) {
                 this[k] = config[k];
             }
         });
@@ -67,7 +63,7 @@ class SrtRtp {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
-                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto} udp://${this.rtpIP}:${this.rtpPort}`;
+                let args = `udp://${this.rtpIP}:${this.rtpPort} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto}`;
                 this._srt = spawn('srt-live-transmit', args.split(" "));
 
                 // Handle stdout
@@ -96,7 +92,7 @@ class SrtRtp {
         }
     }
 
-    // Stop the input capture process
+    // Stop the process
     Stop() {
         if (this._srt != undefined) {
             this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Stopping srt-live-transmit...`);
@@ -111,4 +107,4 @@ class SrtRtp {
 }
 
 // Export class
-module.exports.SrtRtp = SrtRtp;
+module.exports.SrtOutput = SrtOutput;
