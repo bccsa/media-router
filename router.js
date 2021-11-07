@@ -9,7 +9,7 @@
 // -------------------------------------
 
 const fs = require('fs');
-const AudioMixer = require('audio-mixer');
+//const AudioMixer = require('audio-mixer');
 const { AlsaInput } = require('./class/AlsaInput');
 const { AlsaOutput } = require('./class/AlsaOutput');
 const { ffmpegInput } = require('./class/ffmpegInput');
@@ -26,6 +26,26 @@ const { SrtOutput } = require('./class/SrtOutput');
 var devices = {};
 
 // -------------------------------------
+// Dynamic class creation functions
+// -------------------------------------
+
+// Dynamic class map
+const classes = {
+    AlsaInput,
+    AlsaOutput,
+    ffmpegInput,
+    ffplayOutput,
+    RtpInput,
+    RtpOutput,
+    SrtInput,
+    SrtOutput,
+}
+
+function dynamicClass(className) {
+    return classes[className];
+}
+
+// -------------------------------------
 // Startup logic
 // -------------------------------------
 
@@ -40,29 +60,16 @@ loadConfig();
 function defaultConfig() {
     var conf = {};
 
-    let alsaIn = new AlsaInput();
-    conf.AlsaInput = [ alsaIn.GetConfig() ];
+    Object.keys(classes).forEach(className => {
+        // Get class
+        let dClass = dynamicClass(className);
 
-    let alsaOut = new AlsaOutput();
-    conf.AlsaOutput = [ alsaOut.GetConfig() ];
+        // Create class instance
+        let c = new dClass();
 
-    let ffmpegIn = new ffmpegInput();
-    conf.ffmpegInput = [ ffmpegIn.GetConfig() ];
-
-    let ffplayOut = new ffplayOutput();
-    conf.ffplayOutput = [ ffplayOut.GetConfig() ];
-
-    let rtpIn = new RtpInput();
-    conf.RtpInput = [ rtpIn.GetConfig() ];
-
-    let rtpOut = new RtpOutput();
-    conf.RtpOutput = [ rtpOut.GetConfig() ];
-
-    let srtIn = new SrtInput();
-    conf.SrtInput = [ srtIn.GetConfig() ];
-
-    let srtOut = new SrtOutput();
-    conf.SrtOutput = [ srtOut.GetConfig() ];  
+        // Get default configuration, and add to config object
+        conf[className] = [ c.GetConfig() ];
+    });
     
     return conf;
 }
@@ -75,26 +82,34 @@ function loadConfig() {
         // Parse JSON file
         let config = JSON.parse(raw);
 
-        // Generate devices
-        if (devices.AlsaInput ==  undefined) { devices.AlsaInput = [] }
-        if (config.AlsaInput != undefined) {
-            config.AlsaInput.forEach(c => {
-                let d = new AlsaInput();
-                d.SetConfig(c);
-                devices.AlsaInput.push(d);
-            });
-        }
+        // Loop through class names and create class instances with
+        // configuration from config file
+        Object.keys(config).forEach(className => {
+            // Create array for class instances
+            if (devices[className] ==  undefined) { devices[className] = [] }
 
-        // Generate devices
-        if (devices.AlsaOutput ==  undefined) { devices.AlsaOutput = [] }
-        if (config.AlsaOutput != undefined) {
-            config.AlsaOutput.forEach(c => {
-                let d = new AlsaOutput();
-                d.SetConfig(c);
-                devices.AlsaOutput.push(d);
-            });
-        }
+            // Get class
+            let dClass = dynamicClass(className);
 
+            // Create class instances
+            config[className].forEach(settings => {
+                let c = new dClass();
+                c.SetConfig(settings);
+
+                // Subscribe to log event
+                c.log.on('log', message => {
+                    eventLog(message);
+                });
+
+                // Start the device
+                if (c.Start != undefined) {
+                    c.Start();
+                }
+
+                // Add to devices list
+                devices[className].push(c);
+            });
+        });
     }
     catch (err) {
         console.log('Unable to load config.json from file: ' + err.message);
@@ -103,6 +118,9 @@ function loadConfig() {
         var data = JSON.stringify(defaultConfig(), null, 2); //pretty print
         try {
             fs.writeFileSync('config.json', data);
+
+            // Re-load configuration
+            loadConfig();
         }
         catch (err) {
             console.log('Unable to write config.json to disk: ' + err.message);
@@ -110,9 +128,13 @@ function loadConfig() {
     }
 }
 
+// -------------------------------------
+// Event logging
+// -------------------------------------
 
-
-
+function eventLog(message) {
+    console.log(message);
+}
 
 
 
