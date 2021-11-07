@@ -74,7 +74,7 @@ class AlsaInput {
 
                 // Handle process exit event
                 this._arecord.on('close', code => {
-                    if (!_exitFlag) {
+                    if (!this._exitFlag) {
                         this._log.emit('log', `arecord (${this.device}): Closed (${code})`);  
                         // Restart after 1 second
                         setTimeout(() => {

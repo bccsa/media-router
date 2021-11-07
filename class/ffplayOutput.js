@@ -16,9 +16,9 @@ const events = require('events');
 // Class declaration
 // -------------------------------------
 
-class ffmpegOutput {
+class ffplayOutput {
     constructor() {
-        this.name = 'New _ffmpeg output'; 
+        this.name = 'New ffplay output'; 
         this.inputFormat = 's16le';
         this.inputSampleRate = 48000;
         this.inputChannels = 1;
@@ -67,20 +67,25 @@ class ffmpegOutput {
     
                 // Handle stderr
                 this._ffplay.stderr.on('data', (data) => {
-                    // parse ffplay output here
+                    
                 });
 
                 // Handle process exit event
                 this._ffplay.on('close', code => {
                     if (!this._exitFlag) {
+                        this._log.emit('log', `ffplay: Closed (${code})`);  
                         // Restart after 1 second
-                        setTimeout(() => { this.Start(); }, 1000);
+                        setTimeout(() => {
+                            this._log.emit('log', `ffplay: Restarting ffplay...`);  
+                            this._ffplay = undefined;
+                            this.Start();
+                        }, 1000);
                     }
                 });
 
                 // Handle process error events
                 this._ffplay.on('error', code => {
-                    
+                    this._log.emit('log', `ffplay: Error ${code}`);  
                 });
             }
             catch (err) {
@@ -104,4 +109,4 @@ class ffmpegOutput {
 }
 
 // Export class
-module.exports.ffmpegOutput = ffmpegOutput;
+module.exports.ffplayOutput = ffplayOutput;

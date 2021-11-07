@@ -12,6 +12,7 @@ const fs = require('fs');
 const AudioMixer = require('audio-mixer');
 const { AlsaInput } = require('./class/AlsaInput');
 const { AlsaOutput } = require('./class/AlsaOutput');
+const { ffplayOutput } = require('./class/ffplayOutput');
 const { RtpInput } = require('./class/RtpInput');
 const { RtpOutput } = require('./class/RtpOutput');
 const { SrtRtp } = require('./class/SrtRtp');
@@ -47,10 +48,14 @@ var AlsaOut = new AlsaOutput();
 AlsaOut.device = 'Headphones';
 AlsaOut.log.on('log', data => { console.log(data) });
 
-AlsaOut.Start();
-AlsaIn.Start();
-AlsaIn.stdout.pipe(AlsaOut.stdin);
+var ffplayOut = new ffplayOutput();
+ffplayOut.log.on('log', data => { console.log(data) });
 
+//AlsaOut.Start();
+ffplayOut.Start()
+AlsaIn.Start();
+//AlsaIn.stdout.pipe(AlsaOut.stdin);
+AlsaIn.stdout.pipe(ffplayOut.stdin);
 // AlsaOut.Start();
 
 // var rtpOut2 = new RtpOutput();
