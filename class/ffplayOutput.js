@@ -10,46 +10,20 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const events = require('events');
+const { _outputDevice } = require('./_outputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class ffplayOutput {
-    constructor() {
+class ffplayOutput extends _outputDevice {
+    constructor(DeviceList) {
+        super(DeviceList);
         this.name = 'New ffplay output'; 
-        this.inputFormat = 's16le';
-        this.inputSampleRate = 48000;
-        this.inputChannels = 1;
-        this.stdin = undefined;
-        this._log = new events.EventEmitter();
+        this.format = 's16le';
+        this.sampleRate = 48000;
+        this.channels = 1;
         this._ffplay = undefined;
-        this._exitFlag = false;      // flag used to prevent restarting of the process on normal stop
-    }
-
-    get log() {
-        return this._log;
-    }
-
-    SetConfig(config) {
-        Object.getOwnPropertyNames(config).forEach(k => {
-            // Only update "public" properties
-            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                this[k] = config[k];
-            }
-        });
-    }
-
-    GetConfig() {
-        let c = {};
-        Object.getOwnPropertyNames(this).forEach(k => {
-            // Only return "public" properties
-            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                c[k] = this[k];
-            }
-        });
-        return c;
     }
 
     // Start the playback process
@@ -57,35 +31,45 @@ class ffplayOutput {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffplay == undefined) {
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -sync ext -nodisp -framedrop -fflags nobuffer -ac ${this.inputChannels} -sample_rate ${this.inputSampleRate} -f ${this.inputFormat} -i -`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -sync ext -nodisp -framedrop -fflags nobuffer -ac ${this.channels} -sample_rate ${this.sampleRate} -f ${this.format} -i -`;
                 this._ffplay = spawn('ffplay', args.split(" "));
                 this.stdin = this._ffplay.stdin;
     
                 // Handle stderr
                 this._ffplay.stderr.on('data', (data) => {
-                    
+                    this._logEvent(`${data.toString()}`);
+                });
+
+                // Handle stdout
+                this._ffplay.stdout.on('data', (data) => {
+                    this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
                 this._ffplay.on('close', code => {
+                    this.isRunning = false;
+                    this._logEvent(`Closed (${code})`);
+
                     if (!this._exitFlag) {
-                        this._log.emit('log', `ffplay: Closed (${code})`);  
                         // Restart after 1 second
                         setTimeout(() => {
-                            this._log.emit('log', `ffplay: Restarting ffplay...`);  
-                            this._ffplay = undefined;
+                            this._logEvent(`Restarting ffplay...`);
                             this.Start();
                         }, 1000);
                     }
+
+                    this._ffplay = undefined;
                 });
 
                 // Handle process error events
                 this._ffplay.on('error', code => {
-                    this._log.emit('log', `ffplay: Error ${code}`);  
+                    this.isRunning = false;
+                    this._logEvent(`Error ${code}`);
                 });
             }
             catch (err) {
-                this._log.emit('log', `ffplay: ${err.message}`);
+                this.isRunning = false;
+                this._logEvent(`${err.message}`);
             }
         }
     }
@@ -95,7 +79,7 @@ class ffplayOutput {
         if (this._ffplay != undefined) {
             this.stdin = undefined;
             this._exitFlag = true;   // prevent automatic restarting of the process
-            this._log.emit('log', `ffplay: Stopping ffplay...`);
+            this._logEvent(`Stopping ffplay...`);
             this._ffplay.kill('SIGTERM');
 
             // Send SIGKILL to quit process

@@ -10,48 +10,22 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const events = require('events');
+const { _outputDevice } = require('./_outputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AlsaOutput {
-    constructor() {
-        this.name = 'New Alsa Output';  // Display name
+class AlsaOutput extends _outputDevice {
+    constructor(DeviceList) {
+        super(DeviceList);
+        this.name = 'New Alsa Output';      // Display name
         this.format = 'S16_LE';             // For valid formats, see _aplay
         this.sampleRate = 48000;            // PCM sample rate
         this.channels = 1;                  // Channel count
-        this.device = 'Headphones';         // Device name - see _aplay -L
-        this.buffer = 50000;                // Buffer in microseconds
-        this.stdin = undefined;             // stdin mapped to _aplay process stdin
-        this._log = new events.EventEmitter();
-        this._aplay = undefined;             // _aplay process
-        this._exitFlag = false;              // flag used to prevent restarting of the process on normal stop
-    }
-
-    get log() {
-        return this._log;
-    }
-
-    SetConfig(config) {
-        Object.getOwnPropertyNames(config).forEach(k => {
-            // Only update "public" properties
-            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                this[k] = config[k];
-            }
-        });
-    }
-
-    GetConfig() {
-        let c = {};
-        Object.getOwnPropertyNames(this).forEach(k => {
-            // Only return "public" properties
-            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                c[k] = this[k];
-            }
-        });
-        return c;
+        this.alsaDevice = 'Headphones';     // Device name - see _aplay -L
+        this.buffer = 50000;                // Buffer in microseconds         // stdin mapped to _aplay process stdin
+        this._aplay = undefined;            // _aplay process
     }
 
     // Start the playback process
@@ -59,39 +33,47 @@ class AlsaOutput {
         this._exitFlag = false;   // Reset the exit flag
         if (this._aplay == undefined) {
             try {
-                let args = `--nonblock -D plughw:CARD=${this.device},DEV=0 -c ${this.channels} -r ${this.sampleRate} -f ${this.format} -B ${this.buffer} --buffer-size 1024 --period-size 512 -`;
+                let args = `--nonblock -D plughw:CARD=${this.alsaDevice},DEV=0 -c ${this.channels} -r ${this.sampleRate} -f ${this.format} -B ${this.buffer} --buffer-size 1024 --period-size 512 -`;
                 this._aplay = spawn('aplay', args.split(" "));
                 this.stdin = this._aplay.stdin;
     
                 // Handle stderr
                 this._aplay.stderr.on('data', (data) => {
-                    this._log.emit('log', `aplay (${this.device}): ${data.toString()}`); 
+                    this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle stdout
                 this._aplay.stdout.on('data', (data) => {
-                    this._log.emit('log', `aplay (${this.device}): ${data.toString()}`); 
+                    this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
                 this._aplay.on('close', code => {
+                    this.isRunning = false;
+                    this._logEvent(`Closed (${code})`);
+
                     if (!this._exitFlag) {
-                        this._log.emit('log', `aplay (${this.device}): Closed (${code})`);  
                         // Restart after 1 second
                         setTimeout(() => {
-                            this._log.emit('log', `aplay (${this.device}): Restarting aplay...`);  
+                            this._logEvent(`Restarting aplay...`);
                             this.Start();
                         }, 1000);
                     }
+
+                    this._aplay = undefined;
                 });
 
                 // Handle process error events
                 this._aplay.on('error', code => {
-                    this._log.emit('log', `aplay (${this.device}): Error ${code}`);    
+                    this.isRunning = false;
+                    this._logEvent(`Error ${code}`);
                 });
+
+                this.isRunning = true;
             }
             catch (err) {
-                this._log.emit('log', `aplay (${this.device}): ${err.message}`);
+                this.isRunning = false;
+                this._logEvent(`${err.message}`);
             }
         }
     }
@@ -101,7 +83,7 @@ class AlsaOutput {
         if (this._aplay != undefined) {
             this.stdin = undefined;
             this._exitFlag = true;   // prevent automatic restarting of the process
-            this._log.emit('log', `aplay (${this.device}): Stopping aplay...`);
+            this._logEvent(`Stopping aplay...`);
             this._aplay.kill('SIGTERM');
 
             // Send SIGKILL to quit process

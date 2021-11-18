@@ -9,14 +9,15 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const events = require('events');
+const { _device } = require('./_device');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class SrtInput {
-    constructor() {
+class SrtInput extends _device {
+    constructor(DeviceList) {
+        super(DeviceList);
         this.name = 'New SRT to RTP input';   // Display name
         this.rtpIP = '224.0.0.100';
         this.rtpPort = 3000;
@@ -26,37 +27,12 @@ class SrtInput {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this.srtLatency = '200';
-
-        this._log = new events.EventEmitter();
         this._srt = undefined;
-    }
-
-    get log() {
-        return this._log;
-    }
-
-    SetConfig(config) {
-        Object.getOwnPropertyNames(config).forEach(k => {
-            // Only update "public" properties
-            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                this[k] = config[k];
-            }
-        });
-    }
-
-    GetConfig() {
-        let c = {};
-        Object.getOwnPropertyNames(this).forEach(k => {
-            // Only return "public" properties
-            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                c[k] = this[k];
-            }
-        });
-        return c;
     }
 
     // Start the process
     Start() {
+        this._exitFlag = false;   // Reset the exit flag
         if (this._srt == undefined) {
             try {
                 let crypto = "";
@@ -68,26 +44,41 @@ class SrtInput {
 
                 // Handle stdout
                 this._srt.stdout.on('data', data => {
-                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
+                    this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle stderr
                 this._srt.stderr.on('data', data => {
-                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${data}`);
+                    this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
                 this._srt.on('close', code => {
-                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Closed (${code})`);
+                    this.isRunning = false;
+                    this._logEvent(`Closed (${code})`);
+
+                    if (!this._exitFlag) {
+                        // Restart after 1 second
+                        setTimeout(() => {
+                            this._logEvent(`Restarting srt-live-transmit...`);
+                            this.Start();
+                        }, 1000);
+                    }
+
+                    this._srt = undefined;
                 });
 
                 // Handle process error events
                 this._srt.on('error', code => {
-                    this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Error ${code}`);
+                    this.isRunning = false;
+                    this._logEvent(`Error ${code}`);
                 });
+
+                this.isRunning = true;
             }
             catch (err) {
-                this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: ${err.message}`);
+                this.isRunning = false;
+                this._logEvent(`${err.message}`);
             }
         }
     }
@@ -95,13 +86,12 @@ class SrtInput {
     // Stop the input capture process
     Stop() {
         if (this._srt != undefined) {
-            this._log.emit('log', `srt-live-transmit ${this.srtHost}:${this.srtPort}: Stopping srt-live-transmit...`);
+            this._exitFlag = true;   // prevent automatic restarting of the process
+            this._logEvent(`Stopping srt-live-transmit...`);
             this._srt.kill('SIGTERM');
-    
+            
             // Send SIGKILL to quit process
             this._srt.kill('SIGKILL');
-
-            this._srt = undefined;
         }
     }
 }

@@ -9,15 +9,16 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const events = require('events');
+const { _device } = require('./_device');
 const fs = require('fs');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class RtpInput {
-    constructor() {
+class RtpInput extends _device {
+    constructor(DeviceList) {
+        super(DeviceList);
         this.name = 'New RTP Input';   // Display name
         this.rtpIP = '224.0.0.100';
         this.rtpPort = 3000;
@@ -29,39 +30,13 @@ class RtpInput {
         this.outputFormat = 's16le';
         this.outputChannels = 1;
         this.stdout = undefined;
-        this._log = new events.EventEmitter();
         this._ffmpeg = undefined;
-        this._exitFlag = false;      // flag used to prevent restarting of the process on normal stop
-    }
-
-    get log() {
-        return this._log;
-    }
-
-    SetConfig(config) {
-        Object.getOwnPropertyNames(config).forEach(k => {
-            // Only update "public" properties
-            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                this[k] = config[k];
-            }
-        });
-    }
-
-    GetConfig() {
-        let c = {};
-        Object.getOwnPropertyNames(this).forEach(k => {
-            // Only return "public" properties
-            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
-                c[k] = this[k];
-            }
-        });
-        return c;
     }
 
     // Start the input capture process
     Start() {
+        this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
-            this._exitFlag = false;   // Reset the exit flag
             try {
                 // Write sdp file to disk
                 if (!fs.existsSync('sdp')) {
@@ -81,30 +56,40 @@ a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
 
                 let args = `-hide_banner -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -i ${sdpFile} -c:a ${this.outputCodec} -sample_rate ${this.outputSampleRate} -ac ${this.outputChannels} -f ${this.outputFormat} -`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
+                this.stdout = this._ffmpeg.stdout;
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    // parse ffmpeg output here
+                    this._logEvent(`${data.toString()}`);
                 });
-
-                this.stdout = this._ffmpeg.stdout;
-
+                
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    this._log.emit('log', `ffmpeg input ${this.rtpIP}:${this.rtpPort}: Closed (${code})`);
+                    this.isRunning = false;
+                    this._logEvent(`Closed (${code})`);
+
                     if (!this._exitFlag) {
                         // Restart after 1 second
-                        setTimeout(() => { this.Start(); }, 1000);
+                        setTimeout(() => { 
+                            this._logEvent(`Restarting ffmpeg...`);
+                            this.Start();
+                        }, 1000);
                     }
+
+                    this._ffmpeg = undefined;
                 });
 
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
-                    this._log.emit('log', `ffmpeg input ${this.rtpIP}:${this.rtpPort}: Error ${code}`);
+                    this.isRunning = false;
+                    this._logEvent(`Error ${code}`);
                 });
+
+                this.isRunning = true;
             }
             catch (err) {
-                this._log.emit('log', `ffmpeg input ${this.rtpIP}:${this.rtpPort}: ${err.message}`);
+                this.isRunning = false;
+                this._logEvent(`${err.message}`);
             }
         }
     }
@@ -114,14 +99,12 @@ a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
         if (this._ffmpeg != undefined) {
             this.stdout = undefined;
             this._exitFlag = true;   // prevent automatic restarting of the process
-            this._log.emit('log', `ffmpeg input ${this.rtpIP}:${this.rtpPort}: Stopping ffmpeg...`);
+            this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
             this._ffmpeg.kill('SIGTERM');
     
             // ffmpeg stops on SIGTERM, but does not exit.
             // Send SIGKILL to quit process
             this._ffmpeg.kill('SIGKILL');
-
-            this._ffmpeg = undefined;
         }
     }
 }

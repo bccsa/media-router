@@ -9,41 +9,22 @@
 // -------------------------------------
 
 const fs = require('fs');
+const { DeviceList } = require("./class/DeviceList");
+
 //const AudioMixer = require('audio-mixer');
-const { AlsaInput } = require('./class/AlsaInput');
-const { AlsaOutput } = require('./class/AlsaOutput');
-const { ffmpegInput } = require('./class/ffmpegInput');
-const { ffplayOutput } = require('./class/ffplayOutput');
-const { RtpInput } = require('./class/RtpInput');
-const { RtpOutput } = require('./class/RtpOutput');
-const { SrtInput } = require('./class/SrtInput');
-const { SrtOutput } = require('./class/SrtOutput');
 
 // -------------------------------------
 // Global variables
 // -------------------------------------
 
-var devices = {};
+var deviceList = new DeviceList();
 
 // -------------------------------------
-// Dynamic class creation functions
+// Event subscription
 // -------------------------------------
-
-// Dynamic class map
-const classes = {
-    AlsaInput,
-    AlsaOutput,
-    ffmpegInput,
-    ffplayOutput,
-    RtpInput,
-    RtpOutput,
-    SrtInput,
-    SrtOutput,
-}
-
-function dynamicClass(className) {
-    return classes[className];
-}
+deviceList.log.on('log', message => {
+    eventLog(message);
+});
 
 // -------------------------------------
 // Startup logic
@@ -56,66 +37,23 @@ loadConfig();
 // Configuration management
 // -------------------------------------
 
-// Create default (template) configuration
-function defaultConfig() {
-    var conf = {};
-
-    Object.keys(classes).forEach(className => {
-        // Get class
-        let dClass = dynamicClass(className);
-
-        // Create class instance
-        let c = new dClass();
-
-        // Get default configuration, and add to config object
-        conf[className] = [ c.GetConfig() ];
-    });
-    
-    return conf;
-}
-
 // Load settings from file
 function loadConfig() {
     try {
+        eventLog('Loading configuration from config.json');
+
         var raw = fs.readFileSync('config.json');
 
         // Parse JSON file
         let config = JSON.parse(raw);
 
-        // Loop through class names and create class instances with
-        // configuration from config file
-        Object.keys(config).forEach(className => {
-            // Create array for class instances
-            if (devices[className] ==  undefined) { devices[className] = [] }
-
-            // Get class
-            let dClass = dynamicClass(className);
-
-            // Create class instances
-            config[className].forEach(settings => {
-                let c = new dClass();
-                c.SetConfig(settings);
-
-                // Subscribe to log event
-                c.log.on('log', message => {
-                    eventLog(message);
-                });
-
-                // Start the device
-                if (c.Start != undefined) {
-                    c.Start();
-                }
-
-                // Add to devices list
-                devices[className].push(c);
-            });
-        });
+        deviceList.SetConfig(config);
     }
     catch (err) {
-        console.log('Unable to load config.json from file: ' + err.message);
-        console.log('Generating a template config file...')
+        eventLog('Unable to load config.json from file: ' + err.message);
+        eventLog('Generating a template config file...')
 
-        var data = JSON.stringify(defaultConfig(), null, 2); //pretty print
+        var data = JSON.stringify(deviceList.GetConfigTemplate(), null, 2); //pretty print
         try {
             fs.writeFileSync('config.json', data);
 
@@ -123,7 +61,7 @@ function loadConfig() {
             loadConfig();
         }
         catch (err) {
-            console.log('Unable to write config.json to disk: ' + err.message);
+            eventLog('Unable to write config.json to disk: ' + err.message);
         }
     }
 }
