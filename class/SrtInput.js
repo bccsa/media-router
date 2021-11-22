@@ -27,6 +27,7 @@ class SrtInput extends _device {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this.srtLatency = '200';
+        this.srtMaxBw = 8;                  // SRT maxbw (maximum bandwidth) in kilobyte per seconds
         this._srt = undefined;
     }
 
@@ -39,7 +40,7 @@ class SrtInput extends _device {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
-                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto} udp://${this.rtpIP}:${this.rtpPort}`;
+                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto}&maxbw=${this.srtMaxBw} udp://${this.rtpIP}:${this.rtpPort}`;
                 this._srt = spawn('srt-live-transmit', args.split(" "));
 
                 // Handle stdout
@@ -57,13 +58,13 @@ class SrtInput extends _device {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => {
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting srt-live-transmit...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._srt = undefined;
                 });
@@ -71,7 +72,7 @@ class SrtInput extends _device {
                 // Handle process error events
                 this._srt.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
 
                 this.isRunning = true;
@@ -85,8 +86,9 @@ class SrtInput extends _device {
 
     // Stop the input capture process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._srt != undefined) {
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping srt-live-transmit...`);
             this._srt.kill('SIGTERM');
             

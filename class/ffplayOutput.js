@@ -20,9 +20,9 @@ class ffplayOutput extends _outputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New ffplay output'; 
-        this.format = 's16le';
         this.sampleRate = 48000;
         this.channels = 1;
+        this.bitDepth = 16;
         this._ffplay = undefined;
     }
 
@@ -31,7 +31,7 @@ class ffplayOutput extends _outputDevice {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffplay == undefined) {
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -sync ext -nodisp -framedrop -fflags nobuffer -ac ${this.channels} -sample_rate ${this.sampleRate} -f ${this.format} -i -`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -sync ext -nodisp -framedrop -fflags nobuffer -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -i -`;
                 this._ffplay = spawn('ffplay', args.split(" "));
                 this.stdin = this._ffplay.stdin;
     
@@ -50,13 +50,13 @@ class ffplayOutput extends _outputDevice {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => {
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting ffplay...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._ffplay = undefined;
                 });
@@ -64,7 +64,7 @@ class ffplayOutput extends _outputDevice {
                 // Handle process error events
                 this._ffplay.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
             }
             catch (err) {
@@ -76,9 +76,10 @@ class ffplayOutput extends _outputDevice {
 
     // Stop the playback process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._ffplay != undefined) {
             this.stdin = undefined;
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping ffplay...`);
             this._ffplay.kill('SIGTERM');
 

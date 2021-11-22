@@ -52,13 +52,13 @@ class AlsaOutput extends _outputDevice {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => {
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting aplay...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._aplay = undefined;
                 });
@@ -66,7 +66,7 @@ class AlsaOutput extends _outputDevice {
                 // Handle process error events
                 this._aplay.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
 
                 this.isRunning = true;
@@ -80,9 +80,10 @@ class AlsaOutput extends _outputDevice {
 
     // Stop the playback process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._aplay != undefined) {
             this.stdin = undefined;
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping aplay...`);
             this._aplay.kill('SIGTERM');
 

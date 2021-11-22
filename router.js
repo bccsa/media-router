@@ -11,8 +11,6 @@
 const fs = require('fs');
 const { DeviceList } = require("./class/DeviceList");
 
-//const AudioMixer = require('audio-mixer');
-
 // -------------------------------------
 // Global variables
 // -------------------------------------
@@ -65,6 +63,16 @@ function loadConfig() {
         }
     }
 }
+
+/// ********************* Test logic ************************
+setTimeout(() => {
+    let m = deviceList.FindDevice("New Audio Mixer");
+    m.Start();
+
+    setTimeout(() => {
+        m.Stop();
+    }, 5000);
+}, 100);
 
 // -------------------------------------
 // Event logging

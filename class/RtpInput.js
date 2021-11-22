@@ -19,20 +19,14 @@ const fs = require('fs');
 class RtpInput extends _inputDevice {
     constructor(DeviceList) {
         super(DeviceList);
-        this.name = 'New RTP Input';   // Display name
-        this.rtpIP = '224.0.0.100';
-        this.rtpPort = 3000;
-        this.inputChannels = 1;
-        this.inputBitrate = 32; //kbps
-        this.inputSampleRate = 48000;
-        this.outputSampleRate = 48000;
-        this.outputCodec = 'pcm_s16le';
-        this.outputFormat = 's16le';
-        this.outputChannels = 1;
+        this.name = 'New RTP Input';    // Display name
+        this.rtpIP = '224.0.0.100';     // RTP source IP address / host name (can be a multicast address)
+        this.rtpPort = 3000;            // RTP UDP port
+        this.rtpBitrate = 32;           // Opus bitrate in kbps
         this._ffmpeg = undefined;
     }
 
-    // Start the input capture process
+    // Start the input process
     Start() {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
@@ -50,10 +44,10 @@ c=IN IP4 ${this.rtpIP}
 t=0 0
 a=tool:libavformat 58.20.100
 m=audio ${this.rtpPort} RTP/AVP 97
-b=AS:${this.inputBitrate}
-a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
+b=AS:${this.rtpBitrate}
+a=rtpmap:97 opus/${this.sampleRate}/${this.channels}`);
 
-                let args = `-hide_banner -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -i ${sdpFile} -c:a ${this.outputCodec} -sample_rate ${this.outputSampleRate} -ac ${this.outputChannels} -f ${this.outputFormat} -`
+                let args = `-hide_banner -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -i ${sdpFile} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -f s${this.bitDepth}le -`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdout = this._ffmpeg.stdout;
 
@@ -67,13 +61,13 @@ a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => { 
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting ffmpeg...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._ffmpeg = undefined;
                 });
@@ -81,7 +75,7 @@ a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
 
                 this.isRunning = true;
@@ -95,9 +89,10 @@ a=rtpmap:97 opus/${this.inputSampleRate}/${this.inputChannels}`);
 
     // Stop the input capture process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._ffmpeg != undefined) {
             this.stdout = undefined;
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
             this._ffmpeg.kill('SIGTERM');
     

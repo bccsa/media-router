@@ -21,8 +21,6 @@ class AlsaInput extends _inputDevice {
         super(DeviceList);
         this.name = 'New Alsa Input';       // Display name
         this.format = 'S16_LE';             // For valid formats, see arecord
-        this.sampleRate = 48000;            // PCM sample rate
-        this.channels = 1;                  // Channel count
         this.device = 'Microphone';         // Device name - see arecord -L
         this.buffer = 50000;                // Buffer in microseconds
         this._arecord = undefined;          // arecord process
@@ -47,13 +45,13 @@ class AlsaInput extends _inputDevice {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => {
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting arecord...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._arecord = undefined;
                 });
@@ -61,7 +59,7 @@ class AlsaInput extends _inputDevice {
                 // Handle process error events
                 this._arecord.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
 
                 this.isRunning = true;
@@ -75,9 +73,10 @@ class AlsaInput extends _inputDevice {
 
     // Stop the capture process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._arecord != undefined) {
             this.stdout = undefined;
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping arecord...`);
             this._arecord.kill('SIGTERM');
 

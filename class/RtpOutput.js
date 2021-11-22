@@ -19,24 +19,21 @@ class RtpOutput extends _outputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New RTP Output';   // Display name
-        this.rtpIP = '224.0.0.100';
-        this.rtpPort = 3000;
-        this.inputSampleRate = 48000;
-        this.inputFormat = 's16le';
-        this.inputChannels = 1;
-        this.outputChannels = 1;
-        this.outputBitrate = 32; //kbps
-        this.outputSampleRate = 48000;
-        this.outputCodec = 'libopus';
+        this.rtpIP = '224.0.0.100';     // RTP destination IP address / host name (can be a multicast address)
+        this.rtpPort = 3000;            // RTP udp port
+        this.rtpBitrate = 32;           // Opus bitrate in kbps
+        this.sampleRate = 48000;        // Audio sample rate
+        this.bitDepth = 16;             // Audio bit depth
+        this.channels = 1;              // Audio channels
         this._ffmpeg = undefined;
     }
 
-    // Start the input capture process
+    // Start the output process
     Start() {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
             try {
-                let args = `-hide_banner -fflags nobuffer -flags low_delay -f ${this.inputFormat} -sample_rate ${this.inputSampleRate} -ac ${this.inputChannels} -i - -c:a ${this.outputCodec} -sample_rate ${this.outputSampleRate} -ac ${this.outputChannels} -b:a ${this.outputBitrate}k -f rtp rtp://${this.rtpIP}:${this.rtpPort}`
+                let args = `-hide_banner -fflags nobuffer -flags low_delay -f s${bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate ${this.sampleRate} -ac ${this.channels} -b:a ${this.rtpBitrate}k -f rtp rtp://${this.rtpIP}:${this.rtpPort}`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdin = this._ffmpeg.stdin;
 
@@ -55,13 +52,13 @@ class RtpOutput extends _outputDevice {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => {
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting ffmpeg...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._ffmpeg = undefined;
                 });
@@ -69,7 +66,7 @@ class RtpOutput extends _outputDevice {
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
 
                 this.isRunning = true;
@@ -83,9 +80,10 @@ class RtpOutput extends _outputDevice {
 
     // Stop the input capture process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._ffmpeg != undefined) {
             this.stdin = undefined;
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
             this._ffmpeg.kill('SIGTERM');
     

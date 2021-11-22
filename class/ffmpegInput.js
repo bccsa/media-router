@@ -21,12 +21,6 @@ class ffmpegInput extends _inputDevice {
         super(DeviceList);
         this.name = 'New ffmpeg input'; 
         this.device = 'pulse';
-        this.inputSampleRate = 48000;
-        this.inputChannels = 2;
-        this.outputChannels = 1;
-        this.outputCodec = 'pcm_s16le';
-        this.outputFormat = 's16le';
-        this.outputSampleRate = 48000;
         this._ffmpeg = undefined;
     }
 
@@ -35,7 +29,7 @@ class ffmpegInput extends _inputDevice {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.inputChannels} -sample_rate ${this.inputSampleRate} -i ${this.hwInput} -c:a ${this.outputCodec} -ac ${this.outputChannels} -sample_rate ${this.outputSampleRate} -f ${this.outputFormat} -`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdout = this._ffmpeg.stdout;
     
@@ -50,13 +44,13 @@ class ffmpegInput extends _inputDevice {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
-                    if (!this._exitFlag) {
-                        // Restart after 1 second
-                        setTimeout(() => {
+                    // Restart after 1 second
+                    setTimeout(() => {
+                        if (!this._exitFlag) {
                             this._logEvent(`Restarting ffmpeg...`);
                             this.Start();
-                        }, 1000);
-                    }
+                        }
+                    }, 1000);
 
                     this._ffmpeg = undefined;
                 });
@@ -64,7 +58,7 @@ class ffmpegInput extends _inputDevice {
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
                     this.isRunning = false;
-                    this._logEvent(`Error ${code}`);
+                    this._logEvent(`Error "${code}"`);
                 });
 
                 this.isRunning = true;
@@ -78,9 +72,10 @@ class ffmpegInput extends _inputDevice {
 
     // Stop the input capture process
     Stop() {
+        this._exitFlag = true;   // prevent automatic restarting of the process
+
         if (this._ffmpeg != undefined) {
             this.stdout = undefined;
-            this._exitFlag = true;   // prevent automatic restarting of the process
             this._logEvent(`Stopping ffmpeg...`);
             this._ffmpeg.kill('SIGTERM');
     

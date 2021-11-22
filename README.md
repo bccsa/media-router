@@ -1,5 +1,5 @@
 # audio-translation
-Remote audio translation for live events
+Configurable audio router.
 
 ## Compatibility
 This project has been tested on Raspberry Pi OS Buster and Ubuntu 20.04

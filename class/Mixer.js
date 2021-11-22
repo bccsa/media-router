@@ -17,27 +17,22 @@ const { _device } = require('./_device');
 // -------------------------------------
 
 class Mixer extends _device {
-    constructor() {
+    constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Audio Mixer';  // Display name
-        this._audioMixer = new AudioMixer({
-            channels: 1,
-            bitDepth: 16,
-            sampleRate: 48000,
-            clearInterval: 250
+        this.channels = 1;              // Audio channels
+        this.sampleRate = 48000;        // Audio sample rate
+        this.bitDepth = 16;             // Audio bit depth
+        this.clearInterval = 100;       // An interval in ms of when to dump the stream to keep the inputs in sync
+        this._audioMixer = new AudioMixer.Mixer({
+            channels: this.channels,
+            bitDepth: this.bitDepth,
+            sampleRate: this.sampleRate,
+            clearInterval: this.clearInterval
         });
         this._inputList = [];           // List of mixer inputs
         this.stdout = this._audioMixer; // The underlying AudioMixer is a stream, and can be connected directly to stdout.
     }
-
-    get channels() { return this._audioMixer.channels; }
-    set channels(val) { this._audioMixer.channels = val; }
-    get bitDepth() { return this._audioMixer.bitDepth; }
-    set bitDepth(val) { this._audioMixer.bitDepth = val; }
-    get sampleRate() { return this._audioMixer.sampleRate; }
-    set sampleRate(val) { this._audioMixer.sampleRate = val; }
-    get clearInterval() { return this._audioMixer.clearInterval; }
-    set clearInterval(val) { this._audioMixer.clearInterval = val; }
 
     get inputList() { return _this.inputList; }
 

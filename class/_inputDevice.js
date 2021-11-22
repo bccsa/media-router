@@ -22,15 +22,20 @@ class _inputDevice extends _device {
         this.stdout = undefined;            // stdout mapped to process stdout
         this.mixer = "New Audio Mixer";     // String name of the mixer to which the input belongs
         this._mixer = undefined;            // Mixer to which the input belongs
-        this._mixerInput = new AudioMixer.Input({
-            channels: 1,
-            bitDepth: 16,
-            sampleRate: 48000,
-            volume: 100
-        });
+        this.channels = 1;                  // Audio channels
+        this.sampleRate = 48000;            // Audio sample rate
+        this.bitDepth = 16;                 // Audio bit depth
+        this.volume = 100;                  // Mixer volume
         this._muteVolume = 100;             // Variable used to keep track of volume before mute
         this.showVolumeControl = true;      // Indicates that the front end should show the volume control
         this.showMuteControl = true;        // Indicates that the front end should show the mute control
+
+        this._mixerInput = new AudioMixer.Input({
+            channels: this.channels,
+            bitDepth: this.bitDepth,
+            sampleRate: this.sampleRate,
+            volume: this.volume
+        });
 
         // Find the mixer after 100ms
         setTimeout(() => {
@@ -38,23 +43,16 @@ class _inputDevice extends _device {
         }, 100)
     }
 
-    get channels() { return this._mixerInput.channels; }
-    set channels(val) { this._mixerInput.channels = val; }
-    get bitDepth() { return this._mixerInput.bitDepth; }
-    set bitDepth(val) { this._mixerInput.bitDepth = val; }
-    get sampleRate() { return this._mixerInput.sampleRate; }
-    set sampleRate(val) { this._mixerInput.sampleRate = val; }
-    get volume() { return this._mixerInput.volume; }            // volume percentage 
-    set volume(volume) { this._mixerInput.volume = volume; }    // volume percentage
-
     // find the mixer
     _findMixer() {
         let m = this._deviceList.FindDevice(this.mixer);
-        if (typeof m == "Mixer") { this._mixerInput = m; }
+
+        // Validate audio mixer
+        if (m._audioMixer != undefined) { this._mixer = m; }
 
         if (this._mixer != undefined) {
             // Add mixer input to mixer
-            this._mixer.AddInput(this._mixerInput);
+            this._mixer.AddInput(this);
 
             // event subscriptions
             this._mixer.run.on('start', () => {
@@ -75,7 +73,6 @@ class _inputDevice extends _device {
         }
     }
 
-    // Toggle mute
     ToggleMute() {
         if (this._muteVolume < 10)
         {
@@ -86,10 +83,17 @@ class _inputDevice extends _device {
         {
             this._muteVolume = this.volume;
             this.volume = 0;
+            this._mixerInput.setVolume(0);
         }
         else {
             this.volume = this._muteVolume;
+            this._mixerInput.setVolume(this._muteVolume);
         }
+    }
+
+    SetVolume(volume) {
+        this.volume = volume;
+        this._mixerInput.setVolume(volume);
     }
 }
 

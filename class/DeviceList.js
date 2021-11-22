@@ -22,6 +22,7 @@ const { RtpInput } = require('./RtpInput');
 const { RtpOutput } = require('./RtpOutput');
 const { SrtInput } = require('./SrtInput');
 const { SrtOutput } = require('./SrtOutput');
+const { Mixer } = require('./Mixer');
 
 // -------------------------------------
 // Class declaration
@@ -45,6 +46,7 @@ class DeviceList extends _device {
             RtpOutput,
             SrtInput,
             SrtOutput,
+            Mixer,
         }
     }
 
