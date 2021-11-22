@@ -9,14 +9,14 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _device } = require('./_device');
+const { _inputDevice } = require('./_inputDevice');
 const fs = require('fs');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class RtpInput extends _device {
+class RtpInput extends _inputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New RTP Input';   // Display name
@@ -29,7 +29,6 @@ class RtpInput extends _device {
         this.outputCodec = 'pcm_s16le';
         this.outputFormat = 's16le';
         this.outputChannels = 1;
-        this.stdout = undefined;
         this._ffmpeg = undefined;
     }
 

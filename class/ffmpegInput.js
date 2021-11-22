@@ -10,13 +10,13 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _device } = require('./_device');
+const { _inputDevice } = require('./_inputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class ffmpegInput extends _device {
+class ffmpegInput extends _inputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New ffmpeg input'; 
@@ -27,7 +27,6 @@ class ffmpegInput extends _device {
         this.outputCodec = 'pcm_s16le';
         this.outputFormat = 's16le';
         this.outputSampleRate = 48000;
-        this.stdout = undefined;
         this._ffmpeg = undefined;
     }
 

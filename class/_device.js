@@ -54,7 +54,7 @@ class _device {
     SetConfig(config) {
         Object.getOwnPropertyNames(config).forEach(k => {
             // Only update "public" properties
-            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
+            if (this[k] != undefined && k[0] != '_' && (typeof k == 'number' || typeof k == 'string' || typeof k == 'bool')) {
                 this[k] = config[k];
             }
         });
@@ -64,7 +64,7 @@ class _device {
         let c = {};
         Object.getOwnPropertyNames(this).forEach(k => {
             // Only return "public" properties
-            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string')) {
+            if (k[0] != '_' && (typeof k == 'number' || typeof k == 'string' || typeof k == 'bool')) {
                 c[k] = this[k];
             }
         });

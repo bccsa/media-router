@@ -10,13 +10,13 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _device } = require('./_device');
+const { _inputDevice } = require('./_inputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AlsaInput extends _device {
+class AlsaInput extends _inputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Alsa Input';       // Display name
@@ -25,7 +25,6 @@ class AlsaInput extends _device {
         this.channels = 1;                  // Channel count
         this.device = 'Microphone';         // Device name - see arecord -L
         this.buffer = 50000;                // Buffer in microseconds
-        this.stdout = undefined;            // stdout mapped to arecord process stdout
         this._arecord = undefined;          // arecord process
     }
 

@@ -19,13 +19,18 @@ class _outputDevice extends _device {
     constructor(DeviceList) {
         super(DeviceList);
         this.source = "Source device name"  // Source device name (string)
-        this.stdin = undefined;             // stdin mapped to _aplay process stdin
+        this.stdin = undefined;             // stdin mapped to process stdin
         this._source = undefined;           // reference to source device
+
+        // Find the source device after 100ms
+        setTimeout(() => {
+            this._findSource();
+        }, 100)
     }
 
     // find the source device
     _findSource() {
-        this._source = DeviceList.FindDevice(this.source);
+        this._source = this._deviceList.FindDevice(this.source);
 
         // event subscriptions
         if (this._source != undefined) {
@@ -43,6 +48,7 @@ class _outputDevice extends _device {
                 }
                 
             });
+            
             this._source.run.on('stop', () => {
                 // Stop process when the source device stopped
                 this.Stop();
