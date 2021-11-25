@@ -60,6 +60,12 @@ body {
     border-style: inset;
     border-width: 2px;
     border-radius: 10px;
+    display: flex;
+    align-items: center;
+}
+
+.device_label span {
+    width: 100%;
 }
 
 .device_volume td {
@@ -68,15 +74,15 @@ body {
 
 .device_volume {
     text-align: center;
+    position: relative;
 }
 
 .device_volume_slit {
     background-color: rgb(28, 28, 28);
-    /* width: 10px; */
+    width: 15px;
     height: 100%;
     border-radius: 10px;
-    margin-left: 20px;
-    margin-right: 20px;
+    margin: 0 auto;
     border-style: inset;
     border-width: 2px;
     border-color: rgb(153, 153, 153);
@@ -84,13 +90,17 @@ body {
 
 .device_volume_slider {
     position: absolute;
-    width: 34px;
-    height: 34px;
+    top: 200px;
+    left: 0; 
+    right: 0; 
+    margin-left: auto; 
+    margin-right: auto; 
+    width: 50px;
+    height: 50px;
     background-color: white;
-    border-radius: 30px;
+    border-radius: 25px;
     z-index: 10;
-    top: 100px;
-    left: 27px;
+    margin: 0 auto;
     border-style: outset;
     border-width: 2px;
     border-color: rgb(220, 220, 220);
@@ -102,15 +112,17 @@ body {
 
 .device_control_button div {
     height: 100%;
+    display: flex;
+    align-items: center;
     background-color: rgb(34, 75, 18);
     border-color: rgb(6, 154, 46);
     color: black;
     border-style: outset;
     border-width: 2px;
     border-radius: 10px;
+    /* box-shadow: 0 0 10px 5px rgb(6, 154, 46); */
 }
 
 .device_control_button span {
-    height: 100%;
     width: 100%;
 }
