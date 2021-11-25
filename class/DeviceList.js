@@ -32,12 +32,20 @@ class DeviceList extends _device {
     constructor() {
         super()
         this.name = "Device List";
+        this.autoStart = false;
         this._list = {};  // List of devices, grouped per device type (class name)
+
+        setTimeout(() => {
+            if (this.autoStart == true) {
+                this.Start();
+            }
+        }, 100)
     }
 
     // List of device classes
     get _deviceTypeList() {
         return {
+            DeviceList,
             AlsaInput,
             AlsaOutput,
             ffmpegInput,
@@ -82,6 +90,7 @@ class DeviceList extends _device {
         // Create default (template) configuration
         let conf = {};
 
+        // Add configuration for child devices
         Object.keys(this._deviceTypeList).forEach(deviceType => {
             // Get class
             let c = this._deviceTypeList[deviceType];
@@ -105,16 +114,21 @@ class DeviceList extends _device {
     SetConfig(config) {
         Object.keys(config).forEach(deviceType => {
             config[deviceType].forEach(deviceConfig => {
-
-                // Create object, and add to device list
-                let d = this.NewDevice(deviceType);
-
-                // Set device configuration
-                if (d.SetConfig != undefined) {
-                    d.SetConfig(deviceConfig);
+                if (deviceType == this.constructor.name) {
+                    // Apply configuration to this object
+                    this.SetConfig(deviceConfig);
                 }
                 else {
-                    this._logEvent(`Unable to set device configuration for ${deviceType}`);
+                    // Create child object, and add to device list
+                    let d = this.NewDevice(deviceType);
+
+                    // Set device configuration
+                    if (d.SetConfig != undefined) {
+                        d.SetConfig(deviceConfig);
+                    }
+                    else {
+                        this._logEvent(`Unable to set device configuration for ${deviceType}`);
+                    }
                 }
             });
         });
@@ -123,7 +137,11 @@ class DeviceList extends _device {
     // Returns a JSON object with current configuration
     GetConfig() {
         let c = {};
-        // Loop through devices
+        
+        // Add configuration for this device (parent)
+        c[this.constructor.name] = [ this.GetConfig() ];
+
+        // Loop through child devices
         Object.keys(this._list).forEach(deviceType => {
             // Create array for device type
             if (c[deviceType] == undefined) {

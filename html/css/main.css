@@ -1,0 +1,116 @@
+/* General */
+
+* {
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    -moz-user-select: none;
+    -webkit-user-select: none;
+    -ms-user-select:none;
+    user-select:none;
+    -o-user-select:none;
+}
+
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    background-color: rgb(102, 102, 102);
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+/* Device */
+.device_background {
+    background-color: rgb(102, 102, 102);
+    border-color: rgb(153, 153, 153);
+    border-right-style: outset;
+    border-right-width: 2px;
+    border-left-style: outset;
+    border-left-width: 2px;
+    display: block;
+    text-align: center;
+    height: 100%;
+    width: 80px;
+}
+
+.device_background table {
+    width: 100%;
+    height: 100%;
+    border-collapse: collapse;
+    text-align: center;
+}
+
+.device_background td {
+    padding: 10px;
+}
+
+.device_label {
+    height: 30px;
+    color: white;
+}
+
+.device_label div {
+    border-color: rgb(153, 153, 153);
+    border-style: inset;
+    border-width: 2px;
+    border-radius: 10px;
+}
+
+.device_volume td {
+    height: 300px;
+}
+
+.device_volume {
+    text-align: center;
+}
+
+.device_volume_slit {
+    background-color: rgb(28, 28, 28);
+    /* width: 10px; */
+    height: 100%;
+    border-radius: 10px;
+    margin-left: 20px;
+    margin-right: 20px;
+    border-style: inset;
+    border-width: 2px;
+    border-color: rgb(153, 153, 153);
+}
+
+.device_volume_slider {
+    position: absolute;
+    width: 34px;
+    height: 34px;
+    background-color: white;
+    border-radius: 30px;
+    z-index: 10;
+    top: 100px;
+    left: 27px;
+    border-style: outset;
+    border-width: 2px;
+    border-color: rgb(220, 220, 220);
+}
+
+.device_control_button {
+    height: 70px;
+}
+
+.device_control_button div {
+    height: 100%;
+    background-color: rgb(34, 75, 18);
+    border-color: rgb(6, 154, 46);
+    color: black;
+    border-style: outset;
+    border-width: 2px;
+    border-radius: 10px;
+}
+
+.device_control_button span {
+    height: 100%;
+    width: 100%;
+}
