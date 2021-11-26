@@ -53,7 +53,7 @@ a=rtpmap:97 opus/${this.sampleRate}/${this.channels}`);
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    this._logEvent(`${data.toString()}`);
+                    //this._logEvent(`${data.toString()}`);
                 });
                 
                 // Handle process exit event

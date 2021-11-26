@@ -66,12 +66,15 @@ function loadConfig() {
 
 /// ********************* Test logic ************************
 setTimeout(() => {
-    let m = deviceList.FindDevice("New Alsa Input");
+    let m = deviceList.FindDevice("USB Mic");
     m.Start();
 
-    setTimeout(() => {
-        m.Stop();
-    }, 30000);
+    let n = deviceList.FindDevice("RTP IN");
+    n.Start();
+
+    // setTimeout(() => {
+    //     m.Stop();
+    // }, 30000);
 }, 100);
 
 // -------------------------------------

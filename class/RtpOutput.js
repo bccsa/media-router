@@ -33,13 +33,13 @@ class RtpOutput extends _outputDevice {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
             try {
-                let args = `-hide_banner -fflags nobuffer -flags low_delay -f s${bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate ${this.sampleRate} -ac ${this.channels} -b:a ${this.rtpBitrate}k -f rtp rtp://${this.rtpIP}:${this.rtpPort}`
+                let args = `-hide_banner -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate ${this.sampleRate} -ac ${this.channels} -b:a ${this.rtpBitrate}k -f rtp rtp://${this.rtpIP}:${this.rtpPort}`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdin = this._ffmpeg.stdin;
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    this._logEvent(`${data.toString()}`);
+                    //this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle stdout
