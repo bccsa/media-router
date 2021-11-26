@@ -24,6 +24,10 @@ class RtpInput extends _inputDevice {
         this.rtpPort = 3000;            // RTP UDP port
         this.rtpBitrate = 32;           // Opus bitrate in kbps
         this._ffmpeg = undefined;
+
+        if (this.rtpPort % 2 != 0) {
+            this._logEvent(`The RTP port (${this.rtpPort}) must be an even number.`);
+        }
     }
 
     // Start the input process

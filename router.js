@@ -66,11 +66,15 @@ function loadConfig() {
 
 /// ********************* Test logic ************************
 setTimeout(() => {
-    let m = deviceList.FindDevice("USB Mic");
-    m.Start();
+    deviceList.FindDevice("USB Mic").Start();
 
-    let n = deviceList.FindDevice("RTP IN");
-    n.Start();
+    deviceList.FindDevice("RTP IN").Start();
+
+    deviceList.FindDevice("SRT IN").Start();
+
+    deviceList.FindDevice("SRT OUT").Start();
+
+    // deviceList.FindDevice("RTP IN2").Start();
 
     // setTimeout(() => {
     //     m.Stop();

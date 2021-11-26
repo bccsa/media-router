@@ -27,12 +27,22 @@ class SrtInput extends _device {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this.srtLatency = '200';
-        this.srtMaxBw = 8;                  // SRT maxbw (maximum bandwidth) in kilobyte per seconds
+        this.srtMaxBw = 8000;                  // SRT maxbw (maximum bandwidth) in byte per seconds
         this._srt = undefined;
     }
 
     // Start the process
     Start() {
+        if (this.rtpPort % 2 != 0) {
+            this._logEvent(`The RTP port (${this.rtpPort}) must be an even number.`);
+            return;
+        }
+
+        if (this.srtPassphrase.length > 0 && (this.srtPassphrase.length < 10 || this.srtPassphrase.length > 79)) {
+            this._logEvent(`The SRT passphrase should be between 10 and 79 characters`);
+            return;
+        }
+
         this._exitFlag = false;   // Reset the exit flag
         if (this._srt == undefined) {
             try {
@@ -40,7 +50,7 @@ class SrtInput extends _device {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
-                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${crypto}&maxbw=${this.srtMaxBw} udp://${this.rtpIP}:${this.rtpPort}`;
+                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}&maxbw=${this.srtMaxBw}${crypto} udp://${this.rtpIP}:${this.rtpPort}`;
                 this._srt = spawn('srt-live-transmit', args.split(" "));
 
                 // Handle stdout

@@ -26,6 +26,10 @@ class RtpOutput extends _outputDevice {
         this.bitDepth = 16;             // Audio bit depth
         this.channels = 1;              // Audio channels
         this._ffmpeg = undefined;
+
+        if (this.rtpPort % 2 != 0) {
+            this._logEvent(`The RTP port (${this.rtpPort}) must be an even number.`);
+        }
     }
 
     // Start the output process
