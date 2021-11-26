@@ -31,7 +31,7 @@ const { Mixer } = require('./Mixer');
 class DeviceList extends _device {
     constructor() {
         super()
-        this.name = "Device List";
+        this.name = "Audio Router";
         this.autoStart = false;
         this._list = {};  // List of devices, grouped per device type (class name)
 
@@ -45,7 +45,7 @@ class DeviceList extends _device {
     // List of device classes
     get _deviceTypeList() {
         return {
-            DeviceList,
+            // DeviceList,
             AlsaInput,
             AlsaOutput,
             ffmpegInput,
@@ -88,7 +88,8 @@ class DeviceList extends _device {
     // Create a configuration template JSON object containing one entry per device type.
     GetConfigTemplate() {
         // Create default (template) configuration
-        let conf = {};
+        let d = new DeviceList();
+        let conf = d.GetConfig();
 
         // Add configuration for child devices
         Object.keys(this._deviceTypeList).forEach(deviceType => {
@@ -100,7 +101,7 @@ class DeviceList extends _device {
 
             // Get default configuration, and add to config object
             if (d.GetConfig != undefined) {
-                conf[deviceType] = [ d.GetConfig() ];
+                conf.deviceList[deviceType] = [ d.GetConfig() ];
             }
             else {
                 this._logEvent(`Unable to get default configuration for ${deviceType}`)
@@ -112,13 +113,11 @@ class DeviceList extends _device {
 
     // Creates device instances from the passed configuration JSON object
     SetConfig(config) {
-        Object.keys(config).forEach(deviceType => {
-            config[deviceType].forEach(deviceConfig => {
-                if (deviceType == this.constructor.name) {
-                    // Apply configuration to this object
-                    this.SetConfig(deviceConfig);
-                }
-                else {
+        super.SetConfig(config);
+
+        if (config.deviceList != undefined) {
+            Object.keys(config.deviceList).forEach(deviceType => {
+                config.deviceList[deviceType].forEach(deviceConfig => {
                     // Create child object, and add to device list
                     let d = this.NewDevice(deviceType);
 
@@ -129,29 +128,28 @@ class DeviceList extends _device {
                     else {
                         this._logEvent(`Unable to set device configuration for ${deviceType}`);
                     }
-                }
+                });
             });
-        });
+        }
     }
 
     // Returns a JSON object with current configuration
     GetConfig() {
-        let c = {};
-        
-        // Add configuration for this device (parent)
-        c[this.constructor.name] = [ this.GetConfig() ];
+        // Add configuration for device list
+        let c = super.GetConfig();
+        c.deviceList = {};
 
         // Loop through child devices
         Object.keys(this._list).forEach(deviceType => {
             // Create array for device type
-            if (c[deviceType] == undefined) {
-                c[deviceType] = [];
+            if (c.deviceList[deviceType] == undefined) {
+                c.deviceList[deviceType] = [];
             }
 
             // Get configuration for each device instance
             this._list[deviceType].forEach(device => {
                 if (device.GetConfig != undefined) {
-                    c[deviceType].push(device.GetConfig());
+                    c.deviceList[deviceType].push(device.GetConfig());
                 }
                 else {
                     this._logEvent(`Unable to get configuration for ${deviceType}`);

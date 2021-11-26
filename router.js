@@ -69,9 +69,9 @@ setTimeout(() => {
     let m = deviceList.FindDevice("New Audio Mixer");
     m.Start();
 
-    setTimeout(() => {
-        m.Stop();
-    }, 5000);
+    // setTimeout(() => {
+    //     m.Stop();
+    // }, 5000);
 }, 100);
 
 // -------------------------------------
