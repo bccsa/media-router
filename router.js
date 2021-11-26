@@ -66,12 +66,12 @@ function loadConfig() {
 
 /// ********************* Test logic ************************
 setTimeout(() => {
-    let m = deviceList.FindDevice("New Audio Mixer");
+    let m = deviceList.FindDevice("New Alsa Input");
     m.Start();
 
-    // setTimeout(() => {
-    //     m.Stop();
-    // }, 5000);
+    setTimeout(() => {
+        m.Stop();
+    }, 30000);
 }, 100);
 
 // -------------------------------------

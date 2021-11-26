@@ -23,6 +23,7 @@ const { RtpOutput } = require('./RtpOutput');
 const { SrtInput } = require('./SrtInput');
 const { SrtOutput } = require('./SrtOutput');
 const { Mixer } = require('./Mixer');
+const { MixerInput } = require('./MixerInput');
 
 // -------------------------------------
 // Class declaration
@@ -55,6 +56,7 @@ class DeviceList extends _device {
             SrtInput,
             SrtOutput,
             Mixer,
+            MixerInput,
         }
     }
 
@@ -63,26 +65,31 @@ class DeviceList extends _device {
         // Get class
         let c = this._deviceTypeList[DeviceType];
 
-        // Create new instance of class
-        let d = new c(this);
+        if (c != undefined) {
+            // Create new instance of class
+            let d = new c(this);
 
-        // Subscibe to log event
-        if (d.log != undefined) {
-            d.log.on('log', message => {
-                this._log.emit('log', message);
-            });
+            // Subscibe to log event
+            if (d.log != undefined) {
+                d.log.on('log', message => {
+                    this._log.emit('log', message);
+                });
+            }
+            else {
+                this._logEvent(`Unable subscribe to log event for ${DeviceType}`)
+            }
+
+            // Create array for device type, and add to array
+            if (this._list[DeviceType] == undefined) {
+                this._list[DeviceType] = [];
+            }
+            this._list[DeviceType].push(d)
+
+            return d;
         }
         else {
-            this._logEvent(`Unable subscribe to log event for ${DeviceType}`)
+            this._logEvent(`Unknown device type "${DeviceType}"`);
         }
-
-        // Create array for device type, and add to array
-        if (this._list[DeviceType] == undefined) {
-            this._list[DeviceType] = [];
-        }
-        this._list[DeviceType].push(d)
-
-        return d;
     }
 
     // Create a configuration template JSON object containing one entry per device type.
@@ -121,13 +128,19 @@ class DeviceList extends _device {
                     // Create child object, and add to device list
                     let d = this.NewDevice(deviceType);
 
-                    // Set device configuration
-                    if (d.SetConfig != undefined) {
-                        d.SetConfig(deviceConfig);
+                    if (d != undefined) {
+                        // Set device configuration
+                        if (d.SetConfig != undefined) {
+                            d.SetConfig(deviceConfig);
+                        }
+                        else {
+                            this._logEvent(`Unable to set device configuration for ${deviceType}`);
+                        }
                     }
                     else {
-                        this._logEvent(`Unable to set device configuration for ${deviceType}`);
+                        this._logEvent(`Unknown device type "${deviceType}"`);
                     }
+                    
                 });
             });
         }

@@ -10,19 +10,16 @@
 // -------------------------------------
 
 const AudioMixer = require('audio-mixer');
-const { _device } = require('./_device');
+const { _inputDevice } = require('./_inputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class Mixer extends _device {
+class Mixer extends _inputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Audio Mixer';  // Display name
-        this.channels = 1;              // Audio channels
-        this.sampleRate = 48000;        // Audio sample rate
-        this.bitDepth = 16;             // Audio bit depth
         this.clearInterval = 100;       // An interval in ms of when to dump the stream to keep the inputs in sync
         this._audioMixer = new AudioMixer.Mixer({
             channels: this.channels,
@@ -30,6 +27,7 @@ class Mixer extends _device {
             sampleRate: this.sampleRate,
             clearInterval: this.clearInterval
         });
+        //this._audioMixer.removeInput(this._audioMixer.input);
         this._inputList = [];           // List of mixer inputs
         this.stdout = this._audioMixer; // The underlying AudioMixer is a stream, and can be connected directly to stdout.
     }
@@ -41,6 +39,17 @@ class Mixer extends _device {
         if (input._mixer != undefined) {
             this._audioMixer.addInput(input._mixerInput);
             this._inputList.push(input);
+
+            // Subscribe to events
+            input.run.on('start', () => {
+                this.Start();
+            });
+            input.run.on('stop', () => {
+                // Change status to stopped if all inputs have been stopped.
+                if (this._inputList.filter(i => i.isRunning == true).length == 0) {
+                    this.Stop();
+                }
+            });
         }
         else {
             if (input.name != undefined) {
