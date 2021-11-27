@@ -35,7 +35,7 @@ class DeviceList extends _device {
         this.name = "Audio Router";
         this.autoStart = false;
         this._list = {};  // List of devices, grouped per device type (class name)
-
+        this.displayOrder = undefined;  // Hide from configuration file
         setTimeout(() => {
             if (this.autoStart == true) {
                 this.Start();
@@ -196,6 +196,57 @@ class DeviceList extends _device {
     Stop() {
         // Emit run status to subscribed devices in _list
         this.isRunning = false;
+    }
+
+    // Generate HTML containing child device iframes
+    GetHtml() {
+        // Create array of devices with associated html files
+        let l = [];
+        Object.keys(this._list).forEach(deviceType => {
+            this._list[deviceType].forEach(device => {
+                if (device.clientHtmlFileName != undefined)
+                {
+                    l.push(device);
+                }
+            });
+        });
+        l.sort(this._deviceListDisplayOrderComparitor);
+        
+        // Create iframe html
+        let iframe = '';
+        l.forEach(device => {
+            iframe += `<iframe src="${device.clientHtmlFileName}" title="${device.name}" style="width:${device.displayWidth}"></iframe>\n`
+        });
+
+        return `<html>
+            <head>
+                <link rel="stylesheet" href="css/DeviceList.css">
+            </head>
+            <body>
+                <div class="deviceList_header">
+                    <span class="deviceList_header_text">${this.name}</span>
+                    <span class="deviceList_control_text">OFF</span>
+                    <div class="deviceList_control">
+                        <div class="deviceList_control_slider"></div>
+                    </div>
+                    <span class="deviceList_control_text">ON</span>
+                </div>
+                <div class="deviceList_contents">
+                    ${iframe}
+                </div>
+            </body>
+        </html>`
+    }
+
+    // Comparitor for sorting the device list according to display order
+    _deviceListDisplayOrderComparitor(a,b) {
+        if ( a.displayOrder < b.displayOrder ){
+            return -1;
+          }
+          if ( a.displayOrder > b.displayOrder ){
+            return 1;
+          }
+          return 0;
     }
 }
 

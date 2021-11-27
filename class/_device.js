@@ -22,6 +22,14 @@ class _device {
         this._exitFlag = false;             // Flag to prevent auto-restart on user issued stop command
         this._run = new events.EventEmitter();
         this._log = new events.EventEmitter();
+        this._clientHtmlFileName = undefined;   // Reference to the client WebApp html file 
+        this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numberic value to show it in the exported configuration.
+        this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
+    }
+
+    // Return the client WebApp HTML
+    get clientHtmlFileName() {
+        return this._clientHtmlFileName;
     }
 
     // Event log event.

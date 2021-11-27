@@ -1,0 +1,99 @@
+/* General */
+
+* {
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    -moz-user-select: none;
+    -webkit-user-select: none;
+    -ms-user-select:none;
+    user-select:none;
+    -o-user-select:none;
+}
+
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    background-color: rgb(102, 102, 102);
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+/* Header */
+.deviceList_header {
+    height: 50px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background-color: rgb(65, 65, 65);
+    border-color: rgb(138, 138, 138);
+    border-bottom-style: outset;
+    border-bottom-width: 2px;
+    display: flex;
+    align-items: center;
+    padding-left: 15px;
+    padding-right: 15px;
+}
+
+.deviceList_header_text {
+    color: white;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 20px;
+    margin-right: auto;
+}
+
+.deviceList_control {
+    display: block;
+    height: 15px;
+    width: 50px;
+    background-color: rgb(34, 75, 18);
+    /* background-color: rgb(6, 154, 46); */
+    margin-left: 5px;
+    margin-right: 5px;
+    border-radius: 10px;
+    border-style: inset;
+    border-width: 2px;
+    border-color: rgb(138, 138, 138);
+}
+
+.deviceList_control_text {
+    color: white;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 10px;
+}
+
+.deviceList_control_slider {
+    float: left;
+    height: 13px;
+    width: 13px;
+    background-color: silver;
+    border-style: outset;
+    border-width: 1px;
+    border-color: rgb(220, 220, 220);
+    border-radius: 10px;
+}
+
+/* Contents */
+.deviceList_contents {
+    position: absolute;
+    top: 52px;
+    bottom: 0px;
+    left: 0px;
+    right: 0px;
+    text-align: left;
+    display: flex;
+    overflow-x: auto;
+}
+
+.deviceList_contents iframe {
+    float: left;
+    border-style: none;
+    height: 100%;
+}

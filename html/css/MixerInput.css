@@ -18,25 +18,23 @@ html {
 
 body {
     font-family: Arial, Helvetica, sans-serif;
-    background-color: rgb(102, 102, 102);
     height: 100%;
     margin: 0;
     padding: 0;
     overflow: hidden;
+    border-color: rgb(153, 153, 153);
+    border-style: outset;
+    border-width: 1px;
 }
 
 /* Device */
 .device_background {
     background-color: rgb(102, 102, 102);
-    border-color: rgb(153, 153, 153);
-    border-right-style: outset;
-    border-right-width: 2px;
-    border-left-style: outset;
-    border-left-width: 2px;
     display: block;
     text-align: center;
     height: 100%;
-    width: 80px;
+    /* width: 80px; */
+    width: 100%;
 }
 
 .device_background table {
@@ -66,10 +64,6 @@ body {
 
 .device_label span {
     width: 100%;
-}
-
-.device_volume td {
-    height: 300px;
 }
 
 .device_volume {

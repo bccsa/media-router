@@ -28,6 +28,9 @@ class MixerInput extends _outputDevice {
         this._muteVolume = 100;             // Variable used to keep track of volume before mute
         this.showVolumeControl = true;      // Indicates that the front end should show the volume control
         this.showMuteControl = true;        // Indicates that the front end should show the mute control
+        this._clientHtmlFileName = "MixerInput.html";
+        this.displayOrder = 0;              // Display order in the client WebApp.
+        this.displayWidth = "80px";              // Display width in the client WebApp.
 
         this._mixerInput = new AudioMixer.Input({
             channels: this.channels,

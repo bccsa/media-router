@@ -20,6 +20,13 @@ const { DeviceList } = require("./class/DeviceList");
 var deviceList = new DeviceList();
 
 // -------------------------------------
+// Startup logic
+// -------------------------------------
+
+// Load config file from disk
+loadConfig();
+
+// -------------------------------------
 // Express webserver
 // -------------------------------------
 
@@ -38,19 +45,18 @@ catch (err) {
 // Serve html files
 clientApp.use("/", express.static(path.join(__dirname, "/html")));
 
+// Serve DeviceList generated html (default page);
+deviceListHtml = deviceList.GetHtml();
+clientApp.get('/', (req, res) => {
+    res.send(deviceListHtml);
+});
+
 // -------------------------------------
 // Event subscription
 // -------------------------------------
 deviceList.log.on('log', message => {
     eventLog(message);
 });
-
-// -------------------------------------
-// Startup logic
-// -------------------------------------
-
-// Load config file from disk
-loadConfig();
 
 // -------------------------------------
 // Configuration management
