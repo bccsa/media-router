@@ -5,6 +5,7 @@
   "main": "router.js",
   "dependencies": {
     "audio-mixer": "^2.1.4",
+    "express": "^4.17.1",
     "socket.io": "^4.4.0"
   },
   "devDependencies": {},

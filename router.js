@@ -9,6 +9,8 @@
 // -------------------------------------
 
 const fs = require('fs');
+const express = require('express');
+const path = require('path');
 const { DeviceList } = require("./class/DeviceList");
 
 // -------------------------------------
@@ -16,6 +18,25 @@ const { DeviceList } = require("./class/DeviceList");
 // -------------------------------------
 
 var deviceList = new DeviceList();
+
+// -------------------------------------
+// Express webserver
+// -------------------------------------
+
+const clientApp = express();
+const clientHttp = require('http').createServer(clientApp);
+
+try {
+    clientHttp.listen(8081, () => {
+        eventLog('Client WebApp running on *:8081');
+    });
+}
+catch (err) {
+    eventLog(`Unable to start Client WebApp: ${err.message}`);
+}
+
+// Serve html files
+clientApp.use("/", express.static(path.join(__dirname, "/html")));
 
 // -------------------------------------
 // Event subscription
