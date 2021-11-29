@@ -22,6 +22,7 @@ class _device {
         this._exitFlag = false;             // Flag to prevent auto-restart on user issued stop command
         this._run = new events.EventEmitter();
         this._log = new events.EventEmitter();
+        this._clientUIupdate = new events.EventEmitter(); // Event notifying updates to the client User Interface
         this._clientHtmlFileName = undefined;   // Reference to the client WebApp html file 
         this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numberic value to show it in the exported configuration.
         this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
@@ -35,6 +36,11 @@ class _device {
     // Event log event.
     get log() {
         return this._log;
+    }
+
+    // Client UI update notifications
+    get clientUIupdate() {
+        return this._clientUIupdate;
     }
 
     // Running status event. Emits 'start' and 'stop' on process start and stop.
@@ -94,6 +100,21 @@ class _device {
     // Log events to event log
     _logEvent(message) {
         this._log.emit('log', `${this.constructor.name} | ${this.name}: ${message}`);
+    }
+
+    // Notify the client User Interface with status update(s)
+    _updateClientUI(data) {
+        this._clientUIupdate.emit('data', { [this.name]: data });
+    }
+
+    // Return status data needed for client user interface
+    GetClientUIstatus() {
+        return this.GetConfig();
+    }
+
+    // Set value from client user interface
+    SetClientUIcommand(data) {
+        // To be implemented in implementing class
     }
 }
 

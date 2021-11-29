@@ -27,7 +27,7 @@ var deviceList = new DeviceList();
 loadConfig();
 
 // -------------------------------------
-// Express webserver
+// Client WebApp Express webserver
 // -------------------------------------
 
 const clientApp = express();
@@ -52,10 +52,41 @@ clientApp.get('/', (req, res) => {
 });
 
 // -------------------------------------
+// Client WebApp Socket.IO
+// -------------------------------------
+const clientIO = require('socket.io')(clientHttp);
+
+clientIO.on('connection', socket => {
+    // Device status request from client
+    socket.on('req_deviceStatus', DeviceName => {
+        // Join client to Device room
+        socket.join(`${DeviceName}`);
+        // emit device status
+        socket.emit('deviceStatus', deviceList.GetClientUIstatus(DeviceName));
+    });
+
+    // Command from client UI
+    socket.on('set_deviceCommand', clientData => {
+        if (clientData.deviceName != undefined) {
+            deviceList.SetClientUIcommand(clientData);
+        }
+    });
+});
+
+// -------------------------------------
 // Event subscription
 // -------------------------------------
+
+// Event log
 deviceList.log.on('log', message => {
     eventLog(message);
+});
+
+// client UI updates
+deviceList.clientUIupdate.on('data', data => {
+    Object.keys(data).forEach(deviceName => {
+        clientIO.in(`${deviceName}`).emit('deviceUpdate', data[deviceName]);
+    });
 });
 
 // -------------------------------------
@@ -93,13 +124,13 @@ function loadConfig() {
 
 /// ********************* Test logic ************************
 setTimeout(() => {
-    deviceList.FindDevice("USB Mic").Start();
+    // deviceList.FindDevice("USB Mic").Start();
 
-    deviceList.FindDevice("RTP IN").Start();
+    // deviceList.FindDevice("RTP IN").Start();
 
-    deviceList.FindDevice("SRT IN").Start();
+    // deviceList.FindDevice("SRT IN").Start();
 
-    deviceList.FindDevice("SRT OUT").Start();
+    // deviceList.FindDevice("SRT OUT").Start();
 
     // deviceList.FindDevice("RTP IN2").Start();
 

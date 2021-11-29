@@ -49,14 +49,20 @@ body {
     margin-right: auto;
 }
 
+.deviceList_control_container {
+    display: flex;
+    align-items: center;
+    height: 100%;
+    margin-left: 5px;
+    margin-right: 5px;
+}
+
 .deviceList_control {
     display: block;
     height: 15px;
     width: 50px;
     background-color: rgb(34, 75, 18);
     /* background-color: rgb(6, 154, 46); */
-    margin-left: 5px;
-    margin-right: 5px;
     border-radius: 10px;
     border-style: inset;
     border-width: 2px;

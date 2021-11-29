@@ -35,6 +35,7 @@ class DeviceList extends _device {
         this.name = "Audio Router";
         this.autoStart = false;
         this._list = {};  // List of devices, grouped per device type (class name)
+        this._linearList = {}; // List of devices in DeviceName : object pairs
         this.displayOrder = undefined;  // Hide from configuration file
         setTimeout(() => {
             if (this.autoStart == true) {
@@ -79,12 +80,14 @@ class DeviceList extends _device {
                 this._logEvent(`Unable subscribe to log event for ${DeviceType}`)
             }
 
-            // Create array for device type, and add to array
-            if (this._list[DeviceType] == undefined) {
-                this._list[DeviceType] = [];
+            // Subscribe to client UI update event
+            if (d.clientUIupdate != undefined) {
+                d.clientUIupdate.on('data', data => {
+                    // Relay events
+                    this._clientUIupdate.emit('data', { [this.name]: data });
+                });
             }
-            this._list[DeviceType].push(d)
-
+            
             return d;
         }
         else {
@@ -132,6 +135,18 @@ class DeviceList extends _device {
                         // Set device configuration
                         if (d.SetConfig != undefined) {
                             d.SetConfig(deviceConfig);
+
+                            // Create array for device type, and add to array
+                            if (this._list[deviceType] == undefined) {
+                                this._list[deviceType] = [];
+                            }
+                            this._list[deviceType].push(d);
+
+                            // Add to linear list
+                            if (d.name != undefined)
+                            {
+                                this._linearList[d.name] = d;
+                            }
                         }
                         else {
                             this._logEvent(`Unable to set device configuration for ${deviceType}`);
@@ -140,7 +155,6 @@ class DeviceList extends _device {
                     else {
                         this._logEvent(`Unknown device type "${deviceType}"`);
                     }
-                    
                 });
             });
         }
@@ -175,27 +189,25 @@ class DeviceList extends _device {
 
     // Find device by device.name property, and returns the device instance
     FindDevice(name) {
-        var d = undefined;
-        // Loop through devices
-        Object.keys(this._list).forEach(deviceType => {
-            this._list[deviceType].forEach(device => {
-                if (device.name != undefined && device.name == name) {
-                    d = device;
-                    // +++++++++++++++++++++ To Do: break loop when device is found / use array.find
-                }
-            });
-        });
-        return d;
+        return this._linearList[name];
     }
 
     Start() {
         // Emit run status to subscribed devices in _list
         this.isRunning = true;
+
+        this._updateClientUI({
+            isRunning : this.isRunning
+        });
     }
 
     Stop() {
         // Emit run status to subscribed devices in _list
         this.isRunning = false;
+
+        this._updateClientUI({
+            isRunning : this.isRunning
+        });
     }
 
     // Generate HTML containing child device iframes
@@ -215,7 +227,7 @@ class DeviceList extends _device {
         // Create iframe html
         let iframe = '';
         l.forEach(device => {
-            iframe += `<iframe src="${device.clientHtmlFileName}" title="${device.name}" style="width:${device.displayWidth}"></iframe>\n`
+            iframe += `<iframe src="${device.clientHtmlFileName}?DeviceName=${device.name}" title="${device.name}" style="width:${device.displayWidth}"></iframe>\n`
         });
 
         return `<html>
@@ -224,16 +236,20 @@ class DeviceList extends _device {
             </head>
             <body>
                 <div class="deviceList_header">
-                    <span class="deviceList_header_text">${this.name}</span>
+                    <span id="deviceList_header_text" class="deviceList_header_text">${this.name}</span>
                     <span class="deviceList_control_text">OFF</span>
-                    <div class="deviceList_control">
-                        <div class="deviceList_control_slider"></div>
+                    <div class="deviceList_control_container" onclick="deviceList_control_click()">
+                        <div id="deviceList_control" class="deviceList_control">
+                            <div id="deviceList_control_slider" class="deviceList_control_slider"></div>
+                        </div>
                     </div>
                     <span class="deviceList_control_text">ON</span>
                 </div>
                 <div class="deviceList_contents">
                     ${iframe}
                 </div>
+                <script src="/socket.io/socket.io.js"></script>
+                <script src="js/DeviceList.js"></script>
             </body>
         </html>`
     }
@@ -247,6 +263,39 @@ class DeviceList extends _device {
             return 1;
           }
           return 0;
+    }
+
+    // Get client UI status for given device name
+    GetClientUIstatus(DeviceName) {
+        if (DeviceName == this.name) {
+            return {
+                isRunning : this.isRunning
+            }
+        }
+        else {
+            if (this._linearList[DeviceName] != undefined)
+            {
+                return this._linearList[DeviceName].GetClientUIstatus();
+            }
+        }
+    }
+
+    // Set client UI command for give device name
+    SetClientUIcommand(clientData) {
+        if (clientData.deviceName == this.name) {
+            if (clientData.isRunning != undefined) {
+                if (clientData.isRunning && !this.isRunning) {
+                    this.Start();
+                }
+                else if (!clientData.isRunning && this.isRunning) {
+                    this.Stop();
+                }
+            }
+        }
+        else {
+            // Pass command to child device
+            this._linearList[DeviceName].SetClientUIcommand(clientData);
+        }
     }
 }
 
