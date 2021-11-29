@@ -22,6 +22,15 @@ class _inputDevice extends _device {
         this.channels = 1;                  // Audio channels
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
+
+        // Subscribe to DeviceList start and stop events
+        DeviceList.run.on('start', () => {
+            this.Start();
+        });
+
+        DeviceList.run.on('stop', () => {
+            this.Stop();
+        });
     }
 }
 

@@ -29,6 +29,15 @@ class SrtOutput extends _device {
         this.srtLatency = '200';
         // this.srtMaxBw = 8000;                  // maxbw not implemented in SRT output - srt-live-transmit breaks when maxbw parameter is added in output mode
         this._srt = undefined;
+
+        // Subscribe to DeviceList start and stop events
+        DeviceList.run.on('start', () => {
+            this.Start();
+        });
+
+        DeviceList.run.on('stop', () => {
+            this.Stop();
+        });
     }
 
     // Start the process

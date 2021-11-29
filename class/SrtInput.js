@@ -29,6 +29,15 @@ class SrtInput extends _device {
         this.srtLatency = '200';
         this.srtMaxBw = 8000;                  // SRT maxbw (maximum bandwidth) in byte per seconds
         this._srt = undefined;
+
+        // Subscribe to DeviceList start and stop events
+        DeviceList.run.on('start', () => {
+            this.Start();
+        });
+
+        DeviceList.run.on('stop', () => {
+            this.Stop();
+        });
     }
 
     // Start the process
