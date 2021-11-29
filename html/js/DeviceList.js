@@ -31,11 +31,20 @@ var isRunning = false;
 // socket.io communication
 // -------------------------------------
 
+// Request initial device status on connection
 socket.on('connect', () => {
     socket.emit('req_deviceStatus', deviceName);
 });
 
+// Receive initial device status
 socket.on('deviceStatus', data => {
+    isRunning = data.isRunning;
+
+    dom_setRunningStatus();
+});
+
+// Receive device status updates
+socket.on('deviceUpdate', data => {
     isRunning = data.isRunning;
 
     dom_setRunningStatus();

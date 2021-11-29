@@ -122,23 +122,6 @@ function loadConfig() {
     }
 }
 
-/// ********************* Test logic ************************
-setTimeout(() => {
-    // deviceList.FindDevice("USB Mic").Start();
-
-    // deviceList.FindDevice("RTP IN").Start();
-
-    // deviceList.FindDevice("SRT IN").Start();
-
-    // deviceList.FindDevice("SRT OUT").Start();
-
-    // deviceList.FindDevice("RTP IN2").Start();
-
-    // setTimeout(() => {
-    //     m.Stop();
-    // }, 30000);
-}, 100);
-
 // -------------------------------------
 // Event logging
 // -------------------------------------
