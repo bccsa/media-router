@@ -18,48 +18,7 @@ const { _device } = require('./_device');
 class _outputDevice extends _device {
     constructor(DeviceList) {
         super(DeviceList);
-        this.source = "Source device name"  // Source device name (string)
         this.stdin = undefined;             // stdin mapped to process stdin
-        this._source = undefined;           // reference to source device
-
-        // Find the source device after 100ms
-        setTimeout(() => {
-            this._findSource();
-        }, 100)
-    }
-
-    // find the source device
-    _findSource() {
-        this._source = this._deviceList.FindDevice(this.source);
-
-        // event subscriptions
-        if (this._source != undefined) {
-            this._source.run.on('start', () => {
-                if (this._source.stdout != undefined) {
-                    // Start process when the source device started
-                    this.Start();
-
-                    if (this.stdin != undefined) {
-                        this._source.stdout.pipe(this.stdin);
-                    }
-                }
-                else {
-                    this._logEvent(`Unable to connect to "${this.source}"`);
-                }
-                
-            });
-            
-            this._source.run.on('stop', () => {
-                // Stop process when the source device stopped
-                this.Stop();
-            });
-        }
-        else {
-            this._logEvent(`Unable to find source device "${this.source}"`);
-            
-            // Retry to find the source device in 1 second
-            setTimeout(() => { this._findSource() }, 1000);
-        }
     }
 }
 
