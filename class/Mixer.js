@@ -39,17 +39,6 @@ class Mixer extends _inputDevice {
         if (input._mixer != undefined) {
             this._audioMixer.addInput(input._mixerInput);
             this._inputList.push(input);
-
-            // Subscribe to events
-            input.run.on('start', () => {
-                this.Start();
-            });
-            input.run.on('stop', () => {
-                // Change status to stopped if all inputs have been stopped.
-                if (this._inputList.filter(i => i.isRunning == true).length == 0) {
-                    this.Stop();
-                }
-            });
         }
         else {
             if (input.name != undefined) {
