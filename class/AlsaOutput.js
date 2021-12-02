@@ -83,12 +83,13 @@ class AlsaOutput extends _outputDevice {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
         if (this._aplay != undefined) {
-            this.stdin = undefined;
+            this.isRunning = false;
             this._logEvent(`Stopping aplay...`);
             this._aplay.kill('SIGTERM');
 
             // Send SIGKILL to quit process
             this._aplay.kill('SIGKILL');
+            // this.stdin = undefined;
         }
     }
 }

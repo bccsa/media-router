@@ -59,6 +59,11 @@ class _inputDevice extends _device {
             });
             
             this.run.on('stop', () => {
+                // Unipe output to destination input
+                if (this.stdout != undefined && this._destination[this.destination_pin]) {
+                    this.stdout.unpipe(this._destination[this.destination_pin]);
+                }
+
                 // Stop process when the destination device stopped
                 this._destination.Stop();
             });

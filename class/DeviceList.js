@@ -22,8 +22,9 @@ const { RtpInput } = require('./RtpInput');
 const { RtpOutput } = require('./RtpOutput');
 const { SrtInput } = require('./SrtInput');
 const { SrtOutput } = require('./SrtOutput');
-const { Mixer } = require('./Mixer');
-const { MixerInput } = require('./MixerInput');
+const { AudioInput } = require('./AudioInput');
+const { AudioMixer } = require('./AudioMixer');
+const { AudioMixerInput } = require('./AudioMixerInput');
 
 // -------------------------------------
 // Class declaration
@@ -34,14 +35,17 @@ class DeviceList extends _device {
         super()
         this.name = "Audio Router";
         this.autoStart = false;
-        this._list = {};  // List of devices, grouped per device type (class name)
-        this._linearList = {}; // List of devices in DeviceName : object pairs
+        this.autoStartDelay = 500;      // milliseconds
+        this._list = {};                // List of devices, grouped per device type (class name)
+        this._linearList = {};          // List of devices in DeviceName : object pairs
         this.displayOrder = undefined;  // Hide from configuration file
+        
+        
         setTimeout(() => {
             if (this.autoStart == true) {
                 this.Start();
             }
-        }, 100)
+        }, this.autoStartDelay)
     }
 
     // List of device classes
@@ -56,8 +60,9 @@ class DeviceList extends _device {
             RtpOutput,
             SrtInput,
             SrtOutput,
-            Mixer,
-            MixerInput,
+            AudioInput,
+            AudioMixer,
+            AudioMixerInput,
         }
     }
 

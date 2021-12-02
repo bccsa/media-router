@@ -4,9 +4,11 @@
   "description": "Remote audio translation for live events",
   "main": "router.js",
   "dependencies": {
-    "audio-mixer": "^2.1.4",
     "express": "^4.17.1",
-    "socket.io": "^4.4.0"
+    "fluent-ffmpeg": "^2.1.2",
+    "fluent-ffmpeg-multistream": "^1.0.0",
+    "socket.io": "^4.4.0",
+    "uuid": "^8.3.2"
   },
   "devDependencies": {},
   "scripts": {
