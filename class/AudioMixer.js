@@ -10,11 +10,8 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-// const ffmpeg = require('fluent-ffmpeg');
 const { StreamInput, StreamOutput } = require('fluent-ffmpeg-multistream');
 const { _inputDevice } = require('./_inputDevice');
-const zmq = require('zeromq');
-
 
 // -------------------------------------
 // Class declaration
@@ -26,22 +23,6 @@ class AudioMixer extends _inputDevice {
         this.name = 'New Audio Mixer'; 
         this._ffmpeg = undefined;
         this._inputs = [];
-        //this._azmqPort = this._deviceList.GetTcpPort();
-        this._tcpPorts = [];
-    }
-
-    // Get unique TCP port for a given input number
-    _tcpPort(inputNumber) {
-        if (this._tcpPorts.length > inputNumber) {
-            // tcp port already aquired
-            return this._tcpPorts[inputNumber];
-        }
-        else {
-            // Get new TCP port
-            let port = this._deviceList.GetTcpPort();
-            this._tcpPorts.push(port);
-            return port;
-        }
     }
 
     // Start the input capture process
@@ -54,24 +35,12 @@ class AudioMixer extends _inputDevice {
                 let amix = '';      // Input pads for amix filter
 
                 // Add inputs
-                let i = 0;
                 this._inputs.forEach(input => {
-                    // ffmpeg input
-                    args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdin).url} `
-
-                    let azmqPort = this._tcpPort(i);
-
-                    // Add input to audio filter
-                    afilter += `[${i}:a]volume@remote${i},azmq=bind_address='tcp\\\://127.0.0.1\\\:${azmqPort}'[a${i}];`;
-                    amix += `[a${i}]`;
-                    i++;
+                    args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdin).url} `;
                 });
 
-                // Add mixer to audio filter. Important to enclose the azmq bind address in '', otherwise ffmpeg complains
-                afilter += `${amix}amix=inputs=${i}'`;
-
                 // Add filters to ffmpeg command.
-                args += `-filter_complex ${afilter} `;
+                args += `-filter_complex amix=inputs=${this._inputs.length} `;
 
                 // Add audio output (stdout)
                 args += `-c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
@@ -82,7 +51,7 @@ class AudioMixer extends _inputDevice {
     
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', (data) => {
-                    this._logEvent(`${data.toString()}`);
+                    // this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
@@ -108,17 +77,6 @@ class AudioMixer extends _inputDevice {
                 });
 
                 this.isRunning = true;
-
-                // To test: https://github.com/reneraab/pcm-volume/blob/master/index.js
-                // http://www.astro-electronic.de/FFmpeg_Book.pdf page 218
-                setTimeout(() => {
-                    let sock = zmq.socket('push');
-                    sock.connect(`tcp://127.0.0.1:${this._tcpPorts[0]}`);
-                    //sock.send('Parsed_volume_0 volume 0.0');
-                    sock.send("volume@remote0 volume 0.0");
-                    //sock.send('Parsed_volume_2 volume 0.0');
-                    sock.disconnect(`tcp://127.0.0.1:${this._tcpPorts[0]}`);
-                }, 5000);
             }
             catch (err) {
                 this.isRunning = false;

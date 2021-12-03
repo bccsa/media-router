@@ -39,9 +39,6 @@ class DeviceList extends _device {
         this._list = {};                // List of devices, grouped per device type (class name)
         this._linearList = {};          // List of devices in DeviceName : object pairs
         this.displayOrder = undefined;  // Hide from configuration file
-        this._tcpPorts = {};            // List of internal TCP ports        
-        this._internalTcpPortStart = 8000;  // Start address for internal TCP ports
-        this._internalTcpPortEnd = 8999;    // End address for internal TCP ports
         
         setTimeout(() => {
             if (this.autoStart == true) {
@@ -303,20 +300,6 @@ class DeviceList extends _device {
             // Pass command to child device
             this._linearList[DeviceName].SetClientUIcommand(clientData);
         }
-    }
-
-    // Get a new random unique TCP port
-    GetTcpPort() {
-        let port = Math.floor(Math.random() * (this._internalTcpPortEnd - this._internalTcpPortStart) + this._internalTcpPortStart);
-        
-        while (this._tcpPorts[port] == true) {
-            port = Math.floor(Math.random() * (this._internalTcpPortEnd - this._internalTcpPortStart) + this._internalTcpPortStart);
-        }
-
-        // Add the unique port to the list
-        this._tcpPorts[port] = true;
-
-        return port;
     }
 }
 

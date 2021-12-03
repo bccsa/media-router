@@ -8,7 +8,8 @@
 // External libraries
 // -------------------------------------
 
-const stream = require('stream');
+//const stream = require('stream');
+const volume = require('pcm-volume');
 const { _outputDevice } = require('./_outputDevice');
 
 // -------------------------------------
@@ -24,19 +25,21 @@ class AudioMixerInput extends _outputDevice {
         this.channels = 1;                  // Audio channels
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
-        this.volume = 100;                  // Mixer volume
+        this._volume = 100;                  // Mixer volume
+        this._mute = false;
         this.showVolumeControl = true;      // Indicates that the front end should show the volume control
         this.showMuteControl = true;        // Indicates that the front end should show the mute control
         this._clientHtmlFileName = "MixerInput.html";
         this.displayOrder = 0;              // Display order in the client WebApp.
-        this.displayWidth = "80px";              // Display width in the client WebApp.
-        this.stdin = new stream.PassThrough();   // Pass through stream used as ffmpeg input in the Audio Mixer
+        this.displayWidth = "80px";         // Display width in the client WebApp.
+        this.stdin = new volume();          // Pass through transform stream used as ffmpeg input in the Audio Mixer
 
         // Find the mixer after 100ms
         setTimeout(() => {
             this._findMixer();
         }, 100)
     }
+
 
     // find the mixer
     _findMixer() {
@@ -54,27 +57,36 @@ class AudioMixerInput extends _outputDevice {
         }
     }
 
+    // Toggle mute status
     ToggleMute() {
-        // if (this._muteVolume < 10)
-        // {
-        //     this._muteVolume = 10;
-        // }
+        this._mute = !this._mute;
 
-        // if (this.volume > 0)
-        // {
-        //     this._muteVolume = this.volume;
-        //     this.volume = 0;
-        //     this._mixerInput.setVolume(0);
-        // }
-        // else {
-        //     this.volume = this._muteVolume;
-        //     this._mixerInput.setVolume(this._muteVolume);
-        // }
+        if (this._mute) {
+            this.stdin.setVolume(0);
+        }
+        else {
+            if (this._volume <= 0.1) {
+                this.SetVolume(0.1);
+            }
+            this.stdin.setVolume(this._volume);
+        }
+
+        this._updateClientUI({
+            mute : this._mute,
+            volume : this._volume
+        });
     }
 
     SetVolume(volume) {
-        // this.volume = volume;
-        // this._mixerInput.setVolume(volume);
+        this._volume = volume;
+
+        if (!this._mute) {
+            this.stdin.setVolume(this._volume);
+        }
+
+        this._updateClientUI({
+            volume : this._volume
+        });
     }
 
     Start() {
@@ -85,6 +97,29 @@ class AudioMixerInput extends _outputDevice {
     Stop() {
         // Set running status
         this.isRunning = false;
+    }
+
+    // Get client UI status for given device name
+    GetClientUIstatus() {
+        return {
+            mute : this._mute,
+            volume : this._volume
+        };
+    }
+
+    // Set client UI command for give device name
+    SetClientUIcommand(clientData) {
+        if (clientData != undefined) {
+            if (clientData.mute != undefined && clientData.mute != this._mute)
+            {
+                this.ToggleMute();
+            }
+
+            if (clientData.volume != undefined)
+            {
+                this.SetVolume(clientData.volume);
+            }
+        }
     }
 }
 
