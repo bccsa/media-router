@@ -25,7 +25,6 @@ class AudioMixerInput extends _outputDevice {
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
         this.volume = 100;                  // Mixer volume
-        this._muteVolume = 100;             // Variable used to keep track of volume before mute
         this.showVolumeControl = true;      // Indicates that the front end should show the volume control
         this.showMuteControl = true;        // Indicates that the front end should show the mute control
         this._clientHtmlFileName = "MixerInput.html";
