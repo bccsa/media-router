@@ -104,7 +104,7 @@ class _device {
 
     // Notify the client User Interface with status update(s)
     _updateClientUI(data) {
-        this._clientUIupdate.emit('data', { [this.name]: data });
+        this._clientUIupdate.emit('data', { [this.name] : data });
     }
 
     // Return status data needed for client user interface

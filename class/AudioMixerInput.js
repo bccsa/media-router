@@ -25,11 +25,11 @@ class AudioMixerInput extends _outputDevice {
         this.channels = 1;                  // Audio channels
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
-        this._volume = 100;                  // Mixer volume
+        this._volume = 1;                   // Mixer volume
         this._mute = false;
         this.showVolumeControl = true;      // Indicates that the front end should show the volume control
         this.showMuteControl = true;        // Indicates that the front end should show the mute control
-        this._clientHtmlFileName = "MixerInput.html";
+        this._clientHtmlFileName = "AudioMixerInput.html";
         this.displayOrder = 0;              // Display order in the client WebApp.
         this.displayWidth = "80px";         // Display width in the client WebApp.
         this.stdin = new volume();          // Pass through transform stream used as ffmpeg input in the Audio Mixer
@@ -103,7 +103,9 @@ class AudioMixerInput extends _outputDevice {
     GetClientUIstatus() {
         return {
             mute : this._mute,
-            volume : this._volume
+            volume : this._volume,
+            showVolumeControl : this.showVolumeControl,
+            showMuteControl : this.showMuteControl
         };
     }
 

@@ -22,8 +22,6 @@ const deviceList_control_slider = document.getElementById('deviceList_control_sl
 // Global variables & constants
 // -------------------------------------
 
-const queryString = window.location.search;
-const urlParams = new URLSearchParams(queryString);
 const deviceName = deviceList_header_text.textContent;
 var isRunning = false;
 

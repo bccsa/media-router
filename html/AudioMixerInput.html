@@ -1,12 +1,12 @@
 <html>
     <head>
-        <link rel="stylesheet" href="css/MixerInput.css">
+        <link rel="stylesheet" href="css/AudioMixerInput.css">
     </head>
     <body>
         <div id="device_background" class="device_background">
             <table>
                 <tr><td class="device_label">
-                    <div><span id="device_label">MIC1</span></div>
+                    <div><span id="device_label"></span></div>
                 </td></tr>
                 <tr><td class="device_volume">
                     <div id="device_volume_slit" class="device_volume_slit">
@@ -15,11 +15,13 @@
                     <div id="device_volume_slider" class="device_volume_slider"></div>
                 </td></tr>
                 <tr><td class="device_control_button">
-                    <div id="device_control_button">
-                        <span id="device_control_button_text">ON</span>
+                    <div id="device_control_button" onclick="control_button_click()">
+                        <span id="device_control_button_text">OFF</span>
                     </div>
                 </td></tr>
             </table>
         </div>
+        <script src="/socket.io/socket.io.js"></script>
+        <script src="js/AudioMixerInput.js"></script>
     </body>
 </html>

@@ -88,7 +88,7 @@ class DeviceList extends _device {
             if (d.clientUIupdate != undefined) {
                 d.clientUIupdate.on('data', data => {
                     // Relay events
-                    this._clientUIupdate.emit('data', { [this.name]: data });
+                    this._clientUIupdate.emit('data', data);
                 });
             }
             
@@ -298,7 +298,7 @@ class DeviceList extends _device {
         }
         else {
             // Pass command to child device
-            this._linearList[DeviceName].SetClientUIcommand(clientData);
+            this._linearList[clientData.deviceName].SetClientUIcommand(clientData);
         }
     }
 }
