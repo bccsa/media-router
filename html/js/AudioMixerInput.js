@@ -20,7 +20,10 @@ const device_control_button_text    = document.getElementById('device_control_bu
 const device_volume_slit            = document.getElementById('device_volume_slit');
 const device_volume_slider          = document.getElementById('device_volume_slider');
 const device_volume_indicator       = document.getElementById('device_volume_indicator');
-const device_body                   = document.getElementsByName('body');
+//const device_body                   = document.getElementsByName('body');
+const device_peak3                  = document.getElementById('device_peak3');
+const device_peak2                  = document.getElementById('device_peak2');
+const device_peak1                  = document.getElementById('device_peak1');
 
 // -------------------------------------
 // Global variables & constants
@@ -30,7 +33,7 @@ const urlParams = new URLSearchParams(window.location.search);
 const deviceName = urlParams.get("DeviceName");
 var mute = true;
 var volume = 1;
-var volumeMax = 1.5;
+var maxVolume = 1.5;
 var sliderTop = 0;
 var sliderBottom = 0;
 var sliderRange = 0;
@@ -61,6 +64,7 @@ socket.on('connect', () => {
 socket.on('deviceStatus', data => {
     mute = data.mute;
     volume = data.volume;
+    maxVolume = data.maxVolume;
 
     if (!data.showVolumeControl) {
         device_volume_slider.style.display = 'none';
@@ -76,11 +80,16 @@ socket.on('deviceStatus', data => {
 
 // Receive device status updates
 socket.on('deviceUpdate', data => {
-    if (data.mute != undefined) {mute = data.mute}
-    if (data.volume != undefined) {volume = data.volume}
-    
-    dom_setMute();
-    dom_setVolume();
+    if (data.peak != undefined) {
+        dom_setPeak(data.peak);
+    }
+    else if (data.mute != undefined) {
+        mute = data.mute;
+        dom_setMute();
+    } else if (data.volume != undefined) {
+        volume = data.volume;
+        dom_setVolume();
+    }
 });
 
 // Send mute commands to server
@@ -133,12 +142,18 @@ function dom_setMute() {
         device_control_button.style.backgroundColor = "rgb(34, 75, 18)";
         device_control_button.style.boxShadow = "0 0 0 0";
         device_control_button_text.textContent = "OFF";
+        // device_peak1.style.backgroundColor = "rgb(147, 147, 147)"
+        // device_peak2.style.backgroundColor = "rgb(147, 147, 147)"
+        // device_peak3.style.backgroundColor = "rgb(147, 147, 147)"
     }
     else {
         device_control_button.style.borderColor = "rgb(12, 255, 77)";
         device_control_button.style.backgroundColor = "rgb(6, 154, 46)";
         device_control_button.style.boxShadow = "0 0 10px 5px rgb(6, 154, 46)";
         device_control_button_text.textContent = "ON";
+        // device_peak1.style.backgroundColor = "green"
+        // device_peak2.style.backgroundColor = "orange"
+        // device_peak3.style.backgroundColor = "red"
     }
 }
 
@@ -157,7 +172,7 @@ function calcSliderRange() {
 
 // Calculate volume from slider position
 function calcVolume() {
-    return volumeMax * (sliderRange - device_volume_slider.offsetTop + device_volume_slit.offsetTop) / sliderRange;
+    return maxVolume * (sliderRange - device_volume_slider.offsetTop + device_volume_slit.offsetTop) / sliderRange;
 }
 
 // Set volume and send to server
@@ -169,7 +184,7 @@ function setVolume() {
 // Set the volume slider position
 function dom_setVolume() {
     if (!sliderActive) {
-        device_volume_slider.style.top = `${sliderBottom - volume / volumeMax * sliderRange}px`;
+        device_volume_slider.style.top = `${sliderBottom - volume / maxVolume * sliderRange}px`;
     }
 }
 
@@ -230,4 +245,17 @@ function dragElement(elmnt) {
         document.removeEventListener("mouseup", dragEnd, false);
         document.removeEventListener("mousemove", drag, false);
     }
+}
+
+// Set the volume indicator
+function dom_setPeak(peak) {
+    let p = 20 * Math.log10(peak);
+
+    let bar1Height = Math.min(Math.max((p + 60), 0), 60 - 20) * sliderRange / 60;        // Start showing from -60dB. Max height at -20dB (40dB height)
+    let bar2Height = Math.min(Math.max((p + 20), 0), 20 -  9) * sliderRange / 60;        // Start showing from -20dB. Max height at -9dB (11dB height)
+    let bar3Height = Math.min(Math.max((p +  9), 0),  9 -  0) * sliderRange / 60;        // Start showing from -9dB. Max height at -0dB (9dB height)
+
+    device_peak1.style.height = bar1Height + 'px';
+    device_peak2.style.height = bar2Height + 'px';
+    device_peak3.style.height = bar3Height + 'px';
 }

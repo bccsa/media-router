@@ -196,6 +196,16 @@ class DeviceList extends _device {
         return this._linearList[name];
     }
 
+    // Return a list of AudioMixerInputs with the given solo group name
+    SoloGroup(name) {
+        if (this._list.AudioMixerInput != undefined) {
+            return this._list.AudioMixerInput.filter(m => m.soloGroup == name);
+        }
+        else {
+            return [];
+        }
+    }
+
     Start() {
         // Emit run status to subscribed devices in _list
         this.isRunning = true;

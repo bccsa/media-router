@@ -79,6 +79,9 @@ body {
     border-style: inset;
     border-width: 2px;
     border-color: rgb(153, 153, 153);
+    display: flex;
+    justify-content: flex-end;
+    flex-direction: column;
 }
 
 .device_volume_slider {
@@ -118,4 +121,26 @@ body {
 
 .device_control_button span {
     width: 100%;
+}
+
+.device_peak3 {
+    width: 100%;
+    height: 20px;
+    display: block;
+    background-color: red;
+}
+
+.device_peak2 {
+    width: 100%;
+    height: 20px;
+    display: block;
+    background-color: orange;
+}
+
+.device_peak1 {
+    width: 100%;
+    height: 20px;
+    display: block;
+    background-color: green;
+    border-radius: 0 0 10px 10px;
 }
