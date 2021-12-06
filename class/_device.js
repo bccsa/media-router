@@ -24,7 +24,7 @@ class _device {
         this._log = new events.EventEmitter();
         this._clientUIupdate = new events.EventEmitter(); // Event notifying updates to the client User Interface
         this._clientHtmlFileName = undefined;   // Reference to the client WebApp html file 
-        this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numberic value to show it in the exported configuration.
+        this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
         this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
     }
 
@@ -82,8 +82,7 @@ class _device {
                 c[k] = this[k];
             }
         });
-
-        let test = Object.getOwnPropertyDescriptors(this);
+        
         return c;
     }
 

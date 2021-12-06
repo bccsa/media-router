@@ -25,6 +25,7 @@ const { SrtOutput } = require('./SrtOutput');
 const { AudioInput } = require('./AudioInput');
 const { AudioMixer } = require('./AudioMixer');
 const { AudioMixerInput } = require('./AudioMixerInput');
+const { Spacer } = require('./Spacer');
 
 // -------------------------------------
 // Class declaration
@@ -62,6 +63,7 @@ class DeviceList extends _device {
             AudioInput,
             AudioMixer,
             AudioMixerInput,
+            Spacer,
         }
     }
 
