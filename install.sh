@@ -22,3 +22,6 @@ make install
 cd ..
 rm -r -f srt-1.4.4/
 rm -f v1.4.4.tar.gz
+
+#git submodule update --init
+#npm install
