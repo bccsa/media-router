@@ -10,6 +10,8 @@ Modules (devices):
 * SrtInput: Receives an SRT stream and publishes it to a UDP socket.
 * SrtOutput: Reads a UDP socket and publishes it as a SRT stream.
 
+The web UI is available on port 8081.
+
 ## Compatibility
 This project has been tested on Raspberry Pi OS Buster and Ubuntu 20.04
 

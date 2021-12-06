@@ -1,4 +1,5 @@
 apt-get -y update
+apt-get -y install nodejs npm
 apt-get -y install alsa-utils
 apt-get -y install ffmpeg
 apt-get -y install git
