@@ -5,12 +5,10 @@
   "main": "router.js",
   "dependencies": {
     "express": "^4.17.1",
-    "fluent-ffmpeg": "^2.1.2",
     "fluent-ffmpeg-multistream": "^1.0.0",
     "pcm-volume": "^1.0.0",
     "socket.io": "^4.4.0"
   },
-  "devDependencies": {},
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

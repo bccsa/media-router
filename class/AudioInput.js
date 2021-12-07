@@ -9,7 +9,7 @@
 // External libraries
 // -------------------------------------
 
-const ffmpeg = require('fluent-ffmpeg');
+const { spawn } = require('child_process');
 const { _inputAudioDevice } = require('./_inputAudioDevice');
 
 // -------------------------------------
@@ -28,32 +28,19 @@ class AudioInput extends _inputAudioDevice {
     Start() {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
+            this._logEvent('Starting ffmpeg...');
             try {
-                var inputOptions = [
-                    '-probesize 32',
-                    '-analyzeduration 0',
-                    '-fflags nobuffer',
-                    '-flags low_delay',
-                    '-thread_queue_size 512',
-                    `-ac ${this.channels}`,
-                    `-sample_rate ${this.sampleRate}`,
-                ];
-                this._ffmpeg = ffmpeg()
-                    .input(this.device)
-                    .inputFormat('alsa')
-                    .inputOptions(inputOptions)
-                    .outputFormat(`s${this.bitDepth}le`)
-                    .audioCodec(`pcm_s${this.bitDepth}le`)
-                    .audioChannels(this.channels)
-                    .audioFrequency(this.sampleRate);
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
+                this._ffmpeg = spawn('ffmpeg', args.split(" "));
+                this.stdout = this._ffmpeg.stdout;
     
                 // Handle stderr
                 this._ffmpeg.on('stderr', (data) => {
-                    // this._logEvent(`${data.toString()}`);
+                    this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
-                this._ffmpeg.on('end', code => {
+                this._ffmpeg.on('close', code => {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
@@ -64,6 +51,8 @@ class AudioInput extends _inputAudioDevice {
                             this.Start();
                         }
                     }, 1000);
+
+                    this._ffmpeg = undefined;
                 });
 
                 // Handle process error events
@@ -74,9 +63,6 @@ class AudioInput extends _inputAudioDevice {
                     }
                 });
 
-                // Start ffmpeg
-                this._logEvent('Starting ffmpeg...');
-                this.stdout = this._ffmpeg.pipe();
                 this.isRunning = true;
             }
             catch (err) {
@@ -91,10 +77,10 @@ class AudioInput extends _inputAudioDevice {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
         if (this._ffmpeg != undefined) {
-            this.isRunning = false;
             this._logEvent(`Stopping ffmpeg...`);
-            this._ffmpeg.kill();
-            this._ffmpeg = undefined;
+            this.isRunning = false;
+            this._ffmpeg.kill('SIGTERM');
+            this._ffmpeg.kill('SIGKILL');
         }
     }
 }
