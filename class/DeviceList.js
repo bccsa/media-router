@@ -14,17 +14,14 @@ const { _device } = require('./_device');
 // Require device classes
 // -------------------------------------
 
-const { AlsaInput } = require('./AlsaInput');
-const { AlsaOutput } = require('./AlsaOutput');
-const { ffmpegInput } = require('./ffmpegInput');
-const { ffplayOutput } = require('./ffplayOutput');
-const { RtpInput } = require('./RtpInput');
-const { RtpOutput } = require('./RtpOutput');
-const { SrtInput } = require('./SrtInput');
-const { SrtOutput } = require('./SrtOutput');
 const { AudioInput } = require('./AudioInput');
+const { AudioOutput } = require('./AudioOutput');
 const { AudioMixer } = require('./AudioMixer');
 const { AudioMixerInput } = require('./AudioMixerInput');
+const { RtpOpusInput } = require('./RtpOpusInput');
+const { RtpOpusOutput } = require('./RtpOpusOutput');
+const { SrtInput } = require('./SrtInput');
+const { SrtOutput } = require('./SrtOutput');
 const { Spacer } = require('./Spacer');
 
 // -------------------------------------
@@ -51,18 +48,14 @@ class DeviceList extends _device {
     // List of device classes
     get _deviceTypeList() {
         return {
-            // DeviceList,
-            AlsaInput,
-            AlsaOutput,
-            ffmpegInput,
-            ffplayOutput,
-            RtpInput,
-            RtpOutput,
-            SrtInput,
-            SrtOutput,
             AudioInput,
             AudioMixer,
             AudioMixerInput,
+            AudioOutput,
+            RtpOpusInput,
+            RtpOpusOutput,
+            SrtInput,
+            SrtOutput,
             Spacer,
         }
     }
@@ -310,7 +303,9 @@ class DeviceList extends _device {
         }
         else {
             // Pass command to child device
-            this._linearList[clientData.deviceName].SetClientUIcommand(clientData);
+            if (this._linearList[clientData.deviceName] != undefined) {
+                this._linearList[clientData.deviceName].SetClientUIcommand(clientData);
+            }
         }
     }
 }

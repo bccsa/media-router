@@ -9,14 +9,14 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _inputDevice } = require('./_inputDevice');
+const { _inputAudioDevice } = require('./_inputAudioDevice');
 const fs = require('fs');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class RtpInput extends _inputDevice {
+class RtpOpusInput extends _inputAudioDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New RTP Input';    // Display name
@@ -108,4 +108,4 @@ a=rtpmap:97 opus/${this.sampleRate}/${this.channels}`);
 }
 
 // Export class
-module.exports.RtpInput = RtpInput;
+module.exports.RtpOpusInput = RtpOpusInput;

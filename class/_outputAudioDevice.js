@@ -15,7 +15,7 @@ const { _device } = require('./_device');
 // Class declaration
 // -------------------------------------
 
-class _outputDevice extends _device {
+class _outputAudioDevice extends _device {
     constructor(DeviceList) {
         super(DeviceList);
         this.stdin = undefined;             // stdin mapped to process stdin
@@ -23,4 +23,4 @@ class _outputDevice extends _device {
 }
 
 // Export class
-module.exports._outputDevice = _outputDevice;
+module.exports._outputAudioDevice = _outputAudioDevice;

@@ -9,13 +9,13 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _outputDevice } = require('./_outputDevice');
+const { _outputAudioDevice } = require('./_outputAudioDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class RtpOutput extends _outputDevice {
+class RtpOpusOutput extends _outputAudioDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New RTP Output';   // Display name
@@ -99,4 +99,4 @@ class RtpOutput extends _outputDevice {
 }
 
 // Export class
-module.exports.RtpOutput = RtpOutput;
+module.exports.RtpOpusOutput = RtpOpusOutput;

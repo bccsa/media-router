@@ -10,13 +10,13 @@
 
 //const stream = require('stream');
 const volume = require('../submodules/pcm-volume/index');
-const { _outputDevice } = require('./_outputDevice');
+const { _outputAudioDevice } = require('./_outputAudioDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioMixerInput extends _outputDevice {
+class AudioMixerInput extends _outputAudioDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = "New Mixer Input";      // String display name

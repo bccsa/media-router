@@ -11,13 +11,13 @@
 
 const { spawn } = require('child_process');
 const { StreamInput, StreamOutput } = require('fluent-ffmpeg-multistream');
-const { _inputDevice } = require('./_inputDevice');
+const { _inputAudioDevice } = require('./_inputAudioDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioMixer extends _inputDevice {
+class AudioMixer extends _inputAudioDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Audio Mixer'; 

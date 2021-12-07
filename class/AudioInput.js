@@ -10,13 +10,13 @@
 // -------------------------------------
 
 const ffmpeg = require('fluent-ffmpeg');
-const { _inputDevice } = require('./_inputDevice');
+const { _inputAudioDevice } = require('./_inputAudioDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioInput extends _inputDevice {
+class AudioInput extends _inputAudioDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New ffmpeg input'; 

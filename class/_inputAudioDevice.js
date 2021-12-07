@@ -15,7 +15,7 @@ const { _device } = require('./_device');
 // Class declaration
 // -------------------------------------
 
-class _inputDevice extends _device {
+class _inputAudioDevice extends _device {
     constructor(DeviceList) {
         super(DeviceList);
         this.stdout = undefined;            // stdout mapped to process stdout
@@ -24,7 +24,6 @@ class _inputDevice extends _device {
         this.bitDepth = 16;                 // Audio bit depth
 
         this.destination = "Destination device name";  // Destination device name (string)
-        this.destination_pin = "stdin";                // Destination device input name (string)
         this._destination = undefined;                 // reference to source device
 
         // Find the destination device after 100ms
@@ -54,14 +53,14 @@ class _inputDevice extends _device {
 
                 // Pipe output to destination input
                 if (this.stdout != undefined) {
-                    this.stdout.pipe(this._destination[this.destination_pin]);
+                    this.stdout.pipe(this._destination.stdin);
                 }
             });
             
             this.run.on('stop', () => {
                 // Unipe output to destination input
-                if (this.stdout != undefined && this._destination[this.destination_pin]) {
-                    this.stdout.unpipe(this._destination[this.destination_pin]);
+                if (this.stdout != undefined && this._destination.stdin) {
+                    this.stdout.unpipe(this._destination.stdin);
                 }
 
                 // Stop process when the destination device stopped
@@ -78,4 +77,4 @@ class _inputDevice extends _device {
 }
 
 // Export class
-module.exports._inputDevice = _inputDevice;
+module.exports._inputAudioDevice = _inputAudioDevice;
