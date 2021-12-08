@@ -34,7 +34,8 @@ class AudioOutput extends _outputAudioDevice {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i - -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f alsa ${this.device}`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay -thread_queue_size 512 -f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -i - -f alsa -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} ${this.device}`;
+                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i - -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f alsa ${this.device}`;
                 // let args = `--nonblock -D ${this.device} -c ${this.channels} -r ${this.sampleRate} -f ${this.format} -B ${this.buffer} --buffer-size 1024 --period-size 512 -`;
                 // let args = `--nonblock -D plughw:CARD=${this.alsaDevice},DEV=0 -c ${this.channels} -r ${this.sampleRate} -f ${this.format} -B ${this.buffer} --buffer-size 1024 --period-size 512 -`;
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
@@ -42,7 +43,7 @@ class AudioOutput extends _outputAudioDevice {
     
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', (data) => {
-                    this._logEvent(`${data.toString()}`);
+                    // this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle stdout

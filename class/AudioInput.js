@@ -29,7 +29,10 @@ class AudioInput extends _inputAudioDevice {
         if (this._ffmpeg == undefined) {
             this._logEvent('Starting ffmpeg...');
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay -thread_queue_size 512 ` +
+                           `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
+                           `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
+                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
                 // let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdout = this._ffmpeg.stdout;
