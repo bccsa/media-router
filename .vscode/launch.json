@@ -21,7 +21,7 @@
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            "program": "${workspaceFolder}/manager_server/manager.js"
+            "program": "${workspaceFolder}/manager/manager.js"
         }
     ]
 }

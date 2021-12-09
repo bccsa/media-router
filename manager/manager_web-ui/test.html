@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="js/jquery-3.6.0.min.js"> </script>
+    <title>Document</title>
+</head>
+<body>
+    <nav>
+        <ul>
+            <li> <button onclick=""> click </button> </li> 
+            <li> <button onclick="Add(Objs, Obj)"> click </button> </li> 
+        </ul>
+    </nav>
+
+    <div id="textbox">
+        <label for=""> name </label>
+        <input type="text"> </input>
+    </div>
+     
+    <script type="text/javascript"> 
+
+        let Obj = {
+            key :"value",
+            key2 : "value2"
+        }
+
+        let Objs = {}
+        
+        // this.$store.state.routers = {...data, ...this.$store.state.routers}; 
+
+        function Add(Objs, Obj) {
+            Objs = {...Obj ,...Objs};
+            console.log(Objs); 
+        }
+        
+        
+        
+    </script>
+
+</body>
+</html>
