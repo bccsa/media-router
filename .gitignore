@@ -109,3 +109,6 @@ sdp/
 
 # Config files
 config.json
+
+# Tokens file for server authentication
+tokens.json
