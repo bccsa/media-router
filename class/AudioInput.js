@@ -20,46 +20,46 @@ class AudioInput extends _inputAudioDevice {
         super(DeviceList);
         this.name = 'New Alsa input'; 
         this.device = 'default';
-        this._ffmpeg = undefined;
+        this._alsa = undefined;
+        this.buffer = 50000;        // ALSA buffer in microseconds
     }
 
     // Start the input capture process
     Start() {
         this._exitFlag = false;   // Reset the exit flag
-        if (this._ffmpeg == undefined) {
-            this._logEvent('Starting ffmpeg...');
+        if (this._alsa == undefined) {
+            this._logEvent('Starting arecord...');
             try {
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay -thread_queue_size 512 ` +
-                           `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
-                           `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
-                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
-                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -thread_queue_size 512 -ac ${this.channels} -sample_rate ${this.sampleRate} -i ${this.device} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -f s${this.bitDepth}le -`;
-                this._ffmpeg = spawn('ffmpeg', args.split(" "));
-                this.stdout = this._ffmpeg.stdout;
+                let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} -B ${this.buffer}`;
+                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay -thread_queue_size 512 ` +
+                //            `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
+                //            `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
+                this._alsa = spawn('arecord', args.split(" "));
+                this.stdout = this._alsa.stdout;
     
                 // Handle stderr
-                this._ffmpeg.on('stderr', (data) => {
+                this._alsa.on('stderr', (data) => {
                     this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
-                this._ffmpeg.on('close', code => {
+                this._alsa.on('close', code => {
                     this.isRunning = false;
                     this._logEvent(`Closed (${code})`);
 
                     // Restart after 1 second
                     setTimeout(() => {
                         if (!this._exitFlag) {
-                            this._logEvent(`Restarting ffmpeg...`);
+                            this._logEvent(`Restarting arecord...`);
                             this.Start();
                         }
                     }, 1000);
 
-                    this._ffmpeg = undefined;
+                    this._alsa = undefined;
                 });
 
                 // Handle process error events
-                this._ffmpeg.on('error', error => {
+                this._alsa.on('error', error => {
                     this.isRunning = false;
                     if (!error.message.includes('ffmpeg was killed with signal SIGKILL')) {
                         this._logEvent(error.message);
@@ -79,11 +79,11 @@ class AudioInput extends _inputAudioDevice {
     Stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._ffmpeg != undefined) {
-            this._logEvent(`Stopping ffmpeg...`);
+        if (this._alsa != undefined) {
+            this._logEvent(`Stopping arecord...`);
             this.isRunning = false;
-            this._ffmpeg.kill('SIGTERM');
-            this._ffmpeg.kill('SIGKILL');
+            this._alsa.kill('SIGTERM');
+            this._alsa.kill('SIGKILL');
         }
     }
 }
