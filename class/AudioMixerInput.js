@@ -27,16 +27,18 @@ class AudioMixerInput extends _outputAudioDevice {
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
         this.maxVolume = 1.5;               // Maximum volume that the client UI can request
-        this._volume = 1;                   // Mixer volume
+        this.volume = 1;                    // Mixer volume
         this.mute = true;
         this.showVolumeControl = true;      // Indicates that the front end should show the volume control
         this.showMuteControl = true;        // Indicates that the front end should show the mute control
         this._clientHtmlFileName = "AudioMixerInput.html";
         this.displayOrder = 0;              // Display order in the client WebApp.
         this.displayWidth = "80px";         // Display width in the client WebApp.
-        this.stdin = new volume();          // Pass through transform stream used as ffmpeg input in the Audio Mixer
+        this.stdin = undefined;             // Pass through transform stream used as ffmpeg input in the Audio Mixer
         
         setTimeout(() => {
+            this.stdin = new volume(this.volume ,this.bitDepth);
+            
             // Find the mixer
             this._findMixer();
 
@@ -76,15 +78,15 @@ class AudioMixerInput extends _outputAudioDevice {
             this.stdin.setVolume(0);
         }
         else {
-            if (this._volume <= 0.1) {
+            if (this.volume <= 0.1) {
                 this.SetVolume(0.1);
             }
-            this.stdin.setVolume(this._volume);
+            this.stdin.setVolume(this.volume);
         }
 
         this._updateClientUI({
             mute : this.mute,
-            volume : this._volume
+            volume : this.volume
         });
 
         // Mute all other AudioMixerInputs in solo group
@@ -98,14 +100,14 @@ class AudioMixerInput extends _outputAudioDevice {
     }
 
     SetVolume(volume) {
-        this._volume = volume;
+        this.volume = volume;
 
         if (!this.mute) {
-            this.stdin.setVolume(this._volume);
+            this.stdin.setVolume(this.volume);
         }
 
         this._updateClientUI({
-            volume : this._volume
+            volume : this.volume
         });
     }
 
@@ -126,7 +128,7 @@ class AudioMixerInput extends _outputAudioDevice {
     GetClientUIstatus() {
         return {
             mute : this.mute,
-            volume : this._volume,
+            volume : this.volume,
             showVolumeControl : this.showVolumeControl,
             showMuteControl : this.showMuteControl,
             maxVolume : this.maxVolume
