@@ -146,7 +146,6 @@
     border-radius: 50%;
   }
 
-<<<<<<< HEAD:manager_web-ui/css/manager-ui.css
   /* slide bar */
   .slide-bar {
      background-color: rgba(0, 0, 0, 0.521);  
@@ -160,7 +159,6 @@
   }
 
    
-=======
   /* =============================================== */
   /* Login page CSS */
   /* =============================================== */
@@ -168,4 +166,3 @@
   #manager{
     display: none;
   }
->>>>>>> 50080f5e62f74bcea7d2b39d1c0965ce160e4c76:manager_server/manager_web-ui/css/manager-ui.css

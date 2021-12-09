@@ -58,14 +58,18 @@ managerio.use((socket, next) => {
         // if username exsists check if password is valid
         if (login[username].password != password){
             // close connection
-            return next(new Error("Invalid login to connect to manager"));
+            return next(new Error("Invalid username or password"));
         }
     } else {
         // close connection
-        return next(new Error("Invalid login to connect to manager"));
+        return next(new Error("Invalid username or password"));
     }
     next();
 });
+
+// -------------------------------------
+// Socket.io comunication
+// -------------------------------------
 
 managerio.on("connection", (socket) => {
     console.log('Manager page connected ' + socket.request.connection.remoteAddress)
@@ -96,14 +100,18 @@ routerio.use((socket, next) => {
         // if username exsists check if password is valid
         if (login[username].password != password){
             // close connection
-            return next(new Error("Invalid login to connect to manager"));
+            return next(new Error("Invalid username or password"));
         }
     } else {
         // close connection
-        return next(new Error("Invalid login to connect to manager"));
+        return next(new Error("Invalid username or password"));
     }
     next();
 });
+
+// -------------------------------------
+// Socket.io comunication
+// -------------------------------------
 
 routerio.on("connection", (socket) => {
     console.log('Router connected ' + socket.request.connection.remoteAddress)
@@ -118,7 +126,7 @@ routerio.on("connection", (socket) => {
 function readAuth(filename){
     try {
         // read login file
-        let raw = fs.readFileSync(`manager_server/${filename}`);
+        let raw = fs.readFileSync(`manager/${filename}`);
         // pase json file
         let data = JSON.parse(raw);
         // return list of tokens 
@@ -126,12 +134,12 @@ function readAuth(filename){
     } catch (err) {
         console.log(err);
         // create file if it does not exsist
-        if (err.message == `ENOENT: no such file or directory, open 'manager_server/${filename}'`) {
+        if (err.message == `ENOENT: no such file or directory, open 'manager/${filename}'`) {
             let logins = JSON.stringify({"username1": {password:"pass1"}, "username1": {password:"pass1"}, "...": {password:"pass1"}}, null, 2); //pretty print
 
             try {
                 // create file
-                fs.writeFileSync(`manager_server/${filename}`, logins);
+                fs.writeFileSync(`manager/${filename}`, logins);
             } catch (err) {
                 console.log(err);
             }
