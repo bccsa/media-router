@@ -75,6 +75,32 @@ clientIO.on('connection', socket => {
 });
 
 // -------------------------------------
+// Manager Socket.IO
+// -------------------------------------
+
+// -------------------------------------
+// Socket.io authentication
+// -------------------------------------
+
+const managerIO = require('socket.io-client')('http://localhost:8083', 
+{
+    reconnect: true,
+    auth: {
+        username: "user",
+        password: "6q8uGT}x+$cD:YxYJq^Nu-",
+    },
+});
+
+// log connection error 
+managerIO.on("connect_error", (err) => {
+    console.log(err);
+})
+
+// -------------------------------------
+// Socket.io communication
+// -------------------------------------
+
+// -------------------------------------
 // Event subscription
 // -------------------------------------
 

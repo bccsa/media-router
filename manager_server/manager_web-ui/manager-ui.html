@@ -10,12 +10,42 @@
     <link rel="stylesheet" href="jquery-ui-1.13.0.custom/jquery-ui.min.css"></link>
     <link rel="stylesheet" href="jquery-ui-1.13.0.custom/jquery-ui.structure.min.css"></link>
     <link rel="stylesheet" href="jquery-ui-1.13.0.custom/jquery-ui.theme.css"></link>
+    <script src="js/jquery.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <script src="jquery-ui-1.13.0.custom/jquery-ui.min.js"></script>
+<<<<<<< HEAD:manager_web-ui/manager-ui.html
     <script src="js/manager-ui.js"> </script>
+=======
+    <script src="js/manager-ui.js"></script>
+>>>>>>> 50080f5e62f74bcea7d2b39d1c0965ce160e4c76:manager_server/manager_web-ui/manager-ui.html
     <title>Document</title>
 </head>
 <body>
-    <div class="container-fluid">
+    <!-- Login page -->
+    <div id="login" class="loginPage">
+        <table>
+            <tr>
+                <th>
+                    <p id="username" class="loginLabel">Username</p>
+                </th>
+                <th>
+                    <input type="text" id="txtUsername">
+                </th>
+            </tr>
+            <tr>
+                <th>
+                    <p id="password" class="loginLabel">Password</p>
+                </th>
+                <th>
+                    <input type="text" id="txtPassword">
+                </th>
+            </tr>
+        </table>
+        <button id="btnLogin" class="btnLogin" onclick="btnLogin()">Login</button>
+    </div>
+
+    <!-- Manager page -->
+    <div id="manager" class="container-fluid">
         <div class="">
             <div class="container-fluid topbar">
                 <h3> Media Router Manager </h3>
