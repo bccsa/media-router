@@ -86,7 +86,8 @@ const managerIO = require('socket.io-client')('http://localhost:8083',
 {
     reconnect: true,
     auth: {
-        token: "6q8uGT}x+$cD:Yxq^Nu-",
+        username: "user",
+        password: "6q8uGT}x+$cD:YxYJq^Nu-",
     },
 });
 

@@ -111,4 +111,7 @@ sdp/
 config.json
 
 # Tokens file for server authentication
-tokens.json
+routerLogin.json
+
+# Usename and pass for manager web-ui autentication
+managerLogin.json
