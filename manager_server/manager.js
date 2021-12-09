@@ -69,6 +69,9 @@ managerio.use((socket, next) => {
 
 managerio.on("connection", (socket) => {
     console.log('Manager page connected ' + socket.request.connection.remoteAddress)
+
+    // send data to manager
+    socket.emit("Auth");
     
 });
 
