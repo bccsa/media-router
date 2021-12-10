@@ -18,10 +18,10 @@ const { _inputAudioDevice } = require('./_inputAudioDevice');
 class AudioInput extends _inputAudioDevice {
     constructor(DeviceList) {
         super(DeviceList);
-        this.name = 'New Alsa input'; 
-        this.device = 'default';
-        this._alsa = undefined;
-        this.buffer = 50000;        // ALSA buffer in microseconds
+        this.name = 'New Alsa input';   // Display name
+        this.device = 'default';        // Device name - see arecord -L
+        this._alsa = undefined;         // alsa process
+        this.bufferSize = 2048;         // ALSA buffer size in bytes
     }
 
     // Start the input capture process
@@ -30,7 +30,7 @@ class AudioInput extends _inputAudioDevice {
         if (this._alsa == undefined) {
             this._logEvent('Starting arecord...');
             try {
-                let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} -B ${this.buffer}`;
+                let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} --buffer-size=${this.bufferSize}`;
                 // let args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay -thread_queue_size 512 ` +
                 //            `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
                 //            `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
