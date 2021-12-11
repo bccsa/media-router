@@ -9,14 +9,14 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _inputAudioDevice } = require('./_inputAudioDevice');
+const { _audioInputDevice } = require('./_audioInputDevice');
 const fs = require('fs');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class RtpOpusInput extends _inputAudioDevice {
+class RtpOpusInput extends _audioInputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New RTP Input';    // Display name
@@ -63,7 +63,7 @@ a=rtpmap:97 opus/${this.sampleRate}/${this.channels}`);
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
                     this.isRunning = false;
-                    this._logEvent(`Closed (${code})`);
+                    if (code != null) { this._logEvent(`Closed (${code})`) }
 
                     // Restart after 1 second
                     setTimeout(() => {

@@ -10,13 +10,13 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _outputAudioDevice } = require('./_outputAudioDevice');
+const { _audioOutputDevice } = require('./_audioOutputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioOutput extends _outputAudioDevice {
+class AudioOutput extends _audioOutputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New ffplay output'; 

@@ -9,13 +9,13 @@
 // -------------------------------------
 
 const { spawn } = require('child_process');
-const { _inputAudioDevice } = require('./_inputAudioDevice');
+const { _audioInputDevice } = require('./_audioInputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioInput extends _inputAudioDevice {
+class AudioInput extends _audioInputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Alsa input';   // Display name
@@ -35,7 +35,7 @@ class AudioInput extends _inputAudioDevice {
                 //            `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
                 //            `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
                 this._alsa = spawn('arecord', args.split(" "));
-                this.stdout = this._alsa.stdout;
+                this._alsa.stdout.pipe(this.stdout);
     
                 // Handle stderr
                 this._alsa.on('stderr', (data) => {
@@ -44,8 +44,9 @@ class AudioInput extends _inputAudioDevice {
 
                 // Handle process exit event
                 this._alsa.on('close', code => {
+                    this._alsa.stdout.unpipe(this.stdout);
                     this.isRunning = false;
-                    this._logEvent(`Closed (${code})`);
+                    if (code != null) { this._logEvent(`Closed (${code})`) }
 
                     // Restart after 1 second
                     setTimeout(() => {
@@ -81,6 +82,7 @@ class AudioInput extends _inputAudioDevice {
 
         if (this._alsa != undefined) {
             this._logEvent(`Stopping arecord...`);
+            this._alsa.stdout.unpipe(this.stdout);
             this.isRunning = false;
             this._alsa.kill('SIGTERM');
             this._alsa.kill('SIGKILL');

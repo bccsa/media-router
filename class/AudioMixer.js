@@ -11,13 +11,13 @@
 
 const { spawn } = require('child_process');
 const { StreamInput, StreamOutput } = require('fluent-ffmpeg-multistream');
-const { _inputAudioDevice } = require('./_inputAudioDevice');
+const { _audioInputDevice } = require('./_audioInputDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioMixer extends _inputAudioDevice {
+class AudioMixer extends _audioInputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Audio Mixer'; 
@@ -29,14 +29,13 @@ class AudioMixer extends _inputAudioDevice {
     Start() {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
+            this._logEvent('Starting ffmpeg...');
             try {
                 let args = `-hide_banner `;
-                let afilter = ``;       // audio filtergraph
-                let amix = '';      // Input pads for amix filter
 
                 // Add inputs
                 this._inputs.forEach(input => {
-                    args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdin).url} `;
+                    args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdout).url} `;
                 });
 
                 // Add filters to ffmpeg command.
@@ -51,13 +50,13 @@ class AudioMixer extends _inputAudioDevice {
     
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', (data) => {
-                    this._logEvent(`${data.toString()}`);
+                    // this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
                     this.isRunning = false;
-                    this._logEvent(`Closed (${code})`);
+                    if (code != null) { this._logEvent(`Closed (${code})`) }
 
                     // Restart after 1 second
                     setTimeout(() => {

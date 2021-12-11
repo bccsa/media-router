@@ -10,22 +10,17 @@
 
 //const stream = require('stream');
 const volume = require('../submodules/pcm-volume/index');
-const { _outputAudioDevice } = require('./_outputAudioDevice');
+const { _audioTransformDevice } = require('./_audioTransformDevice');
 
 // -------------------------------------
 // Class declaration
 // -------------------------------------
 
-class AudioMixerInput extends _outputAudioDevice {
+class AudioVolumeTransform extends _audioTransformDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = "New Mixer Input";      // String display name
-        this.mixer = "New Audio Mixer";     // String name of the mixer to which the input belongs
         this.soloGroup = "";                // If not blank, mutes all AudioMixerInputs with the same soloGroup text.
-        this._mixer = undefined;            // Mixer to which the input belongs
-        this.channels = 1;                  // Audio channels
-        this.sampleRate = 48000;            // Audio sample rate
-        this.bitDepth = 16;                 // Audio bit depth
         this.maxVolume = 1.5;               // Maximum volume that the client UI can request
         this.volume = 1;                    // Mixer volume
         this.mute = true;
@@ -34,34 +29,18 @@ class AudioMixerInput extends _outputAudioDevice {
         this._clientHtmlFileName = "AudioMixerInput.html";
         this.displayOrder = 0;              // Display order in the client WebApp.
         this.displayWidth = "80px";         // Display width in the client WebApp.
-        this.stdin = undefined;             // Pass through transform stream used as ffmpeg input in the Audio Mixer
+        this.bitDepth = 16;
+        this.stdin = new volume(this.volume, this.bitDepth);
+        this.stdout = this.stdin;
         
         setTimeout(() => {
-            this.stdin = new volume(this.volume ,this.bitDepth);
-            
-            // Find the mixer
-            this._findMixer();
+            // Set volume transform stream settings after config has been set.
+            this.stdin.setVolume(this.volume);
+            this.stdin.setBitDepth(this.bitDepth);
 
             // Set initial mute
             this.SetMute(this.mute);
-        }, 100)
-    }
-
-
-    // find the mixer
-    _findMixer() {
-        let m = this._deviceList.FindDevice(this.mixer);
-
-        // Validate audio mixer
-        if (m != undefined && m.AddInput != undefined) { this._mixer = m; }
-
-        if (this._mixer != undefined) {
-            // Add mixer input to mixer
-            this._mixer.AddInput(this);
-        }
-        else {
-            this._logEvent(`Unable to find mixer "${this.mixer}"`);
-        }
+        }, 50);
     }
 
     // Toggle mute status
@@ -160,8 +139,14 @@ class AudioMixerInput extends _outputAudioDevice {
                 this._updatePeak();
             }, 200);
         }
+        else {
+            // Clear peak display on client UI
+            this._updateClientUI({
+                peak : 0
+            });
+        }
     }
 }
 
 // Export class
-module.exports.AudioMixerInput = AudioMixerInput;
+module.exports.AudioVolumeTransform = AudioVolumeTransform;

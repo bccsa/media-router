@@ -75,7 +75,7 @@ class SrtOutput extends _device {
                 // Handle process exit event
                 this._srt.on('close', code => {
                     this.isRunning = false;
-                    this._logEvent(`Closed (${code})`);
+                    if (code != null) { this._logEvent(`Closed (${code})`) }
 
                     // Restart after 1 second
                     setTimeout(() => {

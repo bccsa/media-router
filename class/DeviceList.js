@@ -17,7 +17,7 @@ const { _device } = require('./_device');
 const { AudioInput } = require('./AudioInput');
 const { AudioOutput } = require('./AudioOutput');
 const { AudioMixer } = require('./AudioMixer');
-const { AudioMixerInput } = require('./AudioMixerInput');
+const { AudioVolumeTransform } = require('./AudioVolumeTransform');
 const { RtpOpusInput } = require('./RtpOpusInput');
 const { RtpOpusOutput } = require('./RtpOpusOutput');
 const { SrtInput } = require('./SrtInput');
@@ -49,8 +49,8 @@ class DeviceList extends _device {
     get _deviceTypeList() {
         return {
             AudioInput,
+            AudioVolumeTransform,
             AudioMixer,
-            AudioMixerInput,
             AudioOutput,
             RtpOpusInput,
             RtpOpusOutput,
