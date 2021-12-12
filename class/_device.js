@@ -68,7 +68,7 @@ class _device {
     SetConfig(config) {
         Object.getOwnPropertyNames(config).forEach(k => {
             // Only update "public" properties
-            if (this[k] != undefined && k[0] != '_' && (typeof this[k] == 'number' || typeof this[k] == 'string' || typeof this[k] == 'boolean')) {
+            if (this[k] != undefined && k[0] != '_' && (typeof this[k] == 'number' || typeof this[k] == 'string' || typeof this[k] == 'boolean' || k == "destinations")) {
                 this[k] = config[k];
             }
         });
@@ -78,7 +78,7 @@ class _device {
         let c = {};
         Object.getOwnPropertyNames(this).forEach(k => {
             // Only return "public" properties
-            if (k[0] != '_' && (typeof this[k] == 'number' || typeof this[k] == 'string' || typeof this[k] == 'boolean')) {
+            if (k[0] != '_' && (typeof this[k] == 'number' || typeof this[k] == 'string' || typeof this[k] == 'boolean' || k == "destinations")) {
                 c[k] = this[k];
             }
         });

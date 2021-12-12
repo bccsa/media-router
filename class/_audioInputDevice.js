@@ -24,13 +24,14 @@ class _audioInputDevice extends _device {
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
 
-        this.destination = "Destination device name";  // Destination device name (string)
-        this._destination = undefined;                 // reference to source device
-        this._mixerInput = false;           // Flag indicating that input is a AudioMixer input
+        this.destinations = [ "Destination device name" ];
+        this._destinations = {};
 
         // Find the destination device after 100ms
         setTimeout(() => {
-            this._findDestination();
+            this.destinations.forEach(destinationName => {
+                this._findDestination(destinationName);
+            });
         }, 100);
 
         // Subscribe to DeviceList start and stop events
@@ -44,44 +45,42 @@ class _audioInputDevice extends _device {
     }
 
     // find the destination device
-    _findDestination() {
-        this._destination = this._deviceList.FindDevice(this.destination);
+    _findDestination(destinationName) {
+        this._destinations[destinationName] = this._deviceList.FindDevice(destinationName);
 
         // start and stop event chaining
-        if (this._destination != undefined && this._destination.Start != undefined && this._destination.Stop != undefined) {
+        if (this._destinations[destinationName] != undefined && this._destinations[destinationName].Start != undefined && this._destinations[destinationName].Stop != undefined) {
             
             // Check if destination is an AudioMixer.
-            this._mixerInput = this._destination.constructor.name == "AudioMixer";
-            
-            if (this._mixerInput) {
+            if (this._destinations[destinationName].constructor.name == "AudioMixer") {
                 // Add mixer input
-                this._destination.AddInput(this);
+                this._destinations[destinationName].AddInput(this);
             }
             else {
                 this.run.on('start', () => {
                     // Pipe to outputAudioDevice
                     // Start the destination process after this process has started
-                    this._destination.Start();
+                    this._destinations[destinationName].Start();
     
                     // Pipe output to destination input
-                    this.stdout.pipe(this._destination.stdin);
+                    this.stdout.pipe(this._destinations[destinationName].stdin);
                 });
                 this.run.on('stop', () => {
                     if (!this._mixerInput) {
                         // Unipe output to destination input
-                        this.stdout.unpipe(this._destination.stdin);
+                        this.stdout.unpipe(this._destinations[destinationName].stdin);
     
                         // Stop process when the destination device stopped
-                        this._destination.Stop();
+                        this._destinations[destinationName].Stop();
                     }
                 });
             }
         }
         else {
-            this._logEvent(`Unable to find destination device "${this.destination}"`);
+            this._logEvent(`Unable to find destination device "${destinationName}"`);
             
             // Retry to find the destination device in 1 second
-            setTimeout(() => { this._findDestination() }, 1000);
+            setTimeout(() => { this._findDestination(destinationName) }, 1000);
         }
     }
 }

@@ -191,10 +191,10 @@ class DeviceList extends _device {
         return this._linearList[name];
     }
 
-    // Return a list of AudioMixerInputs with the given solo group name
+    // Return a list of AudioVolumeTransforms with the given solo group name
     SoloGroup(name) {
-        if (this._list.AudioMixerInput != undefined) {
-            return this._list.AudioMixerInput.filter(m => m.soloGroup == name);
+        if (this._list.AudioVolumeTransform != undefined) {
+            return this._list.AudioVolumeTransform.filter(m => m.soloGroup == name);
         }
         else {
             return [];
