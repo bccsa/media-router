@@ -44,7 +44,7 @@ class RtpOpusOutput extends _audioOutputDevice {
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    //this._logEvent(`${data.toString()}`);
+                    // this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle stdout
@@ -54,8 +54,13 @@ class RtpOpusOutput extends _audioOutputDevice {
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
+                    this.stdin.unpipe(this._ffmpeg.stdin);
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
+
+                    this._ffmpeg.kill('SIGTERM');
+                    this._ffmpeg.kill('SIGKILL');
+                    this._ffmpeg = undefined;
 
                     // Restart after 1 second
                     setTimeout(() => {
@@ -64,8 +69,6 @@ class RtpOpusOutput extends _audioOutputDevice {
                             this.Start();
                         }
                     }, 1000);
-
-                    this._ffmpeg = undefined;
                 });
 
                 // Handle process error events

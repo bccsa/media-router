@@ -56,6 +56,10 @@ class AudioInput extends _audioInputDevice {
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
 
+                    this._process.kill('SIGTERM');
+                    this._process.kill('SIGKILL');
+                    this._process = undefined;
+
                     // Restart after 1 second
                     setTimeout(() => {
                         if (!this._exitFlag) {
@@ -63,8 +67,6 @@ class AudioInput extends _audioInputDevice {
                             this.Start();
                         }
                     }, 1000);
-
-                    this._process = undefined;
                 });
 
                 // Handle process error events

@@ -62,8 +62,13 @@ a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should alway
                 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
+                    this._ffmpeg.stdout.unpipe(this.stdout);
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
+
+                    this._ffmpeg.kill('SIGTERM');
+                    this._ffmpeg.kill('SIGKILL');
+                    this._ffmpeg = undefined;
 
                     // Restart after 1 second
                     setTimeout(() => {
@@ -72,8 +77,6 @@ a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should alway
                             this.Start();
                         }
                     }, 1000);
-
-                    this._ffmpeg = undefined;
                 });
 
                 // Handle process error events

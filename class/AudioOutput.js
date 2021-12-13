@@ -50,6 +50,10 @@ class AudioOutput extends _audioOutputDevice {
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
 
+                    this._alsa.kill('SIGTERM');
+                    this._alsa.kill('SIGKILL');
+                    this._alsa = undefined;
+
                     // Restart after 1 second
                     setTimeout(() => {
                         if (!this._exitFlag) {
@@ -57,8 +61,6 @@ class AudioOutput extends _audioOutputDevice {
                             this.Start();
                         }
                     }, 1000);
-
-                    this._alsa = undefined;
                 });
 
                 // Handle process error events
@@ -81,9 +83,9 @@ class AudioOutput extends _audioOutputDevice {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
         if (this._alsa != undefined) {
+            this.stdin.unpipe(this._alsa.stdin);
             this.isRunning = false;
             this._logEvent(`Stopping aplay...`);
-            this.stdin.unpipe(this._alsa.stdin);
             this._alsa.kill('SIGTERM');
 
             // Send SIGKILL to quit process

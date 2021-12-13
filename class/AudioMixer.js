@@ -58,7 +58,7 @@ class AudioMixer extends _audioInputDevice {
 
                 // Start ffmpeg
                 this._ffmpeg = spawn('ffmpeg', args.split(' '));
-                this.stdout = this._ffmpeg.stdout;
+                this._ffmpeg.stdout.pipe(this.stdout);
     
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', (data) => {
@@ -67,8 +67,13 @@ class AudioMixer extends _audioInputDevice {
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
+                    this._ffmpeg.stdout.unpipe(this.stdout);
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
+
+                    this._ffmpeg.kill('SIGTERM');
+                    this._ffmpeg.kill('SIGKILL');
+                    this._ffmpeg = undefined;
 
                     // Restart after 1 second
                     setTimeout(() => {
@@ -77,8 +82,6 @@ class AudioMixer extends _audioInputDevice {
                             this.Start();
                         }
                     }, 1000);
-
-                    this._ffmpeg = undefined;
                 });
 
                 // Handle process error events
@@ -106,6 +109,7 @@ class AudioMixer extends _audioInputDevice {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
         if (this._ffmpeg != undefined) {
+            this._ffmpeg.stdout.unpipe(this.stdout);
             this._logEvent(`Stopping ffmpeg...`);
             this.isRunning = false;
             this._ffmpeg.kill('SIGTERM');
