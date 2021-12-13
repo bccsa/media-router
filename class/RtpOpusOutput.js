@@ -88,17 +88,23 @@ class RtpOpusOutput extends _audioOutputDevice {
 
     // Stop the input capture process
     Stop() {
-        this._exitFlag = true;   // prevent automatic restarting of the process
+        try {
+            this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._ffmpeg != undefined) {
-            this.stdin.unpipe(this._ffmpeg.stdin);
-            this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
-            this._ffmpeg.kill('SIGTERM');
-    
-            // ffmpeg stops on SIGTERM, but does not exit.
-            // Send SIGKILL to quit process
-            this._ffmpeg.kill('SIGKILL');
+            if (this._ffmpeg != undefined) {
+                this.stdin.unpipe(this._ffmpeg.stdin);
+                this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
+                this._ffmpeg.kill('SIGTERM');
+        
+                // ffmpeg stops on SIGTERM, but does not exit.
+                // Send SIGKILL to quit process
+                this._ffmpeg.kill('SIGKILL');
+            }
         }
+        catch (error) {
+            this._logEvent(error.message);
+        }
+        
     }
 }
 

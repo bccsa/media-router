@@ -106,16 +106,22 @@ class AudioMixer extends _audioInputDevice {
 
     // Stop the input capture process
     Stop() {
-        this._exitFlag = true;   // prevent automatic restarting of the process
+        try {
+            this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._ffmpeg != undefined) {
-            this._ffmpeg.stdout.unpipe(this.stdout);
-            this._logEvent(`Stopping ffmpeg...`);
-            this.isRunning = false;
-            this._ffmpeg.kill('SIGTERM');
-            this._ffmpeg.kill('SIGKILL');
-            this._ffmpeg = undefined;
+            if (this._ffmpeg != undefined) {
+                this._ffmpeg.stdout.unpipe(this.stdout);
+                this._logEvent(`Stopping ffmpeg...`);
+                this.isRunning = false;
+                this._ffmpeg.kill('SIGTERM');
+                this._ffmpeg.kill('SIGKILL');
+                this._ffmpeg = undefined;
+            }
         }
+        catch (error) {
+            this._logEvent(error.message);
+        }
+        
     }
 }
 

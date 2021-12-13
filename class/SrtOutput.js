@@ -105,15 +105,21 @@ class SrtOutput extends _device {
 
     // Stop the process
     Stop() {
-        this._exitFlag = true;   // prevent automatic restarting of the process
+        try {
+            this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._srt != undefined) {
-            this._logEvent(`Stopping srt-live-transmit...`);
-            this._srt.kill('SIGTERM');
-            
-            // Send SIGKILL to quit process
-            this._srt.kill('SIGKILL');
+            if (this._srt != undefined) {
+                this._logEvent(`Stopping srt-live-transmit...`);
+                this._srt.kill('SIGTERM');
+                
+                // Send SIGKILL to quit process
+                this._srt.kill('SIGKILL');
+            }
         }
+        catch (error) {
+            this._logEvent(error.message);
+        }
+        
     }
 }
 

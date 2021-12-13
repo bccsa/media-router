@@ -80,17 +80,23 @@ class AudioOutput extends _audioOutputDevice {
 
     // Stop the playback process
     Stop() {
-        this._exitFlag = true;   // prevent automatic restarting of the process
+        try {
+            this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._alsa != undefined) {
-            this.stdin.unpipe(this._alsa.stdin);
-            this.isRunning = false;
-            this._logEvent(`Stopping aplay...`);
-            this._alsa.kill('SIGTERM');
-
-            // Send SIGKILL to quit process
-            this._alsa.kill('SIGKILL');
+            if (this._alsa != undefined) {
+                this.stdin.unpipe(this._alsa.stdin);
+                this.isRunning = false;
+                this._logEvent(`Stopping aplay...`);
+                this._alsa.kill('SIGTERM');
+    
+                // Send SIGKILL to quit process
+                this._alsa.kill('SIGKILL');
+            }
         }
+        catch (error) {
+            this._logEvent(error.message);
+        }
+        
     }
 }
 

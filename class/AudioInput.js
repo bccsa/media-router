@@ -88,15 +88,21 @@ class AudioInput extends _audioInputDevice {
 
     // Stop the input capture process
     Stop() {
-        this._exitFlag = true;   // prevent automatic restarting of the process
+        try {
+            this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._process != undefined) {
-            this._logEvent(`Stopping ${this._execFile}...`);
-            this._process.stdout.unpipe(this.stdout);
-            this.isRunning = false;
-            this._process.kill('SIGTERM');
-            this._process.kill('SIGKILL');
+            if (this._process != undefined) {
+                this._logEvent(`Stopping ${this._execFile}...`);
+                this._process.stdout.unpipe(this.stdout);
+                this.isRunning = false;
+                this._process.kill('SIGTERM');
+                this._process.kill('SIGKILL');
+            }
         }
+        catch (error) {
+            this._logEvent(error.message);
+        }
+        
     }
 }
 
