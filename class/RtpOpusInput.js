@@ -49,15 +49,15 @@ t=0 0
 a=tool:libavformat 58.20.100
 m=audio ${this.rtpPort} RTP/AVP 97
 b=AS:${this.rtpBitrate}
-a=rtpmap:97 opus/${this.sampleRate}/${this.channels}`);
+a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should always be 48000
 
-                let args = `-hide_banner -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -i ${sdpFile} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -f s${this.bitDepth}le -`
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -c:a libopus -i ${sdpFile} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -f s${this.bitDepth}le -`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdout = this._ffmpeg.stdout;
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    //this._logEvent(`${data.toString()}`);
+                    // this._logEvent(`${data.toString()}`);
                 });
                 
                 // Handle process exit event

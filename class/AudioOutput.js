@@ -30,7 +30,7 @@ class AudioOutput extends _audioOutputDevice {
         this._exitFlag = false;   // Reset the exit flag
         if (this._alsa == undefined) {
             try {
-                let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} --buffer-size=${this.bufferSize}`;
+                let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} -t raw --buffer-size=${this.bufferSize}`;
                 this._alsa = spawn('aplay', args.split(" "));
                 this.stdin.pipe(this._alsa.stdin);
     

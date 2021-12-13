@@ -20,49 +20,56 @@ class AudioInput extends _audioInputDevice {
         super(DeviceList);
         this.name = 'New Alsa input';   // Display name
         this.device = 'default';        // Device name - see arecord -L
-        this._alsa = undefined;         // alsa process
+        this._process = undefined;      // alsa/ffmpeg process
         this.bufferSize = 2048;         // ALSA buffer size in bytes
+        this._execFile = 'arecord';
     }
 
     // Start the input capture process
     Start() {
         this._exitFlag = false;   // Reset the exit flag
-        if (this._alsa == undefined) {
-            this._logEvent('Starting arecord...');
+        if (this._process == undefined) {
+            this._logEvent(`Starting ${this._execFile}...`);
             try {
-                let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} --buffer-size=${this.bufferSize}`;
-                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay -thread_queue_size 512 ` +
-                //            `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
-                //            `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
-                this._alsa = spawn('arecord', args.split(" "));
-                this._alsa.stdout.pipe(this.stdout);
+                let args;
+                if (this._execFile == 'arecord') {
+                    args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} -t raw --buffer-size=${this.bufferSize}`;
+                }
+                else if (this._execFile == 'ffmpeg') {
+                    args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay ` +
+                           `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
+                           `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
+                }
+
+                this._process = spawn(`${this._execFile}`, args.split(" "));
+                this._process.stdout.pipe(this.stdout);
     
                 // Handle stderr
-                this._alsa.on('stderr', (data) => {
+                this._process.on('stderr', (data) => {
                     this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event
-                this._alsa.on('close', code => {
-                    this._alsa.stdout.unpipe(this.stdout);
+                this._process.on('close', code => {
+                    this._process.stdout.unpipe(this.stdout);
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
 
                     // Restart after 1 second
                     setTimeout(() => {
                         if (!this._exitFlag) {
-                            this._logEvent(`Restarting arecord...`);
+                            this._logEvent(`Restarting ${this._execFile}...`);
                             this.Start();
                         }
                     }, 1000);
 
-                    this._alsa = undefined;
+                    this._process = undefined;
                 });
 
                 // Handle process error events
-                this._alsa.on('error', error => {
+                this._process.on('error', error => {
                     this.isRunning = false;
-                    if (!error.message.includes('ffmpeg was killed with signal SIGKILL')) {
+                    if (!error.message.includes(`${this._execFile} was killed with signal SIGKILL`)) {
                         this._logEvent(error.message);
                     }
                 });
@@ -80,12 +87,12 @@ class AudioInput extends _audioInputDevice {
     Stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._alsa != undefined) {
-            this._logEvent(`Stopping arecord...`);
-            this._alsa.stdout.unpipe(this.stdout);
+        if (this._process != undefined) {
+            this._logEvent(`Stopping ${this._execFile}...`);
+            this._process.stdout.unpipe(this.stdout);
             this.isRunning = false;
-            this._alsa.kill('SIGTERM');
-            this._alsa.kill('SIGKILL');
+            this._process.kill('SIGTERM');
+            this._process.kill('SIGKILL');
         }
     }
 }

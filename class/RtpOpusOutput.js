@@ -37,7 +37,8 @@ class RtpOpusOutput extends _audioOutputDevice {
         this._exitFlag = false;   // Reset the exit flag
         if (this._ffmpeg == undefined) {
             try {
-                let args = `-hide_banner -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate ${this.sampleRate} -ac ${this.channels} -b:a ${this.rtpBitrate}k -f rtp rtp://${this.rtpIP}:${this.rtpPort}`
+                // Opus sample rate is always 48000. Input is therefore converted to 48000
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -f rtp -c:a libopus -sample_rate 48000 -ac ${this.channels} -b:a ${this.rtpBitrate}k rtp://${this.rtpIP}:${this.rtpPort}`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this.stdin = this._ffmpeg.stdin;
 

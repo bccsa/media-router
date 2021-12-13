@@ -56,3 +56,9 @@ Uncaught Error [ERR_STREAM_WRITE_AFTER_END]: write after end
 
 
 To do: Create events for config updated. Use events to relay settings further where needed (e.g. volume transform)
+
+Findings:
+Big (and/or growing latency) when sending 44100 sample rate to RtpOpusOutput and / or receiving it back to 44100.
+AudioMixer latency seems to be quite random (different for every restart)
+
+The AudioMixer latency is more when receiving audio directly compared to receiving via RtpOpusInput
