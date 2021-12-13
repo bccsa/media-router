@@ -66,3 +66,4 @@ class _uiControl {
 
 // Export class
 module.exports._uiControl = _uiControl;
+

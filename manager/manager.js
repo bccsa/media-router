@@ -30,7 +30,7 @@ manager.get('/', (req, res) => {
 });
 
 //===================================================
-// Startup logic router.js socket coms
+// Startup logic router.js socket 
 //===================================================
 
 routerHTTP.listen(8083, () => {
