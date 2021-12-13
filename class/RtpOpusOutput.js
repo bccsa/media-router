@@ -54,13 +54,15 @@ class RtpOpusOutput extends _audioOutputDevice {
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    this.stdin.unpipe(this._ffmpeg.stdin);
+                    if (this._ffmpeg != undefined) {
+                        this.stdin.unpipe(this._ffmpeg.stdin);
+                        this._ffmpeg.kill('SIGTERM');
+                        this._ffmpeg.kill('SIGKILL');
+                        this._ffmpeg = undefined;
+                    }
+                    
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
-
-                    this._ffmpeg.kill('SIGTERM');
-                    this._ffmpeg.kill('SIGKILL');
-                    this._ffmpeg = undefined;
 
                     // Restart after 1 second
                     setTimeout(() => {

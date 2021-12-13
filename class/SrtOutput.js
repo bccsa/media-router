@@ -74,6 +74,12 @@ class SrtOutput extends _device {
 
                 // Handle process exit event
                 this._srt.on('close', code => {
+                    if (this._srt != undefined) {
+                        this._srt.kill('SIGTERM');
+                        this._srt.kill('SIGKILL');
+                        this._srt = undefined;
+                    }
+
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
 
@@ -84,8 +90,6 @@ class SrtOutput extends _device {
                             this.Start();
                         }
                     }, 1000);
-
-                    this._srt = undefined;
                 });
 
                 // Handle process error events

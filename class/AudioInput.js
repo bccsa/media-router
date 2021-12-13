@@ -52,13 +52,15 @@ class AudioInput extends _audioInputDevice {
 
                 // Handle process exit event
                 this._process.on('close', code => {
-                    this._process.stdout.unpipe(this.stdout);
+                    if (this._process != undefined) {
+                        this._process.stdout.unpipe(this.stdout);
+                        this._process.kill('SIGTERM');
+                        this._process.kill('SIGKILL');
+                        this._process = undefined;
+                    }
+
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
-
-                    this._process.kill('SIGTERM');
-                    this._process.kill('SIGKILL');
-                    this._process = undefined;
 
                     // Restart after 1 second
                     setTimeout(() => {

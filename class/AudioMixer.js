@@ -67,13 +67,17 @@ class AudioMixer extends _audioInputDevice {
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    this._ffmpeg.stdout.unpipe(this.stdout);
+                    if (this._ffmpeg != undefined) {
+                        this._ffmpeg.stdout.unpipe(this.stdout);
+                        this._ffmpeg.kill('SIGTERM');
+                        this._ffmpeg.kill('SIGKILL');
+                        this._ffmpeg = undefined;
+                    }
+                    
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
 
-                    this._ffmpeg.kill('SIGTERM');
-                    this._ffmpeg.kill('SIGKILL');
-                    this._ffmpeg = undefined;
+                    
 
                     // Restart after 1 second
                     setTimeout(() => {

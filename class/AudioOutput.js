@@ -46,13 +46,15 @@ class AudioOutput extends _audioOutputDevice {
 
                 // Handle process exit event
                 this._alsa.on('close', code => {
-                    this.stdin.unpipe(this._alsa.stdin);
+                    if (this._alsa != undefined) {
+                        this.stdin.unpipe(this._alsa.stdin);
+                        this._alsa.kill('SIGTERM');
+                        this._alsa.kill('SIGKILL');
+                        this._alsa = undefined;
+                    }
+
                     this.isRunning = false;
                     if (code != null) { this._logEvent(`Closed (${code})`) }
-
-                    this._alsa.kill('SIGTERM');
-                    this._alsa.kill('SIGKILL');
-                    this._alsa = undefined;
 
                     // Restart after 1 second
                     setTimeout(() => {
