@@ -51,9 +51,9 @@ m=audio ${this.rtpPort} RTP/AVP 97
 b=AS:${this.rtpBitrate}
 a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should always be 48000
 
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -c:a libopus -i ${sdpFile} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -f s${this.bitDepth}le -`
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -protocol_whitelist file,udp,rtp -reorder_queue_size 0 -buffer_size 0 -c:a libopus -i ${sdpFile} -af aresample=async=1000 -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -f s${this.bitDepth}le -`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
-                this.stdout = this._ffmpeg.stdout;
+                this._ffmpeg.stdout.pipe(this.stdout);
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
@@ -96,7 +96,7 @@ a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should alway
         this._exitFlag = true;   // prevent automatic restarting of the process
 
         if (this._ffmpeg != undefined) {
-            this.stdout = undefined;
+            this._ffmpeg.stdout.unpipe(this.stdout);
             this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
             this._ffmpeg.kill('SIGTERM');
     

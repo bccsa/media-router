@@ -38,9 +38,9 @@ class RtpOpusOutput extends _audioOutputDevice {
         if (this._ffmpeg == undefined) {
             try {
                 // Opus sample rate is always 48000. Input is therefore converted to 48000
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -f rtp -c:a libopus -sample_rate 48000 -ac ${this.channels} -b:a ${this.rtpBitrate}k rtp://${this.rtpIP}:${this.rtpPort}`
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -af aresample=async=1000 -f rtp -c:a libopus -sample_rate 48000 -ac ${this.channels} -b:a ${this.rtpBitrate}k rtp://${this.rtpIP}:${this.rtpPort}`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "));
-                this.stdin = this._ffmpeg.stdin;
+                this.stdin.pipe(this._ffmpeg.stdin);
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
@@ -88,7 +88,7 @@ class RtpOpusOutput extends _audioOutputDevice {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
         if (this._ffmpeg != undefined) {
-            this.stdin = undefined;
+            this.stdin.unpipe(this._ffmpeg.stdin);
             this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
             this._ffmpeg.kill('SIGTERM');
     

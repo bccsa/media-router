@@ -39,8 +39,19 @@ class AudioMixer extends _audioInputDevice {
                     //args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdout).url} `;
                 });
 
-                // Add filters to ffmpeg command.
-                args += `-filter_complex amix=inputs=${this._inputs.length} `;
+                args += `-filter_complex `;
+                // Add input filters
+                for (let i = 0; i < this._inputs.length; i++) {
+                    args += `[${i}:a]aresample=async=1000[a${i}];`
+                }
+
+                // Add input filter outputs to mixer filter
+                for (let i = 0; i < this._inputs.length; i++) {
+                    args += `[a${i}]`
+                }
+
+                // Mixer filter
+                args += `amix=inputs=${this._inputs.length} `;
 
                 // Add audio output (stdout)
                 args += `-f s${this.bitDepth}le -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -`;

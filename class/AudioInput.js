@@ -22,7 +22,7 @@ class AudioInput extends _audioInputDevice {
         this.device = 'default';        // Device name - see arecord -L
         this._process = undefined;      // alsa/ffmpeg process
         this.bufferSize = 2048;         // ALSA buffer size in bytes
-        this._execFile = 'arecord';
+        this._execFile = 'ffmpeg';
     }
 
     // Start the input capture process
@@ -38,6 +38,7 @@ class AudioInput extends _audioInputDevice {
                 else if (this._execFile == 'ffmpeg') {
                     args = `-hide_banner -probesize 32 -analyzeduration 0 -flags low_delay ` +
                            `-f alsa -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i ${this.device} ` +
+                           `-af aresample=async=1000 ` +
                            `-f s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -`;
                 }
 
