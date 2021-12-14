@@ -32,7 +32,7 @@ class AudioVolumeTransform extends _audioTransformDevice {
         this.bitDepth = 16;
         this.stdin = new volume(this.volume, this.bitDepth);
         this.stdout = this.stdin;
-        this._peakPrev = 0;                 // Previous peak value
+        // this._peakPrev = 0;                 // Previous peak value
         
         setTimeout(() => {
             // Set volume transform stream settings after config has been set.
@@ -134,12 +134,10 @@ class AudioVolumeTransform extends _audioTransformDevice {
     _updatePeak() {
         if (this._isRunning) {
             setTimeout(() => {
-                if (this.stdin.peak != this._peakPrev) {
-                    this._updateClientUI({
-                        peak : this.stdin.peak
-                    });
-                    this._updatePeak();
-                }
+                this._updateClientUI({
+                    peak : this.stdin.peak
+                });
+                this._updatePeak();
             }, 200);
         }
         else {
