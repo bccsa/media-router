@@ -50,22 +50,9 @@ class _audioTransformDevice extends _device {
                 this._destinations[destinationName].AddInput(this);
             }
             else {
-                this.run.on('start', () => {
-                    // Pipe to outputAudioDevice
-                    // Start the destination process after this process has started
-                    this._destinations[destinationName].Start();
-    
-                    // Pipe output to destination input
-                    this.stdout.pipe(this._destinations[destinationName].stdin);
-                });
-                this.run.on('stop', () => {
-                    if (!this._mixerInput) {
-                        // Unipe output to destination input
-                        this.stdout.unpipe(this._destinations[destinationName].stdin);
-    
-                        // Stop process when the destination device stopped
-                        this._destinations[destinationName].Stop();
-                    }
+                // Write data to destination
+                this.stdout.on('data', (data) => {
+                    this._destinations[destinationName].stdin.write(data);
                 });
             }
         }

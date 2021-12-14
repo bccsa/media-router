@@ -142,12 +142,18 @@ process.on('SIGTERM', cleanup);
 function cleanup() {
     // Stop devicelist on exit
     deviceList.Stop();
-}
 
-// Delete socket files created by fluent-ffmpeg-multistream
-deviceList.run.on('stop', () => {
+    // Delete socket files created for audio mixer
     let regex = /[.]sock$/;
     fs.readdirSync('./')
         .filter(f => regex.test(f))
         .map(f => fs.unlinkSync(f));
-});
+}
+
+// // Delete socket files created by fluent-ffmpeg-multistream
+// deviceList.run.on('stop', () => {
+//     let regex = /[.]sock$/;
+//     fs.readdirSync('./')
+//         .filter(f => regex.test(f))
+//         .map(f => fs.unlinkSync(f));
+// });

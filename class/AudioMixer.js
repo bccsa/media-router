@@ -12,6 +12,9 @@
 const { spawn } = require('child_process');
 const { StreamInput, StreamOutput } = require('fluent-ffmpeg-multistream');
 const { _audioInputDevice } = require('./_audioInputDevice');
+const { mkfifoSync } = require('named-pipe');
+const fs = require('fs');
+var crypto = require('crypto');
 
 // -------------------------------------
 // Class declaration
@@ -35,23 +38,24 @@ class AudioMixer extends _audioInputDevice {
 
                 // Add inputs
                 this._inputs.forEach(input => {
-                    args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -sample_rate ${input.sampleRate} -ac ${input.channels} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdout).url} `;
-                    //args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdout).url} `;
+                    args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -sample_rate ${input.sampleRate} -ac ${input.channels} -c:a pcm_s${input.bitDepth}le -i ${input.namedPipe} `;
+                    // args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -sample_rate ${input.sampleRate} -ac ${input.channels} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdout).url} `;
+                    // args += `-f s${input.bitDepth}le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -thread_queue_size 512 -ac ${input.channels} -sample_rate ${input.sampleRate} -c:a pcm_s${input.bitDepth}le -i ${StreamInput(input.stdout).url} `;
                 });
 
-                args += `-filter_complex `;
-                // Add input filters
-                for (let i = 0; i < this._inputs.length; i++) {
-                    args += `[${i}:a]aresample=async=1000[a${i}];`
-                }
+                // args += `-filter_complex `;
+                // // Add input filters
+                // for (let i = 0; i < this._inputs.length; i++) {
+                //     args += `[${i}:a]aresample=async=1000[a${i}];`
+                // }
 
-                // Add input filter outputs to mixer filter
-                for (let i = 0; i < this._inputs.length; i++) {
-                    args += `[a${i}]`
-                }
+                // // Add input filter outputs to mixer filter
+                // for (let i = 0; i < this._inputs.length; i++) {
+                //     args += `[a${i}]`
+                // }
 
-                // Mixer filter
-                args += `amix=inputs=${this._inputs.length} `;
+                // // Mixer filter
+                // args += `amix=inputs=${this._inputs.length} `;
 
                 // Add audio output (stdout)
                 args += `-f s${this.bitDepth}le -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -sample_rate ${this.sampleRate} -`;
@@ -106,6 +110,22 @@ class AudioMixer extends _audioInputDevice {
     // Add a mixer input to the mixer
     AddInput(AudioMixerInput) {
         this._inputs.push(AudioMixerInput);
+
+        // Create unique file name
+        let hash = crypto.createHash('md5').update(AudioMixerInput.name + this.name).digest('hex');
+            AudioMixerInput.namedPipe = `${hash}.sock`;
+
+        try {
+            // Create a named pipe
+            mkfifoSync(AudioMixerInput.namedPipe);
+        }
+        catch {}
+
+        // Write data from input to named pipe
+        const wstream = fs.createWriteStream(AudioMixerInput.namedPipe);
+        AudioMixerInput.stdout.on('data', (data) => {
+            wstream.write(data);
+        });
     }
 
     // Stop the input capture process

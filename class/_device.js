@@ -26,6 +26,17 @@ class _device {
         this._clientHtmlFileName = undefined;   // Reference to the client WebApp html file 
         this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
         this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
+
+        // Subscribe to DeviceList start and stop events
+        if (DeviceList != undefined) {
+            DeviceList.run.on('start', () => {
+                this.Start();
+            });
+    
+            DeviceList.run.on('stop', () => {
+                this.Stop();
+            });
+        }
     }
 
     // Return the client WebApp HTML
