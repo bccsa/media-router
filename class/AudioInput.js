@@ -1,4 +1,4 @@
-// ======================================
+// =====================================
 // Hardware Pulse-Code Modulation input
 //
 // Copyright BCC South Africa
@@ -22,7 +22,7 @@ class AudioInput extends _audioInputDevice {
         this.device = 'default';        // Device name - see arecord -L
         this._process = undefined;      // alsa/ffmpeg process
         this.bufferSize = 2048;         // ALSA buffer size in bytes
-        this._execFile = 'ffmpeg';
+        this._execFile = 'arecord';
     }
 
     // Start the input capture process
