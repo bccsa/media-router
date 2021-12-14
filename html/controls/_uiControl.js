@@ -114,7 +114,6 @@ class _uiControl {
                 c[k] = this[k];
             }
         });
-        
         return c;
     }
 

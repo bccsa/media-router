@@ -23,16 +23,19 @@ class uiTextBox extends _uiControl {
 
     get html() {
         return `
-        <!-- ${this.name} -->
-        <div id="${this._uuid}_main" class="row">
-            <div class="col-lg-6">${this.displayName}</div>
-            <div class="col-lg-6">
-                <input type="text" id="${this._uuid}_input" value="${this.value}">
-                <div id="${this._uuid}_controls">
-                    ${this._getControlsHtml()}
+        <!-- ${this.name} --> 
+            <div id="${this._uuid}_main" class="col-lg-3">
+                 
+                <div > 
+                        <label>${this.displayName}</label>
+                        <input type="text" id="${this._uuid}_input" value="${this.value}">  
                 </div>
-            </div>
-        </div>
+
+                <div   id="${this._uuid}_controls">
+                        ${this._getControlsHtml()}
+                    </div> 
+            </div> 
+        
         `;
     }
 
