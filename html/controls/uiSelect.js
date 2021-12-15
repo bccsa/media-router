@@ -9,10 +9,10 @@
 // Class declaration
 // -------------------------------------
 
-class uiTextBox extends _uiControl {
-    constructor() {
+class uiSelect extends _uiControl {
+    constructor(){
         super();
-        this.value = 'TextBox Value';
+        this.values = ["option1", "option2", "option3", "option4"];
         this._sources.push('controls/js/ThisDoesNotExist.js');
         this._styles.push('controls/css/bootstrap.min.css')
     }
@@ -21,34 +21,29 @@ class uiTextBox extends _uiControl {
     // Getters & setters
     // -------------------------------------
 
-    get html() {
+    get html(){
         return `
         <!-- ${this.name} --> 
             <div id="${this._uuid}_main" class="col-lg-3">
-                 
-                <div > 
-                        <label>${this.displayName}</label>
-                        <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
-                </div>
-
-                <div   id="${this._uuid}_controls">
-                        ${this._getControlsHtml()}
-                    </div> 
-            </div> 
-        
+                <label> ${this.displayName}  </label>
+                <Select  id="${this._uuid}_select" class="form-control">
+                    ${this.values.forEach((value) => {
+                        `<option value="${this.value}"> </option>`
+                    })}
+                </Select>
+                
+            </div>
         `;
     }
 
-    DomLinkup() {
+    DomLinkup(){
         this._mainDiv = document.getElementById(`${this._uuid}_main`);
-        // this._mainDiv.addEventListener("click", e => {
-        //     // Do something
-        // });
 
         // Element containing child controls
-        this._input = document.getElementById(`${this._uuid}_input`);
+        this._input = document.getElementById(`${this._uuid}_select`);
 
         // This should be defined if the super AddControl function should be able to add child controls to this control
         this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
+ 
     }
 }
