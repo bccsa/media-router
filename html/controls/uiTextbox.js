@@ -25,21 +25,19 @@ class uiTextBox extends _uiControl {
         return `
         <!-- ${this.name} --> 
             <div id="${this._uuid}_main" class="col-lg-3">
-                 
                 <div > 
-                        <label>${this.displayName}</label>
+                    <label>${this.displayName}</label>
                         <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
                 </div>
-
-                <div   id="${this._uuid}_controls">
-                        ${this._getControlsHtml()}
-                    </div> 
+                <div id="${this._uuid}_controls">
+                    ${this._getControlsHtml()}
+                </div> 
             </div> 
         
         `;
     }
 
-    DomLinkup() {
+    _domLinkup() {
         this._mainDiv = document.getElementById(`${this._uuid}_main`);
         // this._mainDiv.addEventListener("click", e => {
         //     // Do something
