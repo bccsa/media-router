@@ -28,7 +28,7 @@ class uiSelect extends _uiControl {
                 <label> ${this.displayName}  </label>
                 <Select  id="${this._uuid}_select" class="form-control">
                     ${this.values.forEach((value) => {
-                        `<option value="${this.value}"> </option>`
+                        `<option value="${this.value}"> ${this.value} </option>`
                     })}
                 </Select>
                 

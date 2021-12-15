@@ -51,7 +51,7 @@ class _uiControl {
         let h = '';
         this.sources.forEach(s => {
             h += `<script src="${s}"></script>`
-        });
+        }); 
         return h;
     }
 
