@@ -1,0 +1,98 @@
+{
+  "name": "Station 01 – FRA/ENG",
+  "autoStart": true,
+  "autoStartDelay": 500,
+  "deviceList": {
+    "AudioInput": [
+      {
+        "deviceType": "AudioInput",
+        "name": "SSL2",
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "destinations": [
+          "ENG",
+          "FRA"
+        ],
+        "device": "plughw:CARD=S2,DEV=0"
+      }
+    ],
+    "AudioVolumeTransform": [
+      {
+        "name": "ENG",
+        "destinations": [
+          "EngRtpOut"
+        ],
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "mute": true,
+        "displayOrder": 2,
+        "soloGroup": "solo",
+        "showVolumeControl": false
+      },
+      {
+        "name": "FRA",
+        "destinations": [
+          "FraRtpOut"
+        ],
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "mute": false,
+        "displayOrder": 3,
+        "soloGroup": "solo",
+        "showVolumeControl": false
+      }
+    ],
+    "RtpOpusOutput": [
+      {
+        "name": "EngRtpOut",
+        "rtpIP": "127.0.0.1",
+        "rtpPort": 3000,
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16
+      },
+      {
+        "name": "FraRtpOut",
+        "rtpIP": "127.0.0.1",
+        "rtpPort": 3002,
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16
+      }
+    ],
+    "SrtOutput": [
+      {
+        "name": "EngSrtOut",
+        "rtpIP": "127.0.0.1",
+        "rtpPort": 3000,
+        "srtHost": "10.9.1.41",
+        "srtPort": 5010,
+        "srtMode": "caller",
+        "srtPbKeyLen": 16,
+        "srtPassphrase": "",
+        "srtLatency": "10"
+      },
+      {
+        "name": "FraSrtOut",
+        "rtpIP": "127.0.0.1",
+        "rtpPort": 3002,
+        "srtHost": "10.9.1.42",
+        "srtPort": 5010,
+        "srtMode": "caller",
+        "srtPbKeyLen": 16,
+        "srtPassphrase": "",
+        "srtLatency": "10"
+      }
+    ],
+    "Spacer": [
+      {
+        "name": "Outputs",
+        "displayOrder": 1,
+        "displayWidth": "40px"
+      }
+    ]
+  }
+}

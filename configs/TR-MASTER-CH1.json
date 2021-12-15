@@ -1,0 +1,73 @@
+{
+    "name": "TR-REM-CH1 (ENG)",
+    "autoStart": true,
+    "autoStartDelay": 500,
+    "deviceList": {
+        "AudioOutput": [
+            {
+                "name": "EngOut01",
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "device": "default"
+            }
+        ],
+        "AudioVolumeTransform": [
+            {
+                "name": "ENG01",
+                "destinations": [
+                    "EngOut01"
+                ],
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "mute": false,
+                "displayOrder": 1,
+                "soloGroup": ""
+            }
+        ],
+        "RtpOpusInput": [
+            {
+                "name": "EngRtpIn01",
+                "rtpIP": "127.0.0.1",
+                "rtpPort": 3010,
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "destinations": [
+                    "ENG01"
+                ]
+            }
+        ],
+        "SrtInput": [
+            {
+                "name": "EngSrtIn01",
+                "rtpIP": "127.0.0.1",
+                "rtpPort": 3010,
+                "srtHost": "",
+                "srtPort": 5010,
+                "srtMode": "listener",
+                "srtPbKeyLen": 16,
+                "srtPassphrase": "",
+                "srtLatency": "10"
+            }
+        ],
+        "Spacer": [
+            {
+                "name": "Inputs",
+                "displayOrder": 0,
+                "displayWidth": "40px"
+            },
+            {
+                "name": "Outputs",
+                "displayOrder": 2,
+                "displayWidth": "40px"
+            },
+            {
+                "name": "Returns",
+                "displayOrder": 6,
+                "displayWidth": "40px"
+            }
+        ]
+    }
+}
