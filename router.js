@@ -139,15 +139,22 @@ process.on('exit', cleanup);
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 
+var _exit = false;
 function cleanup() {
-    // Stop devicelist on exit
-    deviceList.Stop();
+    if (!_exit) {
+        // Stop devicelist on exit
+        deviceList.Stop();
 
-    // Delete socket files created for audio mixer
-    let regex = /[.]sock$/;
-    fs.readdirSync('./')
-        .filter(f => regex.test(f))
-        .map(f => fs.unlinkSync(f));
+        // Delete socket files created for audio mixer
+        let regex = /[.]sock$/;
+        fs.readdirSync('./')
+            .filter(f => regex.test(f))
+            .map(f => fs.unlinkSync(f));
+
+        _exit = true;
+        process.exit();
+    }
+    
 }
 
 // // Delete socket files created by fluent-ffmpeg-multistream
