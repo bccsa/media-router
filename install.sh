@@ -33,6 +33,8 @@ After=network.target
 [Service]
 WorkingDirectory=$PWD
 ExecStart=$PWD/router.sh
+User=$USER
+Group=$USER
 Restart=always
 
 [Install]
@@ -44,3 +46,4 @@ sudo systemctl daemon-reload
 sudo systemctl enable media-router
 sudo systemctl restart media-router
 
+echo "@sh $PWD/clientUI.sh" | sudo tee --append /etc/xdg/lxsession/LXDE-pi/autostart
