@@ -26,19 +26,20 @@ rm -f v1.4.4.tar.gz
 git submodule update --init
 npm install
 
-sudo echo "[Unit]
+echo "[Unit]
 Description=Media Router
 After=network.target
 
 [Service]
-WorkingDirectory=${$PWD}
-ExecStart=${$PWD}/router.sh
+WorkingDirectory=$PWD
+ExecStart=$PWD/router.sh
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
-" > /lib/systemd/system/media-router.service
+" | sudo tee /lib/systemd/system/media-router.service
 
+chmod +x router.sh
 sudo systemctl daemon-reload
 sudo systemctl enable media-router
 sudo systemctl restart media-router
