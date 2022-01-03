@@ -18,6 +18,9 @@ class _uiControl {
         this._sources = [];                 // Add javascript source paths to this array
         this._styles = [];                  // Add css style paths to this array
         this._uuid = this._generateUuid();
+
+        // Initialize control
+        document.addEventListener('readystatechange', this._init);
     }
 
     // -------------------------------------
@@ -78,13 +81,14 @@ class _uiControl {
 
     // Implementing class should override this function
     // This function is called by the parent control when the child's (this control) html has been printed to the DOM.
-    DomLinkup() {
+    _domLinkup() {
         this._mainDiv = document.getElementById(`${this._uuid}_main`);
         this._mainDiv.addEventListener("click", e => {
             // Do something
         });
 
-        // Element containing child controls
+        // Element containing child controls. Controls that should not be able to host child controls
+        // should not include this line.
         this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
     }
 
@@ -133,6 +137,14 @@ class _uiControl {
         return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
             (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
         );
+    }
+
+    // Control initialization
+    _init() {
+        if (document.readyState === 'complete') {
+            document.removeEventListener('readystatechange',  this._domLinkup);
+            this._domLinkup();
+        }
     }
 }
 
