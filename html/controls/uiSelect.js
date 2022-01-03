@@ -22,14 +22,17 @@ class uiSelect extends _uiControl {
     // -------------------------------------
 
     get html(){
+        let options = '';
+        this.values.forEach((value) => {
+            options += `<option value="${value}"> ${value} </option>`
+        });
+
         return `
         <!-- ${this.name} --> 
             <div id="${this._uuid}_main" class="col-lg-3">
                 <label> ${this.displayName}  </label>
                 <Select  id="${this._uuid}_select" class="form-control">
-                    ${this.values.forEach((value) => {
-                        `<option value="${this.value}"> ${this.value} </option>`
-                    })}
+                    ${options}
                 </Select>
                 
             </div>

@@ -6,38 +6,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="css/manager-ui.css"></link>
     <link rel="stylesheet" href="css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous">
-    <script src="js/bootstrap.min.js" integrity="sha384-ChfqqxuZUCnJSK3+MXmPNIyE6ZbWh2IMqE241rYiqJxyMiZ6OW/JmZQ5stwEULTy" crossorigin="anonymous"></script>
-    <link rel="stylesheet" href="jquery-ui-1.13.0.custom/jquery-ui.min.css"></link>
-    <link rel="stylesheet" href="jquery-ui-1.13.0.custom/jquery-ui.structure.min.css"></link>
-    <link rel="stylesheet" href="jquery-ui-1.13.0.custom/jquery-ui.theme.css"></link>
+   
     <script src="js/jquery.js"></script>
-    <script src="/socket.io/socket.io.js"></script>
-    <script src="jquery-ui-1.13.0.custom/jquery-ui.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script> 
     <script src="js/manager-ui.js"></script>
     <title>Document</title>
 </head>
 <body>
     <!-- Login page -->
     <div id="login" class="loginPage">
-        <table>
-            <tr>
-                <th>
-                    <p id="username" class="loginLabel">Username</p>
-                </th>
-                <th>
-                    <input type="text" id="txtUsername">
-                </th>
-            </tr>
-            <tr>
-                <th>
-                    <p id="password" class="loginLabel">Password</p>
-                </th>
-                <th>
-                    <input type="text" id="txtPassword">
-                </th>
-            </tr>
-        </table>
-        <button id="btnLogin" class="btnLogin" onclick="btnLogin()">Login</button>
+        <form class="col-lg-3">
+            <div class="form-group"> 
+                    <label for="password"   id="username" class="loginLabel">Username</label>
+                    <input type="text" class="form-control" id="txtUsername"> 
+            </div>
+
+            <div class="form-group"> 
+                    <label for="username" id="password">Password</label>
+                    <input type="password" id="txtPassword" class="form-control"> 
+            </div>
+
+            <div class="form-group">
+                <button id="btnLogin" class="btn btn-success" onclick="btnLogin()">Login</button>
+            </div>
+        </form>
+
+        
     </div>
 
     <!-- Manager page -->
