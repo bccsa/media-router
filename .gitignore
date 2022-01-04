@@ -109,9 +109,3 @@ sdp/
 
 # Config files
 config.json
-
-# Tokens file for server authentication
-routerLogin.json
-
-# Usename and pass for manager web-ui autentication
-managerLogin.json
