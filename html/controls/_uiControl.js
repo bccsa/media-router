@@ -23,7 +23,23 @@ class _uiControl {
 
         // Initialize control
         // document.addEventListener('readystatechange', this._init(this));
-        document.addEventListener('readystatechange', function() {_init(this)});
+        this._abortController = new AbortController();
+        document.addEventListener('DOMContentLoaded', this._init(this), { signal: _abortController.signal } );
+        // window.addEventListener('load', this._init(this), { signal: this._abortController.signal } );
+        // document.addEventListener('readystatechange', this._init(this), { signal: this._abortController.signal });
+    }
+
+    // Control initialization
+    _init(control) {
+        // if (document.readyState === 'complete') {
+            //document.removeEventListener('readystatechange',  control._init(control));
+            this._abortController.abort();
+            control.DomLinkup();
+        // }
+        // else {
+            //control._abortController.abort();
+        //     document.addEventListener('readystatechange', control._init(control), { signal: control._abortController.signal });
+        // }
     }
 
     // -------------------------------------
@@ -167,13 +183,7 @@ class _uiControl {
         );
     }
 
-    // Control initialization
-    _init(control) {
-        if (document.readyState === 'complete') {
-            document.removeEventListener('readystatechange',  control._init(control));
-            control.DomLinkup();
-        }
-    }
+    
 }
 
 // Export class
