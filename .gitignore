@@ -107,5 +107,8 @@ dist
 sdp/
 *.sdp
 
-# Config files
-config.json
+# Config files in root folder
+/*.json
+
+# Include package.json
+!/package.json
