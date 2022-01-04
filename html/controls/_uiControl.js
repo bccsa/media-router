@@ -14,13 +14,16 @@ class _uiControl {
         this.displayName = "new control";   // Display name
         this.helpText = "new control help text";
         this.type = this.constructor.name;  // The name of the class. This property should not be set in code.
+        this.parent = undefined;            // Reference to the parent control (if any)
+        this._head = undefined;            // Header DOM object reference (only used by top level parent control)
         this.controls = [];                 // Array of child controls
-        this._sources = [];                 // Add javascript source paths to this array
-        this._styles = [];                  // Add css style paths to this array
+        // this._sources = [];                 // Add javascript source paths to this array
+        this.styles = [];                  // Add css style paths to this array
         this._uuid = this._generateUuid();
 
         // Initialize control
-        document.addEventListener('readystatechange', this._init);
+        // document.addEventListener('readystatechange', this._init(this));
+        document.addEventListener('readystatechange', function() {_init(this)});
     }
 
     // -------------------------------------
@@ -41,39 +44,39 @@ class _uiControl {
         `;
     }
 
-    // Get a list of javascript source paths for this control including any child controls
-    get sources() {
-        let s = [...this._sources];
-        this.controls.forEach(control => {
-            s.concat(control.sources);
-        });
-        return [...new Set(s)];
-    }
+    // // Get a list of javascript source paths for this control including any child controls
+    // get sources() {
+    //     let s = [...this._sources];
+    //     this.controls.forEach(control => {
+    //         s.concat(control.sources);
+    //     });
+    //     return [...new Set(s)];
+    // }
 
-    get sourcesHtml() {
-        let h = '';
-        this.sources.forEach(s => {
-            h += `<script src="${s}"></script>`
-        }); 
-        return h;
-    }
+    // get sourcesHtml() {
+    //     let h = '';
+    //     this.sources.forEach(s => {
+    //         h += `<script src="${s}"></script>`
+    //     }); 
+    //     return h;
+    // }
 
     // Get a list of css file source paths for this control including any child controls
-    get styles() {
-        let s = [...this._styles];
-        this.controls.forEach(control => {
-            s.concat(control.styles);
-        });
-        return [...new Set(s)];
-    }
+    // get styles() {
+    //     let s = [...this._styles];
+    //     this.controls.forEach(control => {
+    //         s.concat(control.styles);
+    //     });
+    //     return [...new Set(s)];
+    // }
 
-    get stylesHtml() {
-        let h = '';
-        this.styles.forEach(s => {
-            h += `<link rel="stylesheet" href="${s}">`
-        });
-        return h;
-    }
+    // get stylesHtml() {
+    //     let h = '';
+    //     this.styles.forEach(s => {
+    //         h += `<link rel="stylesheet" href="${s}">`
+    //     });
+    //     return h;
+    // }
 
     // -------------------------------------
     // functions
@@ -81,7 +84,7 @@ class _uiControl {
 
     // Implementing class should override this function
     // This function is called by the parent control when the child's (this control) html has been printed to the DOM.
-    _domLinkup() {
+    DomLinkup() {
         this._mainDiv = document.getElementById(`${this._uuid}_main`);
         this._mainDiv.addEventListener("click", e => {
             // Do something
@@ -94,7 +97,13 @@ class _uiControl {
 
     // Add a child control to this control
     AddControl(control) {
+        // Add child control to child controls list
         this.controls.push(control);
+
+        // Set the parent of the child control to this control
+        control.parent = this;
+
+        // Print the HTML of the child control inside this control, and linkup child to the DOM.
         if (this._controlsDiv != undefined) {
             this._controlsDiv.innerHTML += control.html;
             control.DomLinkup();
@@ -120,6 +129,25 @@ class _uiControl {
         });
         return c;
     }
+    
+
+    // Apply a new stylesheet (css) file
+    ApplyStyle(ref) {
+        if (!this._styles.includes(ref))
+        {
+            this._styles.push(ref);
+            if (this.parent != undefined) {
+                this.parent.ApplyStyle(ref);
+            }
+            else {
+                if (this._head == undefined) {
+                    this._head = document.getElementsByTagName(`head`)[0];
+                }
+
+                this._head.innerHTML += `<link rel="stylesheet" href="${ref}">`;
+            }
+        }
+    }
 
     _getControlsHtml() {
         let h = ``;
@@ -140,10 +168,10 @@ class _uiControl {
     }
 
     // Control initialization
-    _init() {
+    _init(control) {
         if (document.readyState === 'complete') {
-            document.removeEventListener('readystatechange',  this._domLinkup);
-            this._domLinkup();
+            document.removeEventListener('readystatechange',  control._init(control));
+            control.DomLinkup();
         }
     }
 }

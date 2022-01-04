@@ -13,8 +13,8 @@ class uiTextBox extends _uiControl {
     constructor() {
         super();
         this.value = 'TextBox Value';
-        this._sources.push('controls/js/ThisDoesNotExist.js');
-        this._styles.push('controls/css/bootstrap.min.css')
+        // this._sources.push('');
+        this.styles.push('controls/css/bootstrap.min.css')
     }
 
     // -------------------------------------
@@ -37,7 +37,7 @@ class uiTextBox extends _uiControl {
         `;
     }
 
-    _domLinkup() {
+    DomLinkup() {
         this._mainDiv = document.getElementById(`${this._uuid}_main`);
         // this._mainDiv.addEventListener("click", e => {
         //     // Do something

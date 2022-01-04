@@ -1,43 +1,17 @@
 const controlsDiv = document.getElementById(`controls`);
-const domBody = document.getElementById(`body`);
-const domHead = document.getElementById(`head`);
+// const domBody = document.getElementById(`body`);
+const domHead = document.getElementsByTagName(`head`)[0];
 
+// Top level parent control
 const textBox1 = new uiTextBox();
-const textBox2 = new uiTextBox(); 
-const textBox3 = new uiTextBox();
-const textBox4 = new uiTextBox();
+controlsDiv.innerHTML += textBox1.html;
+// textBox1.DomLinkup();
+textBox1.styles.forEach(ref => {
+    domHead.innerHTML += `<link rel="stylesheet" href="${ref}"></link>`;
+})
 
-const select1 = new uiSelect();
+// Child controls
+// const textBox2 = new uiTextBox();
+// textBox2.value = "Hallo Etienne";
+// textBox1.AddControl(textBox2);
 
-controlsDiv.innerHTML += select1.html;
-// setTimeout(() => {
-    // select1.DomLinkup();
-// }, 100)
-
-// document.onreadystatechange(_domLinkup);
-
-
-
-
-
-
-
-// controlsDiv.innerHTML += textBox1.html;
-// // textBox1.DomLinkup();
-
-// controlsDiv.innerHTML += textBox3.html;
-// //textBox3.DomLinkup();
-
-// controlsDiv.innerHTML += textBox3.html;
-// //textBox3.DomLinkup();
-
-// controlsDiv.innerHTML += textBox4.html; 
-
-
-// // const textBox2 = new uiTextBox();
-
-
-// //textBox1.AddControl(textBox2);
-
-// // Build event chaining to notify parent objects of new CSS and/or Javascript references.
-// domHead.innerHTML += textBox1.stylesHtml; 
