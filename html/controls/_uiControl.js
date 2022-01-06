@@ -15,31 +15,12 @@ class _uiControl {
         this.helpText = "new control help text";
         this.type = this.constructor.name;  // The name of the class. This property should not be set in code.
         this.parent = undefined;            // Reference to the parent control (if any)
-        this._head = undefined;            // Header DOM object reference (only used by top level parent control)
+        this._head = undefined;             // Header DOM object reference (only used by top level parent control)
         this.controls = [];                 // Array of child controls
-        // this._sources = [];                 // Add javascript source paths to this array
-        this.styles = [];                  // Add css style paths to this array
-        this._uuid = this._generateUuid();
-
-        // Initialize control
-        // document.addEventListener('readystatechange', this._init(this));
-        this._abortController = new AbortController();
-        document.addEventListener('DOMContentLoaded', this._init(this), { signal: _abortController.signal } );
-        // window.addEventListener('load', this._init(this), { signal: this._abortController.signal } );
-        // document.addEventListener('readystatechange', this._init(this), { signal: this._abortController.signal });
-    }
-
-    // Control initialization
-    _init(control) {
-        // if (document.readyState === 'complete') {
-            //document.removeEventListener('readystatechange',  control._init(control));
-            this._abortController.abort();
-            control.DomLinkup();
-        // }
-        // else {
-            //control._abortController.abort();
-        //     document.addEventListener('readystatechange', control._init(control), { signal: control._abortController.signal });
-        // }
+        this.styles = [];                   // Add css style paths to this array
+        this._appliedStyles = [];           // List of applied CSS style sheets
+        this._uuid = this._generateUuid();  // Unique ID for this control
+        this._controlsDiv = undefined;      // Add a DOM reference to the _controlsDiv property if the control must support child controls
     }
 
     // -------------------------------------
@@ -59,40 +40,6 @@ class _uiControl {
         </div>
         `;
     }
-
-    // // Get a list of javascript source paths for this control including any child controls
-    // get sources() {
-    //     let s = [...this._sources];
-    //     this.controls.forEach(control => {
-    //         s.concat(control.sources);
-    //     });
-    //     return [...new Set(s)];
-    // }
-
-    // get sourcesHtml() {
-    //     let h = '';
-    //     this.sources.forEach(s => {
-    //         h += `<script src="${s}"></script>`
-    //     }); 
-    //     return h;
-    // }
-
-    // Get a list of css file source paths for this control including any child controls
-    // get styles() {
-    //     let s = [...this._styles];
-    //     this.controls.forEach(control => {
-    //         s.concat(control.styles);
-    //     });
-    //     return [...new Set(s)];
-    // }
-
-    // get stylesHtml() {
-    //     let h = '';
-    //     this.styles.forEach(s => {
-    //         h += `<link rel="stylesheet" href="${s}">`
-    //     });
-    //     return h;
-    // }
 
     // -------------------------------------
     // functions
@@ -121,8 +68,18 @@ class _uiControl {
 
         // Print the HTML of the child control inside this control, and linkup child to the DOM.
         if (this._controlsDiv != undefined) {
+            const observer = new MutationObserver(function(mutationsList, observer){
+                control.styles.forEach(s => {
+                    control.parent.ApplyStyle(s);
+                })
+                
+                control.DomLinkup();
+                observer.disconnect();
+            });
+    
+            observer.observe(this._controlsDiv, { childList: true });
+            
             this._controlsDiv.innerHTML += control.html;
-            control.DomLinkup();
         }
     }
 
@@ -149,9 +106,9 @@ class _uiControl {
 
     // Apply a new stylesheet (css) file
     ApplyStyle(ref) {
-        if (!this._styles.includes(ref))
+        if (!this._appliedStyles.includes(ref))
         {
-            this._styles.push(ref);
+            this._appliedStyles.push(ref);
             if (this.parent != undefined) {
                 this.parent.ApplyStyle(ref);
             }
@@ -185,7 +142,3 @@ class _uiControl {
 
     
 }
-
-// Export class
-module.exports._uiControl = _uiControl;
-

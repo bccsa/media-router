@@ -12,19 +12,24 @@ function _init() {
     
 
     const textBox1 = new uiTextBox();
-
-    textBox1.displayName = "Hallo";
+    textBox1.displayName = "Name";
     controlsDiv.innerHTML += textBox1.html;
 
-    // textBox1.DomLinkup();
+    // const textBox3 = new uiTextBox();
+    // textBox3.displayName = "Class";
+    // controlsDiv.innerHTML += textBox3.html;
+
+    textBox1.DomLinkup();
     // textBox1.styles.forEach(ref => {
     //     domHead.innerHTML += `<link rel="stylesheet" href="${ref}"></link>`;
     // })
 
     // Child controls
-    // const textBox2 = new uiTextBox();
-    // textBox2.value = "Hallo Etienne";
-    // textBox1.AddControl(textBox2);
+    const textBox2 = new uiTextBox();
+    textBox2.value = "test value fuh";
+    textBox1.AddControl(textBox2);
+
+ 
 }
 
 // Top level parent control
