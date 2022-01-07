@@ -10,10 +10,17 @@ document.addEventListener("DOMContentLoaded", _init, {
 function _init() {
   _abortController.abort();
 
+<<<<<<< HEAD
   const textBox1 = new uiTextBox();
   textBox1.displayName = "Name";
   controlsDiv.innerHTML += textBox1.html;
   textBox1.value = " etienne fuh";
+=======
+    const textBox1 = new uiTextBox();
+    textBox1.name = "Param1";
+    textBox1.displayName = "Name";
+    controlsDiv.innerHTML += textBox1.html;
+>>>>>>> 72dda6308422342d17e13996329024856f36acfd
 
   textBox1.DomLinkup();
 
