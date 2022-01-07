@@ -16,7 +16,7 @@ class _uiControl {
         this.type = this.constructor.name;  // The name of the class. This property should not be set in code.
         this.parent = undefined;            // Reference to the parent control (if any)
         this._head = undefined;             // Header DOM object reference (only used by top level parent control)
-        this.controls = [];                 // Array of child controls
+        this.controls = {};                 // List of child controls
         this.styles = [];                   // Add css style paths to this array
         this._appliedStyles = [];           // List of applied CSS style sheets
         this._uuid = this._generateUuid();  // Unique ID for this control
@@ -34,9 +34,7 @@ class _uiControl {
             <h1>Example html code</h1>
             <span>${this.displayName}</span>
             <p>${this.helpText}</p>
-            <div id="${this._uuid}_controls">
-                ${this._getControlsHtml()}
-            </div>
+            <div id="${this._uuid}_controls"></div>
         </div>
         `;
     }
@@ -60,14 +58,14 @@ class _uiControl {
 
     // Add a child control to this control
     AddControl(control) {
-        // Add child control to child controls list
-        this.controls.push(control);
+        if (control != undefined && control.name != undefined && this._controlsDiv != undefined) {
+            // Add child control to controls list
+            this.controls[control.name] = control;
 
-        // Set the parent of the child control to this control
-        control.parent = this;
-
-        // Print the HTML of the child control inside this control, and linkup child to the DOM.
-        if (this._controlsDiv != undefined) {
+            // Set the parent of the child control to this control
+            control.parent = this;
+    
+            // Wait for HTML to be printed _controlsDiv element, and call DomLinkup
             const observer = new MutationObserver(function(mutationsList, observer){
                 control.styles.forEach(s => {
                     control.parent.ApplyStyle(s);
@@ -77,17 +75,28 @@ class _uiControl {
                 observer.disconnect();
             });
     
+            // Observe _controlsDiv for changes to contents
             observer.observe(this._controlsDiv, { childList: true });
-            
+
+            // Print HTML of child control to _controlsDiv
             this._controlsDiv.innerHTML += control.html;
+        }
+        else {
+            throw 'Unable to add child control. Child control is either invalid, or it does not have a _controlsDiv DOM element.';
         }
     }
 
     SetConfig(config) {
         Object.getOwnPropertyNames(config).forEach(k => {
-            // Only update "public" properties
+            // Update this control's "public" properties
             if (this[k] != undefined && k[0] != '_' && (typeof this[k] == 'number' || typeof this[k] == 'string' || typeof this[k] == 'boolean')) {
                 this[k] = config[k];
+            }
+            // Update child controls
+            else {
+                if (this.controls[k] != undefined) {
+                    this.controls[k].SetConfig(config[k]);
+                }
             }
         });
     }
@@ -103,7 +112,6 @@ class _uiControl {
         return c;
     }
     
-
     // Apply a new stylesheet (css) file
     ApplyStyle(ref) {
         if (!this._appliedStyles.includes(ref))
@@ -122,23 +130,10 @@ class _uiControl {
         }
     }
 
-    _getControlsHtml() {
-        let h = ``;
-        this.controls.forEach(control => {
-            if (control.html != undefined) {
-                h += control.html;
-            }
-        });
-
-        return h;
-    }
-
     _generateUuid() {
         // code from https://stackoverflow.com/questions/105034/how-to-create-a-guid-uuid
         return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
             (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
         );
     }
-
-    
 }

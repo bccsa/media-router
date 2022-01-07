@@ -12,6 +12,7 @@ function _init() {
     
 
     const textBox1 = new uiTextBox();
+    textBox1.name = "Param1";
     textBox1.displayName = "Name";
     controlsDiv.innerHTML += textBox1.html;
 

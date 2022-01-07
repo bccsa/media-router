@@ -28,9 +28,7 @@ class uiTextBox extends _uiControl {
                     <label>${this.displayName}</label>
                     <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
                 </div>
-                <div id="${this._uuid}_controls">
-                    ${this._getControlsHtml()}
-                </div> 
+                <div id="${this._uuid}_controls"></div> 
             </div> 
         `;
   }
