@@ -9,7 +9,6 @@ controlsDiv.innerHTML += textBox1.html;
 textBox1.DomLinkup();
 textBox1._init = true;
 
-let test = "";
 let data = {
     "name": "Param1",
     "displayName": "Name",
@@ -111,6 +110,4 @@ setTimeout(() => {
     }
 
     textBox1.SetData(changeData);
-}, 8000)
-
-
+}, 8000);
