@@ -1,3 +1,62 @@
+// Code from https://labs.k.io/creating-a-simple-custom-event-system-in-javascript/
+class DispatcherEvent {
+    constructor(eventName) {
+        this.eventName = eventName;
+        this.callbacks = [];
+    }
+
+    registerCallback(callback) {
+        this.callbacks.push(callback);
+    }
+
+    unregisterCallback(callback) {
+        const index = this.callbacks.indexOf(callback);
+        if (index > -1) {
+            this.callbacks.splice(index, 1);
+        }
+    }
+
+     fire(data) {
+        const callbacks = this.callbacks.slice(0);
+        callbacks.forEach((callback) => {
+            callback(data);
+        });
+    }
+}
+
+// code from https://labs.k.io/creating-a-simple-custom-event-system-in-javascript/
+class Dispatcher {
+    constructor() {
+        this.events = {};
+    }
+
+    dispatch(eventName, data) {
+        const event = this.events[eventName];
+        if (event) {
+            event.fire(data);
+        }
+    }
+
+    on(eventName, callback) {
+        let event = this.events[eventName];
+        if (!event) {
+            event = new DispatcherEvent(eventName);
+            this.events[eventName] = event;
+        }
+        event.registerCallback(callback);
+    }
+
+    off(eventName, callback) {
+        const event = this.events[eventName];
+        if (event && event.callbacks.indexOf(callback) > -1) {
+            event.unregisterCallback(callback);
+            if (event.callbacks.length === 0) {
+                delete this.events[eventName];
+            }
+        }
+    }
+}
+
 // =====================================
 // Base class for ui controls
 //
@@ -8,8 +67,9 @@
 // Class declaration
 // -------------------------------------
 
-class _uiControl {
+class _uiControl extends Dispatcher {
     constructor() {
+        super();
         this.name = "controlName";          // Special property indicating the name of the control. This cannot be changed in runtime, but should be set in the data received when creating new child controls.
         this.controlType = this.constructor.name;  // The name of the class. This property should not be set in code.
         this._parent = undefined;           // Reference to the parent control (if any)
@@ -22,7 +82,6 @@ class _uiControl {
         this._controlsDiv = undefined;      // Add a DOM reference to the _controlsDiv property if the control must support child controls
         this._init = false;                 // True when the control has been initilized (DOM linkup complete)
         this._domUpdateList = [];           // List of properties that needs to be updated;
-
     }
 
     // -------------------------------------
@@ -205,6 +264,38 @@ class _uiControl {
                 this._head.innerHTML += `<link rel="stylesheet" href="${ref}">`;
             }
         }
+    }
+
+    // notifies parent of a change to the given property or array of properties, and triggers the onChange event.
+    _notifyProperty(propertyNames) {
+        let data = {};
+        if (Array.isArray(propertyNames))
+        {
+            propertyNames.forEach(p => {
+                if (this[p] != undefined) {
+                    data[p] = this[p];
+                }
+            });
+        }
+        else {
+            if (this[propertyNames] != undefined) {
+                data[propertyNames] = this[propertyNames];
+            }
+        }
+
+        this._notify(data);
+    }
+
+    // notifies parent of data change, and triggers onChange event.
+    _notify(data) {
+        if (this._parent != undefined) {
+            let n = {
+                [this.name] : data
+            }
+            this._parent._notify(n);
+        }
+
+        this.dispatch('data', data);
     }
 
     // Generate a unique ID for this control

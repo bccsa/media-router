@@ -1,3 +1,4 @@
+<<<<<<< HEAD
  
 const controlsDiv = document.getElementById(`controls`);
 // const domBody = document.getElementById(`body`);
@@ -41,6 +42,8 @@ function _init() {
 
   button1.DomLinkup();
 =======
+=======
+>>>>>>> ec4a5ad31882b96bc0f63bb7ba08fd9504df64a9
 const controlsDiv = document.getElementById("controls");
 
 const textBox1 = new uiTextBox();
@@ -51,6 +54,14 @@ textBox1.value = "Top level value";
 controlsDiv.innerHTML += textBox1.html;
 textBox1.DomLinkup();
 textBox1._init = true;
+
+// textBox1.notify.on('data', data => {
+//     console.log(data);
+// });
+
+textBox1.on('data', data => {
+    console.log(JSON.stringify(data, null, 2));
+})
 
 let data = {
     "name": "Param1",
@@ -92,7 +103,11 @@ let data = {
                 "value": "Hi Oswald 2!"
             }
         }
+<<<<<<< HEAD
     } 
+=======
+    }
+>>>>>>> ec4a5ad31882b96bc0f63bb7ba08fd9504df64a9
 }
 
 textBox1.SetData(data);
@@ -147,7 +162,8 @@ setTimeout(() => {
         "ivanControl": {
             "oswald3Control": {
                 "displayName": "This is Oswald's 3 control - changed",
-                "value": "Hi Oswald 3 - changed!"
+                "value": "Hi Oswald 3 - changed!",
+                "margin" : "20px"
             }
         }
     }
