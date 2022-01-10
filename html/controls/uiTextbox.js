@@ -12,8 +12,10 @@
 class uiTextBox extends _uiControl {
   constructor() {
     super();
+    this.displayName = "new control";   // Display name
+    this.helpText = "new control help text";
     this.value = "TextBox Value";
-    this.styles.push("controls/css/bootstrap.min.css");
+    this._styles.push("controls/css/bootstrap.min.css");
   }
 
   // -------------------------------------
@@ -23,6 +25,7 @@ class uiTextBox extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
+<<<<<<< HEAD
             <div id="${this._uuid}_main" class="col-lg-3">
 
                 <div> 
@@ -34,16 +37,37 @@ class uiTextBox extends _uiControl {
                 </div> 
                 
             </div> 
+=======
+        <div id="${this._uuid}_main" class="col-lg-3">
+            <div> 
+                <label id="${this._uuid}_label">${this.displayName}</label>
+                <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
+            </div>
+            <div id="${this._uuid}_controls"></div> 
+        </div> 
+>>>>>>> 377372434554ef03e83c70bba5cac38c5f43bdcb
         `;
   }
 
   DomLinkup() {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
-
-    // Element containing child controls
     this._input = document.getElementById(`${this._uuid}_input`);
+    this._label = document.getElementById(`${this._uuid}_label`);
 
-    // This should be defined if the super AddControl function should be able to add child controls to this control
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
   }
+
+  DomUpdate(propertyName) {
+    switch (propertyName) {
+      case "value": {
+        this._input.value = this.value;
+        break;
+      }
+      case "displayName": {
+        this._label.innerText = this.displayName;
+        break;
+      }
+    }
+  }
 }
+
