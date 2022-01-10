@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+ 
 const controlsDiv = document.getElementById(`controls`);
 // const domBody = document.getElementById(`body`);
 const domHead = document.getElementsByTagName(`head`)[0];
@@ -92,8 +92,7 @@ let data = {
                 "value": "Hi Oswald 2!"
             }
         }
-    }
->>>>>>> 377372434554ef03e83c70bba5cac38c5f43bdcb
+    } 
 }
 
 textBox1.SetData(data);
