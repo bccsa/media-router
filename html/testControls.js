@@ -9,6 +9,14 @@ controlsDiv.innerHTML += textBox1.html;
 textBox1.DomLinkup();
 textBox1._init = true;
 
+// textBox1.notify.on('data', data => {
+//     console.log(data);
+// });
+
+textBox1.on('data', data => {
+    console.log(JSON.stringify(data, null, 2));
+})
+
 let data = {
     "name": "Param1",
     "displayName": "Name",
@@ -104,7 +112,8 @@ setTimeout(() => {
         "ivanControl": {
             "oswald3Control": {
                 "displayName": "This is Oswald's 3 control - changed",
-                "value": "Hi Oswald 3 - changed!"
+                "value": "Hi Oswald 3 - changed!",
+                "margin" : "20px"
             }
         }
     }
