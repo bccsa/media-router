@@ -27,7 +27,7 @@ class uiTextBox extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-<<<<<<< HEAD
+
  
             <div id="${this._uuid}_main" class="col-lg-3">
 
@@ -49,7 +49,7 @@ class uiTextBox extends _uiControl {
             </div>
             <div id="${this._uuid}_controls"></div> 
         </div>  
-=======
+
         <div id="${this._uuid}_main" class="col-lg-12" style="margin: ${this.margin}">
             <div class="d-flex"> 
                 <label id="${this._uuid}_label" style="width: ${this.labelWidth}">${this.displayName}</label>
@@ -57,7 +57,7 @@ class uiTextBox extends _uiControl {
             </div>
             <div id="${this._uuid}_controls"></div> <!-- Remove -->
         </div> 
->>>>>>> ec4a5ad31882b96bc0f63bb7ba08fd9504df64a9
+
         `;
   }
 

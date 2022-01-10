@@ -1,5 +1,3 @@
-<<<<<<< HEAD
- 
 const controlsDiv = document.getElementById(`controls`);
 // const domBody = document.getElementById(`body`);
 const domHead = document.getElementsByTagName(`head`)[0];
@@ -41,132 +39,120 @@ function _init() {
   button1.value = "AB Testing";
 
   button1.DomLinkup();
-=======
-=======
->>>>>>> ec4a5ad31882b96bc0f63bb7ba08fd9504df64a9
-const controlsDiv = document.getElementById("controls");
 
-const textBox1 = new uiTextBox();
-textBox1.name = "Param1";
-textBox1.displayName = "Top level";
-textBox1.value = "Top level value";
+  const controlsDiv = document.getElementById("controls");
 
-controlsDiv.innerHTML += textBox1.html;
-textBox1.DomLinkup();
-textBox1._init = true;
+  controlsDiv.innerHTML += textBox1.html;
+  textBox1.DomLinkup();
+  textBox1._init = true;
 
-// textBox1.notify.on('data', data => {
-//     console.log(data);
-// });
+  // textBox1.notify.on('data', data => {
+  //     console.log(data);
+  // });
 
-textBox1.on('data', data => {
+  textBox1.on("data", (data) => {
     console.log(JSON.stringify(data, null, 2));
-})
+  });
 
-let data = {
-    "name": "Param1",
-    "displayName": "Name",
-    "helpText": "new control help text",
-    "controlType": "uiTextBox",
-    "value": "TextBox Value",
-    "etienneControl": {
-        "name": "etienneControl",
-        "displayName": "This is Etienne's control",
-        "helpText": "new control help text",
-        "controlType": "uiTextBox",
-        "value": "Hi Etienne!"
+  let data = {
+    name: "Param1",
+    displayName: "Name",
+    helpText: "new control help text",
+    controlType: "uiTextBox",
+    value: "TextBox Value",
+    etienneControl: {
+      name: "etienneControl",
+      displayName: "This is Etienne's control",
+      helpText: "new control help text",
+      controlType: "uiTextBox",
+      value: "Hi Etienne!",
     },
-    "ivanControl": {
-        "name": "ivanControl",
-        "displayName": "This is Ivan's control",
-        "helpText": "new control help text",
-        "controlType": "uiTextBox",
-        "value": "Hi Ivan!",
-        "oswaldControl": {
-            "name": "oswaldControl",
-            "displayName": "This is Oswald's control",
-            "helpText": "new control help text",
-            "controlType": "uiTextBox",
-            "value": "Hi Oswald!",
-            "oswald1Control": {
-                "name": "oswald1Control",
-                "displayName": "This is Oswald's 1 control",
-                "helpText": "new control help text",
-                "controlType": "uiTextBox",
-                "value": "Hi Oswald 1!"
-            },
-            "oswald2Control": {
-                "name": "oswald2Control",
-                "displayName": "This is Oswald's 2 control",
-                "helpText": "new control help text",
-                "controlType": "uiTextBox",
-                "value": "Hi Oswald 2!"
-            }
-        }
-<<<<<<< HEAD
-    } 
-=======
-    }
->>>>>>> ec4a5ad31882b96bc0f63bb7ba08fd9504df64a9
+    ivanControl: {
+      name: "ivanControl",
+      displayName: "This is Ivan's control",
+      helpText: "new control help text",
+      controlType: "uiTextBox",
+      value: "Hi Ivan!",
+      oswaldControl: {
+        name: "oswaldControl",
+        displayName: "This is Oswald's control",
+        helpText: "new control help text",
+        controlType: "uiTextBox",
+        value: "Hi Oswald!",
+        oswald1Control: {
+          name: "oswald1Control",
+          displayName: "This is Oswald's 1 control",
+          helpText: "new control help text",
+          controlType: "uiTextBox",
+          value: "Hi Oswald 1!",
+        },
+        oswald2Control: {
+          name: "oswald2Control",
+          displayName: "This is Oswald's 2 control",
+          helpText: "new control help text",
+          controlType: "uiTextBox",
+          value: "Hi Oswald 2!",
+        },
+      },
+    },
+  };
 }
 
 textBox1.SetData(data);
 
 setTimeout(() => {
-    // console.log(JSON.stringify(textBox1.GetData(), null, 2));
-    // console.log(textBox1.GetData());
+  // console.log(JSON.stringify(textBox1.GetData(), null, 2));
+  // console.log(textBox1.GetData());
 
-    let copy = textBox1.GetData();
-    copy.name = "newParam";
-    copy.value = "Copy of the first Textbox";
+  let copy = textBox1.GetData();
+  copy.name = "newParam";
+  copy.value = "Copy of the first Textbox";
 
-    // textBox1.SetData({
-    //     "Param1": copy
-    // })
+  // textBox1.SetData({
+  //     "Param1": copy
+  // })
 }, 100);
 
-
 setTimeout(() => {
-    let remData = {
-        "ivanControl": {
-            "oswaldControl":""
-        }
-    }
+  let remData = {
+    ivanControl: {
+      oswaldControl: "",
+    },
+  };
 
-    let addData = {
-        "ivanControl": {
-            "oswald3Control": {
-                "name": "oswald3Control",
-                "displayName": "This is Oswald's 3 control",
-                "helpText": "new control help text",
-                "controlType": "uiTextBox",
-                "value": "Hi Oswald 3!"
-            }
-        }
-        
-    }
+  let addData = {
+    ivanControl: {
+      oswald3Control: {
+        name: "oswald3Control",
+        displayName: "This is Oswald's 3 control",
+        helpText: "new control help text",
+        controlType: "uiTextBox",
+        value: "Hi Oswald 3!",
+      },
+    },
+  };
 
-    // let remData = {
-    //     "ivanControl": ""
-    // }
+  // let remData = {
+  //     "ivanControl": ""
+  // }
 
-    textBox1.Remove(remData);
-    textBox1.SetData(addData);
+  textBox1.Remove(remData);
+  textBox1.SetData(addData);
 
-    // console.log(JSON.stringify(textBox1.GetData(), null, 2));
-    // console.log(textBox1.GetData());
+  // console.log(JSON.stringify(textBox1.GetData(), null, 2));
+  // console.log(textBox1.GetData());
 }, 4000);
 
 setTimeout(() => {
-    let changeData = {
-        "ivanControl": {
-            "oswald3Control": {
-                "displayName": "This is Oswald's 3 control - changed",
-                "value": "Hi Oswald 3 - changed!",
-                "margin" : "20px"
-            }
-        }
-    }
+  let changeData = {
+    ivanControl: {
+      oswald3Control: {
+        displayName: "This is Oswald's 3 control - changed",
+        value: "Hi Oswald 3 - changed!",
+        margin: "20px",
+      },
+    },
+  };
 
-    textBox1.SetData(changeData);
+  textBox1.SetData(changeData);
 }, 8000);
