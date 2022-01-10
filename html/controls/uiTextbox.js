@@ -24,11 +24,15 @@ class uiTextBox extends _uiControl {
     return `
         <!-- ${this.name} --> 
             <div id="${this._uuid}_main" class="col-lg-3">
+
                 <div> 
                     <label>${this.displayName}</label>
                     <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
                 </div>
-                <div id="${this._uuid}_controls"></div> 
+
+                <div id="${this._uuid}_controls">
+                </div> 
+                
             </div> 
         `;
   }

@@ -25,5 +25,5 @@ class uiButton extends _uiControl {
         <!-- ${this.name} --> 
         <button class="btn btn-default id="${this._uuid}_button" value="${this.value}" /> 
         `;
-  }
+    }
 }

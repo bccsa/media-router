@@ -10,17 +10,10 @@ document.addEventListener("DOMContentLoaded", _init, {
 function _init() {
   _abortController.abort();
 
-<<<<<<< HEAD
   const textBox1 = new uiTextBox();
+  textBox1.name = "Param1";
   textBox1.displayName = "Name";
   controlsDiv.innerHTML += textBox1.html;
-  textBox1.value = " etienne fuh";
-=======
-    const textBox1 = new uiTextBox();
-    textBox1.name = "Param1";
-    textBox1.displayName = "Name";
-    controlsDiv.innerHTML += textBox1.html;
->>>>>>> 72dda6308422342d17e13996329024856f36acfd
 
   textBox1.DomLinkup();
 
@@ -39,6 +32,13 @@ function _init() {
   textBox3.value = "AB Testing";
 
   textBox3.DomLinkup();
+
+  const button1 = new uiButton();
+  button1.displayName = "Class";
+  controlsDiv.innerHTML += button1.html;
+  button1.value = "AB Testing";
+
+  button1.DomLinkup();
 }
 
 // Top level parent control
