@@ -36,6 +36,11 @@ let data = {
     displayName: "Check",
     controlType: "uiCheckbox",
   },
+  testSwitch: {
+    name: "testSwitch",
+    displayName: "Switch",
+    controlType: "uiSwitchButton",
+  },
   ivanControl: {
     name: "ivanControl",
     displayName: "This is Ivan's control",

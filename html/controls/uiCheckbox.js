@@ -13,9 +13,10 @@ class uiCheckbox extends _uiControl {
   constructor() {
     super();
     this.displayName = "click here";
-    this.helpText = "How to use this button";
+    this.helpText = "How to use this checkBox";
     this.styleClass = "btn btn-danger";
     this._styles.push("controls/css/bootstrap.min.css");
+    this._styles.push("controls/js/bootstrap.min.js");
   }
 
   // -------------------------------------
@@ -26,7 +27,14 @@ class uiCheckbox extends _uiControl {
     return `
             <!-- ${this.name} --> 
                 <div>
-                    <input type="checkbox"  id="${this._uuid}_checkBox" name="${this.displayName}">
+                    <input type="checkbox"  
+                    id="${this._uuid}_checkBox" 
+                    name="${this.displayName}"
+                    data-toggle="tooltip"
+                    data-placement="rigth"
+                    title="${this.helpText}"
+                    >
+
                     <label for="horns">${this.displayName}</label>
                 </div> 
             `;
@@ -44,12 +52,14 @@ class uiCheckbox extends _uiControl {
       console.log("False");
     }
 
-    // this._checkbox.addEventListener("click", function () {
-    //   console.log("check this session");
-    // });
+    this._checkbox.addEventListener("change", function () {
+      console.log("check this session");
+    });
 
     // if (this._checkbox.checked == true) {
     //   console.log("element Check");
+    // } else {
+    //     console.log("default");
     // }
   }
 

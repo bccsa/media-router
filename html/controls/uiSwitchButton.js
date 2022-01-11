@@ -12,7 +12,7 @@
 class uiSwitchButton extends _uiControl {
   constructor() {
     super();
-
+    this.styles.push("controls/css/switch.css");
     this.styles.push("controls/css/bootstrap.min.css");
   }
 
@@ -22,11 +22,11 @@ class uiSwitchButton extends _uiControl {
 
   get html() {
     return `
-          <!-- ${this.name} -->
-        <label class="switch">
+      <!-- ${this.name} -->
+        <div class="switch">
             <input type="checkbox" id="${this._uuid}_switch>
             <span class="slider round"></span>
-        </label>  
+        </div>  
           `;
   }
 }
