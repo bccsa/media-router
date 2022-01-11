@@ -27,29 +27,6 @@ class uiTextBox extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-
- 
-            <div id="${this._uuid}_main" class="col-lg-3">
-
-                <div> 
-                    <label>${this.displayName}</label>
-                    <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
-                </div>
-
-                <div id="${this._uuid}_controls">
-                </div> 
-                
-            </div> 
-
-            
-        <div id="${this._uuid}_main" class="col-lg-3">
-            <div> 
-                <label id="${this._uuid}_label">${this.displayName}</label>
-                <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
-            </div>
-            <div id="${this._uuid}_controls"></div> 
-        </div>  
-
         <div id="${this._uuid}_main" class="col-lg-12" style="margin: ${this.margin}">
             <div class="d-flex"> 
                 <label id="${this._uuid}_label" style="width: ${this.labelWidth}">${this.displayName}</label>
@@ -57,7 +34,6 @@ class uiTextBox extends _uiControl {
             </div>
             <div id="${this._uuid}_controls"></div> <!-- Remove -->
         </div> 
-
         `;
   }
 

@@ -9,6 +9,10 @@ controlsDiv.innerHTML += textBox1.html;
 textBox1.DomLinkup();
 textBox1._init = true;
 
+textBox1.on('data', data => {
+  console.log(JSON.stringify(data, null, 2));
+});
+
 let data = {
     "name": "Param1",
     "displayName": "Name",
