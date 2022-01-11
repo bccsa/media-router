@@ -22,6 +22,10 @@ let data = {
         "controlType": "uiTextBox",
         "value": "Hi Etienne!"
     },
+    "testButton": {
+        "displayName": "test",
+        "controlType": "uiButton"
+    },
     "ivanControl": {
         "name": "ivanControl",
         "displayName": "This is Ivan's control",

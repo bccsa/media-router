@@ -12,8 +12,8 @@
 class uiButton extends _uiControl {
   constructor() {
     super();
-    this.value = "click here";
-    this.styles.push("controls/css/bootstrap.min.css");
+    this.displayName = "click here";
+    this._styles.push("controls/css/bootstrap.min.css");
   }
 
   // -------------------------------------
@@ -23,7 +23,7 @@ class uiButton extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-        <button class="btn btn-default id="${this._uuid}_button" value="${this.value}" /> 
+        <button class="btn btn-danger id="${this._uuid}_button">${this.displayName}</button> 
         `;
-    }
+  }
 }
