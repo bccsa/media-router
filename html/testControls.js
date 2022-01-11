@@ -27,6 +27,7 @@ let data = {
         "value": "Hi Etienne!"
     },
     "testButton": {
+        "name": "testButton",
         "displayName": "test",
         "controlType": "uiButton"
     },
@@ -73,6 +74,10 @@ setTimeout(() => {
     // textBox1.SetData({
     //     "Param1": copy
     // })
+
+    textBox1._controls["testButton"].on("click", btn => {
+        console.log(`${btn.name} clicked!`);
+    });
 }, 100);
 
 
@@ -93,15 +98,21 @@ setTimeout(() => {
                 "value": "Hi Oswald 3!"
             }
         }
-        
     }
 
+    let testButtonHelptext = {
+        "testButton": {
+            "helpText": "Test new help text",
+            "styleClass": "btn btn-default"
+        }
+    }
     // let remData = {
     //     "ivanControl": ""
     // }
 
     textBox1.Remove(remData);
     textBox1.SetData(addData);
+    textBox1.SetData(testButtonHelptext);
 
     // console.log(JSON.stringify(textBox1.GetData(), null, 2));
     // console.log(textBox1.GetData());
