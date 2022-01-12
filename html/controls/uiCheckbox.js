@@ -46,12 +46,6 @@ class uiCheckbox extends _uiControl {
 
     let o = this;
 
-    if (this._checkbox.checked == true) {
-      console.log("True");
-    } else {
-      console.log("False");
-    }
-
     this._checkbox.addEventListener("change", function () {
       console.log("check this session");
     });

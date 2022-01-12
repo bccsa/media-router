@@ -41,6 +41,16 @@ let data = {
     displayName: "Switch",
     controlType: "uiSwitchButton",
   },
+  eventLog: {
+    name: "testterminal",
+    displayName: "terminal",
+    controlType: "uiEventLog",
+  },
+  confirmButton: {
+    name: "modalButton",
+    displayName: "modal button",
+    controlType: "uiConfirmButton",
+  },
   ivanControl: {
     name: "ivanControl",
     displayName: "This is Ivan's control",

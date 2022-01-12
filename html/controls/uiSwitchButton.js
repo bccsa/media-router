@@ -12,8 +12,10 @@
 class uiSwitchButton extends _uiControl {
   constructor() {
     super();
-    this.styles.push("controls/css/switch.css");
-    this.styles.push("controls/css/bootstrap.min.css");
+    this.displayName = "switch here";
+    this.helpText = "How to use this button";
+    // this.styles.push("controls/css/switch.css");
+    // this.styles.push("controls/css/bootstrap.min.css");
   }
 
   // -------------------------------------
@@ -23,10 +25,27 @@ class uiSwitchButton extends _uiControl {
   get html() {
     return `
       <!-- ${this.name} -->
-        <div class="switch">
-            <input type="checkbox" id="${this._uuid}_switch>
-            <span class="slider round"></span>
-        </div>  
+      <label class="switch" 
+      data-toggle="tooltip"
+      data-placement="rigth"
+      title="${this.helpText}"
+      id="${this._uuid}_switch" >
+      <input type="checkbox">
+      <span class="slider round"></span>
+    </label>
           `;
+  }
+
+  DomLinkup() {
+    this._switch = document.getElementById(`${this._uuid}_switch`);
+    this._helpText = document.getElementById(`${this._uuid}_help`);
+
+    // let o = this;
+
+    console.log("switch", this._switch);
+
+    this._switch.addEventListener("change", function () {
+      console.log("switchOn");
+    });
   }
 }
