@@ -15,6 +15,7 @@ class uiCheckbox extends _uiControl {
     this.displayName = "click here";
     this.helpText = "How to use this checkBox";
     this.styleClass = "btn btn-danger";
+    this.value = false;
     this._styles.push("controls/css/bootstrap.min.css");
     // this._styles.push("controls/js/bootstrap.min.js");
   }
@@ -33,6 +34,7 @@ class uiCheckbox extends _uiControl {
                     data-toggle="tooltip"
                     data-placement="rigth"
                     title="${this.helpText}"
+                    checked=${this.value}
                     >
 
                     <label for="horns">${this.displayName}</label>
@@ -47,7 +49,9 @@ class uiCheckbox extends _uiControl {
     let o = this;
 
     this._checkbox.addEventListener("change", function () {
-      console.log("check this session");
+      o.value = o._checkbox.checked;
+      
+      o._notifyProperty("value");
     });
 
     // if (this._checkbox.checked == true) {

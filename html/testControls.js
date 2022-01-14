@@ -1,9 +1,9 @@
 const controlsDiv = document.getElementById("controls");
 
-const textBox1 = new uiTextBox();
+const textBox1 = new uiExpander();
 textBox1.name = "Param1";
 textBox1.displayName = "Top level";
-textBox1.value = "Top level value";
+// textBox1.value = "Top level value";
 
 controlsDiv.innerHTML += textBox1.html;
 textBox1.DomLinkup();
@@ -15,10 +15,9 @@ textBox1.on("data", (data) => {
 
 let data = {
   name: "Param1",
-  displayName: "Name",
+  displayName: "Text expander",
   helpText: "new control help text",
-  controlType: "uiTextBox",
-  value: "TextBox Value",
+  controlType: "uiExpander",
   etienneControl: {
     name: "etienneControl",
     displayName: "This is Etienne's control",
