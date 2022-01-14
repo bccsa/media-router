@@ -16,7 +16,7 @@ class uiCheckbox extends _uiControl {
     this.helpText = "How to use this checkBox";
     this.styleClass = "btn btn-danger";
     this._styles.push("controls/css/bootstrap.min.css");
-    this._styles.push("controls/js/bootstrap.min.js");
+    // this._styles.push("controls/js/bootstrap.min.js");
   }
 
   // -------------------------------------

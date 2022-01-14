@@ -16,8 +16,7 @@ class uiConfirmButton extends _uiControl {
     this.displayName = "The modal";
     this.helpText = "Modal for confirmation";
     this.styleClass = "btn btn-danger";
-    this._styles.push("controls/css/bootstrap.min.css");
-    this._styles.push("controls/js/bootstrap.min.js");
+    this._styles.push("controls/css/bootstrap.min.css"); 
   }
 
   // -------------------------------------

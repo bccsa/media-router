@@ -9,25 +9,41 @@
 // Class declaration
 // -------------------------------------
 
-class uiSwitchButton extends _uiControl {
-    constructor() {
-      super();
-  
-      this.styles.push("controls/css/bootstrap.min.css");
-    }
-  
-    // -------------------------------------
-    // Getters & setters
-    // -------------------------------------
-  
-    get html() {
-      return `
-            <!-- ${this.name} -->
-          <label class="switch">
-              <input type="checkbox" id="${this._uuid}_switch>
-              <span class="slider round"></span>
-          </label>  
-            `;
-    }
+class uiStatus extends _uiControl {
+  constructor() {
+    super();
+    this.helpText = "get you status";
+    this.styleClass = "btn ";
+    // this.styles.push("controls/css/bootstrap.min.css");
+    this.displayName = "Status Control";
   }
-  
+
+  // -------------------------------------
+  // Getters & setters
+  // -------------------------------------
+
+  get html() {
+    return `
+            <!-- ${this.name} -->
+            <div>
+            <button class="${this.styleClass}" 
+              id="${this._uuid}_status" 
+              data-toggle="tooltip" 
+              data-placement="top" 
+              title="${this.helpText}" >${this.displayName}</button>
+            <span id="${this._uuid}_helpText" class="tooltiptext">${this.helpText}</span>
+          </div>
+            `;
+  }
+
+  DomLinkup() {
+    this._status = document.getElementById(`${this._uuid}_status`);
+    this._helpText = document.getElementById(`${this._uuid}_helpText`);
+
+    let o = this;
+    this._status.addEventListener("click", function () {
+      // o.dispatch("click", o);
+      console.log("status is ok");
+    });
+  }
+}

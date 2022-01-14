@@ -51,6 +51,11 @@ let data = {
     displayName: "modal button",
     controlType: "uiConfirmButton",
   },
+  statusControl: {
+    name: "statusControl",
+    displayName: "status control",
+    controlType: "uiStatus",
+  },
   ivanControl: {
     name: "ivanControl",
     displayName: "This is Ivan's control",
