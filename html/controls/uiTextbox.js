@@ -32,7 +32,6 @@ class uiTextBox extends _uiControl {
                 <label id="${this._uuid}_label" style="width: ${this.labelWidth}">${this.displayName}</label>
                 <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
             </div>
-            <div id="${this._uuid}_controls"></div> <!-- Remove -->
         </div> 
         `;
   }
@@ -41,8 +40,6 @@ class uiTextBox extends _uiControl {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._input = document.getElementById(`${this._uuid}_input`);
     this._label = document.getElementById(`${this._uuid}_label`);
-
-    this._controlsDiv = document.getElementById(`${this._uuid}_controls`); // Remove
 
     let o = this;
     this._input.addEventListener('change', function(){

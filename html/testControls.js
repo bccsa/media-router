@@ -23,18 +23,7 @@ container.SetData({
         displayName: "Hi Etienne1!"
       }
     }
-  },
-  expander2: {
-    name:"expander2",
-    controlType:"uiExpander",
-    header: {
-      testButton2: {
-        controlType: "uiButton",
-        name: "testButton2",
-        displayName: "Hi Etienne2!"
-      }
-    }
-  }  
+  }
 });
 
 

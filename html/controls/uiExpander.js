@@ -15,7 +15,24 @@ class uiExpander extends _uiControl {
     this.displayName = "new control"; // Display name
     this.helpText = "new control help text";
     this.margin = "10px";
-    this.padding = "10px";   
+    this.padding = "10px";
+    this._styles.push("controls/css/bootstrap.min.css");
+
+    // Add header controls container to the topBar element
+    this.SetData({
+      header: {
+        controlType: "uiSimpleContainer",
+        name: "header",
+        parentElement: "_topBar"
+      },
+      deleteBtn: {
+        controlType: "uiButton",
+        name: "deleteBtn",
+        displayName: "Delete",
+        parentElement: "_topBar",
+        hidden: true
+      }
+    });
   }
 
   // -------------------------------------
@@ -38,11 +55,6 @@ class uiExpander extends _uiControl {
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
-    
-    // Add header controls container to the topBar element
-    let h = new uiSimpleContainer();
-    h.name = "header";
-    this.AddControl(h, "_topBar");
 
     // Add event listeners
     let o = this;
@@ -52,6 +64,12 @@ class uiExpander extends _uiControl {
       } else {
         o._controlsDiv.style.display = "none";
       }
+    });
+
+    // Listen for delete button event
+    this._controls["deleteBtn"].on("click", () => {
+      // Delete this control
+      this.DomRemove();
     });
   }
 

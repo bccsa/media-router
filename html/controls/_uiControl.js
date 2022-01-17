@@ -75,13 +75,15 @@ class _uiControl extends Dispatcher {
         this._parent = undefined;           // Reference to the parent control (if any)
         this._head = undefined;             // Header DOM object reference (only used by top level parent control)
         this._controls = {};                // List of child controls
-        this._controlQueue = [];            // Queue child controls to be added to this control while this control is not yet initialized
+        this._initQueue = [];               // Queue child controls to be initialized while this control is not yet initialized
         this._styles = [];                  // Add css style paths to this array
         this._appliedStyles = [];           // List of applied CSS style sheets
         this._uuid = this._generateUuid();  // Unique ID for this control
         this._controlsDiv = undefined;      // Add a DOM reference to the _controlsDiv property if the control must support child controls
         this._init = false;                 // True when the control has been initilized (DOM linkup complete)
-        this._domUpdateList = [];           // List of properties that needs to be updated;
+        this._domUpdateList = [];           // List of properties that needs to be updated
+        this.parentElement = undefined;     // Used to specify in which HTML element in the parent the child should be added
+        this.hidden = false;                // Set to true if the control's data should be excluded from GetData() and from _notify();
     }
 
     // -------------------------------------
@@ -128,47 +130,6 @@ class _uiControl extends Dispatcher {
     // Core functions
     // -------------------------------------
 
-    // Add a child control to passed element name (String)
-    AddControl(control,element) {
-        let e = this[element];
-        if (control != undefined && control.name != undefined && e != undefined) {
-            // Add child control to controls list
-            this._controls[control.name] = control;
-
-            // Set the parent of the child control to this control
-            control._parent = this;
-
-            // Wait for HTML to be printed _controlsDiv element, and call DomLinkup
-            const observer = new MutationObserver(function(mutationsList, observer){
-                control._styles.forEach(s => {
-                    control._parent.ApplyStyle(s);
-                })
-                
-                control.DomLinkup();
-                observer.disconnect();
-                control._init = true;
-
-                console.log(control.name);
-
-                // Add queued child controls
-                while (control._controlQueue.length > 0) {
-                    let c = control._controlQueue.shift();
-                    control.AddControl(c.control,c.element);
-                }
-            });
-    
-
-            // Observe controls element for changes to contents
-            observer.observe(e, { childList: true });
-
-            // Print HTML of child control to the controls element
-            e.innerHTML += control.html;
-        }
-        else {
-            throw new Error('Unable to add child control. Child control is either invalid, or this control does not have a _controlsDiv DOM element.');
-        }
-    }
-
     // Set data in JSON
     SetData(data) {
         Object.keys(data).forEach(k => {
@@ -193,13 +154,24 @@ class _uiControl extends Dispatcher {
                 {
                     let c = this._getDynamicClass(data[k].controlType);
                     if (c != undefined) { 
+                        // Create new control
                         let newControl = new c;
                         newControl.SetData(data[k]);
+                        newControl._parent = this;
+
+                        // Add new control to controls list
+                        this._controls[newControl.name] = newControl;
+
+                        // Determine destination element
+                        let e = "_controlsDiv";     // default div
+                        if (data[k].parentElement != undefined) { e = data[k].parentElement }
+
+                        // Initialize child controls, or add to initialization queue if this control is not initialized yet
                         if (!this._init) {
-                            this._controlQueue.push({control: newControl, element: "_controlsDiv"});
+                            this._initQueue.push({control: newControl, element: e});
                         }
                         else {
-                            this.AddControl(newControl,"_controlsDiv");
+                            this._initControl(newControl,e);
                         }
                     }
                 }
@@ -210,6 +182,42 @@ class _uiControl extends Dispatcher {
         this._domUpdateList.forEach(k => {
             this.DomUpdate(k);
         })
+    }
+
+    // Initialize a child control and print it in the passed element name (String)
+    _initControl(control,element) {
+        let e = this[element];
+        if (control != undefined && control.name != undefined && e != undefined) {
+            // Wait for HTML to be printed _controlsDiv element, and call DomLinkup
+            const observer = new MutationObserver(function(mutationsList, observer){
+                control._styles.forEach(s => {
+                    control._parent.ApplyStyle(s);
+                })
+                
+                control.DomLinkup();
+                observer.disconnect();
+                control._init = true;
+
+                // ################## test logic #######################
+                console.log(`Control ${control.name} added to the DOM`);
+
+                // Add queued child controls
+                while (control._initQueue.length > 0) {
+                    let c = control._initQueue.shift();
+                    control._initControl(c.control,c.element);
+                }
+            });
+    
+
+            // Observe controls element for changes to contents
+            observer.observe(e, { childList: true });
+
+            // Print HTML of child control to the controls element
+            e.innerHTML += control.html;
+        }
+        else {
+            throw new Error('Unable to add child control. Child control is either invalid, or this control does not have a _controlsDiv DOM element.');
+        }
     }
 
     // Get data in JSON
@@ -226,7 +234,7 @@ class _uiControl extends Dispatcher {
 
         // Get child controls properties
         Object.keys(this._controls).forEach(k => {
-            if (this._controls[k].GetData() != undefined) {
+            if (this._controls[k].GetData() != undefined && !this._controls[k].hidden) {
                 data[k] = this._controls[k].GetData();
             }
         });
@@ -295,7 +303,10 @@ class _uiControl extends Dispatcher {
             let n = {
                 [this.name] : data
             }
-            this._parent._notify(n);
+
+            if (!this.hidden) {
+                this._parent._notify(n);
+            }
         }
 
         this.dispatch('data', data);
