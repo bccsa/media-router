@@ -1,24 +1,59 @@
 const controlsDiv = document.getElementById("controls");
 
-const textBox1 = new uiExpander();
-textBox1.name = "Param1";
-textBox1.displayName = "Top level";
-// textBox1.value = "Top level value";
+const container = new uiSimpleContainer();
 
-controlsDiv.innerHTML += textBox1.html;
-textBox1.DomLinkup();
-textBox1._init = true;
+controlsDiv.innerHTML += container.html;
+container.DomLinkup();
+container._init = true;
 
-textBox1.on("data", (data) => {
+// Subscribe to the "data" event
+container.on("data", (data) => {
   console.log(JSON.stringify(data, null, 2));
 });
 
-let data = {
-  name: "Param1",
-  displayName: "Text expander",
-  helpText: "new control help text",
-  controlType: "uiExpander",
-  // etienneControl: {
+// let data = 
+container.SetData({
+  expander1: {
+    name:"expander1",
+    controlType:"uiExpander",
+    header: {
+      testButton1: {
+        controlType: "uiButton",
+        name: "testButton1",
+        displayName: "Hi Etienne1!"
+      }
+    }
+  },
+  expander2: {
+    name:"expander2",
+    controlType:"uiExpander",
+    header: {
+      testButton2: {
+        controlType: "uiButton",
+        name: "testButton2",
+        displayName: "Hi Etienne2!"
+      }
+    }
+  }  
+});
+
+
+
+
+
+
+
+
+
+  
+  
+  
+  
+  
+  
+  
+  //,
+  // etienneCoentrol: {
   //   name: "etienneControl",
   //   displayName: "This is Etienne's control",
   //   helpText: "new control help text",
@@ -40,36 +75,36 @@ let data = {
   //   displayName: "Switch",
   //   controlType: "uiSwitchButton",
   // },
-  eventLog: {
-    name: "testterminal",
-    displayName: "terminal",
-    controlType: "uiEventLog",
-  },
-  confirmButton: {
-    name: "modalButton",
-    displayName: "modal button",
-    controlType: "uiConfirmButton",
-  },
-  statusControl: {
-    name: "statusControl",
-    displayName: "status control",
-    controlType: "uiStatus",
-  },
-  statusControl: {
-    name: "statusControl",
-    displayName: "status control",
-    controlType: "uiStatus",
-  },
-  statusControl: {
-    name: "statusControl",
-    displayName: "status control",
-    controlType: "uiStatus",
-  },
-  statusControl: {
-    name: "statusControl",
-    displayName: "status control",
-    controlType: "uiStatus",
-  },
+  // eventLog: {
+  //   name: "testterminal",
+  //   displayName: "terminal",
+  //   controlType: "uiEventLog",
+  // },
+  // confirmButton: {
+  //   name: "modalButton",
+  //   displayName: "modal button",
+  //   controlType: "uiConfirmButton",
+  // },
+  // statusControl: {
+  //   name: "statusControl",
+  //   displayName: "status control",
+  //   controlType: "uiStatus",
+  // },
+  // statusControl: {
+  //   name: "statusControl",
+  //   displayName: "status control",
+  //   controlType: "uiStatus",
+  // },
+  // statusControl: {
+  //   name: "statusControl",
+  //   displayName: "status control",
+  //   controlType: "uiStatus",
+  // },
+  // statusControl: {
+  //   name: "statusControl",
+  //   displayName: "status control",
+  //   controlType: "uiStatus",
+  // },
   // ivanControl: {
   //   name: "ivanControl",
   //   displayName: "This is Ivan's control",
@@ -98,73 +133,70 @@ let data = {
   //     },
   //   },
   // },
-};
+// };////
+// setTimeout(() => {
+//   // console.log(JSON.stringify(textBox1.GetData(), null, 2));
+//   // console.log(textBox1.GetData());
 
-textBox1.SetData(data);
+//   let copy = textBox1.GetData();
+//   copy.name = "newParam";
+//   copy.value = "Copy of the first Textbox";
 
-setTimeout(() => {
-  // console.log(JSON.stringify(textBox1.GetData(), null, 2));
-  // console.log(textBox1.GetData());
+//   // textBox1.SetData({
+//   //     "Param1": copy
+//   // })
 
-  let copy = textBox1.GetData();
-  copy.name = "newParam";
-  copy.value = "Copy of the first Textbox";
+//   textBox1._controls["testButton"].on("click", (btn) => {
+//     console.log(`${btn.name} clicked!`);
+//   });
+// }, 100);
 
-  // textBox1.SetData({
-  //     "Param1": copy
-  // })
+// setTimeout(() => {
+//   let remData = {
+//     ivanControl: {
+//       oswaldControl: "",
+//     },
+//   };
 
-  textBox1._controls["testButton"].on("click", (btn) => {
-    console.log(`${btn.name} clicked!`);
-  });
-}, 100);
+//   let addData = {
+//     ivanControl: {
+//       oswald3Control: {
+//         name: "oswald3Control",
+//         displayName: "This is Oswald's 3 control",
+//         helpText: "new control help text",
+//         controlType: "uiTextBox",
+//         value: "Hi Oswald 3!",
+//       },
+//     },
+//   };
+// 
+//   let testButtonHelptext = {
+//     testButton: {
+//       helpText: "Test new help text",
+//       styleClass: "btn btn-default",
+//     },
+//   };
+//   // let remData = {
+//   //     "ivanControl": ""
+//   // }
 
-setTimeout(() => {
-  let remData = {
-    ivanControl: {
-      oswaldControl: "",
-    },
-  };
+//   textBox1.Remove(remData);
+//   textBox1.SetData(addData);
+//   textBox1.SetData(testButtonHelptext);
 
-  let addData = {
-    ivanControl: {
-      oswald3Control: {
-        name: "oswald3Control",
-        displayName: "This is Oswald's 3 control",
-        helpText: "new control help text",
-        controlType: "uiTextBox",
-        value: "Hi Oswald 3!",
-      },
-    },
-  };
+//   // console.log(JSON.stringify(textBox1.GetData(), null, 2));
+//   // console.log(textBox1.GetData());
+// }, 4000);
 
-  let testButtonHelptext = {
-    testButton: {
-      helpText: "Test new help text",
-      styleClass: "btn btn-default",
-    },
-  };
-  // let remData = {
-  //     "ivanControl": ""
-  // }
+// setTimeout(() => {
+//   let changeData = {
+//     ivanControl: {
+//       oswald3Control: {
+//         displayName: "This is Oswald's 3 control - changed",
+//         value: "Hi Oswald 3 - changed!",
+//       },
+//     },
+//   };
 
-  textBox1.Remove(remData);
-  textBox1.SetData(addData);
-  textBox1.SetData(testButtonHelptext);
-
-  // console.log(JSON.stringify(textBox1.GetData(), null, 2));
-  // console.log(textBox1.GetData());
-}, 4000);
-
-setTimeout(() => {
-  let changeData = {
-    ivanControl: {
-      oswald3Control: {
-        displayName: "This is Oswald's 3 control - changed",
-        value: "Hi Oswald 3 - changed!",
-      },
-    },
-  };
-
-  textBox1.SetData(changeData);
-}, 8000);
+//   textBox1.SetData(changeData);
+// }, 000);

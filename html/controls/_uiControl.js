@@ -128,9 +128,10 @@ class _uiControl extends Dispatcher {
     // Core functions
     // -------------------------------------
 
-    // Add a child control to this control
-    AddControl(control) {
-        if (control != undefined && control.name != undefined && this._controlsDiv != undefined) {
+    // Add a child control to passed element name (String)
+    AddControl(control,element) {
+        let e = this[element];
+        if (control != undefined && control.name != undefined && e != undefined) {
             // Add child control to controls list
             this._controls[control.name] = control;
 
@@ -151,18 +152,20 @@ class _uiControl extends Dispatcher {
 
                 // Add queued child controls
                 while (control._controlQueue.length > 0) {
-                    control.AddControl(control._controlQueue.shift());
+                    let c = control._controlQueue.shift();
+                    control.AddControl(c.control,c.element);
                 }
             });
     
-            // Observe _controlsDiv for changes to contents
-            observer.observe(this._controlsDiv, { childList: true });
 
-            // Print HTML of child control to _controlsDiv
-            this._controlsDiv.innerHTML += control.html;
+            // Observe controls element for changes to contents
+            observer.observe(e, { childList: true });
+
+            // Print HTML of child control to the controls element
+            e.innerHTML += control.html;
         }
         else {
-            throw new Error('Unable to add child control. Child control is either invalid, or it does not have a _controlsDiv DOM element.');
+            throw new Error('Unable to add child control. Child control is either invalid, or this control does not have a _controlsDiv DOM element.');
         }
     }
 
@@ -193,10 +196,10 @@ class _uiControl extends Dispatcher {
                         let newControl = new c;
                         newControl.SetData(data[k]);
                         if (!this._init) {
-                            this._controlQueue.push(newControl);
+                            this._controlQueue.push({control: newControl, element: "_controlsDiv"});
                         }
                         else {
-                            this.AddControl(newControl);
+                            this.AddControl(newControl,"_controlsDiv");
                         }
                     }
                 }

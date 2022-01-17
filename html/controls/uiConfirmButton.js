@@ -26,7 +26,7 @@ class uiConfirmButton extends _uiControl {
   get html() {
     return `
           <!-- ${this.name} -->
-          <button id="${this._uuid}_buttonModal" onclick=""> ${this.displayName}</button>
+          <button id="${this._uuid}_buttonModal" > ${this.displayName}</button>
           <div id="${this._uuid}_confirm-box" style="position: center; background-color:grey; width: 300px; height: 200px;padding: 50px; padding-top: 80px">
               <button 
                 type="button" 

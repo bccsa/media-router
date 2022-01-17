@@ -15,11 +15,7 @@ class uiExpander extends _uiControl {
     this.displayName = "new control"; // Display name
     this.helpText = "new control help text";
     this.margin = "10px";
-    this.padding = "10px";
-    this._c_statusName = new uiStatus();
-
-    // Set static controls values
-    this._c_statusName.displayName = "Control 1";
+    this.padding = "10px";   
   }
 
   // -------------------------------------
@@ -30,11 +26,10 @@ class uiExpander extends _uiControl {
     return `
         <!-- ${this.name} --> 
         <div id="${this._uuid}_main" class="row col-lg-12" style="margin:${this.margin}">
-            <div id="${this._uuid}_topBar" class="col-lg-12 p-3" style="background-color:grey;  ">
+            <div id="${this._uuid}_topBar" class="col-lg-12 p-3" style="background-color:grey;">
                 <span id="${this._uuid}_label">${this.displayName}</span>
-                 ${this._c_statusName.html}  
             </div>
-            <div id="${this._uuid}_controls" style="padding:${this.padding};  width:100%; display:none;"></div>
+            <div id="${this._uuid}_controls" style="padding:${this.padding};width:100%;display:none;"></div>
         </div>`;
   }
 
@@ -42,9 +37,14 @@ class uiExpander extends _uiControl {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
-    this._status = document.getElementById(`${this._uuid}_status`);
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
+    
+    // Add header controls container to the topBar element
+    let h = new uiSimpleContainer();
+    h.name = "header";
+    this.AddControl(h, "_topBar");
 
+    // Add event listeners
     let o = this;
     this._topBar.addEventListener("dblclick", function () {
       if (o._controlsDiv.style.display != "block") {
