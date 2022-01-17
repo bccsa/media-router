@@ -13,7 +13,7 @@ class uiStatus extends _uiControl {
   constructor() {
     super();
     this.helpText = "get you status";
-    this.styleClass = "btn ";
+    this.styleClass = "p-2 m-1";
     // this.styles.push("controls/css/bootstrap.min.css");
     this.displayName = "Status Control";
   }
@@ -27,11 +27,12 @@ class uiStatus extends _uiControl {
             <!-- ${this.name} -->
             <div>
             <button class="${this.styleClass}" 
+              style="border: 0.5px solid grey; border-radius: 15px; "
               id="${this._uuid}_status" 
               data-toggle="tooltip" 
               data-placement="top" 
               title="${this.helpText}" >${this.displayName}</button>
-            <span id="${this._uuid}_helpText" class="tooltiptext">${this.helpText}</span>
+            
           </div>
             `;
   }

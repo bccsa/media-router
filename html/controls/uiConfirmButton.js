@@ -25,12 +25,24 @@ class uiConfirmButton extends _uiControl {
 
   get html() {
     return `
-          <!-- ${this.name} --> 
-            <button type="button" id="${this._uuid}_buttonModal" class="btn btn-primary" data-toggle="modal" data-target="#exampleModal">
-            ${this.displayName}
-            </button>
-             
-          `;
+          <!-- ${this.name} -->
+          <button id="${this._uuid}_buttonModal" onclick=""> ${this.displayName}</button>
+          <div id="${this._uuid}_confirm-box" style="position: center; background-color:grey; width: 300px; height: 200px;padding: 50px; padding-top: 80px">
+              <button 
+                type="button" 
+                id="${this._uuid}_buttonOk" 
+                class="btn btn-success m-1">
+                  Confirm
+              </button>
+
+              <button 
+                type="button" 
+                id="${this._uuid}_buttonCancel" 
+                class="btn btn-danger m-1">
+                  Cancel
+              </button> 
+          </div>     
+      `;
   }
 
   DomLinkup() {
@@ -41,7 +53,7 @@ class uiConfirmButton extends _uiControl {
 
     let o = this;
     this._buttonModal.addEventListener("click", function () {
-      confirm("Press a button!\nEither OK or Cancel.");
+      console.log("true");
     });
   }
 

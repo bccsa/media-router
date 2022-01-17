@@ -18,28 +18,28 @@ let data = {
   displayName: "Text expander",
   helpText: "new control help text",
   controlType: "uiExpander",
-  etienneControl: {
-    name: "etienneControl",
-    displayName: "This is Etienne's control",
-    helpText: "new control help text",
-    controlType: "uiTextBox",
-    value: "Hi Etienne!",
-  },
-  testButton: {
-    name: "testButton",
-    displayName: "test",
-    controlType: "uiButton",
-  },
-  testCheckBox: {
-    name: "testCheckBox",
-    displayName: "Check",
-    controlType: "uiCheckbox",
-  },
-  testSwitch: {
-    name: "testSwitch",
-    displayName: "Switch",
-    controlType: "uiSwitchButton",
-  },
+  // etienneControl: {
+  //   name: "etienneControl",
+  //   displayName: "This is Etienne's control",
+  //   helpText: "new control help text",
+  //   controlType: "uiTextBox",
+  //   value: "Hi Etienne!",
+  // },
+  // testButton: {
+  //   name: "testButton",
+  //   displayName: "test",
+  //   controlType: "uiButton",
+  // },
+  // testCheckBox: {
+  //   name: "testCheckBox",
+  //   displayName: "Check",
+  //   controlType: "uiCheckbox",
+  // },
+  // testSwitch: {
+  //   name: "testSwitch",
+  //   displayName: "Switch",
+  //   controlType: "uiSwitchButton",
+  // },
   eventLog: {
     name: "testterminal",
     displayName: "terminal",
@@ -55,34 +55,49 @@ let data = {
     displayName: "status control",
     controlType: "uiStatus",
   },
-  ivanControl: {
-    name: "ivanControl",
-    displayName: "This is Ivan's control",
-    helpText: "new control help text",
-    controlType: "uiTextBox",
-    value: "Hi Ivan!",
-    oswaldControl: {
-      name: "oswaldControl",
-      displayName: "This is Oswald's control",
-      helpText: "new control help text",
-      controlType: "uiTextBox",
-      value: "Hi Oswald!",
-      oswald1Control: {
-        name: "oswald1Control",
-        displayName: "This is Oswald's 1 control",
-        helpText: "new control help text",
-        controlType: "uiTextBox",
-        value: "Hi Oswald 1!",
-      },
-      oswald2Control: {
-        name: "oswald2Control",
-        displayName: "This is Oswald's 2 control",
-        helpText: "new control help text",
-        controlType: "uiTextBox",
-        value: "Hi Oswald 2!",
-      },
-    },
+  statusControl: {
+    name: "statusControl",
+    displayName: "status control",
+    controlType: "uiStatus",
   },
+  statusControl: {
+    name: "statusControl",
+    displayName: "status control",
+    controlType: "uiStatus",
+  },
+  statusControl: {
+    name: "statusControl",
+    displayName: "status control",
+    controlType: "uiStatus",
+  },
+  // ivanControl: {
+  //   name: "ivanControl",
+  //   displayName: "This is Ivan's control",
+  //   helpText: "new control help text",
+  //   controlType: "uiTextBox",
+  //   value: "Hi Ivan!",
+  //   oswaldControl: {
+  //     name: "oswaldControl",
+  //     displayName: "This is Oswald's control",
+  //     helpText: "new control help text",
+  //     controlType: "uiTextBox",
+  //     value: "Hi Oswald!",
+  //     oswald1Control: {
+  //       name: "oswald1Control",
+  //       displayName: "This is Oswald's 1 control",
+  //       helpText: "new control help text",
+  //       controlType: "uiTextBox",
+  //       value: "Hi Oswald 1!",
+  //     },
+  //     oswald2Control: {
+  //       name: "oswald2Control",
+  //       displayName: "This is Oswald's 2 control",
+  //       helpText: "new control help text",
+  //       controlType: "uiTextBox",
+  //       value: "Hi Oswald 2!",
+  //     },
+  //   },
+  // },
 };
 
 textBox1.SetData(data);
