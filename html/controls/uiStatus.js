@@ -42,7 +42,7 @@ class uiStatus extends _uiControl {
     this._status = document.getElementById(`${this._uuid}_status`);
     this._helpText = document.getElementById(`${this._uuid}_helpText`);
 
-    let o = this;
+    // let o = this;
     setInterval(() => {
       this._status.innerHTML = this.displayName;
     }, 3000);
@@ -50,7 +50,7 @@ class uiStatus extends _uiControl {
 
   DomUpdate(propertyName) {
     switch (propertyName) {
-      case "value": {
+      case "displayName": {
         this._status.innerHTML = this.displayName;
         break;
       }

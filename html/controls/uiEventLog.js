@@ -25,8 +25,13 @@ class uiEventLog extends _uiControl {
   get html() {
     return `
               <!-- ${this.name} --> 
-                  <div class="row">
-                       <div class="terminal">
+                  <div   class="row"> 
+                       <div id= class="terminal" style="height: 300px;
+                       background-color: #000;
+                       color: #fff; 
+                       width: 100%;
+                       padding: 14px; 
+                       margin: 10px;" >
                             <p class="" id="${this._uuid}_eventLog" > ${this.displayName} . . . . </p>
                        </div>
                   </div> 
@@ -34,22 +39,24 @@ class uiEventLog extends _uiControl {
   }
 
   DomLinkup() {
-    this._eventLog = document.getElementById(`${this._uuid}_checkBox`);
-    this._helpText = document.getElementById(`${this._uuid}_help`);
+    this._eventLog = document.getElementById(`${this._uuid}__eventLog`);
+    //  this._terminal = document.getElementById(`${this._uuid}_terminal`);
 
-    let o = this;
+    setInterval(() => {
+      this._eventLog.innerHTML = this.displayName;
+    }, 3000);
   }
 
   DomUpdate(propertyName) {
     switch (propertyName) {
-      case "helpText": {
-        this._helpText.innerHTML = this.helpText;
+      case "displayName": {
+        this._helpText.innerHTML = this.displayName;
         break;
       }
-      case "styleClass": {
-        this._input.className = this.styleClass;
-        break;
-      }
+      // case "styleClass": {
+      //   this._terminal.className = this.styles;
+      //   break;
+      // }
     }
   }
 }
