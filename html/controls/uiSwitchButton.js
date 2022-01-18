@@ -25,15 +25,16 @@ class uiSwitchButton extends _uiControl {
   get html() {
     return `
       <!-- ${this.name} -->
+      Off
       <label class="switch" 
       data-toggle="tooltip"
       data-placement="rigth"
       title="${this.helpText}"
       id="${this._uuid}_switch" >
        
-      <input type="checkbox">
+      <input type="checkbox"> On
       <span class="slider round"></span>
-    </label>
+    </label> On
           `;
   }
 

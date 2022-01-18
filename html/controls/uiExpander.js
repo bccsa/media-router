@@ -17,6 +17,13 @@ class uiExpander extends _uiControl {
     this.margin = "10px";
     this.padding = "10px";
     this._styles.push("controls/css/bootstrap.min.css");
+    this.button1 = new uiButton();
+    this.button1.displayName = " Device";
+    this.button2 = new uiButton();
+    this.button3 = new uiButton();
+    this.button4 = new uiButton();
+    this.terminal1 = new uiEventLog();
+    this._styles.push("controls/css/terminal.css");
 
     // Add header controls container to the topBar element
     this.SetData({
@@ -55,8 +62,19 @@ class uiExpander extends _uiControl {
             padding:${this.padding};
             width:100%;
             display:none;
-            "></div>
-            </div>`;
+            ">
+                <div class="d-flex">
+                      ${this.button1.html}
+                      ${this.button2.html}
+                      ${this.button3.html}
+                      ${this.button4.html}
+                </div>
+
+                <div>
+                    ${this.terminal1.html}
+                </div>
+            </div>
+        </div>`;
   }
 
   DomLinkup() {
@@ -81,7 +99,6 @@ class uiExpander extends _uiControl {
       // Delete this control
       this.DomRemove();
     });
-
   }
 
   DomUpdate(propertyName) {
@@ -92,6 +109,4 @@ class uiExpander extends _uiControl {
       }
     }
   }
-
-
 }
