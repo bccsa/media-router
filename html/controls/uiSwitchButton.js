@@ -12,7 +12,7 @@
 class uiSwitchButton extends _uiControl {
   constructor() {
     super();
-    this.displayName = "switch here";
+    this.displayName = "";
     this.helpText = "How to use this button";
     // this.styles.push("controls/css/switch.css");
     // this.styles.push("controls/css/bootstrap.min.css");
@@ -30,6 +30,7 @@ class uiSwitchButton extends _uiControl {
       data-placement="rigth"
       title="${this.helpText}"
       id="${this._uuid}_switch" >
+       
       <input type="checkbox">
       <span class="slider round"></span>
     </label>
@@ -40,12 +41,27 @@ class uiSwitchButton extends _uiControl {
     this._switch = document.getElementById(`${this._uuid}_switch`);
     this._helpText = document.getElementById(`${this._uuid}_help`);
 
-    // let o = this;
+    // console.log(this._switch);
 
-    console.log("switch", this._switch);
+    let o = this;
 
     this._switch.addEventListener("change", function () {
-      console.log("switchOn");
+      o.value = o._switch.value;
+      o._notifyProperty(["value"]);
     });
+  }
+
+  DomUpdate(propertyName) {
+    switch (propertyName) {
+      case "value": {
+        this._switch.value = this.value;
+        break;
+      }
+
+      case "displayName": {
+        this._label.innerText = this.displayName;
+        break;
+      }
+    }
   }
 }

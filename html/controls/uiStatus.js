@@ -14,6 +14,7 @@ class uiStatus extends _uiControl {
     super();
     this.helpText = "get you status";
     this.styleClass = "p-2 m-1";
+    this.statusUpdate = ""
     // this.styles.push("controls/css/bootstrap.min.css");
     this.displayName = "Status Control";
   }
@@ -25,7 +26,7 @@ class uiStatus extends _uiControl {
   get html() {
     return `
             <!-- ${this.name} -->
-            <div>
+            
             <button class="${this.styleClass}" 
               style="border: 0.5px solid grey; border-radius: 15px; "
               id="${this._uuid}_status" 
@@ -33,7 +34,7 @@ class uiStatus extends _uiControl {
               data-placement="top" 
               title="${this.helpText}" >${this.displayName}</button>
             
-          </div>
+           
             `;
   }
 
@@ -41,10 +42,19 @@ class uiStatus extends _uiControl {
     this._status = document.getElementById(`${this._uuid}_status`);
     this._helpText = document.getElementById(`${this._uuid}_helpText`);
 
-    let o = this;
-    this._status.addEventListener("click", function () {
-      // o.dispatch("click", o);
-      console.log("status is ok");
-    });
+    // let o = this;
+    setInterval(() =>{
+        this._status.value = this.statusUpdate;
+    }, 3000)
+    
+  }
+
+  DomUpdate(propertyName) {
+    switch (propertyName) {
+      case "value": {
+        this._status.value = this.statusUpdate;
+        break;
+      }
+    }
   }
 }

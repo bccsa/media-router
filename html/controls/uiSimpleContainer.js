@@ -21,7 +21,9 @@ class uiSimpleContainer extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-        <div id="${this._uuid}_controls"></div>`;
+        <div id="${this._uuid}_controls">
+                  
+        </div>`;
   }
 
   DomLinkup() {

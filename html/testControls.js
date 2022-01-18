@@ -11,117 +11,143 @@ container.on("data", (data) => {
   console.log(JSON.stringify(data, null, 2));
 });
 
-// let data = 
+// let data =
 container.SetData({
   expander1: {
-    name:"expander1",
-    controlType:"uiExpander",
+    name: "expander1",
+    displayName: "Douala",
+    controlType: "uiExpander",
     header: {
-      testButton1: {
-        controlType: "uiButton",
-        name: "testButton1",
-        displayName: "Hi Etienne1!"
-      }
-    }
-  }
+      statusC1: {
+        controlType: "uiStatus",
+        name: "Status Control 1",
+        displayName: "Status Ctrl 1",
+      },
+      statusC2: {
+        controlType: "uiStatus",
+        name: "Status Control 2",
+        displayName: "Status Ctrl 2",
+      },
+      statusC3: {
+        controlType: "uiStatus",
+        name: "Status Control 3",
+        displayName: "Status Ctrl 3",
+      },
+      switchButton: {
+        controlType: "uiSwitchButton",
+        name: "Switch",
+      },
+    },
+  },
+  expander2: {
+    name: "expander2",
+    displayName: "Yaounde",
+    controlType: "uiExpander",
+    header: {
+      statusC1: {
+        controlType: "uiStatus",
+        name: "Status Control 1",
+        displayName: "Status Ctrl 1",
+      },
+      statusC2: {
+        controlType: "uiStatus",
+        name: "Status Control 2",
+        displayName: "Status Ctrl 2",
+      },
+      statusC3: {
+        controlType: "uiStatus",
+        name: "Status Control 3",
+        displayName: "Status Ctrl 3",
+      },
+      switchButton: {
+        controlType: "uiSwitchButton",
+        name: "Switch",
+      },
+    },
+  },
 });
 
-
-
-
-
-
-
-
-
-  
-  
-  
-  
-  
-  
-  
-  //,
-  // etienneCoentrol: {
-  //   name: "etienneControl",
-  //   displayName: "This is Etienne's control",
-  //   helpText: "new control help text",
-  //   controlType: "uiTextBox",
-  //   value: "Hi Etienne!",
-  // },
-  // testButton: {
-  //   name: "testButton",
-  //   displayName: "test",
-  //   controlType: "uiButton",
-  // },
-  // testCheckBox: {
-  //   name: "testCheckBox",
-  //   displayName: "Check",
-  //   controlType: "uiCheckbox",
-  // },
-  // testSwitch: {
-  //   name: "testSwitch",
-  //   displayName: "Switch",
-  //   controlType: "uiSwitchButton",
-  // },
-  // eventLog: {
-  //   name: "testterminal",
-  //   displayName: "terminal",
-  //   controlType: "uiEventLog",
-  // },
-  // confirmButton: {
-  //   name: "modalButton",
-  //   displayName: "modal button",
-  //   controlType: "uiConfirmButton",
-  // },
-  // statusControl: {
-  //   name: "statusControl",
-  //   displayName: "status control",
-  //   controlType: "uiStatus",
-  // },
-  // statusControl: {
-  //   name: "statusControl",
-  //   displayName: "status control",
-  //   controlType: "uiStatus",
-  // },
-  // statusControl: {
-  //   name: "statusControl",
-  //   displayName: "status control",
-  //   controlType: "uiStatus",
-  // },
-  // statusControl: {
-  //   name: "statusControl",
-  //   displayName: "status control",
-  //   controlType: "uiStatus",
-  // },
-  // ivanControl: {
-  //   name: "ivanControl",
-  //   displayName: "This is Ivan's control",
-  //   helpText: "new control help text",
-  //   controlType: "uiTextBox",
-  //   value: "Hi Ivan!",
-  //   oswaldControl: {
-  //     name: "oswaldControl",
-  //     displayName: "This is Oswald's control",
-  //     helpText: "new control help text",
-  //     controlType: "uiTextBox",
-  //     value: "Hi Oswald!",
-  //     oswald1Control: {
-  //       name: "oswald1Control",
-  //       displayName: "This is Oswald's 1 control",
-  //       helpText: "new control help text",
-  //       controlType: "uiTextBox",
-  //       value: "Hi Oswald 1!",
-  //     },
-  //     oswald2Control: {
-  //       name: "oswald2Control",
-  //       displayName: "This is Oswald's 2 control",
-  //       helpText: "new control help text",
-  //       controlType: "uiTextBox",
-  //       value: "Hi Oswald 2!",
-  //     },
-  //   },
-  // },
+//,
+// etienneCoentrol: {
+//   name: "etienneControl",
+//   displayName: "This is Etienne's control",
+//   helpText: "new control help text",
+//   controlType: "uiTextBox",
+//   value: "Hi Etienne!",
+// },
+// testButton: {
+//   name: "testButton",
+//   displayName: "test",
+//   controlType: "uiButton",
+// },
+// testCheckBox: {
+//   name: "testCheckBox",
+//   displayName: "Check",
+//   controlType: "uiCheckbox",
+// },
+// testSwitch: {
+//   name: "testSwitch",
+//   displayName: "Switch",
+//   controlType: "uiSwitchButton",
+// },
+// eventLog: {
+//   name: "testterminal",
+//   displayName: "terminal",
+//   controlType: "uiEventLog",
+// },
+// confirmButton: {
+//   name: "modalButton",
+//   displayName: "modal button",
+//   controlType: "uiConfirmButton",
+// },
+// statusControl: {
+//   name: "statusControl",
+//   displayName: "status control",
+//   controlType: "uiStatus",
+// },
+// statusControl: {
+//   name: "statusControl",
+//   displayName: "status control",
+//   controlType: "uiStatus",
+// },
+// statusControl: {
+//   name: "statusControl",
+//   displayName: "status control",
+//   controlType: "uiStatus",
+// },
+// statusControl: {
+//   name: "statusControl",
+//   displayName: "status control",
+//   controlType: "uiStatus",
+// },
+// ivanControl: {
+//   name: "ivanControl",
+//   displayName: "This is Ivan's control",
+//   helpText: "new control help text",
+//   controlType: "uiTextBox",
+//   value: "Hi Ivan!",
+//   oswaldControl: {
+//     name: "oswaldControl",
+//     displayName: "This is Oswald's control",
+//     helpText: "new control help text",
+//     controlType: "uiTextBox",
+//     value: "Hi Oswald!",
+//     oswald1Control: {
+//       name: "oswald1Control",
+//       displayName: "This is Oswald's 1 control",
+//       helpText: "new control help text",
+//       controlType: "uiTextBox",
+//       value: "Hi Oswald 1!",
+//     },
+//     oswald2Control: {
+//       name: "oswald2Control",
+//       displayName: "This is Oswald's 2 control",
+//       helpText: "new control help text",
+//       controlType: "uiTextBox",
+//       value: "Hi Oswald 2!",
+//     },
+//   },
+// },
 // };////
 // setTimeout(() => {
 //   // console.log(JSON.stringify(textBox1.GetData(), null, 2));
@@ -158,7 +184,7 @@ container.SetData({
 //       },
 //     },
 //   };
-// 
+//
 //   let testButtonHelptext = {
 //     testButton: {
 //       helpText: "Test new help text",

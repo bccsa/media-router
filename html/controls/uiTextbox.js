@@ -48,6 +48,8 @@ class uiTextBox extends _uiControl {
     });
   }
 
+
+
   DomUpdate(propertyName) {
     switch (propertyName) {
       case "value": {

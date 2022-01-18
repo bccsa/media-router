@@ -23,15 +23,16 @@ class uiExpander extends _uiControl {
       header: {
         controlType: "uiSimpleContainer",
         name: "header",
-        parentElement: "_topBar"
+        displayName: this.displayName,
+        parentElement: "_topBar",
       },
       deleteBtn: {
         controlType: "uiButton",
         name: "deleteBtn",
         displayName: "Delete",
         parentElement: "_topBar",
-        hidden: true
-      }
+        hidden: true,
+      },
     });
   }
 
@@ -42,12 +43,20 @@ class uiExpander extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-        <div id="${this._uuid}_main" class="row col-lg-12" style="margin:${this.margin}">
-            <div id="${this._uuid}_topBar" class="col-lg-12 p-3" style="background-color:grey;">
+        <div id="${this._uuid}_main" class="col-lg-12 "   style="margin:${this.margin}">
+            <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
                 <span id="${this._uuid}_label">${this.displayName}</span>
             </div>
-            <div id="${this._uuid}_controls" style="padding:${this.padding};width:100%;display:none;"></div>
-        </div>`;
+            <div 
+            id="${this._uuid}_controls" 
+            class="row" 
+            style="display: 
+            flex; margin-left; 
+            padding:${this.padding};
+            width:100%;
+            display:none;
+            "></div>
+            </div>`;
   }
 
   DomLinkup() {
@@ -64,6 +73,7 @@ class uiExpander extends _uiControl {
       } else {
         o._controlsDiv.style.display = "none";
       }
+      console.log(this._controlsDiv);
     });
 
     // Listen for delete button event
@@ -71,6 +81,7 @@ class uiExpander extends _uiControl {
       // Delete this control
       this.DomRemove();
     });
+
   }
 
   DomUpdate(propertyName) {
@@ -81,4 +92,6 @@ class uiExpander extends _uiControl {
       }
     }
   }
+
+
 }

@@ -14,7 +14,7 @@ class uiButton extends _uiControl {
     super();
     this.displayName = "click here";
     this.helpText = "How to use this button";
-    this.styleClass = "btn btn-primary";
+    this.styleClass = "btn btn-default m-1";
     this._styles.push("controls/css/bootstrap.min.css");
     // this._styles.push("controls/js/bootstrap.min.js");
   }
@@ -26,14 +26,14 @@ class uiButton extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} -->
-        <div>
+         
           <button class="${this.styleClass}" 
             id="${this._uuid}_button" 
             data-toggle="tooltip" 
             data-placement="top" 
             title="${this.helpText}" >${this.displayName}</button>
-          <span id="${this._uuid}_helpText" class="tooltiptext">${this.helpText}</span>
-        </div>
+           
+         
         `;
   }
 
@@ -56,6 +56,9 @@ class uiButton extends _uiControl {
       case "styleClass": {
         this._button.className = this.styleClass;
         break;
+      }
+      case "displayName": {
+        this._button.value = this.displayName;
       }
     }
   }
