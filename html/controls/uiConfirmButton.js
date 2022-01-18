@@ -17,6 +17,7 @@ class uiConfirmButton extends _uiControl {
     this.helpText = "Modal for confirmation";
     this.styleClass = "btn btn-danger";
     this._styles.push("controls/css/bootstrap.min.css");
+    this._styles.push("controls/css/modal.css");
   }
 
   // -------------------------------------
@@ -26,8 +27,9 @@ class uiConfirmButton extends _uiControl {
   get html() {
     return `
           <!-- ${this.name} -->
+           
           <button id="${this._uuid}_buttonModal" > ${this.displayName}</button>
-          <div id="${this._uuid}_confirm-box" style="position: center; background-color:grey; width: 300px; height: 200px;padding: 50px; padding-top: 80px">
+          <div id="${this._uuid}_confirmBox" class="modal-content">
               <button 
                 type="button" 
                 id="${this._uuid}_buttonOk" 
@@ -50,10 +52,21 @@ class uiConfirmButton extends _uiControl {
     this._buttonCancel = document.getElementById(`${this._uuid}_buttonCancel`);
     this._buttonModal = document.getElementById(`${this._uuid}_buttonModal`);
     this._helpText = document.getElementById(`${this._uuid}_helpText`);
+    this._confirmBox = document.getElementById(`${this._uuid}_confirmBox`);
 
     let o = this;
     this._buttonModal.addEventListener("click", function () {
-      console.log("true");
+      o._confirmBox.style.display = "block";
+    });
+
+    this._buttonCancel.addEventListener("click", function () {
+      o._confirmBox.style.display = "none";
+    });
+
+    window.addEventListener("click", function (event) {
+      if (event == o._confirmBox) {
+        o._confirmBox.style.display = "none";
+      }
     });
   }
 
