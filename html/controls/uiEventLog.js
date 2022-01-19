@@ -12,10 +12,9 @@
 class uiEventLog extends _uiControl {
   constructor() {
     super();
-    this.displayName = "Terminal";
-    this.helpText = "How to use this event log";
+    this.logText = "Terminal";
     this._styles.push("controls/css/bootstrap.min.css");
-    this._styles.push("controls/css/terminal.css");
+    this._styles.push("controls/css/uiEventLog.css");
   }
 
   // -------------------------------------
@@ -25,38 +24,29 @@ class uiEventLog extends _uiControl {
   get html() {
     return `
               <!-- ${this.name} --> 
-                  <div   class="row"> 
-                       <div id= class="terminal" style="height: 300px;
-                       background-color: #000;
-                       color: #fff; 
-                       width: 100%;
-                       padding: 14px; 
-                       margin: 10px;" >
-                            <p class="" id="${this._uuid}_eventLog" > ${this.displayName} . . . . </p>
+                  <div class="row"> 
+                       <div class="uiEventLog-terminal"   >
+                            <p id="${this._uuid}_eventLog" >${this.logText}</p>
                        </div>
                   </div> 
               `;
   }
 
   DomLinkup() {
-    this._eventLog = document.getElementById(`${this._uuid}__eventLog`);
+    this._eventLog = document.getElementById(`${this._uuid}_eventLog`);
     //  this._terminal = document.getElementById(`${this._uuid}_terminal`);
 
-    setInterval(() => {
-      this._eventLog.innerHTML = this.displayName;
-    }, 3000);
+    // setInterval(() => {
+    //   this._eventLog.innerHTML = this.displayName;
+    // }, 3000);
   }
 
   DomUpdate(propertyName) {
     switch (propertyName) {
-      case "displayName": {
-        this._helpText.innerHTML = this.displayName;
+      case "logText": {
+        this._eventLog.innerHTML += this.logText;
         break;
       }
-      // case "styleClass": {
-      //   this._terminal.className = this.styles;
-      //   break;
-      // }
     }
   }
 }

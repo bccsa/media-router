@@ -97,7 +97,7 @@ class _uiControl extends Dispatcher {
         <!-- ${this.name} -->
             <div id="${this._uuid}_main"  >
                 <div id="${this._uuid}_controls" class="${this.className}" >
-                    
+
                 </div>
             </div>
         `;

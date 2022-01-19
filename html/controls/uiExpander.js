@@ -23,7 +23,7 @@ class uiExpander extends _uiControl {
     this.button3 = new uiButton();
     this.button4 = new uiButton();
     this.terminal1 = new uiEventLog();
-    this._styles.push("controls/css/terminal.css");
+    this._styles.push("controls/css/uiExpander.css");
 
     // Add header controls container to the topBar element
     this.SetData({
@@ -39,6 +39,23 @@ class uiExpander extends _uiControl {
         displayName: "Delete",
         parentElement: "_topBar",
         hidden: true,
+      },
+      startButton: {
+        controlType: "uiButton",
+        name: "startButton",
+        displayName: "Start",
+        parentElement: "__btnSess",
+      },
+      stopButton: {
+        controlType: "uiButton",
+        name: "startButton",
+        displayName: "Stop",
+        parentElement: "__btnSess",
+      },
+      eventLog: {
+        controlType: "uiEventLog",
+        parentElement: "_console",
+        name: "eventLog",
       },
     });
   }
@@ -58,23 +75,23 @@ class uiExpander extends _uiControl {
             </div>
             <div 
             id="${this._uuid}_controls" 
-            class="row" 
+            class="row d-flex" 
             style="display: 
             flex; margin-left; 
             padding:${this.padding};
             width:100%;
             display:none;
             ">
-                <div class="d-flex">
-                      ${this.button1.html}
-                      ${this.button2.html}
-                      ${this.button3.html}
-                      ${this.button4.html}
-                </div>
+            
+              <div id="${this._uuid}_console" class="row">
 
-                <div>
-                    ${this.terminal1.html}
-                </div>
+              </div>
+
+              <div id="${this._uuid}_btnSess" class="row">
+              
+              </div>
+               
+                
             </div>
         </div>`;
   }
@@ -84,6 +101,8 @@ class uiExpander extends _uiControl {
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
+    this._console = document.getElementById(`${this._uuid}_console`);
+    this._btnSess = document.getElementById(`${this._uuid}_btnSess`);
 
     // Add event listeners
     let o = this;

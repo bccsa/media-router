@@ -23,6 +23,11 @@ container.SetData({
         name: "Status Control 1",
         displayName: "Status Ctrl 1",
       },
+      modal: {
+        controlType: "uiConfirmButton",
+        name: "Modal",
+        displayName: "Modal",
+      },
       statusC2: {
         controlType: "uiStatus",
         name: "Status Control 2",
@@ -36,7 +41,7 @@ container.SetData({
       switchButton: {
         controlType: "uiSwitchButton",
         name: "Switch",
-      },
+      }
     },
   },
   expander2: {
