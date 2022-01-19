@@ -52,7 +52,9 @@ class uiExpander extends _uiControl {
         <!-- ${this.name} --> 
         <div id="${this._uuid}_main" class="col-lg-12 "   style="margin:${this.margin}">
             <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
-                <span id="${this._uuid}_label">${this.displayName}</span>
+               
+            <span id="${this._uuid}_label">${this.displayName}</span>  
+                 
             </div>
             <div 
             id="${this._uuid}_controls" 
