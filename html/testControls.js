@@ -1,15 +1,19 @@
 const controlsDiv = document.getElementById("controls");
+// const Console = document.getElementById(`${this._uuid}_console`);
 
 const container = new uiSimpleContainer();
+// const terminal = new uiSimpleContainer();
 
 controlsDiv.innerHTML += container.html;
 container.DomLinkup();
 container._init = true;
 
+
 // Subscribe to the "data" event
 container.on("data", (data) => {
   console.log(JSON.stringify(data, null, 2));
 });
+
 
 // let data =
 container.SetData({
@@ -22,11 +26,6 @@ container.SetData({
         controlType: "uiStatus",
         name: "Status Control 1",
         displayName: "Status Ctrl 1",
-      },
-      modal: {
-        controlType: "uiConfirmButton",
-        name: "Modal",
-        displayName: "Modal",
       },
       statusC2: {
         controlType: "uiStatus",
@@ -41,7 +40,7 @@ container.SetData({
       switchButton: {
         controlType: "uiSwitchButton",
         name: "Switch",
-      }
+      },
     },
   },
   expander2: {

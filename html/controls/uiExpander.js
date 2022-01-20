@@ -17,12 +17,6 @@ class uiExpander extends _uiControl {
     this.margin = "10px";
     this.padding = "10px";
     this._styles.push("controls/css/bootstrap.min.css");
-    this.button1 = new uiButton();
-    this.button1.displayName = " Device";
-    this.button2 = new uiButton();
-    this.button3 = new uiButton();
-    this.button4 = new uiButton();
-    this.terminal1 = new uiEventLog();
     this._styles.push("controls/css/uiExpander.css");
 
     // Add header controls container to the topBar element
@@ -44,13 +38,13 @@ class uiExpander extends _uiControl {
         controlType: "uiButton",
         name: "startButton",
         displayName: "Start",
-        parentElement: "__btnSess",
+        parentElement: "_controlsDiv",
       },
       stopButton: {
         controlType: "uiButton",
         name: "startButton",
         displayName: "Stop",
-        parentElement: "__btnSess",
+        parentElement: "_controlsDiv",
       },
       eventLog: {
         controlType: "uiEventLog",
@@ -69,29 +63,23 @@ class uiExpander extends _uiControl {
         <!-- ${this.name} --> 
         <div id="${this._uuid}_main" class="col-lg-12 "   style="margin:${this.margin}">
             <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
-               
-            <span id="${this._uuid}_label">${this.displayName}</span>  
-                 
+                <span id="${this._uuid}_label">${this.displayName}</span>          
             </div>
-            <div 
-            id="${this._uuid}_controls" 
-            class="row d-flex" 
-            style="display: 
-            flex; margin-left; 
-            padding:${this.padding};
-            width:100%;
-            display:none;
-            ">
-            
-              <div id="${this._uuid}_console" class="row">
-
-              </div>
-
-              <div id="${this._uuid}_btnSess" class="row">
+            <div class
+              id="${this._uuid}_controls" 
+              class="row d-flex" 
+              style=" 
+               margin-left; 
+              padding:${this.padding};
+              width:100%;
+              display:none;" > 
               
+              <div id="${this._uuid}_console"> 
               </div>
-               
-                
+
+              <div id="${this._uuid}_btnSess">
+              </div>
+ 
             </div>
         </div>`;
   }
@@ -112,7 +100,7 @@ class uiExpander extends _uiControl {
       } else {
         o._controlsDiv.style.display = "none";
       }
-      console.log(this._controlsDiv);
+      console.log(o._controlsDiv.style.display);
     });
 
     // Listen for delete button event
