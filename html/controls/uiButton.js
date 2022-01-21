@@ -31,6 +31,7 @@ class uiButton extends _uiControl {
             id="${this._uuid}_button" 
             data-toggle="tooltip" 
             data-placement="top" 
+            style="background-color:grey;
             title="${this.helpText}" >${this.displayName}</button>
            
          

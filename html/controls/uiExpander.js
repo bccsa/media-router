@@ -91,7 +91,8 @@ class uiExpander extends _uiControl {
             <div class
               id="${this._uuid}_controls" 
               class="row d-flex" 
-              style=" 
+              style="
+              background-color: #efefef; 
               float: left; 
               padding:${this.padding};
               width:100%;

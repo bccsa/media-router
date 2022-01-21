@@ -27,8 +27,8 @@ class uiBar extends _uiControl {
                      
                          <div id="${this._uuid}_bar" class="uiBar">
                             <ul>
-                                <li> <img src="../assets/img/list.png"</li>
-                                <li> <img src="../assets/img/settings.png"</li>
+                                <li id="${this._uuid}_list1"> <img src="../assets/img/list.png"</li>
+                                <li id="${this._uuid}_list2"> <img src="../assets/img/settings.png"</li>
                             </ul>
                          </div> 
                 `;
@@ -36,6 +36,17 @@ class uiBar extends _uiControl {
 
   DomLinkup() {
     this._Bar = document.getElementById(`${this._uuid}_Bar`);
+    this._list1 = document.getElementById(`${this._uuid}_list1`);
+    this._list2 = document.getElementById(`${this._uuid}_list2`);
+
+    let o = this;
+    this._list1.addEventListener("click", function () {
+      console.log("first");
+    });
+
+    this._list2.addEventListener("click", function () {
+      console.log("first");
+    });
     //  this._terminal = document.getElementById(`${this._uuid}_terminal`);
 
     // setInterval(() => {
