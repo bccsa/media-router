@@ -1,0 +1,19 @@
+.uiBar{
+    float: right;
+    width: 50px;
+    height: 300px;
+    z-index: -1;
+    top:  position: absolute; 
+    top: 0px; 
+}
+
+.uiBar ul li{
+    height: 130px; 
+    padding: 1%;
+    list-style: none;
+}
+
+.uiBar ul li:hover {
+    height: 130px;
+    background-color: rgb(173, 173, 95);
+}

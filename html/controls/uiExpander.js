@@ -46,10 +46,27 @@ class uiExpander extends _uiControl {
         displayName: "Stop",
         parentElement: "_controlsDiv",
       },
+      controlButton1: {
+        controlType: "uiButton",
+        name: "controlButton1",
+        displayName: "control 1",
+        parentElement: "_controlsDiv",
+      },
+      controlButton2: {
+        controlType: "uiButton",
+        name: "controlButton2",
+        displayName: "control 2",
+        parentElement: "_controlsDiv",
+      },
       eventLog: {
         controlType: "uiEventLog",
-        parentElement: "_console",
+        parentElement: "_controlsDiv",
         name: "eventLog",
+      },
+      bar: {
+        controlType: "uiBar",
+        parentElement: "_controlsDiv",
+        name: "bar",
       },
     });
   }
@@ -63,24 +80,22 @@ class uiExpander extends _uiControl {
         <!-- ${this.name} --> 
         <div id="${this._uuid}_main" class="col-lg-12 "   style="margin:${this.margin}">
             <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
-                <span id="${this._uuid}_label">${this.displayName}</span>          
+                <span class="col-lg-6" id="${this._uuid}_label">${this.displayName}</span>          
             </div>
             <div class
               id="${this._uuid}_controls" 
               class="row d-flex" 
               style=" 
-               margin-left; 
+              float: left; 
               padding:${this.padding};
               width:100%;
               display:none;" > 
               
-              <div id="${this._uuid}_console"> 
-              </div>
-
-              <div id="${this._uuid}_btnSess">
-              </div>
+             
  
             </div>
+
+            
         </div>`;
   }
 
