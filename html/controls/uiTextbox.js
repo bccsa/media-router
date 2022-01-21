@@ -27,7 +27,7 @@ class uiTextBox extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-        <div id="${this._uuid}_main" class="col-lg-12" style="margin: ${this.margin}">
+        <div id="${this._uuid}_main" class="col-lg-3" style="margin: ${this.margin}">
             <div class="d-flex"> 
                 <label id="${this._uuid}_label" style="width: ${this.labelWidth}">${this.displayName}</label>
                 <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
