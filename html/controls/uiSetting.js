@@ -36,9 +36,27 @@ class uiSetting extends _uiControl {
         parentElement: "_setting",
       },
       controlLabel3: {
-        controlType: "uiTextBox",
+        controlType: "uiCheckbox",
         name: "controlLabel3",
         displayName: "controlLabel3",
+        parentElement: "_setting",
+      },
+      controlLabel4: {
+        controlType: "uiCheckbox",
+        name: "controlLabel4",
+        displayName: "controlLabel4",
+        parentElement: "_setting",
+      },
+      controlLabel5: {
+        controlType: "uiCheckbox",
+        name: "controlLabel5",
+        displayName: "controlLabel5",
+        parentElement: "_setting",
+      },
+      controlLabel6: {
+        controlType: "uiCheckbox",
+        name: "controlLabel6",
+        displayName: "controlLabel6",
         parentElement: "_setting",
       },
     });
@@ -51,7 +69,7 @@ class uiSetting extends _uiControl {
     return `
     <!-- ${this.name} --> 
         <div class="row" id="${this._uuid}_setting">
-          <span class=""> ${this.displayName} </span>  
+          <div class="col-lg-12"> <h3 > ${this.displayName} </h3> </div>  
         </div>
     `;
   }

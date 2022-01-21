@@ -27,7 +27,7 @@ class uiCheckbox extends _uiControl {
   get html() {
     return `
             <!-- ${this.name} --> 
-                <div>
+                <div class="col-lg-3">
                     <input type="checkbox"  
                     id="${this._uuid}_checkBox" 
                     name="${this.displayName}"
@@ -50,7 +50,7 @@ class uiCheckbox extends _uiControl {
 
     this._checkbox.addEventListener("change", function () {
       o.value = o._checkbox.checked;
-      
+
       o._notifyProperty("value");
     });
 
