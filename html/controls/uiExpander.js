@@ -34,6 +34,12 @@ class uiExpander extends _uiControl {
         parentElement: "_topBar",
         hidden: true,
       },
+      modal: {
+        controlType: "uiConfirmButton",
+        name: "modal",
+        displayName: "modal",
+        parentElement: "_topBar",
+      },
       startButton: {
         controlType: "uiButton",
         name: "startButton",

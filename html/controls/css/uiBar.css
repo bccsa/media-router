@@ -1,19 +1,31 @@
 .uiBar{
     float: right;
-    width: 50px;
+    width: 100px;
     height: 300px;
-    z-index: -1;
-    top:  position: absolute; 
-    top: 0px; 
+    z-index: 1;   
+    margin-top: -22.6%;
+    background-color:grey; 
+    padding-top: 20px;
+}
+.uiBar ul li img{
+        margin-left: 8px;
+}
+
+.uiBar ul {
+    margin-left: -40px;
 }
 
 .uiBar ul li{
-    height: 130px; 
-    padding: 1%;
+    height: 70px;  
     list-style: none;
+    width: 85px;  
+    margin-bottom: 10px;  
 }
 
 .uiBar ul li:hover {
-    height: 130px;
-    background-color: rgb(173, 173, 95);
+    height: 70px;
+    background-color: beige;
+    width: 85px;
+    margin-bottom: 10px;
+    padding-left: -40px; 
 }

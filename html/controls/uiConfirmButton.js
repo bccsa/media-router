@@ -15,7 +15,7 @@ class uiConfirmButton extends _uiControl {
     super();
     this.displayName = "The modal";
     this.helpText = "Modal for confirmation";
-    this.styleClass = "btn btn-danger";
+    this.styleClass = "btn btn-primary";
     this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/modal.css");
   }
@@ -28,9 +28,11 @@ class uiConfirmButton extends _uiControl {
     return `
           <!-- ${this.name} -->
            
-          <button id="${this._uuid}_buttonModal" > ${this.displayName}</button>
-          <div id="${this._uuid}_confirmBox" class="modal-content">
-              <button 
+          <button class="${this.styleClass}" id="${this._uuid}_buttonModal" > ${this.displayName} </button>
+
+          <div id="${this._uuid}_confirmBox" class="modal">
+            <div class="modal-content">
+                <button 
                 type="button" 
                 id="${this._uuid}_buttonOk" 
                 class="btn btn-success m-1">
@@ -43,6 +45,7 @@ class uiConfirmButton extends _uiControl {
                 class="btn btn-danger m-1">
                   Cancel
               </button> 
+            </div>
           </div>     
       `;
   }
@@ -63,11 +66,11 @@ class uiConfirmButton extends _uiControl {
       o._confirmBox.style.display = "none";
     });
 
-    window.addEventListener("click", function (event) {
-      if (event == o._confirmBox) {
-        o._confirmBox.style.display = "none";
-      }
-    });
+    // window.addEventListener("click", function (event) {
+    //   if (event == o._confirmBox) {
+    //     o._confirmBox.style.display = "none";
+    //   }
+    // });
   }
 
   DomUpdate(propertyName) {
