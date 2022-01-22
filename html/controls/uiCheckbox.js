@@ -17,7 +17,7 @@ class uiCheckbox extends _uiControl {
     this.styleClass = "btn btn-danger";
     this.value = false;
     this._styles.push("controls/css/bootstrap.min.css");
-    // this._styles.push("controls/js/bootstrap.min.js");
+    this._styles.push("controls/css/uiCheckbox.css");
   }
 
   // -------------------------------------
@@ -27,17 +27,18 @@ class uiCheckbox extends _uiControl {
   get html() {
     return `
             <!-- ${this.name} --> 
-                <div class="col-lg-3">
+                <div class="col-lg-3 checkBox">
+                <label  for="horns">${this.displayName}</label>
                     <input type="checkbox"  
                     id="${this._uuid}_checkBox" 
                     name="${this.displayName}"
                     data-toggle="tooltip"
                     data-placement="rigth"
                     title="${this.helpText}"
-                    checked=${this.value}
+                    checked=${this.value} 
                     >
 
-                    <label for="horns">${this.displayName}</label>
+                    
                 </div> 
             `;
   }

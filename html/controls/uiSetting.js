@@ -12,8 +12,9 @@
 class uiSetting extends _uiControl {
   constructor() {
     super();
-    this.displayName = "General";
+    this.displayName = "";
     this._styles.push("controls/css/bootstrap.min.css");
+    this._styles.push("controls/css/uiSettings.css");
 
     // Add small uiComponents
     this.SetData({
@@ -68,7 +69,7 @@ class uiSetting extends _uiControl {
   get html() {
     return `
     <!-- ${this.name} --> 
-        <div class="row" id="${this._uuid}_setting">
+        <div class="row setting" id="${this._uuid}_setting">
           <div class="col-lg-12"> <h3 > ${this.displayName} </h3> </div>  
         </div>
     `;

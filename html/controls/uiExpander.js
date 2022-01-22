@@ -78,6 +78,13 @@ class uiExpander extends _uiControl {
         controlType: "uiSetting",
         parentElement: "_controlsDiv",
         name: "setting",
+        displayName: "General1",
+      },
+      setting1: {
+        controlType: "uiSetting",
+        parentElement: "_controlsDiv",
+        name: "setting1",
+        displayName: "General 2",
       },
     });
   }
