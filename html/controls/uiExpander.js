@@ -15,7 +15,7 @@ class uiExpander extends _uiControl {
     this.displayName = "new control"; // Display name
     this.helpText = "new control help text";
     this.margin = "10px";
-    this.padding = "10px";
+    this.padding = "10px"; 
     this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiExpander.css");
 

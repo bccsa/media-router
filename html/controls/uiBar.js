@@ -12,7 +12,7 @@
 class uiBar extends _uiControl {
   constructor() {
     super();
-
+    this.console = document.getElementById(`${this._uuid}_console`);
     this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiBar.css");
   }
@@ -41,7 +41,7 @@ class uiBar extends _uiControl {
 
     let o = this;
     this._list1.addEventListener("click", function () {
-      console.log("first");
+      console.log(o.console);
     });
 
     this._list2.addEventListener("click", function () {
