@@ -14,7 +14,7 @@ class uiTabController extends _uiControl {
     super();
     this.console = document.getElementById(`${this._uuid}_console`);
     this._styles.push("controls/css/bootstrap.min.css");
-    this._styles.push("controls/css/uiBar.css");
+    this._styles.push("controls/css/uiTabController.css");
   }
 
   // -------------------------------------
