@@ -9,7 +9,7 @@
 // Class declaration
 // -------------------------------------
 
-class uiBar extends _uiControl {
+class uiTabController extends _uiControl {
   constructor() {
     super();
     this.console = document.getElementById(`${this._uuid}_console`);
@@ -23,18 +23,25 @@ class uiBar extends _uiControl {
 
   get html() {
     return `
-                <!-- ${this.name} --> 
-                     
-                         <div id="${this._uuid}_bar" class="uiBar">
-                            <ul>
-                                <li id="${this._uuid}_list1"> <img src="../assets/img/list.png"</li>
-                                <li id="${this._uuid}_list2"> <img src="../assets/img/settings.png"</li>
-                            </ul>
-                         </div> 
-                `;
+      <!-- ${this.name} --> 
+      <div id="${this._uuid}_main">
+        <div id="${this._uuid}_tabPages">
+          uiTabPage controls added in this div.
+        </div>
+          <ul id="${this._uuid}_tabButtons">
+            <dynamic li's added in code
+          </ul>
+      </div
+                <div id="${this._uuid}_bar" class="uiBar">
+                  <ul>
+                      <li id="${this._uuid}_list1"> <img src="../assets/img/list.png"</li>
+                      <li id="${this._uuid}_list2"> <img src="../assets/img/settings.png"</li>
+                  </ul>
+                </div> 
+      `;
   }
 
-  DomLinkup() {
+  Init() {
     this._Bar = document.getElementById(`${this._uuid}_Bar`);
     this._list1 = document.getElementById(`${this._uuid}_list1`);
     this._list2 = document.getElementById(`${this._uuid}_list2`);
@@ -54,7 +61,7 @@ class uiBar extends _uiControl {
     // }, 3000);
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "logText": {
         this._eventLog.innerHTML += this.logText;

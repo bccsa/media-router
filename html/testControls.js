@@ -5,7 +5,7 @@ const container = new uiSimpleContainer();
 // const terminal = new uiSimpleContainer();
 
 controlsDiv.innerHTML += container.html;
-container.DomLinkup();
+container.Init();
 container._init = true;
 
 

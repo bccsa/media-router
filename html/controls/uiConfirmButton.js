@@ -13,11 +13,10 @@
 class uiConfirmButton extends _uiControl {
   constructor() {
     super();
-    this.displayName = "The modal";
-    this.helpText = "Modal for confirmation";
-    this.styleClass = "btn btn-primary";
+    this.displayName = "Confirm button";
+    this.helpText = "Confirm button help text";
     this._styles.push("controls/css/bootstrap.min.css");
-    this._styles.push("controls/css/modal.css");
+    this._styles.push("controls/css/uiConfirmButton.css");
   }
 
   // -------------------------------------
@@ -26,17 +25,24 @@ class uiConfirmButton extends _uiControl {
 
   get html() {
     return `
-          <!-- ${this.name} -->
-           
-          <button class="${this.styleClass}" id="${this._uuid}_buttonModal" > ${this.displayName} </button>
+        <!-- ${this.name} -->
+        <div id="${this._uuid}_main">
+          <button
+            class="btn btn-primary"
+            data-toggle="tooltip"
+            data-placement="top"
+            title="${this.helpText}"
+            id="${this._uuid}_buttonModal">
+              ${this.displayName}
+          </button>
 
-          <div id="${this._uuid}_confirmBox" class="modal">
-            <div class="modal-content">
-                <button 
+          <div id="${this._uuid}_confirmBox" class="uiConfirmButton">
+            <div class="uiConfirmButton_content">
+              <button 
                 type="button" 
                 id="${this._uuid}_buttonOk" 
                 class="btn btn-success m-1">
-                  Confirm
+                  Ok
               </button>
 
               <button 
@@ -46,17 +52,19 @@ class uiConfirmButton extends _uiControl {
                   Cancel
               </button> 
             </div>
-          </div>     
+          </div>    
+        </div>
       `;
   }
 
-  DomLinkup() {
+  Init() {
+    this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._buttonOk = document.getElementById(`${this._uuid}_buttonOk`);
     this._buttonCancel = document.getElementById(`${this._uuid}_buttonCancel`);
     this._buttonModal = document.getElementById(`${this._uuid}_buttonModal`);
-    this._helpText = document.getElementById(`${this._uuid}_helpText`);
     this._confirmBox = document.getElementById(`${this._uuid}_confirmBox`);
 
+    // Event handling
     let o = this;
     this._buttonModal.addEventListener("click", function () {
       o._confirmBox.style.display = "block";
@@ -66,21 +74,20 @@ class uiConfirmButton extends _uiControl {
       o._confirmBox.style.display = "none";
     });
 
-    // window.addEventListener("click", function (event) {
-    //   if (event == o._confirmBox) {
-    //     o._confirmBox.style.display = "none";
-    //   }
-    // });
+    this._buttonOk.addEventListener("click", function () {
+      o.dispatch("click", o);
+      o._confirmBox.style.display = "none";
+    });
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "helpText": {
-        this._helpText.innerHTML = this.helpText;
+        this._buttonModal.title = this.helpText;
         break;
       }
-      case "styleClass": {
-        this._button.className = this.styleClass;
+      case "displayName": {
+        this._buttonModal.innerHTML = this.displayName;
         break;
       }
     }

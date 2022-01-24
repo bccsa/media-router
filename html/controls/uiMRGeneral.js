@@ -41,7 +41,7 @@
 //         </div>`;
 //     }
   
-//     DomLinkup() {
+//     Init() {
 //       this._mainDiv = document.getElementById(`${this._uuid}_main`);
 //       this._label = document.getElementById(`${this._uuid}_label`);
 //       this._topBar = document.getElementById(`${this._uuid}_topBar`);
@@ -59,7 +59,7 @@
 //       });
 //     }
   
-//     DomUpdate(propertyName) {
+//     Update(propertyName) {
 //       switch (propertyName) {
 //         case "displayName": {
 //           this._label.innerText = this.displayName;

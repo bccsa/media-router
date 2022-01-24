@@ -32,7 +32,7 @@ class uiEventLog extends _uiControl {
               `;
   }
 
-  DomLinkup() {
+  Init() {
     this._eventLog = document.getElementById(`${this._uuid}_eventLog`);
     //  this._terminal = document.getElementById(`${this._uuid}_terminal`);
 
@@ -41,7 +41,7 @@ class uiEventLog extends _uiControl {
     // }, 3000);
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "logText": {
         this._eventLog.innerHTML += this.logText;

@@ -118,7 +118,7 @@ class uiExpander extends _uiControl {
         </div>`;
   }
 
-  DomLinkup() {
+  Init() {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
@@ -140,11 +140,11 @@ class uiExpander extends _uiControl {
     // Listen for delete button event
     this._controls["deleteBtn"].on("click", () => {
       // Delete this control
-      this.DomRemove();
+      this.Remove();
     });
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "displayName": {
         this._label.innerText = this.displayName;

@@ -38,7 +38,7 @@ class uiStatus extends _uiControl {
             `;
   }
 
-  DomLinkup() {
+  Init() {
     this._status = document.getElementById(`${this._uuid}_status`);
     this._helpText = document.getElementById(`${this._uuid}_helpText`);
 
@@ -48,7 +48,7 @@ class uiStatus extends _uiControl {
     }, 3000);
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "displayName": {
         this._status.innerHTML = this.displayName;

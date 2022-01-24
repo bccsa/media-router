@@ -14,7 +14,6 @@ class uiCheckbox extends _uiControl {
     super();
     this.displayName = "click here";
     this.helpText = "How to use this checkBox";
-    this.styleClass = "btn btn-danger";
     this.value = false;
     this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiCheckbox.css");
@@ -27,49 +26,48 @@ class uiCheckbox extends _uiControl {
   get html() {
     return `
             <!-- ${this.name} --> 
-                <div class="col-lg-3 checkBox">
-                <label  for="horns">${this.displayName}</label>
-                    <input type="checkbox"  
-                    id="${this._uuid}_checkBox" 
-                    name="${this.displayName}"
-                    data-toggle="tooltip"
-                    data-placement="rigth"
-                    title="${this.helpText}"
-                    checked=${this.value} 
-                    >
-
-                    
-                </div> 
+            <div id="${this._uuid}_main"
+              class="col-lg-3 uiCheckbox"
+              data-toggle="tooltip"
+              data-placement="rigth"
+              title="${this.helpText}">
+              <label id="${this._uuid}_label">${this.displayName}</label>
+              <input type="checkbox"  
+                id="${this._uuid}_checkBox" 
+                name="${this.displayName}">
+            </div> 
             `;
   }
 
-  DomLinkup() {
+  Init() {
+    this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._checkbox = document.getElementById(`${this._uuid}_checkBox`);
     this._helpText = document.getElementById(`${this._uuid}_help`);
+    this._label = document.getElementById(`${this._uuid}_label`);
 
+    // Set initial value
+    this._checkbox.checked = this.value;
+
+    // Event handling
     let o = this;
-
     this._checkbox.addEventListener("change", function () {
       o.value = o._checkbox.checked;
-
       o._notifyProperty("value");
     });
-
-    // if (this._checkbox.checked == true) {
-    //   console.log("element Check");
-    // } else {
-    //     console.log("default");
-    // }
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "helpText": {
-        this._helpText.innerHTML = this.helpText;
+        this._checkbox.title = this.helpText;
         break;
       }
-      case "styleClass": {
-        this._input.className = this.styleClass;
+      case "value": {
+        this._checkbox.checked = this.value;
+        break;
+      }
+      case "displayName": {
+        this._label.innerHTML = this.displayName;
         break;
       }
     }

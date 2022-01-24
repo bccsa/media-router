@@ -39,7 +39,7 @@ class uiSelect extends _uiControl {
         `;
     }
 
-    DomLinkup(){
+    Init(){
         this._mainDiv = document.getElementById(`${this._uuid}_main`);
 
         // Element containing child controls

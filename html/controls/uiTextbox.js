@@ -36,7 +36,7 @@ class uiTextBox extends _uiControl {
         `;
   }
 
-  DomLinkup() {
+  Init() {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._input = document.getElementById(`${this._uuid}_input`);
     this._label = document.getElementById(`${this._uuid}_label`);
@@ -50,7 +50,7 @@ class uiTextBox extends _uiControl {
 
 
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "value": {
         this._input.value = this.value;

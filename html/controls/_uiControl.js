@@ -81,7 +81,7 @@ class _uiControl extends Dispatcher {
     this._uuid = this._generateUuid(); // Unique ID for this control
     this._controlsDiv = undefined; // Add a DOM reference to the _controlsDiv property if the control must support child controls
     this._init = false; // True when the control has been initilized (DOM linkup complete)
-    this._domUpdateList = []; // List of properties that needs to be updated
+    this._UpdateList = []; // List of properties that needs to be updated
     this.parentElement = undefined; // Used to specify in which HTML element in the parent the child should be added
     this.hidden = false; // Set to true if the control's data should be excluded from GetData() and from _notify();
     this.className = "row";
@@ -109,7 +109,7 @@ class _uiControl extends Dispatcher {
 
   // Implementing class should override this function
   // This function is called by the parent control when the child's (this control) html has been printed to the DOM.
-  DomLinkup() {
+  Init() {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
 
     // Element containing child controls. Controls that should not be able to host child controls
@@ -119,13 +119,13 @@ class _uiControl extends Dispatcher {
 
   // Implementing class should override this function if needed
   // This function is called by the parent control when the child's (this control) html should be removed from the DOM.
-  DomRemove() {
+  Remove() {
     this._mainDiv.remove();
   }
 
   // Implementing class should override this function
   // This function is called when data has been received through the SetData method.
-  DomUpdate(propertyName) {}
+  Update(propertyName) {}
 
   // -------------------------------------
   // Core functions
@@ -147,14 +147,14 @@ class _uiControl extends Dispatcher {
 
           // Notify to update the DOM if control has been initialized
           if (this._init) {
-            this._domUpdateList.push(k);
+            this._UpdateList.push(k);
           }
         }
         // Update child controls. If a child control shares the name of a settable property, the child control will not receive data.
         else if (this._controls[k] != undefined) {
           this._controls[k].SetData(data[k]);
         }
-        // Create a new child control if the passed data has controlType set. If this control is not ready yet (DomLinkup did not run yet),
+        // Create a new child control if the passed data has controlType set. If this control is not ready yet (Init did not run yet),
         // add new child controls to a controls queue.
         else if (data[k].controlType != undefined) {
           let c = this._getDynamicClass(data[k].controlType);
@@ -185,8 +185,8 @@ class _uiControl extends Dispatcher {
     });
 
     // Update the DOM
-    this._domUpdateList.forEach((k) => {
-      this.DomUpdate(k);
+    this._UpdateList.forEach((k) => {
+      this.Update(k);
     });
   }
 
@@ -194,13 +194,13 @@ class _uiControl extends Dispatcher {
   _initControl(control, element) {
     let e = this[element];
     if (control != undefined && control.name != undefined && e != undefined) {
-      // Wait for HTML to be printed _controlsDiv element, and call DomLinkup
+      // Wait for HTML to be printed _controlsDiv element, and call Init
       const observer = new MutationObserver(function (mutationsList, observer) {
         control._styles.forEach((s) => {
           control._parent.ApplyStyle(s);
         });
 
-        control.DomLinkup();
+        control.Init();
         observer.disconnect();
         control._init = true;
 
@@ -262,7 +262,7 @@ class _uiControl extends Dispatcher {
       if (this._controls[k] != undefined) {
         // Check if the passed path has no children
         if (Object.keys(path[k]).length == 0) {
-          this._controls[k].DomRemove();
+          this._controls[k].Remove();
           delete this._controls[k];
         }
         // Pass the path to the child control

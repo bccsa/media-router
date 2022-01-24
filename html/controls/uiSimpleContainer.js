@@ -25,7 +25,7 @@ class uiSimpleContainer extends _uiControl {
             </div> `;
   }
 
-  DomLinkup() {
+  Init() {
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
   }
 }

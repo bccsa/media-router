@@ -75,7 +75,7 @@ class uiSetting extends _uiControl {
     `;
   }
 
-  DomLinkup() {
+  Init() {
     this._setting = document.getElementById(`${this._uuid}_setting`);
   }
 }

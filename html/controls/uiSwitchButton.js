@@ -38,7 +38,7 @@ class uiSwitchButton extends _uiControl {
           `;
   }
 
-  DomLinkup() {
+  Init() {
     this._switch = document.getElementById(`${this._uuid}_switch`);
     this._helpText = document.getElementById(`${this._uuid}_help`);
 
@@ -52,7 +52,7 @@ class uiSwitchButton extends _uiControl {
     });
   }
 
-  DomUpdate(propertyName) {
+  Update(propertyName) {
     switch (propertyName) {
       case "value": {
         this._switch.value = this.value;
