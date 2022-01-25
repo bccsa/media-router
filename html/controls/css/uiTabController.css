@@ -1,13 +1,13 @@
-.tabControl{
+.uiTabController{
     display: flex;
     width: 100%;
 }
 
-.tabPages{
+.uiTabController_controls{
     width: 100%;
 }
 
-.uiTabController{
+.uiTabController_buttons{
     float: right;
     width: 100px;
     height: 300px;
@@ -15,22 +15,22 @@
     background-color:grey; 
     padding-top: 20px;
 }
-.uiTabController ul li img{
+.uiTabController_buttons ul li img{
         margin-left: 8px;
 }
 
-.uiTabController ul {
+.uiTabController_buttons ul {
     margin-left: -40px;
 }
 
-.uiTabController ul li{
+.uiTabController_buttons ul li{
     height: 70px;  
     list-style: none;
     width: 85px;  
     margin-bottom: 10px;  
 }
 
-.uiTabController ul li:hover {
+.uiTabController_buttons ul li:hover {
     height: 70px;
     background-color:  #efefef;
     width: 85px;

@@ -1,5 +1,5 @@
 // =====================================
-// button with value
+// Tab controller
 // user control
 //
 // Copyright BCC South Africa
@@ -12,29 +12,9 @@
 class uiTabController extends _uiControl {
   constructor() {
     super();
-    this.console = document.getElementById(`${this._uuid}_console`);
-    this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiTabController.css");
-
-    this.SetData({
-      list: {
-        controlType: "uiList",
-        name: "list1",
-        displayName: "list.png",
-        parentElement: "_tabButtons",
-      },
-      list2: {
-        controlType: "uiList",
-        name: "list2",
-        displayName: "settings.png",
-        parentElement: "_tabButtons",
-      },
-      tabPage: {
-        controlType: "uiTabPage",
-        name: "tabPage",
-        parentElement: "_tabPages",
-      },
-    });
+    this._buttons = {};
+    this._tabCount = 0;
   }
 
   // -------------------------------------
@@ -43,46 +23,78 @@ class uiTabController extends _uiControl {
 
   get html() {
     return `
-      <!-- ${this.name} --> 
-      <div id="${this._uuid}_main" class="tabControl">
-
-        <div id="${this._uuid}_tabPages" class="tabPages"> 
+      <div id="${this._uuid}_main" class="uiTabController">
+        <!-- ${this.name} --> 
+        <div id="${this._uuid}_controls" class="uiTabController_controls"></div>
+        <div class="uiTabController_buttons">
+          <ul id="${this._uuid}_buttons"></ul>
         </div>
-
-        <div class="uiTabController">
-          <ul id="${this._uuid}_tabButtons">
-            
-          </ul>
-        </div>
-          
       </div
-                 
       `;
   }
 
   Init() {
-    this._tabPages = document.getElementById(`${this._uuid}_tabPages`);
-    this._tabButtons = document.getElementById(`${this._uuid}_tabButtons`);
-
-    this._list01 = document.getElementById(`${this._uuid}_list1`);
-
-    let o = this;
-    console.log("click" );
-    // this._list01.addEventListener("click", function () {
-    //   console.log("o.console");
-    // });
-
-    // this._list2.addEventListener("click", function () {
-    //   console.log("first");
-    // });
+    this._mainDiv = document.getElementById(`${this._uuid}_main`);
+    this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
+    this._tabButtons = document.getElementById(`${this._uuid}_buttons`);
   }
 
-  Update(propertyName) {
-    switch (propertyName) {
-      case "logText": {
-        this._eventLog.innerHTML += this.logText;
-        break;
+  CreateTab(tabPage) {
+    if (tabPage.constructor.name == "uiTabPage") {
+      // Create the tab button
+      this.SetData({
+        [`${tabPage.name}_button`]: {
+          name: `${tabPage.name}_button`,
+          controlType: "uiTabButton",
+          tabImagePath: tabPage.tabImagePath,
+          parentElement: "_tabButtons"
+        }
+      });
+
+      let tabButton = this._controls[`${tabPage.name}_button`];
+
+      // Add tab page reference to button
+      tabButton._tabPage = tabPage;
+
+      // Event handling
+      tabButton.on("click", (tb) => {
+        Object.keys(this._controls).forEach((k) => {
+          let p = this._controls[k];
+          if (p.constructor.name == "uiTabPage") {
+            if (p == tb._tabPage) {
+              p.Show();
+            }
+            else {
+              p.Hide();
+            }
+          }
+          else if (p.constructor.name == "uiTabButton") {
+            if (p == tb) {
+              p.Select();
+            }
+            else {
+              p.Deselect();
+            }
+          }
+        });
+      });
+
+      // Show the first tab page, and hide subsequent tab pages
+      if (this._tabCount == 0) {
+        tabPage.Show();
       }
+      else {
+        tabPage.Hide();
+      }
+
+      this._tabCount++;
     }
+  }
+
+  RemoveTab(tabPage) {
+    // Remove the tab button
+    this.Remove({[`${tabPage.name}_button`]:""});
+
+    this._tabCount--;
   }
 }

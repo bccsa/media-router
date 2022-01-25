@@ -1,9 +1,8 @@
-.uiList {
+.uiTabButton {
     list-style: none;  
-} 
+}
 
-.uiList:hover {
+.uiTabButton:hover {
     list-style: none; 
     background-color: #f5f5f5; 
-} 
-
+}

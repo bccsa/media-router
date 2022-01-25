@@ -1,5 +1,5 @@
 // =====================================
-// button with value
+// Tab Button
 // user control
 //
 // Copyright BCC South Africa
@@ -9,12 +9,13 @@
 // Class declaration
 // -------------------------------------
 
-class uiButton extends _uiControl {
+class uiTabButton extends _uiControl {
   constructor() {
     super();
-    this.displayName = "click here";
-    this.helpText = "How to use this button";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this.tabImagePath = "path/to/image.png";
+    this._tabPage = undefined;                // Reference to the uiTabPage that this button is controlling. This is set by the uiTabController
+    this._hideData = true;                    // Hide uiTabButton data from GetData by default
+    this._styles.push("controls/css/uiTabButton.css");
   }
 
   // -------------------------------------
@@ -23,11 +24,11 @@ class uiButton extends _uiControl {
 
   get html() {
     return `
-      <!-- ${this.name} -->
-      <div id="${this._uuid}_main" data-toggle="tooltip" data-placement="top" title="${this.helpText}">
-        <button id="${this._uuid}_button" class="btn btn-default m-1" style="background-color:grey;">
-          ${this.displayName}
-        </button>
+      <div id="${this._uuid}_main">
+        <!-- ${this.name} -->
+        <li class="uiTabButton" id="${this._uuid}_button">
+          <img src="${this.tabImagePath}">
+        </li>  
       </div>`;
   }
 
@@ -42,15 +43,11 @@ class uiButton extends _uiControl {
     });
   }
 
-  Update(propertyName) {
-    switch (propertyName) {
-      case "helpText": {
-        this._button.title = this.helpText;
-        break;
-      }
-      case "displayName": {
-        this._button.value = this.displayName;
-      }
-    }
+  Select() {
+    // Change background colour to selected colour
+  }
+
+  Deselect() {
+    // Change background colour to default colour
   }
 }

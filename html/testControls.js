@@ -2,7 +2,7 @@ const controlsDiv = document.getElementById("controls");
 // const Console = document.getElementById(`${this._uuid}_console`);
 
 const container = new uiSimpleContainer();
-// const terminal = new uiSimpleContainer();
+container.name = "Top level container";
 
 controlsDiv.innerHTML += container.html;
 container.Init();
@@ -15,61 +15,79 @@ container.on("data", (data) => {
 });
 
 
-// let data =
 container.SetData({
-  expander1: {
-    name: "expander1",
-    displayName: "Douala",
-    controlType: "uiExpander",
-    header: {
-      statusC1: {
-        controlType: "uiStatus",
-        name: "Status Control 1",
-        displayName: "Status Ctrl 1",
-      },
-      statusC2: {
-        controlType: "uiStatus",
-        name: "Status Control 2",
-        displayName: "Status Ctrl 2",
-      },
-      statusC3: {
-        controlType: "uiStatus",
-        name: "Status Control 3",
-        displayName: "Status Ctrl 3",
-      },
-      switchButton: {
-        controlType: "uiSwitchButton",
-        name: "Switch",
-      },
+  tabController1: {
+    name:"tabController1",
+    controlType:"uiTabController",
+    tabPage1: {
+      name:"tabPage1",
+      controlType:"uiTabPage",
+      tabImagePath:"assets/img/settings.png",
+      expander1: {
+        name: "expander1",
+        displayName: "Douala",
+        controlType: "uiExpander",
+        header: {
+          statusC1: {
+            controlType: "uiStatus",
+            name: "Status Control 1",
+            displayName: "Status Ctrl 1",
+          },
+          statusC2: {
+            controlType: "uiStatus",
+            name: "Status Control 2",
+            displayName: "Status Ctrl 2",
+          },
+          statusC3: {
+            controlType: "uiStatus",
+            name: "Status Control 3",
+            displayName: "Status Ctrl 3",
+          },
+          switchButton: {
+            controlType: "uiSwitchButton",
+            name: "Switch",
+          },
+        },
+      }
     },
-  },
-  expander2: {
-    name: "expander2",
-    displayName: "Yaounde",
-    controlType: "uiExpander",
-    header: {
-      statusC1: {
-        controlType: "uiStatus",
-        name: "Status Control 1",
-        displayName: "Status Ctrl 1",
-      },
-      statusC2: {
-        controlType: "uiStatus",
-        name: "Status Control 2",
-        displayName: "Status Ctrl 2",
-      },
-      statusC3: {
-        controlType: "uiStatus",
-        name: "Status Control 3",
-        displayName: "Status Ctrl 3",
-      },
-      switchButton: {
-        controlType: "uiSwitchButton",
-        name: "Switch",
-      },
-    },
-  },
-});
+    tabPage2: {
+      name:"tabPage2",
+      controlType:"uiTabPage",
+      tabImagePath:"assets/img/list.png",
+      expander2: {
+        name: "expander2",
+        displayName: "Yaounde",
+        controlType: "uiExpander",
+        header: {
+          statusC1: {
+            controlType: "uiStatus",
+            name: "Status Control 1",
+            displayName: "Status Ctrl 1",
+          },
+          statusC2: {
+            controlType: "uiStatus",
+            name: "Status Control 2",
+            displayName: "Status Ctrl 2",
+          },
+          statusC3: {
+            controlType: "uiStatus",
+            name: "Status Control 3",
+            displayName: "Status Ctrl 3",
+          },
+          switchButton: {
+            controlType: "uiSwitchButton",
+            name: "Switch",
+          },
+        },
+      }
+    }
+  }
+})
+// let data =
+// container.SetData({
+  
+//   ,
+// });
 
 //,
 // etienneCoentrol: {

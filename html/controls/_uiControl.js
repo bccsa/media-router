@@ -83,7 +83,7 @@ class _uiControl extends Dispatcher {
     this._init = false; // True when the control has been initilized (DOM linkup complete)
     this._UpdateList = []; // List of properties that needs to be updated
     this.parentElement = undefined; // Used to specify in which HTML element in the parent the child should be added
-    this.hidden = false; // Set to true if the control's data should be excluded from GetData() and from _notify();
+    this.hideData = false; // Set to true if the control's data should be excluded from GetData() and from _notify();
     this.className = "row";
   }
 
@@ -119,7 +119,7 @@ class _uiControl extends Dispatcher {
 
   // Implementing class should override this function if needed
   // This function is called by the parent control when the child's (this control) html should be removed from the DOM.
-  Remove() {
+  RemoveHtml() {
     this._mainDiv.remove();
   }
 
@@ -203,6 +203,8 @@ class _uiControl extends Dispatcher {
         control.Init();
         observer.disconnect();
         control._init = true;
+        // Notify that initialization is done
+        control.dispatch("init", control);
 
         // ################## test logic #######################
         console.log(`Control ${control.name} added to the DOM`);
@@ -247,7 +249,7 @@ class _uiControl extends Dispatcher {
     Object.keys(this._controls).forEach((k) => {
       if (
         this._controls[k].GetData() != undefined &&
-        !this._controls[k].hidden
+        !this._controls[k].hideData
       ) {
         data[k] = this._controls[k].GetData();
       }
@@ -262,7 +264,7 @@ class _uiControl extends Dispatcher {
       if (this._controls[k] != undefined) {
         // Check if the passed path has no children
         if (Object.keys(path[k]).length == 0) {
-          this._controls[k].Remove();
+          this._controls[k].RemoveHtml();
           delete this._controls[k];
         }
         // Pass the path to the child control
@@ -314,7 +316,7 @@ class _uiControl extends Dispatcher {
         [this.name]: data,
       };
 
-      if (!this.hidden) {
+      if (!this.hideData) {
         this._parent._notify(n);
       }
     }

@@ -20,12 +20,15 @@ class uiSimpleContainer extends _uiControl {
 
   get html() {
     return `
+      <div id="${this._uuid}_main">
         <!-- ${this.name} -->  
-            <div class="" id="${this._uuid}_controls">
-            </div> `;
+        <div class="" id="${this._uuid}_controls">
+        </div>
+      </div>`;
   }
 
   Init() {
+    this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
   }
 }
