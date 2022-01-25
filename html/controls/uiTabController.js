@@ -67,6 +67,7 @@ class uiTabController extends _uiControl {
     this._list01 = document.getElementById(`${this._uuid}_list1`);
 
     let o = this;
+    console.log("click" );
     // this._list01.addEventListener("click", function () {
     //   console.log("o.console");
     // });
