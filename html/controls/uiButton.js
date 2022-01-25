@@ -42,7 +42,7 @@ class uiButton extends _uiControl {
     // Event handling
     let o = this;
     this._button.addEventListener("click", function () {
-      o.dispatch("click", o);
+        o.dispatch("click", o);
     });
   }
 

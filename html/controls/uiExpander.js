@@ -64,28 +64,29 @@ class uiExpander extends _uiControl {
         displayName: "control 2",
         parentElement: "_controlsDiv",
       },
-      eventLog: {
-        controlType: "uiEventLog",
-        parentElement: "_controlsDiv",
-        name: "eventLog",
-      },
-      bar: {
+
+      tab: {
         controlType: "uiTabController",
         parentElement: "_controlsDiv",
-        name: "bar",
+        name: "tap",
       },
-      settings: {
-        controlType: "uiSetting",
-        parentElement: "_controlsDiv",
-        name: "setting",
-        displayName: "General1",
-      },
-      setting1: {
-        controlType: "uiSetting",
-        parentElement: "_controlsDiv",
-        name: "setting1",
-        displayName: "General 2",
-      },
+      // eventLog: {
+      //   controlType: "uiEventLog",
+      //   parentElement: "_controlsDiv",
+      //   name: "eventLog",
+      // },
+      // settings: {
+      //   controlType: "uiSetting",
+      //   parentElement: "_controlsDiv",
+      //   name: "setting",
+      //   displayName: "General1",
+      // },
+      // setting1: {
+      //   controlType: "uiSetting",
+      //   parentElement: "_controlsDiv",
+      //   name: "setting1",
+      //   displayName: "General 2",
+      // },
     });
   }
 

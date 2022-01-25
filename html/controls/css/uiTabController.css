@@ -1,31 +1,40 @@
-.uiBar{
+.tabControl{
+    display: flex;
+    width: 100%;
+}
+
+.tabPages{
+    width: 100%;
+}
+
+.uiTabController{
     float: right;
     width: 100px;
     height: 300px;
-    z-index: 1;   
-    margin-top: -22.6%;
+    z-index: 1;    
     background-color:grey; 
     padding-top: 20px;
 }
-.uiBar ul li img{
+.uiTabController ul li img{
         margin-left: 8px;
 }
 
-.uiBar ul {
+.uiTabController ul {
     margin-left: -40px;
 }
 
-.uiBar ul li{
+.uiTabController ul li{
     height: 70px;  
     list-style: none;
     width: 85px;  
     margin-bottom: 10px;  
 }
 
-.uiBar ul li:hover {
+.uiTabController ul li:hover {
     height: 70px;
     background-color:  #efefef;
     width: 85px;
     margin-bottom: 10px;
     padding-left: -40px; 
 }
+

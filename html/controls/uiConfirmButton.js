@@ -15,6 +15,7 @@ class uiConfirmButton extends _uiControl {
     super();
     this.displayName = "Confirm button";
     this.helpText = "Confirm button help text";
+    this.message = "do you want to confirm this ?";
     this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiConfirmButton.css");
   }
@@ -38,6 +39,7 @@ class uiConfirmButton extends _uiControl {
 
           <div id="${this._uuid}_confirmBox" class="uiConfirmButton">
             <div class="uiConfirmButton_content">
+            <div> ${this.message}  </div>  
               <button 
                 type="button" 
                 id="${this._uuid}_buttonOk" 

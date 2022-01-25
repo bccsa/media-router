@@ -15,6 +15,26 @@ class uiTabController extends _uiControl {
     this.console = document.getElementById(`${this._uuid}_console`);
     this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiTabController.css");
+
+    this.SetData({
+      list: {
+        controlType: "uiList",
+        name: "list1",
+        displayName: "list.png",
+        parentElement: "_tabButtons",
+      },
+      list2: {
+        controlType: "uiList",
+        name: "list2",
+        displayName: "settings.png",
+        parentElement: "_tabButtons",
+      },
+      tabPage: {
+        controlType: "uiTabPage",
+        name: "tabPage",
+        parentElement: "_tabPages",
+      },
+    });
   }
 
   // -------------------------------------
@@ -24,41 +44,36 @@ class uiTabController extends _uiControl {
   get html() {
     return `
       <!-- ${this.name} --> 
-      <div id="${this._uuid}_main">
-        <div id="${this._uuid}_tabPages">
-          uiTabPage controls added in this div.
+      <div id="${this._uuid}_main" class="tabControl">
+
+        <div id="${this._uuid}_tabPages" class="tabPages"> 
         </div>
+
+        <div class="uiTabController">
           <ul id="${this._uuid}_tabButtons">
-            <dynamic li's added in code
+            
           </ul>
+        </div>
+          
       </div
-                <div id="${this._uuid}_bar" class="uiBar">
-                  <ul>
-                      <li id="${this._uuid}_list1"> <img src="../assets/img/list.png"</li>
-                      <li id="${this._uuid}_list2"> <img src="../assets/img/settings.png"</li>
-                  </ul>
-                </div> 
+                 
       `;
   }
 
   Init() {
-    this._Bar = document.getElementById(`${this._uuid}_Bar`);
-    this._list1 = document.getElementById(`${this._uuid}_list1`);
-    this._list2 = document.getElementById(`${this._uuid}_list2`);
+    this._tabPages = document.getElementById(`${this._uuid}_tabPages`);
+    this._tabButtons = document.getElementById(`${this._uuid}_tabButtons`);
+
+    this._list01 = document.getElementById(`${this._uuid}_list1`);
 
     let o = this;
-    this._list1.addEventListener("click", function () {
-      console.log(o.console);
-    });
+    // this._list01.addEventListener("click", function () {
+    //   console.log("o.console");
+    // });
 
-    this._list2.addEventListener("click", function () {
-      console.log("first");
-    });
-    //  this._terminal = document.getElementById(`${this._uuid}_terminal`);
-
-    // setInterval(() => {
-    //   this._eventLog.innerHTML = this.displayName;
-    // }, 3000);
+    // this._list2.addEventListener("click", function () {
+    //   console.log("first");
+    // });
   }
 
   Update(propertyName) {
