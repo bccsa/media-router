@@ -8,21 +8,19 @@ controlsDiv.innerHTML += container.html;
 container.Init();
 container._init = true;
 
-
 // Subscribe to the "data" event
 container.on("data", (data) => {
   console.log(JSON.stringify(data, null, 2));
 });
 
-
 container.SetData({
   tabController1: {
-    name:"tabController1",
-    controlType:"uiTabController",
+    name: "tabController1",
+    controlType: "uiTabController",
     tabPage1: {
-      name:"tabPage1",
-      controlType:"uiTabPage",
-      tabImagePath:"assets/img/settings.png",
+      name: "tabPage1",
+      controlType: "uiTabPage",
+      tabImagePath: "assets/img/settings.png",
       expander1: {
         name: "expander1",
         displayName: "Douala",
@@ -48,12 +46,12 @@ container.SetData({
             name: "Switch",
           },
         },
-      }
+      },
     },
     tabPage2: {
-      name:"tabPage2",
-      controlType:"uiTabPage",
-      tabImagePath:"assets/img/list.png",
+      name: "tabPage2",
+      controlType: "uiTabPage",
+      tabImagePath: "assets/img/list.png",
       expander2: {
         name: "expander2",
         displayName: "Yaounde",
@@ -79,13 +77,17 @@ container.SetData({
             name: "Switch",
           },
         },
-      }
-    }
-  }
-})
+      },
+      eventLog: {
+        controlType: "uiEventLog",
+        name: "eventLog",
+      },
+    },
+  },
+});
 // let data =
 // container.SetData({
-  
+
 //   ,
 // });
 

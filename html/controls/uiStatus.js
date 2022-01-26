@@ -28,7 +28,7 @@ class uiStatus extends _uiControl {
             <!-- ${this.name} -->
             
             <button class="${this.styleClass}" 
-              style="border: 0.5px solid grey; border-radius: 15px; "
+              style="border: 1px solid black; background-color: grey; border-radius: 15px; "
               id="${this._uuid}_status" 
               data-toggle="tooltip" 
               data-placement="top" 

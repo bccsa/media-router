@@ -40,24 +40,24 @@ class uiExpander extends _uiControl {
         displayName: "modal",
         parentElement: "_topBar",
       },
-      startButton: {
-        controlType: "uiButton",
-        name: "startButton",
-        displayName: "Start",
-        parentElement: "_controlsDiv",
-      },
-      stopButton: {
-        controlType: "uiButton",
-        name: "startButton",
-        displayName: "Stop",
-        parentElement: "_controlsDiv",
-      },
-      controlButton1: {
-        controlType: "uiButton",
-        name: "controlButton1",
-        displayName: "control 1",
-        parentElement: "_controlsDiv",
-      },
+      // startButton: {
+      //   controlType: "uiButton",
+      //   name: "startButton",
+      //   displayName: "Start",
+      //   parentElement: "_controlsDiv",
+      // },
+      // stopButton: {
+      //   controlType: "uiButton",
+      //   name: "startButton",
+      //   displayName: "Stop",
+      //   parentElement: "_controlsDiv",
+      // },
+      // controlButton1: {
+      //   controlType: "uiButton",
+      //   name: "controlButton1",
+      //   displayName: "control 1",
+      //   parentElement: "_controlsDiv",
+      // },
       // eventLog: {
       //   controlType: "uiEventLog",
       //   parentElement: "_controlsDiv",
