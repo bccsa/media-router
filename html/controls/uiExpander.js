@@ -58,18 +58,6 @@ class uiExpander extends _uiControl {
         displayName: "control 1",
         parentElement: "_controlsDiv",
       },
-      controlButton2: {
-        controlType: "uiButton",
-        name: "controlButton2",
-        displayName: "control 2",
-        parentElement: "_controlsDiv",
-      },
-
-      tab: {
-        controlType: "uiTabController",
-        parentElement: "_controlsDiv",
-        name: "tap",
-      },
       // eventLog: {
       //   controlType: "uiEventLog",
       //   parentElement: "_controlsDiv",
@@ -108,11 +96,9 @@ class uiExpander extends _uiControl {
               background-color: #efefef; 
               float: left; 
               padding:${this.padding};
-              width:100%;
-              display:none;" > 
-              
-             
- 
+              width:100%; 
+              display: flex;" > 
+        
             </div>
 
             

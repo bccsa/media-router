@@ -13,8 +13,8 @@ class uiTabButton extends _uiControl {
   constructor() {
     super();
     this.tabImagePath = "path/to/image.png";
-    this._tabPage = undefined;                // Reference to the uiTabPage that this button is controlling. This is set by the uiTabController
-    this._hideData = true;                    // Hide uiTabButton data from GetData by default
+    this._tabPage = undefined; // Reference to the uiTabPage that this button is controlling. This is set by the uiTabController
+    this._hideData = true; // Hide uiTabButton data from GetData by default
     this._styles.push("controls/css/uiTabButton.css");
   }
 
@@ -39,15 +39,19 @@ class uiTabButton extends _uiControl {
     // Event handling
     let o = this;
     this._button.addEventListener("click", function () {
-        o.dispatch("click", o);
+      o.dispatch("click", o);
     });
   }
 
   Select() {
     // Change background colour to selected colour
+    this._mainDiv.style.backgroundColor = "#efefef";
+    this._mainDiv.style.borderRadius = "0px 10px 10px 0px";
+    this._mainDiv.style.marginRight = "10px";
+    this._mainDiv.style.className = "uiTabButton-selected";
   }
 
   Deselect() {
-    // Change background colour to default colour
+    this._mainDiv.style.backgroundColor = "grey";
   }
 }

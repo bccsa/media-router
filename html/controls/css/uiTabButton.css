@@ -6,3 +6,17 @@
     list-style: none; 
     background-color: #f5f5f5; 
 }
+
+.uiTabButton-selected {
+    height: 70px;
+    background-color:  #efefef;
+    width: 85px;
+    margin-bottom: 10px;
+    padding-left: -40px; 
+    border-radius: 0px 10px 10px 0px;
+}
+
+.uiTabButton-deselected {
+    height: 70px;
+    background-color:  "grey"; 
+}

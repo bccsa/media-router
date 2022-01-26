@@ -28,6 +28,7 @@
     list-style: none;
     width: 85px;  
     margin-bottom: 10px;  
+    border-radius: 0px 10px 10px 0px;
 }
 
 .uiTabController_buttons ul li:hover {
@@ -36,5 +37,17 @@
     width: 85px;
     margin-bottom: 10px;
     padding-left: -40px; 
+    border-radius: 0px 10px 10px 0px;
 }
+
+.uiTabController_buttons ul li:hover {
+    height: 70px;
+    background-color:  #efefef;
+    width: 85px;
+    margin-bottom: 10px;
+    padding-left: -40px; 
+    border-radius: 0px 10px 10px 0px;
+}
+
+
 

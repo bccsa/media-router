@@ -47,8 +47,8 @@ class uiTabController extends _uiControl {
           name: `${tabPage.name}_button`,
           controlType: "uiTabButton",
           tabImagePath: tabPage.tabImagePath,
-          parentElement: "_tabButtons"
-        }
+          parentElement: "_tabButtons",
+        },
       });
 
       let tabButton = this._controls[`${tabPage.name}_button`];
@@ -63,16 +63,13 @@ class uiTabController extends _uiControl {
           if (p.constructor.name == "uiTabPage") {
             if (p == tb._tabPage) {
               p.Show();
-            }
-            else {
+            } else {
               p.Hide();
             }
-          }
-          else if (p.constructor.name == "uiTabButton") {
+          } else if (p.constructor.name == "uiTabButton") {
             if (p == tb) {
               p.Select();
-            }
-            else {
+            } else {
               p.Deselect();
             }
           }
@@ -82,8 +79,7 @@ class uiTabController extends _uiControl {
       // Show the first tab page, and hide subsequent tab pages
       if (this._tabCount == 0) {
         tabPage.Show();
-      }
-      else {
+      } else {
         tabPage.Hide();
       }
 
@@ -93,7 +89,7 @@ class uiTabController extends _uiControl {
 
   RemoveTab(tabPage) {
     // Remove the tab button
-    this.Remove({[`${tabPage.name}_button`]:""});
+    this.Remove({ [`${tabPage.name}_button`]: "" });
 
     this._tabCount--;
   }
