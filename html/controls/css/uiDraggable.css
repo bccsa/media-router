@@ -1,0 +1,14 @@
+.draggable {
+    border-style: solid;
+    border-radius: 10px;
+    border-width: 1px;
+    margin: 27px;
+    padding: 5px;
+    width: 97%;
+    background-color: #efefef;
+    cursor: move;
+} 
+
+.draggable.dragging {
+    opacity: 0.3;
+  }

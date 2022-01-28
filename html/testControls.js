@@ -47,6 +47,10 @@ container.SetData({
           },
         },
       },
+      DraggableList: {
+        controlType: "uiDraggableList",
+        name: "uiDraggableList",
+      },
     },
     tabPage2: {
       name: "tabPage2",
