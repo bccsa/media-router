@@ -70,15 +70,28 @@ class uiDraggable extends _uiControl {
     return `
       <!-- ${this.name} --> 
           <div class="row draggable" id="${this._uuid}_draggable" draggable="true" >
-            <div class="col-lg-12"> <h3> ${this.displayName} </h3> </div>  
+            <div class="col-lg-12" > <h3> ${this.displayName} </h3> </div>  
           </div>
       `;
   }
 
   Init() {
     this._draggable = document.getElementById(`${this._uuid}_draggable`);
+    this._draggables = document.querySelectorAll(".draggable");
+
+    this._draggables.forEach((drag) => {
+      const box = drag.getBoundingClientRect();
+      console.log(box.y);
+    });
 
     let o = this;
+    //Subscribe to event that will give the drag position.
+    // this._mainDiv.addEventListener('dragMoveEvent', () => {
+    //   //Set the position property in this control
+    //   this._dragPos = "Drag position in whatever format";
+    //   this._parent.SetChildPos(o);
+    // });
+
     this._draggable.addEventListener("dragstart", () => {
       o._draggable.classList.add("dragging");
     });

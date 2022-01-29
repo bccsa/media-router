@@ -38,23 +38,41 @@ class uiDraggableList extends _uiControl {
 
   get html() {
     return `
+        
+      <div id="${this._uuid}_main" class="draggableList"> 
         <!-- ${this.name} --> 
-            <div class="draggableList" id="${this._uuid}_draggableList"  >   
-
-            </div>
+      </div>
+           
         `;
   }
 
   Init() {
-    this._draggableList = document.getElementById(
-      `${this._uuid}_draggableList`
-    );
+    // this._mainDiv = document.getElementById(`${this._uuid}_main`);
+    this._draggableList = document.getElementById(`${this._uuid}_main`);
+    this._drags = document.querySelectorAll(".draggable");
 
-    console.log(Object.keys(this._draggableList.children));
-    console.log("Object.keys", this._draggableList.children);
-
-    Object.keys(this._draggableList.children).forEach((drag) => {
-      console.log("test", drag);
+    this._drags.forEach((draggable) => {
+      console.log("ui", draggable);
     });
+
+    let o = this;
+    this._draggableList.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      const draggable = document.querySelector(".dragging");
+      o._draggableList.appendChild(draggable);
+    });
+
+    // console.log("drag", this._draggableList.childNodes);
+
+    // console.log("Object.keys", this._draggableList.children);
+
+    // Object.keys(this._draggableList).forEach((drag) => {
+    //   console.log("test", drag);
+    // });
   }
+
+  // SetChildPos(control) {
+  //   Object.keys
+  //   if control._dragPos below postition of any control in this._controls
+  // }
 }
