@@ -13,7 +13,6 @@ class uiDraggable extends _uiControl {
   constructor() {
     super();
     this.displayName = "";
-    this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiDraggable.css");
 
     // Add small uiComponents
@@ -69,8 +68,8 @@ class uiDraggable extends _uiControl {
   get html() {
     return `
       <!-- ${this.name} --> 
-          <div class="row draggable" id="${this._uuid}_draggable" draggable="true" >
-            <div class="col-lg-12" > <h3> ${this.displayName} </h3> </div>  
+          <div class="row draggable" id="${this._uuid}_draggable"  >
+            <div class="col-lg-12 drag" > <h3 draggable="true"> ${this.displayName} </h3> </div>  
           </div>
       `;
   }

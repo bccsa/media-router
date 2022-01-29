@@ -15,7 +15,6 @@ class uiCheckbox extends _uiControl {
     this.displayName = "click here";
     this.helpText = "How to use this checkBox";
     this.value = false;
-    this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiCheckbox.css");
   }
 
@@ -27,7 +26,7 @@ class uiCheckbox extends _uiControl {
     return `
             <!-- ${this.name} --> 
             <div id="${this._uuid}_main"
-              class="col-lg-3 uiCheckbox"
+              class=" uiCheckbox"
               data-toggle="tooltip"
               data-placement="rigth"
               title="${this.helpText}">

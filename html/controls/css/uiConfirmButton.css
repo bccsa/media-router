@@ -22,4 +22,29 @@
   border-radius: 10px;
   width: fit-content; /* Could be more or less, depending on screen size */
 }
+.uiConfirmBtn {
+  background-color:grey;
+    padding: 7px;
+    margin: 5px;
+    color: black;
+    border-radius: 10px;
+    width: auto;
+}
 
+.uiConfirmBtnOk {
+  background-color:rgba(13, 243, 13, 0.39);
+    padding: 7px;
+    margin: 5px;
+    color: black;
+    border-radius: 10px;
+    width: auto;
+}
+
+.uiConfirmBtnCancel {
+  background-color:rgba(221, 7, 7, 0.281);
+    padding: 7px;
+    margin: 5px;
+    color: black;
+    border-radius: 10px;
+    width: auto;
+}

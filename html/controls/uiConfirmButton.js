@@ -29,7 +29,7 @@ class uiConfirmButton extends _uiControl {
         <!-- ${this.name} -->
         <div id="${this._uuid}_main">
           <button
-            class="btn btn-primary"
+            class="uiConfirmBtn"
             data-toggle="tooltip"
             data-placement="top"
             title="${this.helpText}"
@@ -43,14 +43,14 @@ class uiConfirmButton extends _uiControl {
               <button 
                 type="button" 
                 id="${this._uuid}_buttonOk" 
-                class="btn btn-success m-1">
+                class="uiConfirmBtnOk">
                   Ok
               </button>
 
               <button 
                 type="button" 
                 id="${this._uuid}_buttonCancel" 
-                class="btn btn-danger m-1">
+                class="uiConfirmBtnCancel">
                   Cancel
               </button> 
             </div>

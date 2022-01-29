@@ -1,3 +1,13 @@
-.uiCheckbox label {
-    margin-right: 3px;
+.uiCheckbox {
+    margin : 10px;
+}
+
+.uiCheckbox label { 
+    width: auto;
+}
+
+.uiCheckbox input {
+    width: 20px;
+    height: 20px; 
+    margin:0px 3px 0px 30px;
 }

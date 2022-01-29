@@ -14,7 +14,7 @@ class uiButton extends _uiControl {
     super();
     this.displayName = "click here";
     this.helpText = "How to use this button";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this._styles.push("controls/css/uiButton.css");
   }
 
   // -------------------------------------
@@ -25,7 +25,7 @@ class uiButton extends _uiControl {
     return `
       <!-- ${this.name} -->
       <div id="${this._uuid}_main" data-toggle="tooltip" data-placement="top" title="${this.helpText}">
-        <button id="${this._uuid}_button" class="btn btn-default m-1" style="background-color:grey;">
+        <button id="${this._uuid}_button" class="uiButton" >
           ${this.displayName}
         </button>
       </div>`;
@@ -38,7 +38,7 @@ class uiButton extends _uiControl {
     // Event handling
     let o = this;
     this._button.addEventListener("click", function () {
-        o.dispatch("click", o);
+      o.dispatch("click", o);
     });
   }
 

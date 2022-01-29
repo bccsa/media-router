@@ -12,11 +12,11 @@
 class uiTextBox extends _uiControl {
   constructor() {
     super();
-    this.displayName = "new control";         // Display name
+    this.displayName = "new control"; // Display name
     this.helpText = "new control help text";
     this.value = "TextBox Value";
-    this.labelWidth = "400px";               // Label width in px
-    this.margin = "10px"
+    this.labelWidth = "400px"; // Label width in px
+    this.margin = "10px";
     this._styles.push("controls/css/bootstrap.min.css");
   }
 
@@ -27,7 +27,7 @@ class uiTextBox extends _uiControl {
   get html() {
     return `
         <!-- ${this.name} --> 
-        <div id="${this._uuid}_main" class="col-lg-3" style="margin: ${this.margin}">
+        <div id="${this._uuid}_main" class="col-lg-3" draggable="false">
             <div class="d-flex"> 
                 <label id="${this._uuid}_label" style="width: ${this.labelWidth}">${this.displayName}</label>
                 <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
@@ -42,13 +42,11 @@ class uiTextBox extends _uiControl {
     this._label = document.getElementById(`${this._uuid}_label`);
 
     let o = this;
-    this._input.addEventListener('change', function(){
+    this._input.addEventListener("change", function () {
       o.value = o._input.value;
-      o._notifyProperty(['value']);
+      o._notifyProperty(["value"]);
     });
   }
-
-
 
   Update(propertyName) {
     switch (propertyName) {
@@ -71,4 +69,3 @@ class uiTextBox extends _uiControl {
     }
   }
 }
-
