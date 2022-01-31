@@ -5,6 +5,8 @@
 // Copyright BCC South Africa
 // =====================================
 
+// const Sortable = require("../js/Sortable");
+
 // -------------------------------------
 // Class declaration
 // -------------------------------------
@@ -29,6 +31,18 @@ class uiDraggableList extends _uiControl {
         name: "draggable2",
         parentElement: "_draggableList",
         displayName: "Mic 2",
+      },
+      draggable3: {
+        controlType: "uiDraggable",
+        name: "draggable3",
+        parentElement: "_draggableList",
+        displayName: "Mic 3",
+      },
+      draggable4: {
+        controlType: "uiDraggable",
+        name: "draggable4",
+        parentElement: "_draggableList",
+        displayName: "Mic 4",
       },
     });
   }
@@ -55,12 +69,18 @@ class uiDraggableList extends _uiControl {
       console.log("ui", draggable);
     });
 
-    let o = this;
-    this._draggableList.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      const draggable = document.querySelector(".dragging");
-      o._draggableList.appendChild(draggable);
-    });
+    let el = document.getElementById(`${this._uuid}_main`);
+    Sortable.create(el, {
+      handle: '.drag', // handle's class
+      animation: 150
+    })
+
+    // let o = this;
+    // this._draggableList.addEventListener("dragover", (e) => {
+    //   e.preventDefault();
+    //   const draggable = document.querySelector(".dragging");
+    //   o._draggableList.appendChild(draggable);
+    // });
 
     // console.log("drag", this._draggableList.childNodes);
 

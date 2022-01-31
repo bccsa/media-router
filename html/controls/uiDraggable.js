@@ -68,8 +68,8 @@ class uiDraggable extends _uiControl {
   get html() {
     return `
       <!-- ${this.name} --> 
-          <div class="row draggable" id="${this._uuid}_draggable"  >
-            <div class="col-lg-12 drag" > <h3 draggable="true"> ${this.displayName} </h3> </div>  
+          <div class="row draggable"   id="${this._uuid}_draggable"  >
+            <div class="col-lg-12 drag" > <h3> ${this.displayName} </h3> </div>  
           </div>
       `;
   }
