@@ -13,8 +13,7 @@ class uiButton extends _uiControl {
   constructor() {
     super();
     this.displayName = "click here";
-    this.helpText = "How to use this button";
-    this._styles.push("controls/css/uiButton.css");
+    this.helpText = "How to use this button"; 
   }
 
   // -------------------------------------

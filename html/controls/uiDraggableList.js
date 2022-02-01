@@ -69,6 +69,8 @@ class uiDraggableList extends _uiControl {
       console.log("ui", draggable);
     });
 
+
+    // Import Sortable.create to Sortable librairy 
     let el = document.getElementById(`${this._uuid}_main`);
     Sortable.create(el, {
       handle: '.drag', // handle's class
