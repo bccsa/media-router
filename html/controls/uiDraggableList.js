@@ -5,8 +5,6 @@
 // Copyright BCC South Africa
 // =====================================
 
-// const Sortable = require("../js/Sortable");
-
 // -------------------------------------
 // Class declaration
 // -------------------------------------
@@ -14,87 +12,30 @@
 class uiDraggableList extends _uiControl {
   constructor() {
     super();
-    this.displayName = "";
-    this._styles.push("controls/css/bootstrap.min.css");
     this._styles.push("controls/css/uiDraggableList.css");
-
-    // Add small uiComponents
-    this.SetData({
-      draggable1: {
-        controlType: "uiDraggable",
-        name: "draggable1",
-        parentElement: "_draggableList",
-        displayName: "Mic 1",
-      },
-      draggable2: {
-        controlType: "uiDraggable",
-        name: "draggable2",
-        parentElement: "_draggableList",
-        displayName: "Mic 2",
-      },
-      draggable3: {
-        controlType: "uiDraggable",
-        name: "draggable3",
-        parentElement: "_draggableList",
-        displayName: "Mic 3",
-      },
-      draggable4: {
-        controlType: "uiDraggable",
-        name: "draggable4",
-        parentElement: "_draggableList",
-        displayName: "Mic 4",
-      },
-    });
   }
+
   // -------------------------------------
   // Getters & setters
   // -------------------------------------
 
   get html() {
     return `
-        
-      <div id="${this._uuid}_main" class="draggableList"> 
+      <div id="${this._uuid}_main"> 
         <!-- ${this.name} --> 
-      </div>
-           
-        `;
+        <div id="${this._uuid}_controls" class="uiDraggableList"></div>
+      </div>`;
   }
 
   Init() {
-    // this._mainDiv = document.getElementById(`${this._uuid}_main`);
-    this._draggableList = document.getElementById(`${this._uuid}_main`);
-    this._drags = document.querySelectorAll(".draggable");
-
-    this._drags.forEach((draggable) => {
-      console.log("ui", draggable);
-    });
-
+    this._mainDiv = document.getElementById(`${this._uuid}_main`);
+    this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
 
     // Import Sortable.create to Sortable librairy 
-    let el = document.getElementById(`${this._uuid}_main`);
+    let el = this._controlsDiv;
     Sortable.create(el, {
-      handle: '.drag', // handle's class
+      handle: '.uiDraggable_drag', // handle's class
       animation: 150
-    })
-
-    // let o = this;
-    // this._draggableList.addEventListener("dragover", (e) => {
-    //   e.preventDefault();
-    //   const draggable = document.querySelector(".dragging");
-    //   o._draggableList.appendChild(draggable);
-    // });
-
-    // console.log("drag", this._draggableList.childNodes);
-
-    // console.log("Object.keys", this._draggableList.children);
-
-    // Object.keys(this._draggableList).forEach((drag) => {
-    //   console.log("test", drag);
-    // });
+    });
   }
-
-  // SetChildPos(control) {
-  //   Object.keys
-  //   if control._dragPos below postition of any control in this._controls
-  // }
 }

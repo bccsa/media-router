@@ -50,6 +50,24 @@ container.SetData({
       DraggableList: {
         controlType: "uiDraggableList",
         name: "uiDraggableList",
+        dragItem1: {
+          name: "dragItem1",
+          controlType: "uiDraggable",
+          displayName: "Test Draggable",
+          button1: {
+            name: "button1",
+            controlType: "uiButton",
+          }
+        },
+        dragItem2: {
+          name: "dragItem2",
+          controlType: "uiDraggable",
+          displayName: "Test Draggable2",
+          button1: {
+            name: "button1",
+            controlType: "uiButton",
+          }
+        }
       },
     },
     tabPage2: {
@@ -89,6 +107,36 @@ container.SetData({
     },
   },
 });
+
+
+// Add small uiComponents
+// container.SetData({
+//   draggable1: {
+//     controlType: "uiDraggable",
+//     name: "draggable1",
+//     parentElement: "_draggableList",
+//     displayName: "Mic 1",
+//   },
+//   draggable2: {
+//     controlType: "uiDraggable",
+//     name: "draggable2",
+//     parentElement: "_draggableList",
+//     displayName: "Mic 2",
+//   },
+//   draggable3: {
+//     controlType: "uiDraggable",
+//     name: "draggable3",
+//     parentElement: "_draggableList",
+//     displayName: "Mic 3",
+//   },
+//   draggable4: {
+//     controlType: "uiDraggable",
+//     name: "draggable4",
+//     parentElement: "_draggableList",
+//     displayName: "Mic 4",
+//   },
+// });
+
 // let data =
 // container.SetData({
 

@@ -26,55 +26,7 @@ class uiExpander extends _uiControl {
         name: "header",
         displayName: this.displayName,
         parentElement: "_topBar",
-      },
-      deleteBtn: {
-        controlType: "uiButton",
-        name: "deleteBtn",
-        displayName: "Delete",
-        parentElement: "_topBar",
-        hidden: true,
-      },
-      modal: {
-        controlType: "uiConfirmButton",
-        name: "modal",
-        displayName: "modal",
-        parentElement: "_topBar",
-      },
-      // startButton: {
-      //   controlType: "uiButton",
-      //   name: "startButton",
-      //   displayName: "Start",
-      //   parentElement: "_controlsDiv",
-      // },
-      // stopButton: {
-      //   controlType: "uiButton",
-      //   name: "startButton",
-      //   displayName: "Stop",
-      //   parentElement: "_controlsDiv",
-      // },
-      // controlButton1: {
-      //   controlType: "uiButton",
-      //   name: "controlButton1",
-      //   displayName: "control 1",
-      //   parentElement: "_controlsDiv",
-      // },
-      // eventLog: {
-      //   controlType: "uiEventLog",
-      //   parentElement: "_controlsDiv",
-      //   name: "eventLog",
-      // },
-      // settings: {
-      //   controlType: "uiSetting",
-      //   parentElement: "_controlsDiv",
-      //   name: "setting",
-      //   displayName: "General1",
-      // },
-      // setting1: {
-      //   controlType: "uiSetting",
-      //   parentElement: "_controlsDiv",
-      //   name: "setting1",
-      //   displayName: "General 2",
-      // },
+      }
     });
   }
 
@@ -84,34 +36,20 @@ class uiExpander extends _uiControl {
 
   get html() {
     return `
-        <!-- ${this.name} --> 
-        <div id="${this._uuid}_main" class="col-lg-12 "   style="margin:${this.margin}">
-            <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
-                <span class="title col-lg-6" id="${this._uuid}_label">${this.displayName}</span>          
-            </div>
-            <div class
-              id="${this._uuid}_controls" 
-              class="row d-flex" 
-              style="
-              background-color: #efefef; 
-              float: left; 
-              padding:${this.padding};
-              width:100%; 
-              display: flex;" > 
-        
-            </div>
-
-            
-        </div>`;
+      <div id="${this._uuid}_main" class="col-lg-12" style="margin:${this.margin}">
+        <!-- ${this.name} -->
+        <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
+          <span class="title col-lg-6" id="${this._uuid}_label">${this.displayName}</span>          
+        </div>
+        <div id="${this._uuid}_controls"></div>
+      </div>`;
   }
 
   Init() {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
+    this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
-    this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
-    this._console = document.getElementById(`${this._uuid}_console`);
-    this._btnSess = document.getElementById(`${this._uuid}_btnSess`);
 
     // Add event listeners
     let o = this;
@@ -122,12 +60,6 @@ class uiExpander extends _uiControl {
         o._controlsDiv.style.display = "none";
       }
       console.log(o._controlsDiv.style.display);
-    });
-
-    // Listen for delete button event
-    this._controls["deleteBtn"].on("click", () => {
-      // Delete this control
-      this.Remove();
     });
   }
 

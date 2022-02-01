@@ -1,18 +1,17 @@
-.draggable { 
-    border-style: solid;
-    border-radius: 10px;
-    border-width: 1px;
-    margin: 27px;
-    padding: 5px;
-    width: 97%;
-    background-color: #efefef;
-    
+.uiDraggable { 
+  border-style: solid;
+  border-radius: 10px;
+  border-width: 1px;
+  margin: 27px;
+  padding: 5px;
+  width: 97%;
+  background-color: #efefef;
 } 
 
-.draggable.dragging {
-    opacity: 0.01;
-  }
+.uiDraggable.uiDraggable_dragging {
+  opacity: 0.01;
+}
 
-  .drag {
-    cursor: move;
-  }
+.uiDraggable_drag {
+  cursor: move;
+}

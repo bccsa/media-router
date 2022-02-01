@@ -84,7 +84,6 @@ class _uiControl extends Dispatcher {
     this._UpdateList = []; // List of properties that needs to be updated
     this.parentElement = undefined; // Used to specify in which HTML element in the parent the child should be added
     this.hideData = false; // Set to true if the control's data should be excluded from GetData() and from _notify();
-    this.className = "row";
   }
 
   // -------------------------------------
@@ -94,13 +93,10 @@ class _uiControl extends Dispatcher {
   // Override this getter in the implementing class
   get html() {
     return `
+      <div id="${this._uuid}_main"  >
         <!-- ${this.name} -->
-            <div id="${this._uuid}_main"  >
-                <div id="${this._uuid}_controls" class="${this.className}" >
-
-                </div>
-            </div>
-        `;
+        <div id="${this._uuid}_controls"></div>
+      </div>`;
   }
 
   // -------------------------------------
