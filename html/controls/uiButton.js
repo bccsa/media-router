@@ -14,6 +14,7 @@ class uiButton extends _uiControl {
     super();
     this.displayName = "click here";
     this.helpText = "How to use this button"; 
+    this._styles.push("controls/css/uiButton.css");
   }
 
   // -------------------------------------

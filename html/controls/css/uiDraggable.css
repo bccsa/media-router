@@ -8,10 +8,14 @@
   background-color: #efefef;
 } 
 
-.uiDraggable.uiDraggable_dragging {
+.uiDraggable.dragging {
   opacity: 0.01;
 }
 
 .uiDraggable_drag {
   cursor: move;
+}
+
+.uiDraggable_control {
+  display: -webkit-box;
 }

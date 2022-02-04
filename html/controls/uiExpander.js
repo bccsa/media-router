@@ -15,8 +15,7 @@ class uiExpander extends _uiControl {
     this.displayName = "new control"; // Display name
     this.helpText = "new control help text";
     this.margin = "10px";
-    this.padding = "10px";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this.padding = "10px"; 
     this._styles.push("controls/css/uiExpander.css");
 
     // Add header controls container to the topBar element
@@ -36,10 +35,10 @@ class uiExpander extends _uiControl {
 
   get html() {
     return `
-      <div id="${this._uuid}_main" class="col-lg-12" style="margin:${this.margin}">
+      <div id="${this._uuid}_main" class="uiExpander" style="margin:${this.margin}">
         <!-- ${this.name} -->
-        <div id="${this._uuid}_topBar" class="col-lg-12 p-2 d-flex" style="background-color:grey;">
-          <span class="title col-lg-6" id="${this._uuid}_label">${this.displayName}</span>          
+        <div id="${this._uuid}_topBar" class="uiExpander_topbar" >
+          <p class="uiDraggable_drag" id="${this._uuid}_label">${this.displayName}</p>          
         </div>
         <div id="${this._uuid}_controls"></div>
       </div>`;
@@ -61,6 +60,18 @@ class uiExpander extends _uiControl {
       }
       console.log(o._controlsDiv.style.display);
     });
+
+
+    // Event handling
+    this._mainDiv.addEventListener("dragstart", () => {
+      o._mainDiv.classList.add("dragging"); 
+    });
+
+    this._mainDiv.addEventListener("dragend", () => {
+      o._mainDiv.classList.remove("dragging");  
+    });
+
+
   }
 
   Update(propertyName) {

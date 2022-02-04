@@ -21,6 +21,13 @@ container.SetData({
       name: "tabPage1",
       controlType: "uiTabPage",
       tabImagePath: "assets/img/settings.png",
+
+
+      DraggableList: {
+        controlType: "uiDraggableList",
+        name: "uiDraggableList-expander" ,
+     
+
       expander1: {
         name: "expander1",
         displayName: "Douala",
@@ -46,7 +53,7 @@ container.SetData({
             name: "Switch",
           },
         },
-      },
+      
       DraggableList: {
         controlType: "uiDraggableList",
         name: "uiDraggableList",
@@ -66,10 +73,145 @@ container.SetData({
           button1: {
             name: "button1",
             controlType: "uiButton",
-          }
+          },
+          button2: {
+            name: "button2",
+            controlType: "uiButton",
+          },
+          button3: {
+            name: "button3",
+            controlType: "uiButton",
+          },
+          button4: {
+            name: "button4",
+            controlType: "uiButton",
+          },
+          button5: {
+            name: "button5",
+            controlType: "uiButton",
+          },
+          button6: {
+            name: "button6",
+            controlType: "uiButton",
+          },
+          statusC2: {
+            controlType: "uiStatus",
+            name: "Status Control 2",
+            displayName: "Status Ctrl 2",
+          },
+          statusC3: {
+            controlType: "uiStatus",
+            name: "Status Control 3",
+            displayName: "Status Ctrl 3",
+          },
         }
       },
     },
+
+    expander2: {
+      name: "expander2",
+      displayName: "Yaounde",
+      controlType: "uiExpander",
+      header: {
+        statusC1: {
+          controlType: "uiStatus",
+          name: "Status Control 1",
+          displayName: "Status Ctrl 1",
+        },
+        statusC2: {
+          controlType: "uiStatus",
+          name: "Status Control 2",
+          displayName: "Status Ctrl 2",
+        },
+        statusC3: {
+          controlType: "uiStatus",
+          name: "Status Control 3",
+          displayName: "Status Ctrl 3",
+        },
+        switchButton: {
+          controlType: "uiSwitchButton",
+          name: "Switch",
+        },
+      },
+    
+    DraggableList: {
+      controlType: "uiDraggableList",
+      name: "uiDraggableList",
+      dragItem1: {
+        name: "dragItem1",
+        controlType: "uiDraggable",
+        displayName: "Test Draggable",
+        button1: {
+          name: "button1",
+          controlType: "uiButton",
+        }
+      },
+      dragItem2: {
+        name: "dragItem2",
+        controlType: "uiDraggable",
+        displayName: "Test Draggable2",
+        button1: {
+          name: "button1",
+          controlType: "uiButton",
+        }, 
+      }
+    },
+  },
+
+  expander3: {
+    name: "expander3",
+    displayName: "Pretoria",
+    controlType: "uiExpander",
+    header: {
+      statusC1: {
+        controlType: "uiStatus",
+        name: "Status Control 1",
+        displayName: "Status Ctrl 1",
+      },
+      statusC2: {
+        controlType: "uiStatus",
+        name: "Status Control 2",
+        displayName: "Status Ctrl 2",
+      },
+      statusC3: {
+        controlType: "uiStatus",
+        name: "Status Control 3",
+        displayName: "Status Ctrl 3",
+      },
+      switchButton: {
+        controlType: "uiSwitchButton",
+        name: "Switch",
+      },
+    },
+  },
+
+  
+  DraggableList: {
+    controlType: "uiDraggableList",
+    name: "uiDraggableList",
+    dragItem1: {
+      name: "dragItem1",
+      controlType: "uiDraggable",
+      displayName: "Test Draggable",
+      button1: {
+        name: "button1",
+        controlType: "uiButton",
+      }
+    },
+    dragItem2: {
+      name: "dragItem2",
+      controlType: "uiDraggable",
+      displayName: "Test Draggable2",
+      button1: {
+        name: "button1",
+        controlType: "uiButton",
+      }, 
+    }
+  },
+},
+
+  },
+
     tabPage2: {
       name: "tabPage2",
       controlType: "uiTabPage",
@@ -77,7 +219,7 @@ container.SetData({
       expander2: {
         name: "expander2",
         displayName: "Yaounde",
-        controlType: "uiExpander",
+        controlType: "uiExpander", 
         header: {
           statusC1: {
             controlType: "uiStatus",

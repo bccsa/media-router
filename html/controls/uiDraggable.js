@@ -27,7 +27,7 @@ class uiDraggable extends _uiControl {
         <div id="${this._uuid}_header" class="uiDraggable_drag">
           <h3>${this.displayName}</h3>
         </div>
-        <div id="${this._uuid}_controls"></div>
+        <div id="${this._uuid}_controls" class="uiDraggable_control"></div>
       </div>`;
   }
 
@@ -37,13 +37,16 @@ class uiDraggable extends _uiControl {
     this._header = document.getElementById(`${this._uuid}_header`);
 
     // Event handling
-    let o = this;
-    this._header.addEventListener("dragstart", () => {
-      o._header.classList.add("uiDraggable_dragging");
-    });
-
-    this._header.addEventListener("dragend", () => {
-      o._header.classList.remove("uiDraggable_dragging");
-    });
+    if(this._parent.constructor.name === "uiDraggableList"){
+      let o = this;
+      this._mainDiv.addEventListener("dragstart", () => {
+         o._mainDiv.classList.add("dragging"); 
+      });
+  
+      this._mainDiv.addEventListener("dragend", () => {
+        o._mainDiv.classList.remove("dragging");  
+      });
+    }
+  
   }
 }

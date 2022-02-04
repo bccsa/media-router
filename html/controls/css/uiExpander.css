@@ -2,3 +2,18 @@
     color: white;
     margin-top: 12px;
 }
+
+.uiExpander_topbar{
+    display: flex;
+    margin: 10px;
+    background-color: grey;
+    padding: 10px;
+}
+
+.uiExpander_topbar p {
+    width: 40%;
+}
+
+.uiExpander.dragging {
+    opacity: 0.01;
+}
