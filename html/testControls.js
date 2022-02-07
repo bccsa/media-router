@@ -70,6 +70,7 @@ container.SetData({
           button1: {
             name: "button1",
             controlType: "uiButton",
+            parentElement: "_sect1"
           }
         },
         dragItem2: {
@@ -79,111 +80,105 @@ container.SetData({
           button1: {
             name: "button1",
             controlType: "uiButton",
-          }, 
+            parentElement: "_sect2"
+          },
+          button2: {
+            name: "button2",
+            controlType: "uiTextBox",
+            parentElement: "_sect2"
+          },
+          check1: {
+            name: "check1",
+            controlType: "uiCheckbox",
+            parentElement: "_sect2"
+          },
+          check2: {
+            name: "check2",
+            controlType: "uiCheckbox",
+            parentElement: "_sect2"
+          }  
         }
       },
     },
   }
 },
 
-    expander2: {
-      name: "expander2",
-      displayName: "Yaounde",
-      controlType: "uiExpander",
-      header: {
-        statusC1: {
-          controlType: "uiStatus",
-          name: "Status Control 1",
-          displayName: "Status Ctrl 1",
-        },
-        statusC2: {
-          controlType: "uiStatus",
-          name: "Status Control 2",
-          displayName: "Status Ctrl 2",
-        },
-        statusC3: {
-          controlType: "uiStatus",
-          name: "Status Control 3",
-          displayName: "Status Ctrl 3",
-        },
-        switchButton: {
-          controlType: "uiSwitchButton",
-          name: "Switch",
-        },
-      },
-    
-    DraggableList: {
-      controlType: "uiDraggableList",
-      name: "uiDraggableList",
-      dragItem1: {
-        name: "dragItem1",
-        controlType: "uiDraggable",
-        displayName: "Test Draggable",
-        button1: {
-          name: "button1",
-          controlType: "uiButton",
-        }
-      },
-      dragItem2: {
-        name: "dragItem2",
-        controlType: "uiDraggable",
-        displayName: "Test Draggable2",
-        button1: {
-          name: "button1",
-          controlType: "uiButton",
-        }, 
-      }
+expander2: {
+  name: "expander2",
+  displayName: "yaounde",
+  controlType: "uiExpander",
+  header: {
+    statusC1: {
+      controlType: "uiStatus",
+      name: "Status Control 1",
+      displayName: "Status Ctrl 1",
+    },
+    statusC2: {
+      controlType: "uiStatus",
+      name: "Status Control 2",
+      displayName: "Status Ctrl 2",
+    },
+    statusC3: {
+      controlType: "uiStatus",
+      name: "Status Control 3",
+      displayName: "Status Ctrl 3",
+    },
+    switchButton: {
+      controlType: "uiSwitchButton",
+      name: "Switch",
     },
   },
+  tabController1:{
+      name: "tabController1",
+      controlType: "uiTabController",
+      tabPage1: {
+        name: "tabPage1",
+        controlType: "uiTabPage",
+        tabImagePath: "assets/img/settings.png",
 
-  expander3: {
-    name: "expander3",
-    displayName: "Pretoria",
-    controlType: "uiExpander",
-    header: {
-      statusC1: {
-        controlType: "uiStatus",
-        name: "Status Control 1",
-        displayName: "Status Ctrl 1",
-      },
-      statusC2: {
-        controlType: "uiStatus",
-        name: "Status Control 2",
-        displayName: "Status Ctrl 2",
-      },
-      statusC3: {
-        controlType: "uiStatus",
-        name: "Status Control 3",
-        displayName: "Status Ctrl 3",
-      },
-      switchButton: {
-        controlType: "uiSwitchButton",
-        name: "Switch",
-      },
-    },
-    DraggableList: {
-      controlType: "uiDraggableList",
-      name: "uiDraggableList",
-      dragItem1: {
-        name: "dragItem1",
-        controlType: "uiDraggable",
-        displayName: "Test Draggable",
-        button1: {
-          name: "button1",
-          controlType: "uiButton",
-        }
-      },
-      dragItem2: {
-        name: "dragItem2",
-        controlType: "uiDraggable",
-        displayName: "Test Draggable2",
-        button1: {
-          name: "button1",
-          controlType: "uiButton",
-        }, 
-      }
-    },
+DraggableList: {
+  controlType: "uiDraggableList",
+  name: "uiDraggableList",
+  dragItem1: {
+    name: "dragItem1",
+    controlType: "uiDraggable",
+    displayName: "Test Draggable",
+    button1: {
+      name: "button1",
+      controlType: "uiButton",
+      parentElement: "_sect1"
+    }
   },
+  dragItem2: {
+    name: "dragItem2",
+    controlType: "uiDraggable",
+    displayName: "Test Draggable2",
+    button1: {
+      name: "button1",
+      controlType: "uiButton",
+      parentElement: "_sect2"
+    },
+    button2: {
+      name: "button2",
+      controlType: "uiTextBox",
+      parentElement: "_sect2"
+    },
+    check1: {
+      name: "check1",
+      controlType: "uiCheckbox",
+      parentElement: "_sect2"
+    },
+    check2: {
+      name: "check2",
+      controlType: "uiCheckbox",
+      parentElement: "_sect2"
+    }  
+  }
+},
+},
+}
+},
+   
 
   
 
@@ -191,42 +186,42 @@ container.SetData({
 
  // },
 
-    tabPage2:{
-      name: "tabPage2",
-      controlType: "uiTabPage",
-      tabImagePath: "assets/img/list.png",
-      expander2: {
-        name: "expander2",
-        displayName: "yde",
-        controlType: "uiExpander", 
-        header: {
-          statusC1: {
-            controlType: "uiStatus",
-            name: "Status Control 1",
-            displayName: "Status Ctrl 1",
-          },
-          statusC2: {
-            controlType: "uiStatus",
-            name: "Status Control 2",
-            displayName: "Status Ctrl 2",
-          },
-          statusC3: {
-            controlType: "uiStatus",
-            name: "Status Control 3",
-            displayName: "Status Ctrl 3",
-          },
-          switchButton: {
-            controlType: "uiSwitchButton",
-            name: "Switch",
-          },
-        },
-      },
-      eventLog: {
-        controlType: "uiEventLog",
-        name: "eventLog",
-      },
-  //   },
-  },
+  //   tabPage2:{
+  //     name: "tabPage2",
+  //     controlType: "uiTabPage",
+  //     tabImagePath: "assets/img/list.png",
+  //     expander2: {
+  //       name: "expander2",
+  //       displayName: "yde",
+  //       controlType: "uiExpander", 
+  //       header: {
+  //         statusC1: {
+  //           controlType: "uiStatus",
+  //           name: "Status Control 1",
+  //           displayName: "Status Ctrl 1",
+  //         },
+  //         statusC2: {
+  //           controlType: "uiStatus",
+  //           name: "Status Control 2",
+  //           displayName: "Status Ctrl 2",
+  //         },
+  //         statusC3: {
+  //           controlType: "uiStatus",
+  //           name: "Status Control 3",
+  //           displayName: "Status Ctrl 3",
+  //         },
+  //         switchButton: {
+  //           controlType: "uiSwitchButton",
+  //           name: "Switch",
+  //         },
+  //       },
+  //     },
+  //     eventLog: {
+  //       controlType: "uiEventLog",
+  //       name: "eventLog",
+  //     },
+  // //   },
+  // },
 });
 
 

@@ -1,0 +1,10 @@
+.uiTextBox {
+    margin: 10px;
+}
+
+.uiTextBox input {
+    border-radius: 5px;
+    padding: 4px;
+    text-align: center;
+    border: 1px solid white
+}

@@ -16,7 +16,8 @@ class uiTextBox extends _uiControl {
     this.helpText = "new control help text";
     this.value = "TextBox Value";
     this.labelWidth = "400px"; // Label width in px
-    this.margin = "10px"; 
+    this.margin = "10px";
+    this._styles.push("controls/css/uiTextBox.css"); 
   }
 
   // -------------------------------------
@@ -27,7 +28,7 @@ class uiTextBox extends _uiControl {
     return `
         <!-- ${this.name} --> 
         <div id="${this._uuid}_main" class="col-lg-3" draggable="false">
-            <div class="d-flex"> 
+            <div class="uiTextBox"> 
                 <label id="${this._uuid}_label" style="width: ${this.labelWidth}">${this.displayName}</label>
                 <input type="text" id="${this._uuid}_input" class="form-control" value="${this.value}">
             </div>

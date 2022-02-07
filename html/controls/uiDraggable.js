@@ -27,7 +27,19 @@ class uiDraggable extends _uiControl {
         <div id="${this._uuid}_header" class="uiDraggable_drag">
           <h3>${this.displayName}</h3>
         </div>
-        <div id="${this._uuid}_controls" class="uiDraggable_control"></div>
+        <div id="${this._uuid}_controls" class="uiDraggable_control">
+            <div id="${this._uuid}_sect1" class="uiDraggable_sect1">
+                  
+            </div>
+
+            <div id="${this._uuid}_sect2" class="uiDraggable_sect2">
+                   
+            </div>
+
+            <div id="${this._uuid}_sect3" class="uiDraggable_sect3">
+                   
+            </div>
+        </div>
       </div>`;
   }
 
@@ -35,17 +47,20 @@ class uiDraggable extends _uiControl {
     this._mainDiv = document.getElementById(`${this._uuid}_main`);
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
     this._header = document.getElementById(`${this._uuid}_header`);
+    this._sect1 = document.getElementById(`${this._uuid}_sect1`);
+    this._sect2 = document.getElementById(`${this._uuid}_sect2`);
+    this._sect3 = document.getElementById(`${this._uuid}_sect3`);
 
     // Event handling
     if(this._parent.constructor.name === "uiDraggableList"){
       let o = this;
       this._mainDiv.addEventListener("dragstart", (event) => {
-        event.stopPropagation();
+        //event.stopPropagation();
          o._mainDiv.classList.add("dragging");  
       });
   
       this._mainDiv.addEventListener("dragend", (event) => {
-        event.stopPropagation();
+        //event.stopPropagation();
         o._mainDiv.classList.remove("dragging");  
       });
     }

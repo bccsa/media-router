@@ -1,11 +1,10 @@
-.uiDraggable { 
-  border-style: solid;
-  border-radius: 10px;
-  border-width: 1px;
-  margin: 27px;
+.uiDraggable {  
+  margin: 7px;
   padding: 5px;
-  width: 95%;
-  background-color: #efefef;
+  width: 96%;
+  background-color: RGB(178, 178, 178);
+  border: 1px solid #999999;
+  border-radius: 9px;
 } 
 
 .uiDraggable.dragging {
@@ -18,4 +17,16 @@
 
 .uiDraggable_control {
   display: -webkit-box;
+}
+
+.uiDraggable_sect1{
+  width: 33%;
+}
+
+.uiDraggable_sect2{
+  width: 33%;
+}
+
+.uiDraggable_sect3{
+  width: 33%;
 }

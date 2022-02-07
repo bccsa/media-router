@@ -1,19 +1,21 @@
-.title{
-    color: white;
-    margin-top: 12px;
+.uiExpander {
+   background-color: RGB(153, 153, 153);
+   padding: 0px; 
 }
 
 .uiExpander_topbar{
-    display: flex;
-    margin: 10px;
-    background-color: grey;
-    padding: 10px;
-    border-radius: 12px;
+    color: white;
+    font-family: sans-serif;
+    display: flex; 
+    background-color: #666666;
+    padding: 10px; 
+    border: 1px solid white;
+    width: 99.2%;
+    float: left;
+    padding-right: 0px; 
 }
 
-.uiExpander_topbar p {
-    width: 40%;
-}
+ 
 
 .uiExpander.dragging {
     opacity: 0.01;
