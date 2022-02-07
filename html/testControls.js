@@ -14,18 +14,19 @@ container.on("data", (data) => {
 });
 
 container.SetData({
-  tabController1: {
-    name: "tabController1",
-    controlType: "uiTabController",
-    tabPage1: {
-      name: "tabPage1",
-      controlType: "uiTabPage",
-      tabImagePath: "assets/img/settings.png",
+  // tabController1: {
+  //   name: "tabController1",
+  //   controlType: "uiTabController",
+  //   tabPage1: {
+  //     name: "tabPage1",
+  //     controlType: "uiTabPage",
+  //     tabImagePath: "assets/img/settings.png",
+
 
       DraggableList: {
         controlType: "uiDraggableList",
         name: "uiDraggableList-expander" ,
-  
+ 
       expander1: {
         name: "expander1",
         displayName: "Douala",
@@ -51,6 +52,14 @@ container.SetData({
             name: "Switch",
           },
         },
+        tabController1:{
+            name: "tabController1",
+            controlType: "uiTabController",
+            tabPage1: {
+              name: "tabPage1",
+              controlType: "uiTabPage",
+              tabImagePath: "assets/img/settings.png",
+      
       DraggableList: {
         controlType: "uiDraggableList",
         name: "uiDraggableList",
@@ -74,6 +83,8 @@ container.SetData({
         }
       },
     },
+  }
+},
 
     expander2: {
       name: "expander2",
@@ -178,9 +189,9 @@ container.SetData({
 
 },
 
-  },
+ // },
 
-    tabPage2: {
+    tabPage2:{
       name: "tabPage2",
       controlType: "uiTabPage",
       tabImagePath: "assets/img/list.png",
@@ -214,7 +225,7 @@ container.SetData({
         controlType: "uiEventLog",
         name: "eventLog",
       },
-    },
+  //   },
   },
 });
 

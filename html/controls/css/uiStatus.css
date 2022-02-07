@@ -1,7 +1,7 @@
 .uiStatus {
     padding: 9px;
     margin: 7px;
-    border: 1px solid black; 
+    border: 1px solid rgb(226, 220, 220); 
     background-color: grey; 
     border-radius: 15px
 }
