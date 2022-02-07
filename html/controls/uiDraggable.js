@@ -40,7 +40,7 @@ class uiDraggable extends _uiControl {
     if(this._parent.constructor.name === "uiDraggableList"){
       let o = this;
       this._mainDiv.addEventListener("dragstart", () => {
-         o._mainDiv.classList.add("dragging"); 
+         o._mainDiv.classList.add("dragging");  
       });
   
       this._mainDiv.addEventListener("dragend", () => {

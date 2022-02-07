@@ -8,6 +8,7 @@
     margin: 10px;
     background-color: grey;
     padding: 10px;
+    border-radius: 12px;
 }
 
 .uiExpander_topbar p {
@@ -15,5 +16,5 @@
 }
 
 .uiExpander.dragging {
-    opacity: 0.01;
+    opacity: 0.9;
 }

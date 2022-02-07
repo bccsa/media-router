@@ -12,8 +12,7 @@
 class uiSetting extends _uiControl {
   constructor() {
     super();
-    this.displayName = "";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this.displayName = ""; 
     this._styles.push("controls/css/uiSettings.css");
 
     // Add small uiComponents
@@ -69,8 +68,8 @@ class uiSetting extends _uiControl {
   get html() {
     return `
     <!-- ${this.name} --> 
-        <div class="row setting" id="${this._uuid}_setting" draggable="true" >
-          <div class="col-lg-12"> <h3 > ${this.displayName} </h3> </div>  
+        <div class="setting" id="${this._uuid}_setting" draggable="true" >
+          <div class=""> <h3 > ${this.displayName} </h3> </div>  
         </div>
     `;
   }

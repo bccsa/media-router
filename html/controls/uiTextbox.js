@@ -16,8 +16,7 @@ class uiTextBox extends _uiControl {
     this.helpText = "new control help text";
     this.value = "TextBox Value";
     this.labelWidth = "400px"; // Label width in px
-    this.margin = "10px";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this.margin = "10px"; 
   }
 
   // -------------------------------------

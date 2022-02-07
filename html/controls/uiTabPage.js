@@ -12,8 +12,7 @@
 class uiTabPage extends _uiControl {
   constructor() {
     super();
-    this.tabImagePath = "path/to/image.png";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this.tabImagePath = "path/to/image.png"; 
   }
 
   // -------------------------------------

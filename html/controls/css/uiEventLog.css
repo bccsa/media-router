@@ -2,8 +2,9 @@
     height: 300px;
     background-color: #000;
     color: #fff;
-    width: 95.4%;
+    width: 95%;
     padding: 14px;
     margin: 1px;
-    margin-left: 40px;
+    margin-left: 19px;
+    border-radius: 12px;
 }

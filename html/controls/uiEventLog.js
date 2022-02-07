@@ -12,8 +12,7 @@
 class uiEventLog extends _uiControl {
   constructor() {
     super();
-    this.logText = "Terminal";
-    this._styles.push("controls/css/bootstrap.min.css");
+    this.logText = "Terminal"; 
     this._styles.push("controls/css/uiEventLog.css");
   }
 
@@ -24,7 +23,7 @@ class uiEventLog extends _uiControl {
   get html() {
     return `
               <!-- ${this.name} --> 
-                  <div class="row"> 
+                  <div id="${this._uuid}_main" class=""> 
                        <div class="uiEventLog-terminal"   >
                             <p id="${this._uuid}_eventLog" >${this.logText}</p>
                        </div>

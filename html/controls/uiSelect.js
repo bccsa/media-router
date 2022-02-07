@@ -13,8 +13,6 @@ class uiSelect extends _uiControl {
     constructor(){
         super();
         this.values = ["option1", "option2", "option3", "option4"];
-        // this._sources.push('controls/js/ThisDoesNotExist.js');
-        this._styles.push('controls/css/bootstrap.min.css')
     }
 
     // -------------------------------------

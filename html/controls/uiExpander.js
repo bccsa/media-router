@@ -58,7 +58,6 @@ class uiExpander extends _uiControl {
       } else {
         o._controlsDiv.style.display = "none";
       }
-      console.log(o._controlsDiv.style.display);
     });
 
 
@@ -80,6 +79,7 @@ class uiExpander extends _uiControl {
         this._label.innerText = this.displayName;
         break;
       }
+      
     }
   }
 }
