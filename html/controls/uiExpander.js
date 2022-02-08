@@ -17,16 +17,6 @@ class uiExpander extends _uiControl {
     this.margin = "10px";
     this.padding = "10px"; 
     this._styles.push("controls/css/uiExpander.css");
-
-    // Add header controls container to the topBar element
-    this.SetData({
-      header: {
-        controlType: "uiSimpleContainer",
-        name: "header",
-        displayName: this.displayName,
-        parentElement: "_topBar",
-      }
-    });
   }
 
   // -------------------------------------
@@ -38,7 +28,8 @@ class uiExpander extends _uiControl {
       <div id="${this._uuid}_main" class="uiExpander" >
         <!-- ${this.name} -->
         <div id="${this._uuid}_topBar" class="uiExpander_topbar" >
-          <p class="uiDraggable_drag" id="${this._uuid}_label">${this.displayName}</p>          
+          <p class="uiDraggable_drag" id="${this._uuid}_label">${this.displayName}</p>
+          <div class="Etienne to put class here" id="${this._uuid}_headerControls"></div>
         </div>
         <div id="${this._uuid}_controls"></div>
       </div>`;
@@ -49,6 +40,7 @@ class uiExpander extends _uiControl {
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
+    this.header = document.getElementById(`${this._uuid}_headerControls`);
 
     // Add event listeners
     let o = this;

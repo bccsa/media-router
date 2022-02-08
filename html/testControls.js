@@ -31,27 +31,31 @@ container.SetData({
         name: "expander1",
         displayName: "Douala",
         controlType: "uiExpander",
-        header: {
-          statusC1: {
-            controlType: "uiStatus",
-            name: "Status Control 1",
-            displayName: "Status Ctrl 1",
-          },
-          statusC2: {
-            controlType: "uiStatus",
-            name: "Status Control 2",
-            displayName: "Status Ctrl 2",
-          },
-          statusC3: {
-            controlType: "uiStatus",
-            name: "Status Control 3",
-            displayName: "Status Ctrl 3",
-          },
-          switchButton: {
-            controlType: "uiSwitchButton",
-            name: "Switch",
-          },
+        // header: {
+        statusC1: {
+          controlType: "uiStatus",
+          name: "Status Control 1",
+          displayName: "Status Ctrl 1",
+          parentElement: "header",
         },
+        statusC2: {
+          controlType: "uiStatus",
+          name: "Status Control 2",
+          displayName: "Status Ctrl 2",
+          parentElement: "header",
+        },
+        statusC3: {
+          controlType: "uiStatus",
+          name: "Status Control 3",
+          displayName: "Status Ctrl 3",
+          parentElement: "header",
+        },
+        switchButton: {
+          controlType: "uiSwitchButton",
+          name: "Switch",
+          parentElement: "header",
+        },
+        // },
         tabController1:{
             name: "tabController1",
             controlType: "uiTabController",
