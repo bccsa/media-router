@@ -35,7 +35,7 @@ class uiExpander extends _uiControl {
 
   get html() {
     return `
-      <div id="${this._uuid}_main" class="uiExpander" style="margin:${this.margin}">
+      <div id="${this._uuid}_mainEx" class="uiExpander" >
         <!-- ${this.name} -->
         <div id="${this._uuid}_topBar" class="uiExpander_topbar" >
           <p class="uiDraggable_drag" id="${this._uuid}_label">${this.displayName}</p>          
@@ -45,7 +45,7 @@ class uiExpander extends _uiControl {
   }
 
   Init() {
-    this._mainDiv = document.getElementById(`${this._uuid}_main`);
+    this._mainDivEx = document.getElementById(`${this._uuid}_mainEx`);
     this._controlsDiv = document.getElementById(`${this._uuid}_controls`);
     this._label = document.getElementById(`${this._uuid}_label`);
     this._topBar = document.getElementById(`${this._uuid}_topBar`);
@@ -62,13 +62,15 @@ class uiExpander extends _uiControl {
 
 
     // Event handling
-    this._mainDiv.addEventListener("dragstart", () => {
-      o._mainDiv.classList.add("dragging"); 
-    });
+    // this._mainDivEx.addEventListener("dragstart", (e) => {
+    //     // e.stopPropagation();
+    //    o._topBar.classList.add("dragging"); 
+    // });
 
-    this._mainDiv.addEventListener("dragend", () => {
-      o._mainDiv.classList.remove("dragging");  
-    });
+    // this._mainDivEx.addEventListener("dragend", (e) => {
+    //  // e.stopPropagation();
+    //     o._topBar.classList.remove("dragging");  
+    // });
 
 
   }
