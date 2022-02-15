@@ -29,7 +29,7 @@ class uiExpander extends _uiControl {
         <!-- ${this.name} -->
         <div id="${this._uuid}_topBar" class="uiExpander_topbar" >
           <p class="uiDraggable_drag" id="${this._uuid}_label">${this.displayName}</p>
-          <div class="Etienne to put class here" id="${this._uuid}_headerControls"></div>
+          <div class="uiExpander_control" id="${this._uuid}_headerControls"></div>
         </div>
         <div id="${this._uuid}_controls"></div>
       </div>`;

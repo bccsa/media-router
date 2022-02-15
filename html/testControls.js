@@ -74,32 +74,57 @@ container.SetData({
           button1: {
             name: "button1",
             controlType: "uiButton",
-            parentElement: "_sect1"
+            parentElement: "_controlsDiv"
+          },
+          button2: {
+            name: "button2",
+            controlType: "uiButton",
+            parentElement: "_controlsDiv"
+          },
+          textbox1: {
+            name: "textbox1",
+            controlType: "uiTextBox",
+            parentElement: "_controlsDiv"
           }
         },
         dragItem2: {
           name: "dragItem2",
           controlType: "uiDraggable",
-          displayName: "Test Draggable2",
-          button1: {
-            name: "button1",
-            controlType: "uiButton",
-            parentElement: "_sect2"
-          },
+          displayName: "Test Draggable2", 
           button2: {
             name: "button2",
             controlType: "uiTextBox",
-            parentElement: "_sect2"
+            parentElement: "_controlsDiv"
+          }, 
+          button3: {
+            name: "button3",
+            controlType: "uiTextBox",
+            parentElement: "_controlsDiv"
+          },
+          button4: {
+            name: "button4",
+            controlType: "uiTextBox",
+            parentElement: "_controlsDiv"
+          },
+          button5: {
+            name: "button5",
+            controlType: "uiTextBox",
+            parentElement: "_controlsDiv"
+          },
+          button6: {
+            name: "button6",
+            controlType: "uiTextBox",
+            parentElement: "_controlsDiv"
           },
           check1: {
             name: "check1",
             controlType: "uiCheckbox",
-            parentElement: "_sect2"
+            parentElement: "_controlsDiv"
           },
           check2: {
             name: "check2",
             controlType: "uiCheckbox",
-            parentElement: "_sect2"
+            parentElement: "_controlsDiv"
           }  
         }
       },
@@ -109,29 +134,39 @@ container.SetData({
 
 expander2: {
   name: "expander2",
-  displayName: "yaounde",
+  displayName: "Yaounde",
   controlType: "uiExpander",
-  header: {
-    statusC1: {
-      controlType: "uiStatus",
-      name: "Status Control 1",
-      displayName: "Status Ctrl 1",
-    },
-    statusC2: {
-      controlType: "uiStatus",
-      name: "Status Control 2",
-      displayName: "Status Ctrl 2",
-    },
-    statusC3: {
-      controlType: "uiStatus",
-      name: "Status Control 3",
-      displayName: "Status Ctrl 3",
-    },
-    switchButton: {
-      controlType: "uiSwitchButton",
-      name: "Switch",
-    },
+  // header: {
+  statusC1: {
+    controlType: "uiStatus",
+    name: "Status Control 1",
+    displayName: "Status Ctrl 1",
+    parentElement: "header",
   },
+  statusC4: {
+    controlType: "uiStatus",
+    name: "Status Control 4",
+    displayName: "Status Ctrl 4",
+    parentElement: "header",
+  },
+  statusC2: {
+    controlType: "uiStatus",
+    name: "Status Control 2",
+    displayName: "Status Ctrl 2",
+    parentElement: "header",
+  },
+  statusC3: {
+    controlType: "uiStatus",
+    name: "Status Control 3",
+    displayName: "Status Ctrl 3",
+    parentElement: "header",
+  },
+  switchButton: {
+    controlType: "uiSwitchButton",
+    name: "Switch",
+    parentElement: "header",
+  },
+  // },
   tabController1:{
       name: "tabController1",
       controlType: "uiTabController",
@@ -182,6 +217,8 @@ DraggableList: {
 },
 }
 },
+
+ 
    
 
   

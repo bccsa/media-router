@@ -5,8 +5,7 @@
 
 .uiExpander_topbar{
     color: white;
-    font-family: sans-serif;
-    display: flex; 
+    font-family: sans-serif; 
     background-color: #666666;
     padding: 10px; 
     border: 1px solid white;
@@ -14,7 +13,11 @@
     padding-right: 0px; 
 }
 
- 
+.uiExpander_control{
+    float: right;
+    margin-top: -49px;
+    padding-right: 20px;
+}
 
 .uiExpander.dragging {
     opacity: 0.01;

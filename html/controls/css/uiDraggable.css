@@ -16,8 +16,14 @@
 }
 
 .uiDraggable_control {
-  display: -webkit-box;
+  display: flex;    
+  flex-flow: column wrap;
+   height: 200px;  
 }
+
+.uiDraggable_control>* {
+  flex: 1 1 100px;
+}  
 
 .uiDraggable_sect1{
   width: 33%;
