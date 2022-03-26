@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="css/manager-ui.css"></link>
+    <link rel="stylesheet" href="css/bootstrap.min.css" integrity="sha384-MCw98/SFnGE8fJT3GXwEOngsV7Zt27NXFoaoApmYm81iuXoPkFOJwJ8ERdknLPMO" crossorigin="anonymous">
+   
+    <script src="js/jquery.js"></script>
+    <script src="/socket.io/socket.io.js"></script> 
+    <script src="js/manager-ui.js"></script>
+    <title>Document</title>
+</head>
+<body>
+    <!-- Login page -->
+    <div id="login" class="loginPage">
+        <form class="col-lg-3">
+            <div class="form-group"> 
+                    <label for="password"   id="username" class="loginLabel">Username</label>
+                    <input type="text" class="form-control" id="txtUsername"> 
+            </div>
+
+            <div class="form-group"> 
+                    <label for="username" id="password">Password</label>
+                    <input type="password" id="txtPassword" class="form-control"> 
+            </div>
+
+            <div class="form-group">
+                <button id="btnLogin" class="btn btn-success" onclick="btnLogin()">Login</button>
+            </div>
+        </form>
+
+        
+    </div>
+
+    <!-- Manager page -->
+    <div id="manager" class="container-fluid">
+        <div class="">
+            <div class="container-fluid topbar">
+                <h3> Media Router Manager </h3>
+            </div>
+
+            <div class="container-fluid client">
+                <div class="row client-topbar">
+
+                    <div class="col-lg-3">
+                        <h5>Client Name </h5>
+                    </div>
+
+                    <div class="col-lg-8">
+                        <div class="row status">
+                            <div class="col-lg-2 status-control">
+                                <p> Status Control </p>
+                            </div> 
+
+                            <div class="col-lg-2 status-control">
+                                <p> Status Control </p>
+                            </div> 
+
+                            <div class="col-lg-2 status-control">
+                                <p> Status Control </p>
+                            </div> 
+                        </div>
+                    </div>
+
+                    <div class="col-lg-1">
+                        <div class="toggle-switch">
+                            <!-- <span class=""> Off </span> -->
+                            <label class="switch">  
+                            <input type="checkbox" checked>
+                            <span class="slider round"></span> 
+                            </label>
+                            <!-- <span class=""> On </span> -->
+                        </div>
+                    </div>         
+                    
+                </div>
+
+                <div id="control" class="row control">
+
+                    <div class="col-lg-11">
+                        <div class="top-control">
+                            <button> Control Button </button> 
+                            <button> Control Button </button> 
+                            <button> Control Button </button> 
+                            <button> Control Button </button> 
+                        </div>
+    
+                        <div class="console-control">
+                            <p> Event log</p>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-1 slide-bar">
+                        <ul class="r"">
+                            <li> Mixers </li>
+                            <li> Settings </li>
+                        </ul>
+                    </div>
+
+                    <div class="col-md-11 settings">
+                        <div class="general">
+                            <div class="row">
+                                <div class="col-lg-12">
+                                    <h3> General </h3>
+                                </div>
+    
+                                <div class="col-lg-4">
+                                    <label for=""> Control Label </label>
+                                    <input type="text"> </input>
+                                </div>
+    
+                                <div class="col-lg-4">
+                                    <label for=""> Control2 Label </label>
+                                    <input type="checkbox"> </input>
+                                </div>
+
+                                <div class="col-lg-4">
+                                    <label for=""> Control Label </label>
+                                    <input type="text"> </input>
+                                </div>
+                            </div>
+
+                            <div class="row"> 
+    
+                                <div class="col-lg-4">
+                                    <label for=""> Control Label </label>
+                                    <input type="text"> </input>
+                                </div>
+    
+                                <div class="col-lg-4">
+                                    <label for=""> Control2 Label </label>
+                                    <input type="checkbox"> </input>
+                                </div>
+
+                                <div class="col-lg-4">
+                                    <label for=""> Control Label </label>
+                                    <input type="text"> </input>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                
+
+            </div>
+
+            </div>
+        </div>
+    </div>
+</body>
+</html>

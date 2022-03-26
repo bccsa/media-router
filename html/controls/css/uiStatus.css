@@ -1,0 +1,8 @@
+.uiStatus {
+    padding: 9px;
+    margin: 7px;
+    border: 1px solid #707070; 
+    background-color: #666666;
+    border-radius: 15px;
+    color: black;
+}
