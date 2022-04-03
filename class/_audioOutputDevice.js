@@ -16,6 +16,13 @@ const { PassThrough } = require ('stream');
 // Class declaration
 // -------------------------------------
 
+/**
+ * Audio output device base class
+ * @extends _device
+ * @property {number} bitDepth - Audio bit depth (default = 14)
+ * @property {number} channels - Audio channel number (default = 1)
+ * @property {number} sampleRate - Audio sample rate (default = 48000)
+ */
 class _audioOutputDevice extends _device {
     constructor(DeviceList) {
         super(DeviceList);

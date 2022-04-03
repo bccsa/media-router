@@ -14,6 +14,9 @@ const { _device } = require('./_device');
 // Require device classes
 // -------------------------------------
 
+const { JackAudioServer } = require('./JackAudioServer');
+const { JackAudioInput } = require('./JackAudioInput');
+const { JackAudioOutput } = require('./JackAudioOutput');
 const { AudioInput } = require('./AudioInput');
 const { AudioOutput } = require('./AudioOutput');
 const { AudioMixer } = require('./AudioMixer');
@@ -48,6 +51,9 @@ class DeviceList extends _device {
     // List of device classes
     get _deviceTypeList() {
         return {
+            JackAudioServer,
+            JackAudioInput,
+            JackAudioOutput,
             AudioInput,
             AudioVolumeTransform,
             AudioMixer,

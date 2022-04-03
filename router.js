@@ -93,7 +93,7 @@ const managerIO = require('socket.io-client')('http://localhost:8083',
 
 // log connection error 
 managerIO.on("connect_error", (err) => {
-    console.log(err);
+    // console.log(err);
 })
 
 // -------------------------------------
