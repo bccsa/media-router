@@ -112,3 +112,6 @@ sdp/
 
 # Include package.json
 !/package.json
+
+# Exclude MAC OS files
+.DS_Store
