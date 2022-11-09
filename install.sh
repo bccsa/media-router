@@ -9,19 +9,20 @@ sudo apt-get -y install pkg-config
 sudo apt-get -y install cmake
 sudo apt-get -y install libssl-dev
 sudo apt-get -y install build-essential
+sudo apt-get -y install opus-tools
 
-wget https://github.com/Haivision/srt/archive/refs/tags/v1.4.4.tar.gz
-tar -xzf v1.4.4.tar.gz
+wget https://github.com/Haivision/srt/archive/refs/tags/v1.5.1.tar.gz
+tar -xzf v1.5.1.tar.gz
 
 
-cd srt-1.4.4/
+cd srt-1.5.1/
 ./configure
 make
 sudo make install
 
 cd ..
-rm -r -f srt-1.4.4/
-rm -f v1.4.4.tar.gz
+rm -r -f srt-1.5.1/
+rm -f v1.5.1.tar.gz
 
 git submodule update --init
 npm install
