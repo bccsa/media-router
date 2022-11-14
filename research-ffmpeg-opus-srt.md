@@ -34,6 +34,11 @@ srt-live-transmit udp://:5555 "srt://:1234?mode=listener&latency=40"
 ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f mpegts -c:a libopus -i "srt://127.0.0.1:1234?mode=caller&latency=40" -c:a pcm_s16le -f alsa "default"
 
 # ffmpeg test 5 (vbr auto quality fec)
-ffmpeg -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -i "default" -ac 1 -c:a libopus -frame_duration 2.5 -application lowdelay -compression_level 0 -packet_loss 5 -fec 1 -f mpegts "udp://127.0.0.1:5555?pkt_size=300"
+ffmpeg -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -i "default" -ac 1 -c:a libopus -frame_duration 2.5 -application lowdelay -compression_level 0 -packet_loss 5 -fec 1 -f mpegts "udp://127.0.0.1:5555?pkt_size=188"
+srt-live-transmit udp://:5555 "srt://:1234?mode=listener&latency=40"
+ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f mpegts -c:a libopus -i "srt://127.0.0.1:1234?mode=caller&latency=40" -c:a pcm_s16le -f alsa "default"
+
+# ffmpeg test 5 (vbr auto quality fec buffer_size)
+ffmpeg -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f alsa -i "default" -ac 1 -c:a libopus -frame_duration 2.5 -application lowdelay -compression_level 0 -packet_loss 5 -fec 1 -f mpegts "udp://127.0.0.1:5555?pkt_size=188&buffer_size=0"
 srt-live-transmit udp://:5555 "srt://:1234?mode=listener&latency=40"
 ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f mpegts -c:a libopus -i "srt://127.0.0.1:1234?mode=caller&latency=40" -c:a pcm_s16le -f alsa "default"
