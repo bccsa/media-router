@@ -23,7 +23,7 @@ class _audioTransformDevice extends _device {
         this.stdin = undefined;             // stdin mapped to process stdin. Implementing class should define stdin.
         this.stdout = undefined;            // stdout mapped to process stdout. Implementing class should define stdout.
         this.channels = 1;                  // Audio channels
-        this.sampleRate = 44100;            // Audio sample rate
+        this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
 
         this.destinations = [ "Destination device name" ];
