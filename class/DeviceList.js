@@ -14,18 +14,20 @@ const { _device } = require('./_device');
 // Require device classes
 // -------------------------------------
 
-const { JackAudioServer } = require('./JackAudioServer');
-const { JackAudioInput } = require('./JackAudioInput');
-const { JackAudioOutput } = require('./JackAudioOutput');
+// const { JackAudioServer } = require('./JackAudioServer');
+// const { JackAudioInput } = require('./JackAudioInput');
+// const { JackAudioOutput } = require('./JackAudioOutput');
 const { AudioInput } = require('./AudioInput');
 const { AudioOutput } = require('./AudioOutput');
-const { AudioMixer } = require('./AudioMixer');
+// const { AudioMixer } = require('./AudioMixer');
 const { AudioVolumeTransform } = require('./AudioVolumeTransform');
-const { RtpOpusInput } = require('./RtpOpusInput');
-const { RtpOpusOutput } = require('./RtpOpusOutput');
-const { SrtInput } = require('./SrtInput');
-const { SrtOutput } = require('./SrtOutput');
+// const { RtpOpusInput } = require('./RtpOpusInput');
+// const { RtpOpusOutput } = require('./RtpOpusOutput');
+// const { SrtInput } = require('./SrtInput');
+// const { SrtOutput } = require('./SrtOutput');
 const { Spacer } = require('./Spacer');
+const { SrtOpusInput } = require('./SrtOpusInput');
+const { SrtOpusOutput } = require('./SrtOpusOutput');
 
 // -------------------------------------
 // Class declaration
@@ -47,22 +49,23 @@ class DeviceList extends _device {
             }
         }, this.autoStartDelay)
     }
-
     // List of device classes
     get _deviceTypeList() {
         return {
-            JackAudioServer,
-            JackAudioInput,
-            JackAudioOutput,
+            // JackAudioServer,
+            // JackAudioInput,
+            // JackAudioOutput,
             AudioInput,
             AudioVolumeTransform,
-            AudioMixer,
+            // AudioMixer,
             AudioOutput,
-            RtpOpusInput,
-            RtpOpusOutput,
-            SrtInput,
-            SrtOutput,
+            // RtpOpusInput,
+            // RtpOpusOutput,
+            // SrtInput,
+            // SrtOutput,
             Spacer,
+            SrtOpusInput,
+            SrtOpusOutput,
         }
     }
 
