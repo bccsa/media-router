@@ -46,6 +46,16 @@ class AudioMixer extends _audioInputDevice {
             });
 
             // Subscribe to volume change events (to do)
+            // ##########################################
+
+            // Subscribe to level indication events (to do)
+            input.on('level', data => {
+                // console.log(data);
+            });
+
+            input.on('peak', data => {
+                // console.log(data);
+            });
 
             // Pipe device output stream to mixer input
             device.stdout.pipe(input);
