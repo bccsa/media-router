@@ -31,6 +31,7 @@ class _audioInputDevice extends _device {
         this.channels = 1;                  // Audio channels
         this.sampleRate = 48000;            // Audio sample rate
         this.bitDepth = 16;                 // Audio bit depth
+        this.volume = 1;                    // Volume
 
         this.destinations = [ "Destination device name" ];
         this._destinations = {};
@@ -56,10 +57,8 @@ class _audioInputDevice extends _device {
                 this._destinations[destinationName].AddInput(this);
             }
             else {
-                // Write data to destination
-                this.stdout.on('data', (data) => {
-                    this._destinations[destinationName].stdin.write(data);
-                });
+                // Pipe data to destination
+                this.stdout.pipe(this._destinations[destinationName].stdin);
             }
         }
         else {

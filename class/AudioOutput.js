@@ -20,7 +20,7 @@ class AudioOutput extends _audioOutputDevice {
         super(DeviceList);
         this.name = 'New Alsa Output';      // Display name
         this.device = 'default';            // Device name - see aplay -L
-        this.bufferSize = 2048;             // ALSA buffer size in bytes
+        this.bufferSize = 128;             // ALSA buffer size in bytes
         this._alsa = undefined;             // alsa process
     }
 

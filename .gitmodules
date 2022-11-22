@@ -1,3 +1,6 @@
 [submodule "submodules/pcm-volume"]
 	path = submodules/pcm-volume
 	url = https://github.com/bccsa/pcm-volume.git
+[submodule "submodules/audio-mixer"]
+	path = submodules/audio-mixer
+	url = https://github.com/bccsa/audio-mixer.git

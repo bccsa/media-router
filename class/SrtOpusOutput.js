@@ -57,6 +57,7 @@ class SrtOpusOutput extends _audioOutputDevice {
                 // ffmpeg external process
                 // Opus sample rate is always 48000. Input is therefore converted to 48000                                                                                                                                                                                                -frame_duration 2.5 -application lowdelay -compression_level 0 -packet_loss 5 -fec 1                                              
                 //let ffmpeg_args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -af aresample=async=1000 -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss 5 -fec 1 -f mpegts udp://127.0.0.1:${this.udpSocketPort}?pkt_size=188&buffer_size=0`
+                this._logEvent(`Starting ffmpeg...`);
                 let ffmpeg_args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss 5 -fec 1 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts udp://127.0.0.1:${this.udpSocketPort}?pkt_size=188&buffer_size=0`
                 this._ffmpeg = spawn('ffmpeg', ffmpeg_args.split(" "));
                 this.stdin.pipe(this._ffmpeg.stdin);
@@ -107,6 +108,7 @@ class SrtOpusOutput extends _audioOutputDevice {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
+                this._logEvent(`Starting srt-live-transmit...`);
                 let args = `udp://127.0.0.1:${this.udpSocketPort} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}&streamid=${this.srtStreamID}${crypto}`;
                 this._srt = spawn('srt-live-transmit', args.split(" "));
 

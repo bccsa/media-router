@@ -62,13 +62,14 @@ class SrtOpusInput extends _audioInputDevice {
                 if (this.srtPassphrase != '') {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`
                 }
+                this._logEvent(`Starting ffmpeg...`);
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f mpegts -c:a libopus -i "srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}&maxbw=${this.srtMaxBw}&streamid=${this.srtStreamID}${crypto}" -af aresample=async=1000 -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -f s${this.bitDepth}le -`
                 this._ffmpeg = spawn('ffmpeg', args.split(" "), { shell: "bash" });
                 this._ffmpeg.stdout.pipe(this.stdout);
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    //this._logEvent(`${data.toString()}`);
+                    // this._logEvent(`${data.toString()}`);
                 });
 
                 // Handle process exit event

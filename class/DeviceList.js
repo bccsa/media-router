@@ -19,8 +19,8 @@ const { _device } = require('./_device');
 // const { JackAudioOutput } = require('./JackAudioOutput');
 const { AudioInput } = require('./AudioInput');
 const { AudioOutput } = require('./AudioOutput');
-// const { AudioMixer } = require('./AudioMixer');
-const { AudioVolumeTransform } = require('./AudioVolumeTransform');
+const { AudioMixer } = require('./AudioMixer');
+// const { AudioVolumeTransform } = require('./AudioVolumeTransform');
 // const { RtpOpusInput } = require('./RtpOpusInput');
 // const { RtpOpusOutput } = require('./RtpOpusOutput');
 // const { SrtInput } = require('./SrtInput');
@@ -56,8 +56,8 @@ class DeviceList extends _device {
             // JackAudioInput,
             // JackAudioOutput,
             AudioInput,
-            AudioVolumeTransform,
-            // AudioMixer,
+            // AudioVolumeTransform,
+            AudioMixer,
             AudioOutput,
             // RtpOpusInput,
             // RtpOpusOutput,

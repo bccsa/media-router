@@ -21,7 +21,7 @@ class AudioInput extends _audioInputDevice {
         this.name = 'New Alsa input';   // Display name
         this.device = 'default';        // Device name - see arecord -L
         this._process = undefined;      // alsa/ffmpeg process
-        this.bufferSize = 2048;         // ALSA buffer size in bytes
+        this.bufferSize = 128;         // ALSA buffer size in bytes
         this._execFile = 'arecord';
     }
 
