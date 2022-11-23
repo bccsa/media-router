@@ -51,6 +51,33 @@ clientApp.get('/', (req, res) => {
     res.send(deviceListHtml);
 });
 
+
+// -------------------------------------
+// Manager WebApp Express webserver
+// -------------------------------------
+
+const managerApp = express();
+const managerHttp = require('http').createServer(managerApp);
+
+try {
+    managerHttp.listen(8082, () => {
+        eventLog('Manager WebApp running on *:8082');
+    });
+}
+catch (err) {
+    eventLog(`Unable to start Manager WebApp: ${err.message}`);
+}
+
+// Serve html files
+managerApp.use(express.static('client'));
+
+// Serve DeviceList generated html (default page);
+// deviceListHtml = deviceList.GetHtml();
+// clientApp.get('/', (req, res) => {
+//     res.send(deviceListHtml);
+// });
+
+
 // -------------------------------------
 // Client WebApp Socket.IO
 // -------------------------------------
