@@ -15,13 +15,19 @@ Modules (devices):
 The web control interface is available on port 8081.
 
 ## Compatibility
-This project has been tested on Raspberry Pi OS Buster and Ubuntu 20.04
+This project has been tested on Raspberry Pi OS Bullseye
 
 ## Dependencies
 Run the installation script:
 ```
-sudo ./install.sh
+sudo ./install-dependencies.sh
 ```
-## uiControl 
-Limitation of printing taf tested
-* cant not add a childElement inside the ChildElement 
+
+## Development environment
+* Clone the project to your Raspberry Pi.
+* Navigate to the media-router directory
+* Run the router.js with NodeJS: ```node server.js```
+* A default configuration file will be created listing all the modules. This file can be modified to create a working setup
+
+## Example configurations
+To do
