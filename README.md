@@ -27,7 +27,7 @@ sudo ./install-dependencies.sh
 * Clone the project to your Raspberry Pi.
 * Navigate to the media-router directory
 * Run the router.js with NodeJS: ```node server.js```
-* A default configuration file will be created listing all the modules. This file can be modified to create a working setup
+* A default configuration file will be created listing all the modules. This file can be modified to create a working setup. The server.js script should be restarted to apply the configuration changes.
 
 ## Example configurations
 To do
