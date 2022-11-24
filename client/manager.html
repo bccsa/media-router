@@ -1,14 +1,56 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Document</title>
-    <script src="modular-ui/modular-ui.js" ></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="modular-ui/modular-ui.js"></script>
 </head>
+
 <body>
+    <div class= "w-full h-12 bg-[#1E293B] mb-0.5 text-white indent-2.5 border-solid border-black">
+        <h1 class ="p-3"> Media Router Manager </h1>
+    </div>
+
     <div id="controls"></div>
-    <script src="manager.js" ></script>
+    
+    <script src="manager.js"></script>
+
+    <div class="mixer">
+          <p>MASTER</p> 
+          <a class="active master-btn"></a>
+          <ul>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>   
+          </ul> 
+          <input class="slider master" value="50" type="range" />
+        </section>
+        
+      </div>
+
+      <div class="slider">
+        <input type="range" min="0" max="200" value="100" oninput="rangeValue3.innerText = this.value">
+        <p id="rangeValue3">10</p>
+        </div>
+
+        
+      
+    
 </body>
+
 </html>

@@ -1,11 +1,22 @@
 var controls = new uiTopLevelContainer('../controls', 'controls');
 
 controls.SetData({
-    AlbertsMixer: {
-        controlType: "AudioMixer",
+    AudioInput_SCC_Pulpit:{
+        controlType: "AudioInput",
     },
-    IvansMixer: {
-        controlType: "AudioMixer",
-        description: "This is a test"
+    AudioInput_ENG:{
+        controlType: "AudioInput",
+    },
+    AudioInput_FRA:{
+        controlType: "AudioInput",
     }
+
+
+    // AlbertsMixer: {
+    //     controlType: "AudioMixer",
+    // },
+    // IvansMixer: {
+    //     controlType: "AudioMixer",
+    //     description: "This is a test"
+    // }
 });
