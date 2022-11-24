@@ -6,45 +6,40 @@
 
 const { spawn } = require('child_process');
 const { _audioInputDevice } = require('./_audioInputDevice');
-const fs = require('fs');
 
-/** SRT Opus audio input */
+/** 
+ * SRT Opus audio input 
+ * @extends _audioInputDevice
+ * @property {String} srtHost - SRT host name / ip address
+ * @property {String} srtPort - SRT mode (caller, listener, rendevouz)
+ * @property {Number} srtMode - SRT encryption key length (16, 32)
+ * @property {Number} srtPbKeyLen - SRT port
+ * @property {String} srtPassphrase - SRT encryption passphrase
+ * @property {Number} srtLatency - SRT latency in milliseconds
+ * @property {String} srtStreamID - SRT Stream ID
+ * @property {Number} srtMaxBw - SRT Max Bandwidth in bytes per second
+ */
 class SrtOpusInput extends _audioInputDevice {
     constructor(DeviceList) {
         super(DeviceList);
-        /** Display name */
         this.name = 'New SRT Opus Input';
-        /** Audio sample rate */
-        this.sampleRate = 48000;
-        /** Audio bit depth */
-        this.bitDepth = 16;
-        /** Audio channel count */
-        this.channels = 1;
-        /** SRT host name / ip address */
         this.srtHost = 'srt.invalid';
-        /** SRT port */
         this.srtPort = 5000;
-        /** SRT mode (caller, listener, rendevouz) */
         this.srtMode = 'caller';
-        /** SRT encryption key length */
         this.srtPbKeyLen = 16;
-        /** SRT encryption passphrase */
         this.srtPassphrase = '';
-        /** SRT latency */
         this.srtLatency = 200;
-        /** SRT max bandwidth in byte per second */
         this.srtMaxBw = 8000;
-        /** SRT Stream ID */
         this.srtStreamID = ''
         this._srt = undefined;
         this._ffmpeg = undefined;
 
         // Subscribe to DeviceList start and stop events
-        DeviceList.run.on('start', () => {
+        DeviceList.on('start', () => {
             this.Start();
         });
 
-        DeviceList.run.on('stop', () => {
+        DeviceList.on('stop', () => {
             this.Stop();
         });
     }

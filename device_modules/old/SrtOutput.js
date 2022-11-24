@@ -31,11 +31,11 @@ class SrtOutput extends _device {
         this._srt = undefined;
 
         // Subscribe to DeviceList start and stop events
-        DeviceList.run.on('start', () => {
+        DeviceList.on('start', () => {
             this.Start();
         });
 
-        DeviceList.run.on('stop', () => {
+        DeviceList.on('stop', () => {
             this.Stop();
         });
     }

@@ -211,7 +211,7 @@ function cleanup() {
 }
 
 // // Delete socket files created by fluent-ffmpeg-multistream
-// deviceList.run.on('stop', () => {
+// deviceList.on('stop', () => {
 //     let regex = /[.]sock$/;
 //     fs.readdirSync('./')
 //         .filter(f => regex.test(f))

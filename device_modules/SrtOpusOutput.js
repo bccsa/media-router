@@ -7,36 +7,29 @@
 const { spawn } = require('child_process');
 const { _audioOutputDevice } = require('./_audioOutputDevice');
 
-/** SRT Opus audio output */
+/**
+ * SRT Opus audio output
+ * @extends _audioOutputDevice
+ * @property {Number} udpSocketPort - Unique UDP socket port used internally for transfer of data between ffmpeg and srt-live-transmit.
+ * @property {String} srtHost - SRT host name / ip address
+ * @property {String} srtPort - SRT mode (caller, listener, rendevouz)
+ * @property {Number} srtMode - SRT encryption key length (16, 32)
+ * @property {Number} srtPbKeyLen - SRT port
+ * @property {String} srtPassphrase - SRT encryption passphrase
+ * @property {Number} srtLatency - SRT latency in milliseconds
+ * @property {String} srtStreamID - SRT Stream ID
+ */
 class SrtOpusOutput extends _audioOutputDevice {
-    /**
-     * Create a new SRT Opus audio output
-     */
     constructor(DeviceList) {
         super(DeviceList);
-        /** Display name */
         this.name = 'SRT Opus audio output';   // Display name
-        /** Audio sample rate */
-        this.sampleRate = 48000;        // Audio sample rate
-        /** Audio bit depth */
-        this.bitDepth = 16;             // Audio bit depth
-        /** Audio channel count */
-        this.channels = 1;              // Audio channels
-        /** Unique UDP socket port used internally for transfer of data between ffmpeg and srt-live-transmit. */
         this.udpSocketPort = 5555;
-        /** SRT host name / ip address */
         this.srtHost = 'srt.invalid';
-        /** SRT port */
         this.srtPort = 5000;
-        /** SRT mode (caller, listener, rendevouz) */
         this.srtMode = 'caller';
-        /** SRT encryption key length */
         this.srtPbKeyLen = 16;
-        /** SRT encryption passphrase */
         this.srtPassphrase = '';
-        /** SRT latency */
         this.srtLatency = 200;
-        /** SRT Stream ID */
         this.srtStreamID = ''
 
         // this.srtMaxBw = 8000;                  // maxbw not implemented in SRT output - srt-live-transmit breaks when maxbw parameter is added in output mode
@@ -60,7 +53,7 @@ class SrtOpusOutput extends _audioOutputDevice {
                 this._logEvent(`Starting ffmpeg...`);
                 let ffmpeg_args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss 5 -fec 1 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts udp://127.0.0.1:${this.udpSocketPort}?pkt_size=188&buffer_size=0`
                 this._ffmpeg = spawn('ffmpeg', ffmpeg_args.split(" "));
-                this.stdin.pipe(this._ffmpeg.stdin);
+                this._mixer.pipe(this._ffmpeg.stdin);
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
