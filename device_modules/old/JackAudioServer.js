@@ -66,7 +66,7 @@ class JackAudioServer extends _device {
 
                 // Handle process exit event
                 this._process.on('close', code => {
-                    if (this._process != undefined) {
+                    if (this._process) {
                         this._process.stdout.unpipe(this.stdout);
                         this._process.kill('SIGTERM');
                         this._process.kill('SIGKILL');
@@ -107,7 +107,7 @@ class JackAudioServer extends _device {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 
-            if (this._process != undefined) {
+            if (this._process) {
                 this._logEvent(`Stopping jackd...`);
                 this._process.stdout.unpipe(this.stdout);
                 this.isRunning = false;

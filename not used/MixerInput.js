@@ -52,9 +52,9 @@ class MixerInput extends _outputDevice {
         let m = this._deviceList.FindDevice(this.mixer);
 
         // Validate audio mixer
-        if (m != undefined && m._audioMixer != undefined) { this._mixer = m; }
+        if (m && m._audioMixer) { this._mixer = m; }
 
-        if (this._mixer != undefined) {
+        if (this._mixer) {
             // Add mixer input to mixer
             this._mixer.AddInput(this);
         }

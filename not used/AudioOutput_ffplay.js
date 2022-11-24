@@ -81,7 +81,7 @@ class AudioOutput extends _audioOutputDevice {
     Stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._ffplay != undefined) {
+        if (this._ffplay) {
             this.isRunning = false;
             this._logEvent(`Stopping ffplay...`);
             this._ffplay.kill('SIGTERM');

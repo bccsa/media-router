@@ -4,24 +4,22 @@
 // Copyright BCC South Africa
 // =====================================
 
-// -------------------------------------
-// External libraries
-// -------------------------------------
-
 const { spawn } = require('child_process');
 const { _audioInputDevice } = require('./_audioInputDevice');
 
-// -------------------------------------
-// Class declaration
-// -------------------------------------
-
+/**
+ * ALSA Audio Input module
+ * @extends _audioInputDevice
+ * @property {String} device - ALSA Device name - see aplay -L (Default = default)
+ * @property {Number} bufferSize - ALSA buffer size in bytes (Default = 64)
+ */
 class AudioInput extends _audioInputDevice {
     constructor(DeviceList) {
         super(DeviceList);
         this.name = 'New Alsa input';   // Display name
         this.device = 'default';        // Device name - see arecord -L
         this._process = undefined;      // alsa/ffmpeg process
-        this.bufferSize = 128;         // ALSA buffer size in bytes
+        this.bufferSize = 64;         // ALSA buffer size in bytes
         this._execFile = 'arecord';
     }
 
@@ -52,7 +50,7 @@ class AudioInput extends _audioInputDevice {
 
                 // Handle process exit event
                 this._process.on('close', code => {
-                    if (this._process != undefined) {
+                    if (this._process) {
                         this._process.stdout.unpipe(this.stdout);
                         this._process.kill('SIGTERM');
                         this._process.kill('SIGKILL');
@@ -93,7 +91,7 @@ class AudioInput extends _audioInputDevice {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 
-            if (this._process != undefined) {
+            if (this._process) {
                 this._logEvent(`Stopping ${this._execFile}...`);
                 this._process.stdout.unpipe(this.stdout);
                 this.isRunning = false;

@@ -80,13 +80,13 @@ socket.on('deviceStatus', data => {
 
 // Receive device status updates
 socket.on('deviceUpdate', data => {
-    if (data.peak != undefined) {
+    if (data.peak) {
         dom_setPeak(data.peak);
     }
-    else if (data.mute != undefined) {
+    else if (data.mute) {
         mute = data.mute;
         dom_setMute();
-    } else if (data.volume != undefined) {
+    } else if (data.volume) {
         volume = data.volume;
         dom_setVolume();
     }

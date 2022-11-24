@@ -134,7 +134,7 @@ class _uiControl extends Dispatcher {
       if (k[0] != "_" && k != "controlType") {
         // Update this control's settable (not starting with "_") properties
         if (
-          this[k] != undefined &&
+          this[k] &&
           (typeof this[k] == "number" ||
             typeof this[k] == "string" ||
             typeof this[k] == "boolean")
@@ -147,14 +147,14 @@ class _uiControl extends Dispatcher {
           }
         }
         // Update child controls. If a child control shares the name of a settable property, the child control will not receive data.
-        else if (this._controls[k] != undefined) {
+        else if (this._controls[k]) {
           this._controls[k].SetData(data[k]);
         }
         // Create a new child control if the passed data has controlType set. If this control is not ready yet (Init did not run yet),
         // add new child controls to a controls queue.
-        else if (data[k].controlType != undefined) {
+        else if (data[k].controlType) {
           let c = this._getDynamicClass(data[k].controlType);
-          if (c != undefined) {
+          if (c) {
             // Create new control
             let newControl = new c();
             newControl.SetData(data[k]);
@@ -165,7 +165,7 @@ class _uiControl extends Dispatcher {
 
             // Determine destination element
             let e = "_controlsDiv"; // default div
-            if (data[k].parentElement != undefined) {
+            if (data[k].parentElement) {
               e = data[k].parentElement;
             }
 
@@ -189,7 +189,7 @@ class _uiControl extends Dispatcher {
   // Initialize a child control and print it in the passed element name (String)
   _initControl(control, element) {
     let e = this[element];
-    if (control != undefined && control.name != undefined && e != undefined) {
+    if (control && control.name && e) {
       // Wait for HTML to be printed _controlsDiv element, and call Init
       const observer = new MutationObserver(function (mutationsList, observer) {
         control._styles.forEach((s) => {
@@ -244,7 +244,7 @@ class _uiControl extends Dispatcher {
     // Get child controls properties
     Object.keys(this._controls).forEach((k) => {
       if (
-        this._controls[k].GetData() != undefined &&
+        this._controls[k].GetData() &&
         !this._controls[k].hideData
       ) {
         data[k] = this._controls[k].GetData();
@@ -257,7 +257,7 @@ class _uiControl extends Dispatcher {
   // Remove child control with associated data at the passed JSON path(s)
   Remove(path) {
     Object.keys(path).forEach((k) => {
-      if (this._controls[k] != undefined) {
+      if (this._controls[k]) {
         // Check if the passed path has no children
         if (Object.keys(path[k]).length == 0) {
           this._controls[k].RemoveHtml();
@@ -275,7 +275,7 @@ class _uiControl extends Dispatcher {
   ApplyStyle(ref) {
     if (!this._appliedStyles.includes(ref)) {
       this._appliedStyles.push(ref);
-      if (this._parent != undefined) {
+      if (this._parent) {
         this._parent.ApplyStyle(ref);
       } else {
         if (this._head == undefined) {
@@ -292,12 +292,12 @@ class _uiControl extends Dispatcher {
     let data = {};
     if (Array.isArray(propertyNames)) {
       propertyNames.forEach((p) => {
-        if (this[p] != undefined) {
+        if (this[p]) {
           data[p] = this[p];
         }
       });
     } else {
-      if (this[propertyNames] != undefined) {
+      if (this[propertyNames]) {
         data[propertyNames] = this[propertyNames];
       }
     }
@@ -307,7 +307,7 @@ class _uiControl extends Dispatcher {
 
   // notifies parent of data change, and triggers onChange event.
   _notify(data) {
-    if (this._parent != undefined) {
+    if (this._parent) {
       let n = {
         [this.name]: data,
       };

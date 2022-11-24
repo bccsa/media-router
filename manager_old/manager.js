@@ -54,7 +54,7 @@ managerio.use((socket, next) => {
     let login = readAuth("managerLogin.json");
 
     // if username does not exisist
-    if (login[username] != undefined) {
+    if (login[username]) {
         // if username exsists check if password is valid
         if (login[username].password != password){
             // close connection
@@ -96,7 +96,7 @@ routerio.use((socket, next) => {
     let login = readAuth("routerLogin.json");
 
     // if username does not exisist
-    if (login[username] != undefined) {
+    if (login[username]) {
         // if username exsists check if password is valid
         if (login[username].password != password){
             // close connection

@@ -117,13 +117,13 @@ class AudioVolumeTransform extends _audioTransformDevice {
 
     // Set client UI command for give device name
     SetClientUIcommand(clientData) {
-        if (clientData != undefined) {
-            if (clientData.mute != undefined && clientData.mute != this.mute)
+        if (clientData) {
+            if (clientData.mute && clientData.mute != this.mute)
             {
                 this.ToggleMute();
             }
 
-            if (clientData.volume != undefined)
+            if (clientData.volume)
             {
                 this.SetVolume(clientData.volume);
             }

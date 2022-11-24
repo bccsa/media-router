@@ -14,17 +14,8 @@ const { _device } = require('./_device');
 // Require device classes
 // -------------------------------------
 
-// const { JackAudioServer } = require('./JackAudioServer');
-// const { JackAudioInput } = require('./JackAudioInput');
-// const { JackAudioOutput } = require('./JackAudioOutput');
 const { AudioInput } = require('./AudioInput');
 const { AudioOutput } = require('./AudioOutput');
-const { AudioMixer } = require('./AudioMixer');
-// const { AudioVolumeTransform } = require('./AudioVolumeTransform');
-// const { RtpOpusInput } = require('./RtpOpusInput');
-// const { RtpOpusOutput } = require('./RtpOpusOutput');
-// const { SrtInput } = require('./SrtInput');
-// const { SrtOutput } = require('./SrtOutput');
 const { Spacer } = require('./Spacer');
 const { SrtOpusInput } = require('./SrtOpusInput');
 const { SrtOpusOutput } = require('./SrtOpusOutput');
@@ -52,17 +43,8 @@ class DeviceList extends _device {
     // List of device classes
     get _deviceTypeList() {
         return {
-            // JackAudioServer,
-            // JackAudioInput,
-            // JackAudioOutput,
             AudioInput,
-            // AudioVolumeTransform,
-            AudioMixer,
             AudioOutput,
-            // RtpOpusInput,
-            // RtpOpusOutput,
-            // SrtInput,
-            // SrtOutput,
             Spacer,
             SrtOpusInput,
             SrtOpusOutput,
@@ -74,27 +56,20 @@ class DeviceList extends _device {
         // Get class
         let c = this._deviceTypeList[DeviceType];
 
-        if (c != undefined) {
+        if (c) {
             // Create new instance of class
             let d = new c(this);
 
             // Subscibe to log event
-            if (d.log != undefined) {
-                d.log.on('log', message => {
-                    this._log.emit('log', message);
-                });
-            }
-            else {
-                this._logEvent(`Unable subscribe to log event for ${DeviceType}`)
-            }
+            d.on('log', message => {
+                this.emit('log', message);
+            });
 
             // Subscribe to client UI update event
-            if (d.clientUIupdate != undefined) {
-                d.clientUIupdate.on('data', data => {
-                    // Relay events
-                    this._clientUIupdate.emit('data', data);
-                });
-            }
+            d.on('data', data => {
+                // Relay events
+                this.emit('data', data);
+            });
             
             return d;
         }
@@ -118,7 +93,7 @@ class DeviceList extends _device {
             let d = new c(this);
 
             // Get default configuration, and add to config object
-            if (d.GetConfig != undefined) {
+            if (d.GetConfig) {
                 conf.deviceList[deviceType] = [ d.GetConfig() ];
             }
             else {
@@ -133,15 +108,15 @@ class DeviceList extends _device {
     SetConfig(config) {
         super.SetConfig(config);
 
-        if (config.deviceList != undefined) {
+        if (config.deviceList) {
             Object.keys(config.deviceList).forEach(deviceType => {
                 config.deviceList[deviceType].forEach(deviceConfig => {
                     // Create child object, and add to device list
                     let d = this.NewDevice(deviceType);
 
-                    if (d != undefined) {
+                    if (d) {
                         // Set device configuration
-                        if (d.SetConfig != undefined) {
+                        if (d.SetConfig) {
                             d.SetConfig(deviceConfig);
 
                             // Create array for device type, and add to array
@@ -151,7 +126,7 @@ class DeviceList extends _device {
                             this._list[deviceType].push(d);
 
                             // Add to linear list
-                            if (d.name != undefined)
+                            if (d.name)
                             {
                                 this._linearList[d.name] = d;
                             }
@@ -183,7 +158,7 @@ class DeviceList extends _device {
 
             // Get configuration for each device instance
             this._list[deviceType].forEach(device => {
-                if (device.GetConfig != undefined) {
+                if (device.GetConfig) {
                     c.deviceList[deviceType].push(device.GetConfig());
                 }
                 else {
@@ -202,7 +177,7 @@ class DeviceList extends _device {
 
     // Return a list of AudioVolumeTransforms with the given solo group name
     SoloGroup(name) {
-        if (this._list.AudioVolumeTransform != undefined) {
+        if (this._list.AudioVolumeTransform) {
             return this._list.AudioVolumeTransform.filter(m => m.soloGroup == name);
         }
         else {
@@ -234,7 +209,7 @@ class DeviceList extends _device {
         let l = [];
         Object.keys(this._list).forEach(deviceType => {
             this._list[deviceType].forEach(device => {
-                if (device.clientHtmlFileName != undefined)
+                if (device.clientHtmlFileName)
                 {
                     l.push(device);
                 }
@@ -291,7 +266,7 @@ class DeviceList extends _device {
             }
         }
         else {
-            if (this._linearList[DeviceName] != undefined)
+            if (this._linearList[DeviceName])
             {
                 return this._linearList[DeviceName].GetClientUIstatus();
             }
@@ -301,7 +276,7 @@ class DeviceList extends _device {
     // Set client UI command for give device name
     SetClientUIcommand(clientData) {
         if (clientData.deviceName == this.name) {
-            if (clientData.isRunning != undefined) {
+            if (clientData.isRunning) {
                 if (clientData.isRunning && !this.isRunning) {
                     this.Start();
                 }
@@ -312,7 +287,7 @@ class DeviceList extends _device {
         }
         else {
             // Pass command to child device
-            if (this._linearList[clientData.deviceName] != undefined) {
+            if (this._linearList[clientData.deviceName]) {
                 this._linearList[clientData.deviceName].SetClientUIcommand(clientData);
             }
         }

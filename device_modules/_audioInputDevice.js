@@ -17,7 +17,7 @@ const { PassThrough } = require ('stream');
 // -------------------------------------
 
 /**
- * Audio input device base class
+ * Base class for audio input modules
  * @extends _device
  * @property {number} bitDepth - Audio bit depth (default = 14)
  * @property {number} channels - Audio channel number (default = 1)
@@ -48,24 +48,16 @@ class _audioInputDevice extends _device {
     _findDestination(destinationName) {
         this._destinations[destinationName] = this._deviceList.FindDevice(destinationName);
 
-        // start and stop event chaining
-        if (this._destinations[destinationName] != undefined && this._destinations[destinationName].Start != undefined && this._destinations[destinationName].Stop != undefined) {
-            
-            // Check if destination is an AudioMixer.
-            if (this._destinations[destinationName].constructor.name == "AudioMixer") {
-                // Add mixer input
-                this._destinations[destinationName].AddInput(this);
-            }
-            else {
-                // Pipe data to destination
-                this.stdout.pipe(this._destinations[destinationName].stdin);
-            }
+        // Check for valid output device
+        if (this._destinations[destinationName] && this._destinations[destinationName].AddInput) {
+            // Link input device to destination output device
+            this._destinations[destinationName].AddInput(this);
         }
         else {
-            this._logEvent(`Unable to find destination device "${destinationName}"`);
+            this._logEvent(`Unable to find destination device "${destinationName}", or destination device not of _audioOutputDevice type`);
             
             // Retry to find the destination device in 1 second
-            setTimeout(() => { this._findDestination(destinationName) }, 1000);
+            //setTimeout(() => { this._findDestination(destinationName) }, 1000);
         }
     }
 }

@@ -42,7 +42,7 @@ class _audioTransformDevice extends _device {
         this._destinations[destinationName] = this._deviceList.FindDevice(destinationName);
 
         // start and stop event chaining
-        if (this._destinations[destinationName] != undefined && this._destinations[destinationName].Start != undefined && this._destinations[destinationName].Stop != undefined) {
+        if (this._destinations[destinationName] && this._destinations[destinationName].Start && this._destinations[destinationName].Stop) {
             
             // Check if destination is an AudioMixer.
             if (this._destinations[destinationName].constructor.name == "AudioMixer") {

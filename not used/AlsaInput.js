@@ -75,7 +75,7 @@ class AlsaInput extends _inputDevice {
     Stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._arecord != undefined) {
+        if (this._arecord) {
             this.stdout = undefined;
             this._logEvent(`Stopping arecord...`);
             this._arecord.kill('SIGTERM');

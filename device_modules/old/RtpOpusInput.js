@@ -62,7 +62,7 @@ a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should alway
                 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    if (this._ffmpeg != undefined) {
+                    if (this._ffmpeg) {
                         this._ffmpeg.stdout.unpipe(this.stdout);
                         this._ffmpeg.kill('SIGTERM');
                         this._ffmpeg.kill('SIGKILL');
@@ -101,7 +101,7 @@ a=rtpmap:97 opus/48000/${this.channels}`);      // Opus sample rate should alway
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 
-            if (this._ffmpeg != undefined) {
+            if (this._ffmpeg) {
                 this._ffmpeg.stdout.unpipe(this.stdout);
                 this._logEvent(`Stopping ffmpeg (rtp://${this.rtpIP}:${this.rtpPort})...`);
                 this._ffmpeg.kill('SIGTERM');

@@ -61,7 +61,7 @@ class JackAudioOutput extends _audioOutputDevice {
     
                     // Handle process exit event
                     this._process.on('close', code => {
-                        if (this._process != undefined) {
+                        if (this._process) {
                             this.stdin.unpipe(this._process.stdin);
                             this._process.kill('SIGTERM');
                             this._process.kill('SIGKILL');
@@ -102,7 +102,7 @@ class JackAudioOutput extends _audioOutputDevice {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 
-            if (this._process != undefined) {
+            if (this._process) {
                 this.stdin.unpipe(this._process.stdin);
                 this.isRunning = false;
                 this._logEvent(`Stopping jack-stdin...`);

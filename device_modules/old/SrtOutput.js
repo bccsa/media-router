@@ -74,7 +74,7 @@ class SrtOutput extends _device {
 
                 // Handle process exit event
                 this._srt.on('close', code => {
-                    if (this._srt != undefined) {
+                    if (this._srt) {
                         this._srt.kill('SIGTERM');
                         this._srt.kill('SIGKILL');
                         this._srt = undefined;
@@ -112,7 +112,7 @@ class SrtOutput extends _device {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 
-            if (this._srt != undefined) {
+            if (this._srt) {
                 this._logEvent(`Stopping srt-live-transmit...`);
                 this._srt.kill('SIGTERM');
                 

@@ -31,7 +31,7 @@ class AudioMixer_old2 extends _inputDevice {
                 let name = `in${i}`;
                 this._createNamedPipe(name);
 
-                if (this._pipes[name] != undefined && this._pipes[name].stream != undefined) {
+                if (this._pipes[name] && this._pipes[name].stream) {
                     this[name] = this._pipes[name].stream;
                 }
             }
@@ -92,7 +92,7 @@ class AudioMixer_old2 extends _inputDevice {
     Stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._ffmpeg != undefined) {
+        if (this._ffmpeg) {
             this.stdout = undefined;
             this._logEvent(`Stopping ffmpeg...`);
             this._ffmpeg.kill('SIGTERM');

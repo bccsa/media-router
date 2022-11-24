@@ -74,7 +74,7 @@ class ffmpegInput extends _inputDevice {
     Stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
 
-        if (this._ffmpeg != undefined) {
+        if (this._ffmpeg) {
             this.stdout = undefined;
             this._logEvent(`Stopping ffmpeg...`);
             this._ffmpeg.kill('SIGTERM');

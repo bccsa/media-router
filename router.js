@@ -46,7 +46,7 @@ catch (err) {
 clientApp.use("/", express.static(path.join(__dirname, "/html")));
 
 // Serve DeviceList generated html (default page);
-deviceListHtml = deviceList.GetHtml();
+let deviceListHtml = deviceList.GetHtml();
 clientApp.get('/', (req, res) => {
     res.send(deviceListHtml);
 });
@@ -95,7 +95,7 @@ clientIO.on('connection', socket => {
 
     // Command from client UI
     socket.on('set_deviceCommand', clientData => {
-        if (clientData.deviceName != undefined) {
+        if (clientData.deviceName) {
             deviceList.SetClientUIcommand(clientData);
         }
     });
@@ -132,12 +132,12 @@ managerIO.on("connect_error", (err) => {
 // -------------------------------------
 
 // Event log
-deviceList.log.on('log', message => {
+deviceList.on('log', message => {
     eventLog(message);
 });
 
 // client UI updates
-deviceList.clientUIupdate.on('data', data => {
+deviceList.on('data', data => {
     Object.keys(data).forEach(deviceName => {
         clientIO.in(`${deviceName}`).emit('deviceUpdate', data[deviceName]);
     });
@@ -198,11 +198,11 @@ function cleanup() {
         // Stop devicelist on exit
         deviceList.Stop();
 
-        // Delete socket files created for audio mixer
-        let regex = /[.]sock$/;
-        fs.readdirSync('./')
-            .filter(f => regex.test(f))
-            .map(f => fs.unlinkSync(f));
+        // // Delete socket files created for audio mixer
+        // let regex = /[.]sock$/;
+        // fs.readdirSync('./')
+        //     .filter(f => regex.test(f))
+        //     .map(f => fs.unlinkSync(f));
 
         _exit = true;
         process.exit();

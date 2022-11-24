@@ -36,12 +36,12 @@ class Mixer extends _inputDevice {
 
     // Add input to AudioMixer
     AddInput(input) {
-        if (input._mixer != undefined) {
+        if (input._mixer) {
             this._audioMixer.addInput(input._mixerInput);
             this._inputList.push(input);
         }
         else {
-            if (input.name != undefined) {
+            if (input.name) {
                 this._logEvent(`Unable to add mixer input "${input.name}": invalid type`);
             }
             else {
