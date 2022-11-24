@@ -51,19 +51,23 @@ class _audioOutputDevice extends _device {
                 channels : device.channels,
                 bitDepth : device.bitDepth,
                 sampleRate : device.sampleRate,
-                volume : device.volume
+                volume : this._getVolume(device)
             });
 
-            // Subscribe to volume change events (to do)
-            // ##########################################
+            // subscribe to input device events
+            device.on('volume', () => {
+                input.volume = this._getVolume(device);
+            });
+            device.on('mute', () => {
+                input.volume = this._getVolume(device);
+            });
 
-            // Subscribe to level indication events (to do)
+            // Subscribe to mixer input level indication events
             input.on('level', data => {
-                
+                device.emit('level', data);
             });
-
             input.on('peak', data => {
-                
+                device.emit('peak', data);
             });
 
             // Pipe device output stream to mixer input
@@ -76,6 +80,15 @@ class _audioOutputDevice extends _device {
             else {
                 this._logEvent(`${this.name}: Invalid input`)
             }
+        }
+    }
+
+    // Get mute compensated device volume
+    _getVolume(device) {
+        if (device.mute) {
+            return 0;
+        } else {
+            return device.volume;
         }
     }
 }

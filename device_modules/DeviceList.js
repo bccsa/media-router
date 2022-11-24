@@ -175,8 +175,14 @@ class DeviceList extends _device {
         return this._linearList[name];
     }
 
-    // Return a list of AudioVolumeTransforms with the given solo group name
-    SoloGroup(name) {
+    /**
+     * Return a list of _audioInputDevice objects with the given solo group name
+     * @param {String} name - Solo group name
+     * @returns 
+     */
+    GetSoloGroup(name) {
+        // #################################
+        // To be updated: return all objects inheriting _audioInputDevice
         if (this._list.AudioVolumeTransform) {
             return this._list.AudioVolumeTransform.filter(m => m.soloGroup == name);
         }

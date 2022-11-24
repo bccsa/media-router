@@ -23,15 +23,30 @@ const { PassThrough } = require ('stream');
  * @property {number} channels - Audio channel number (default = 1)
  * @property {number} sampleRate - Audio sample rate (default = 48000)
  * @property {array} destinations - Array of strings with destination device name(s)
+ * @property {number} volume - Audio volume (1 = unity gain)
+ * @property {number} maxVolume - Maximum volume that the client WebApp can request
+ * @property {number} soloGroup - If not blank, mutes all AudioMixerInputs with the same soloGroup text.
+ * @property {number} mute - If true, reduces the audio volume to zero.
+ * @property {number} showVolumeControl - Indicates that the front end should show the volume control
+ * @property {number} showMuteControl - Indicates that the front end should show the mute control
+ * @property {number} displayOrder - Display order in the client WebApp.
  */
 class _audioInputDevice extends _device {
     constructor(DeviceList) {
         super(DeviceList);
-        this.stdout = new PassThrough();    // stdout mapped to process stdout
-        this.channels = 1;                  // Audio channels
-        this.sampleRate = 48000;            // Audio sample rate
-        this.bitDepth = 16;                 // Audio bit depth
-        this.volume = 1;                    // Volume
+        this.stdout = new PassThrough();
+        this.channels = 1;
+        this.sampleRate = 48000;
+        this.bitDepth = 16;
+        this._volume = 1;
+        this.maxVolume = 1.5;
+        this.soloGroup = "";
+        this._mute = true;
+        this.showVolumeControl = true;
+        this.showMuteControl = true;
+        this._clientHtmlFileName = "AudioMixerInput.html";
+        this.displayOrder = 0;
+        // this.displayWidth = "80px";         // Display width in the client WebApp.
 
         this.destinations = [ "Destination device name" ];
         this._destinations = {};
@@ -42,6 +57,45 @@ class _audioInputDevice extends _device {
                 this._findDestination(destinationName);
             });
         }, 100);
+    }
+
+    /**
+     * Set the audio volume (1 = unity gain)
+     */
+    set volume(volume) {
+        let prev = this._volume;
+        this._volume = volume;
+        if (volume != prev) this.emit('volume', this._volume);
+    }
+
+    /**
+     * Get the audio volume (1 = unity gain)
+     */
+    get volume() {
+        return this._volume;
+    }
+
+    /**
+     * Set the audio mute to on or off
+     */
+    set mute(mute) {
+        let prev = this._mute;
+        this._mute = mute;
+        if (mute != prev) this.emit('mute', this._mute);
+
+        // Mute all other _audioInputDevice objects in the solo group
+        if (!mute && this.soloGroup) {
+            this._deviceList.GetSoloGroup(this.soloGroup).forEach(device => {
+                if (device.name != this.name && !device.mute) device.mute = true;
+            });
+        }
+    }
+
+    /**
+     * Get the audio mute value
+     */
+    get mute() {
+        return this._mute;
     }
 
     // find the destination device
