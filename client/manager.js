@@ -20,3 +20,12 @@ controls.SetData({
     //     description: "This is a test"
     // }
 });
+
+function toggleContainer(uuid) {
+    var x = document.getElementById(uuid);
+    if (x.style.display === "none") {
+      x.style.display = "block";
+    } else {
+      x.style.display = "none";
+    }
+}
