@@ -9,8 +9,8 @@
 // External libraries
 // -------------------------------------
 
-const { _device } = require('./_device');
-const { _audioInputDevice } = require('./_audioInputDevice');
+const _device = require('./_device');
+const _audioInputDevice = require('./_audioInputDevice');
 // const { PassThrough } = require ('stream');
 const Mixer = require('../submodules/audio-mixer/index');
 
@@ -94,4 +94,4 @@ class _audioOutputDevice extends _device {
 }
 
 // Export class
-module.exports._audioOutputDevice = _audioOutputDevice;
+module.exports = _audioOutputDevice;

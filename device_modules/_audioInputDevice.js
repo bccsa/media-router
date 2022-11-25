@@ -9,8 +9,8 @@
 // External libraries
 // -------------------------------------
 
-const { _device } = require('./_device');
-const { PassThrough } = require ('stream');
+const _device = require('./_device');
+const { PassThrough } = require('stream');
 
 // -------------------------------------
 // Class declaration
@@ -32,8 +32,8 @@ const { PassThrough } = require ('stream');
  * @property {number} displayOrder - Display order in the client WebApp.
  */
 class _audioInputDevice extends _device {
-    constructor(DeviceList) {
-        super(DeviceList);
+    constructor() {
+        super();
         this.stdout = new PassThrough();
         this.channels = 1;
         this.sampleRate = 48000;
@@ -48,8 +48,8 @@ class _audioInputDevice extends _device {
         this.displayOrder = 0;
         // this.displayWidth = "80px";         // Display width in the client WebApp.
 
-        this.destinations = [ "Destination device name" ];
-        this._destinations = {};
+        this.destinations = ["Destination device name"];
+        // this._destinations = {};
 
         // Find the destination device after 100ms
         setTimeout(() => {
@@ -83,9 +83,9 @@ class _audioInputDevice extends _device {
         this._mute = mute;
         if (mute != prev) this.emit('mute', this._mute);
 
-        // Mute all other _audioInputDevice objects in the solo group
+        // Mute all other objects (with the same parent) in the solo group
         if (!mute && this.soloGroup) {
-            this._deviceList.GetSoloGroup(this.soloGroup).forEach(device => {
+            Object.values(this._parent.controls).filter(c => c.soloGroup == this.soloGroup).forEach(device => {
                 if (device.name != this.name && !device.mute) device.mute = true;
             });
         }
@@ -100,21 +100,20 @@ class _audioInputDevice extends _device {
 
     // find the destination device
     _findDestination(destinationName) {
-        this._destinations[destinationName] = this._deviceList.FindDevice(destinationName);
+        let dest = this._parent.controls[destinationName];
 
         // Check for valid output device
-        if (this._destinations[destinationName] && this._destinations[destinationName].AddInput) {
+        if (dest && dest.AddInput) {
+            // this._destinations[destinationName] = dest;
+
             // Link input device to destination output device
-            this._destinations[destinationName].AddInput(this);
+            dest.AddInput(this);
         }
         else {
             this._logEvent(`Unable to find destination device "${destinationName}", or destination device not of _audioOutputDevice type`);
-            
-            // Retry to find the destination device in 1 second
-            //setTimeout(() => { this._findDestination(destinationName) }, 1000);
         }
     }
 }
 
 // Export class
-module.exports._audioInputDevice = _audioInputDevice;
+module.exports = _audioInputDevice;

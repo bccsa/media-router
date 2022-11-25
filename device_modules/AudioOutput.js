@@ -5,7 +5,7 @@
 // =====================================
 
 const { spawn } = require('child_process');
-const { _audioOutputDevice } = require('./_audioOutputDevice');
+const _audioOutputDevice = require('./_audioOutputDevice');
 
 
 /**
@@ -15,9 +15,8 @@ const { _audioOutputDevice } = require('./_audioOutputDevice');
  * @property {Number} bufferSize - ALSA buffer size in bytes (Default = 64)
  */
 class AudioOutput extends _audioOutputDevice {
-    constructor(DeviceList) {
-        super(DeviceList);
-        this.name = 'New Alsa Output';      // Display name
+    constructor() {
+        super();
         this.device = 'default';            // Device name - see aplay -L
         this.bufferSize = 64;               // ALSA buffer size in bytes
         this._alsa = undefined;             // alsa process
@@ -106,4 +105,4 @@ class AudioOutput extends _audioOutputDevice {
 }
 
 // Export class
-module.exports.AudioOutput = AudioOutput;
+module.exports = AudioOutput;

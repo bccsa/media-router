@@ -5,7 +5,7 @@
 // =====================================
 
 const { spawn } = require('child_process');
-const { _audioInputDevice } = require('./_audioInputDevice');
+const _audioInputDevice = require('./_audioInputDevice');
 
 /** 
  * SRT Opus audio input 
@@ -20,9 +20,8 @@ const { _audioInputDevice } = require('./_audioInputDevice');
  * @property {Number} srtMaxBw - SRT Max Bandwidth in bytes per second
  */
 class SrtOpusInput extends _audioInputDevice {
-    constructor(DeviceList) {
-        super(DeviceList);
-        this.name = 'New SRT Opus Input';
+    constructor() {
+        super();
         this.srtHost = 'srt.invalid';
         this.srtPort = 5000;
         this.srtMode = 'caller';
@@ -33,15 +32,6 @@ class SrtOpusInput extends _audioInputDevice {
         this.srtStreamID = ''
         this._srt = undefined;
         this._ffmpeg = undefined;
-
-        // Subscribe to DeviceList start and stop events
-        DeviceList.on('start', () => {
-            this.Start();
-        });
-
-        DeviceList.on('stop', () => {
-            this.Stop();
-        });
     }
 
     /** Start the external processes */
@@ -120,4 +110,4 @@ class SrtOpusInput extends _audioInputDevice {
 }
 
 // Export class
-module.exports.SrtOpusInput = SrtOpusInput;
+module.exports = SrtOpusInput;

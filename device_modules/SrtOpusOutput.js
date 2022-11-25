@@ -5,7 +5,7 @@
 // =====================================
 
 const { spawn } = require('child_process');
-const { _audioOutputDevice } = require('./_audioOutputDevice');
+const _audioOutputDevice = require('./_audioOutputDevice');
 
 /**
  * SRT Opus audio output
@@ -20,9 +20,8 @@ const { _audioOutputDevice } = require('./_audioOutputDevice');
  * @property {String} srtStreamID - SRT Stream ID
  */
 class SrtOpusOutput extends _audioOutputDevice {
-    constructor(DeviceList) {
-        super(DeviceList);
-        this.name = 'SRT Opus audio output';   // Display name
+    constructor() {
+        super();
         this.udpSocketPort = 5555;
         this.srtHost = 'srt.invalid';
         this.srtPort = 5000;
@@ -179,4 +178,4 @@ class SrtOpusOutput extends _audioOutputDevice {
 }
 
 // Export class
-module.exports.SrtOpusOutput = SrtOpusOutput;
+module.exports = SrtOpusOutput;

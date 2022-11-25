@@ -5,7 +5,7 @@
 // =====================================
 
 const { spawn } = require('child_process');
-const { _audioInputDevice } = require('./_audioInputDevice');
+const _audioInputDevice = require('./_audioInputDevice');
 
 /**
  * ALSA Audio Input module
@@ -14,9 +14,8 @@ const { _audioInputDevice } = require('./_audioInputDevice');
  * @property {Number} bufferSize - ALSA buffer size in bytes (Default = 64)
  */
 class AudioInput extends _audioInputDevice {
-    constructor(DeviceList) {
-        super(DeviceList);
-        this.name = 'New Alsa input';   // Display name
+    constructor() {
+        super();
         this.device = 'default';        // Device name - see arecord -L
         this._process = undefined;      // alsa/ffmpeg process
         this.bufferSize = 64;         // ALSA buffer size in bytes
@@ -107,4 +106,4 @@ class AudioInput extends _audioInputDevice {
 }
 
 // Export class
-module.exports.AudioInput = AudioInput;
+module.exports = AudioInput;

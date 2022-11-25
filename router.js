@@ -11,7 +11,7 @@
 const fs = require('fs');
 const express = require('express');
 const path = require('path');
-const { DeviceList } = require("./device_modules/DeviceList");
+const DeviceList = require("./device_modules/DeviceList");
 
 // -------------------------------------
 // Global variables
