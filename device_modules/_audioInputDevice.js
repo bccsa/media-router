@@ -44,12 +44,12 @@ class _audioInputDevice extends _device {
         this._mute = true;
         this.showVolumeControl = true;
         this.showMuteControl = true;
-        this._clientHtmlFileName = "AudioMixerInput.html";
         this.displayOrder = 0;
+        this.clientControl = "AudioInput";
+        
         // this.displayWidth = "80px";         // Display width in the client WebApp.
 
         this.destinations = ["Destination device name"];
-        // this._destinations = {};
 
         // Find the destination device after 100ms
         setTimeout(() => {
@@ -65,7 +65,7 @@ class _audioInputDevice extends _device {
     set volume(volume) {
         let prev = this._volume;
         this._volume = volume;
-        if (volume != prev) this.emit('volume', this._volume);
+        if (volume != prev) this.NotifyProperty('volume');
     }
 
     /**
@@ -81,7 +81,7 @@ class _audioInputDevice extends _device {
     set mute(mute) {
         let prev = this._mute;
         this._mute = mute;
-        if (mute != prev) this.emit('mute', this._mute);
+        if (mute != prev) this.NotifyProperty('mute');
 
         // Mute all other objects (with the same parent) in the solo group
         if (!mute && this.soloGroup) {

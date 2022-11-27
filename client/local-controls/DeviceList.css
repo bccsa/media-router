@@ -97,9 +97,3 @@ body {
     display: flex;
     overflow-x: auto;
 }
-
-.DeviceList_contents iframe {
-    float: left;
-    border-style: none;
-    height: 100%;
-}

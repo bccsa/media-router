@@ -16,9 +16,9 @@ const _audioInputDevice = require('./_audioInputDevice');
 class AudioInput extends _audioInputDevice {
     constructor() {
         super();
-        this.device = 'default';        // Device name - see arecord -L
-        this._process = undefined;      // alsa/ffmpeg process
-        this.bufferSize = 64;         // ALSA buffer size in bytes
+        this.device = 'default';
+        this._process = undefined;      // alsa process
+        this.bufferSize = 64;
         this._execFile = 'arecord';
     }
 

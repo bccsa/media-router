@@ -91,22 +91,6 @@ clientIO.on('connection', socket => {
     socket.on('data', data => {
         controls.SetConfig(data);
     });
-
-
-    // Device status request from client
-    socket.on('req_deviceStatus', DeviceName => {
-        // Join client to Device room
-        socket.join(`${DeviceName}`);
-        // emit device status
-        socket.emit('deviceStatus', deviceList.GetClientUIstatus(DeviceName));
-    });
-
-    // Command from client UI
-    socket.on('set_deviceCommand', clientData => {
-        if (clientData.deviceName) {
-            deviceList.SetClientUIcommand(clientData);
-        }
-    });
 });
 
 // Forward data to clients

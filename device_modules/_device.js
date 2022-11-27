@@ -10,11 +10,14 @@ const EventEmitter = require('events');
  * Base class for device modules
  * @extends EventEmitter
  * @property {String} name - Display name
+ * @property {String} clientControl - Client UI control name. Implementing classes should set this value to the client UI control classname.
+ * @property {String} managerControl - Manager UI control name. Implementing classes should set this value to the manager UI control classname.
+ * @property {Number} displayOrder - Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
  */
 class _device extends EventEmitter {
     constructor() {
         super();
-        this.controlType = this.constructor.name; // The name of the class. This property should not be set in code.
+        this.deviceType = this.constructor.name; // The name of the class. This property should not be set in code.
         this.controls = {};                 // List of child controls
         this._parent = undefined;           // Reference to parent
         this._run = false;                  // Running status flag
@@ -22,6 +25,8 @@ class _device extends EventEmitter {
         this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
         // this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
         this._clientVisible = false;        // If true, the device has a client UI control.
+        this.clientControl = undefined;     // Client UI control name
+        this.managerControl = undefined;    // Manager UI control name
 
         // Subscribe to parent run event
         if (this._parent) {
@@ -113,7 +118,7 @@ class _device extends EventEmitter {
                     this.controls[k].SetConfig(config[k]);
                 }
                 // Create a new child control if the passed data has controlType set.
-                else if (config[k] != null && config[k].controlType != undefined) {
+                else if (config[k] != null && config[k].deviceType != undefined) {
                     this._createControl(config[k], k);
                 }
             }
@@ -161,7 +166,7 @@ class _device extends EventEmitter {
      * @param {*} name - control name
      */
     _createControl(data, name) {
-        let controlClass = this._getDynamicClass(data.controlType);
+        let controlClass = this._getDynamicClass(data.deviceType);
 
         if (controlClass) {
             // Create new control
@@ -187,7 +192,7 @@ class _device extends EventEmitter {
 
     /**
      * Get configuration as object
-     * @param {Object} options - Default: { client: false }; client -> true filters output to only include controls with _clientVisible property set.
+     * @param {Object} options - Default: { client: false }; client -> true filters output to only include controls with clientControl property set.
      * @returns {Object}
      */
     GetConfig(options) {
@@ -208,12 +213,26 @@ class _device extends EventEmitter {
 
         // Get child controls properties
         Object.keys(this.controls).forEach((k) => {
-            if (!options || !options.client || options.client && this.controls[k] && this.controls[k]._clientVisible) {
-                let c = this.controls[k].GetConfig(options);
+            let c;
+            if (!options || !options.client && !options.manager) {
+                c = this.controls[k].GetConfig(options);
+            }
+            else if (options.client && this.controls[k] && this.controls[k].clientControl) {
+                c = this.controls[k].GetConfig(options);
                 if (c) {
-                    data[k] = this.controls[k].GetConfig(options);
+                    // Convert to modular-ui format
+                    c.controlType = c.clientControl;
                 }
             }
+            else if (options.manager && this.controls[k] && this.controls[k].managerControl) {
+                c = this.controls[k].GetConfig(options);
+                if (c) {
+                    // Convert to modular-ui format
+                    c.controlType = c.managerControl;
+                }
+            }
+
+            if (c) data[k] = c;
         });
 
         return data;

@@ -29,7 +29,8 @@ class DeviceList extends _device {
         super()
         this.autoStart = false;
         this.autoStartDelay = 500;      // milliseconds
-        this._clientVisible = true;     // This device has an associated client UI control
+        this.clientControl = "DeviceList";     // This device has an associated client UI control
+        this.managerControl = "DeviceList";
         // this.displayOrder = undefined;  // Hide from configuration file
         
         setTimeout(() => {

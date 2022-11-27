@@ -3,7 +3,10 @@
     display: block;
     text-align: center;
     height: 100%;
-    width: 100%;
+    min-width: 80px;
+    border-left: outset;
+    border-right: outset;
+    border-color: darkgray;
 }
 
 .AudioInput_background table {
