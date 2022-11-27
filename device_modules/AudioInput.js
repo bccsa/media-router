@@ -63,7 +63,7 @@ class AudioInput extends _audioInputDevice {
                     setTimeout(() => {
                         if (!this._exitFlag) {
                             this._logEvent(`Restarting ${this._execFile}...`);
-                            this.Start();
+                            this._start();
                         }
                     }, 1000);
                 });

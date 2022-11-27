@@ -45,7 +45,7 @@ class _audioInputDevice extends _device {
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;
-        this.clientControl = "AudioInput";
+        this.clientControl = "AudioInputDevice";
         
         // this.displayWidth = "80px";         // Display width in the client WebApp.
 
@@ -65,6 +65,7 @@ class _audioInputDevice extends _device {
     set volume(volume) {
         let prev = this._volume;
         this._volume = volume;
+        this.emit('volume', volume);
         if (volume != prev) this.NotifyProperty('volume');
     }
 
@@ -81,6 +82,7 @@ class _audioInputDevice extends _device {
     set mute(mute) {
         let prev = this._mute;
         this._mute = mute;
+        this.emit('mute', mute);
         if (mute != prev) this.NotifyProperty('mute');
 
         // Mute all other objects (with the same parent) in the solo group

@@ -60,7 +60,7 @@ class AudioOutput extends _audioOutputDevice {
                     setTimeout(() => {
                         if (!this._exitFlag) {
                             this._logEvent(`Restarting aplay...`);
-                            this.Start();
+                            this._start();
                         }
                     }, 1000);
                 });

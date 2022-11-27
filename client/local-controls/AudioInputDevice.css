@@ -1,4 +1,4 @@
-.AudioInput_background {
+.AudioInputDevice_background {
     background-color: rgb(102, 102, 102);
     display: block;
     text-align: center;
@@ -7,25 +7,27 @@
     border-left: outset;
     border-right: outset;
     border-color: darkgray;
+    border-left-width: 1px;
+    border-right-width: 1px;
 }
 
-.AudioInput_background table {
+.AudioInputDevice_background table {
     width: 100%;
     height: 100%;
     border-collapse: collapse;
     text-align: center;
 }
 
-.AudioInput_background td {
+.AudioInputDevice_background td {
     padding: 10px;
 }
 
-.AudioInput_label {
+.AudioInputDevice_label {
     height: 30px;
     color: white;
 }
 
-.AudioInput_label div {
+.AudioInputDevice_label div {
     border-color: rgb(153, 153, 153);
     border-style: inset;
     border-width: 2px;
@@ -34,16 +36,16 @@
     align-items: center;
 }
 
-.AudioInput_label span {
+.AudioInputDevice_label span {
     width: 100%;
 }
 
-.AudioInput_volume {
+.AudioInputDevice_volume {
     text-align: center;
     position: relative;
 }
 
-.AudioInput_volume_slit {
+.AudioInputDevice_volume_slit {
     background-color: rgb(28, 28, 28);
     width: 15px;
     height: 100%;
@@ -57,7 +59,7 @@
     flex-direction: column;
 }
 
-.AudioInput_volume_slider {
+.AudioInputDevice_volume_slider {
     position: absolute;
     top: 200px;
     left: 0; 
@@ -75,11 +77,11 @@
     border-color: rgb(220, 220, 220);
 }
 
-.AudioInput_control_button {
+.AudioInputDevice_control_button {
     height: 70px;
 }
 
-.AudioInput_control_button div {
+.AudioInputDevice_control_button div {
     height: 100%;
     display: flex;
     align-items: center;
@@ -92,25 +94,25 @@
     /* box-shadow: 0 0 10px 5px rgb(6, 154, 46); */
 }
 
-.AudioInput_control_button span {
+.AudioInputDevice_control_button span {
     width: 100%;
 }
 
-.AudioInput_peak3 {
+.AudioInputDevice_level3 {
     width: 100%;
     height: 0px;
     display: block;
     background-color: red;
 }
 
-.AudioInput_peak2 {
+.AudioInputDevice_level2 {
     width: 100%;
     height: 0px;
     display: block;
     background-color: orange;
 }
 
-.AudioInput_peak1 {
+.AudioInputDevice_level1 {
     width: 100%;
     height: 0px;
     display: block;

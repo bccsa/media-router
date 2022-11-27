@@ -193,7 +193,7 @@ var _exit = false;
 function cleanup() {
     if (!_exit) {
         // Stop devicelist on exit
-        deviceList.Stop();
+        deviceList._stop();
 
         // // Delete socket files created for audio mixer
         // let regex = /[.]sock$/;

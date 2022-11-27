@@ -1,14 +1,16 @@
-class AudioInput extends ui {
+class AudioInputDevice extends ui {
     constructor() {
         super();
         this.description = "type your description here";
-        this._styles.push('AudioInput.css');
+        this._styles.push('AudioInputDevice.css');
 
         this.mute = true;
         this.volume = 1;
         this.maxVolume = 1.5;
         this.showVolumeControl = true;
         this.showMuteControl = true;
+        this.level = 0;
+        this.peak = 0;
         this._sliderTop = 0;
         this._sliderBottom = 0;
         this._sliderRange = 0;
@@ -24,20 +26,20 @@ class AudioInput extends ui {
         return `
         <!-- ${this.name} -->
 
-        <div class="AudioInput_background">
+        <div class="AudioInputDevice_background">
             <table>
-                <tr><td class="AudioInput_label">
+                <tr><td class="AudioInputDevice_label">
                     <div><span>${this.name}</span></div>
                 </td></tr>
-                <tr><td class="AudioInput_volume">
-                    <div id="${this._uuid}_volume_slit" class="AudioInput_volume_slit">
-                        <div id="${this._uuid}_peak3" class="AudioInput_peak3"></div>
-                        <div id="${this._uuid}_peak2" class="AudioInput_peak2"></div>
-                        <div id="${this._uuid}_peak1" class="AudioInput_peak1"></div>
+                <tr><td class="AudioInputDevice_volume">
+                    <div id="${this._uuid}_volume_slit" class="AudioInputDevice_volume_slit">
+                        <div id="${this._uuid}_level3" class="AudioInputDevice_level3"></div>
+                        <div id="${this._uuid}_level2" class="AudioInputDevice_level2"></div>
+                        <div id="${this._uuid}_level1" class="AudioInputDevice_level1"></div>
                     </div>
-                    <div id="${this._uuid}_volume_slider" class="AudioInput_volume_slider"></div>
+                    <div id="${this._uuid}_volume_slider" class="AudioInputDevice_volume_slider"></div>
                 </td></tr>
-                <tr><td class="AudioInput_control_button">
+                <tr><td class="AudioInputDevice_control_button">
                     <div id="${this._uuid}_control_button">
                         <span id="${this._uuid}_control_button_text">OFF</span>
                     </div>
@@ -54,9 +56,9 @@ class AudioInput extends ui {
         this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
         this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
         this._volume_indicator = document.getElementById(`${this._uuid}_volume_indicator`);
-        this._peak3 = document.getElementById(`${this._uuid}_peak3`);
-        this._peak2 = document.getElementById(`${this._uuid}_peak2`);
-        this._peak1 = document.getElementById(`${this._uuid}_peak1`);
+        this._level3 = document.getElementById(`${this._uuid}_level3`);
+        this._level2 = document.getElementById(`${this._uuid}_level2`);
+        this._level1 = document.getElementById(`${this._uuid}_level1`);
 
         // Workaround: calculate slider range after css is applied
         setTimeout(() => {this._calcSliderRange()}, 100);
@@ -83,8 +85,13 @@ class AudioInput extends ui {
         switch (propertyName) {
             case "mute":
                 this._setMute();
+                break;
             case "volume":
                 this._setVolume();
+                break;
+            case "level":
+                this._setLevel();
+                break;
             default:
                 break;
         }
@@ -111,16 +118,16 @@ class AudioInput extends ui {
         }
     }
 
-    _setPeak() {
-        let p = 20 * Math.log10(this.peak);
+    _setLevel() {
+        let p = 20 * Math.log10(this.level);
 
         let bar1Height = Math.min(Math.max((p + 60), 0), 60 - 20) * this._sliderRange / 60;        // Start showing from -60dB. Max height at -20dB (40dB height)
         let bar2Height = Math.min(Math.max((p + 20), 0), 20 - 9) * this._sliderRange / 60;        // Start showing from -20dB. Max height at -9dB (11dB height)
         let bar3Height = Math.min(Math.max((p + 9), 0), 9 - 0) * this._sliderRange / 60;        // Start showing from -9dB. Max height at -0dB (9dB height)
 
-        this._peak1.style.height = bar1Height + 'px';
-        this._peak2.style.height = bar2Height + 'px';
-        this._peak3.style.height = bar3Height + 'px';
+        this._level1.style.height = bar1Height + 'px';
+        this._level2.style.height = bar2Height + 'px';
+        this._level3.style.height = bar3Height + 'px';
     }
 
     _calcSliderRange() {
