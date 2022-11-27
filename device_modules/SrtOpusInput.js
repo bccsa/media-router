@@ -35,7 +35,7 @@ class SrtOpusInput extends _audioInputDevice {
     }
 
     /** Start the external processes */
-    Start() {
+    _start() {
         this._exitFlag = false;   // Reset the exit flag
         this._start_ffmpeg();
     }
@@ -69,7 +69,7 @@ class SrtOpusInput extends _audioInputDevice {
                         }, 1000);
                     }
 
-                    this.Stop();
+                    this._stop();
                 });
 
                 // Handle process error events
@@ -82,13 +82,13 @@ class SrtOpusInput extends _audioInputDevice {
             }
             catch (err) {
                 this._logEvent(`${err.message}`);
-                this.Stop();
+                this._stop();
             }
         }
     }
 
     // Stop the input capture process
-    Stop() {
+    _stop() {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
             this.isRunning = false;

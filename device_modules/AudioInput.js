@@ -23,7 +23,7 @@ class AudioInput extends _audioInputDevice {
     }
 
     // Start the input capture process
-    Start() {
+    _start() {
         this._exitFlag = false;   // Reset the exit flag
         if (this._process == undefined) {
             this._logEvent(`Starting ${this._execFile}...`);
@@ -86,7 +86,7 @@ class AudioInput extends _audioInputDevice {
     }
 
     // Stop the input capture process
-    Stop() {
+    _stop() {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 

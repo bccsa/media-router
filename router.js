@@ -11,13 +11,13 @@
 const fs = require('fs');
 const express = require('express');
 const path = require('path');
-const DeviceList = require("./device_modules/DeviceList");
+const _device = require("./device_modules/_device");
 
 // -------------------------------------
 // Global variables
 // -------------------------------------
 
-var deviceList = new DeviceList();
+var controls = new _device(); // Top level control for devices
 
 // -------------------------------------
 // Startup logic
@@ -43,13 +43,14 @@ catch (err) {
 }
 
 // Serve html files
-clientApp.use("/", express.static(path.join(__dirname, "/html")));
+// clientApp.use("/", express.static(path.join(__dirname, "/html")));
+clientApp.use(express.static('client'));
 
 // Serve DeviceList generated html (default page);
-let deviceListHtml = deviceList.GetHtml();
-clientApp.get('/', (req, res) => {
-    res.send(deviceListHtml);
-});
+// let deviceListHtml = deviceList.GetHtml();
+// clientApp.get('/', (req, res) => {
+//     res.send(deviceListHtml);
+// });
 
 
 // -------------------------------------
@@ -85,6 +86,13 @@ managerApp.use(express.static('client'));
 const clientIO = require('socket.io')(clientHttp);
 
 clientIO.on('connection', socket => {
+    socket.emit('data', controls.GetConfig({client: true}));
+
+    socket.on('data', data => {
+        controls.SetConfig(data);
+    });
+
+
     // Device status request from client
     socket.on('req_deviceStatus', DeviceName => {
         // Join client to Device room
@@ -99,6 +107,11 @@ clientIO.on('connection', socket => {
             deviceList.SetClientUIcommand(clientData);
         }
     });
+});
+
+// Forward data to clients
+controls.on('data', data => {
+    clientIO.emit('data', data);
 });
 
 // -------------------------------------
@@ -132,16 +145,16 @@ managerIO.on("connect_error", (err) => {
 // -------------------------------------
 
 // Event log
-deviceList.on('log', message => {
+controls.on('log', message => {
     eventLog(message);
 });
 
-// client UI updates
-deviceList.on('data', data => {
-    Object.keys(data).forEach(deviceName => {
-        clientIO.in(`${deviceName}`).emit('deviceUpdate', data[deviceName]);
-    });
-});
+// // client UI updates
+// deviceList.on('data', data => {
+//     Object.keys(data).forEach(deviceName => {
+//         clientIO.in(`${deviceName}`).emit('deviceUpdate', data[deviceName]);
+//     });
+// });
 
 // -------------------------------------
 // Configuration management
@@ -157,22 +170,22 @@ function loadConfig() {
         // Parse JSON file
         let config = JSON.parse(raw);
 
-        deviceList.SetConfig(config);
+        controls.SetConfig(config);
     }
     catch (err) {
         eventLog('Unable to load config.json from file: ' + err.message);
-        eventLog('Generating a template config file...')
+        // eventLog('Generating a template config file...')
 
-        var data = JSON.stringify(deviceList.GetConfigTemplate(), null, 2); //pretty print
-        try {
-            fs.writeFileSync('config.json', data);
+        // var data = JSON.stringify(deviceList.GetConfigTemplate(), null, 2); //pretty print
+        // try {
+        //     fs.writeFileSync('config.json', data);
 
-            // Re-load configuration
-            loadConfig();
-        }
-        catch (err) {
-            eventLog('Unable to write config.json to disk: ' + err.message);
-        }
+        //     // Re-load configuration
+        //     loadConfig();
+        // }
+        // catch (err) {
+        //     eventLog('Unable to write config.json to disk: ' + err.message);
+        // }
     }
 }
 

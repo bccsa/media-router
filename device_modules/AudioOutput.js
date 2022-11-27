@@ -25,7 +25,7 @@ class AudioOutput extends _audioOutputDevice {
     /** 
      * Start the playback process
     */
-    Start() {
+    _start() {
         this._logEvent('Starting aplay...')
         this._exitFlag = false;   // Reset the exit flag
         if (this._alsa == undefined) {
@@ -83,7 +83,7 @@ class AudioOutput extends _audioOutputDevice {
     /**
      * Stop the playback process
      */
-    Stop() {
+    _stop() {
         try {
             this._exitFlag = true;   // prevent automatic restarting of the process
 

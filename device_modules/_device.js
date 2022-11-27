@@ -17,22 +17,30 @@ class _device extends EventEmitter {
         this.controlType = this.constructor.name; // The name of the class. This property should not be set in code.
         this.controls = {};                 // List of child controls
         this._parent = undefined;           // Reference to parent
-        this._isRunning = false;            // Running status flag
+        this._run = false;                  // Running status flag
         this._exitFlag = false;             // Flag to prevent auto-restart on user issued stop command
-        this._clientHtmlFileName = undefined;   // Reference to the client WebApp html file 
         this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
-        this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
+        // this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
+        this._clientVisible = false;        // If true, the device has a client UI control.
 
-        // Subscribe to parent start and stop events
+        // Subscribe to parent run event
         if (this._parent) {
-            this._parent.on('start', () => {
-                this.Start();
-            });
-
-            this._parent.on('stop', () => {
-                this.Stop();
+            this._parent.on('run', (state) => {
+                this.run = state;
             });
         }
+    }
+
+    /**
+     * Start the playback process. This method should be implemented (overridden) by the inheriting class
+     */
+    _start() {
+    }
+
+    /**
+     * Stop the playback process. This method should be implemented (overridden) by the inheriting class
+     */
+    _stop() {
     }
 
     /**
@@ -59,21 +67,23 @@ class _device extends EventEmitter {
     /**
      * Get the running status
      */
-    get isRunning() {
-        return this._isRunning;
+    get run() {
+        return this._run;
     }
 
     /**
-     * Set the running status and notify event subscribers.
+     * Set the running status (execute the _start and _stop functions) and notify event subscribers.
      */
-    set isRunning(isRunning) {
-        if (isRunning == true && this._isRunning != true) {
-            this._isRunning = true;
-            this.emit('start', this);
+    set run(state) {
+        if (state == true && this._run != true) {
+            this._run = true;
+            this._start();
+            this.emit('run', this._run);
         }
-        else if (isRunning == false && this.isRunning == true) {
-            this._isRunning = false;
-            this.emit('stop', this);
+        else if (state == false && this.run == true) {
+            this._run = false;
+            this._stop()
+            this.emit('run', this._run);
         }
     }
 
@@ -168,49 +178,45 @@ class _device extends EventEmitter {
             // Add a direct reference to the control in this control
             this[name] = control;
 
-            // Subscribe to this control's start and stop events to automatically start/stop child control
-            this.on('start', () => {
-                control.Start();
+            // Subscribe to this control's run event to automatically start/stop child control
+            this.on('run', (state) => {
+                control.run = state;
             });
-            this.on('stop', () => {
-                control.Stop();
-            })
         }
     }
 
     /**
      * Get configuration as object
+     * @param {Object} options - Default: { client: false }; client -> true filters output to only include controls with _clientVisible property set.
      * @returns {Object}
      */
-    GetConfig() {
-        let c = {};
-        Object.getOwnPropertyNames(this).forEach(k => {
-            // Only return "public" properties
-            if (k[0] != '_' &&
-                (typeof this[k] == 'number' ||
-                    typeof this[k] == 'string' ||
-                    typeof this[k] == 'boolean' ||
-                    k == "destinations")
+    GetConfig(options) {
+        let data = {};
+
+        // Get own properties
+        Object.getOwnPropertyNames(this).forEach((k) => {
+            // Only return settable (not starting with "_") properties
+            if (
+                k[0] != "_" &&
+                (typeof this[k] == "number" ||
+                    typeof this[k] == "string" ||
+                    typeof this[k] == "boolean")
             ) {
-                c[k] = this[k];
+                data[k] = this[k];
             }
         });
 
-        return c;
-    }
+        // Get child controls properties
+        Object.keys(this.controls).forEach((k) => {
+            if (!options || !options.client || options.client && this.controls[k] && this.controls[k]._clientVisible) {
+                let c = this.controls[k].GetConfig(options);
+                if (c) {
+                    data[k] = this.controls[k].GetConfig(options);
+                }
+            }
+        });
 
-    /**
-     * Start the playback process. This method should be implemented (overridden) by the inheriting class
-     */
-    Start() {
-        this._exitFlag = false;   // Reset the exit flag
-    }
-
-    /**
-     * Stop the playback process. This method should be implemented (overridden) by the inheriting class
-     */
-    Stop() {
-        this._exitFlag = true;   // prevent automatic restarting of the process
+        return data;
     }
 
     /**
@@ -222,26 +228,39 @@ class _device extends EventEmitter {
     }
 
     /**
-     * Notify the client User Interface with status update(s)
-     * @param {Object} data 
+     * Notifies parent control of a change to the given property or array of properties and triggers the data event on the top level parent.
+     * @param {*} propertyNames - Single string or array of string property names
      */
-    _updateClientUI(data) {
-        this.emit('data', { [this.name]: data });
+    NotifyProperty(propertyNames) {
+        let data = {};
+        if (Array.isArray(propertyNames)) {
+            propertyNames.forEach((p) => {
+                if (this[p] != undefined) {
+                    data[p] = this[p];
+                }
+            });
+        } else {
+            if (this[propertyNames] != undefined) {
+                data[propertyNames] = this[propertyNames];
+            }
+        }
+
+        this._notify(data);
     }
 
-    /**
-     * Return status data needed for client user interface
-     */
-    GetClientUIstatus() {
-        return this.GetConfig();
-    }
-
-    /**
-     * Set value from client user interface
-     * @param {Object} data 
-     */
-    SetClientUIcommand(data) {
-        // To be implemented in implementing class
+    // notifies parent of data change, and triggers data event on the top level parent.
+    _notify(data) {
+        if (this._parent != undefined) {
+            if (!this.hideData) {
+                let n = {
+                    [this.name]: data,
+                };
+                this._parent._notify(n);
+            }
+        }
+        else {
+            this.emit("data", data);
+        }
     }
 }
 

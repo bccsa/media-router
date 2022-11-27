@@ -37,7 +37,7 @@ class SrtOpusOutput extends _audioOutputDevice {
     }
 
     /** Start the external processes */
-    Start() {
+    _start() {
         this._exitFlag = false;   // Reset the exit flag
         this._start_srt();
         this._start_ffmpeg();
@@ -76,7 +76,7 @@ class SrtOpusOutput extends _audioOutputDevice {
                         }
                     }, 1000);
 
-                    this.Stop();
+                    this._stop();
                 });
 
                 // Handle process error events
@@ -87,7 +87,7 @@ class SrtOpusOutput extends _audioOutputDevice {
             }
             catch (err) {
                 this._logEvent(`${err.message}`);
-                this.Stop()
+                this._stop()
             }
         }
     }
@@ -126,7 +126,7 @@ class SrtOpusOutput extends _audioOutputDevice {
                         }
                     }, 1000);
 
-                    this.Stop();
+                    this._stop();
                 });
 
                 // Handle process error events
@@ -140,13 +140,13 @@ class SrtOpusOutput extends _audioOutputDevice {
             catch (err) {
                 this.isRunning = false;
                 this._logEvent(`${err.message}`);
-                this.Stop();
+                this._stop();
             }
         }
     }
     
     /** Stop the external processes */
-    Stop() {
+    _stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
         this.isRunning = false;
         try {
