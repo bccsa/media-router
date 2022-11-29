@@ -13,3 +13,4 @@ input#un-mute {
   input#un-mute:checked ~ .mute img {
     display: none;
   }
+  
