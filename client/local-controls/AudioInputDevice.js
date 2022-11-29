@@ -33,9 +33,6 @@ class AudioInputDevice extends ui {
                 </td></tr>
                 <tr><td class="AudioInputDevice_volume">
                     <div id="${this._uuid}_volume_slit" class="AudioInputDevice_volume_slit">
-                        <div id="${this._uuid}_level3" class="AudioInputDevice_level3"></div>
-                        <div id="${this._uuid}_level2" class="AudioInputDevice_level2"></div>
-                        <div id="${this._uuid}_level1" class="AudioInputDevice_level1"></div>
                     </div>
                     <div id="${this._uuid}_volume_slider" class="AudioInputDevice_volume_slider"></div>
                 </td></tr>
@@ -55,13 +52,9 @@ class AudioInputDevice extends ui {
         this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
         this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
         this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
-        this._volume_indicator = document.getElementById(`${this._uuid}_volume_indicator`);
-        this._level3 = document.getElementById(`${this._uuid}_level3`);
-        this._level2 = document.getElementById(`${this._uuid}_level2`);
-        this._level1 = document.getElementById(`${this._uuid}_level1`);
 
         // Workaround: calculate slider range after css is applied
-        setTimeout(() => {this._calcSliderRange()}, 100);
+        setTimeout(() => { this._calcSliderRange() }, 100);
 
         // Enable dragging for volume slider
         this._dragElement(this._volume_slider, this);
@@ -79,6 +72,15 @@ class AudioInputDevice extends ui {
             this._calcSliderRange();
             this._setVolume();
         });
+
+        // Add VU meter
+        this.SetData({
+            vu: {
+                controlType: "VuMeter",
+                hideData: true,
+                parentElement: `_volume_slit`,
+            }
+        });
     }
 
     Update(propertyName) {
@@ -90,7 +92,13 @@ class AudioInputDevice extends ui {
                 this._setVolume();
                 break;
             case "level":
-                this._setLevel();
+                if (this.vu) {
+                    // this.SetData({
+                    //     vu: { 
+                    //         level: this.level
+                    //     }
+                    // });
+                }
                 break;
             default:
                 break;
@@ -116,18 +124,6 @@ class AudioInputDevice extends ui {
         if (!this._sliderActive) {
             this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
         }
-    }
-
-    _setLevel() {
-        let p = 20 * Math.log10(this.level);
-
-        let bar1Height = Math.min(Math.max((p + 60), 0), 60 - 20) * this._sliderRange / 60;        // Start showing from -60dB. Max height at -20dB (40dB height)
-        let bar2Height = Math.min(Math.max((p + 20), 0), 20 - 9) * this._sliderRange / 60;        // Start showing from -20dB. Max height at -9dB (11dB height)
-        let bar3Height = Math.min(Math.max((p + 9), 0), 9 - 0) * this._sliderRange / 60;        // Start showing from -9dB. Max height at -0dB (9dB height)
-
-        this._level1.style.height = bar1Height + 'px';
-        this._level2.style.height = bar2Height + 'px';
-        this._level3.style.height = bar3Height + 'px';
     }
 
     _calcSliderRange() {
