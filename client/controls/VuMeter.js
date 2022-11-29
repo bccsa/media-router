@@ -34,34 +34,49 @@ class VuMeter extends ui {
         this._canvas = document.getElementById(`${this._uuid}_canvas`);
         this._canvas.style.position = 'absolute';
         this._ctx = this._canvas.getContext("2d");
-        
+
+        // // Set initial size
+        // setTimeout(() => {
+        //     this._setSize();
+        // }, 100);
+
+        // // Listen for window resize events
+        // window.addEventListener('resize', () => {
+        //     this._setSize;
+        // });
+
         // Listen for div size changes
         const divResizeObserver = new ResizeObserver(() => {
-            this._width = this._div.clientWidth;
-            this._height = this._div.clientHeight;
-            this._ctx.canvas.width = this._div.clientWidth;
-            this._ctx.canvas.height = this._div.clientHeight;
-
-            // Set initial
-            this._setLevelVertical();
+            this._setSize();
         });
         divResizeObserver.observe(this._div); 
-    }
 
-    Update(propertyName) {
-        switch (propertyName) {
-            case "level":
-                //this._setLevelVertical();
-                //this._setLevelHorizontal();
-                break;
-            default:
-                break;
+        // Handle property changes
+        if (this.orientation == 'vertical') {
+            this.on('level', level => {
+                this._setLevelVertical(level);
+            });
+        }
+        else {
+            this.on('level', level => {
+                // To do
+            });
         }
     }
 
-    _setLevelVertical() {
+    _setSize() {
+        this._width = this._div.clientWidth;
+        this._height = this._div.clientHeight;
+        this._ctx.canvas.width = this._div.clientWidth;
+        this._ctx.canvas.height = this._div.clientHeight;
+
+        // Set initial
+        this._setLevelVertical();
+    }
+
+    _setLevelVertical(level) {
         // Logarithmic level in 50 steps
-        let p = Math.round(20 * Math.log10(this.level) * 50) / 50;
+        let p = Math.round(20 * Math.log10(level) * 50) / 50;
 
         let height1 = Math.min(Math.max((p + 60), 0), 60 - 20) * this._height / 60;  // Start showing from -60dB. Max height at -20dB (40dB height)
         let height2 = Math.min(Math.max((p + 20), 0), 20 - 9) * this._height / 60;   // Start showing from -20dB. Max height at -9dB (11dB height)
@@ -78,7 +93,7 @@ class VuMeter extends ui {
 
         // Clear
         if (total < this._totalPrev) {
-            this._ctx.clearRect(0, this._top3Prev, this._width, top3 - this._top3Prev);
+            this._ctx.clearRect(0, this._top3Prev - 1, this._width, top3 - this._top3Prev);
         }
         // Draw
         else if (total > this._totalPrev) {

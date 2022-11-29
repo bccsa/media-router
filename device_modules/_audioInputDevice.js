@@ -45,7 +45,7 @@ class _audioInputDevice extends _device {
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;
-        this.clientControl = "AudioInputDevice";
+        this.clientControl = "client_AudioInputDevice";
         
         // this.displayWidth = "80px";         // Display width in the client WebApp.
 
