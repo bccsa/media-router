@@ -1,10 +1,10 @@
-class DeviceList extends ui {
+class client_DeviceList extends ui {
     constructor() {
         super();
         this.description = "type your description here";
         this.run = false;
 
-        this._styles.push('DeviceList.css');
+        this._styles.push('client_DeviceList.css');
     }
 
     get html() {

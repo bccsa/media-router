@@ -1,5 +1,5 @@
 var socket = io();
-var controls = new uiTopLevelContainer('../local-controls', 'controls');
+var controls = new uiTopLevelContainer('../controls', 'controls');
 
 
 // Receive data from router

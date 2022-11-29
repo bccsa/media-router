@@ -54,9 +54,14 @@
     border-style: inset;
     border-width: 2px;
     border-color: rgb(153, 153, 153);
-    display: flex;
-    justify-content: flex-end;
-    flex-direction: column;
+    display: block;
+    /* justify-content: flex-end; */
+    /* flex-direction: column; */
+}
+
+.AudioInputDevice_volume_slit div {
+    width: 100%;
+    height: 100%;
 }
 
 .AudioInputDevice_volume_slider {

@@ -1,8 +1,7 @@
-class AudioInputDevice extends ui {
+class client_AudioInputDevice extends ui {
     constructor() {
         super();
-        this.description = "type your description here";
-        this._styles.push('AudioInputDevice.css');
+        this._styles.push('client_AudioInputDevice.css');
 
         this.mute = true;
         this.volume = 1;
@@ -47,13 +46,12 @@ class AudioInputDevice extends ui {
     }
 
     Init() {
-        // this._label = document.getElementById(`${this._uuid}_label`);
         this._control_button = document.getElementById(`${this._uuid}_control_button`);
         this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
         this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
         this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
 
-        // Workaround: calculate slider range after css is applied
+        // Workaround: calculate initial slider range after css is applied
         setTimeout(() => { this._calcSliderRange() }, 100);
 
         // Enable dragging for volume slider
@@ -81,29 +79,44 @@ class AudioInputDevice extends ui {
                 parentElement: `_volume_slit`,
             }
         });
+
+        // Handle property changes
+        this.on('mute', () => {
+            this._setMute();
+        });
+
+        this.on('volume', () => {
+            this._setVolume();
+        });
+
+        this.on('level', level => {
+            if (this.vu) {
+                this.vu.level = level;
+            }
+        });
     }
 
-    Update(propertyName) {
-        switch (propertyName) {
-            case "mute":
-                this._setMute();
-                break;
-            case "volume":
-                this._setVolume();
-                break;
-            case "level":
-                if (this.vu) {
-                    // this.SetData({
-                    //     vu: { 
-                    //         level: this.level
-                    //     }
-                    // });
-                }
-                break;
-            default:
-                break;
-        }
-    }
+    // Update(propertyName) {
+    //     switch (propertyName) {
+    //         case "mute":
+    //             this._setMute();
+    //             break;
+    //         case "volume":
+    //             this._setVolume();
+    //             break;
+    //         case "level":
+    //             if (this.vu) {
+    //                 // this.SetData({
+    //                 //     vu: { 
+    //                 //         level: this.level
+    //                 //     }
+    //                 // });
+    //             }
+    //             break;
+    //         default:
+    //             break;
+    //     }
+    // }
 
     _setMute() {
         if (this.mute) {
