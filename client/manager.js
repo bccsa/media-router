@@ -29,3 +29,14 @@ function toggleContainer(uuid) {
       x.style.display = "none";
     }
 }
+
+function toggleMute(uuid) {
+    var myAudio = document.getElementById(uuid);
+    myAudio.muted = !myAudio.muted;
+ }
+
+ var un_mute = document.getElementById('un-mute');
+
+un_mute.onclick = function() {
+   alert('toggle player here');
+};
