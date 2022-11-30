@@ -59,7 +59,7 @@ class VuMeter extends ui {
         }
         else {
             this.on('level', level => {
-                // To do
+                this._setLevelHorizontal(level);
             });
         }
     }
@@ -72,6 +72,7 @@ class VuMeter extends ui {
 
         // Set initial
         this._setLevelVertical();
+        this._setLevelHorizontal();
     }
 
     _setLevelVertical(level) {
@@ -143,25 +144,25 @@ class VuMeter extends ui {
 
         // Clear
         if (total < this._totalPrev) {
-            this._ctx.clearRect(this._top3Prev, 0, top3 - this._top3Prev, this._width);
+            this._ctx.clearRect(this._top3Prev - 1, 0, top3 - this._top3Prev, this._height);
         }
         // Draw
         else if (total > this._totalPrev) {
             if (top1 < this._top1Prev) {
                 this._ctx.fillStyle = "green";
-                this._ctx.fillRect(top1, 0, this._top1Prev - top1 + 1, this._width);
+                this._ctx.fillRect(top1, 0, this._top1Prev - top1 + 1, this._height);
             }
             if (top2 < this._top2Prev && top2 < bot2) {
                 let bot = this._top2Prev;
                 if (this._top2Prev > bot2) bot = bot2;
                 this._ctx.fillStyle = "orange";
-                this._ctx.fillRect(top2, 0, bot - top2 + 1, this._width);
+                this._ctx.fillRect(top2, 0, bot - top2 + 1, this._height);
             }
             if (top3 < this._top3Prev && top3 < bot3) {
                 let bot = this._top3Prev;
                 if (this._top3Prev > bot3) bot = bot3;
                 this._ctx.fillStyle = "red";
-                this._ctx.fillRect(top3, 0, bot - top3 + 1, this._width);
+                this._ctx.fillRect(top3, 0, bot - top3 + 1, this._height);
             }
         }
 
