@@ -22,11 +22,9 @@ class VuMeter extends ui {
     get html() {
         return `
         <!-- ${this.name} -->
-        <!--<div style="display: block; width: 200px; height: 200px;">-->
-        <div id="${this._uuid}_div" style="display: block; width: 100%; height: 100%; padding: 0px;">
-            <canvas id="${this._uuid}_canvas"></canvas>
-        </div>
-        <!--</div>-->`
+        <div id="${this._uuid}_div" style="display: block; width: 100%; height: 100%;">
+            <canvas id="${this._uuid}_canvas"></canvas>    
+        </div>`
     }
 
     Init() {
@@ -34,16 +32,6 @@ class VuMeter extends ui {
         this._canvas = document.getElementById(`${this._uuid}_canvas`);
         this._canvas.style.position = 'absolute';
         this._ctx = this._canvas.getContext("2d");
-
-        // // Set initial size
-        // setTimeout(() => {
-        //     this._setSize();
-        // }, 100);
-
-        // // Listen for window resize events
-        // window.addEventListener('resize', () => {
-        //     this._setSize;
-        // });
 
         // Listen for div size changes
         const divResizeObserver = new ResizeObserver(() => {
@@ -65,13 +53,23 @@ class VuMeter extends ui {
     }
 
     _setSize() {
-        this._width = this._div.clientWidth;
-        this._height = this._div.clientHeight;
-        this._ctx.canvas.width = this._div.clientWidth;
-        this._ctx.canvas.height = this._div.clientHeight;
+        let r = this._div.getBoundingClientRect();
+        
+        this._width = r.width;
+        this._height = r.height;
+        this._ctx.canvas.width = this._width;
+        this._ctx.canvas.height = this._height;
+        this._canvas.style.left = this._div.offsetLeft + "px";
+        this._canvas.style.top = this._div.offsetTop + "px";
 
         // Set initial
-        this._setLevelVertical();
+        if (this.orientation == 'vertical') {
+            this._setLevelVertical(level);
+        }
+        else {
+            this._setLevelHorizontal(level);
+        }
+
     }
 
     _setLevelVertical(level) {
