@@ -122,9 +122,9 @@ class VuMeter extends ui {
         this._totalPrev = total;
     }
 
-    _setLevelHorizontal() {
+    _setLevelHorizontal(level) {    
         // Logarithmic level in 50 steps
-        let p = Math.round(20 * Math.log10(this.level) * 50) / 50;
+        let p = Math.round(20 * Math.log10(level) * 50) / 50;
 
         let width1 = Math.min(Math.max((p + 60), 0), 60 - 20) * this._width / 60;  // Start showing from -60dB. Max width at -20dB (40dB width)
         let width2 = Math.min(Math.max((p + 20), 0), 20 - 9) * this._width / 60;   // Start showing from -20dB. Max width at -9dB (11dB width)
