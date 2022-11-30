@@ -25,7 +25,7 @@ class AudioInput extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="ml-4 mt-2 w-[26rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB]">
+        <div class="ml-4 mt-2 w-[30rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB]">
 
             <details class="shadow rounded group">
                 <summary class="list-none flex flex-wrap items-center cursor-pointer
@@ -38,15 +38,15 @@ class AudioInput extends ui {
 
                             <!-- Name and Volume indicator -->
                             <div class="w-1/3">
-                                <span class="font-semibold text-base">${this.name}</span>
+                                <span class="font-semibold text-base" title="Audio Input Name">${this.name}</span>
 
-                                <div id="${this._uuid}_volume_slit" class="AudioInput_volume_slit" title="This is a test"></div>
+                                <div id="${this._uuid}_volume_slit" class="AudioInput_volume_slit" title="Audio Indicator"></div>
 
                             </div>
 
                             <!-- Mute Button -->
                             <div class="ml-32 mt-1">
-                                <button id="${this._uuid}_control_button" type="button" class="h-12 w-20 inline-block px-6 py-2.5 leading-tight
+                                <button id="${this._uuid}_control_button" type="button" title="Mute Button" class="h-12 w-20 inline-block px-6 py-2.5 leading-tight
                                     uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
                                     focus:ring-0 transition duration-150 ease-in-out">
                                     <span id="${this._uuid}_control_button_text">OFF</span>
@@ -72,29 +72,18 @@ class AudioInput extends ui {
 
                     <!-- Description text area  -->
                     <div class="w-full mb-2">
-                        <label for="${this._uuid}_description" class="form-label inline-block mb-2"
-                            >Description:</label>
-                                <textarea
-                                class="
-                                    max-h-52
-                                    form-control
-                                    block
-                                    w-11/12
-                                    text-base
-                                    font-normal
-                                    text-gray-700
-                                    bg-white bg-clip-padding
-                                    border border-solid border-gray-300
-                                    rounded
-                                    transition
-                                    ease-in-out
-                                    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none"
+                        <label for="${this._uuid}_description" class="form-label inline-block mb-2">Description:</label>
+                            <textarea
+                                class="max-h-52 form-control block w-11/12 text-base font-normal
+                                text-gray-700 bg-white bg-clip-padding border border-solid border-gray-300
+                                rounded transition ease-in-out focus:text-gray-700 focus:bg-white focus:border-blue-600 
+                                focus:outline-none"
 
-                                    id="${this._uuid}_description"
-                                    rows="2" 
-                                    cols="3"
-                                    placeholder="Your description" 
-                                ></textarea>
+                                id="${this._uuid}_description"
+                                rows="2" 
+                                cols="3"
+                                placeholder="Your description" 
+                            ></textarea>
                     </div>
 
                     <!-- Volume Slider  -->
@@ -102,60 +91,83 @@ class AudioInput extends ui {
 
                         <label for="${this._uuid}_volume" class="mt-6">Volume:</label>
 
-                        <div class="container">
-                            
+                        <input type="range" list="${this._uuid}_tickMarks" id="${this._uuid}_volume_slider" name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mt-2 w-60 bg-[#293548] text-[#75C4EB]" oninput=""${this._uuid}_rangeValue".innerText=this.value">
+                        
+                        <datalist id="${this._uuid}_tickMarks">
+                            <option value="0.00"></option>
+                            <option value="0.10"></option>
+                            <option value="0.20"></option>
+                            <option value="0.30"></option>
+                            <option value="0.40"></option>
+                            <option value="0.50"></option>
+                            <option value="0.60"></option>
+                            <option value="0.70"></option>
+                            <option value="0.80"></option>
+                            <option value="0.90"></option>
+                            <option value="1.0"0></option>
+                            <option value="1.10"></option>
+                            <option value="1.20"></option>
+                            <option value="1.30"></option>
+                            <option value="1.40"></option>
+                            <option value="1.50"></option>
+                        </datalist>
 
-                            <input type="range" list=tickMarks id="${this._uuid}_volume_slider" name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mt-6 w-64 bg-[#293548] text-[#75C4EB]" oninput=""${this._uuid}_rangeValue".innerText=this.value">
-                            
-                            <datalist id="tickMarks">
-                                <option value="0.0"></option>
-                                <option value="0.10"></option>
-                                <option value="0.20"></option>
-                                <option value="0.30"></option>
-                                <option value="0.40"></option>
-                                <option value="0.50"></option>
-                                <option value="0.60"></option>
-                                <option value="0.70"></option>
-                                <option value="0.80"></option>
-                                <option value="0.90"></option>
-                                <option value="1.0" label="100%"></option>
-                                <option value="1.10"></option>
-                                <option value="1.20"></option>
-                                <option value="1.30"></option>
-                                <option value="1.40"></option>
-                                <option value="1.50"></option>
-                            </datalist>
+                        <span id="${this._uuid}_rs-bullet" class="ml-2 mb-20">100</span>
+                          
+                    </div>
 
-                            <span id="${this._uuid}_rs-bullet" class="">100</span>
+                    <div class="w-full mb-2 flex ">
+
+                        <div class="w-1/4 mr-4">
+                            <label for="${this._uuid}_channels" class="form-label inline-block mb-2">Channels:</label>
+                                <div class="mb-3 w-full">
+                                    <select id="${this._uuid}_channels" value="${this.channels}" name="channel" class="form-select
+                                    w-full text-base font-normal text-[#75C4EB] bg-[#293548]
+                                    border border-solid border-gray-300 rounded transition
+                                    ease-in-out m-0"
+                                    type="text">
+                                    <option value="1">1</option>
+                                    <option value="2">2</option>
+                                    </select>
+                                </div>
+                        </div>
                             
+                        <div class="w-1/4 mr-4">
+                            <label for="${this._uuid}_sampleRate" class="form-label inline-block mb-2">Sample Rate:</label>
+                            <select id="${this._uuid}_sampleRate" value="${this.sampleRate}" name="sampleRate" class="form-select
+                                w-full text-base font-normal text-[#75C4EB] bg-[#293548]
+                                border border-solid border-gray-300 rounded transition
+                                ease-in-out m-0" type="text">
+                                <option value="44100">44100 Hz</option>
+                                <option value="48000">48000 Hz</option>
+                            </select>
+                        </div>
+                            
+                        <div class="w-1/4 mr-4">
+                            <label for="${this._uuid}_bitDepth" class="form-label inline-block mb-2">Bit Depth:</label>
+                            <select id="${this._uuid}_bitDepth" value="${this.bitDepth}" name="bitDepth" class="form-select
+                                w-full text-base font-normal text-[#75C4EB] bg-[#293548]
+                                border border-solid border-gray-300 rounded transition
+                                ease-in-out m-0" type="text">
+                                <option value="16">16</option>
+                                <option value="24">24</option>
+                                <option value="32">32</option>
+                            </select>
                         </div>
 
-                        
+                        <div class="w-1/4 mr-4">
+                            <label for="${this._uuid}_maxVolume" class="form-label inline-block mb-2">Max Volume:</label>
+                            <input type="number" id="${this._uuid}_maxVolume" name="maxVolume" step="0.1" class="
+                                w-full text-base font-normal text-[#75C4EB] bg-[#293548]
+                                border border-solid border-gray-300 rounded transition
+                                ease-in-out m-0"
+                                value="${this.maxVolume}"
+                            >
+                        </div>
+
                     </div>
 
 
-
-                    <label for="channel" class="mt-6">Channels:</label>
-                    <select id="${this._uuid}_channels" name="channel" class="ml-3 w-50 bg-[#293548] text-[#75C4EB]" type="text">
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    </select>
-
-                    <label for="sampleRate" class="ml-3 mt-6">Sample Rate:</label>
-                    <select id="${this._uuid}_sampleRate" name="sampleRate" class="ml-3 w-50 bg-[#293548] text-[#75C4EB]" type="text">
-                            <option value="1">44100 Hz</option>
-                            <option value="2">48000 Hz</option>
-                    </select>
-
-                    <label for="bitDepth" class="ml-3 mt-6">Bit Depth:</label>
-                    <select id="${this._uuid}_bitDepth" name="bitDepth" class="ml-3 w-50 bg-[#293548] text-[#75C4EB]" type="text">
-                        <option value="1">16</option>
-                        <option value="2">24</option>
-                        <option value="3">32</option>
-                    </select>
-                    
-
-                    
                     
                 </div>  
             </details> 
@@ -166,16 +178,19 @@ class AudioInput extends ui {
 
  
     Init() {
-        this._description = document.getElementById(`${this._uuid}_description`);
+        
         this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
         this._control_button = document.getElementById(`${this._uuid}_control_button`);
         this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
 
+        this._description = document.getElementById(`${this._uuid}_description`);
+        this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
+        this._rangeBullet = document.getElementById(`${this._uuid}_rs-bullet`);
 
-        this.rangeSlider = document.getElementById(`${this._uuid}_volume_slider`);
-        this.rangeBullet = document.getElementById(`${this._uuid}_rs-bullet`);
-
-
+        this._channels = document.getElementById(`${this._uuid}_channels`);
+        this._sampleRate = document.getElementById(`${this._uuid}_sampleRate`);
+        this._bitDepth = document.getElementById(`${this._uuid}_bitDepth`);
+        this._maxVolume = document.getElementById(`${this._uuid}_maxVolume`);
 
 
         //Set initial mute status
@@ -189,8 +204,25 @@ class AudioInput extends ui {
             this.NotifyProperty("mute");
         });
 
-        this.rangeSlider.addEventListener('input', (e) => {
+        this._volume_slider.addEventListener('input', (e) => {
             this.showSliderValue();
+        });
+
+        this._channels.addEventListener('change', (e) => {
+            this.channels = Number.parseInt(this._channels.value);
+        });
+
+        this._sampleRate.addEventListener('change', (e) => {
+            this.sampleRate = Number.parseInt(this._sampleRate.value);
+        });
+
+        this._bitDepth.addEventListener('change', (e) => {
+            this.bitDepth = Number.parseInt(this._bitDepth.value);
+        });
+
+        this._maxVolume.addEventListener('change', (e) => {
+            this.maxVolume = Number.parseFloat(this._maxVolume.value);
+            this._volume_slider.max = this.maxVolume;
         });
 
 
@@ -251,9 +283,7 @@ class AudioInput extends ui {
     }
 
     showSliderValue() {
-        this.rangeBullet.innerHTML = Math.round(this.rangeSlider.value * 100);
-        var bulletPosition = (this.rangeSlider.value /this.rangeSlider.max);
-        this.rangeBullet.style.left = (bulletPosition * 50) + "px";
+        this._rangeBullet.innerHTML = Math.round(this._volume_slider.value * 100);
     }
 
 }
