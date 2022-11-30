@@ -3,7 +3,7 @@ class AudioInput extends ui {
         super();
         this._styles.push('AudioInput.css');
 
-        this.description = "type your description here";
+        this.description = "";
         this.level = 0;
         this.channels = 1;
         this.sampleRate = 48000;
@@ -11,12 +11,12 @@ class AudioInput extends ui {
         this.volume = 1;
         this.maxVolume = 1.5;
         this.soloGroup = "";
-        this._mute = true;
+        this.mute = true;
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;
-        this.clientControl = "AudioInputDevice";
-
+        this.device = 'default';
+        this.destinations = ["Destination1","Destination2","Destination3"]; // Split with comma from string
         this.peak = 0;
     }
 
@@ -25,7 +25,7 @@ class AudioInput extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="ml-4 mt-2 w-[40rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB]">
+        <div class="ml-4 mt-2 w-[26rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB]">
 
             <details class="shadow rounded group">
                 <summary class="list-none flex flex-wrap items-center cursor-pointer
@@ -34,21 +34,26 @@ class AudioInput extends ui {
                     ">
 
                     <!-- Top Heading Container  -->
-                    <div class="grid grid-cols-1 sm:grid-cols-4 pt-4 pl-6 w-full h-16 ">
-                            <div class="w-1/4">
-                                <span class="font-semibold text-lg">${this.name}</span>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 mt-1 mb-1 ml-3 w-full h-14 ">
+
+                            <!-- Name and Volume indicator -->
+                            <div class="w-1/3">
+                                <span class="font-semibold text-base">${this.name}</span>
+
+                                <div id="${this._uuid}_volume_slit" class="AudioInput_volume_slit" title="This is a test"></div>
+
                             </div>
 
-                            <div id="${this._uuid}_volume_slit" class="AudioInput_volume_slit">
-
+                            <!-- Mute Button -->
+                            <div class="ml-32 mt-1">
+                                <button id="${this._uuid}_control_button" type="button" class="h-12 w-20 inline-block px-6 py-2.5 leading-tight
+                                    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
+                                    focus:ring-0 transition duration-150 ease-in-out">
+                                    <span id="${this._uuid}_control_button_text">OFF</span>
+                                </button>
                             </div>
 
-                            <div class="w-1/4 ml-40">
-                            <button type="button" class="inline-block px-6 py-2.5 bg-green-500 text-white font-medium text-xs leading-tight
-                             uppercase rounded shadow-md hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
-                             focus:ring-0 active:bg-green-700 active:shadow-lg transition duration-150 ease-in-out">Off</button>
-                            </div>
-
+                            <!-- Container toggle -->
                             <div class="w-1/4 flex flex-col items-end ml-28">
                                 <div class="flex w-10 items-center justify-center">
                                     <div class="border-8 border-transparent border-l-white mr-1 mt-1
@@ -59,15 +64,81 @@ class AudioInput extends ui {
                     </div>
                 </summary>
 
-                <!-- More Info Container  -->
-                <div id="${this._uuid}_MoreInfoContainer" class="pl-6 pt-4 w-full h-96">
+                <!-- Divider line  -->
+                <div class="w-full h-[0.01rem] bg-[#75C4EB]"></div>
 
-                    <input id="${this._uuid}_description" class="ml-3 w-60 bg-[#293548] text-[#75C4EB] border-solid border border-b-[6A6A6A] rounded-lg" type="text" value="${this.description}"></input>
+                <!-- More Info Container  -->
+                <div class="pl-6 pt-4 w-full h-96">
+
+                    <!-- Description text area  -->
+                    <div class="w-full mb-2">
+                        <label for="${this._uuid}_description" class="form-label inline-block mb-2"
+                            >Description:</label>
+                                <textarea
+                                class="
+                                    max-h-52
+                                    form-control
+                                    block
+                                    w-11/12
+                                    text-base
+                                    font-normal
+                                    text-gray-700
+                                    bg-white bg-clip-padding
+                                    border border-solid border-gray-300
+                                    rounded
+                                    transition
+                                    ease-in-out
+                                    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none"
+
+                                    id="${this._uuid}_description"
+                                    rows="2" 
+                                    cols="3"
+                                    placeholder="Your description" 
+                                ></textarea>
+                    </div>
+
+                    <!-- Volume Slider  -->
+                    <div class="w-full mb-2">
+
+                        <label for="${this._uuid}_volume" class="mt-6">Volume:</label>
+
+                        <div class="container">
+                            
+
+                            <input type="range" list=tickMarks id="${this._uuid}_volume_slider" name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mt-6 w-64 bg-[#293548] text-[#75C4EB]" oninput=""${this._uuid}_rangeValue".innerText=this.value">
+                            
+                            <datalist id="tickMarks">
+                                <option value="0.0"></option>
+                                <option value="0.10"></option>
+                                <option value="0.20"></option>
+                                <option value="0.30"></option>
+                                <option value="0.40"></option>
+                                <option value="0.50"></option>
+                                <option value="0.60"></option>
+                                <option value="0.70"></option>
+                                <option value="0.80"></option>
+                                <option value="0.90"></option>
+                                <option value="1.0" label="100%"></option>
+                                <option value="1.10"></option>
+                                <option value="1.20"></option>
+                                <option value="1.30"></option>
+                                <option value="1.40"></option>
+                                <option value="1.50"></option>
+                            </datalist>
+
+                            <span id="${this._uuid}_rs-bullet" class="">100</span>
+                            
+                        </div>
+
+                        
+                    </div>
+
+
 
                     <label for="channel" class="mt-6">Channels:</label>
                     <select id="${this._uuid}_channels" name="channel" class="ml-3 w-50 bg-[#293548] text-[#75C4EB]" type="text">
-                    <option value="1">Channel 1</option>
-                    <option value="2">Channel 2</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
                     </select>
 
                     <label for="sampleRate" class="ml-3 mt-6">Sample Rate:</label>
@@ -84,25 +155,7 @@ class AudioInput extends ui {
                     </select>
                     
 
-                    <label for="volume" class="mt-6">Volume:</label>
-
-                    <input type="range" list=tickMarks id="${this._uuid}_volume" name="volume" min="0" max="100" class="ml-3 mt-3 w-64 bg-[#293548] text-[#75C4EB]" oninput="rangeValue.innerText=this.value">
                     
-                        <datalist id="tickMarks">
-                            <option value="0"></option>
-                            <option value="10"></option>
-                            <option value="20"></option>
-                            <option value="30"></option>
-                            <option value="40"></option>
-                            <option value="50"></option>
-                            <option value="60"></option>
-                            <option value="70"></option>
-                            <option value="80"></option>
-                            <option value="90"></option>
-                            <option value="100"></option>
-                        </datalist>
-
-                        <p id="rangeValue" class="">10</p>
                     
                 </div>  
             </details> 
@@ -115,6 +168,30 @@ class AudioInput extends ui {
     Init() {
         this._description = document.getElementById(`${this._uuid}_description`);
         this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
+        this._control_button = document.getElementById(`${this._uuid}_control_button`);
+        this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
+
+
+        this.rangeSlider = document.getElementById(`${this._uuid}_volume_slider`);
+        this.rangeBullet = document.getElementById(`${this._uuid}_rs-bullet`);
+
+
+
+
+        //Set initial mute status
+        this._setMute();
+
+        //Event subscriptions
+        this._control_button.addEventListener('click', (e) => {
+            this.mute = !this.mute;
+
+            this._setMute();
+            this.NotifyProperty("mute");
+        });
+
+        this.rangeSlider.addEventListener('input', (e) => {
+            this.showSliderValue();
+        });
 
 
         // Add VU meter
@@ -128,6 +205,10 @@ class AudioInput extends ui {
         });
 
         // Handle property changes
+        this.on('description', () => {
+            _setDescription()
+        });
+
         this.on('mute', () => {
             this._setMute();
         });
@@ -143,14 +224,36 @@ class AudioInput extends ui {
         });
     }
 
-    Update(propertyName) {
-        switch (propertyName) {
-            case "description":
-                this._description.value = this.description;
-            default:
-                break;
+    
+    _setDescription(){
+        this._description.value = this.description;
+    }
+
+    _setVolume() {
+        if (!this._sliderActive) {
+            this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
         }
     }
 
+    _setMute() {
+        if (this.mute) {
+            this._control_button.style.borderColor = "rgb(6, 154, 46)";
+            this._control_button.style.backgroundColor = "rgb(34, 75, 18,0.9)";
+            this._control_button.style.boxShadow = "0 0 1px 1px rgb(6, 154, 46, 0.3)";
+            this._control_button_text.textContent = "OFF";
+        }
+        else {
+            this._control_button.style.borderColor = "rgb(12, 255, 77)";
+            this._control_button.style.backgroundColor = "rgb(6, 154, 46)";
+            this._control_button.style.boxShadow = "0 0 10px 5px rgb(6, 154, 46, 0.6)";
+            this._control_button_text.textContent = "ON";
+        }
+    }
+
+    showSliderValue() {
+        this.rangeBullet.innerHTML = Math.round(this.rangeSlider.value * 100);
+        var bulletPosition = (this.rangeSlider.value /this.rangeSlider.max);
+        this.rangeBullet.style.left = (bulletPosition * 50) + "px";
+    }
 
 }

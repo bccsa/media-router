@@ -62,14 +62,8 @@ class VuMeter extends ui {
         this._canvas.style.left = this._div.offsetLeft + "px";
         this._canvas.style.top = this._div.offsetTop + "px";
 
-        // Set initial
-        if (this.orientation == 'vertical') {
-            this._setLevelVertical(level);
-        }
-        else {
-            this._setLevelHorizontal(level);
-        }
-
+        // reset level to ensure canvas is repainted
+        this.level = 0;
     }
 
     _setLevelVertical(level) {

@@ -134,9 +134,7 @@ class client_AudioInputDevice extends ui {
     }
 
     _setVolume() {
-        if (!this._sliderActive) {
-            this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
-        }
+        
     }
 
     _calcSliderRange() {
