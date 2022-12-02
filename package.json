@@ -8,7 +8,8 @@
     "express": "^4.17.1",
     "express-session": "^1.17.2",
     "socket.io": "^4.4.0",
-    "socket.io-client": "^4.4.0"
+    "socket.io-client": "^4.4.0",
+    "tw-elements": "^1.0.0-alpha13"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -22,5 +23,8 @@
   "bugs": {
     "url": "https://github.com/bccsa/audio-translation/issues"
   },
-  "homepage": "https://github.com/bccsa/audio-translation#readme"
+  "homepage": "https://github.com/bccsa/audio-translation#readme",
+  "devDependencies": {
+    "tailwindcss": "^3.2.4"
+  }
 }
