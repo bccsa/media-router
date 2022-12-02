@@ -10,7 +10,7 @@ class AudioInput extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="ml-4 mt-2 w-[30rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border-1 border-b-[#75C4EB]">
+        <div class="m-2 p-2 w-[30rem] overflow-hidden bg-white rounded-lg text-white border-solid border-1 border-b-[#75C4EB]">
 
             <details class="shadow rounded group">
                 <summary class="list-none flex items-center cursor-pointer
@@ -52,7 +52,8 @@ class AudioInput extends ui {
 
                 <!-- More Info Container  -->
                 <div class="p-6 pt-2 w-full h-auto">
-                    <div id="${this._uuid}_deviceList" class="w-auto h-auto" title="Audio Indicator"></div>
+                    <div id="${this._uuid}_audioInputControls" class="w-auto h-auto" title="Audio Input Controls"></div>
+                    <div id="controls"></div>
                     
                 </div>  
 
@@ -77,7 +78,7 @@ class AudioInput extends ui {
         this.SetData({
                 AudioInput_SCC_Pulpit:{
                     controlType: "AudioInput",
-                    parentElement: _deviceList,
+                    parentElement: _audioInputControls,
                 },
         });
 
