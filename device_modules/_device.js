@@ -13,6 +13,7 @@ const EventEmitter = require('events');
  * @property {String} clientControl - Client UI control name. Implementing classes should set this value to the client UI control classname.
  * @property {String} managerControl - Manager UI control name. Implementing classes should set this value to the manager UI control classname.
  * @property {Number} displayOrder - Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
+ * @property {boolean} run - Get / set the running state. When set, executes the _start() or _stop() functions.
  */
 class _device extends EventEmitter {
     constructor() {
@@ -20,13 +21,12 @@ class _device extends EventEmitter {
         this.deviceType = this.constructor.name; // The name of the class. This property should not be set in code.
         this.controls = {};                 // List of child controls
         this._parent = undefined;           // Reference to parent
-        this._run = false;                  // Running status flag
         this._exitFlag = false;             // Flag to prevent auto-restart on user issued stop command
         this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
-        // this.displayWidth = undefined;      // Display width on client WebApp. Implementing classes should set this value to a string value (e.g. "80px") to show it in the exported configuration.
         this._clientVisible = false;        // If true, the device has a client UI control.
         this.clientControl = undefined;     // Client UI control name
         this.managerControl = undefined;    // Manager UI control name
+        this._properties = { run: false };  // List of properties populated for properties with getters and setters
 
         // Subscribe to parent run event
         if (this._parent) {
@@ -37,15 +37,40 @@ class _device extends EventEmitter {
     }
 
     /**
-     * Start the playback process. This method should be implemented (overridden) by the inheriting class
+     * Start the playback process. This method should be implemented (overridden) by the implementing class
      */
     _start() {
     }
 
     /**
-     * Stop the playback process. This method should be implemented (overridden) by the inheriting class
+     * Stop the playback process. This method should be implemented (overridden) by the implementing class
      */
     _stop() {
+    }
+
+    /**
+     * Set to true: start the module, and emit the 'run' event; Set to false: stop the module, and emit the 'stop' event;
+     * @param {Boolean} val
+     */
+    set run(val) {
+        if (this._properties.run != val) {
+            if (val) {
+                this._properties.run = true;
+                this._start();
+                this.emit('run', true);
+            } else {
+                this._properties.run = false;
+                this._stop();
+                this.emit('run', false);
+            }
+        }
+    }
+
+    /**
+     * Get the module running status
+     */
+    get run() {
+        return this._properties.run;
     }
 
     /**
@@ -60,36 +85,6 @@ class _device extends EventEmitter {
             }
         }
         return this._topLevelParent;
-    }
-
-    /**
-     * Return the client WebApp HTML
-     */
-    get clientHtmlFileName() {
-        return this._clientHtmlFileName;
-    }
-
-    /**
-     * Get the running status
-     */
-    get run() {
-        return this._run;
-    }
-
-    /**
-     * Set the running status (execute the _start and _stop functions) and notify event subscribers.
-     */
-    set run(state) {
-        if (state == true && this._run != true) {
-            this._run = true;
-            this._start();
-            this.emit('run', this._run);
-        }
-        else if (state == false && this.run == true) {
-            this._run = false;
-            this._stop()
-            this.emit('run', this._run);
-        }
     }
 
     /**
@@ -186,6 +181,32 @@ class _device extends EventEmitter {
             // Subscribe to this control's run event to automatically start/stop child control
             this.on('run', (state) => {
                 control.run = state;
+            });
+
+            // Create getters and setters
+            Object.getOwnPropertyNames(control).forEach((k) => {
+                // Only return settable (not starting with "_") properties excluding special properties
+                if (
+                    k[0] != "_" && k != "run" &&
+                    (typeof control[k] == "number" ||
+                        typeof control[k] == "string" ||
+                        typeof control[k] == "boolean" ||
+                        Array.isArray(control[k]))
+                ) {
+                    // Store property value in _properties list
+                    control._properties[k] = control[k];
+
+                    // Create getter and setter
+                    Object.defineProperty(control, k, {
+                        get: function () {
+                            return this._properties[k];
+                        },
+                        set: function (val) {
+                            this._properties[k] = val;
+                            this.emit(k, val);
+                        }
+                    });
+                }
             });
         }
     }

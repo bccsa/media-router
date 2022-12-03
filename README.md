@@ -1,18 +1,14 @@
 # media-router
 Configurable media router.
-Modules (devices):
+Modules:
 * AudioInput: Capture audio from hardware and output to a PCM stream.
 * AudioOutput: Play a PCM audio stream to hardware.
-* AudioMixer: Mix audio via AudioMixerInputs and output to a PCM stream.
-* AudioMixerInput: Input audio from a PCM audio stream into a AudioMixer. Includes a web control interface with mute and volume controls.
-* RtpOpusInput: Receive Opus encoded audio via RTP, and decode to PCM.
-* RtpOpusOutput: Encode PCM audio to Opus and send via RTP.
-* SrtInput: Receives an SRT stream and publishes it to a UDP socket.
-* SrtOutput: Reads a UDP socket and publishes it as a SRT stream.
+* SrtOpusInput: Receives an SRT Opus encoded audio stream
+* SrtOpusOutput: Publishes an audio stream as Opus encoded SRT. 
 * Spacer: Visual spacer for web control interface.
 
 
-The web control interface is available on port 8081.
+The client web control interface is available on port 8081.
 
 ## Compatibility
 This project has been tested on Raspberry Pi OS Bullseye
@@ -23,11 +19,138 @@ Run the installation script:
 sudo ./install-dependencies.sh
 ```
 
+## Installing the service
+Run the installation scripts:
+```
+sudo ./install-dependencies.sh
+sudo ./install-service.sh
+```
+
 ## Development environment
 * Clone the project to your Raspberry Pi.
-* Navigate to the media-router directory
+* Navigate to the ```media-router``` directory
+* Install dependencies ```sudo ./install-dependencies.sh```
 * Run the router.js with NodeJS: ```node server.js```
-* A default configuration file will be created listing all the modules. This file can be modified to create a working setup. The server.js script should be restarted to apply the configuration changes.
+* A default configuration file ```config.js``` will be created listing all the modules. This file can be modified to create a working setup. The server.js script should be restarted to apply the configuration changes.
 
 ## Example configurations
 To do
+
+## Module structure
+Modules are NodeJS classes extending the ```_device``` base class. The ```_audioInputDevice``` and ```_audioOutputDevice``` classes (also extending ```_device```) provides additional functionality for audio inputs (volume & mute control and level indication) and audio outputs (built-in audio mixer capabilities with volume & mute control and level indication).
+
+### _device
+The ```_device``` base class provides the following base functionality:
+
+**Parent/Child structure**
+
+The _device base class provides a parent/child structure, where modules can be added as child modules to another module. Adding modules is done through the ```SetConfig()``` function by passing javascript object structured data to the parent module. ```SetConfig()``` creates the module structure according to the passed javascript object structure, and sets valid passed parameters. Modules are identified by the ```deviceType``` parameter. The module object structure is thus fully accessible externally.
+
+Example:
+```javascript
+parent.SetConfig({
+    child1: {
+        deviceType: "ModuleType1",
+        property1: "value1",
+        property2: "value2"
+    },
+    child2: {
+        deviceType: "ModuleType2",
+        propertyA: "valueA",
+        propertyB: "valueB",
+        grandChild1: {
+            deviceType: "ModuleType3",
+            propertyZ: "valueZ"
+        }
+    }
+});
+```
+
+**Dynamic class loading**
+
+*To do*
+
+**NodeJS events**
+
+The ```_device``` base class extends the built-in NodeJS events module. Any event can be emitted, subscribed to and unsubscribed from through the ```module.emit()```, ```module.on()```, ```module.off()``` and ```module.once()``` functions.
+
+**Automatic creation of getters and setters and property change events**
+
+The ```_device``` base class automatically creates getters and setters for predefined class properties with property names not starting with "_" and with types ```String```, ```Number```, ```Boolean``` and ```Array```. Properties added dynamically to modules (implementing ```_device```) are not modified.
+
+Property values copied and saved as key/value pairs in the ```module._properties``` object. The setters will emit an event with the property name and value when the property value is set.
+
+Example: Subscribing to property change notifications for a module.property1 property
+```javascript
+module.on('property1', value => {
+    // logic handling value change
+});
+```
+
+**External notification**
+
+In addition to property change notifications, it may be necessary to notify property values in the module's structure format. The ```module.NotifyProperty()``` function will emit a ```'data'``` event on the top level parent with the property name and value, including the path to the property.
+
+Example:
+```javascript
+// Create child controls
+parent.SetConfig({
+    child1: {
+        deviceType: "ModuleType2",
+        propertyA: "valueA",
+        propertyB: "valueB",
+        grandChild1: {
+            deviceType: "ModuleType3",
+            propertyZ: "valueZ"
+        }
+    }
+});
+
+// Listen for data
+parent.on('data', data => {
+    // Expected output: see below
+});
+
+// Notify grandChild1's propertyZ (this will usually be implemented in ModuleType3's internal logic, but for the sake of the example it is triggered externally).
+parent.child1.grandChild1.NotifyProperty('propertyZ');
+```
+
+The expected output from the ```'data'``` event is
+```javascript
+{
+    child1: {
+        grandChild1: {
+            propertyZ: "valueZ"
+        }
+    }
+}
+```
+
+**Updating module properties through module.SetConfig()**
+
+In addition to creating new modules, ```SetConfig()``` can be used to pass properties to modules. Setting one or several properties in the module's data structure through ```SetConfig()``` will apply the property values to the modules as per the passed structure. Using the above example, the same data structure that was received through the ```'data'``` event can be applied to set the property/ies value(s).
+
+**Getting the full module structure through module.GetConfig()**
+
+The full module structure (including child modules) can generated by calling ```module.GetConfig()```. This can be used to store configuration to disk, which can be used on startup to load the last state by setting the saved configuration using ```module.SetConfig()```.
+
+**Special purpose properties**
+
+The ```_device``` base class includes the following special purpose properties:
+
+```run```
+
+The ```module.run``` Boolean property's setter is modified to run the _start() and _stop() functions before emitting the updated property value.
+
+The ```_device``` base class also automatically subscribes to parent ```'run'``` events, and sets it's own ```run``` property to the value received through the parent's ```'run'``` event. This is used for coordinated starting and stopping of implementing modules.
+
+**Override functions**
+Implementing modules (classes) may override the following functions to implement functionality:
+
+```_start()```
+
+Override the start function to implement module starting logic (e.g. starting of an external process to capture audio).
+
+```_stop()```
+
+Override the stop function to implement module stopping logic (e.g. stopping of an external audio capturing process).
