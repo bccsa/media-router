@@ -94,29 +94,11 @@ class client_AudioInputDevice extends ui {
                 this.vu.level = level;
             }
         });
-    }
 
-    // Update(propertyName) {
-    //     switch (propertyName) {
-    //         case "mute":
-    //             this._setMute();
-    //             break;
-    //         case "volume":
-    //             this._setVolume();
-    //             break;
-    //         case "level":
-    //             if (this.vu) {
-    //                 // this.SetData({
-    //                 //     vu: { 
-    //                 //         level: this.level
-    //                 //     }
-    //                 // });
-    //             }
-    //             break;
-    //         default:
-    //             break;
-    //     }
-    // }
+        // Set initial state
+        this._setMute();
+        this._setVolume();
+    }
 
     _setMute() {
         if (this.mute) {

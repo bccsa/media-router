@@ -34,17 +34,14 @@ class client_DeviceList extends ui {
         this._control_container.addEventListener("click", () => {
             this.run = !this.run;
             this.NotifyProperty("run");
-            // this._setRunningStatus(this.run)
         });
-    }
 
-    Update(propertyName) {
-        switch (propertyName) {
-            case "run":
-                this._setRunningStatus(this.run);
-            default:
-                break;
-        }
+        this.on('run', run => {
+            this._setRunningStatus(run);
+        });
+
+        // Set initial status
+        this._setRunningStatus(this.run);
     }
 
     _setRunningStatus(run) {
