@@ -38,9 +38,11 @@ class _audioOutputDevice extends _device {
         this.bitDepth = 16;
         this.volume = 1;
         this.maxVolume = 1.5;
-        this.mute = true;
+        this.mute = false;
         this.showVolumeControl = true;
         this.showMuteControl = true;
+        this.displayOrder = 0;
+        this.clientControl = "client_AudioInputDevice";
 
         this._inputs = [];
         this._mixer = new Mixer({
@@ -56,6 +58,22 @@ class _audioOutputDevice extends _device {
                     device._notify({level: 0, peak: 0});
                 });
             }
+        });
+
+        // Calculate mixer volume on volume and mute updates
+        this.on('volume', vol => {
+            this._mixer.volume = this._getVolume(this);
+        });
+        this.on('mute', mute => {
+            this._mixer.volume = this._getVolume(this);
+        });
+
+        // Subscribe to mixer output level indication events and notify externally.
+        this._mixer.level.on('level', data => {
+            this._notify({level: data})
+        });
+        this._mixer.level.on('peak', data => {
+            this._notify({peak: data})
         });
     }
 
@@ -84,10 +102,10 @@ class _audioOutputDevice extends _device {
             });
 
             // Subscribe to mixer input level indication events
-            input.on('level', data => {
+            input.level.on('level', data => {
                 device._notify({level: data})
             });
-            input.on('peak', data => {
+            input.level.on('peak', data => {
                 device._notify({peak: data})
             });
 
