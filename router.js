@@ -86,7 +86,8 @@ managerApp.use(express.static('client'));
 const clientIO = require('socket.io')(clientHttp);
 
 clientIO.on('connection', socket => {
-    socket.emit('data', controls.GetConfig({client: true}));
+    // Send initial (full) state
+    socket.emit('data', controls.GetConfig({client: true, includeRun: true}));
 
     socket.on('data', data => {
         controls.SetConfig(data);

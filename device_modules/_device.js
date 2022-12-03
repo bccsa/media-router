@@ -21,12 +21,13 @@ class _device extends EventEmitter {
         this.deviceType = this.constructor.name; // The name of the class. This property should not be set in code.
         this.controls = {};                 // List of child controls
         this._parent = undefined;           // Reference to parent
+        this._run = false;                  // Running status
         this._exitFlag = false;             // Flag to prevent auto-restart on user issued stop command
         this.displayOrder = undefined;      // Display order on client WebApp. Implementing classes should set this value to a numeric value to show it in the exported configuration.
         this._clientVisible = false;        // If true, the device has a client UI control.
         this.clientControl = undefined;     // Client UI control name
         this.managerControl = undefined;    // Manager UI control name
-        this._properties = { run: false };  // List of properties populated for properties with getters and setters
+        this._properties = {};  // List of properties populated for properties with getters and setters
 
         // Subscribe to parent run event
         if (this._parent) {
@@ -55,11 +56,11 @@ class _device extends EventEmitter {
     set run(val) {
         if (this._properties.run != val) {
             if (val) {
-                this._properties.run = true;
+                this._run = true;
                 this._start();
                 this.emit('run', true);
             } else {
-                this._properties.run = false;
+                this._run = false;
                 this._stop();
                 this.emit('run', false);
             }
@@ -70,7 +71,7 @@ class _device extends EventEmitter {
      * Get the module running status
      */
     get run() {
-        return this._properties.run;
+        return this._run;
     }
 
     /**
@@ -216,24 +217,21 @@ class _device extends EventEmitter {
 
     /**
      * Get configuration as object
-     * @param {Object} options - Default: { client: false }; client -> true filters output to only include controls with clientControl property set.
+     * @param {Object} options - Default: { client: false, includeRun: false }; client -> true filters output to only include controls with clientControl property set; includeRun -> true includes the special 'run' property in the result.
      * @returns {Object}
      */
     GetConfig(options) {
         let data = {};
 
         // Get own properties
-        Object.getOwnPropertyNames(this).forEach((k) => {
-            // Only return settable (not starting with "_") properties
-            if (
-                k[0] != "_" &&
-                (typeof this[k] == "number" ||
-                    typeof this[k] == "string" ||
-                    typeof this[k] == "boolean")
-            ) {
-                data[k] = this[k];
-            }
+        Object.getOwnPropertyNames(this._properties).forEach((k) => {
+            data[k] = this._properties[k];
         });
+
+        // Include 'run' special property
+        if (options && options.includeRun) {
+            data['run'] = this.run;
+        }
 
         // Get child controls properties
         Object.keys(this.controls).forEach((k) => {
