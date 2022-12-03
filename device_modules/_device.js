@@ -202,8 +202,11 @@ class _device extends EventEmitter {
                             return this._properties[k];
                         },
                         set: function (val) {
-                            this._properties[k] = val;
-                            this.emit(k, val);
+                            if (this._properties[k] != val){
+                                // Only notify changes
+                                this._properties[k] = val;
+                                this.emit(k, val);
+                            }
                         }
                     });
                 }
