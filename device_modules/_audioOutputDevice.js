@@ -24,20 +24,38 @@ const Mixer = require('../submodules/audio-mixer/index');
  * @property {number} bitDepth - Audio bit depth (default = 14)
  * @property {number} channels - Audio channel number (default = 1)
  * @property {number} sampleRate - Audio sample rate (default = 48000)
+ * @property {number} volume - Audio volume (1 = unity gain)
+ * @property {number} maxVolume - Maximum volume that the client WebApp can request
+ * @property {number} showVolumeControl - Indicates that the front end should show the volume control
+ * @property {number} showMuteControl - Indicates that the front end should show the mute control
+ * @property {number} displayOrder - Display order in the client WebApp.
  */
 class _audioOutputDevice extends _device {
-    constructor(DeviceList) {
-        super(DeviceList);
-        // this.stdin = new PassThrough();     // stdin mapped to process stdin
-        this.channels = 1;                  // Audio channels
-        this.sampleRate = 48000;            // Audio sample rate
-        this.bitDepth = 16;                 // Audio bit depth
+    constructor() {
+        super();
+        this.channels = 1;
+        this.sampleRate = 48000;
+        this.bitDepth = 16;
+        this.volume = 1;
+        this.maxVolume = 1.5;
+        this.mute = true;
+        this.showVolumeControl = true;
+        this.showMuteControl = true;
 
         this._inputs = [];
         this._mixer = new Mixer({
             channels : this.channels,
             bitDepth : this.bitDepth,
             sampleRate : this.sampleRate
+        });
+
+        // Clear level and peak indicators on device stop
+        this.on('run', run => {
+            if (!run) {
+                this._inputs.forEach(device => {
+                    device._notify({level: 0, peak: 0});
+                });
+            }
         });
     }
 
@@ -47,6 +65,9 @@ class _audioOutputDevice extends _device {
     AddInput(device) {
         // Create a new mixer input
         if (device && device.__proto__ instanceof _audioInputDevice) {
+            // Add passed _audioInputDevice to list of inputs
+            this._inputs.push(device);
+            
             const input = this._mixer.input({
                 channels : device.channels,
                 bitDepth : device.bitDepth,
