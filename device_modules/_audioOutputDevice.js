@@ -65,11 +65,9 @@ class _audioOutputDevice extends _device {
             // Subscribe to mixer input level indication events
             input.on('level', data => {
                 device._notify({level: data})
-                // device.emit('level', data);
             });
             input.on('peak', data => {
                 device._notify({peak: data})
-                // device.emit('peak', data);
             });
 
             // Pipe device output stream to mixer input

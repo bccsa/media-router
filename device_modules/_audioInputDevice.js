@@ -38,17 +38,14 @@ class _audioInputDevice extends _device {
         this.channels = 1;
         this.sampleRate = 48000;
         this.bitDepth = 16;
-        this._volume = 1;
+        this.volume = 1;
         this.maxVolume = 1.5;
         this.soloGroup = "";
-        this._mute = true;
+        this.mute = true;
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;
         this.clientControl = "client_AudioInputDevice";
-        
-        // this.displayWidth = "80px";         // Display width in the client WebApp.
-
         this.destinations = ["Destination device name"];
 
         // Find the destination device after 100ms
@@ -57,47 +54,15 @@ class _audioInputDevice extends _device {
                 this._findDestination(destinationName);
             });
         }, 100);
-    }
 
-    /**
-     * Set the audio volume (1 = unity gain)
-     */
-    set volume(volume) {
-        let prev = this._volume;
-        this._volume = volume;
-        this.emit('volume', volume);
-        if (volume != prev) this.NotifyProperty('volume');
-    }
-
-    /**
-     * Get the audio volume (1 = unity gain)
-     */
-    get volume() {
-        return this._volume;
-    }
-
-    /**
-     * Set the audio mute to on or off
-     */
-    set mute(mute) {
-        let prev = this._mute;
-        this._mute = mute;
-        this.emit('mute', mute);
-        if (mute != prev) this.NotifyProperty('mute');
-
-        // Mute all other objects (with the same parent) in the solo group
-        if (!mute && this.soloGroup) {
-            Object.values(this._parent.controls).filter(c => c.soloGroup == this.soloGroup).forEach(device => {
-                if (device.name != this.name && !device.mute) device.mute = true;
-            });
-        }
-    }
-
-    /**
-     * Get the audio mute value
-     */
-    get mute() {
-        return this._mute;
+        // Mute all other _audioInputDevice modules (with the same parent) in the solo group
+        this.on('mute', mute => {
+            if (!mute && this.soloGroup) {
+                Object.values(this._parent.controls).filter(c => c.soloGroup == this.soloGroup).forEach(device => {
+                    if (device.name != this.name && !device.mute) device.mute = true;
+                });
+            }
+        });
     }
 
     // find the destination device
