@@ -57,6 +57,7 @@ class _audioOutputDevice extends _device {
                 this._inputs.forEach(device => {
                     device._notify({level: 0, peak: 0});
                 });
+                this._notify({level: 0, peak: 0});
             }
         });
 
