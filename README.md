@@ -196,6 +196,10 @@ The ```module.run``` Boolean property's setter is modified to run the _start() a
 
 The ```_device``` base class also automatically subscribes to parent ```'run'``` events, and sets it's own ```run``` property to the value received through the parent's ```'run'``` event. This is used for coordinated starting and stopping of implementing modules.
 
+```name```
+
+Name of the module (e.g. ```MyAudioInput```).
+
 **Override functions**
 Implementing modules (classes) may override the following functions to implement functionality:
 
