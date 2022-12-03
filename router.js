@@ -90,11 +90,15 @@ clientIO.on('connection', socket => {
     socket.emit('data', controls.GetConfig({client: true, includeRun: true}));
 
     socket.on('data', data => {
+        // Send data to router
         controls.SetConfig(data);
+
+        // Send data to other clients
+        socket.broadcast.emit('data', data);
     });
 });
 
-// Forward data to clients
+// Forward data from router to clients
 controls.on('data', data => {
     clientIO.emit('data', data);
 });
@@ -107,19 +111,19 @@ controls.on('data', data => {
 // Socket.io authentication
 // -------------------------------------
 
-const managerIO = require('socket.io-client')('http://localhost:8083', 
-{
-    reconnect: true,
-    auth: {
-        username: "user",
-        password: "6q8uGT}x+$cD:YxYJq^Nu-",
-    },
-});
+// const managerIO = require('socket.io-client')('http://localhost:8083', 
+// {
+//     reconnect: true,
+//     auth: {
+//         username: "user",
+//         password: "6q8uGT}x+$cD:YxYJq^Nu-",
+//     },
+// });
 
-// log connection error 
-managerIO.on("connect_error", (err) => {
-    // console.log(err);
-})
+// // log connection error 
+// managerIO.on("connect_error", (err) => {
+//     // console.log(err);
+// })
 
 // -------------------------------------
 // Socket.io communication
@@ -133,13 +137,6 @@ managerIO.on("connect_error", (err) => {
 controls.on('log', message => {
     eventLog(message);
 });
-
-// // client UI updates
-// deviceList.on('data', data => {
-//     Object.keys(data).forEach(deviceName => {
-//         clientIO.in(`${deviceName}`).emit('deviceUpdate', data[deviceName]);
-//     });
-// });
 
 // -------------------------------------
 // Configuration management
@@ -159,20 +156,31 @@ function loadConfig() {
     }
     catch (err) {
         eventLog('Unable to load config.json from file: ' + err.message);
-        // eventLog('Generating a template config file...')
-
-        // var data = JSON.stringify(deviceList.GetConfigTemplate(), null, 2); //pretty print
-        // try {
-        //     fs.writeFileSync('config.json', data);
-
-        //     // Re-load configuration
-        //     loadConfig();
-        // }
-        // catch (err) {
-        //     eventLog('Unable to write config.json to disk: ' + err.message);
-        // }
     }
 }
+
+// -------------------------------------
+// Client controller
+// -------------------------------------
+// let schema = [
+//     {
+//         deviceType: "DeviceList",
+//         clientType: "client_DeviceList",
+//         managerType: ""
+//     },
+//     {
+//         deviceType: "AudioInput",
+//         clientType: "client_AudioInputDevice",
+//         managerType: ""
+//     },
+//     {
+//         deviceType: "SrtOpusInput",
+//         clientType: "client_AudioInputDevice",
+//         managerType: ""
+//     },
+// ];
+
+
 
 // -------------------------------------
 // Event logging
