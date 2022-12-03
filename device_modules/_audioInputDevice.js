@@ -50,9 +50,13 @@ class _audioInputDevice extends _device {
 
         // Find the destination device after 100ms
         setTimeout(() => {
-            this.destinations.forEach(destinationName => {
-                this._findDestination(destinationName);
-            });
+            if (this.destinations.length > 1) {
+                this._logEvent('Currently only supporing one destination. Only the first destination will be routed.')
+            }
+
+            if (this.destinations.length > 0) {
+                this._findDestination(this.destinations[0]);
+            }
         }, 100);
 
         // Mute all other _audioInputDevice modules (with the same parent) in the solo group
