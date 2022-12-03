@@ -31,7 +31,6 @@ sudo ./install-service.sh
 * Navigate to the ```media-router``` directory
 * Install dependencies ```sudo ./install-dependencies.sh```
 * Run the router.js with NodeJS: ```node server.js```
-* A default configuration file ```config.js``` will be created listing all the modules. This file can be modified to create a working setup. The server.js script should be restarted to apply the configuration changes.
 
 ## Installation: Tailwind CLI and Tailwind Elements
 
