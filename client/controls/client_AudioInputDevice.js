@@ -51,9 +51,6 @@ class client_AudioInputDevice extends ui {
         this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
         this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
 
-        // Workaround: calculate initial slider range after css is applied
-        setTimeout(() => { this._calcSliderRange() }, 100);
-
         // Enable dragging for volume slider
         this._dragElement(this._volume_slider, this);
 
@@ -97,7 +94,13 @@ class client_AudioInputDevice extends ui {
 
         // Set initial state
         this._setMute();
-        this._setVolume();
+
+        // Workaround: calculate initial slider range after css is applied
+        setTimeout(() => {
+            this._calcSliderRange();
+            this._setVolume();
+        }, 100);
+        
     }
 
     _setMute() {
@@ -116,7 +119,7 @@ class client_AudioInputDevice extends ui {
     }
 
     _setVolume() {
-        
+        this._volume_slider.style.top = this._sliderTop + this._sliderRange - this._sliderRange * this.volume / this.maxVolume + "px";
     }
 
     _calcSliderRange() {
