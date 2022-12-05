@@ -11,7 +11,7 @@
 
 const _device = require('./_device');
 const _audioInputDevice = require('./_audioInputDevice');
-// const { PassThrough } = require ('stream');
+const ReadableStreamClone = require("readable-stream-clone");
 const Mixer = require('../submodules/audio-mixer/index');
 
 // -------------------------------------
@@ -111,7 +111,11 @@ class _audioOutputDevice extends _device {
             });
 
             // Pipe device output stream to mixer input
-            device.stdout.pipe(input);
+            // const c = new ReadableStreamClone(device.stdout);
+            // c.pipe(input);
+            device.stdout.on('data', data => {
+                input.write(data)
+            })
         }
         else {
             if (device && device.name) {

@@ -202,7 +202,7 @@ var _exit = false;
 function cleanup() {
     if (!_exit) {
         // Stop devicelist on exit
-        deviceList._stop();
+        controls._stop();
 
         // // Delete socket files created for audio mixer
         // let regex = /[.]sock$/;
