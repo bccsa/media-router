@@ -6,6 +6,8 @@ class DeviceList extends ui {
         this.autoStartDelay = 500;  // milliseconds
         this._controlsDiv = undefined;
     }
+
+    
     
     get html() {
         return `
@@ -21,25 +23,46 @@ class DeviceList extends ui {
                     ">
 
                     <!-- Top Heading Container  -->
-                    <div class="grid grid-cols-3 mt-1 mb-1 ml-4 pl-2 w-full h-10">
+                    <div class="flex flex-row mt-1 mb-1 ml-4 pl-2 w-full h-14">
 
-                            <!-- Name -->
-                            <div class="w-1/3">
-                                <span class="font-semibold text-xl" title="Audio Input Name">${this.name}</span>
-
+                            <!-- Name and Volume indicator -->
+                            <div class="basis-4/5">
+                                <span class="font-semibold text-base" title="Audio Input Name">${this.name}</span>
                             </div>
 
-                            <!--  -->
-                            <div class="ml-[10.5rem] mt-2">
-                                
-                            </div>
+                            
+                            <div class="basis-1/5">
+                                <div class="flex flex-row justify-center m-1">
 
-                            <!-- Container toggle -->
-                            <div class="w-1/4 flex flex-col items-end ml-28">
-                                <div class="flex w-10 items-center justify-center">
-                                    <div class="border-8 border-transparent border-l-black mr-1 mt-1
-                                    group-open:rotate-90 transition-transform origin-left
-                                    "></div>
+                                    <!-- Toggle On/Off  -->
+                                    <div class="basis-1/3">
+                                    
+                                        <div class="flex">
+                                        <label class="form-check-label1 inline-block text-gray-800 mr-2" for="flexSwitchCheckChecked">Off</label>
+                                            <div class="form-check form-switch">
+                                                
+                                                <input class="form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-white bg-no-repeat bg-contain bg-gray-300 focus:outline-none cursor-pointer shadow-sm" type="checkbox" role="switch" id="flexSwitchCheckChecked" checked>
+                                                <label class="form-check-label2 inline-block text-gray-800" for="flexSwitchCheckChecked">On</label>
+                                            </div>
+                                        </div>
+                                        
+                                    </div>
+
+                                    <!-- Settings button  -->
+                                    <div class="basis-1/3">
+                                        
+                                            <button type="button" class="ml-4 bg-cog_solid inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition duration-150 ease-in-out w-9 h-9">
+                                            </button>
+                                    </div>
+
+                                    <!-- Container toggle -->
+                                    <div class="basis-1/3 justify-end">
+                                        <div class="flex items-start justify-end">
+                                            <div class="border-8 border-transparent border-l-black ml-4 mt-1
+                                            group-open:rotate-90 transition-transform origin-left
+                                            "></div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                     </div>

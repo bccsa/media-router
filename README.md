@@ -42,7 +42,6 @@ sudo npx tailwindcss init
 ```
 
 ### 2. Add the Tailwind directives to your CSS
-* Create new folder **"src"**
 * Create new file **"input.css"**
 * Add the @tailwind directives for each of Tailwind’s layers to your main CSS file.
 ```
@@ -60,7 +59,7 @@ sudo npm install tw-elements
 ### 4. Update the config file **"tailwind.config.js"**
 ```
 module.exports = {
-  content: ['./src/**/*.{html,js}', './node_modules/tw-elements/dist/js/**/*.js'],
+  content: ['./client/**/*.{html,js}', './node_modules/tw-elements/dist/js/**/*.js'],
   plugins: [
     require('tw-elements/dist/plugin')
   ]
@@ -71,7 +70,7 @@ module.exports = {
 * Save all your files before running the build process
 * Run the CLI tool to scan your template files for classes and build your CSS.
 ```
-sudo npx tailwindcss -i ./src/input.css -o ./dist/output.css
+sudo npx tailwindcss -i ./input.css -o ./client/output.css
 ```
 
 

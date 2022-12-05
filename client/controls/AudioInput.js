@@ -61,7 +61,7 @@ class AudioInput extends ui {
 
                             <!-- Container toggle -->
                             <div class="w-1/4 flex flex-col items-end ml-28">
-                                <div class="flex w-10 items-center justify-center">
+                                <div id="${this._uuid}_container_toggle" class="flex w-10 items-center justify-center">
                                     <div class="border-8 border-transparent border-l-white mr-1 mt-1
                                     group-open:rotate-90 transition-transform origin-left
                                     "></div>
