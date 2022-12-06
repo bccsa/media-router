@@ -31,7 +31,7 @@ class AudioInput extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="ml-4 mt-2 w-[30rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border-1 border-b-[#75C4EB]">
+        <div class="select-none ml-4 mt-2 w-[30rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border-1 border-b-[#75C4EB]">
 
             <details class="shadow rounded group">
                 <summary class="list-none flex items-center cursor-pointer
@@ -83,7 +83,7 @@ class AudioInput extends ui {
                                 class="max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[27.5rem] text-base font-normal
                                 text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
                                 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-                                focus:outline-none"
+                                focus:outline-none px-2 py-1"
 
                                 id="${this._uuid}_description"
                                 title="Device description"
@@ -132,7 +132,7 @@ class AudioInput extends ui {
                                     <select id="${this._uuid}_channels" title="Choose the channel" value="${this.channels}" name="channel" class="form-select
                                     w-full text-base font-normal text-[#75C4EB] bg-[#293548]
                                     border border-solid border-gray-300 rounded transition
-                                    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 m-0"1
+                                    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5"
                                     type="text">
                                     <option value="1">1</option>
                                     <option value="2">2</option>
@@ -146,7 +146,7 @@ class AudioInput extends ui {
                             <select id="${this._uuid}_sampleRate" title="Choose the sample rate" value="${this.sampleRate}" name="sampleRate" class="form-select
                                 w-full text-base font-normal text-[#75C4EB] bg-[#293548]
                                 border border-solid border-gray-300 rounded transition
-                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 m-0" type="text">
+                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1" type="text">
                                 <option value="44100">44100 Hz</option>
                                 <option value="48000">48000 Hz</option>
                             </select>
@@ -158,7 +158,7 @@ class AudioInput extends ui {
                             <select id="${this._uuid}_bitDepth" title="Choose the bit depth" value="${this.bitDepth}" name="bitDepth" class="form-select
                                 w-full text-base font-normal text-[#75C4EB] bg-[#293548]
                                 border border-solid border-gray-300 rounded transition
-                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 m-0" type="text">
+                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5" type="text">
                                 <option value="16">16</option>
                                 <option value="24">24</option>
                                 <option value="32">32</option>
@@ -171,7 +171,7 @@ class AudioInput extends ui {
                             <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_maxVolume" title="Enter the max volume" name="maxVolume" step="0.1" class="
                                 w-full text-base font-normal text-[#75C4EB] bg-[#293548]
                                 border border-solid border-gray-300 rounded transition
-                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 m-0"
+                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5"
                                 value="${this.maxVolume}"
                             >
                         </div>
@@ -185,7 +185,7 @@ class AudioInput extends ui {
                                 class="max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[27.5rem] text-base font-normal
                                 text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
                                 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-                                focus:outline-none"
+                                focus:outline-none px-2 py-1"
 
                                 id="${this._uuid}_destinations"
                                 title="Enter the destinations, e.g. 'D1, D2, D3'"
@@ -202,7 +202,7 @@ class AudioInput extends ui {
                                 class="max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[27.5rem] text-base font-normal
                                 text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
                                 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-                                focus:outline-none"
+                                focus:outline-none px-2 py-1"
 
                                 id="${this._uuid}_soloGroup"
                                 title="Enter solo group name";
@@ -230,7 +230,7 @@ class AudioInput extends ui {
                         <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_displayOrder" title="Client display order" name="maxVolume" step="1" class="
                             w-1/5 h-6 text-base font-normal text-[#75C4EB] bg-[#293548]
                             border border-solid border-gray-300 rounded transition
-                            ease-in-out focus:bg-[#2B3749] focus:border-blue-600 m-0"
+                            ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5 py-1"
                             value="${this.displayOrder}"
                         >
                     </div>

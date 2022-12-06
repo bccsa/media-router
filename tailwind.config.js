@@ -9,6 +9,8 @@ module.exports = {
     extend: {
       backgroundImage: {
         'cog_solid': "url('./controls/img/cog_solid.svg')",
+        'circle_xmark_solid_blue': "url('./controls/img/circle_xmark_solid_blue.svg')",
+        'xmark': "url('./controls/img/xmark.svg')",
       }
     }
   }
