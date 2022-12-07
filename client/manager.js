@@ -1,5 +1,9 @@
 var controls = new uiTopLevelContainer('../controls', 'controls');
 
+if (!controls._getDynamicClass("_audioDevice")) {
+    controls.LoadScript("_audioDevice" + ".js");
+}
+
 controls.SetData({
     
     DeviceList1: {

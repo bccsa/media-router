@@ -15,27 +15,27 @@ class DeviceList extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="select-none drop-shadow-2xl m-2 pl-2 pt-2 w-auto overflow-hidden bg-white rounded-lg text-black border-solid border border-b-[#DADBDC]">
+        <div class="select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden bg-white rounded-lg text-black border-solid border border-b-[#DADBDC]">
 
             <details class="rounded group">
-                <summary class="flex list-none items-center cursor-pointer
+                <summary class="flex list-none cursor-pointer
                     focus-visible:outline-none focus-visible:ring focus-visible:ring-pink-500
                     rounded group-open:rounded-b-none group-open:z-[10] relative">
 
                     <!-- Top Heading Container  -->
-                    <div class="flex flex-row mt-1 mb-1 ml-4 pl-2 w-full h-14">
+                    <div class="flex flex-row mt-1 mb-1 ml-4 pl-2 w-full h-10">
 
                         <!-- Name -->
-                        <div class="basis-4/5">
+                        <div class="basis-4/5 mt-1">
                             <span class="font-semibold text-xl" title="Device List Name">${this.name}</span>
                         </div>
 
                         
-                        <div class="flex flex-row items-start justify-end basis-1/5">
-                            <div class="flex flex-row items-start justify-end m-1">
+                        <div class="flex flex-row items-center justify-end basis-1/5">
+                            <div class="flex flex-row items-center justify-end">
 
                                 <!-- Toggle On/Off  -->
-                                <div class="basis-1/2 mr-4">
+                                <div class="basis-1/2 items-center mr-4">
                                 
                                     <div class="flex">
                                         <label class="form-check-label1 inline-block text-gray-800 mr-1" for="${this._uuid}_switchOnOff">Off</label>
@@ -50,10 +50,10 @@ class DeviceList extends ui {
                                 </div>
 
                                 <!-- Container toggle -->
-                                <div class="basis-1/2 justify-end">
-                                    <div class="flex items-start justify-end">
-                                        <div class="mb-8 border-8 border-transparent border-l-black ml-4 mt-1
-                                        group-open:rotate-90 transition-transform origin-left
+                                <div class="basis-1/2 justify-end mr-1">
+                                    <div class="flex items-center justify-end">
+                                        <div class="mb-4 border-8 border-transparent border-l-black ml-4 mt-1
+                                        group-open:rotate-90 transition-transform group-open: origin-left
                                         ">
                                     </div>
                                     </div>
@@ -70,7 +70,7 @@ class DeviceList extends ui {
                 <!-- More Info Container  -->
                 <div class="flex flex-row justify-between w-full h-auto">
 
-                    <div id="${this._uuid}_audioInputControls" class="lg:basis-9/12 md:basis-6/12 sm:basis-3/5 p-6 pt-2 h-auto w-auto"></div>
+                    <div id="${this._uuid}_audioInputControls" class="pb-4 pt-2 h-auto w-auto"></div>
 
                     <!-- Settings button  -->
                     <div class="justify-between mt-1">
@@ -82,7 +82,7 @@ class DeviceList extends ui {
                     </div>
 
                     
-                    <div id="${this._uuid}_settingsContainer" class="bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-full h-auto lg:basis-3/12 md:basis-6/12 sm:basis-2/5 mt-[0.05rem] ease-in-out hidden" >
+                    <div id="${this._uuid}_settingsContainer" class="bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-auto h-auto ml-4 max-w-xs max-h-xs mt-[0.05rem] ease-in-out hidden" >
 
 
                         <!-- Exit setting button  -->

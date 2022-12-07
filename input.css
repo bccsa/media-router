@@ -1,3 +1,19 @@
 @tailwind base;
 @tailwind components;
+
+.main-card {
+    @apply select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border-1 border-b-[#75C4EB];
+}
+
+.btn {
+    @apply h-10 w-20 inline-block px-6 py-2.5 leading-tight
+    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
+    focus:ring-0 transition duration-150 ease-in-out;
+}
+
 @tailwind utilities;
+
+
+    
+
+
