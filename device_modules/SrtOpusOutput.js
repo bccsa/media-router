@@ -122,7 +122,7 @@ class SrtOpusOutput extends _audioOutputDevice {
                     setTimeout(() => {
                         if (!this._exitFlag) {
                             this._logEvent(`Restarting srt-live-transmit...`);
-                            this.Start();
+                            this._start();
                         }
                     }, 1000);
 
