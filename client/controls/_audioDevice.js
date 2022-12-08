@@ -1,23 +1,17 @@
 class _audioDevice extends ui {
     constructor() {
         super();
-        this._styles.push('AudioInput.css');
+        this._styles.push('_audioDevice.css');
         
-
         this.level = 0;
         this.mute = true;
-
         this.description = "";
-
         this.volume = 1;
-
-        this.channels = 1;
+        this.channels = 2;
         this.sampleRate = 48000;
         this.bitDepth = 16;
         this.maxVolume = 1.5;
-
         this.destinations = ["Destination1","Destination2","Destination3"]; // Split with comma from string
-
         this.soloGroup = "";
         this.showVolumeControl = true;
         this.showMuteControl = true;
@@ -32,42 +26,30 @@ class _audioDevice extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="main-card">
-        
+        <div class="audioDevice-main-card">
 
-            <details class="shadow rounded group">
-                <summary class="list-none flex items-center cursor-pointer
-                    focus-visible:outline-none focus-visible:ring focus-visible:ring-pink-500
-                    rounded group-open:rounded-b-none group-open:z-[10] relative
-                    ">
+            <details class="shadow rounded group/audioDevice">
 
-                    <!-- Top Heading Container  -->
-                    <div class="grid grid-cols-3 mt-1 mb-1 ml-4 pl-2 w-full h-14">
+                <!-- Top Heading Container  -->
+                <summary class="audioDevice-summary-container">
+                    <div class="audioDevice-heading">
 
                             <!-- Name and Volume indicator -->
-                            <div class="w-1/3">
-                                <span class="font-semibold text-base" title="Audio Input Name">${this.name}</span>
-
-                                <div id="${this._uuid}_volume_slit" class="AudioInput_volume_slit" title="Audio Indicator"></div>
-
+                            <div class="mb-1">
+                                <span class="text-lg" title="Audio Input Name">${this.name}</span>
+                                <div id="${this._uuid}_volume_slit" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                             </div>
 
                             <!-- Mute Button -->
                             <div class="ml-[10.5rem] mt-2">
-                                <button id="${this._uuid}_control_button" type="button" title="Mute Button" class="h-10 w-20 inline-block px-6 py-2.5 leading-tight
-                                    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
-                                    focus:ring-0 transition duration-150 ease-in-out">
+                                <button id="${this._uuid}_control_button" type="button" title="Mute Button" class="btn-mute">
                                     <span id="${this._uuid}_control_button_text">OFF</span>
                                 </button>
                             </div>
 
                             <!-- Container toggle -->
-                            <div class="w-1/4 flex flex-col items-end ml-28">
-                                <div id="${this._uuid}_container_toggle" class="flex w-10 items-center justify-center">
-                                    <div class="border-8 border-transparent border-l-white mr-1 mt-1
-                                    group-open:rotate-90 transition-transform origin-left
-                                    "></div>
-                                </div>
+                            <div class="items-end justify-items-end ml-32 mt-1">
+                                <div class="audioDevice-toggle-arrow"></div>
                             </div>
                     </div>
                 </summary>
@@ -76,52 +58,37 @@ class _audioDevice extends ui {
                 <div class="w-full h-[0.01rem] bg-[#75C4EB]"></div>
 
                 <!-- More Info Container  -->
-                <div class="p-6 pt-2 w-full h-auto">
+                <div class="w-full h-auto m-4 pr-[2rem] font-['Helvetica'] text-sm">
 
                     <!-- Description text area  -->
                     <div class="w-full mb-1 mr-4">
                         <label for="${this._uuid}_description" class="form-label inline-block mb-2">Description:</label>
                             <textarea
-                                class="max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[27.5rem] text-base font-normal
-                                text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
-                                rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-                                focus:outline-none px-2 py-1"
-
-                                id="${this._uuid}_description"
-                                title="Device description"
-                                rows="1" 
-                                cols="3"
+                                id="${this._uuid}_description" class="audioDevice-text-area"
+                                title="Device description" rows="1" cols="3"
                                 placeholder="Your description" 
                             >${this.description}</textarea>
                     </div>
 
                     <!-- Volume Slider  -->
-                    <div class="w-full mb-1">
+                    <div class="w-full mb-2">
 
                         <label for="${this._uuid}_volume" class="mt-6">Volume:</label>
 
-                        <input type="range" list="${this._uuid}_tickMarks" id="${this._uuid}_volume_slider" title="Audio volume" name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mt-2 w-60 bg-[#293548] text-[#75C4EB]" oninput=""${this._uuid}_rangeValue".innerText=this.value">
+                        <input type="range" list="${this._uuid}_tickMarks" id="${this._uuid}_volume_slider" title="Audio volume" 
+                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mt-2 w-64 bg-[#293548] text-[#75C4EB]" 
+                        oninput=""${this._uuid}_rangeValue".innerText=this.value">
                         
                         <datalist id="${this._uuid}_tickMarks">
-                            <option value="0.00"></option>
-                            <option value="0.10"></option>
-                            <option value="0.20"></option>
-                            <option value="0.30"></option>
-                            <option value="0.40"></option>
-                            <option value="0.50"></option>
-                            <option value="0.60"></option>
-                            <option value="0.70"></option>
-                            <option value="0.80"></option>
-                            <option value="0.90"></option>
-                            <option value="1.0"0></option>
-                            <option value="1.10"></option>
-                            <option value="1.20"></option>
-                            <option value="1.30"></option>
-                            <option value="1.40"></option>
+                            <option value="0.00"></option> <option value="0.10"></option> <option value="0.20"></option> 
+                            <option value="0.30"></option> <option value="0.40"></option> <option value="0.50"></option>
+                            <option value="0.60"></option> <option value="0.70"></option> <option value="0.80"></option> 
+                            <option value="0.90"></option> <option value="1.0"0></option> <option value="1.10"></option>
+                            <option value="1.20"></option> <option value="1.30"></option> <option value="1.40"></option> 
                             <option value="1.50"></option>
                         </datalist>
 
-                        <span id="${this._uuid}_rs-bullet" class="ml-2 mb-20">100 %</span>
+                        <span id="${this._uuid}_rs-bullet" class="ml-2 mb-20">${this.volume*100} %</span>
                           
                     </div>
 
@@ -131,11 +98,8 @@ class _audioDevice extends ui {
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_channels" class="form-label inline-block mb-2">Channels:</label>
                                 <div class="mb-3 w-full">
-                                    <select id="${this._uuid}_channels" title="Choose the channel" value="${this.channels}" name="channel" class="form-select
-                                    w-full text-base font-normal text-[#75C4EB] bg-[#293548]
-                                    border border-solid border-gray-300 rounded transition
-                                    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5"
-                                    type="text">
+                                    <select id="${this._uuid}_channels" title="Choose the channel" selected="${this.channels}" 
+                                    name="channel" class="audioDevice-select" type="text">
                                     <option value="1">1</option>
                                     <option value="2">2</option>
                                     </select>
@@ -145,10 +109,8 @@ class _audioDevice extends ui {
                         <!-- SampleRate  -->
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_sampleRate" class="form-label inline-block mb-2">Sample Rate:</label>
-                            <select id="${this._uuid}_sampleRate" title="Choose the sample rate" value="${this.sampleRate}" name="sampleRate" class="form-select
-                                w-full text-base font-normal text-[#75C4EB] bg-[#293548]
-                                border border-solid border-gray-300 rounded transition
-                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1" type="text">
+                            <select id="${this._uuid}_sampleRate" title="Choose the sample rate" value="${this.sampleRate}" 
+                            name="sampleRate" class="audioDevice-select" type="text">
                                 <option value="44100">44100 Hz</option>
                                 <option value="48000">48000 Hz</option>
                             </select>
@@ -157,10 +119,8 @@ class _audioDevice extends ui {
                         <!-- BitDepth  -->    
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_bitDepth" class="form-label inline-block mb-2">Bit Depth:</label>
-                            <select id="${this._uuid}_bitDepth" title="Choose the bit depth" value="${this.bitDepth}" name="bitDepth" class="form-select
-                                w-full text-base font-normal text-[#75C4EB] bg-[#293548]
-                                border border-solid border-gray-300 rounded transition
-                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5" type="text">
+                            <select id="${this._uuid}_bitDepth" title="Choose the bit depth" value="${this.bitDepth}" 
+                            name="bitDepth" class="audioDevice-select" type="text">
                                 <option value="16">16</option>
                                 <option value="24">24</option>
                                 <option value="32">32</option>
@@ -170,10 +130,8 @@ class _audioDevice extends ui {
                         <!-- Max Volume  --> 
                         <div class="w-1/4">
                             <label for="${this._uuid}_maxVolume" class="form-label inline-block mb-2">Max Volume:</label>
-                            <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_maxVolume" title="Enter the max volume" name="maxVolume" step="0.1" class="
-                                w-full text-base font-normal text-[#75C4EB] bg-[#293548]
-                                border border-solid border-gray-300 rounded transition
-                                ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5"
+                            <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_maxVolume" 
+                            title="Enter the max volume" name="maxVolume" step="0.1" class="audioDevice-pos-decimal-input"
                                 value="${this.maxVolume}"
                             >
                         </div>
@@ -181,47 +139,37 @@ class _audioDevice extends ui {
                     </div>
 
                     <!-- Destinations  -->
-                    <div class="w-full mb-1 mr-4">
+                    <div class="w-full mb-2 mr-4">
                         <label for="${this._uuid}_destinations" class="form-label inline-block mb-2">Destinations:</label>
                             <textarea
-                                class="max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[27.5rem] text-base font-normal
-                                text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
-                                rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-                                focus:outline-none px-2 py-1"
-
+                                class="audioDevice-text-area"
                                 id="${this._uuid}_destinations"
                                 title="Enter the destinations, e.g. 'D1, D2, D3'"
-                                rows="1" 
-                                cols="3"
+                                rows="1" cols="3"
                                 placeholder="Example: Destination1, Destination2, Destination3"
                             ></textarea>
                     </div>
 
                     <!-- Solo Group  -->
-                    <div class="w-full mb-1 mr-4">
+                    <div class="w-full mb-2 mr-4">
                         <label for="${this._uuid}_soloGroup" class="form-label inline-block mb-2">Solo Group:</label>
                             <textarea
-                                class="max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[27.5rem] text-base font-normal
-                                text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
-                                rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-                                focus:outline-none px-2 py-1"
-
+                                class="audioDevice-text-area"
                                 id="${this._uuid}_soloGroup"
                                 title="Enter solo group name";
-                                rows="1" 
-                                cols="3"
+                                rows="1" cols="3"
                                 placeholder="Solo group name:"
                             ></textarea>
                     </div>
 
                     <!-- Show Volume Control Checkbox  --> 
-                    <div class="w-full mb-1 flex">
+                    <div class="w-full mb-2 flex">
                         <input type="checkbox" checked id="${this._uuid}_showVolumeControl" value="" class="mr-2 mt-1 h-4 w-4" />  
                         <label for="${this._uuid}_showVolumeControl" class="form-label inline-block">Show client volume control</label> 
                     </div>
 
                     <!-- Show Mute Control Checkbox  --> 
-                    <div class="w-full mb-1 flex">
+                    <div class="w-full mb-2 flex">
                         <input type="checkbox" checked id="${this._uuid}_showMuteControl" value="" class="mr-2 mt-1 h-4 w-4" />  
                         <label for="${this._uuid}_showMuteControl" class="form-label inline-block">Show client mute control</label>  
                     </div>
@@ -229,10 +177,8 @@ class _audioDevice extends ui {
                     <!-- Display Order  --> 
                     <div class="w-full mr-4 mt-1 flex">
                         <label for="${this._uuid}_displayOrder" class="form-label inline-block mb-2 mr-2">Display Order:</label>
-                        <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_displayOrder" title="Client display order" name="maxVolume" step="1" class="
-                            w-1/5 h-6 text-base font-normal text-[#75C4EB] bg-[#293548]
-                            border border-solid border-gray-300 rounded transition
-                            ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5 py-1"
+                        <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_displayOrder" 
+                            title="Client display order" name="maxVolume" step="1" class="audioDevice-pos-number-input"
                             value="${this.displayOrder}"
                         >
                     </div>
@@ -271,6 +217,7 @@ class _audioDevice extends ui {
 
         //Set initial mute status
         this._setMute();
+        this._channels.value = this.channels;
 
         //Event subscriptions
         this._control_button.addEventListener('click', (e) => {
@@ -327,7 +274,6 @@ class _audioDevice extends ui {
         this._displayOrder.addEventListener('change', (e) => {
             this.displayOrder = Number.parseInt(this._displayOrder.value);
         });
-
 
         // Add VU meter
         this.SetData({
@@ -424,5 +370,4 @@ class _audioDevice extends ui {
     _setDestinations(){
         this._destinations.value = this.destinations.join(', ');
     }
-
 }
