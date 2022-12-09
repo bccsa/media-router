@@ -13,7 +13,7 @@ class AudioOutput extends _audioDevice {
                 <textarea
                     class="audioDevice-text-area"
                     id="${this._uuid}_device"
-                    title="Enter the Device"
+                    title="ALSA Device name - see aplay -L (Default = default)"
                     rows="1" cols="3"
                     placeholder="Your device"
                 >${this.device}</textarea>
@@ -22,7 +22,7 @@ class AudioOutput extends _audioDevice {
         <!-- Buffer Size  -->    
         <div class="w-1/4 mr-3">
             <label for="${this._uuid}_bufferSize" class="form-label inline-block mb-2">Buffer Size:</label>
-            <select id="${this._uuid}_bufferSize" title="Choose the buffer size" value="${this.bufferSize}" 
+            <select id="${this._uuid}_bufferSize" title="ALSA buffer size in bytes (Default = 64)" value="${this.bufferSize}" 
             name="bufferSize" class="audioDevice-select" type="text">
                 <option value="64">64</option>
                 <option value="128">128</option>

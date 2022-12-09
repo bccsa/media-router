@@ -13,27 +13,34 @@ class AudioInput extends _audioInputDevice {
                 <textarea
                     class="audioDevice-text-area"
                     id="${this._uuid}_device"
-                    title="Enter the Device"
+                    title="ALSA Device name - see aplay -L (Default = default)"
                     rows="1" cols="3"
                     placeholder="Your device"
                 >${this.device}</textarea>
         </div>
         
-        <!-- Buffer Size  -->    
-        <div class="w-1/4 mr-3">
-            <label for="${this._uuid}_bufferSize" class="form-label inline-block mb-2">Buffer Size:</label>
-            <select id="${this._uuid}_bufferSize" title="Choose the buffer size" value="${this.bufferSize}" 
-            name="bufferSize" class="audioDevice-select" type="text">
-                <option value="64">64</option>
-                <option value="128">128</option>
-                <option value="256">256</option>
-                <option value="512">512</option>
-                <option value="1024">1024</option>
-                <option value="2048">2048</option>
-                <option value="4096">4096</option>
-            </select>
-        </div>
+        <div class="w-full mb-1 flex ">
 
+            <!-- Buffer Size  -->    
+            <div class="w-1/4 mr-3">
+                <label for="${this._uuid}_bufferSize" class="form-label inline-block mb-2">Buffer Size:</label>
+                <select id="${this._uuid}_bufferSize" title="ALSA buffer size in bytes (Default = 64)" value="${this.bufferSize}" 
+                name="bufferSize" class="audioDevice-select" type="text">
+                    <option value="64">64</option>
+                    <option value="128">128</option>
+                    <option value="256">256</option>
+                    <option value="512">512</option>
+                    <option value="1024">1024</option>
+                    <option value="2048">2048</option>
+                    <option value="4096">4096</option>
+                </select>
+            </div>
+
+            <div class="w-1/4 mr-3"></div>
+            <div class="w-1/4 mr-3"></div>
+            <div class="w-1/4"></div>
+
+        </div>
         `);
     }
 

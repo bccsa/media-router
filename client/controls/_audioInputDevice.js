@@ -12,7 +12,8 @@ class _audioInputDevice extends _audioDevice {
                 <textarea
                     class="audioDevice-text-area"
                     id="${this._uuid}_destinations"
-                    title="Enter the destinations, e.g. 'D1, D2, D3'"
+                    title="Array of strings with destination device name(s)
+(Enter the destinations, e.g. 'D1, D2, D3')"
                     rows="1" cols="3"
                     placeholder="Example: Destination1, Destination2, Destination3"
                 >${this.destinations.join(', ')}</textarea>
@@ -28,8 +29,6 @@ class _audioInputDevice extends _audioDevice {
     Init() {
         super.Init();
         this._destinations = document.getElementById(`${this._uuid}_destinations`);
-
-        // Set initial values 
 
         //Event subscriptions
         this._destinations.addEventListener('change', (e) => {

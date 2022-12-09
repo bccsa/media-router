@@ -11,13 +11,13 @@ const _audioInputDevice = require('./_audioInputDevice');
  * SRT Opus audio input 
  * @extends _audioInputDevice
  * @property {String} srtHost - SRT host name / ip address
- * @property {String} srtPort - SRT mode (caller, listener, rendezvous)
- * @property {Number} srtMode - SRT encryption key length (16, 32)
- * @property {Number} srtPbKeyLen - SRT port
+ * @property {Number} srtPort - SRT port
+ * @property {String} srtMode - SRT mode (caller, listener, rendezvous)
+ * @property {Number} srtPbKeyLen - SRT encryption key length (16, 32)
  * @property {String} srtPassphrase - SRT encryption passphrase
  * @property {Number} srtLatency - SRT latency in milliseconds
- * @property {String} srtStreamID - SRT Stream ID
  * @property {Number} srtMaxBw - SRT Max Bandwidth in bytes per second
+ * @property {String} srtStreamID - SRT Stream ID
  */
 class SrtOpusInput extends _audioInputDevice {
     constructor() {

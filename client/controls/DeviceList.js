@@ -89,7 +89,7 @@ class DeviceList extends ui {
                                     class="deviceList-text-area"
                                     id="${this._uuid}_description" rows="3"
                                     placeholder="Your description"
-                                    title="Enter a description"
+                                    title="Device List description"
                                 >${this.description}</textarea>
                             </div>
                         </div>
@@ -100,7 +100,7 @@ class DeviceList extends ui {
                                 <label for="${this._uuid}_autoStartDelay" class="form-label inline-block"
                                 >Auto Start Delay: </label>
 
-                                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_autoStartDelay" title="Set the delay in ms" name="maxVolume" step="1" class="
+                                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_autoStartDelay" title="Set the delay in milliseconds" name="maxVolume" step="1" class="
                                 h-6 text-base font-normal text-gray-700 bg-white
                                 border border-solid border-gray-300 rounded transition
                                 ease-in-out focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none pl-3 py-1.5 w-full"
