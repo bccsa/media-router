@@ -14,7 +14,7 @@
     @apply grid grid-cols-3 mt-1 mb-1 pl-4 w-full h-14
 }
 
-.btn-mute {
+.audioDevice-btn-mute {
     @apply h-10 w-20 inline-block px-6 py-2.5 leading-tight
     uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
     focus:ring-0 transition duration-150 ease-in-out;
@@ -54,6 +54,8 @@
 
 /*-------------------------*/
 
+
+/* Device List css */
 .deviceList-main-card {
     @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden bg-white rounded-lg text-black border-solid border border-b-[#DADBDC];
 }
@@ -91,7 +93,7 @@
     @apply form-control block w-full px-3 py-1.5
     text-base font-normal text-gray-700 bg-white bg-clip-padding
     border border-solid border-gray-300 rounded transition
-    ease-in-out max-h-40 min-h-[2rem]
+    ease-in-out max-h-40 min-h-[2.4rem]
     focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
 

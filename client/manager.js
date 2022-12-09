@@ -1,27 +1,30 @@
 var controls = new uiTopLevelContainer('../controls', 'controls');
 
-if (!controls._getDynamicClass("_audioDevice")) {
-    controls.LoadScript("_audioDevice" + ".js");
-}
+let pList = [];
+pList.push(controls.LoadScript("_audioDevice" + ".js"));
+pList.push(controls.LoadScript("AudioInputDevice" + ".js"));
 
-controls.SetData({
+Promise.all(pList).then(() => {
+    controls.SetData({
     
-    DeviceList1: {
-        controlType: "DeviceList",
-            
-        AudioInput_SCC_Pulpit:{
-            controlType: "AudioInput"
-        },
-
-        AudioInput_ENG:{
-            controlType: "AudioInput"
-        },
-
-        AudioInput_FRA:{
-            controlType: "AudioInput"
+        DeviceList1: {
+            controlType: "DeviceList",
+                
+            AudioInput_SCC_Pulpit:{
+                controlType: "AudioInputDevice"
+            },
+    
+            AudioInput_ENG:{
+                controlType: "AudioInputDevice"
+            },
+    
+            AudioInput_FRA:{
+                controlType: "AudioInputDevice"
+            }
         }
-    }
+    });
 });
+
 
 // function toggleContainer(uuidContainer,uuidButton) {
 //     var container = document.getElementById(uuidContainer);

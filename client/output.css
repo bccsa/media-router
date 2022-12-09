@@ -5143,7 +5143,7 @@ textarea.form-control.is-invalid {
   padding-left: 1rem;
 }
 
-.btn-mute {
+.audioDevice-btn-mute {
   display: inline-block;
   height: 2.5rem;
   width: 5rem;
@@ -5161,7 +5161,7 @@ textarea.form-control.is-invalid {
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.btn-mute:hover {
+.audioDevice-btn-mute:hover {
   --tw-bg-opacity: 1;
   background-color: rgb(22 163 74 / var(--tw-bg-opacity));
   --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
@@ -5169,7 +5169,7 @@ textarea.form-control.is-invalid {
   box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 }
 
-.btn-mute:focus {
+.audioDevice-btn-mute:focus {
   --tw-bg-opacity: 1;
   background-color: rgb(22 163 74 / var(--tw-bg-opacity));
   --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
@@ -5745,6 +5745,8 @@ textarea.audioDevice-text-area.is-invalid {
 
 /*-------------------------*/
 
+/* Device List css */
+
 .deviceList-main-card {
   margin: 0.5rem;
   width: auto;
@@ -6258,7 +6260,7 @@ textarea.deviceList-text-area.is-invalid {
 .deviceList-text-area {
   display: block;
   max-height: 10rem;
-  min-height: 2rem;
+  min-height: 2.4rem;
   width: 100%;
   border-radius: 0.25rem;
   border-width: 1px;

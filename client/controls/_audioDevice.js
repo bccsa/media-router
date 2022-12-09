@@ -1,8 +1,12 @@
+/**
+ * This class should only be used as a super class for Audio devices.
+ * Additional HTML content should be added through super.html.replace('%additionalHtml%','Your additional HTML');
+ * Also run super.Init() in the overridden Init() function.
+ */
 class _audioDevice extends ui {
     constructor() {
         super();
         this._styles.push('_audioDevice.css');
-        
         this.level = 0;
         this.mute = true;
         this.description = "";
@@ -11,13 +15,13 @@ class _audioDevice extends ui {
         this.sampleRate = 48000;
         this.bitDepth = 16;
         this.maxVolume = 1.5;
+
         this.destinations = ["Destination1","Destination2","Destination3"]; // Split with comma from string
+
         this.soloGroup = "";
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;
-
-        this.device = 'default';
         this.peak = 0;
     }
 
@@ -42,7 +46,7 @@ class _audioDevice extends ui {
 
                             <!-- Mute Button -->
                             <div class="ml-[10.5rem] mt-2">
-                                <button id="${this._uuid}_control_button" type="button" title="Mute Button" class="btn-mute">
+                                <button id="${this._uuid}_control_button" type="button" title="Mute Button" class="audioDevice-btn-mute">
                                     <span id="${this._uuid}_control_button_text">OFF</span>
                                 </button>
                             </div>
@@ -98,7 +102,7 @@ class _audioDevice extends ui {
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_channels" class="form-label inline-block mb-2">Channels:</label>
                                 <div class="mb-3 w-full">
-                                    <select id="${this._uuid}_channels" title="Choose the channel" selected="${this.channels}" 
+                                    <select id="${this._uuid}_channels" title="Choose the channel" value="${this.channels}" 
                                     name="channel" class="audioDevice-select" type="text">
                                     <option value="1">1</option>
                                     <option value="2">2</option>
@@ -182,7 +186,9 @@ class _audioDevice extends ui {
                             value="${this.displayOrder}"
                         >
                     </div>
-                    <div id="${this._uuid}_controlsDiv"/>
+
+                    <!-- Additional controls  --> 
+                    %additionalHtml%
                 </div>  
             </details> 
 
@@ -212,8 +218,6 @@ class _audioDevice extends ui {
         this._showVolumeControl = document.getElementById(`${this._uuid}_showVolumeControl`);
         this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
         this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
-
-        this._controlsDiv = document.getElementById(`${this._uuid}_controlsDiv`);
 
         //Set initial mute status
         this._setMute();
