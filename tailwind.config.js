@@ -11,6 +11,7 @@ module.exports = {
         'cog_solid': "url('./controls/img/cog_solid.svg')",
         'circle_xmark_solid_blue': "url('./controls/img/circle_xmark_solid_blue.svg')",
         'xmark': "url('./controls/img/xmark.svg')",
+        'cog_outline': "url('./controls/img/cog_outline.svg')",
       }
     }
   }

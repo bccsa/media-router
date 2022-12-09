@@ -1,3 +1,104 @@
 @tailwind base;
 @tailwind components;
+
+/* Audio Device css */
+.audioDevice-main-card {
+    @apply select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
+}
+
+.audioDevice-summary-container {
+    @apply list-none flex items-center cursor-pointer first-letter:focus-visible:outline-none focus-visible:ring focus-visible:ring-pink-500 rounded group-open:rounded-b-none group-open:z-10 relative;
+}
+
+.audioDevice-heading {
+    @apply grid grid-cols-3 mt-1 mb-1 pl-4 w-full h-14
+}
+
+.audioDevice-btn-mute {
+    @apply h-10 w-20 inline-block px-6 py-2.5 leading-tight
+    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
+    focus:ring-0 transition duration-150 ease-in-out;
+}
+
+.audioDevice-toggle-arrow {
+    @apply border-8 border-transparent border-l-white mr-1 mt-1
+    group-open/audioDevice:rotate-90 transition-transform origin-left;
+}
+
+.audioDevice-text-area {
+    @apply max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[28rem] text-sm font-normal
+    text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
+    rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
+    focus:outline-none px-2 py-1
+}
+
+.audioDevice-select {
+   @apply form-select h-[1.625rem]
+   w-full text-sm font-normal text-[#75C4EB] bg-[#293548]
+   border border-solid border-gray-300 rounded transition
+   ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5; 
+}
+
+.audioDevice-pos-decimal-input {
+   @apply w-full text-sm font-normal text-[#75C4EB] bg-[#293548]
+   border border-solid border-gray-300 rounded transition
+   ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5 h-[1.625rem]; 
+}
+
+.audioDevice-pos-number-input {
+    @apply 
+    w-1/5 h-6 text-sm font-normal text-[#75C4EB] bg-[#293548]
+    border border-solid border-gray-300 rounded transition
+    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
+}
+
+/*-------------------------*/
+
+
+/* Device List css */
+.deviceList-main-card {
+    @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden bg-white rounded-lg text-black border-solid border border-b-[#DADBDC];
+}
+
+.deviceList-heading {
+    @apply flex flex-row mt-1 mb-1 pl-2 w-full h-10;
+}
+
+.deviceList-toggle {
+    @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-white bg-no-repeat bg-contain bg-gray-300
+    focus:outline-none cursor-pointer shadow-sm;
+}
+
+.deviceList-toggle-arrow {
+    @apply mb-[0.75rem] border-8 border-transparent border-l-black ml-4 mt-1 group-open:rotate-90 transition-transform origin-left self-center;
+}
+
+.deviceList-btn-settings{
+    @apply ml-4 bg-cog_outline bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
+    duration-150 ease-in-out w-[1.39rem] h-[1.39rem] m-1;
+}
+
+.deviceList-settingsContainer {
+    @apply bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-auto h-auto ml-4 max-w-xs mt-[0.05rem] ease-in-out hidden;
+}
+
+.deviceList-btn-exit{
+    @apply bg-xmark ml-4 bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
+    duration-150 ease-in-out w-8 h-8;
+}
+
+.deviceList-text-area {
+    @apply form-control block w-full px-3 py-1.5
+    text-base font-normal text-gray-700 bg-white bg-clip-padding
+    border border-solid border-gray-300 rounded transition
+    ease-in-out max-h-40 min-h-[2.4rem]
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+}
+
+/* . {
+    @apply ;
+} */
+
 @tailwind utilities;

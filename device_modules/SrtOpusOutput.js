@@ -12,7 +12,7 @@ const _audioOutputDevice = require('./_audioOutputDevice');
  * @extends _audioOutputDevice
  * @property {Number} udpSocketPort - Unique UDP socket port used internally for transfer of data between ffmpeg and srt-live-transmit.
  * @property {String} srtHost - SRT host name / ip address
- * @property {String} srtPort - SRT mode (caller, listener, rendevouz)
+ * @property {String} srtPort - SRT mode (caller, listener, rendezvous)
  * @property {Number} srtMode - SRT encryption key length (16, 32)
  * @property {Number} srtPbKeyLen - SRT port
  * @property {String} srtPassphrase - SRT encryption passphrase

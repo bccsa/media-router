@@ -31,7 +31,8 @@ class AudioInput extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="select-none ml-4 mt-2 w-[30rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border-1 border-b-[#75C4EB]">
+        <div class="select-none ml-4 mt-2 w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border-1 border-b-[#75C4EB]">
+        
 
             <details class="shadow rounded group">
                 <summary class="list-none flex items-center cursor-pointer
@@ -126,7 +127,7 @@ class AudioInput extends ui {
                     <div class="w-full mb-1 flex ">
 
                         <!-- Channels  -->
-                        <div class="w-1/4 mr-4">
+                        <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_channels" class="form-label inline-block mb-2">Channels:</label>
                                 <div class="mb-3 w-full">
                                     <select id="${this._uuid}_channels" title="Choose the channel" value="${this.channels}" name="channel" class="form-select
@@ -141,7 +142,7 @@ class AudioInput extends ui {
                         </div>
                         
                         <!-- SampleRate  -->
-                        <div class="w-1/4 mr-4">
+                        <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_sampleRate" class="form-label inline-block mb-2">Sample Rate:</label>
                             <select id="${this._uuid}_sampleRate" title="Choose the sample rate" value="${this.sampleRate}" name="sampleRate" class="form-select
                                 w-full text-base font-normal text-[#75C4EB] bg-[#293548]
@@ -153,7 +154,7 @@ class AudioInput extends ui {
                         </div>
 
                         <!-- BitDepth  -->    
-                        <div class="w-1/4 mr-4">
+                        <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_bitDepth" class="form-label inline-block mb-2">Bit Depth:</label>
                             <select id="${this._uuid}_bitDepth" title="Choose the bit depth" value="${this.bitDepth}" name="bitDepth" class="form-select
                                 w-full text-base font-normal text-[#75C4EB] bg-[#293548]
@@ -234,6 +235,7 @@ class AudioInput extends ui {
                             value="${this.displayOrder}"
                         >
                     </div>
+                    <div id="${this._uuid}_controlsDiv"/>
                 </div>  
             </details> 
 
@@ -264,6 +266,7 @@ class AudioInput extends ui {
         this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
         this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
 
+        this._controlsDiv = document.getElementById(`${this._uuid}_controlsDiv`);
 
         //Set initial mute status
         this._setMute();
