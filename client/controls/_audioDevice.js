@@ -11,13 +11,10 @@ class _audioDevice extends ui {
         this.mute = true;
         this.description = "";
         this.volume = 1;
-        this.channels = 2;
+        this.channels = 1;
         this.sampleRate = 48000;
         this.bitDepth = 16;
         this.maxVolume = 1.5;
-
-        this.destinations = ["Destination1","Destination2","Destination3"]; // Split with comma from string
-
         this.soloGroup = "";
         this.showVolumeControl = true;
         this.showMuteControl = true;
@@ -142,18 +139,6 @@ class _audioDevice extends ui {
 
                     </div>
 
-                    <!-- Destinations  -->
-                    <div class="w-full mb-2 mr-4">
-                        <label for="${this._uuid}_destinations" class="form-label inline-block mb-2">Destinations:</label>
-                            <textarea
-                                class="audioDevice-text-area"
-                                id="${this._uuid}_destinations"
-                                title="Enter the destinations, e.g. 'D1, D2, D3'"
-                                rows="1" cols="3"
-                                placeholder="Example: Destination1, Destination2, Destination3"
-                            ></textarea>
-                    </div>
-
                     <!-- Solo Group  -->
                     <div class="w-full mb-2 mr-4">
                         <label for="${this._uuid}_soloGroup" class="form-label inline-block mb-2">Solo Group:</label>
@@ -163,18 +148,18 @@ class _audioDevice extends ui {
                                 title="Enter solo group name";
                                 rows="1" cols="3"
                                 placeholder="Solo group name:"
-                            ></textarea>
+                            >${this.soloGroup}</textarea>
                     </div>
 
                     <!-- Show Volume Control Checkbox  --> 
                     <div class="w-full mb-2 flex">
-                        <input type="checkbox" checked id="${this._uuid}_showVolumeControl" value="" class="mr-2 mt-1 h-4 w-4" />  
+                        <input type="checkbox" checked id="${this._uuid}_showVolumeControl" value="${this.showVolumeControl}" class="mr-2 mt-1 h-4 w-4" />  
                         <label for="${this._uuid}_showVolumeControl" class="form-label inline-block">Show client volume control</label> 
                     </div>
 
                     <!-- Show Mute Control Checkbox  --> 
                     <div class="w-full mb-2 flex">
-                        <input type="checkbox" checked id="${this._uuid}_showMuteControl" value="" class="mr-2 mt-1 h-4 w-4" />  
+                        <input type="checkbox" checked id="${this._uuid}_showMuteControl" value="${this.showMuteControl}" class="mr-2 mt-1 h-4 w-4" />  
                         <label for="${this._uuid}_showMuteControl" class="form-label inline-block">Show client mute control</label>  
                     </div>
 
@@ -212,16 +197,21 @@ class _audioDevice extends ui {
         this._bitDepth = document.getElementById(`${this._uuid}_bitDepth`);
         this._maxVolume = document.getElementById(`${this._uuid}_maxVolume`);
 
-        this._destinations = document.getElementById(`${this._uuid}_destinations`);
         this._soloGroup = document.getElementById(`${this._uuid}_soloGroup`);
 
         this._showVolumeControl = document.getElementById(`${this._uuid}_showVolumeControl`);
         this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
         this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
 
-        //Set initial mute status
+        //Set initial values
         this._setMute();
         this._channels.value = this.channels;
+        this._sampleRate.value = this.sampleRate;
+        this._bitDepth.value = this.bitDepth;
+        this._showVolumeControl.checked = this.showVolumeControl;
+        this._showMuteControl.checked = this.showMuteControl;
+
+
 
         //Event subscriptions
         this._control_button.addEventListener('click', (e) => {
@@ -255,10 +245,6 @@ class _audioDevice extends ui {
             this.maxVolume = Number.parseFloat(this._maxVolume.value);
             this._volume_slider.max = this.maxVolume;
             this.showSliderValue();
-        });
-
-        this._destinations.addEventListener('change', (e) => {
-            this.destinations = this._destinations.value.split(', ');
         });
 
         this._soloGroup.addEventListener('change', (e) => {
@@ -325,20 +311,16 @@ class _audioDevice extends ui {
             this._maxVolume.value = maxVolume;
         });
 
-        this.on('destinations', () => {
-            this._setDestinations()
-        });
-
         this.on('soloGroup', soloGroup => {
             this._soloGroup.value = soloGroup;
         });
 
         this.on('showVolumeControl', showVolumeControl => {
-            this._showVolumeControl.value = showVolumeControl;
+            this._showVolumeControl.checked = showVolumeControl;
         });
 
         this.on('showMuteControl', showMuteControl => {
-            this._showMuteControl.value = showMuteControl;
+            this._showMuteControl.checked = showMuteControl;
         });
 
         this.on('displayOrder', displayOrder => {
@@ -369,9 +351,5 @@ class _audioDevice extends ui {
 
     showSliderValue() {
         this._rangeBullet.innerHTML = Math.round(this._volume_slider.value * 100) + " %";
-    }
-
-    _setDestinations(){
-        this._destinations.value = this.destinations.join(', ');
     }
 }

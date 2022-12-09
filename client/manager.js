@@ -2,7 +2,10 @@ var controls = new uiTopLevelContainer('../controls', 'controls');
 
 let pList = [];
 pList.push(controls.LoadScript("_audioDevice" + ".js"));
-pList.push(controls.LoadScript("AudioInputDevice" + ".js"));
+Promise.all(pList).then(() => {
+pList.push(controls.LoadScript("_audioInputDevice" + ".js"));
+// pList.push(controls.LoadScript("AudioInput" + ".js"));
+// pList.push(controls.LoadScript("AudioOutput" + ".js"));
 
 Promise.all(pList).then(() => {
     controls.SetData({
@@ -11,18 +14,19 @@ Promise.all(pList).then(() => {
             controlType: "DeviceList",
                 
             AudioInput_SCC_Pulpit:{
-                controlType: "AudioInputDevice"
+                controlType: "AudioInput"
             },
     
             AudioInput_ENG:{
-                controlType: "AudioInputDevice"
+                controlType: "AudioInput"
             },
     
             AudioInput_FRA:{
-                controlType: "AudioInputDevice"
+                controlType: "AudioInput"
             }
         }
     });
+});
 });
 
 

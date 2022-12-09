@@ -90,7 +90,7 @@ class DeviceList extends ui {
                                     id="${this._uuid}_description" rows="3"
                                     placeholder="Your description"
                                     title="Enter a description"
-                                ></textarea>
+                                >${this.description}</textarea>
                             </div>
                         </div>
 
@@ -132,7 +132,10 @@ class DeviceList extends ui {
         this._autoStartDelay = document.getElementById(`${this._uuid}_autoStartDelay`);
         this._autoStart = document.getElementById(`${this._uuid}_autoStart`);
 
+        // Set initial values
         this._toggleSettingContainer();
+        this._switchOnOff.checked = this.run;
+        this._autoStart.checked = this.autoStart;
 
         // Event subscriptions
         this._switchOnOff.addEventListener("click", () => {
@@ -163,7 +166,7 @@ class DeviceList extends ui {
         // Handle property changes
 
         this.on('run', run => {
-            this._switchOnOff.value = run;
+            this._switchOnOff.checked = run;
         });
 
         this.on('description', description => {
@@ -175,7 +178,7 @@ class DeviceList extends ui {
         });
 
         this.on('autoStart', autoStart => {
-            this._autoStart.value = autoStart;
+            this._autoStart.checked = autoStart;
         });
     }
 

@@ -1,4 +1,4 @@
-class AudioInputDevice extends _audioDevice {
+class AudioOutput extends _audioDevice {
     constructor() {
         super();
         this.device = "New Device";

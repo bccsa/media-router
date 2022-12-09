@@ -1,4 +1,4 @@
-class AudioOutputDevice extends _audioDevice {
+class AudioInput extends _audioInputDevice {
     constructor() {
         super();
         this.device = "New Device";
@@ -33,6 +33,7 @@ class AudioOutputDevice extends _audioDevice {
                 <option value="4096">4096</option>
             </select>
         </div>
+
         `);
     }
 
@@ -41,6 +42,9 @@ class AudioOutputDevice extends _audioDevice {
         super.Init();
         this._device = document.getElementById(`${this._uuid}_device`);
         this._bufferSize = document.getElementById(`${this._uuid}_bufferSize`);
+
+        // Set initial values
+        this._bufferSize.value = this.bufferSize; 
 
         //Event subscriptions
         this._device.addEventListener('change', (e) => {
