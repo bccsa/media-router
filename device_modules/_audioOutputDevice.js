@@ -1,5 +1,5 @@
 // =====================================
-// Base class for output devices
+// Base class for audio output devices
 // 
 //
 // Copyright BCC South Africa
@@ -9,9 +9,8 @@
 // External libraries
 // -------------------------------------
 
-const _device = require('./_device');
+const _audioDevice = require('./_audioDevice');
 const _audioInputDevice = require('./_audioInputDevice');
-const ReadableStreamClone = require("readable-stream-clone");
 const Mixer = require('../submodules/audio-mixer/index');
 
 // -------------------------------------
@@ -21,28 +20,10 @@ const Mixer = require('../submodules/audio-mixer/index');
 /**
  * Base class for audio output modules. The _audioOutputDevice accepts multiple input streams, and implements an audio mixer.
  * @extends _device
- * @property {number} bitDepth - Audio bit depth (default = 14)
- * @property {number} channels - Audio channel number (default = 1)
- * @property {number} sampleRate - Audio sample rate (default = 48000)
- * @property {number} volume - Audio volume (1 = unity gain)
- * @property {number} maxVolume - Maximum volume that the client WebApp can request
- * @property {number} showVolumeControl - Indicates that the front end should show the volume control
- * @property {number} showMuteControl - Indicates that the front end should show the mute control
- * @property {number} displayOrder - Display order in the client WebApp.
  */
-class _audioOutputDevice extends _device {
+class _audioOutputDevice extends _audioDevice {
     constructor() {
         super();
-        this.channels = 1;
-        this.sampleRate = 48000;
-        this.bitDepth = 16;
-        this.volume = 1;
-        this.maxVolume = 1.5;
-        this.mute = false;
-        this.showVolumeControl = true;
-        this.showMuteControl = true;
-        this.displayOrder = 0;
-        this.clientControl = "client_AudioInputDevice";
 
         this._inputs = [];
         this._mixer = new Mixer({
@@ -111,8 +92,6 @@ class _audioOutputDevice extends _device {
             });
 
             // Pipe device output stream to mixer input
-            // const c = new ReadableStreamClone(device.stdout);
-            // c.pipe(input);
             device.stdout.on('data', data => {
                 input.write(data)
             })

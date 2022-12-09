@@ -1,6 +1,5 @@
 // =====================================
-// Base class for input devices. Includes
-// an AudioMixer.Input
+// Base class for audio input devices
 //
 // Copyright BCC South Africa
 // =====================================
@@ -9,7 +8,7 @@
 // External libraries
 // -------------------------------------
 
-const _device = require('./_device');
+const _audioDevice = require('./_audioDevice');
 const { PassThrough } = require('stream');
 
 // -------------------------------------
@@ -18,34 +17,13 @@ const { PassThrough } = require('stream');
 
 /**
  * Base class for audio input modules
- * @extends _device
- * @property {number} bitDepth - Audio bit depth (default = 14)
- * @property {number} channels - Audio channel number (default = 1)
- * @property {number} sampleRate - Audio sample rate (default = 48000)
+ * @extends _audioDevice
  * @property {array} destinations - Array of strings with destination device name(s)
- * @property {number} volume - Audio volume (1 = unity gain)
- * @property {number} maxVolume - Maximum volume that the client WebApp can request
- * @property {number} soloGroup - If not blank, mutes all AudioMixerInputs with the same soloGroup text.
- * @property {number} mute - If true, reduces the audio volume to zero.
- * @property {number} showVolumeControl - Indicates that the front end should show the volume control
- * @property {number} showMuteControl - Indicates that the front end should show the mute control
- * @property {number} displayOrder - Display order in the client WebApp.
  */
-class _audioInputDevice extends _device {
+class _audioInputDevice extends _audioDevice {
     constructor() {
         super();
         this.stdout = new PassThrough();
-        this.channels = 1;
-        this.sampleRate = 48000;
-        this.bitDepth = 16;
-        this.volume = 1;
-        this.maxVolume = 1.5;
-        this.soloGroup = "";
-        this.mute = true;
-        this.showVolumeControl = true;
-        this.showMuteControl = true;
-        this.displayOrder = 0;
-        this.clientControl = "client_AudioInputDevice";
         this.destinations = ["Destination device name"];
 
         // Find the destination device after 100ms
@@ -54,15 +32,6 @@ class _audioInputDevice extends _device {
                 this._findDestination(destinationName);
             });
         }, 100);
-
-        // Mute all other _audioInputDevice modules (with the same parent) in the solo group
-        this.on('mute', mute => {
-            if (!mute && this.soloGroup) {
-                Object.values(this._parent.controls).filter(c => c.soloGroup == this.soloGroup).forEach(device => {
-                    if (device.name != this.name && !device.mute) device.mute = true;
-                });
-            }
-        });
     }
 
     // find the destination device
