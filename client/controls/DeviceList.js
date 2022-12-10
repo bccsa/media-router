@@ -89,8 +89,8 @@ class DeviceList extends ui {
                                     class="deviceList-text-area"
                                     id="${this._uuid}_description" rows="3"
                                     placeholder="Your description"
-                                    title="Enter a description"
-                                ></textarea>
+                                    title="Device List description"
+                                >${this.description}</textarea>
                             </div>
                         </div>
 
@@ -100,7 +100,7 @@ class DeviceList extends ui {
                                 <label for="${this._uuid}_autoStartDelay" class="form-label inline-block"
                                 >Auto Start Delay: </label>
 
-                                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_autoStartDelay" title="Set the delay in ms" name="maxVolume" step="1" class="
+                                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_autoStartDelay" title="Set the delay in milliseconds" name="maxVolume" step="1" class="
                                 h-6 text-base font-normal text-gray-700 bg-white
                                 border border-solid border-gray-300 rounded transition
                                 ease-in-out focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none pl-3 py-1.5 w-full"
@@ -132,7 +132,10 @@ class DeviceList extends ui {
         this._autoStartDelay = document.getElementById(`${this._uuid}_autoStartDelay`);
         this._autoStart = document.getElementById(`${this._uuid}_autoStart`);
 
+        // Set initial values
         this._toggleSettingContainer();
+        this._switchOnOff.checked = this.run;
+        this._autoStart.checked = this.autoStart;
 
         // Event subscriptions
         this._switchOnOff.addEventListener("click", () => {
@@ -163,7 +166,7 @@ class DeviceList extends ui {
         // Handle property changes
 
         this.on('run', run => {
-            this._switchOnOff.value = run;
+            this._switchOnOff.checked = run;
         });
 
         this.on('description', description => {
@@ -175,7 +178,7 @@ class DeviceList extends ui {
         });
 
         this.on('autoStart', autoStart => {
-            this._autoStart.value = autoStart;
+            this._autoStart.checked = autoStart;
         });
     }
 

@@ -11,13 +11,10 @@ class _audioDevice extends ui {
         this.mute = true;
         this.description = "";
         this.volume = 1;
-        this.channels = 2;
+        this.channels = 1;
         this.sampleRate = 48000;
         this.bitDepth = 16;
         this.maxVolume = 1.5;
-
-        this.destinations = ["Destination1","Destination2","Destination3"]; // Split with comma from string
-
         this.soloGroup = "";
         this.showVolumeControl = true;
         this.showMuteControl = true;
@@ -46,7 +43,7 @@ class _audioDevice extends ui {
 
                             <!-- Mute Button -->
                             <div class="ml-[10.5rem] mt-2">
-                                <button id="${this._uuid}_control_button" type="button" title="Mute Button" class="audioDevice-btn-mute">
+                                <button id="${this._uuid}_control_button" type="button" title="If true, reduces the audio volume to zero." class="audioDevice-btn-mute">
                                     <span id="${this._uuid}_control_button_text">OFF</span>
                                 </button>
                             </div>
@@ -74,13 +71,25 @@ class _audioDevice extends ui {
                             >${this.description}</textarea>
                     </div>
 
+                    <!-- Solo Group  -->
+                    <div class="w-full mr-4">
+                        <label for="${this._uuid}_soloGroup" class="form-label inline-block mb-2">Solo Group:</label>
+                            <textarea
+                                class="audioDevice-text-area"
+                                id="${this._uuid}_soloGroup"
+                                title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
+                                rows="1" cols="3"
+                                placeholder="Solo group name:"
+                            >${this.soloGroup}</textarea>
+                    </div>
+
                     <!-- Volume Slider  -->
-                    <div class="w-full mb-2">
+                    <div class="w-full mb-2 flex flex-row items-end">
 
-                        <label for="${this._uuid}_volume" class="mt-6">Volume:</label>
+                        <label for="${this._uuid}_volume" class="mt-5 w-1/6">Volume:</label>
 
-                        <input type="range" list="${this._uuid}_tickMarks" id="${this._uuid}_volume_slider" title="Audio volume" 
-                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mt-2 w-64 bg-[#293548] text-[#75C4EB]" 
+                        <input type="range" list="${this._uuid}_tickMarks" id="${this._uuid}_volume_slider" title="Audio volume (1 = unity gain)" 
+                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mr-4 mt-2 w-4/6 bg-[#293548] text-[#75C4EB]" 
                         oninput=""${this._uuid}_rangeValue".innerText=this.value">
                         
                         <datalist id="${this._uuid}_tickMarks">
@@ -92,7 +101,7 @@ class _audioDevice extends ui {
                             <option value="1.50"></option>
                         </datalist>
 
-                        <span id="${this._uuid}_rs-bullet" class="ml-2 mb-20">${this.volume*100} %</span>
+                        <label for="${this._uuid}_volume" id="${this._uuid}_rs-bullet" class="ml-2 w-1/6">${this.volume*100} %</label>
                           
                     </div>
 
@@ -102,7 +111,7 @@ class _audioDevice extends ui {
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_channels" class="form-label inline-block mb-2">Channels:</label>
                                 <div class="mb-3 w-full">
-                                    <select id="${this._uuid}_channels" title="Choose the channel" value="${this.channels}" 
+                                    <select id="${this._uuid}_channels" title="Audio channel number (default = 1)" value="${this.channels}" 
                                     name="channel" class="audioDevice-select" type="text">
                                     <option value="1">1</option>
                                     <option value="2">2</option>
@@ -113,7 +122,7 @@ class _audioDevice extends ui {
                         <!-- SampleRate  -->
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_sampleRate" class="form-label inline-block mb-2">Sample Rate:</label>
-                            <select id="${this._uuid}_sampleRate" title="Choose the sample rate" value="${this.sampleRate}" 
+                            <select id="${this._uuid}_sampleRate" title="Audio sample rate (default = 48000)" value="${this.sampleRate}" 
                             name="sampleRate" class="audioDevice-select" type="text">
                                 <option value="44100">44100 Hz</option>
                                 <option value="48000">48000 Hz</option>
@@ -123,7 +132,7 @@ class _audioDevice extends ui {
                         <!-- BitDepth  -->    
                         <div class="w-1/4 mr-3">
                             <label for="${this._uuid}_bitDepth" class="form-label inline-block mb-2">Bit Depth:</label>
-                            <select id="${this._uuid}_bitDepth" title="Choose the bit depth" value="${this.bitDepth}" 
+                            <select id="${this._uuid}_bitDepth" title="Audio bit depth (default = 16)" value="${this.bitDepth}" 
                             name="bitDepth" class="audioDevice-select" type="text">
                                 <option value="16">16</option>
                                 <option value="24">24</option>
@@ -135,56 +144,48 @@ class _audioDevice extends ui {
                         <div class="w-1/4">
                             <label for="${this._uuid}_maxVolume" class="form-label inline-block mb-2">Max Volume:</label>
                             <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_maxVolume" 
-                            title="Enter the max volume" name="maxVolume" step="0.1" class="audioDevice-pos-decimal-input"
+                            title="Maximum volume that the client WebApp can request" name="maxVolume" step="0.1" class="audioDevice-pos-decimal-input"
                                 value="${this.maxVolume}"
                             >
                         </div>
 
                     </div>
 
-                    <!-- Destinations  -->
-                    <div class="w-full mb-2 mr-4">
-                        <label for="${this._uuid}_destinations" class="form-label inline-block mb-2">Destinations:</label>
-                            <textarea
-                                class="audioDevice-text-area"
-                                id="${this._uuid}_destinations"
-                                title="Enter the destinations, e.g. 'D1, D2, D3'"
-                                rows="1" cols="3"
-                                placeholder="Example: Destination1, Destination2, Destination3"
-                            ></textarea>
-                    </div>
+                    <div class="w-full mb-1 flex ">
 
-                    <!-- Solo Group  -->
-                    <div class="w-full mb-2 mr-4">
-                        <label for="${this._uuid}_soloGroup" class="form-label inline-block mb-2">Solo Group:</label>
-                            <textarea
-                                class="audioDevice-text-area"
-                                id="${this._uuid}_soloGroup"
-                                title="Enter solo group name";
-                                rows="1" cols="3"
-                                placeholder="Solo group name:"
-                            ></textarea>
-                    </div>
+                        <!-- Show Volume Control Checkbox  --> 
+                        <div class="w-1/2 mr-2 mb-2 flex">
+                            <input type="checkbox" checked id="${this._uuid}_showVolumeControl" value="${this.showVolumeControl}" class="mr-2 mt-1 h-4 w-4" />  
+                            <label for="${this._uuid}_showVolumeControl" class="form-label inline-block" 
+                            title="Indicates that the front end should show the volume control">Show client volume control</label> 
+                        </div>
 
-                    <!-- Show Volume Control Checkbox  --> 
-                    <div class="w-full mb-2 flex">
-                        <input type="checkbox" checked id="${this._uuid}_showVolumeControl" value="" class="mr-2 mt-1 h-4 w-4" />  
-                        <label for="${this._uuid}_showVolumeControl" class="form-label inline-block">Show client volume control</label> 
-                    </div>
+                        <!-- Show Mute Control Checkbox  --> 
+                        <div class="w-1/2 mb-2 flex">
+                            <input type="checkbox" checked id="${this._uuid}_showMuteControl" value="${this.showMuteControl}" class="mr-2 mt-1 h-4 w-4" />  
+                            <label for="${this._uuid}_showMuteControl" class="form-label inline-block" 
+                            title="Indicates that the front end should show the mute control">Show client mute control</label>  
+                        </div>
 
-                    <!-- Show Mute Control Checkbox  --> 
-                    <div class="w-full mb-2 flex">
-                        <input type="checkbox" checked id="${this._uuid}_showMuteControl" value="" class="mr-2 mt-1 h-4 w-4" />  
-                        <label for="${this._uuid}_showMuteControl" class="form-label inline-block">Show client mute control</label>  
                     </div>
+                    
+                    <!-- Display Order  -->
+                    <div class="w-full mb-1 flex ">
 
-                    <!-- Display Order  --> 
-                    <div class="w-full mr-4 mt-1 flex">
-                        <label for="${this._uuid}_displayOrder" class="form-label inline-block mb-2 mr-2">Display Order:</label>
-                        <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_displayOrder" 
-                            title="Client display order" name="maxVolume" step="1" class="audioDevice-pos-number-input"
+                        <div class="w-1/4 mr-3">
+                            <label for="${this._uuid}_displayOrder" class="form-label inline-block mb-2">Display Order:</label>
+                        </div>
+            
+                        <div class="w-1/4 mr-3">
+                            <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_displayOrder" 
+                            title="Display order in the client WebApp." name="maxVolume" step="1" class="audioDevice-pos-number-input"
                             value="${this.displayOrder}"
-                        >
+                            >
+                        </div>
+
+                        <div class="w-1/4 mr-3"></div>
+                        <div class="w-1/4"></div>
+
                     </div>
 
                     <!-- Additional controls  --> 
@@ -212,16 +213,21 @@ class _audioDevice extends ui {
         this._bitDepth = document.getElementById(`${this._uuid}_bitDepth`);
         this._maxVolume = document.getElementById(`${this._uuid}_maxVolume`);
 
-        this._destinations = document.getElementById(`${this._uuid}_destinations`);
         this._soloGroup = document.getElementById(`${this._uuid}_soloGroup`);
 
         this._showVolumeControl = document.getElementById(`${this._uuid}_showVolumeControl`);
         this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
         this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
 
-        //Set initial mute status
+        //Set initial values
         this._setMute();
         this._channels.value = this.channels;
+        this._sampleRate.value = this.sampleRate;
+        this._bitDepth.value = this.bitDepth;
+        this._showVolumeControl.checked = this.showVolumeControl;
+        this._showMuteControl.checked = this.showMuteControl;
+
+
 
         //Event subscriptions
         this._control_button.addEventListener('click', (e) => {
@@ -255,10 +261,6 @@ class _audioDevice extends ui {
             this.maxVolume = Number.parseFloat(this._maxVolume.value);
             this._volume_slider.max = this.maxVolume;
             this.showSliderValue();
-        });
-
-        this._destinations.addEventListener('change', (e) => {
-            this.destinations = this._destinations.value.split(', ');
         });
 
         this._soloGroup.addEventListener('change', (e) => {
@@ -325,20 +327,16 @@ class _audioDevice extends ui {
             this._maxVolume.value = maxVolume;
         });
 
-        this.on('destinations', () => {
-            this._setDestinations()
-        });
-
         this.on('soloGroup', soloGroup => {
             this._soloGroup.value = soloGroup;
         });
 
         this.on('showVolumeControl', showVolumeControl => {
-            this._showVolumeControl.value = showVolumeControl;
+            this._showVolumeControl.checked = showVolumeControl;
         });
 
         this.on('showMuteControl', showMuteControl => {
-            this._showMuteControl.value = showMuteControl;
+            this._showMuteControl.checked = showMuteControl;
         });
 
         this.on('displayOrder', displayOrder => {
@@ -369,9 +367,5 @@ class _audioDevice extends ui {
 
     showSliderValue() {
         this._rangeBullet.innerHTML = Math.round(this._volume_slider.value * 100) + " %";
-    }
-
-    _setDestinations(){
-        this._destinations.value = this.destinations.join(', ');
     }
 }

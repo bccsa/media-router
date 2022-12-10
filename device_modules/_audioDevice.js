@@ -17,7 +17,7 @@ const _device = require('./_device');
 /**
  * Base class for audio input modules
  * @extends _device
- * @property {number} bitDepth - Audio bit depth (default = 14)
+ * @property {number} bitDepth - Audio bit depth (default = 16)
  * @property {number} channels - Audio channel number (default = 1)
  * @property {number} sampleRate - Audio sample rate (default = 48000)
  * @property {number} volume - Audio volume (1 = unity gain)

@@ -47,7 +47,7 @@
 
 .audioDevice-pos-number-input {
     @apply 
-    w-1/5 h-6 text-sm font-normal text-[#75C4EB] bg-[#293548]
+    w-full h-6 text-sm font-normal text-[#75C4EB] bg-[#293548]
     border border-solid border-gray-300 rounded transition
     ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
@@ -95,6 +95,15 @@
     border border-solid border-gray-300 rounded transition
     ease-in-out max-h-40 min-h-[2.4rem]
     focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+}
+/*-------------------------*/
+
+/*SRTOpusInput CSS*/
+.srtOpusInput-pos-number-input {
+    @apply 
+    w-full h-6 text-sm font-normal text-[#75C4EB] bg-[#293548]
+    border border-solid border-gray-300 rounded transition
+    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
 
 /* . {

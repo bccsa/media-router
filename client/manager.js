@@ -1,27 +1,32 @@
 var controls = new uiTopLevelContainer('../controls', 'controls');
 
 let pList = [];
-pList.push(controls.LoadScript("_audioDevice" + ".js"));
-pList.push(controls.LoadScript("AudioInputDevice" + ".js"));
+(controls.LoadScript("_audioDevice" + ".js")).then(() => {
+    controls.LoadScript("_audioInputDevice" + ".js").then(() => {
+        controls.SetData({
 
-Promise.all(pList).then(() => {
-    controls.SetData({
-    
-        DeviceList1: {
-            controlType: "DeviceList",
-                
-            AudioInput_SCC_Pulpit:{
-                controlType: "AudioInputDevice"
-            },
-    
-            AudioInput_ENG:{
-                controlType: "AudioInputDevice"
-            },
-    
-            AudioInput_FRA:{
-                controlType: "AudioInputDevice"
+            DeviceList1: {
+                controlType: "DeviceList",
+
+                SrtOpusOutput: {
+                    controlType: "SrtOpusOutput"
+                },
+
+                SrtOpusInput: {
+                    controlType: "SrtOpusInput"
+                },
+
+                AudioInput: {
+                    controlType: "AudioInput"
+                },
+
+                AudioOutput: {
+                    controlType: "AudioOutput"
+                }
+
+
             }
-        }
+        });
     });
 });
 
