@@ -27,18 +27,18 @@ class _audioOutputDevice extends _audioDevice {
 
         this._inputs = [];
         this._mixer = new Mixer({
-            channels : this.channels,
-            bitDepth : this.bitDepth,
-            sampleRate : this.sampleRate
+            channels: this.channels,
+            bitDepth: this.bitDepth,
+            sampleRate: this.sampleRate
         });
 
         // Clear level and peak indicators on device stop
         this.on('run', run => {
             if (!run) {
                 this._inputs.forEach(device => {
-                    device._notify({level: 0, peak: 0});
+                    device._notify({ level: 0, peak: 0 });
                 });
-                this._notify({level: 0, peak: 0});
+                this._notify({ level: 0, peak: 0 });
             }
         });
 
@@ -52,10 +52,10 @@ class _audioOutputDevice extends _audioDevice {
 
         // Subscribe to mixer output level indication events and notify externally.
         this._mixer.level.on('level', data => {
-            this._notify({level: data})
+            this._notify({ level: data })
         });
         this._mixer.level.on('peak', data => {
-            this._notify({peak: data})
+            this._notify({ peak: data })
         });
     }
 
@@ -67,12 +67,12 @@ class _audioOutputDevice extends _audioDevice {
         if (device && device.__proto__ instanceof _audioInputDevice) {
             // Add passed _audioInputDevice to list of inputs
             this._inputs.push(device);
-            
+
             const input = this._mixer.input({
-                channels : device.channels,
-                bitDepth : device.bitDepth,
-                sampleRate : device.sampleRate,
-                volume : this._getVolume(device)
+                channels: device.channels,
+                bitDepth: device.bitDepth,
+                sampleRate: device.sampleRate,
+                volume: this._getVolume(device)
             });
 
             // subscribe to input device events
@@ -83,18 +83,21 @@ class _audioOutputDevice extends _audioDevice {
                 input.volume = this._getVolume(device);
             });
 
-            // Subscribe to mixer input level indication events
-            input.level.on('level', data => {
-                device._notify({level: data})
-            });
-            input.level.on('peak', data => {
-                device._notify({peak: data})
-            });
+            if (!device._firstOutput) {
+                // Subscribe to mixer input level indication events
+                input.level.on('level', data => {
+                    device._notify({ level: data })
+                });
+                input.level.on('peak', data => {
+                    device._notify({ peak: data })
+                });
+                device._firstOutput = this;
+            }
 
             // Pipe device output stream to mixer input
             device.stdout.on('data', data => {
                 input.write(data)
-            })
+            });
         }
         else {
             if (device && device.name) {
