@@ -1,5 +1,6 @@
 # media-router
 Configurable media router.
+
 Modules:
 * AudioInput: Capture audio from hardware and output to a PCM stream.
 * AudioOutput: Play a PCM audio stream to hardware.
@@ -11,20 +12,7 @@ Modules:
 The client web control interface is available on port 8081.
 
 ## Compatibility
-This project has been tested on Raspberry Pi OS Bullseye
-
-## Dependencies
-Run the installation script:
-```
-sudo ./install-dependencies.sh
-```
-
-## Installing the service
-Run the installation scripts:
-```
-sudo ./install-dependencies.sh
-sudo ./install-service.sh
-```
+This project has been tested on Raspberry Pi OS Buster
 
 ## Development environment
 * Clone the project to your Raspberry Pi.
