@@ -23,4 +23,4 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       - name: Deploy main
-        run: bash /media-router-deployment/main/build-main.sh
+        run:  cd /media-router-deployment/main/; bash ./build-main.sh
