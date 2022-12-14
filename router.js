@@ -32,6 +32,8 @@ var controls = new _device(); // Top level control for devices
 if (process.argv.length > 2) {
     // Load config file from disk
     loadConfig(process.argv[2]);
+} else {
+    loadConfig('config.json');
 }
 
 // -------------------------------------
