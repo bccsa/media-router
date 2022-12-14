@@ -12,6 +12,11 @@ const fs = require('fs');
 const express = require('express');
 const path = require('path');
 const _device = require("./device_modules/_device");
+const process = require('process')
+
+
+// Set path to runtime directory
+process.chdir(__dirname);
 
 // -------------------------------------
 // Global variables
