@@ -32,7 +32,11 @@ class AudioOutput extends _audioOutputDevice {
             try {
                 let args = `-D ${this.device} -c ${this.channels} -f S${this.bitDepth}_LE -r ${this.sampleRate} -t raw --buffer-size=${this.bufferSize}`;
                 this._alsa = spawn('aplay', args.split(" "));
-                this._mixer.pipe(this._alsa.stdin);
+                this._mixer.on('data', data => {
+                    if (this._alsa && this._alsa.stdin.readyState === 'writeOnly') {
+                        this._alsa.stdin.write(data);
+                    }
+                });
 
                 // Handle stderr
                 this._alsa.stderr.on('data', (data) => {

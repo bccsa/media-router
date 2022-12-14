@@ -40,7 +40,10 @@ class AudioInput extends _audioInputDevice {
                 }
 
                 this._process = spawn(`${this._execFile}`, args.split(" "));
-                this._process.stdout.pipe(this.stdout);
+
+                this._process.stdout.on('data', data => {
+                    this.stdout.write(data);
+                });
     
                 // Handle stderr
                 this._process.on('stderr', (data) => {

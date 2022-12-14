@@ -52,7 +52,11 @@ class SrtOpusOutput extends _audioOutputDevice {
                 this._logEvent(`Starting ffmpeg...`);
                 let ffmpeg_args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i - -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss 5 -fec 1 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts udp://127.0.0.1:${this.udpSocketPort}?pkt_size=188&buffer_size=0`
                 this._ffmpeg = spawn('ffmpeg', ffmpeg_args.split(" "));
-                this._mixer.pipe(this._ffmpeg.stdin);
+                this._mixer.on('data', data => {
+                    if (this._ffmpeg && this._ffmpeg.stdin.readyState === 'writeOnly') {
+                        this._ffmpeg.stdin.write(data);
+                    }
+                });
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
@@ -144,7 +148,7 @@ class SrtOpusOutput extends _audioOutputDevice {
             }
         }
     }
-    
+
     /** Stop the external processes */
     _stop() {
         this._exitFlag = true;   // prevent automatic restarting of the process
