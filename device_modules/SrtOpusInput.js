@@ -65,7 +65,7 @@ class SrtOpusInput extends _audioInputDevice {
                     if (!this._exitFlag) {
                         setTimeout(() => {
                             this._logEvent(`Restarting ffmpeg...`);
-                            this.Start();
+                            this._start();
                         }, 1000);
                     }
 

@@ -12,6 +12,11 @@ const fs = require('fs');
 const express = require('express');
 const path = require('path');
 const _device = require("./device_modules/_device");
+const process = require('process')
+
+
+// Set path to runtime directory
+process.chdir(__dirname);
 
 // -------------------------------------
 // Global variables
@@ -23,8 +28,11 @@ var controls = new _device(); // Top level control for devices
 // Startup logic
 // -------------------------------------
 
-// Load config file from disk
-loadConfig();
+// Get config file path from passed argument
+if (process.argv.length > 2) {
+    // Load config file from disk
+    loadConfig(process.argv[2]);
+}
 
 // -------------------------------------
 // Client WebApp Express webserver
@@ -143,11 +151,16 @@ controls.on('log', message => {
 // -------------------------------------
 
 // Load settings from file
-function loadConfig() {
+function loadConfig(path) {
     try {
-        eventLog('Loading configuration from config.json');
+        if (!path) {
+            // Load from default path
+            path = 'config.json'
+        }
+        
+        eventLog(`Loading configuration from ${path}`);
 
-        var raw = fs.readFileSync('config.json');
+        var raw = fs.readFileSync(path);
 
         // Parse JSON file
         let config = JSON.parse(raw);
@@ -155,7 +168,7 @@ function loadConfig() {
         controls.SetConfig(config);
     }
     catch (err) {
-        eventLog('Unable to load config.json from file: ' + err.message);
+        eventLog(`Unable to load configuration from file (${path}): ${err.message}`);
     }
 }
 
