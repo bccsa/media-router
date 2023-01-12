@@ -1,0 +1,65 @@
+{
+  "name": "Audio Router",
+  "autoStart": true,
+  "autoStartDelay": 500,
+  "deviceList": {
+    "AudioInput": [
+      {
+        "name": "AudioInput1",
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "destinations": [
+          "SrtOut1"
+        ],
+        "device": "default",
+        "bufferSize": 128,
+        "maxVolume": 100
+      }
+    ],
+    "AudioOutput": [
+      {
+        "name": "AudioOutput1",
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "device": "default",
+        "bufferSize": 128
+      }
+    ],
+    "SrtOpusInput": [
+      {
+        "name": "New SRT Opus Input",
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "destinations": [
+          "AudioOutput1"
+        ],
+        "srtHost": "127.0.0.1",
+        "srtPort": 5000,
+        "srtMode": "listener",
+        "srtPbKeyLen": 16,
+        "srtPassphrase": "",
+        "srtLatency": "20",
+        "srtMaxBw": 8000,
+        "maxVolume": 100
+      }
+    ],
+    "SrtOpusOutput": [
+      {
+        "name": "SrtOut1",
+        "channels": 1,
+        "sampleRate": 48000,
+        "bitDepth": 16,
+        "udpSocketPort": 5555,
+        "srtHost": "127.0.0.1",
+        "srtPort": 5000,
+        "srtMode": "caller",
+        "srtPbKeyLen": 16,
+        "srtPassphrase": "",
+        "srtLatency": "20"
+      }
+    ]
+  }
+}

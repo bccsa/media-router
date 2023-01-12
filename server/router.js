@@ -13,7 +13,7 @@ const express = require('express');
 const path = require('path');
 const _device = require("./device_modules/_device");
 const process = require('process')
-
+const io  = require('socket.io-client')
 
 // Set path to runtime directory
 process.chdir(__dirname);
@@ -23,10 +23,16 @@ process.chdir(__dirname);
 // -------------------------------------
 
 var controls = new _device(); // Top level control for devices
+/**
+ * Manager socket.io connection
+ */
+var manager_io;
 
 // -------------------------------------
 // Startup logic
 // -------------------------------------
+
+manager_connect('http://localhost:3000');
 
 // Get config file path from passed argument
 if (process.argv.length > 2) {
@@ -34,6 +40,30 @@ if (process.argv.length > 2) {
     loadConfig(process.argv[2]);
 } else {
     loadConfig('config.json');
+}
+
+// -------------------------------------
+// Manager socket.io connection
+// -------------------------------------
+/**
+ * Connect to the manager's socket.io server
+ * @param {string} url 
+ */
+function manager_connect(url) {
+    // Clear existing connection
+    if (manager_io) {
+        manager_io.disconnect();
+    }
+
+    manager_io = io(url,{auth: {username: 'testUser1', password: 'testPass'}});
+
+    manager_io.on('connect', () => {
+        console.log('Connected to manager.')
+    });
+
+    manager_io.on('connect_error', err => {
+        console.log('Unable to connect to manager: ' + err.message);
+    });
 }
 
 // -------------------------------------

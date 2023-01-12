@@ -1,4 +1,15 @@
 var controls = new uiTopLevelContainer('../controls', 'controls');
+var socket = io({auth: {username: 'testUser1', password: 'testPass'}});
+
+socket.on('connect_error', err => {
+    console.log('Unable to connect to manager: ' + err.message);
+});
+
+socket.on('connect', () => {
+    console.log('Connected to manager');
+});
+
+socket.emit('hello', "My name is Albert");
 
 let pList = [];
 (controls.LoadScript("_audioDevice" + ".js")).then(() => {

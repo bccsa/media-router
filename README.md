@@ -1,6 +1,16 @@
 # media-router
 Configurable media router.
 
+## client
+Client web interface for the manager and router
+
+## server
+NodeJS scripts for the router and manager
+
+
+
+
+
 Modules:
 * AudioInput: Capture audio from hardware and output to a PCM stream.
 * AudioOutput: Play a PCM audio stream to hardware.

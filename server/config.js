@@ -7,9 +7,11 @@ class config {
     /**
      * 
      * @param {string} path - path to the configuration file
+     * @param {string} defaultConfig - path to a default configuration file to be loaded if 'path' does not exist or is invalid
      */
-    constructor(path) {
+    constructor(path, defaultConfig) {
         this.path = path;
+        this.defaultConfig = defaultConfig;
     }
 
     /**
@@ -26,13 +28,17 @@ class config {
 
             var raw = fs.readFileSync(this.path);
 
-            // Parse JSON file
-            let config = JSON.parse(raw);
-
-            controls.SetConfig(config);
+            // Parse JSON file and return
+            return(JSON.parse(raw));
         }
         catch (err) {
-            console.log(`Unable to load configuration from file (${this.path}): ${err.message}`);
+            // Return the default configuration file if available
+            if (this.defaultConfig) {
+                return new config(this.defaultConfig).loadConfig();
+            } else {
+                console.log(`Unable to load configuration from file (${this.path}): ${err.message}`);
+                return undefined;
+            }
         }
     }
 
