@@ -23,9 +23,28 @@ let pList = [];
                 AudioOutput: {
                     controlType: "AudioOutput"
                 }
+            },
 
+            DeviceList2: {
+                controlType: "DeviceList",
 
+                SrtOpusOutput: {
+                    controlType: "SrtOpusOutput"
+                },
+
+                SrtOpusInput: {
+                    controlType: "SrtOpusInput"
+                },
+
+                AudioInput: {
+                    controlType: "AudioInput"
+                },
+
+                AudioOutput: {
+                    controlType: "AudioOutput"
+                }
             }
+
         });
     });
 });
