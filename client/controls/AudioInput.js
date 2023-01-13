@@ -1,6 +1,7 @@
 class AudioInput extends _audioInputDevice {
     constructor() {
         super();
+        this.deviceType = "AudioInput";
         this.device = "New Device";
         this.bufferSize = 64; // 64, 128, 256, 512, 1024, 2048, 4096
     }
