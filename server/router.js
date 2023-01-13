@@ -13,7 +13,8 @@ const express = require('express');
 const path = require('path');
 const _device = require("./device_modules/_device");
 const process = require('process')
-const io  = require('socket.io-client')
+const io  = require('socket.io-client');
+const { config } = require('process');
 
 // Set path to runtime directory
 process.chdir(__dirname);
@@ -35,16 +36,17 @@ var manager_io;
 manager_connect('http://localhost:3000');
 
 // Get config file path from passed argument
-if (process.argv.length > 2) {
-    // Load config file from disk
-    loadConfig(process.argv[2]);
-} else {
-    loadConfig('config.json');
-}
+// if (process.argv.length > 2) {
+//     // Load config file from disk
+//     loadConfig(process.argv[2]);
+// } else {
+//     loadConfig('config.json');
+// }
 
 // -------------------------------------
 // Manager socket.io connection
 // -------------------------------------
+var firstCon = true;
 /**
  * Connect to the manager's socket.io server
  * @param {string} url 
@@ -53,9 +55,12 @@ function manager_connect(url) {
     // Clear existing connection
     if (manager_io) {
         manager_io.disconnect();
+        firstCon = true;
+
+        // To do: Stop running router
     }
 
-    manager_io = io(url,{auth: {username: 'testUser1', password: 'testPass'}});
+    manager_io = io(url,{auth: {username: 'testRouter1', password: 'testPass'}});
 
     manager_io.on('connect', () => {
         console.log('Connected to manager.')
@@ -64,7 +69,38 @@ function manager_connect(url) {
     manager_io.on('connect_error', err => {
         console.log('Unable to connect to manager: ' + err.message);
     });
+
+    // set data from manager to router controls
+    manager_io.on('data', data => {
+        if (!firstCon) {
+            config_cleanup(data);
+        }
+        firstCon = false;
+        controls.SetConfig(data);
+    });
 }
+
+/**
+ * Clean configuration received from the manager to prevent changes to a running router
+ * @param {*} config 
+ */
+function config_cleanup(config) {
+    Object.keys(config).forEach(key => {
+        if (key == 'deviceType') {
+            delete config[key];
+        } else if (typeof config[key] === "object" && config[key] !== null) {
+            // clean child objects
+            config_cleanup(config[key]);
+        }
+    });
+}
+
+// forward data from router controls to manager
+controls.on('data', data => {
+    if (manager_io) {
+        manager_io.emit('data', data);
+    }
+})
 
 // -------------------------------------
 // Client WebApp Express webserver
@@ -97,20 +133,20 @@ clientApp.use(express.static('client'));
 // Manager WebApp Express webserver
 // -------------------------------------
 
-const managerApp = express();
-const managerHttp = require('http').createServer(managerApp);
+// const managerApp = express();
+// const managerHttp = require('http').createServer(managerApp);
 
-try {
-    managerHttp.listen(8082, () => {
-        eventLog('Manager WebApp running on *:8082');
-    });
-}
-catch (err) {
-    eventLog(`Unable to start Manager WebApp: ${err.message}`);
-}
+// try {
+//     managerHttp.listen(8082, () => {
+//         eventLog('Manager WebApp running on *:8082');
+//     });
+// }
+// catch (err) {
+//     eventLog(`Unable to start Manager WebApp: ${err.message}`);
+// }
 
-// Serve html files
-managerApp.use(express.static('client'));
+// // Serve html files
+// managerApp.use(express.static('client'));
 
 // Serve DeviceList generated html (default page);
 // deviceListHtml = deviceList.GetHtml();
@@ -143,31 +179,6 @@ controls.on('data', data => {
     clientIO.emit('data', data);
 });
 
-// -------------------------------------
-// Manager Socket.IO
-// -------------------------------------
-
-// -------------------------------------
-// Socket.io authentication
-// -------------------------------------
-
-// const managerIO = require('socket.io-client')('http://localhost:8083', 
-// {
-//     reconnect: true,
-//     auth: {
-//         username: "user",
-//         password: "6q8uGT}x+$cD:YxYJq^Nu-",
-//     },
-// });
-
-// // log connection error 
-// managerIO.on("connect_error", (err) => {
-//     // console.log(err);
-// })
-
-// -------------------------------------
-// Socket.io communication
-// -------------------------------------
 
 // -------------------------------------
 // Event subscription
@@ -183,26 +194,26 @@ controls.on('log', message => {
 // -------------------------------------
 
 // Load settings from file
-function loadConfig(path) {
-    try {
-        if (!path) {
-            // Load from default path
-            path = 'config.json'
-        }
+// function loadConfig(path) {
+//     try {
+//         if (!path) {
+//             // Load from default path
+//             path = 'config.json'
+//         }
         
-        eventLog(`Loading configuration from ${path}`);
+//         eventLog(`Loading configuration from ${path}`);
 
-        var raw = fs.readFileSync(path);
+//         var raw = fs.readFileSync(path);
 
-        // Parse JSON file
-        let config = JSON.parse(raw);
+//         // Parse JSON file
+//         let config = JSON.parse(raw);
 
-        controls.SetConfig(config);
-    }
-    catch (err) {
-        eventLog(`Unable to load configuration from file (${path}): ${err.message}`);
-    }
-}
+//         controls.SetConfig(config);
+//     }
+//     catch (err) {
+//         eventLog(`Unable to load configuration from file (${path}): ${err.message}`);
+//     }
+// }
 
 // -------------------------------------
 // Client controller
