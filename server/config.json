@@ -1,5 +1,5 @@
 {
-    "TR-PROG01": {
+    "testRouter1": {
         "deviceType": "DeviceList",
         "autoStart": true,
         "autoStartDelay": 500,
