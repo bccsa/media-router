@@ -110,6 +110,9 @@ sdp/
 # Config files in root folder
 /*.json
 
+# Config files in router folder
+router/*.json
+
 # Include package.json
 !/package.json
 

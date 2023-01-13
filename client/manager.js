@@ -1,62 +1,70 @@
 var controls = new uiTopLevelContainer('../controls', 'controls');
-var socket = io({auth: {username: 'testUser1', password: 'testPass'}});
-
-socket.on('connect_error', err => {
-    console.log('Unable to connect to manager: ' + err.message);
-});
-
-socket.on('connect', () => {
-    console.log('Connected to manager');
-});
-
-socket.emit('hello', "My name is Albert");
 
 let pList = [];
 (controls.LoadScript("_audioDevice" + ".js")).then(() => {
     controls.LoadScript("_audioInputDevice" + ".js").then(() => {
-        controls.SetData({
 
-            DeviceList1: {
-                controlType: "DeviceList",
+        var socket = io({auth: {username: 'testUser1', password: 'testPass'}});
 
-                SrtOpusOutput: {
-                    controlType: "SrtOpusOutput"
-                },
-
-                SrtOpusInput: {
-                    controlType: "SrtOpusInput"
-                },
-
-                AudioInput: {
-                    controlType: "AudioInput"
-                },
-
-                AudioOutput: {
-                    controlType: "AudioOutput"
-                }
-            },
-
-            DeviceList2: {
-                controlType: "DeviceList",
-
-                SrtOpusOutput: {
-                    controlType: "SrtOpusOutput"
-                },
-
-                SrtOpusInput: {
-                    controlType: "SrtOpusInput"
-                },
-
-                AudioInput: {
-                    controlType: "AudioInput"
-                },
-
-                AudioOutput: {
-                    controlType: "AudioOutput"
-                }
-            }
-
+        socket.on('connect_error', err => {
+            console.log('Unable to connect to manager: ' + err.message);
         });
+        
+        socket.on('connect', () => {
+            console.log('Connected to manager');
+        });
+
+        socket.on('data', data => {
+            controls.SetData(data);
+        });
+
+        controls.on('data', data => {
+            console.log(data);
+        });
+
+        // controls.SetData({
+
+        //     DeviceList1: {
+        //         controlType: "DeviceList",
+
+        //         SrtOpusOutput: {
+        //             controlType: "SrtOpusOutput"
+        //         },
+
+        //         SrtOpusInput: {
+        //             controlType: "SrtOpusInput"
+        //         },
+
+        //         AudioInput: {
+        //             controlType: "AudioInput"
+        //         },
+
+        //         AudioOutput: {
+        //             controlType: "AudioOutput"
+        //         }
+        //     },
+
+        //     DeviceList2: {
+        //         controlType: "DeviceList",
+
+        //         SrtOpusOutput: {
+        //             controlType: "SrtOpusOutput"
+        //         },
+
+        //         SrtOpusInput: {
+        //             controlType: "SrtOpusInput"
+        //         },
+
+        //         AudioInput: {
+        //             controlType: "AudioInput"
+        //         },
+
+        //         AudioOutput: {
+        //             controlType: "AudioOutput"
+        //         }
+        //     }
+
+        // });
     });
 });
 
