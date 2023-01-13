@@ -1,6 +1,7 @@
 class DeviceList extends ui {
     constructor() {
         super();
+        this.deviceType = "DeviceList";
         this.description = "";
         this.autoStart = false;
         this.autoStartDelay = 500;  // milliseconds

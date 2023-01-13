@@ -1,6 +1,7 @@
 class SrtOpusInput extends _audioInputDevice {
     constructor() {
         super();
+        this.deviceType = "SrtOpusInput";
         this.srtHost = 'srt.invalid';
         this.srtPort = 5000;
         this.srtMode = 'caller';

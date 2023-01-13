@@ -1,6 +1,7 @@
 class SrtOpusOutput extends _audioDevice {
     constructor() {
         super();
+        this.deviceType = "SrtOpusOutput";
 
         this.udpSocketPort = 5555; 
 
