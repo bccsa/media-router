@@ -27,5 +27,5 @@ rm -f v1.5.1.tar.gz
 git submodule update --init
 npm install
 
-cd submodules/audio-mixer
+cd server
 npm install
