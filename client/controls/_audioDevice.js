@@ -36,20 +36,20 @@ class _audioDevice extends ui {
                     <div class="audioDevice-heading">
 
                             <!-- Name and Volume indicator -->
-                            <div class="mb-1">
-                                <span class="text-lg" title="Audio Input Name">${this.name}</span>
+                            <div class="mb-1 col-span-2">
+                                <div class="font-medium text-lg font-['Segoe UI']" title="Audio Input Name">${this.name}</div>
                                 <div id="${this._uuid}_volume_slit" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                             </div>
 
                             <!-- Mute Button -->
-                            <div class="ml-[10.5rem] mt-2">
+                            <div class="ml-7 mt-2">
                                 <button id="${this._uuid}_control_button" type="button" title="If true, reduces the audio volume to zero." class="audioDevice-btn-mute">
                                     <span id="${this._uuid}_control_button_text">OFF</span>
                                 </button>
                             </div>
 
                             <!-- Container toggle -->
-                            <div class="items-end justify-items-end ml-32 mt-1">
+                            <div class="items-end justify-items-end ml-7 mt-1">
                                 <div class="audioDevice-toggle-arrow"></div>
                             </div>
                     </div>

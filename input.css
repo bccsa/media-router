@@ -3,7 +3,7 @@
 
 /* Audio Device css */
 .audioDevice-main-card {
-    @apply select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
+    @apply m-1 select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
 }
 
 .audioDevice-summary-container {
@@ -11,7 +11,7 @@
 }
 
 .audioDevice-heading {
-    @apply grid grid-cols-3 mt-1 mb-1 pl-4 w-full h-14
+    @apply flex mt-1 mb-1 pl-4 w-full h-14
 }
 
 .audioDevice-btn-mute {

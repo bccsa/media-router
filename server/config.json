@@ -1,156 +1,162 @@
 {
-    "testRouter1": {
-        "deviceType": "DeviceList",
-        "controlType": "DeviceList",
-        "autoStart": true,
-        "autoStartDelay": 500,
-        "PROG-MUL-RET": {
-            "deviceType": "AudioInput",
-            "controlType": "AudioInput",
-            "displayOrder": 0,
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "maxVolume": 1,
-            "soloGroup": "",
-            "mute": false,
-            "showVolumeControl": false,
-            "showMuteControl": false,
-            "destinations": [
-                "TR-FRA01_MUL-RET"
-            ],
-            "device": "default",
-            "bufferSize": 64
+    "appFrame1": {
+        "deviceType":"_AppFrame",
+        "controlType": "_AppFrame",
+        "testRouter1": {
+            "deviceType": "DeviceList",
+            "controlType": "DeviceList",
+            "autoStart": true,
+            "autoStartDelay": 500,
+            "PROG-MUL-RET": {
+                "deviceType": "AudioInput",
+                "controlType": "AudioInput",
+                "displayOrder": 0,
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "maxVolume": 1,
+                "soloGroup": "",
+                "mute": false,
+                "showVolumeControl": false,
+                "showMuteControl": false,
+                "destinations": [
+                    "TR-FRA01_MUL-RET"
+                ],
+                "device": "default",
+                "bufferSize": 64
+            },
+            "TR-FRA01_MUL-RET": {
+                "deviceType": "SrtOpusOutput",
+                "controlType": "SrtOpusOutput",
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "udpSocketPort": 5555,
+                "srtHost": "",
+                "srtPort": 5000,
+                "srtMode": "listener",
+                "srtPbKeyLen": 16,
+                "srtPassphrase": "",
+                "srtLatency": 20,
+                "srtStreamID": "",
+                "mute": false
+            },
+            "TR-FRA01_ENG": {
+                "deviceType": "SrtOpusInput",
+                "controlType": "SrtOpusInput",
+                "volume": 1,
+                "displayOrder": 0,
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "maxVolume": 1.5,
+                "soloGroup": "",
+                "mute": false,
+                "showVolumeControl": true,
+                "showMuteControl": true,
+                "destinations": [
+                    "PROG-ENG"
+                ],
+                "srtHost": "0.0.0.0",
+                "srtPort": 5010,
+                "srtMode": "listener",
+                "srtPbKeyLen": 16,
+                "srtPassphrase": "",
+                "srtLatency": 20,
+                "srtMaxBw": 8000,
+                "srtStreamID": ""
+            },
+            "PROG-ENG": {
+                "deviceType": "AudioOutput",
+                "controlType": "AudioOutput",
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "device": "default",
+                "bufferSize": 64,
+                "mute": false,
+                "maxVolume": 1.5,
+                "showMuteControl": false
+            }
         },
-        "TR-FRA01_MUL-RET": {
-            "deviceType": "SrtOpusOutput",
-            "controlType": "SrtOpusOutput",
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "udpSocketPort": 5555,
-            "srtHost": "",
-            "srtPort": 5000,
-            "srtMode": "listener",
-            "srtPbKeyLen": 16,
-            "srtPassphrase": "",
-            "srtLatency": 20,
-            "srtStreamID": "",
-            "mute": false
-        },
-        "TR-FRA01_ENG": {
-            "deviceType": "SrtOpusInput",
-            "controlType": "SrtOpusInput",
-            "volume": 1,
-            "displayOrder": 0,
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "maxVolume": 1.5,
-            "soloGroup": "",
-            "mute": false,
-            "showVolumeControl": true,
-            "showMuteControl": true,
-            "destinations": [
-                "PROG-ENG"
-            ],
-            "srtHost": "0.0.0.0",
-            "srtPort": 5010,
-            "srtMode": "listener",
-            "srtPbKeyLen": 16,
-            "srtPassphrase": "",
-            "srtLatency": 20,
-            "srtMaxBw": 8000,
-            "srtStreamID": ""
-        },
-        "PROG-ENG": {
-            "deviceType": "AudioOutput",
-            "controlType": "AudioOutput",
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "device": "default",
-            "bufferSize": 64,
-            "mute": false,
-            "maxVolume": 1.5,
-            "showMuteControl": false
-        }
-    },
-    "testRouter2": {
-        "deviceType": "DeviceList",
-        "controlType": "DeviceList",
-        "autoStart": true,
-        "autoStartDelay": 500,
-        "PROG-MUL-RET": {
-            "deviceType": "AudioInput",
-            "controlType": "AudioInput",
-            "displayOrder": 0,
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "maxVolume": 1,
-            "soloGroup": "",
-            "mute": false,
-            "showVolumeControl": false,
-            "showMuteControl": false,
-            "destinations": [
-                "TR-FRA01_MUL-RET"
-            ],
-            "device": "default",
-            "bufferSize": 64
-        },
-        "TR-FRA01_MUL-RET": {
-            "deviceType": "SrtOpusOutput",
-            "controlType": "SrtOpusOutput",
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "udpSocketPort": 5555,
-            "srtHost": "",
-            "srtPort": 5000,
-            "srtMode": "listener",
-            "srtPbKeyLen": 16,
-            "srtPassphrase": "",
-            "srtLatency": 20,
-            "srtStreamID": "",
-            "mute": false
-        },
-        "TR-FRA01_ENG": {
-            "deviceType": "SrtOpusInput",
-            "controlType": "SrtOpusInput",
-            "volume": 1,
-            "displayOrder": 0,
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "maxVolume": 1.5,
-            "soloGroup": "",
-            "mute": false,
-            "showVolumeControl": true,
-            "showMuteControl": true,
-            "destinations": [
-                "PROG-ENG"
-            ],
-            "srtHost": "0.0.0.0",
-            "srtPort": 5010,
-            "srtMode": "listener",
-            "srtPbKeyLen": 16,
-            "srtPassphrase": "",
-            "srtLatency": 20,
-            "srtMaxBw": 8000,
-            "srtStreamID": ""
-        },
-        "PROG-ENG": {
-            "deviceType": "AudioOutput",
-            "controlType": "AudioOutput",
-            "channels": 1,
-            "sampleRate": 48000,
-            "bitDepth": 16,
-            "device": "default",
-            "bufferSize": 64,
-            "mute": false,
-            "maxVolume": 1.5,
-            "showMuteControl": false
+        "testRouter2": {
+            "deviceType": "DeviceList",
+            "controlType": "DeviceList",
+            "autoStart": true,
+            "autoStartDelay": 500,
+            "PROG-MUL-RET": {
+                "deviceType": "AudioInput",
+                "controlType": "AudioInput",
+                "displayOrder": 0,
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "maxVolume": 1,
+                "soloGroup": "",
+                "mute": false,
+                "showVolumeControl": false,
+                "showMuteControl": false,
+                "destinations": [
+                    "TR-FRA01_MUL-RET"
+                ],
+                "device": "default",
+                "bufferSize": 64
+            },
+            "TR-FRA01_MUL-RET": {
+                "deviceType": "SrtOpusOutput",
+                "controlType": "SrtOpusOutput",
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "udpSocketPort": 5555,
+                "srtHost": "",
+                "srtPort": 5000,
+                "srtMode": "listener",
+                "srtPbKeyLen": 16,
+                "srtPassphrase": "",
+                "srtLatency": 20,
+                "srtStreamID": "",
+                "mute": false
+            },
+            "TR-FRA01_ENG": {
+                "deviceType": "SrtOpusInput",
+                "controlType": "SrtOpusInput",
+                "volume": 1,
+                "displayOrder": 0,
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "maxVolume": 1.5,
+                "soloGroup": "",
+                "mute": false,
+                "showVolumeControl": true,
+                "showMuteControl": true,
+                "destinations": [
+                    "PROG-ENG"
+                ],
+                "srtHost": "0.0.0.0",
+                "srtPort": 5010,
+                "srtMode": "listener",
+                "srtPbKeyLen": 16,
+                "srtPassphrase": "",
+                "srtLatency": 20,
+                "srtMaxBw": 8000,
+                "srtStreamID": ""
+            },
+            "PROG-ENG": {
+                "deviceType": "AudioOutput",
+                "controlType": "AudioOutput",
+                "channels": 1,
+                "sampleRate": 48000,
+                "bitDepth": 16,
+                "device": "default",
+                "bufferSize": 64,
+                "mute": false,
+                "maxVolume": 1.5,
+                "showMuteControl": false
+            }
         }
     }
+    
+    
 }

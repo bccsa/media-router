@@ -1,8 +1,8 @@
-var controls = new uiTopLevelContainer('../controls', 'controls');
+var appFrame = new uiTopLevelContainer('../controls', 'appFrame');
 
 let pList = [];
-(controls.LoadScript("_audioDevice" + ".js")).then(() => {
-    controls.LoadScript("_audioInputDevice" + ".js").then(() => {
+(appFrame.LoadScript("_audioDevice" + ".js")).then(() => {
+    appFrame.LoadScript("_audioInputDevice" + ".js").then(() => {
 
         var socket = io({auth: {username: 'testUser1', password: 'testPass'}});
 
@@ -15,10 +15,10 @@ let pList = [];
         });
 
         socket.on('data', data => {
-            controls.SetData(data);
+            appFrame.SetData(data);
         });
 
-        controls.on('data', data => {
+        appFrame.on('data', data => {
             console.log(data);
         });
 

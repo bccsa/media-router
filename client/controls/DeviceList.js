@@ -126,7 +126,9 @@ class DeviceList extends ui {
     Init() {
         this._switchOnOff = document.getElementById(`${this._uuid}_switchOnOff`);
         this._description = document.getElementById(`${this._uuid}_description`);
+        
         this._controlsDiv = document.getElementById(`${this._uuid}_audioInputControls`);
+
         this._exitButton = document.getElementById(`${this._uuid}_exitButton`);
         this._settingsButton = document.getElementById(`${this._uuid}_settingsButton`);
         this._settingsContainer = document.getElementById(`${this._uuid}_settingsContainer`);

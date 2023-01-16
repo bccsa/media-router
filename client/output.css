@@ -5089,6 +5089,7 @@ textarea.form-control.is-invalid {
 /* Audio Device css */
 
 .audioDevice-main-card {
+  margin: 0.25rem;
   width: 30.05rem;
   -webkit-user-select: none;
      -moz-user-select: none;
@@ -5136,10 +5137,9 @@ textarea.form-control.is-invalid {
 .audioDevice-heading {
   margin-top: 0.25rem;
   margin-bottom: 0.25rem;
-  display: grid;
+  display: flex;
   height: 3.5rem;
   width: 100%;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   padding-left: 1rem;
 }
 
@@ -6367,6 +6367,10 @@ textarea.deviceList-text-area.is-invalid {
   isolation: isolate;
 }
 
+.col-span-2 {
+  grid-column: span 2 / span 2;
+}
+
 .m-4 {
   margin: 1rem;
 }
@@ -6456,32 +6460,20 @@ textarea.deviceList-text-area.is-invalid {
   margin-left: -1rem;
 }
 
-.-mr-4 {
-  margin-right: -1rem;
-}
-
-.ml-32 {
-  margin-left: 8rem;
-}
-
-.mt-5 {
-  margin-top: 1.25rem;
-}
-
-.-mr-6 {
-  margin-right: -1.5rem;
-}
-
-.-mr-8 {
-  margin-right: -2rem;
-}
-
 .-mr-16 {
   margin-right: -4rem;
 }
 
 .mt-3 {
   margin-top: 0.75rem;
+}
+
+.ml-7 {
+  margin-left: 1.75rem;
+}
+
+.mt-5 {
+  margin-top: 1.25rem;
 }
 
 .block {
@@ -6604,14 +6596,6 @@ textarea.deviceList-text-area.is-invalid {
   width: auto;
 }
 
-.w-1\/6 {
-  width: 16.666667%;
-}
-
-.w-4\/6 {
-  width: 66.666667%;
-}
-
 .w-\[30rem\] {
   width: 30rem;
 }
@@ -6626,6 +6610,14 @@ textarea.deviceList-text-area.is-invalid {
 
 .w-5\/12 {
   width: 41.666667%;
+}
+
+.w-1\/6 {
+  width: 16.666667%;
+}
+
+.w-4\/6 {
+  width: 66.666667%;
 }
 
 .max-w-\[27\.5rem\] {
@@ -6926,6 +6918,18 @@ textarea.deviceList-text-area.is-invalid {
 
 .font-\[\'Helvetica\'\] {
   font-family: 'Helvetica';
+}
+
+.font-\[\'Robot\'\] {
+  font-family: 'Robot';
+}
+
+.font-sans {
+  font-family: Inter, sans-serif;
+}
+
+.font-\[\'Arial\'\] {
+  font-family: 'Arial';
 }
 
 .text-2xl {

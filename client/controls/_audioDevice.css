@@ -15,6 +15,7 @@
         border-style: inset;
         border-width: 1px;
         border-color: rgba(117, 196, 235, 0.58);
+        border-radius: 25px;
         display: block;
         box-shadow: white;
         transform: rotate(180deg);
