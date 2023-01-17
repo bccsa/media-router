@@ -75,8 +75,8 @@
 
 .deviceList-btn-settings{
     @apply ml-4 bg-cog_outline bg-no-repeat bg-cover bg-center 
-    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
-    duration-150 ease-in-out w-[1.39rem] h-[1.39rem] m-1;
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none border-4 border-white p-3 transition 
+    duration-150 ease-in-out w-[1.39rem] h-[1.39rem];
 }
 
 .deviceList-settingsContainer {
@@ -105,6 +105,26 @@
     border border-solid border-gray-300 rounded transition
     ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
+/*-------------------------*/
+
+/*App Frame CSS*/
+
+.appFrame-btn-add{
+    @apply 
+    bg-center bg-cover bg-plus_circle bg-no-repeat 
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
+.appFrame-btn-user{
+    @apply 
+    bg-center bg-cover bg-account bg-no-repeat
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-8 h-8 border p-1;
+}
+
+/*-------------------------*/
+
 
 /* . {
     @apply ;
