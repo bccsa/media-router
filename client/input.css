@@ -108,6 +108,15 @@
 /*-------------------------*/
 
 /*App Frame CSS*/
+.appFrame-top-bar{
+    @apply 
+    relative w-full h-12 flex flex-wrap justify-between py-2 bg-gray-900 text-gray-200 shadow-lg
+}
+
+.appFrame-top-flex-div{
+    @apply 
+    w-full flex flex-wrap justify-between px-6
+}
 
 .appFrame-btn-add{
     @apply 
@@ -116,12 +125,98 @@
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
+.appFrame-heading{
+    @apply 
+    mb-4 text-2xl text-white font-['Open-sans']
+}
+
 .appFrame-btn-user{
     @apply 
     bg-center bg-cover bg-account bg-no-repeat
     inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
-    duration-200 ease-in-out w-8 h-8 border p-1;
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
+
+.appFrame-modal{
+    @apply 
+    modal fade hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto
+}
+
+.appFrame-login-form{
+    @apply 
+    flex items-center h-[36rem] w-full select-none
+}
+
+.appFrame-login-container{
+    @apply 
+    w-full bg-white rounded shadow-lg p-8 m-4 md:max-w-sm md:mx-auto
+}
+
+.appFrame-login-alert-container{
+    @apply 
+    bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full
+}
+
+.appFrame-login-alert-icon{
+    @apply 
+    bg-alert w-4 h-4 mr-2
+}
+
+.appFrame-login-alert-text{
+    @apply 
+    text-base text-yellow-700
+}
+
+.appFrame-login-label{
+    @apply 
+    inline-block mb-2 text-gray-700
+}
+
+.appFrame-login-username{
+    @apply 
+    form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700
+    bg-white bg-clip-padding border border-solid border-gray-300 rounded transition ease-in-out
+    m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none
+}
+
+.appFrame-login-password{
+    @apply 
+    form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700 bg-white bg-clip-padding
+    border border-solid border-gray-300 rounded transition ease-in-out  m-0
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none
+}
+
+.appFrame-login-flex-div{
+    @apply 
+    flex justify-between items-center mb-6
+}
+
+.appFrame-login-remember-checkbox{
+    @apply 
+    form-check-input appearance-none h-4 w-4 border border-gray-300 rounded-sm bg-white checked:bg-blue-600
+    checked:border-blue-600 focus:outline-none transition duration-200 mt-1 align-top bg-no-repeat bg-center bg-contain float-left mr-2 cursor-pointer
+}
+
+.appFrame-login-remember-label{
+    @apply 
+    form-check-label inline-block text-gray-800
+}
+
+.appFrame-login-forgot-pass{
+    @apply 
+    text-blue-600 hover:text-blue-700 focus:text-blue-700 transition duration-200 ease-in-out
+}
+
+.appFrame-login-sign-in-button{
+    @apply 
+    w-full px-6 py-2.5 bg-blue-600 text-white font-medium text-xs leading-tight
+    uppercase rounded shadow-md hover:bg-blue-700 hover:shadow-lg
+    focus:bg-blue-700 focus:shadow-lg focus:outline-none focus:ring-0
+    active:bg-blue-800 active:shadow-lg transition duration-150
+    ease-in-out
+}
+
+
 
 /*-------------------------*/
 

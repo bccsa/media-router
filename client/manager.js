@@ -1,26 +1,41 @@
-var appFrame = new uiTopLevelContainer('../controls', 'appFrame');
+var controls = new uiTopLevelContainer('../controls', 'controls');
 
-let pList = [];
-(appFrame.LoadScript("_audioDevice" + ".js")).then(() => {
-    appFrame.LoadScript("_audioInputDevice" + ".js").then(() => {
+controls.SetData({
+    appFrame: {
+        controlType: "appFrame"
+    }
+});
 
-        var socket = io({auth: {username: 'testUser1', password: 'testPass'}});
+controls.on('appFrame', appFrame => {
+    appFrame.on('login', data => {
+        var socket = io({ auth: { username: data.username, password: data.password } });
+        // var socket = io({ auth: { username: 'testUser1', password: 'testPass' } });
 
         socket.on('connect_error', err => {
             console.log('Unable to connect to manager: ' + err.message);
         });
-        
+
         socket.on('connect', () => {
             console.log('Connected to manager');
+            appFrame.logIn();
         });
 
         socket.on('data', data => {
-            appFrame.SetData(data);
+            controls.appFrame.SetData(data);
         });
 
-        appFrame.on('data', data => {
+        controls.on('data', data => {
             console.log(data);
         });
+    });
+});
+
+let pList = [];
+(controls.LoadScript("_audioDevice" + ".js")).then(() => {
+    controls.LoadScript("_audioInputDevice" + ".js").then(() => {
+
+
+
 
         // controls.SetData({
 
