@@ -26,7 +26,7 @@ controls.on('appFrame', appFrame => {
         });
 
         controls.on('data', data => {
-            console.log(data);
+            socket.emit('data', data.appFrame);
         });
     });
 });

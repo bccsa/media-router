@@ -72,7 +72,7 @@ manager_io.on('connection', manager_socket => {
     // Data received from manager WebApp
     manager_socket.on('data', data => {
         // Forward data to other connected manager WebApp's
-        manager_socket.broadcast('data', data);
+        manager_socket.broadcast.emit('data', data);
 
         // Append received data to the configuration manager
         confManager.append(data);

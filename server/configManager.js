@@ -48,11 +48,10 @@ class configManager {
 
     /**
      * Save configuration to config.json located in the runtime directory
-     * @param {object} config - configuration
      */
-    save(config) {
+    save() {
         try {
-            fs.writeFileSync(this.path, JSON.stringify(config, null, 2));
+            fs.writeFileSync(this.path, JSON.stringify(this.config, null, 2));
         } catch (err) {
             console.log('Unable to save ' + this.path + ': ' + err.message);
         }
