@@ -79,14 +79,14 @@ class appFrame extends ui {
                     <div class="form-group mb-6">
                         <label for="${this._uuid}_username" class="appFrame-login-label">Username</label>
                         <input type="username" id="${this._uuid}_username" class="appFrame-login-username" 
-                        title="Enter your username" placeholder="Enter username" value="Admin">
+                        title="Enter your username" placeholder="Enter username" value="testUser1">
                     </div>
 
                     <!-- Password input -->
                     <div class="form-group mb-6">
                         <label for="${this._uuid}_userPassword" class="appFrame-login-label">Password</label>
                         <input type="password" id="${this._uuid}_userPassword" class="appFrame-login-password"
-                        placeholder="Password" value="Admin" title="Enter your password">
+                        placeholder="Password" value="testPass" title="Enter your password">
                     </div>
                     
                     <div class="appFrame-login-flex-div">
