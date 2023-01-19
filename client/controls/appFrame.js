@@ -146,9 +146,9 @@ class appFrame extends ui {
         //     this._modalHandler(true);
         // });
 
-        this._username.addEventListener('change', (e) => {
-            this.username = this._username.value;
-        });
+        // this._username.addEventListener('change', (e) => {
+        //     this.username = this._username.value;
+        // });
 
         // this._userPassword.addEventListener('change', (e) => {
         //     this.userPassword = this._userPassword.value;
@@ -159,7 +159,7 @@ class appFrame extends ui {
         });
 
         this._signIn.addEventListener('click', (e) => {
-            this.emit('login', { username: this.username, password: this._userPassword.value  });
+            this.emit('login', { username: this._username.value, password: this._userPassword.value  });
         });
 
         // Handle property changes
