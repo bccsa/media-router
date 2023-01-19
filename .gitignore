@@ -111,7 +111,7 @@ sdp/
 /*.json
 
 # Config files in router folder
-router/*.json
+server/*.json
 
 # Include package.json
 !/package.json
