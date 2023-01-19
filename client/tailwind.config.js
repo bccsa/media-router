@@ -16,6 +16,7 @@ module.exports = {
         'plus_circle': "url('./controls/img/plus_circle.svg')",
         'account': "url('./controls/img/account.svg')",
         'alert': "url('./controls/img/alert.svg')",
+        'logout': "url('./controls/img/logout.svg')",
       }
     }
   }
