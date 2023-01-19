@@ -69,7 +69,7 @@ class appFrame extends ui {
         <div id="${this._uuid}_formLogIn" class="appFrame-login-form">
             <div class="appFrame-login-container">
                 <!-- Alert message -->
-                <div id="${this._uuid}_incorrectPassAlert" class="appFrame-login-alert-container">
+                <div id="@{_incorrectPassAlert}" class="appFrame-login-alert-container">
                     <div class="appFrame-login-alert-icon"></div>
                     <div class="appFrame-login-alert-text">Incorrect email or password!</div>
                 </div>
@@ -119,7 +119,7 @@ class appFrame extends ui {
         this._userButton = document.getElementById(`${this._uuid}_userButton`);
 
         this._formLogIn = document.getElementById(`${this._uuid}_formLogIn`);
-        this._incorrectPassAlert = document.getElementById(`${this._uuid}_incorrectPassAlert`);
+        // this._incorrectPassAlert = document.getElementById(`${this._uuid}_incorrectPassAlert`);
         this._username = document.getElementById(`${this._uuid}_username`);
         this._userPassword = document.getElementById(`${this._uuid}_userPassword`);
         
