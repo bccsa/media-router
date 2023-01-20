@@ -110,12 +110,12 @@
 /*App Frame CSS*/
 .appFrame-top-bar{
     @apply 
-    relative w-full h-12 flex flex-wrap justify-between py-2 bg-gray-900 text-gray-200 shadow-lg
+    w-full h-12 flex justify-between py-2 bg-gray-900 text-gray-200 shadow-lg min-w-[21rem]
 }
 
 .appFrame-top-flex-div{
     @apply 
-    w-full flex flex-wrap justify-between px-6
+    w-full flex justify-between px-6
 }
 
 .appFrame-btn-add{
@@ -127,7 +127,7 @@
 
 .appFrame-heading{
     @apply 
-    mb-4 text-2xl text-white font-['Open-sans']
+    inline-block mb-4 text-2xl text-white font-['Open-sans']
 }
 
 .appFrame-btn-user{
@@ -144,7 +144,7 @@
 
 .appFrame-login-form{
     @apply 
-    flex items-center h-[36rem] w-full select-none
+    flex items-center h-[36rem] w-full select-none min-w-[21rem]
 }
 
 .appFrame-login-container{

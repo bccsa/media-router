@@ -28,24 +28,24 @@ class DeviceList extends ui {
 
                         <div class="flex flex-row items-center justify-items-end justify-end basis-1/5">
                             
-                            <!-- Toggle On/Off  -->
-                            <div class="mr-4">
-                            
-                                <div class="flex">
-                                    <label class="form-check-label inline-block text-gray-800 mr-2" for="@{_switchOnOff}">Off</label>
-                                    <div class="form-check form-switch">
-                                        <input class="deviceList-toggle" type="checkbox" role="switch" id="@{_switchOnOff}" 
-                                        title="Switch Device list on or off">
-                                        <label class="form-check-label inline-block text-gray-800" for="@{_switchOnOff}">On</label>
-                                    </div>
+                        <!-- Toggle On/Off  -->
+                        <div class="mr-4">
+                        
+                            <div class="flex">
+                                <label class="form-check-label inline-block text-gray-800 mr-2" for="@{_switchOnOff}">Off</label>
+                                <div class="form-check form-switch">
+                                    <input class="deviceList-toggle" type="checkbox" role="switch" id="@{_switchOnOff}" 
+                                    title="Switch Device list on or off">
+                                    <label class="form-check-label inline-block text-gray-800" for="@{_switchOnOff}">On</label>
                                 </div>
                             </div>
+                        </div>
 
-                            <!-- Container toggle -->
-                            <div class="mr-1">
-                                    <div class="deviceList-toggle-arrow">
-                                </div>
+                        <!-- Container toggle -->
+                        <div class="mr-1">
+                                <div class="deviceList-toggle-arrow">
                             </div>
+                        </div>
 
                         </div>
                     </div>

@@ -14,6 +14,7 @@ controls.on('appFrame', appFrame => {
 
         socket.on('connect_error', err => {
             console.log('Unable to connect to manager: ' + err.message);
+            appFrame._incorrectPassAlert.style.display = "block";
         });
 
         socket.on('connect', () => {

@@ -6364,11 +6364,10 @@ textarea.deviceList-text-area.is-invalid {
 /*App Frame CSS*/
 
 .appFrame-top-bar {
-  position: relative;
   display: flex;
   height: 3rem;
   width: 100%;
-  flex-wrap: wrap;
+  min-width: 21rem;
   justify-content: space-between;
   --tw-bg-opacity: 1;
   background-color: rgb(17 24 39 / var(--tw-bg-opacity));
@@ -6384,7 +6383,6 @@ textarea.deviceList-text-area.is-invalid {
 .appFrame-top-flex-div {
   display: flex;
   width: 100%;
-  flex-wrap: wrap;
   justify-content: space-between;
   padding-left: 1.5rem;
   padding-right: 1.5rem;
@@ -6424,6 +6422,7 @@ textarea.deviceList-text-area.is-invalid {
 
 .appFrame-heading {
   margin-bottom: 1rem;
+  display: inline-block;
   font-family: 'Open-sans';
   font-size: 1.5rem;
   line-height: 2rem;
@@ -6541,6 +6540,7 @@ textarea.deviceList-text-area.is-invalid {
   display: flex;
   height: 36rem;
   width: 100%;
+  min-width: 21rem;
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
