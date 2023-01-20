@@ -38,13 +38,13 @@ class _audioDevice extends ui {
                             <!-- Name and Volume indicator -->
                             <div class="mb-1 col-span-2">
                                 <div class="font-medium text-lg font-['Segoe UI']" title="Audio Input Name">${this.name}</div>
-                                <div id="${this._uuid}_volume_slit" class="audioDevice_volume_slit" title="Audio Indicator"></div>
+                                <div id="@{_volume_slit}" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                             </div>
 
                             <!-- Mute Button -->
                             <div class="ml-7 mt-2">
-                                <button id="${this._uuid}_control_button" type="button" title="If true, reduces the audio volume to zero." class="audioDevice-btn-mute">
-                                    <span id="${this._uuid}_control_button_text">OFF</span>
+                                <button id="@{_control_button}" type="button" title="If true, reduces the audio volume to zero." class="audioDevice-btn-mute">
+                                    <span id="@{_control_button_text}">OFF</span>
                                 </button>
                             </div>
 
@@ -63,9 +63,9 @@ class _audioDevice extends ui {
 
                     <!-- Description text area  -->
                     <div class="w-full mb-1 mr-4">
-                        <label for="${this._uuid}_description" class="form-label inline-block mb-2">Description:</label>
+                        <label for="@{_description}" class="form-label inline-block mb-2">Description:</label>
                             <textarea
-                                id="${this._uuid}_description" class="audioDevice-text-area"
+                                id="@{_description}" class="audioDevice-text-area"
                                 title="Device description" rows="1" cols="3"
                                 placeholder="Your description" 
                             >${this.description}</textarea>
@@ -73,10 +73,10 @@ class _audioDevice extends ui {
 
                     <!-- Solo Group  -->
                     <div class="w-full mr-4">
-                        <label for="${this._uuid}_soloGroup" class="form-label inline-block mb-2">Solo Group:</label>
+                        <label for="@{_soloGroup}" class="form-label inline-block mb-2">Solo Group:</label>
                             <textarea
                                 class="audioDevice-text-area"
-                                id="${this._uuid}_soloGroup"
+                                id="@{_soloGroup}"
                                 title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
                                 rows="1" cols="3"
                                 placeholder="Solo group name:"
@@ -86,13 +86,12 @@ class _audioDevice extends ui {
                     <!-- Volume Slider  -->
                     <div class="w-full mb-2 flex flex-row items-end">
 
-                        <label for="${this._uuid}_volume" class="mt-5 w-1/6">Volume:</label>
+                        <label for="@{_volume}" class="mt-5 w-1/6">Volume:</label>
 
-                        <input type="range" list="${this._uuid}_tickMarks" id="${this._uuid}_volume_slider" title="Audio volume (1 = unity gain)" 
-                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mr-4 mt-2 w-4/6 bg-[#293548] text-[#75C4EB]" 
-                        oninput=""${this._uuid}_rangeValue".innerText=this.value">
+                        <input type="range" list="@{_tickMarks}" id="@{_volume_slider}" title="Audio volume (1 = unity gain)" 
+                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mr-4 mt-2 w-4/6 bg-[#293548] text-[#75C4EB]">
                         
-                        <datalist id="${this._uuid}_tickMarks">
+                        <datalist id="@{_tickMarks}">
                             <option value="0.00"></option> <option value="0.10"></option> <option value="0.20"></option> 
                             <option value="0.30"></option> <option value="0.40"></option> <option value="0.50"></option>
                             <option value="0.60"></option> <option value="0.70"></option> <option value="0.80"></option> 
@@ -101,7 +100,7 @@ class _audioDevice extends ui {
                             <option value="1.50"></option>
                         </datalist>
 
-                        <label for="${this._uuid}_volume" id="${this._uuid}_rs-bullet" class="ml-2 w-1/6">${this.volume*100} %</label>
+                        <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume*100} %</label>
                           
                     </div>
 
@@ -109,9 +108,9 @@ class _audioDevice extends ui {
 
                         <!-- Channels  -->
                         <div class="w-1/4 mr-3">
-                            <label for="${this._uuid}_channels" class="form-label inline-block mb-2">Channels:</label>
+                            <label for="@{_channels}" class="form-label inline-block mb-2">Channels:</label>
                                 <div class="mb-3 w-full">
-                                    <select id="${this._uuid}_channels" title="Audio channel number (default = 1)" value="${this.channels}" 
+                                    <select id="@{_channels}" title="Audio channel number (default = 1)" value="${this.channels}" 
                                     name="channel" class="audioDevice-select" type="text">
                                     <option value="1">1</option>
                                     <option value="2">2</option>
@@ -121,8 +120,8 @@ class _audioDevice extends ui {
                         
                         <!-- SampleRate  -->
                         <div class="w-1/4 mr-3">
-                            <label for="${this._uuid}_sampleRate" class="form-label inline-block mb-2">Sample Rate:</label>
-                            <select id="${this._uuid}_sampleRate" title="Audio sample rate (default = 48000)" value="${this.sampleRate}" 
+                            <label for="@{_sampleRate}" class="form-label inline-block mb-2">Sample Rate:</label>
+                            <select id="@{_sampleRate}" title="Audio sample rate (default = 48000)" value="${this.sampleRate}" 
                             name="sampleRate" class="audioDevice-select" type="text">
                                 <option value="44100">44100 Hz</option>
                                 <option value="48000">48000 Hz</option>
@@ -131,8 +130,8 @@ class _audioDevice extends ui {
 
                         <!-- BitDepth  -->    
                         <div class="w-1/4 mr-3">
-                            <label for="${this._uuid}_bitDepth" class="form-label inline-block mb-2">Bit Depth:</label>
-                            <select id="${this._uuid}_bitDepth" title="Audio bit depth (default = 16)" value="${this.bitDepth}" 
+                            <label for="@{_bitDepth}" class="form-label inline-block mb-2">Bit Depth:</label>
+                            <select id="@{_bitDepth}" title="Audio bit depth (default = 16)" value="${this.bitDepth}" 
                             name="bitDepth" class="audioDevice-select" type="text">
                                 <option value="16">16</option>
                                 <option value="24">24</option>
@@ -142,8 +141,8 @@ class _audioDevice extends ui {
 
                         <!-- Max Volume  --> 
                         <div class="w-1/4">
-                            <label for="${this._uuid}_maxVolume" class="form-label inline-block mb-2">Max Volume:</label>
-                            <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_maxVolume" 
+                            <label for="@{_maxVolume}" class="form-label inline-block mb-2">Max Volume:</label>
+                            <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_maxVolume}" 
                             title="Maximum volume that the client WebApp can request" name="maxVolume" step="0.1" class="audioDevice-pos-decimal-input"
                                 value="${this.maxVolume}"
                             >
@@ -155,15 +154,15 @@ class _audioDevice extends ui {
 
                         <!-- Show Volume Control Checkbox  --> 
                         <div class="w-1/2 mr-2 mb-2 flex">
-                            <input type="checkbox" checked id="${this._uuid}_showVolumeControl" value="${this.showVolumeControl}" class="mr-2 mt-1 h-4 w-4" />  
-                            <label for="${this._uuid}_showVolumeControl" class="form-label inline-block" 
+                            <input type="checkbox" checked id="@{_showVolumeControl}" value="${this.showVolumeControl}" class="mr-2 mt-1 h-4 w-4" />  
+                            <label for="@{_showVolumeControl}" class="form-label inline-block" 
                             title="Indicates that the front end should show the volume control">Show client volume control</label> 
                         </div>
 
                         <!-- Show Mute Control Checkbox  --> 
                         <div class="w-1/2 mb-2 flex">
-                            <input type="checkbox" checked id="${this._uuid}_showMuteControl" value="${this.showMuteControl}" class="mr-2 mt-1 h-4 w-4" />  
-                            <label for="${this._uuid}_showMuteControl" class="form-label inline-block" 
+                            <input type="checkbox" checked id="@{_showMuteControl}" value="${this.showMuteControl}" class="mr-2 mt-1 h-4 w-4" />  
+                            <label for="@{_showMuteControl}" class="form-label inline-block" 
                             title="Indicates that the front end should show the mute control">Show client mute control</label>  
                         </div>
 
@@ -173,11 +172,11 @@ class _audioDevice extends ui {
                     <div class="w-full mb-1 flex ">
 
                         <div class="w-1/4 mr-3">
-                            <label for="${this._uuid}_displayOrder" class="form-label inline-block mb-2">Display Order:</label>
+                            <label for="@{_displayOrder}" class="form-label inline-block mb-2">Display Order:</label>
                         </div>
             
                         <div class="w-1/4 mr-3">
-                            <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_displayOrder" 
+                            <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_displayOrder}" 
                             title="Display order in the client WebApp." name="maxVolume" step="1" class="audioDevice-pos-number-input"
                             value="${this.displayOrder}"
                             >
@@ -200,24 +199,20 @@ class _audioDevice extends ui {
  
     Init() {
         
-        this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
-        this._control_button = document.getElementById(`${this._uuid}_control_button`);
-        this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
-
-        this._description = document.getElementById(`${this._uuid}_description`);
-        this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
-        this._rangeBullet = document.getElementById(`${this._uuid}_rs-bullet`);
-
-        this._channels = document.getElementById(`${this._uuid}_channels`);
-        this._sampleRate = document.getElementById(`${this._uuid}_sampleRate`);
-        this._bitDepth = document.getElementById(`${this._uuid}_bitDepth`);
-        this._maxVolume = document.getElementById(`${this._uuid}_maxVolume`);
-
-        this._soloGroup = document.getElementById(`${this._uuid}_soloGroup`);
-
-        this._showVolumeControl = document.getElementById(`${this._uuid}_showVolumeControl`);
-        this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
-        this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
+        // this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
+        // this._control_button = document.getElementById(`${this._uuid}_control_button`);
+        // this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
+        // this._description = document.getElementById(`${this._uuid}_description`);
+        // this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
+        // this._rangeBullet = document.getElementById(`${this._uuid}_rs-bullet`);
+        // this._channels = document.getElementById(`${this._uuid}_channels`);
+        // this._sampleRate = document.getElementById(`${this._uuid}_sampleRate`);
+        // this._bitDepth = document.getElementById(`${this._uuid}_bitDepth`);
+        // this._maxVolume = document.getElementById(`${this._uuid}_maxVolume`);
+        // this._soloGroup = document.getElementById(`${this._uuid}_soloGroup`);
+        // this._showVolumeControl = document.getElementById(`${this._uuid}_showVolumeControl`);
+        // this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
+        // this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
 
         //Set initial values
         this._setMute();
@@ -232,39 +227,53 @@ class _audioDevice extends ui {
         //Event subscriptions
         this._control_button.addEventListener('click', (e) => {
             this.mute = !this.mute;
-
             this._setMute();
             this.NotifyProperty("mute");
         });
 
         this._description.addEventListener('change', (e) => {
             this.description = this._description.value;
+            this.NotifyProperty("description");
         });
 
         this._volume_slider.addEventListener('input', (e) => {
+            this.volume = Number.parseFloat(this._volume_slider.value);
             this.showSliderValue();
+            this.NotifyProperty("volume");
         });
 
         this._channels.addEventListener('change', (e) => {
             this.channels = Number.parseInt(this._channels.value);
+            this.NotifyProperty("channels");
         });
 
         this._sampleRate.addEventListener('change', (e) => {
             this.sampleRate = Number.parseInt(this._sampleRate.value);
+            this.NotifyProperty("sampleRate");
         });
 
         this._bitDepth.addEventListener('change', (e) => {
             this.bitDepth = Number.parseInt(this._bitDepth.value);
+            this.NotifyProperty("bitDepth");
         });
 
         this._maxVolume.addEventListener('change', (e) => {
             this.maxVolume = Number.parseFloat(this._maxVolume.value);
             this._volume_slider.max = this.maxVolume;
             this.showSliderValue();
+            this.NotifyProperty("maxVolume");
+            
+            if (this.maxVolume <= this.volume)
+            {
+                this.volume = Number.parseFloat(this._volume_slider.value);
+                this.showSliderValue();
+                this.NotifyProperty("volume");
+            }
         });
 
         this._soloGroup.addEventListener('change', (e) => {
             this.soloGroup = this._soloGroup.value;
+            this.NotifyProperty("soloGroup");
         });
 
         this._showVolumeControl.addEventListener('change', (e) => {
@@ -279,6 +288,7 @@ class _audioDevice extends ui {
 
         this._displayOrder.addEventListener('change', (e) => {
             this.displayOrder = Number.parseInt(this._displayOrder.value);
+            this.NotifyProperty("displayOrder");
         });
 
         // Add VU meter

@@ -29,10 +29,10 @@ class SrtOpusInput extends _audioInputDevice {
 
         <!-- SRT host  -->
         <div class="w-full mb-2 mr-4">
-            <label for="${this._uuid}_srtHost" class="form-label inline-block mb-2">SRT Host:</label>
+            <label for="@{_srtHost}" class="form-label inline-block mb-2">SRT Host:</label>
                 <textarea
                     class="audioDevice-text-area"
-                    id="${this._uuid}_srtHost"
+                    id="@{_srtHost}"
                     title="SRT host name / ip address"
                     rows="1" cols="3"
                     placeholder="Your srt Host"
@@ -42,8 +42,8 @@ class SrtOpusInput extends _audioInputDevice {
         <div class="w-full mb-2 flex ">
             <!-- SRT port  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="${this._uuid}_srtPort" class="form-label inline-block mb-2 mr-2">SRT Port:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_srtPort" 
+                <label for="@{_srtPort}" class="form-label inline-block mb-2 mr-2">SRT Port:</label>
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtPort}" 
                     title="SRT port" name="SRT port" step="1" class="srtOpusInput-pos-number-input"
                     value="${this.srtPort}"
                 >
@@ -51,8 +51,8 @@ class SrtOpusInput extends _audioInputDevice {
 
             <!-- SRT Latency  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="${this._uuid}_srtLatency" class="form-label inline-block mb-2 mr-2">SRT Latency:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_srtLatency" 
+                <label for="@{_srtLatency}" class="form-label inline-block mb-2 mr-2">SRT Latency:</label>
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtLatency}" 
                     title="SRT latency in milliseconds" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
                     value="${this.srtLatency}"
                 >
@@ -60,8 +60,8 @@ class SrtOpusInput extends _audioInputDevice {
 
             <!-- SRT Max Bandwidth  --> 
             <div class="w-1/3 flex flex-col">
-                <label for="${this._uuid}_srtMaxBw" class="form-label inline-block mb-2 mr-2">SRT Max Bw:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_srtMaxBw" 
+                <label for="@{_srtMaxBw}" class="form-label inline-block mb-2 mr-2">SRT Max Bw:</label>
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtMaxBw}" 
                     title="SRT Max Bandwidth in bytes per second" name="SRT MaxBw" step="1" class="srtOpusInput-pos-number-input"
                     value="${this.srtMaxBw}"
                 >
@@ -73,8 +73,8 @@ class SrtOpusInput extends _audioInputDevice {
 
             <!-- SRT Mode  -->    
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="${this._uuid}_srtMode" class="form-label inline-block mb-2">SRT Mode:</label>
-                <select id="${this._uuid}_srtMode" title="SRT mode (caller, listener, rendezvous)" value="${this.srtMode}" 
+                <label for="@{_srtMode}" class="form-label inline-block mb-2">SRT Mode:</label>
+                <select id="@{_srtMode}" title="SRT mode (caller, listener, rendezvous)" value="${this.srtMode}" 
                 name="SRT Mode" class="audioDevice-select" type="text">
                     <option value="caller">Caller</option>
                     <option value="listener">Listener</option>
@@ -84,8 +84,8 @@ class SrtOpusInput extends _audioInputDevice {
 
             <!-- SRT PbKeyLen  -->    
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="${this._uuid}_srtPbKeyLen" class="form-label inline-block mb-2">SRT Pb Key Len:</label>
-                <select id="${this._uuid}_srtPbKeyLen" title="SRT encryption key length (16, 32)" value="${this.srtPbKeyLen}" 
+                <label for="@{_srtPbKeyLen}" class="form-label inline-block mb-2">SRT Pb Key Len:</label>
+                <select id="@{_srtPbKeyLen}" title="SRT encryption key length (16, 32)" value="${this.srtPbKeyLen}" 
                 name="SRT PbKeyLen" class="audioDevice-select" type="text">
                     <option value="16">16</option>
                     <option value="32">32</option>
@@ -98,10 +98,10 @@ class SrtOpusInput extends _audioInputDevice {
 
         <!-- SRT Passphrase  -->
         <div class="w-full mb-2 mr-4">
-            <label for="${this._uuid}_srtPassphrase" class="form-label inline-block mb-2">SRT Passphrase:</label>
+            <label for="@{_srtPassphrase}" class="form-label inline-block mb-2">SRT Passphrase:</label>
                 <textarea
                     class="audioDevice-text-area"
-                    id="${this._uuid}_srtPassphrase"
+                    id="@{_srtPassphrase}"
                     title="SRT encryption passphrase"
                     rows="1" cols="3"
                     placeholder="Your srt Passphrase"
@@ -110,31 +110,29 @@ class SrtOpusInput extends _audioInputDevice {
 
         <!-- SRT StreamID  -->
         <div class="w-full mb-2 mr-4">
-            <label for="${this._uuid}_srtStreamID" class="form-label inline-block mb-2">SRT Stream ID:</label>
+            <label for="@{_srtStreamID}" class="form-label inline-block mb-2">SRT Stream ID:</label>
                 <textarea
                     class="audioDevice-text-area"
-                    id="${this._uuid}_srtStreamID"
+                    id="@{_srtStreamID}"
                     title="SRT Stream ID"
                     rows="1" cols="3"
                     placeholder="Your srt StreamID"
                 >${this.srtStreamID}</textarea>
         </div>
-
-
         `);
     }
 
  
     Init() {
         super.Init();
-        this._srtHost = document.getElementById(`${this._uuid}_srtHost`);
-        this._srtPort = document.getElementById(`${this._uuid}_srtPort`);
-        this._srtMode = document.getElementById(`${this._uuid}_srtMode`);
-        this._srtPbKeyLen = document.getElementById(`${this._uuid}_srtPbKeyLen`);
-        this._srtPassphrase = document.getElementById(`${this._uuid}_srtPassphrase`);
-        this._srtLatency = document.getElementById(`${this._uuid}_srtLatency`);
-        this._srtMaxBw = document.getElementById(`${this._uuid}_srtMaxBw`);
-        this._srtStreamID = document.getElementById(`${this._uuid}_srtStreamID`);
+        // this._srtHost = document.getElementById(`${this._uuid}_srtHost`);
+        // this._srtPort = document.getElementById(`${this._uuid}_srtPort`);
+        // this._srtMode = document.getElementById(`${this._uuid}_srtMode`);
+        // this._srtPbKeyLen = document.getElementById(`${this._uuid}_srtPbKeyLen`);
+        // this._srtPassphrase = document.getElementById(`${this._uuid}_srtPassphrase`);
+        // this._srtLatency = document.getElementById(`${this._uuid}_srtLatency`);
+        // this._srtMaxBw = document.getElementById(`${this._uuid}_srtMaxBw`);
+        // this._srtStreamID = document.getElementById(`${this._uuid}_srtStreamID`);
 
         // Set initial values 
         this._srtMode.value = this.srtMode;
@@ -143,34 +141,43 @@ class SrtOpusInput extends _audioInputDevice {
         //Event subscriptions
         this._srtHost.addEventListener('change', (e) => {
             this.srtHost = this._srtHost.value;
+            this.NotifyProperty("srtHost");
+            
         });
 
         this._srtPort.addEventListener('change', (e) => {
-            this.srtPort = this._srtPort.value;
+            this.srtPort = Number.parseInt(this._srtPort.value);
+            this.NotifyProperty("srtPort");
         });
 
         this._srtMode.addEventListener('change', (e) => {
             this.srtMode = this._srtMode.value;
+            this.NotifyProperty("srtMode");
         });
 
         this._srtPbKeyLen.addEventListener('change', (e) => {
-            this.srtPbKeyLen = this._srtPbKeyLen.value;
+            this.srtPbKeyLen = Number.parseInt(this._srtPbKeyLen.value);
+            this.NotifyProperty("srtPbKeyLen");
         });
 
         this._srtPassphrase.addEventListener('change', (e) => {
             this.srtPassphrase = this._srtPassphrase.value;
+            this.NotifyProperty("srtPassphrase");
         });
 
         this._srtLatency.addEventListener('change', (e) => {
-            this.srtLatency = this._srtLatency.value;
+            this.srtLatency = Number.parseInt(this._srtLatency.value);
+            this.NotifyProperty("srtLatency");
         });
 
         this._srtMaxBw.addEventListener('change', (e) => {
-            this.srtMaxBw = this._srtMaxBw.value;
+            this.srtMaxBw = Number.parseInt(this._srtMaxBw.value);
+            this.NotifyProperty("srtMaxBw");
         });
 
         this._srtStreamID.addEventListener('change', (e) => {
             this.srtStreamID = this._srtStreamID.value;
+            this.NotifyProperty("srtStreamID");
         });
 
         // Handle property changes

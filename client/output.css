@@ -7635,6 +7635,10 @@ textarea.appFrame-login-password.is-invalid {
   margin-top: 1.25rem;
 }
 
+.ml-1 {
+  margin-left: 0.25rem;
+}
+
 .box-border {
   box-sizing: border-box;
 }

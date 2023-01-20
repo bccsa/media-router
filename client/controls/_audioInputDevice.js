@@ -8,10 +8,10 @@ class _audioInputDevice extends _audioDevice {
         return super.html.replace('%additionalHtml%', `
         <!-- Destinations  -->
         <div class="w-full mb-2 mr-4">
-            <label for="${this._uuid}_destinations" class="form-label inline-block mb-2">Destinations:</label>
+            <label for="@{_destinations}" class="form-label inline-block mb-2">Destinations:</label>
                 <textarea
                     class="audioDevice-text-area"
-                    id="${this._uuid}_destinations"
+                    id="@{_destinations}"
                     title="Array of strings with destination device name(s)
 (Enter the destinations, e.g. 'D1, D2, D3')"
                     rows="1" cols="3"
@@ -28,11 +28,12 @@ class _audioInputDevice extends _audioDevice {
  
     Init() {
         super.Init();
-        this._destinations = document.getElementById(`${this._uuid}_destinations`);
+        // this._destinations = document.getElementById(`${this._uuid}_destinations`);
 
         //Event subscriptions
         this._destinations.addEventListener('change', (e) => {
             this.destinations = this._destinations.value.split(', ');
+            this.NotifyProperty("destinations");
         });
 
         // Handle property changes

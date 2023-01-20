@@ -5,7 +5,6 @@ class DeviceList extends ui {
         this.description = "";
         this.autoStart = false;
         this.autoStartDelay = 500;  // milliseconds
-        this._controlsDiv = undefined;
         this.run = false;
     }
 
@@ -33,11 +32,11 @@ class DeviceList extends ui {
                             <div class="mr-4">
                             
                                 <div class="flex">
-                                    <label class="form-check-label inline-block text-gray-800 mr-2" for="${this._uuid}_switchOnOff">Off</label>
+                                    <label class="form-check-label inline-block text-gray-800 mr-2" for="@{_switchOnOff}">Off</label>
                                     <div class="form-check form-switch">
-                                        <input class="deviceList-toggle" type="checkbox" role="switch" id="${this._uuid}_switchOnOff" 
+                                        <input class="deviceList-toggle" type="checkbox" role="switch" id="@{_switchOnOff}" 
                                         title="Switch Device list on or off">
-                                        <label class="form-check-label inline-block text-gray-800" for="${this._uuid}_switchOnOff">On</label>
+                                        <label class="form-check-label inline-block text-gray-800" for="@{_switchOnOff}">On</label>
                                     </div>
                                 </div>
                             </div>
@@ -58,25 +57,25 @@ class DeviceList extends ui {
                 <!-- More Info Container  -->
                 <div class="pl-2 flex flex-row justify-between w-full h-auto">
 
-                    <div id="${this._uuid}_audioInputControls" class="pb-4 pt-2 h-auto w-auto"></div>
+                    <div id="@{_controlsDiv}" class="pb-4 pt-2 h-auto w-auto"></div>
 
                     <!-- Settings button  -->
                     <div class="justify-between mt-1">
-                        <button id="${this._uuid}_settingsButton" type="button" class="deviceList-btn-settings" 
+                        <button id="@{_settingsButton}" type="button" class="deviceList-btn-settings" 
                         title="Open Device List Settings">
                         </button>
                     </div>
 
-                    <div id="${this._uuid}_settingsContainer" class="deviceList-settingsContainer" >
+                    <div id="@{_settingsContainer}" class="deviceList-settingsContainer" >
 
 
                         <!-- Exit setting button  -->
                         <div class="flex flex-row justify-between w-full h-auto">
-                            <label for="${this._uuid}_description" class="form-label inline-block ml-4 mt-2"
+                            <label for="@{_description}" class="form-label inline-block ml-4 mt-2"
                             >Description: </label>
 
                             <div class="justify-end">
-                                    <button id="${this._uuid}_exitButton" type="button" class="deviceList-btn-exit" 
+                                    <button id="@{_exitButton}" type="button" class="deviceList-btn-exit" 
                                     title="Close Device List Settings">
                                     </button>
                             </div>
@@ -88,7 +87,7 @@ class DeviceList extends ui {
                             
                                 <textarea
                                     class="deviceList-text-area"
-                                    id="${this._uuid}_description" rows="3"
+                                    id="@{_description}" rows="3"
                                     placeholder="Your description"
                                     title="Device List description"
                                 >${this.description}</textarea>
@@ -98,10 +97,10 @@ class DeviceList extends ui {
                         <!-- Auto Start Delay  -->
                         <div class="justify-start">
                             <div class="ml-4 mb-2 mr-4">
-                                <label for="${this._uuid}_autoStartDelay" class="form-label inline-block"
+                                <label for="@{_autoStartDelay}" class="form-label inline-block"
                                 >Auto Start Delay: </label>
 
-                                <input type="number" min="0" oninput="validity.valid||(value='')" id="${this._uuid}_autoStartDelay" title="Set the delay in milliseconds" name="maxVolume" step="1" class="
+                                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_autoStartDelay}" title="Set the delay in milliseconds" name="maxVolume" step="1" class="
                                 h-6 text-base font-normal text-gray-700 bg-white
                                 border border-solid border-gray-300 rounded transition
                                 ease-in-out focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none pl-3 py-1.5 w-full"
@@ -112,8 +111,8 @@ class DeviceList extends ui {
 
                         <!-- Auto Start Checkbox  --> 
                         <div class="ml-4 mb-4 flex justify-start">
-                            <input type="checkbox" id="${this._uuid}_autoStart" value="${this.autoStart}" class="mr-2 mt-1 h-4 w-4" title="Enable or disable the auto start" />  
-                            <label for="${this._uuid}_autoStart" class="form-label inline-block">Auto Start</label>  
+                            <input type="checkbox" id="@{_autoStart}" value="${this.autoStart}" class="mr-2 mt-1 h-4 w-4" title="Enable or disable the auto start" />  
+                            <label for="@{_autoStart}" class="form-label inline-block">Auto Start</label>  
                         </div>
 
                     </div>
@@ -124,16 +123,14 @@ class DeviceList extends ui {
     }
 
     Init() {
-        this._switchOnOff = document.getElementById(`${this._uuid}_switchOnOff`);
-        this._description = document.getElementById(`${this._uuid}_description`);
-        
-        this._controlsDiv = document.getElementById(`${this._uuid}_audioInputControls`);
-
-        this._exitButton = document.getElementById(`${this._uuid}_exitButton`);
-        this._settingsButton = document.getElementById(`${this._uuid}_settingsButton`);
-        this._settingsContainer = document.getElementById(`${this._uuid}_settingsContainer`);
-        this._autoStartDelay = document.getElementById(`${this._uuid}_autoStartDelay`);
-        this._autoStart = document.getElementById(`${this._uuid}_autoStart`);
+        // this._switchOnOff = document.getElementById(`${this._uuid}_switchOnOff`);
+        // this._description = document.getElementById(`${this._uuid}_description`);
+        // this._controlsDiv = document.getElementById(`${this._uuid}_audioInputControls`);
+        // this._exitButton = document.getElementById(`${this._uuid}_exitButton`);
+        // this._settingsButton = document.getElementById(`${this._uuid}_settingsButton`);
+        // this._settingsContainer = document.getElementById(`${this._uuid}_settingsContainer`);
+        // this._autoStartDelay = document.getElementById(`${this._uuid}_autoStartDelay`);
+        // this._autoStart = document.getElementById(`${this._uuid}_autoStart`);
 
         // Set initial values
         this._toggleSettingContainer();
@@ -143,6 +140,7 @@ class DeviceList extends ui {
         // Event subscriptions
         this._switchOnOff.addEventListener("click", () => {
             this.run = !this.run;
+
             this.NotifyProperty("run");
         });
 
@@ -156,14 +154,20 @@ class DeviceList extends ui {
 
         this._description.addEventListener('change', (e) => {
             this.description = this._description.value;
+
+            this.NotifyProperty("description");
         });
 
         this._autoStartDelay.addEventListener('change', (e) => {
-            this.autoStartDelay = this._autoStartDelay.value;
+            this.autoStartDelay = Number.parseInt(this._autoStartDelay.value);
+
+            this.NotifyProperty("autoStartDelay");
         });
 
         this._autoStart.addEventListener('change', (e) => {
             this.autoStart = !this.autoStart;
+
+            this.NotifyProperty("autoStart");
         });
 
         // Handle property changes

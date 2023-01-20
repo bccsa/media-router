@@ -10,10 +10,10 @@ class AudioInput extends _audioInputDevice {
         return super.html.replace('%additionalHtml%', `
         <!-- Device  -->
         <div class="w-full mb-2 mr-4">
-            <label for="${this._uuid}_device" class="form-label inline-block mb-2">Device:</label>
+            <label for="@{_device}" class="form-label inline-block mb-2">Device:</label>
                 <textarea
                     class="audioDevice-text-area"
-                    id="${this._uuid}_device"
+                    id="@{_device}"
                     title="ALSA Device name - see aplay -L (Default = default)"
                     rows="1" cols="3"
                     placeholder="Your device"
@@ -24,8 +24,8 @@ class AudioInput extends _audioInputDevice {
 
             <!-- Buffer Size  -->    
             <div class="w-1/4 mr-3">
-                <label for="${this._uuid}_bufferSize" class="form-label inline-block mb-2">Buffer Size:</label>
-                <select id="${this._uuid}_bufferSize" title="ALSA buffer size in bytes (Default = 64)" value="${this.bufferSize}" 
+                <label for="@{_bufferSize}" class="form-label inline-block mb-2">Buffer Size:</label>
+                <select id="@{_bufferSize}" title="ALSA buffer size in bytes (Default = 64)" value="${this.bufferSize}" 
                 name="bufferSize" class="audioDevice-select" type="text">
                     <option value="64">64</option>
                     <option value="128">128</option>
@@ -48,8 +48,8 @@ class AudioInput extends _audioInputDevice {
  
     Init() {
         super.Init();
-        this._device = document.getElementById(`${this._uuid}_device`);
-        this._bufferSize = document.getElementById(`${this._uuid}_bufferSize`);
+        // this._device = document.getElementById(`${this._uuid}_device`);
+        // this._bufferSize = document.getElementById(`${this._uuid}_bufferSize`);
 
         // Set initial values
         this._bufferSize.value = this.bufferSize; 
@@ -57,10 +57,12 @@ class AudioInput extends _audioInputDevice {
         //Event subscriptions
         this._device.addEventListener('change', (e) => {
             this.device = this._device.value;
+            this.NotifyProperty("device");
         });
 
         this._bufferSize.addEventListener('change', (e) => {
-            this.bufferSize = this._bufferSize.value;
+            this.bufferSize = Number.parseInt(this._bufferSize.value);
+            this.NotifyProperty("bufferSize");
         });
 
         // Handle property changes
