@@ -13,10 +13,11 @@ module.exports = {
         'xmark': "url('./controls/img/xmark.svg')",
         'cog_outline': "url('./controls/img/cog_outline.svg')",
         'delete': "url('./controls/img/delete.svg')",
-        'plus_circle': "url('./controls/img/plus_circle.svg')",
+        'plus_circle_wt': "url('./controls/img/plus_circle_wt.svg')",
         'account': "url('./controls/img/account.svg')",
         'alert': "url('./controls/img/alert.svg')",
         'logout': "url('./controls/img/logout.svg')",
+        'plus_circle_bl': "url('./controls/img/plus_circle_bl.svg')",
       }
     }
   }

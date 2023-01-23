@@ -28,10 +28,18 @@ class appFrame extends ui {
             </div>
         </nav>
 
+       
+        <!-- Alert message -->
+        <div id="@{_disconnectAlert}" class="appFrame-login-alert-container">
+            <div class="appFrame-login-alert-icon"></div>
+            <div class="appFrame-login-alert-text">You have lost connection!</div>
+        </div>
+      
+
 
         <!-- Modal log out -->
-        <div class="modal fade fixed top-0 left-0 hidden  w-full h-full outline-none overflow-x-hidden overflow-y-auto"
-        id="@{_modal_log_out}" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal fade fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
+        id="@{_modal_log_out}" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-sm relative w-auto pointer-events-none">
             <div
             class="modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current">
@@ -51,10 +59,10 @@ class appFrame extends ui {
             </div>
             <div
                 class="modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md">
-                <button type="button" class="px-6
-                py-2.5  bg-purple-600 text-white font-medium text-xs leading-tight uppercase rounded shadow-md
-                hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg focus:outline-none focus:ring-0
-                active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">Log out</button>
+                <button type="button" id="@{_logOutButton}" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs 
+                    leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+                    focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
+                 Log out</button>
             </div>
             </div>
         </div>
@@ -63,7 +71,8 @@ class appFrame extends ui {
     
         <!-- Log in form  -->
         <div id="@{_formLogIn}" class="appFrame-login-form">
-            <div class="appFrame-login-container">
+            <div id="@{_logInContainer}" class="appFrame-login-container">
+            
                 <!-- Alert message -->
                 <div id="@{_incorrectPassAlert}" class="appFrame-login-alert-container">
                     <div class="appFrame-login-alert-icon"></div>
@@ -75,7 +84,7 @@ class appFrame extends ui {
                     <div class="form-group mb-6">
                         <label for="@{_userName}" class="appFrame-login-label">Username</label>
                         <input type="userName" id="@{_userName}" class="appFrame-login-username" 
-                        title="Enter your userName" placeholder="Enter userName" value="testUser1">
+                        title="Enter your Username" placeholder="Enter Username" value="testUser1">
                     </div>
 
                     <!-- Password input -->
@@ -125,19 +134,42 @@ class appFrame extends ui {
         
         // Set initial values
         this._hideAlert();
+        this._disconnectAlert.style.display = "none";
+        this._addButton.disabled = true;
+        this._userButton.disabled = true;
+        
 
         // Event subscriptions
         this._addButton.addEventListener('click', (e) => {
-            controls.appFrame.SetData({router3: {controlType: "DeviceList"}})
+            // Get unique random name
+            function randomName() {
+                return "router_" + Math.round(Math.random() * 10000);
+            }
+            
+            let name = randomName();
+            while (this[name]) {
+                name = randomName();
+            }
+
+            // Create new router
+            controls.appFrame.SetData({[name]: {controlType: "DeviceList"}});
+            controls.appFrame.on(name, control => {
+                // send newly created router's data to manager
+                this._notify({[name]: control.GetData()});
+            });
         });
 
-        // this._userName.addEventListener('change', (e) => {
-        //     this.userName = this._userName.value;
-        // });
-
-        // this._userPassword.addEventListener('change', (e) => {
-        //     this.userPassword = this._userPassword.value;
-        // });
+        this._logOutButton.addEventListener('click', (e) => {
+            this.clearControls();
+            this._addButton.disabled = true;
+            this._userButton.disabled = true;
+            this._formLogIn.style.display = "flex";
+            this._controlsDiv.style.display = "none";
+            this._incorrectPassAlert.style.display = "none";
+            this._userName.value = "";
+            this._userPassword.value = "";
+            this._userName.focus();
+        });
 
         this._userRemember.addEventListener('click', (e) => {
             
@@ -167,12 +199,18 @@ class appFrame extends ui {
     }
 
     logIn() {
-        
-            this._controlsDiv.style.display = "block";
-            this._formLogIn.style.display = "none";
-            this._incorrectPassAlert.style.display = "none";
-    }
+        this._addButton.disabled = false;
+        this._userButton.disabled = false;
+        this._controlsDiv.style.display = "block";
+        this._formLogIn.style.display = "none";
+        this._incorrectPassAlert.style.display = "none";
+}
       
+    clearControls() {
+        Object.keys(this._controls).forEach(control => {
+            this.RemoveChild(control);
+        });
+    }
     // this._incorrectPassAlert.style.display = "block";
     // this._userName.focus();
     

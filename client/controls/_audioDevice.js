@@ -37,20 +37,20 @@ class _audioDevice extends ui {
 
                             <!-- Name and Volume indicator -->
                             <div class="mb-1 col-span-2">
-                                <div class="font-medium text-lg font-['Segoe UI']" title="Audio Input Name">${this.name}</div>
+                                <div class="font-medium text-lg" title="Audio Input Name">${this.name}</div>
                                 <div id="@{_volume_slit}" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                             </div>
 
-                            <!-- Mute Button -->
-                            <div class="ml-7 mt-2">
+                            <div class="flex justify-between">
+                                <!-- Mute Button -->
                                 <button id="@{_control_button}" type="button" title="If true, reduces the audio volume to zero." class="audioDevice-btn-mute">
                                     <span id="@{_control_button_text}">OFF</span>
                                 </button>
-                            </div>
 
-                            <!-- Container toggle -->
-                            <div class="items-end justify-items-end ml-7 mt-1">
-                                <div class="audioDevice-toggle-arrow"></div>
+                                <!-- Container toggle -->
+                                <div class="flex w-4 h-full items-start justify-items-end ml-2">
+                                    <div class="audioDevice-toggle-arrow"></div>
+                                </div>
                             </div>
                     </div>
                 </summary>
@@ -59,7 +59,7 @@ class _audioDevice extends ui {
                 <div class="w-full h-[0.01rem] bg-[#75C4EB]"></div>
 
                 <!-- More Info Container  -->
-                <div class="w-full h-auto m-4 pr-[2rem] font-['Helvetica'] text-sm">
+                <div class="w-full h-auto m-4 pr-[2rem] text-[14.75px]">
 
                     <!-- Description text area  -->
                     <div class="w-full mb-1 mr-4">
@@ -335,6 +335,7 @@ class _audioDevice extends ui {
 
         this.on('maxVolume', maxVolume => {
             this._maxVolume.value = maxVolume;
+            this._volume_slider.max = this.maxVolume;
         });
 
         this.on('soloGroup', soloGroup => {
@@ -373,6 +374,8 @@ class _audioDevice extends ui {
         if (!this._sliderActive) {
             this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
         }
+        this._volume_slider.value = this.volume;
+        this._rangeBullet.innerHTML = Math.round(this.volume * 100) + " %";
     }
 
     showSliderValue() {

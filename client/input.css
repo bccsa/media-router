@@ -11,12 +11,12 @@
 }
 
 .audioDevice-heading {
-    @apply flex mt-1 mb-1 pl-4 w-full h-14
+    @apply flex justify-between items-center mt-1 mb-1 pl-4 w-full h-14;
 }
 
 .audioDevice-btn-mute {
-    @apply h-10 w-20 inline-block px-6 py-2.5 leading-tight
-    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none 
+    @apply h-11 w-11 inline-block leading-tight
+    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none ml-8 mt-1 mr-3
     focus:ring-0 transition duration-150 ease-in-out;
 }
 
@@ -27,27 +27,27 @@
 
 .audioDevice-text-area {
     @apply max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[28rem] text-sm font-normal
-    text-[#75C4EB] bg-[#293548] border border-solid border-gray-300
+    text-white bg-[#293548] border border-solid border-gray-300
     rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
-    focus:outline-none px-2 py-1
+    focus:outline-none px-2 py-1;
 }
 
 .audioDevice-select {
    @apply form-select h-[1.625rem]
-   w-full text-sm font-normal text-[#75C4EB] bg-[#293548]
+   w-full text-sm font-normal text-white bg-[#293548]
    border border-solid border-gray-300 rounded transition
    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5; 
 }
 
 .audioDevice-pos-decimal-input {
-   @apply w-full text-sm font-normal text-[#75C4EB] bg-[#293548]
+   @apply w-full text-sm font-normal text-white bg-[#293548]
    border border-solid border-gray-300 rounded transition
    ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5 h-[1.625rem]; 
 }
 
 .audioDevice-pos-number-input {
     @apply 
-    w-full h-6 text-sm font-normal text-[#75C4EB] bg-[#293548]
+    w-full h-6 text-sm font-normal text-white bg-[#293548]
     border border-solid border-gray-300 rounded transition
     ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
@@ -60,12 +60,17 @@
     @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden bg-white rounded-lg text-black border-solid border border-b-[#DADBDC];
 }
 
-.deviceList-heading {
-    @apply flex flex-row mt-1 mb-1 pl-2 w-full h-10;
+.deviceList-top-bar {
+    @apply flex justify-between w-full h-10 py-1 min-w-[21rem];
+}
+
+.deviceList-top-flex-div{
+    @apply 
+    w-full flex justify-between px-1;
 }
 
 .deviceList-toggle {
-    @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-white bg-no-repeat bg-contain bg-gray-300
+    @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-gray-300
     focus:outline-none cursor-pointer shadow-sm;
 }
 
@@ -96,12 +101,34 @@
     ease-in-out max-h-40 min-h-[2.4rem]
     focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
+
+.deviceList-btn-add{
+    @apply 
+    bg-center bg-cover bg-plus_circle_bl bg-no-repeat
+    inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none border-white;
+}
+
+.deviceList-btn-delete{
+    @apply bg-delete ml-4 bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
+    duration-150 ease-in-out w-8 h-8;
+}
+
+.deviceList-select{
+    @apply form-select appearance-none block w-full
+    px-3 py-1.5 text-base font-normal  text-gray-700
+    bg-white bg-clip-padding bg-no-repeat
+    border border-solid border-gray-300 rounded
+    transition ease-in-out  m-0
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none
+}
+
 /*-------------------------*/
 
 /*SRTOpusInput CSS*/
 .srtOpusInput-pos-number-input {
     @apply 
-    w-full h-6 text-sm font-normal text-[#75C4EB] bg-[#293548]
+    w-full h-6 text-sm font-normal text-white bg-[#293548]
     border border-solid border-gray-300 rounded transition
     ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
@@ -110,24 +137,24 @@
 /*App Frame CSS*/
 .appFrame-top-bar{
     @apply 
-    w-full h-12 flex justify-between py-2 bg-gray-900 text-gray-200 shadow-lg min-w-[21rem]
+    w-full h-12 flex justify-between py-2 bg-gray-900 text-gray-200 shadow-lg min-w-[23rem];
 }
 
 .appFrame-top-flex-div{
     @apply 
-    w-full flex justify-between px-6
+    w-full flex justify-between px-6;
 }
 
 .appFrame-btn-add{
     @apply 
-    bg-center bg-cover bg-plus_circle bg-no-repeat 
+    bg-center bg-cover bg-plus_circle_wt bg-no-repeat 
     inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
 .appFrame-heading{
     @apply 
-    inline-block mb-4 text-2xl text-white font-['Open-sans']
+    inline-block mb-4 text-2xl text-white;
 }
 
 .appFrame-btn-user{
@@ -139,72 +166,72 @@
 
 .appFrame-modal{
     @apply 
-    modal fade hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto
+    modal fade hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto;
 }
 
 .appFrame-login-form{
     @apply 
-    flex items-center h-[36rem] w-full select-none min-w-[21rem]
+    flex items-center h-[36rem] w-full select-none min-w-[21rem];
 }
 
 .appFrame-login-container{
     @apply 
-    w-full bg-white rounded shadow-lg p-8 m-4 md:max-w-sm md:mx-auto
+    w-full bg-white rounded shadow-lg p-8 m-4 md:max-w-sm md:mx-auto;
 }
 
 .appFrame-login-alert-container{
     @apply 
-    bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full
+    flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full min-w-[17rem];
 }
 
 .appFrame-login-alert-icon{
     @apply 
-    bg-alert w-4 h-4 mr-2
+    bg-alert w-8 h-8 mr-2 bg-center bg-cover bg-no-repeat;
 }
 
 .appFrame-login-alert-text{
     @apply 
-    text-base text-yellow-700
+    text-base text-yellow-700;
 }
 
 .appFrame-login-label{
     @apply 
-    inline-block mb-2 text-gray-700
+    inline-block mb-2 text-gray-700;
 }
 
 .appFrame-login-username{
     @apply 
     form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700
     bg-white bg-clip-padding border border-solid border-gray-300 rounded transition ease-in-out
-    m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none
+    m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
 
 .appFrame-login-password{
     @apply 
     form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700 bg-white bg-clip-padding
     border border-solid border-gray-300 rounded transition ease-in-out  m-0
-    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
 
 .appFrame-login-flex-div{
     @apply 
-    flex justify-between items-center mb-6
+    flex justify-between items-center mb-6;
 }
 
 .appFrame-login-remember-checkbox{
     @apply 
     form-check-input appearance-none h-4 w-4 border border-gray-300 rounded-sm bg-white checked:bg-blue-600
-    checked:border-blue-600 focus:outline-none transition duration-200 mt-1 align-top bg-no-repeat bg-center bg-contain float-left mr-2 cursor-pointer
+    checked:border-blue-600 focus:outline-none transition duration-200 mt-1 align-top bg-no-repeat bg-center bg-contain float-left mr-2 cursor-pointer;
 }
 
 .appFrame-login-remember-label{
     @apply 
-    form-check-label inline-block text-gray-800
+    form-check-label inline-block text-gray-800;
 }
 
 .appFrame-login-forgot-pass{
     @apply 
-    text-blue-600 hover:text-blue-700 focus:text-blue-700 transition duration-200 ease-in-out
+    text-blue-600 hover:text-blue-700 focus:text-blue-700 transition duration-200 ease-in-out;
 }
 
 .appFrame-login-sign-in-button{
@@ -213,12 +240,13 @@
     uppercase rounded shadow-md hover:bg-blue-700 hover:shadow-lg
     focus:bg-blue-700 focus:shadow-lg focus:outline-none focus:ring-0
     active:bg-blue-800 active:shadow-lg transition duration-150
-    ease-in-out
+    ease-in-out;
 }
 
-
-
 /*-------------------------*/
+
+
+
 
 
 /* . {

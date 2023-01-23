@@ -15,11 +15,18 @@ controls.on('appFrame', appFrame => {
         socket.on('connect_error', err => {
             console.log('Unable to connect to manager: ' + err.message);
             appFrame._incorrectPassAlert.style.display = "block";
+            appFrame._userName.focus();
         });
 
         socket.on('connect', () => {
             console.log('Connected to manager');
             appFrame.logIn();
+            appFrame._disconnectAlert.style.display = "none";
+        });
+
+        socket.on('disconnect', () => {
+            appFrame.clearControls();
+            appFrame._disconnectAlert.style.display = "flex";
         });
 
         socket.on('data', data => {
