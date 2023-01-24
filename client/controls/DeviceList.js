@@ -138,7 +138,7 @@ class DeviceList extends ui {
                                     class="deviceList-text-area"
                                     id="@{_userName}" rows="1"
                                     placeholder="Your Username"
-                                    title="Device List description"
+                                    title="Enter a username"
                                 >${this.username}</textarea>
                             </div>
                         </div>
@@ -154,7 +154,7 @@ class DeviceList extends ui {
                                     class="deviceList-text-area"
                                     id="@{_password}" rows="1"
                                     placeholder="Your password"
-                                    title="Device List description"
+                                    title="Enter a password"
                                 >${this.password}</textarea>
                             </div>
                         </div>
@@ -169,9 +169,8 @@ class DeviceList extends ui {
                     </div>
                 </div>  
             </details> 
-        </div>
 
-        <!-- Modal remove deviceList conformation -->
+            <!-- Modal remove deviceList conformation -->
         <div class="modal fade fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
             id="@{_modal_delete}" tabindex="-1" aria-hidden="true">
             <div class="modal-dialog modal-sm relative w-auto pointer-events-none">
@@ -204,6 +203,10 @@ class DeviceList extends ui {
                 </div>
             </div>
         </div>
+        
+        </div>
+
+        
 
         <!-- Modal add Audio Device -->
         <div class="modal fade fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"

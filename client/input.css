@@ -52,6 +52,18 @@
     ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
 
+.audioDevice-btn-duplicate{
+    @apply bg-content_duplicate bg-center bg-cover bg-no-repeat 
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
+.audioDevice-btn-delete{
+    @apply bg-delete_wt bg-center bg-cover bg-no-repeat 
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
 /*-------------------------*/
 
 
@@ -109,7 +121,7 @@
 }
 
 .deviceList-btn-delete{
-    @apply bg-delete ml-4 bg-no-repeat bg-cover bg-center 
+    @apply bg-delete_bl ml-4 bg-no-repeat bg-cover bg-center 
     inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
     duration-150 ease-in-out w-8 h-8;
 }
@@ -120,7 +132,7 @@
     bg-white bg-clip-padding bg-no-repeat
     border border-solid border-gray-300 rounded
     transition ease-in-out  m-0
-    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
 
 /*-------------------------*/
@@ -152,6 +164,7 @@
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
+
 .appFrame-heading{
     @apply 
     inline-block mb-4 text-2xl text-white;
@@ -181,7 +194,8 @@
 
 .appFrame-login-alert-container{
     @apply 
-    flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full min-w-[17rem];
+    flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 
+    w-full min-w-[17rem];
 }
 
 .appFrame-login-alert-icon{
@@ -245,6 +259,20 @@
 
 /*-------------------------*/
 
+.modal {
+    z-index: 1055;
+    background-color: #0000004d;
+  }
+
+.modal-backdrop {
+    position: relative;
+    top: 0;
+    left: 0;
+    z-index: 1050;
+    width: 100vw;
+    height: 100vh;
+    background-color: #000000;
+  }
 
 
 

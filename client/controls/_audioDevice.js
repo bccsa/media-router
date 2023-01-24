@@ -61,6 +61,52 @@ class _audioDevice extends ui {
                 <!-- More Info Container  -->
                 <div class="w-full h-auto m-4 pr-[2rem] text-[14.75px]">
 
+                    <!-- Duplicate & Delete  -->
+                    <div class="w-full mr-4 flex justify-end">
+                         
+                        <button type="button" class="audioDevice-btn-duplicate" id="@{_btn_duplicate}" 
+                            title="Duplicate Audio Device">
+                        </button>
+
+                        <button type="button" id="@{_btn_delete}" class="audioDevice-btn-delete"
+                        title="Delete Audio Device">
+                        </button>
+                    </div>
+
+                    <!-- Modal remove device conformation -->
+                    <div class="modal fade top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
+                        id="@{_modal_delete_AudioDevice}" tabindex="-1" aria-hidden="true">
+                        <div class="modal-dialog modal-sm relative w-auto pointer-events-none">
+                            <div class="modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current">
+                                <div class="modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md">
+            
+                                    <div class="inline modal-header h-[1.875rem] w-[1.875rem] bg-delete bg-cover bg-center bg-no-repeat"></div>
+                                    <h5 class="ml-2 text-xl font-medium leading-normal text-gray-800" id="exampleModalLabel"> Delete Device</h5>
+            
+                                    <button type="button"
+                                    class="btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
+                                    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline"
+                                    data-bs-dismiss="modal" aria-label="Close"></button>
+                                </div>
+                                <div class="modal-body relative p-4">
+                                    Are you sure you want to delete the Audio Device?
+                                </div>
+                                <div class="modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md">
+                                    
+                                    <button type="button" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs mr-2
+                                        leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+                                        focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
+                                    Cancel</button>
+                                    
+                                    <button type="button" id="@{_deleteAudioDevice}" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs 
+                                        leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+                                        focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
+                                    Yes</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Description text area  -->
                     <div class="w-full mb-1 mr-4">
                         <label for="@{_description}" class="form-label inline-block mb-2">Description:</label>
@@ -191,8 +237,9 @@ class _audioDevice extends ui {
                     %additionalHtml%
                 </div>  
             </details> 
-
-        </div>`;
+        </div>
+        
+        `;
 
     }
 
@@ -289,6 +336,51 @@ class _audioDevice extends ui {
         this._displayOrder.addEventListener('change', (e) => {
             this.displayOrder = Number.parseInt(this._displayOrder.value);
             this.NotifyProperty("displayOrder");
+        });
+
+        this._btn_delete.addEventListener('click', (e) => {
+            // Show message box
+            this.emit('messageBox',
+            {
+                buttons: ["yes", "no"],
+                title: `Delete ${this.name}?`,
+                text: 'Are you really so ready to remove me? Please let me stay???',
+                callback: data => {
+                    if (data == 'yes') {
+                        this._notify({remove: true});
+                        this.SetData({remove: true});
+                    }
+            }}, 'top');
+        });
+
+        this._deleteAudioDevice.addEventListener('click', (e) => {
+            this._notify({remove: true});
+            this.SetData({remove: true});
+        });
+
+        this._btn_duplicate.addEventListener('click', (e) => {
+        
+            // Get unique random name
+            let type = this.controlType;
+            function randomName() {
+                return type + "_" + Math.round(Math.random() * 10000);
+            }
+            
+            let name = randomName();
+            while (this._parent[name]) {
+                name = randomName();
+            }
+
+            // Create new audio device
+            let dup = this.GetData();
+            delete dup.name;
+
+            this._parent.SetData({[name]: dup});
+            
+            // send newly created audio device's data to manager
+            this._parent._notify({[name]: dup});
+            
+        
         });
 
         // Add VU meter

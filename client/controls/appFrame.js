@@ -152,8 +152,8 @@ class appFrame extends ui {
             }
 
             // Create new router
-            controls.appFrame.SetData({[name]: {controlType: "DeviceList"}});
-            controls.appFrame.on(name, control => {
+            this.SetData({[name]: {controlType: "DeviceList"}});
+            this.on(name, control => {
                 // send newly created router's data to manager
                 this._notify({[name]: control.GetData()});
             });

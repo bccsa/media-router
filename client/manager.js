@@ -36,6 +36,11 @@ controls.on('appFrame', appFrame => {
         controls.on('data', data => {
             socket.emit('data', data.appFrame);
         });
+
+        // Handle messageBox requests
+        controls.on('messageBox', data => {
+            console.log(data);
+        });
     });
 });
 
