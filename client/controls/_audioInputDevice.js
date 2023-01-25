@@ -16,7 +16,7 @@ class _audioInputDevice extends _audioDevice {
 (Enter the destinations, e.g. 'D1, D2, D3')"
                     rows="1" cols="3"
                     placeholder="Example: Destination1, Destination2, Destination3"
-                >${this.destinations.join(', ')}</textarea>
+                >${this.destinations.join(',')}</textarea>
         </div>
 
         <!-- Additional controls  --> 
@@ -32,7 +32,7 @@ class _audioInputDevice extends _audioDevice {
 
         //Event subscriptions
         this._destinations.addEventListener('change', (e) => {
-            this.destinations = this._destinations.value.split(', ');
+            this.destinations = this._destinations.value.split(',');
             this.NotifyProperty("destinations");
         });
 
@@ -44,6 +44,6 @@ class _audioInputDevice extends _audioDevice {
     }
 
     _setDestinations(){
-        this._destinations.value = this.destinations.join(', ');
+        this._destinations.value = this.destinations.join(',');
     }
 }

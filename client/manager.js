@@ -39,7 +39,14 @@ controls.on('appFrame', appFrame => {
 
         // Handle messageBox requests
         controls.on('messageBox', data => {
-            console.log(data);
+            controls.SetData({ msgBox: {
+                controlType: 'messageBox',
+                title: data.title,
+                text: data.text,
+                buttons: data.buttons,
+                callback: data.callback
+            }
+            });
         });
     });
 });

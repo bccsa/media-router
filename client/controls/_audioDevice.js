@@ -146,7 +146,7 @@ class _audioDevice extends ui {
                             <option value="1.50"></option>
                         </datalist>
 
-                        <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume*100} %</label>
+                        <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume * 100} %</label>
                           
                     </div>
 
@@ -243,9 +243,9 @@ class _audioDevice extends ui {
 
     }
 
- 
+
     Init() {
-        
+
         // this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
         // this._control_button = document.getElementById(`${this._uuid}_control_button`);
         // this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
@@ -309,9 +309,8 @@ class _audioDevice extends ui {
             this._volume_slider.max = this.maxVolume;
             this.showSliderValue();
             this.NotifyProperty("maxVolume");
-            
-            if (this.maxVolume <= this.volume)
-            {
+
+            if (this.maxVolume <= this.volume) {
                 this.volume = Number.parseFloat(this._volume_slider.value);
                 this.showSliderValue();
                 this.NotifyProperty("volume");
@@ -338,34 +337,36 @@ class _audioDevice extends ui {
             this.NotifyProperty("displayOrder");
         });
 
+        let a = this;
         this._btn_delete.addEventListener('click', (e) => {
             // Show message box
             this.emit('messageBox',
-            {
-                buttons: ["yes", "no"],
-                title: `Delete ${this.name}?`,
-                text: 'Are you really so ready to remove me? Please let me stay???',
-                callback: data => {
-                    if (data == 'yes') {
-                        this._notify({remove: true});
-                        this.SetData({remove: true});
+                {
+                    buttons: ["yes", "no"],
+                    title: `Delete ${a.name}?`,
+                    text: 'Are you really so ready to remove me? Please let me stay???',
+                    callback: function (data) {
+                        if (data == 'yes') {
+                            a._notify({ remove: true });
+                            a.SetData({ remove: true });
+                        }
                     }
-            }}, 'top');
+                }, 'top');
         });
 
         this._deleteAudioDevice.addEventListener('click', (e) => {
-            this._notify({remove: true});
-            this.SetData({remove: true});
+            this._notify({ remove: true });
+            this.SetData({ remove: true });
         });
 
         this._btn_duplicate.addEventListener('click', (e) => {
-        
+
             // Get unique random name
             let type = this.controlType;
             function randomName() {
                 return type + "_" + Math.round(Math.random() * 10000);
             }
-            
+
             let name = randomName();
             while (this._parent[name]) {
                 name = randomName();
@@ -375,12 +376,12 @@ class _audioDevice extends ui {
             let dup = this.GetData();
             delete dup.name;
 
-            this._parent.SetData({[name]: dup});
-            
+            this._parent.SetData({ [name]: dup });
+
             // send newly created audio device's data to manager
-            this._parent._notify({[name]: dup});
-            
-        
+            this._parent._notify({ [name]: dup });
+
+
         });
 
         // Add VU meter
@@ -461,7 +462,7 @@ class _audioDevice extends ui {
             this._control_button_text.textContent = "ON";
         }
     }
-    
+
     _setVolume() {
         if (!this._sliderActive) {
             this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
