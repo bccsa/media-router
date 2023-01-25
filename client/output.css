@@ -7862,6 +7862,10 @@ textarea.appFrame-login-password.is-invalid {
   visibility: visible;
 }
 
+.\!visible {
+  visibility: visible !important;
+}
+
 .invisible {
   visibility: hidden;
 }

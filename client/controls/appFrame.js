@@ -111,25 +111,25 @@ class appFrame extends ui {
                         
                 </div>
             </div>
-        </div>
+        </div> 
 
-        <!-- Device Lists-->
-        <div id="@{_controlsDiv}" class="pb-4 pt-2 h-auto w-auto hidden"></div>
+        <!-- Simple List 
+
+            <!-- Device Lists-->
+            <div id="@{_controlsDiv}" class="list-group pb-4 pt-2 h-auto w-auto hidden"></div>
+
+            
         `;
 
     }
 
     Init() {
-        // this._addButton = document.getElementById(`${this._uuid}_addButton`);
-        // this._userButton = document.getElementById(`${this._uuid}_userButton`);
-        // this._formLogIn = document.getElementById(`${this._uuid}_formLogIn`);
-        // this._incorrectPassAlert = document.getElementById(`${this._uuid}_incorrectPassAlert`);
-        // this._userName = document.getElementById(`${this._uuid}_userName`);
-        // this._userPassword = document.getElementById(`${this._uuid}_userPassword`);
-        // this._userRemember = document.getElementById(`${this._uuid}_userRemember`);
-        // this._signIn = document.getElementById(`${this._uuid}_signIn`);
-        // this._controlsDiv = document.getElementById(`${this._uuid}_controlsDiv`);
-        // this._modal-log-out = document.getElementById(`${this._uuid}_modal-log-out`);
+        
+        Sortable.create(this._controlsDiv, {
+            animation: 350,
+            chosenClass: "sortable-chosen",
+            dragClass: "sortable-drag"
+        });
 
         
         // Set initial values

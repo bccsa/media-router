@@ -15,7 +15,7 @@ class DeviceList extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="deviceList-main-card">
+        <div class="deviceList-main-card list-group-item">
 
             <details class="rounded group">
 
