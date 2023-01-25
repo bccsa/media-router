@@ -246,21 +246,6 @@ class _audioDevice extends ui {
 
     Init() {
 
-        // this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
-        // this._control_button = document.getElementById(`${this._uuid}_control_button`);
-        // this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
-        // this._description = document.getElementById(`${this._uuid}_description`);
-        // this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
-        // this._rangeBullet = document.getElementById(`${this._uuid}_rs-bullet`);
-        // this._channels = document.getElementById(`${this._uuid}_channels`);
-        // this._sampleRate = document.getElementById(`${this._uuid}_sampleRate`);
-        // this._bitDepth = document.getElementById(`${this._uuid}_bitDepth`);
-        // this._maxVolume = document.getElementById(`${this._uuid}_maxVolume`);
-        // this._soloGroup = document.getElementById(`${this._uuid}_soloGroup`);
-        // this._showVolumeControl = document.getElementById(`${this._uuid}_showVolumeControl`);
-        // this._showMuteControl = document.getElementById(`${this._uuid}_showMuteControl`);
-        // this._displayOrder = document.getElementById(`${this._uuid}_displayOrder`);
-
         //Set initial values
         this._setMute();
         this._channels.value = this.channels;
@@ -268,8 +253,6 @@ class _audioDevice extends ui {
         this._bitDepth.value = this.bitDepth;
         this._showVolumeControl.checked = this.showVolumeControl;
         this._showMuteControl.checked = this.showMuteControl;
-
-
 
         //Event subscriptions
         this._control_button.addEventListener('click', (e) => {
@@ -342,9 +325,10 @@ class _audioDevice extends ui {
             // Show message box
             this.emit('messageBox',
                 {
-                    buttons: ["yes", "no"],
+                    buttons: ["Cancel", "Yes"],
                     title: `Delete ${a.name}?`,
-                    text: 'Are you really so ready to remove me? Please let me stay???',
+                    text: 'Are you sure you want to delete the device?',
+                    img: 'bg-delete_bl',
                     callback: function (data) {
                         if (data == 'yes') {
                             a._notify({ remove: true });

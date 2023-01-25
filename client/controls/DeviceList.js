@@ -17,8 +17,6 @@ class DeviceList extends ui {
         <!-- Main Card Container -->
         <div class="deviceList-main-card">
 
-
-
             <details class="rounded group">
 
                 <!-- Top Heading Container  -->
@@ -26,16 +24,19 @@ class DeviceList extends ui {
                     <div class="deviceList-top-bar">
                         <div class="deviceList-top-flex-div">
 
-                            <div class="flex flex-row items-center justify-items-end">
-                                <!-- Add Button  -->
-                                <button id="@{_addButton}" type="button" class="deviceList-btn-add"
-                                data-bs-toggle="modal" data-bs-target="#@{_modal_add_audioDevice}"  
-                                    title="Add a new DeviceList">
-                                </button>
+                            <!-- Name -->
+                            <div class="ml-4">
+                                <span class="font-semibold text-2xl" title="Device List Name">${this.name}</span>
+                            </div>
 
-                                <!-- Name -->
+                            <div class="flex flex-row items-center justify-items-end">
+                                <!-- Signal -->
+                                <div class="deviceList-btn-signal"
+                                    title="Add a new DeviceList">
+                                </div>
+
                                 <div class="ml-4">
-                                    <span class="font-semibold text-2xl" title="Device List Name">${this.name}</span>
+                                     <span class="font-medium text-xl" title="Device List Name">Signal(to be added)</span>
                                 </div>
                             </div>
 
@@ -84,9 +85,21 @@ class DeviceList extends ui {
 
                         <!-- Exit setting button  -->
                         <div class="flex flex-row justify-between w-full h-auto">
-                            <label for="@{_description}" class="form-label inline-block ml-4 mt-2"
-                            >Description: </label>
+                            <div class="flex flex-row items-center justify-items-end">
 
+                                <!-- Add Button  -->
+                                <button id="@{_addButton}" type="button" class="deviceList-btn-add"
+                                data-bs-toggle="modal" data-bs-target="#@{_modal_add_audioDevice}"  
+                                    title="Add a new Device">
+                                </button>
+
+                                <!-- Duplicate Button  -->
+                                <button id="@{_duplicateButton}" type="button" class="deviceList-btn-duplicate"
+                                    title="Duplicate DeviceList">
+                                </button>
+                            </div>
+                            
+                            <!-- Exit Button  -->
                             <div class="justify-end">
                                     <button id="@{_exitButton}" type="button" class="deviceList-btn-exit" 
                                     title="Close Device List Settings">
@@ -95,6 +108,7 @@ class DeviceList extends ui {
                         </div>
                                     
                         <!-- Description  -->
+                        <label for="@{_description}" class="form-label inline-block ml-4 mt-2">Description: </label>
                         <div class="ml-4 mb-2 flex justify-start">
                             <div class="mr-4 w-full">
                             
@@ -169,44 +183,7 @@ class DeviceList extends ui {
                     </div>
                 </div>  
             </details> 
-
-            <!-- Modal remove deviceList conformation -->
-        <div class="modal fade fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
-            id="@{_modal_delete}" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog modal-sm relative w-auto pointer-events-none">
-                <div class="modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current">
-                    <div class="modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md">
-
-                        <div class="inline modal-header h-[1.875rem] w-[1.875rem] bg-delete bg-cover bg-center bg-no-repeat"></div>
-                        <h5 class="ml-2 text-xl font-medium leading-normal text-gray-800" id="exampleModalLabel"> Delete DeviceList</h5>
-
-                        <button type="button"
-                        class="btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
-                        focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline"
-                        data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-                    <div class="modal-body relative p-4">
-                        Are you sure you want to delete the DeviceList?
-                    </div>
-                    <div class="modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md">
-                        
-                        <button type="button" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs mr-2
-                            leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
-                            focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
-                        Cancel</button>
-                        
-                        <button type="button" id="@{_deleteDeviceList}" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs 
-                            leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
-                            focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
-                        Yes</button>
-                    </div>
-                </div>
-            </div>
         </div>
-        
-        </div>
-
-        
 
         <!-- Modal add Audio Device -->
         <div class="modal fade fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
@@ -253,20 +230,47 @@ class DeviceList extends ui {
                 </div>
             </div>
         </div>
+
+
+        <!-- Modal remove deviceList conformation -->
+        <div class="modal fade fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
+            id="@{_modal_delete}" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm relative w-auto pointer-events-none">
+                <div class="modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current">
+                    <div class="modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md">
+
+                        <div class="inline modal-header h-[1.875rem] w-[1.875rem] bg-delete_bl bg-cover bg-center bg-no-repeat"></div>
+                        <h5 class="ml-2 text-xl font-medium leading-normal text-gray-800" id="exampleModalLabel"> Delete DeviceList</h5>
+
+                        <button type="button"
+                        class="btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
+                        focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body relative p-4">
+                        Are you sure you want to delete the DeviceList?
+                    </div>
+                    <div class="modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md">
+                        
+                        <button type="button" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs mr-2
+                            leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+                            focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
+                        Cancel</button>
+                        
+                        <button type="button" id="@{_deleteDeviceList}" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs 
+                            leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+                            focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
+                        Yes</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         `;
 
     }
 
     Init() {
-        // this._switchOnOff = document.getElementById(`${this._uuid}_switchOnOff`);
-        // this._description = document.getElementById(`${this._uuid}_description`);
-        // this._controlsDiv = document.getElementById(`${this._uuid}_audioInputControls`);
-        // this._exitButton = document.getElementById(`${this._uuid}_exitButton`);
-        // this._settingsButton = document.getElementById(`${this._uuid}_settingsButton`);
-        // this._settingsContainer = document.getElementById(`${this._uuid}_settingsContainer`);
-        // this._autoStartDelay = document.getElementById(`${this._uuid}_autoStartDelay`);
-        // this._autoStart = document.getElementById(`${this._uuid}_autoStart`);
-
+        
         // Set initial values
         this._toggleSettingContainer();
         this._switchOnOff.checked = this.run;
@@ -341,6 +345,27 @@ class DeviceList extends ui {
                 this._notify({[name]: control.GetData()});
             });
         });
+
+        this._duplicateButton.addEventListener('click', (e) => {
+            // Get unique random name
+            function randomName() {
+                return  "router_" + Math.round(Math.random() * 10000);
+            }
+
+            let name = randomName();
+            while (this._parent[name]) {
+                name = randomName();
+            }
+
+            // Create new router
+            let dup = this.GetData();
+            delete dup.name;
+
+            this._parent.SetData({ [name]: dup });
+
+            // send newly created router's data to manager
+            this._parent._notify({ [name]: dup });
+        })
 
         // Handle property changes
 

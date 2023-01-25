@@ -53,7 +53,7 @@
 }
 
 .audioDevice-btn-duplicate{
-    @apply bg-content_duplicate bg-center bg-cover bg-no-repeat 
+    @apply bg-content_duplicate_wt bg-center bg-cover bg-no-repeat 
     inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
@@ -116,8 +116,20 @@
 
 .deviceList-btn-add{
     @apply 
-    bg-center bg-cover bg-plus_circle_bl bg-no-repeat
-    inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none border-white;
+    bg-center bg-cover bg-plus_circle_bl bg-no-repeat m-2
+    inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none;
+}
+
+.deviceList-btn-duplicate{
+    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 
+    inline-block rounded-full transition hover:shadow-lg
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
+.deviceList-btn-signal{
+    @apply 
+    bg-center bg-cover bg-signal_gr bg-no-repeat
+    inline-block w-7 h-7 p-1;
 }
 
 .deviceList-btn-delete{

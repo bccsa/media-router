@@ -5779,7 +5779,7 @@ textarea.audioDevice-text-area.is-invalid {
   border-radius: 9999px;
   border-width: 2px;
   border-color: transparent;
-  background-image: url('./controls/img/content_duplicate.svg');
+  background-image: url('./controls/img/content_duplicate_wt.svg');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -6398,14 +6398,13 @@ textarea.deviceList-text-area.is-invalid {
 }
 
 .deviceList-btn-add {
+  margin: 0.5rem;
   display: inline-block;
   height: 2rem;
   width: 2rem;
   border-radius: 9999px;
   border-width: 2px;
   border-color: transparent;
-  --tw-border-opacity: 1;
-  border-color: rgb(255 255 255 / var(--tw-border-opacity));
   background-image: url('./controls/img/plus_circle_bl.svg');
   background-size: cover;
   background-position: center;
@@ -6424,6 +6423,43 @@ textarea.deviceList-text-area.is-invalid {
   box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
   outline: 2px solid transparent;
   outline-offset: 2px;
+}
+
+.deviceList-btn-duplicate {
+  margin: 0.5rem;
+  display: inline-block;
+  height: 2rem;
+  width: 2rem;
+  border-radius: 9999px;
+  border-width: 2px;
+  border-color: transparent;
+  background-image: url('./controls/img/content_duplicate_bl.svg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  padding: 0.25rem;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-backdrop-filter;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.deviceList-btn-duplicate:hover {
+  --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --tw-shadow-colored: 0 10px 15px -3px var(--tw-shadow-color), 0 4px 6px -4px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+
+.deviceList-btn-signal {
+  display: inline-block;
+  height: 1.75rem;
+  width: 1.75rem;
+  background-image: url('./controls/img/signal_gr.svg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  padding: 0.25rem;
 }
 
 .deviceList-btn-delete {
@@ -9231,6 +9267,10 @@ textarea.appFrame-login-password.is-invalid {
 
 .bg-plus_circle_bl {
   background-image: url('./controls/img/plus_circle_bl.svg');
+}
+
+.bg-delete_bl {
+  background-image: url('./controls/img/delete_bl.svg');
 }
 
 .bg-logout {

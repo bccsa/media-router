@@ -1,7 +1,7 @@
 class _audioInputDevice extends _audioDevice {
     constructor() {
         super();
-        this.destinations = ["Destination1","Destination2","Destination3"]; // Split with comma from string
+        this.destinations = ["Destination1", "Destination2", "Destination3"]; // Split with comma from string
     }
 
     get html() {
@@ -13,7 +13,7 @@ class _audioInputDevice extends _audioDevice {
                     class="audioDevice-text-area"
                     id="@{_destinations}"
                     title="Array of strings with destination device name(s)
-(Enter the destinations, e.g. 'D1, D2, D3')"
+(Enter the destinations, e.g. 'D1,D2,D3')"
                     rows="1" cols="3"
                     placeholder="Example: Destination1, Destination2, Destination3"
                 >${this.destinations.join(',')}</textarea>

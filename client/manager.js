@@ -44,6 +44,7 @@ controls.on('appFrame', appFrame => {
                 title: data.title,
                 text: data.text,
                 buttons: data.buttons,
+                img: data.img,
                 callback: data.callback
             }
             });

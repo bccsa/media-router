@@ -19,7 +19,11 @@ module.exports = {
         'alert': "url('./controls/img/alert.svg')",
         'logout': "url('./controls/img/logout.svg')",
         'plus_circle_bl': "url('./controls/img/plus_circle_bl.svg')",
-        'content_duplicate': "url('./controls/img/content_duplicate.svg')",
+        'content_duplicate_wt': "url('./controls/img/content_duplicate_wt.svg')",
+        'content_duplicate_bl': "url('./controls/img/content_duplicate_bl.svg')",
+        'signal_gr': "url('./controls/img/signal_gr.svg')",
+        'signal_bl': "url('./controls/img/signal_bl.svg')",
+        'signal_red': "url('./controls/img/signal_red.svg')",
       }
     }
   }

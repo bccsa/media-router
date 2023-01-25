@@ -4,6 +4,7 @@ class messageBox extends ui {
         this.buttons = [];
         this.title = "";
         this.text = "";
+        this.img = "";
         this.callback = "";
     }
 
@@ -26,14 +27,15 @@ class messageBox extends ui {
         <!-- messageBox modal -->
         <div class="fixed top-0 left-0 w-full h-full outline-none overflow-x-hidden overflow-y-auto z-[1050] bg-[#00000050]"
             id="@{_modal_messageBox}" tabindex="-1" aria-hidden="false">
-            <div class="modal-dialog modal-sm mt-32 transition-opacity duration-300 relative w-auto pointer-events-none z-[1055]">
+            <div class="modal-dialog mt-32 transition-opacity duration-300 relative w-auto pointer-events-none z-[1055]">
                 <div class="modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current">
                     <div class="modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md">
 
-                        <div class="inline modal-header h-[1.875rem] w-[1.875rem] bg-delete bg-cover bg-center bg-no-repeat"></div>
+                        <div class="inline modal-header h-[1.875rem] w-[1.875rem] ${this.img} bg-cover bg-center bg-no-repeat"></div>
+
                         <h5 class="ml-2 text-xl font-medium leading-normal text-gray-800">${this.title}</h5>
 
-                        <button type="button"
+                        <button type="button" id="@{_btn_close}"
                         class="btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
                         focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline"
                         aria-label="Close"></button>
@@ -65,5 +67,16 @@ class messageBox extends ui {
             // Destroy the control
             m.SetData({remove: true});
         }
+
+        this._modal_messageBox.addEventListener('click', (e) => {
+            // Destroy the control
+            m.SetData({remove: true});
+        })
+
+        this._btn_close.addEventListener('click', (e) => {
+            // Destroy the control
+            m.SetData({remove: true});
+        })
+
     }
 }

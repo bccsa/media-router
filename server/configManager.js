@@ -74,7 +74,7 @@ class configManager {
         Object.keys(source).forEach(key => {
             // Append data to destination.
             let val = source[key];
-            if (typeof val === "object" && val !== null) {
+            if (typeof val === "object" && val !== null && !Array.isArray(source[key])) {
                 if (val.remove == true) {
                     // Remove destination child object if the source remove key is set
                     delete destination[key];
