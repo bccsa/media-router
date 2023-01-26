@@ -1,6 +1,187 @@
 @tailwind base;
 @tailwind components;
 
+/*App Frame CSS*/
+.appFrame-top-bar{
+    @apply 
+    w-full h-12 flex justify-between py-2 bg-gray-900 text-gray-200 shadow-lg min-w-[23rem];
+}
+
+.appFrame-top-flex-div{
+    @apply 
+    w-full flex justify-between px-6;
+}
+
+.appFrame-btn-add{
+    @apply 
+    bg-center bg-cover bg-plus_circle_wt bg-no-repeat 
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
+.appFrame-heading{
+    @apply 
+    inline-block mb-4 text-2xl text-white;
+}
+
+.appFrame-btn-log-out{
+    @apply 
+    bg-center bg-cover bg-account bg-no-repeat
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
+.appFrame-disconnect-alert-container{
+    @apply 
+    flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 
+    w-full min-w-[17rem];
+}
+
+.appFrame-disconnect-alert-icon{
+    @apply 
+    bg-alert w-8 h-8 mr-2 bg-center bg-cover bg-no-repeat;
+}
+
+.appFrame-disconnect-alert-text{
+    @apply 
+    text-base text-yellow-700;
+}
+
+.appFrame-modal-log-out{
+    @apply 
+    fixed hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto;
+}
+
+.appFrame-modal-dialog{
+    @apply 
+    relative w-auto pointer-events-none;
+}
+
+.appFrame-modal-content{
+    @apply 
+    modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
+}
+
+.appFrame-modal-header{
+    @apply 
+    modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md;
+}
+
+.appFrame-modal-img{
+    @apply 
+    bg-logout inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+}
+
+.appFrame-modal-heading{
+    @apply 
+    ml-2 text-xl font-medium leading-normal text-gray-800;
+}
+
+.appFrame-modal-btn-close{
+    @apply 
+    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
+    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline;
+}
+
+.appFrame-modal-body{
+    @apply 
+    modal-body relative p-4;
+}
+
+.appFrame-modal-footer{
+    @apply 
+    modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md;
+}
+
+.appFrame-modal-btn-log-out{
+    @apply 
+    px-6 py-2.5 bg-purple-600 text-white font-medium text-xs 
+    leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+    focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out;
+}
+
+.appFrame-login-form{
+    @apply 
+    flex items-center h-[36rem] w-full select-none min-w-[21rem];
+}
+
+.appFrame-login-container{
+    @apply 
+    w-full bg-white rounded shadow-lg p-8 m-4 md:max-w-sm md:mx-auto;
+}
+
+.appFrame-login-alert-container{
+    @apply 
+    flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 
+    w-full min-w-[17rem];
+}
+
+.appFrame-login-alert-icon{
+    @apply 
+    bg-alert w-8 h-8 mr-2 bg-center bg-cover bg-no-repeat;
+}
+
+.appFrame-login-alert-text{
+    @apply 
+    text-base text-yellow-700;
+}
+
+.appFrame-label{
+    @apply 
+    inline-block mb-2 text-gray-700;
+}
+
+.appFrame-input-username{
+    @apply 
+    form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700
+    bg-white bg-clip-padding border border-solid border-gray-300 rounded transition ease-in-out
+    m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+}
+
+.appFrame-input-password{
+    @apply 
+    form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700 bg-white bg-clip-padding
+    border border-solid border-gray-300 rounded transition ease-in-out  m-0
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+}
+
+.appFrame-login-flex-div{
+    @apply 
+    flex justify-between items-center mb-6;
+}
+
+.appFrame-checkbox{
+    @apply 
+    form-check-input appearance-none h-4 w-4 border border-gray-300 rounded-sm bg-white checked:bg-blue-600
+    checked:border-blue-600 focus:outline-none transition duration-200 mt-1 align-top bg-no-repeat bg-center bg-contain float-left mr-2 cursor-pointer;
+}
+
+.appFrame-label-remember{
+    @apply 
+    form-check-label inline-block text-gray-800;
+}
+
+.appFrame-link-forgot-pass{
+    @apply 
+    text-blue-600 hover:text-blue-700 focus:text-blue-700 transition duration-200 ease-in-out;
+}
+
+.appFrame-btn-sign-in{
+    @apply 
+    w-full px-6 py-2.5 bg-blue-600 text-white font-medium text-xs leading-tight
+    uppercase rounded shadow-md hover:bg-blue-700 hover:shadow-lg
+    focus:bg-blue-700 focus:shadow-lg focus:outline-none focus:ring-0
+    active:bg-blue-800 active:shadow-lg transition duration-150
+    ease-in-out;
+}
+
+.appFrame-controls-div{
+    @apply 
+    pb-4 pt-2 h-auto w-auto hidden;
+}
+
+/*-------------------------*/
+
 /* Audio Device css */
 .audioDevice-main-card {
     @apply m-1 select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
@@ -69,7 +250,9 @@
 
 /* Device List css */
 .deviceList-main-card {
-    @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden bg-white rounded-lg text-black border-solid border border-b-[#DADBDC];
+    @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden 
+    bg-white rounded-lg text-black border-solid border border-b-[#DADBDC] 
+    min-w-[35rem];
 }
 
 .deviceList-top-bar {
@@ -147,6 +330,12 @@
     focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
 
+.deviceList-btn-handel{
+    @apply
+    bg-handel_drag cursor-grabbing bg-center bg-cover bg-no-repeat
+    inline-block w-7 h-7 p-1;
+}
+
 /*-------------------------*/
 
 /*SRTOpusInput CSS*/
@@ -158,118 +347,7 @@
 }
 /*-------------------------*/
 
-/*App Frame CSS*/
-.appFrame-top-bar{
-    @apply 
-    w-full h-12 flex justify-between py-2 bg-gray-900 text-gray-200 shadow-lg min-w-[23rem];
-}
 
-.appFrame-top-flex-div{
-    @apply 
-    w-full flex justify-between px-6;
-}
-
-.appFrame-btn-add{
-    @apply 
-    bg-center bg-cover bg-plus_circle_wt bg-no-repeat 
-    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
-    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
-}
-
-
-.appFrame-heading{
-    @apply 
-    inline-block mb-4 text-2xl text-white;
-}
-
-.appFrame-btn-user{
-    @apply 
-    bg-center bg-cover bg-account bg-no-repeat
-    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
-    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
-}
-
-.appFrame-modal{
-    @apply 
-    modal fade hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto;
-}
-
-.appFrame-login-form{
-    @apply 
-    flex items-center h-[36rem] w-full select-none min-w-[21rem];
-}
-
-.appFrame-login-container{
-    @apply 
-    w-full bg-white rounded shadow-lg p-8 m-4 md:max-w-sm md:mx-auto;
-}
-
-.appFrame-login-alert-container{
-    @apply 
-    flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 
-    w-full min-w-[17rem];
-}
-
-.appFrame-login-alert-icon{
-    @apply 
-    bg-alert w-8 h-8 mr-2 bg-center bg-cover bg-no-repeat;
-}
-
-.appFrame-login-alert-text{
-    @apply 
-    text-base text-yellow-700;
-}
-
-.appFrame-login-label{
-    @apply 
-    inline-block mb-2 text-gray-700;
-}
-
-.appFrame-login-username{
-    @apply 
-    form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700
-    bg-white bg-clip-padding border border-solid border-gray-300 rounded transition ease-in-out
-    m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
-}
-
-.appFrame-login-password{
-    @apply 
-    form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700 bg-white bg-clip-padding
-    border border-solid border-gray-300 rounded transition ease-in-out  m-0
-    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
-}
-
-.appFrame-login-flex-div{
-    @apply 
-    flex justify-between items-center mb-6;
-}
-
-.appFrame-login-remember-checkbox{
-    @apply 
-    form-check-input appearance-none h-4 w-4 border border-gray-300 rounded-sm bg-white checked:bg-blue-600
-    checked:border-blue-600 focus:outline-none transition duration-200 mt-1 align-top bg-no-repeat bg-center bg-contain float-left mr-2 cursor-pointer;
-}
-
-.appFrame-login-remember-label{
-    @apply 
-    form-check-label inline-block text-gray-800;
-}
-
-.appFrame-login-forgot-pass{
-    @apply 
-    text-blue-600 hover:text-blue-700 focus:text-blue-700 transition duration-200 ease-in-out;
-}
-
-.appFrame-login-sign-in-button{
-    @apply 
-    w-full px-6 py-2.5 bg-blue-600 text-white font-medium text-xs leading-tight
-    uppercase rounded shadow-md hover:bg-blue-700 hover:shadow-lg
-    focus:bg-blue-700 focus:shadow-lg focus:outline-none focus:ring-0
-    active:bg-blue-800 active:shadow-lg transition duration-150
-    ease-in-out;
-}
-
-/*-------------------------*/
 
 .modal {
     z-index: 1055;

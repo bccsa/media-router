@@ -8,6 +8,7 @@ class DeviceList extends ui {
         this.run = false;
         this.username = "";
         this.password = "";
+        this.displayName = "New Router";
     }
 
     get html() {
@@ -15,18 +16,25 @@ class DeviceList extends ui {
         <!-- ${this.name} -->
 
         <!-- Main Card Container -->
-        <div class="deviceList-main-card list-group-item">
+        <div class="deviceList-main-card list-group-item" data-id="${++ this._parent.listId}">
 
-            <details class="rounded group">
+            <details id="@{_details}" class="rounded group">
 
                 <!-- Top Heading Container  -->
                 <summary class="audioDevice-summary-container">
                     <div class="deviceList-top-bar">
                         <div class="deviceList-top-flex-div">
 
-                            <!-- Name -->
-                            <div class="ml-4">
-                                <span class="font-semibold text-2xl" title="Device List Name">${this.name}</span>
+                            <div class="flex flex-row items-center justify-items-end">
+                                <!-- Handel -->
+                                <div class="deviceList-btn-handel"
+                                    title="Add a new DeviceList">
+                                </div>
+
+                                <!-- Name -->
+                                <div class="ml-4">
+                                    <span id="@{_name}" class="font-semibold text-2xl" title="Device List Name">${this.displayName}</span>
+                                </div>
                             </div>
 
                             <div class="flex flex-row items-center justify-items-end">
@@ -104,6 +112,19 @@ class DeviceList extends ui {
                                     <button id="@{_exitButton}" type="button" class="deviceList-btn-exit" 
                                     title="Close Device List Settings">
                                     </button>
+                            </div>
+                        </div>
+
+                        <!-- Display name  -->
+                        <label for="@{_displayName}" class="form-label inline-block ml-4 mt-2">Display Name: </label>
+                        <div class="ml-4 mb-2 flex justify-start">
+                            <div class="mr-4 w-full">
+                            
+                                <input type="text" class="deviceList-text-area"
+                                    id="@{_displayName}" maxlength="30"
+                                    placeholder="Your display name"
+                                    title="Device List display name"
+                                    value="${this.displayName}"/>
                             </div>
                         </div>
                                     
@@ -269,8 +290,7 @@ class DeviceList extends ui {
 
     }
 
-    Init() {
-        
+    Init() {        
         // Set initial values
         this._toggleSettingContainer();
         this._switchOnOff.checked = this.run;
@@ -296,6 +316,13 @@ class DeviceList extends ui {
 
             this.NotifyProperty("description");
         });
+
+        this._displayName.addEventListener('change', (e) => {
+            this.displayName = this._displayName.value;
+            this._name.innerHTML  = this._displayName.value;
+
+            this.NotifyProperty("displayName");
+        })
 
         this._autoStartDelay.addEventListener('change', (e) => {
             this.autoStartDelay = Number.parseInt(this._autoStartDelay.value);
@@ -360,11 +387,16 @@ class DeviceList extends ui {
             // Create new router
             let dup = this.GetData();
             delete dup.name;
+            dup.displayName += " (copy)"
 
             this._parent.SetData({ [name]: dup });
 
             // send newly created router's data to manager
             this._parent._notify({ [name]: dup });
+
+            // Close group
+            this._details.removeAttribute("open");
+
         })
 
         // Handle property changes
@@ -376,6 +408,11 @@ class DeviceList extends ui {
         this.on('description', description => {
             this._description.value = description;
         });
+
+        this.on('displayName', displayName => {
+            this._displayName.value = displayName;
+            this._name.innerHTML = displayName;
+        })
 
         this.on('autoStartDelay', autoStartDelay => {
             this._autoStartDelay.value = autoStartDelay;

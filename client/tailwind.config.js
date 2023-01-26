@@ -24,6 +24,7 @@ module.exports = {
         'signal_gr': "url('./controls/img/signal_gr.svg')",
         'signal_bl': "url('./controls/img/signal_bl.svg')",
         'signal_red': "url('./controls/img/signal_red.svg')",
+        'handel_drag': "url('./controls/img/handel_drag.svg')",
       }
     }
   }

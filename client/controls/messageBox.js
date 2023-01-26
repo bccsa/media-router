@@ -15,7 +15,7 @@ class messageBox extends ui {
         focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out">
         &name&</button>`;
 
-        let btns = ""
+        let btns = "";
 
         this.buttons.forEach(btn => {
             btns += btnHtml.replaceAll('&name&', btn);
