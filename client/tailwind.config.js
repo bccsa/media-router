@@ -25,6 +25,8 @@ module.exports = {
         'signal_bl': "url('./controls/img/signal_bl.svg')",
         'signal_red': "url('./controls/img/signal_red.svg')",
         'handel_drag': "url('./controls/img/handel_drag.svg')",
+        'dots-six-vertical-bold': "url('./controls/img/dots-six-vertical-bold.svg')",
+        'dots-vertical': "url('./controls/img/dots-vertical.svg')",
       }
     }
   }

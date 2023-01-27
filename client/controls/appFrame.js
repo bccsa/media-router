@@ -1,7 +1,6 @@
 class appFrame extends ui {
     constructor() {
         super();
-        this.listId = 0;
     }
 
     get html() {
@@ -176,6 +175,13 @@ class appFrame extends ui {
         // Load the list order when the mouse is over the controls div
         this._controlsDiv.addEventListener('mouseover', (e) => {
             Sortable.create(this._controlsDiv, {
+                handle: '.deviceList-btn-handel',
+                animation: 350,
+                chosenClass: "sortable-chosen",
+                dragClass: "sortable-drag",
+                group: {
+                    name: 'my-sortable-group'
+                },
                 
                 store: {
                     /**

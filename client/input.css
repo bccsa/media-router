@@ -182,6 +182,220 @@
 
 /*-------------------------*/
 
+/* Device List css */
+.deviceList-main-card {
+    @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden 
+    bg-white rounded-lg text-black border-solid border border-b-[#DADBDC] 
+    min-w-[35rem];
+}
+
+.deviceList-summary-container {
+    @apply list-none flex items-center cursor-pointer first-letter:focus-visible:outline-none focus-visible:ring focus-visible:ring-pink-500 rounded group-open:rounded-b-none group-open:z-10 relative;
+}
+
+.deviceList-top-bar {
+    @apply flex justify-between w-full h-10 py-1 min-w-[21rem];
+}
+
+.deviceList-top-flex-div{
+    @apply 
+    w-full flex justify-between px-1;
+}
+
+.deviceList-flex-justify-end{
+    @apply 
+    flex flex-row items-center justify-items-end;
+}
+
+.deviceList-flex-justify-start{
+    @apply 
+    flex flex-row justify-items-start;
+}
+
+.deviceList-label{
+    @apply 
+    form-check-label inline-block text-gray-800 mr-2;
+}
+
+.deviceList-toggle {
+    @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-gray-300
+    focus:outline-none cursor-pointer shadow-sm;
+}
+
+.deviceList-toggle-arrow {
+    @apply mb-[0.75rem] border-8 border-transparent border-l-black ml-4 mt-1 group-open:rotate-90 transition-transform origin-left self-center;
+}
+
+.deviceList-line{
+    @apply 
+    w-full h-[0.01rem] bg-[#DADBDC];
+}
+
+.deviceList-content{
+    @apply 
+    pl-2 flex flex-row justify-between w-full h-auto;
+}
+
+.deviceList-devices-div{
+    @apply 
+    pb-4 pt-2 h-auto w-auto min-h-[3rem] min-w-[3rem];
+}
+
+.deviceList-btn-settings{
+    @apply ml-4 bg-cog_outline bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none border-4 border-white p-3 transition 
+    duration-150 ease-in-out w-[1.39rem] h-[1.39rem];
+}
+
+.deviceList-settingsContainer {
+    @apply bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-auto h-auto ml-4 max-w-xs mt-[0.05rem] ease-in-out hidden text-[15px];
+}
+
+.deviceList-flex-justify-between{
+    @apply 
+    flex flex-row justify-between w-full h-auto;
+}
+
+.deviceList-btn-exit{
+    @apply bg-xmark ml-4 bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
+    duration-150 ease-in-out w-8 h-8;
+}
+
+.deviceList-text-area {
+    @apply form-control block w-full px-3 py-1.5
+    text-base font-normal text-gray-700 bg-white bg-clip-padding
+    border border-solid border-gray-300 rounded transition
+    ease-in-out max-h-40 min-h-[2.4rem]
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+}
+
+.deviceList-btn-add{
+    @apply 
+    bg-center bg-cover bg-plus_circle_bl bg-no-repeat m-2
+    inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none;
+}
+
+.deviceList-btn-duplicate{
+    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 
+    inline-block rounded-full transition hover:shadow-lg
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+}
+
+.deviceList-label-settings{
+    @apply 
+    ml-4 w-full h-auto;
+}
+
+.deviceList-btn-signal{
+    @apply 
+    bg-center bg-cover bg-signal_gr bg-no-repeat
+    inline-block w-7 h-7 p-1;
+}
+
+.deviceList-container{
+    @apply 
+    ml-4 mb-2 flex justify-start;
+}
+
+.deviceList-number-range{
+    @apply 
+    h-6 text-base font-normal text-gray-700 bg-white
+    border border-solid border-gray-300 rounded transition
+    ease-in-out focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none pl-3 py-1.5 w-full;
+}
+
+.deviceList-checkbox{
+    @apply 
+    mr-2 mt-1 h-4 w-4;
+}
+
+.deviceList-btn-delete{
+    @apply bg-delete_bl ml-4 bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
+    duration-150 ease-in-out w-8 h-8;
+}
+
+.deviceList-select{
+    @apply form-select appearance-none block w-full
+    px-3 py-1.5 text-base font-normal  text-gray-700
+    bg-white bg-clip-padding bg-no-repeat
+    border border-solid border-gray-300 rounded
+    transition ease-in-out  m-0
+    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+}
+
+.deviceList-btn-handel{
+    @apply
+    bg-dots-six-vertical-bold cursor-grabbing bg-center bg-cover bg-no-repeat
+    inline-block w-7 h-7 p-1;
+}
+
+.deviceList-modal{
+    @apply 
+    fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto;
+}
+
+.deviceList-modal-dialog{
+    @apply 
+    relative w-auto pointer-events-none;
+}
+
+.deviceList-modal-content{
+    @apply 
+    modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
+}
+
+.deviceList-modal-header{
+    @apply 
+    modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md;
+}
+
+.deviceList-modal-img-add{
+    @apply 
+    bg-plus_circle_bl inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+}
+
+.deviceList-modal-img-rm{
+    @apply 
+    bg-delete_bl inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+}
+
+.deviceList-modal-heading{
+    @apply 
+    ml-2 text-xl font-medium leading-normal text-gray-800;
+}
+
+.deviceList-modal-btn-close{
+    @apply 
+    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
+    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline;
+}
+
+.deviceList-modal-body{
+    @apply 
+    modal-body relative p-4;
+}
+
+.deviceList-modal-footer{
+    @apply 
+    modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md;
+}
+
+.deviceList-modal-btn{
+    @apply 
+    px-6 py-2.5 bg-purple-600 text-white font-medium text-xs 
+    leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+    focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out;
+}
+
+.deviceList-login-form{
+    @apply 
+    flex items-center h-[36rem] w-full select-none min-w-[21rem];
+}
+
+/*-------------------------*/
+
 /* Audio Device css */
 .audioDevice-main-card {
     @apply m-1 select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
@@ -201,9 +415,25 @@
     focus:ring-0 transition duration-150 ease-in-out;
 }
 
+.audioDevice-toggle-div {
+    @apply flex w-4 h-full items-start justify-items-end ml-2;
+}
+
 .audioDevice-toggle-arrow {
     @apply border-8 border-transparent border-l-white mr-1 mt-1
     group-open/audioDevice:rotate-90 transition-transform origin-left;
+}
+
+.audioDevice-line {
+    @apply w-full h-[0.01rem] bg-[#75C4EB];
+}
+
+.audioDevice-more-info-container {
+    @apply w-full h-auto m-4 pr-[2rem] text-[14.75px];
+}
+
+.audioDevice-slider {
+    @apply ml-4 mr-4 mt-2 w-4/6 bg-[#293548] text-[#75C4EB];
 }
 
 .audioDevice-text-area {
@@ -247,97 +477,6 @@
 
 /*-------------------------*/
 
-
-/* Device List css */
-.deviceList-main-card {
-    @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden 
-    bg-white rounded-lg text-black border-solid border border-b-[#DADBDC] 
-    min-w-[35rem];
-}
-
-.deviceList-top-bar {
-    @apply flex justify-between w-full h-10 py-1 min-w-[21rem];
-}
-
-.deviceList-top-flex-div{
-    @apply 
-    w-full flex justify-between px-1;
-}
-
-.deviceList-toggle {
-    @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-gray-300
-    focus:outline-none cursor-pointer shadow-sm;
-}
-
-.deviceList-toggle-arrow {
-    @apply mb-[0.75rem] border-8 border-transparent border-l-black ml-4 mt-1 group-open:rotate-90 transition-transform origin-left self-center;
-}
-
-.deviceList-btn-settings{
-    @apply ml-4 bg-cog_outline bg-no-repeat bg-cover bg-center 
-    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none border-4 border-white p-3 transition 
-    duration-150 ease-in-out w-[1.39rem] h-[1.39rem];
-}
-
-.deviceList-settingsContainer {
-    @apply bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-auto h-auto ml-4 max-w-xs mt-[0.05rem] ease-in-out hidden;
-}
-
-.deviceList-btn-exit{
-    @apply bg-xmark ml-4 bg-no-repeat bg-cover bg-center 
-    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
-    duration-150 ease-in-out w-8 h-8;
-}
-
-.deviceList-text-area {
-    @apply form-control block w-full px-3 py-1.5
-    text-base font-normal text-gray-700 bg-white bg-clip-padding
-    border border-solid border-gray-300 rounded transition
-    ease-in-out max-h-40 min-h-[2.4rem]
-    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
-}
-
-.deviceList-btn-add{
-    @apply 
-    bg-center bg-cover bg-plus_circle_bl bg-no-repeat m-2
-    inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none;
-}
-
-.deviceList-btn-duplicate{
-    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 
-    inline-block rounded-full transition hover:shadow-lg
-    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
-}
-
-.deviceList-btn-signal{
-    @apply 
-    bg-center bg-cover bg-signal_gr bg-no-repeat
-    inline-block w-7 h-7 p-1;
-}
-
-.deviceList-btn-delete{
-    @apply bg-delete_bl ml-4 bg-no-repeat bg-cover bg-center 
-    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
-    duration-150 ease-in-out w-8 h-8;
-}
-
-.deviceList-select{
-    @apply form-select appearance-none block w-full
-    px-3 py-1.5 text-base font-normal  text-gray-700
-    bg-white bg-clip-padding bg-no-repeat
-    border border-solid border-gray-300 rounded
-    transition ease-in-out  m-0
-    focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
-}
-
-.deviceList-btn-handel{
-    @apply
-    bg-handel_drag cursor-grabbing bg-center bg-cover bg-no-repeat
-    inline-block w-7 h-7 p-1;
-}
-
-/*-------------------------*/
-
 /*SRTOpusInput CSS*/
 .srtOpusInput-pos-number-input {
     @apply 
@@ -347,7 +486,60 @@
 }
 /*-------------------------*/
 
+/*Message Modal*/
+.message-modal{
+    @apply 
+    fixed top-0 left-0 w-full h-full outline-none overflow-x-hidden overflow-y-auto;
+}
 
+.message-modal-dialog{
+    @apply 
+    mt-32 transition-opacity duration-300 relative w-auto pointer-events-none z-[1055];
+}
+
+.message-modal-content{
+    @apply 
+    modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
+}
+
+.message-modal-header{
+    @apply 
+    modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md;
+}
+
+.message-modal-img{
+    @apply 
+    inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+}
+
+.message-modal-heading{
+    @apply 
+    ml-2 text-xl font-medium leading-normal text-gray-800;
+}
+
+.message-modal-btn-close{
+    @apply 
+    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
+    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline;
+}
+
+.message-modal-body{
+    @apply 
+    modal-body relative p-4;
+}
+
+.message-modal-footer{
+    @apply 
+    modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md;
+}
+
+.message-modal-btn{
+    @apply 
+    px-6 py-2.5 bg-purple-600 text-white font-medium text-xs 
+    leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
+    focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out;
+}
+/*-------------------------*/
 
 .modal {
     z-index: 1055;

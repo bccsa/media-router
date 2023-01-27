@@ -26,116 +26,74 @@ class _audioDevice extends ui {
         return `
         <!-- ${this.name} -->
 
-        <!-- Main Card Container -->
-        <div class="audioDevice-main-card">
-
+        <!--    MAIN CARD CONTAINER     -->
+        <div class="audioDevice-main-card list-group-item">
             <details class="shadow rounded group/audioDevice">
 
-                <!-- Top Heading Container  -->
-                <summary class="audioDevice-summary-container">
+                <!--    TOP HEADING CONTAINER    -->
+                <summary id="_draggable" class="audioDevice-summary-container" draggable="true">
                     <div class="audioDevice-heading">
 
-                            <!-- Name and Volume indicator -->
+                            <!--    NAME AND VOLUME INDICATOR      -->
                             <div class="mb-1 col-span-2">
                                 <div class="font-medium text-lg" title="Audio Input Name">${this.name}</div>
                                 <div id="@{_volume_slit}" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                             </div>
 
                             <div class="flex justify-between">
-                                <!-- Mute Button -->
-                                <button id="@{_control_button}" type="button" title="If true, reduces the audio volume to zero." class="audioDevice-btn-mute">
+                                <!--    MUTE BUTTON     -->
+                                <button id="@{_control_button}" class="audioDevice-btn-mute" type="button" title="If true, reduces the audio volume to zero.">
                                     <span id="@{_control_button_text}">OFF</span>
                                 </button>
 
-                                <!-- Container toggle -->
-                                <div class="flex w-4 h-full items-start justify-items-end ml-2">
+                                <!--    CONTAINER TOGGLE     -->
+                                <div class="audioDevice-toggle-div">
                                     <div class="audioDevice-toggle-arrow"></div>
                                 </div>
                             </div>
                     </div>
                 </summary>
 
-                <!-- Divider line  -->
-                <div class="w-full h-[0.01rem] bg-[#75C4EB]"></div>
+                <!--    DIVIDER LINE     -->
+                <div class="audioDevice-line"></div>
 
-                <!-- More Info Container  -->
-                <div class="w-full h-auto m-4 pr-[2rem] text-[14.75px]">
+                <!--    MORE INFO CONTAINER       -->
+                <div class="audioDevice-more-info-container">
 
-                    <!-- Duplicate & Delete  -->
                     <div class="w-full mr-4 flex justify-end">
-                         
-                        <button type="button" class="audioDevice-btn-duplicate" id="@{_btn_duplicate}" 
-                            title="Duplicate Audio Device">
-                        </button>
+                        
+                        <!--    DUPLICATE    -->
+                        <button id="@{_btnDuplicate}" class="audioDevice-btn-duplicate"
+                        type="button" title="Duplicate Audio Device"></button>
 
-                        <button type="button" id="@{_btn_delete}" class="audioDevice-btn-delete"
-                        title="Delete Audio Device">
-                        </button>
+                        <!--    DELETE   -->
+                        <button id="@{_btnDelete}" class="audioDevice-btn-delete"
+                        type="button" title="Delete Audio Device"></button>
+
                     </div>
-
-                    <!-- Modal remove device conformation -->
-                    <div class="modal fade top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto"
-                        id="@{_modal_delete_AudioDevice}" tabindex="-1" aria-hidden="true">
-                        <div class="modal-dialog modal-sm relative w-auto pointer-events-none">
-                            <div class="modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current">
-                                <div class="modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md">
-            
-                                    <div class="inline modal-header h-[1.875rem] w-[1.875rem] bg-delete bg-cover bg-center bg-no-repeat"></div>
-                                    <h5 class="ml-2 text-xl font-medium leading-normal text-gray-800" id="exampleModalLabel"> Delete Device</h5>
-            
-                                    <button type="button"
-                                    class="btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
-                                    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline"
-                                    data-bs-dismiss="modal" aria-label="Close"></button>
-                                </div>
-                                <div class="modal-body relative p-4">
-                                    Are you sure you want to delete the Audio Device?
-                                </div>
-                                <div class="modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md">
-                                    
-                                    <button type="button" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs mr-2
-                                        leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
-                                        focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
-                                    Cancel</button>
-                                    
-                                    <button type="button" id="@{_deleteAudioDevice}" class="px-6 py-2.5  bg-purple-600 text-white font-medium text-xs 
-                                        leading-tight uppercase rounded shadow-md hover:bg-purple-700 hover:shadow-lg focus:bg-purple-700 focus:shadow-lg
-                                        focus:outline-none focus:ring-0 active:bg-purple-800 active:shadow-lg transition duration-150 ease-in-out" data-bs-dismiss="modal">
-                                    Yes</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Description text area  -->
+               
+                    <!--    DESCRIPTION TEXT AREA     -->
                     <div class="w-full mb-1 mr-4">
-                        <label for="@{_description}" class="form-label inline-block mb-2">Description:</label>
-                            <textarea
-                                id="@{_description}" class="audioDevice-text-area"
-                                title="Device description" rows="1" cols="3"
-                                placeholder="Your description" 
-                            >${this.description}</textarea>
+                        <label for="@{_description}" class="mb-2">Description:</label>
+                            <textarea id="@{_description}" class="audioDevice-text-area" rows="1" cols="3"
+                            title="Device description" placeholder="Your description" >${this.description}</textarea>
                     </div>
 
-                    <!-- Solo Group  -->
+                    <!--    SOLO GROUP    -->
                     <div class="w-full mr-4">
-                        <label for="@{_soloGroup}" class="form-label inline-block mb-2">Solo Group:</label>
-                            <textarea
-                                class="audioDevice-text-area"
-                                id="@{_soloGroup}"
-                                title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
-                                rows="1" cols="3"
-                                placeholder="Solo group name:"
-                            >${this.soloGroup}</textarea>
+                        <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
+                            <textarea id="@{_soloGroup}" class="audioDevice-text-area" rows="1" cols="3"
+                            title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
+                            placeholder="Solo group name:">${this.soloGroup}</textarea>
                     </div>
 
-                    <!-- Volume Slider  -->
+                    <!--    VOLUME SLIDER     -->
                     <div class="w-full mb-2 flex flex-row items-end">
 
                         <label for="@{_volume}" class="mt-5 w-1/6">Volume:</label>
 
-                        <input type="range" list="@{_tickMarks}" id="@{_volume_slider}" title="Audio volume (1 = unity gain)" 
-                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" class="ml-4 mr-4 mt-2 w-4/6 bg-[#293548] text-[#75C4EB]">
+                        <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
+                        name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" >
                         
                         <datalist id="@{_tickMarks}">
                             <option value="0.00"></option> <option value="0.10"></option> <option value="0.20"></option> 
@@ -152,100 +110,92 @@ class _audioDevice extends ui {
 
                     <div class="w-full mb-1 flex ">
 
-                        <!-- Channels  -->
+                        <!--    CHANNELS      -->
                         <div class="w-1/4 mr-3">
-                            <label for="@{_channels}" class="form-label inline-block mb-2">Channels:</label>
+                            <label for="@{_channels}" class="mb-2">Channels:</label>
                                 <div class="mb-3 w-full">
-                                    <select id="@{_channels}" title="Audio channel number (default = 1)" value="${this.channels}" 
-                                    name="channel" class="audioDevice-select" type="text">
-                                    <option value="1">1</option>
-                                    <option value="2">2</option>
+                                    <select id="@{_channels}" class="audioDevice-select" title="Audio channel number (default = 1)"
+                                    value="${this.channels}" name="channel" type="text">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
                                     </select>
                                 </div>
                         </div>
                         
-                        <!-- SampleRate  -->
+                        <!--    SAMPLE RATE    -->
                         <div class="w-1/4 mr-3">
-                            <label for="@{_sampleRate}" class="form-label inline-block mb-2">Sample Rate:</label>
-                            <select id="@{_sampleRate}" title="Audio sample rate (default = 48000)" value="${this.sampleRate}" 
-                            name="sampleRate" class="audioDevice-select" type="text">
+                            <label for="@{_sampleRate}" class="mb-2">Sample Rate:</label>
+                            <select id="@{_sampleRate}" class="audioDevice-select" title="Audio sample rate (default = 48000)"
+                            value="${this.sampleRate}" name="sampleRate" type="text">
                                 <option value="44100">44100 Hz</option>
                                 <option value="48000">48000 Hz</option>
                             </select>
                         </div>
 
-                        <!-- BitDepth  -->    
+                        <!-- BIT DEPTH   -->    
                         <div class="w-1/4 mr-3">
-                            <label for="@{_bitDepth}" class="form-label inline-block mb-2">Bit Depth:</label>
-                            <select id="@{_bitDepth}" title="Audio bit depth (default = 16)" value="${this.bitDepth}" 
-                            name="bitDepth" class="audioDevice-select" type="text">
+                            <label for="@{_bitDepth}" class="mb-2">Bit Depth:</label>
+                            <select id="@{_bitDepth}" class="audioDevice-select" title="Audio bit depth (default = 16)"
+                            value="${this.bitDepth}" name="bitDepth" type="text">
                                 <option value="16">16</option>
                                 <option value="24">24</option>
                                 <option value="32">32</option>
                             </select>
                         </div>
 
-                        <!-- Max Volume  --> 
+                        <!--    MAX VOLUME    --> 
                         <div class="w-1/4">
-                            <label for="@{_maxVolume}" class="form-label inline-block mb-2">Max Volume:</label>
-                            <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_maxVolume}" 
-                            title="Maximum volume that the client WebApp can request" name="maxVolume" step="0.1" class="audioDevice-pos-decimal-input"
-                                value="${this.maxVolume}"
-                            >
+                            <label for="@{_maxVolume}" class="mb-2">Max Volume:</label>
+                            <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
+                            title="Maximum volume that the client WebApp can request" name="maxVolume" step="0.1"
+                            class="audioDevice-pos-decimal-input" value="${this.maxVolume}">
                         </div>
 
                     </div>
 
                     <div class="w-full mb-1 flex ">
 
-                        <!-- Show Volume Control Checkbox  --> 
+                        <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
                         <div class="w-1/2 mr-2 mb-2 flex">
-                            <input type="checkbox" checked id="@{_showVolumeControl}" value="${this.showVolumeControl}" class="mr-2 mt-1 h-4 w-4" />  
-                            <label for="@{_showVolumeControl}" class="form-label inline-block" 
-                            title="Indicates that the front end should show the volume control">Show client volume control</label> 
+                            <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked  value="${this.showVolumeControl}"/>  
+                            <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Show client volume control</label> 
                         </div>
 
-                        <!-- Show Mute Control Checkbox  --> 
+                        <!--    SHOW MUTE CONTROL CHECKBOX      --> 
                         <div class="w-1/2 mb-2 flex">
-                            <input type="checkbox" checked id="@{_showMuteControl}" value="${this.showMuteControl}" class="mr-2 mt-1 h-4 w-4" />  
-                            <label for="@{_showMuteControl}" class="form-label inline-block" 
-                            title="Indicates that the front end should show the mute control">Show client mute control</label>  
+                            <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked value="${this.showMuteControl}"/>  
+                            <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
                         </div>
 
                     </div>
                     
-                    <!-- Display Order  -->
+                    <!--    DISPLAY ORDER     -->
                     <div class="w-full mb-1 flex ">
 
                         <div class="w-1/4 mr-3">
-                            <label for="@{_displayOrder}" class="form-label inline-block mb-2">Display Order:</label>
+                            <label for="@{_displayOrder}" class="mb-2">Display Order:</label>
                         </div>
             
                         <div class="w-1/4 mr-3">
-                            <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_displayOrder}" 
-                            title="Display order in the client WebApp." name="maxVolume" step="1" class="audioDevice-pos-number-input"
-                            value="${this.displayOrder}"
-                            >
+                            <input id="@{_displayOrder}" class="audioDevice-pos-number-input" type="number" min="0"
+                            oninput="validity.valid||(value='')" title="Display order in the client WebApp."
+                            name="maxVolume" step="1" value="${this.displayOrder}">
                         </div>
 
-                        <div class="w-1/4 mr-3"></div>
-                        <div class="w-1/4"></div>
+                        <div class="w-1/4 mr-3"></div> <div class="w-1/4"></div>
 
                     </div>
 
-                    <!-- Additional controls  --> 
+                    <!-- EXTENDS AUDIO DEVICE  --> 
                     %additionalHtml%
+
                 </div>  
             </details> 
         </div>
-        
         `;
-
     }
 
-
     Init() {
-
         //Set initial values
         this._setMute();
         this._channels.value = this.channels;
@@ -321,7 +271,7 @@ class _audioDevice extends ui {
         });
 
         let a = this;
-        this._btn_delete.addEventListener('click', (e) => {
+        this._btnDelete.addEventListener('click', (e) => {
             // Show message box
             this.emit('messageBox',
                 {
@@ -338,12 +288,7 @@ class _audioDevice extends ui {
                 }, 'top');
         });
 
-        this._deleteAudioDevice.addEventListener('click', (e) => {
-            this._notify({ remove: true });
-            this.SetData({ remove: true });
-        });
-
-        this._btn_duplicate.addEventListener('click', (e) => {
+        this._btnDuplicate.addEventListener('click', (e) => {
 
             // Get unique random name
             let type = this.controlType;
@@ -364,8 +309,6 @@ class _audioDevice extends ui {
 
             // send newly created audio device's data to manager
             this._parent._notify({ [name]: dup });
-
-
         });
 
         // Add VU meter
@@ -379,7 +322,6 @@ class _audioDevice extends ui {
         });
 
         // Handle property changes
-
         this.on('level', level => {
             if (this.vu) {
                 this.vu.level = level;
@@ -430,6 +372,56 @@ class _audioDevice extends ui {
         this.on('displayOrder', displayOrder => {
             this._displayOrder.value = displayOrder;
         });
+    //Make the DIV element draggagle:
+    var pos1 , pos2 , pos3 , pos4;
+    
+    
+
+    document.addEventListener("DOMContentLoaded", function() {
+        this._draggable.addEventListener("dragstart", function(event) {
+            this._dragElement(this._deviceDrag);
+        });
+    });
+    
+
+}
+
+    _dragElement(elmnt) {
+        this.pos1 = 0; 
+        this.pos2 = 0; 
+        this.pos3 = 0; 
+        this.pos4 = 0;
+        elmnt.onmousedown = this._dragMouseDown;
+    }
+
+    _dragMouseDown(e) {
+        e = e || window.event;
+        e.preventDefault();
+        // get the mouse cursor position at startup:
+        this.pos3 = e.clientX;
+        this.pos4 = e.clientY;
+        document.onmouseup = this._closeDragElement;
+        // call a function whenever the cursor moves:
+        document.onmousemove = this._elementDrag;
+    }
+
+    _elementDrag(e) {
+        e = e || window.event;
+        e.preventDefault();
+        // calculate the new cursor position:
+        this.pos1 = this.pos3 - e.clientX;
+        this.pos2 = this.pos4 - e.clientY;
+        this.pos3 = e.clientX;
+        this.pos4 = e.clientY;
+        // set the element's new position:
+        elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+        elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+    }
+
+    _closeDragElement() {
+        /* stop moving when mouse button is released:*/
+        document.onmouseup = null;
+        document.onmousemove = null;
     }
 
     _setMute() {
