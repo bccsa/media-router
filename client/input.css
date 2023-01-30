@@ -184,7 +184,7 @@
 
 /* Device List css */
 .deviceList-main-card {
-    @apply select-none drop-shadow-2xl m-2 pl-2 w-auto overflow-hidden 
+    @apply select-none drop-shadow-2xl m-2 w-auto h-auto overflow-hidden 
     bg-white rounded-lg text-black border-solid border border-b-[#DADBDC] 
     min-w-[35rem];
 }
@@ -199,7 +199,7 @@
 
 .deviceList-top-flex-div{
     @apply 
-    w-full flex justify-between px-1;
+    w-full flex justify-between;
 }
 
 .deviceList-flex-justify-end{
@@ -233,12 +233,12 @@
 
 .deviceList-content{
     @apply 
-    pl-2 flex flex-row justify-between w-full h-auto;
+    pl-2 flex flex-row justify-between w-full h-full;
 }
 
 .deviceList-devices-div{
     @apply 
-    pb-4 pt-2 h-auto w-auto min-h-[3rem] min-w-[3rem];
+    pb-4 pt-2 h-[80rem] w-full min-h-[10rem] min-w-[3rem];
 }
 
 .deviceList-btn-settings{
@@ -328,7 +328,7 @@
 .deviceList-btn-handel{
     @apply
     bg-dots-six-vertical-bold cursor-grabbing bg-center bg-cover bg-no-repeat
-    inline-block w-7 h-7 p-1;
+    inline-block w-6 h-6 p-1;
 }
 
 .deviceList-modal{
@@ -398,7 +398,7 @@
 
 /* Audio Device css */
 .audioDevice-main-card {
-    @apply m-1 select-none w-[30.05rem] overflow-hidden bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
+    @apply m-1 select-none w-[18rem] bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
 }
 
 .audioDevice-summary-container {
@@ -411,7 +411,7 @@
 
 .audioDevice-btn-mute {
     @apply h-11 w-11 inline-block leading-tight
-    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none ml-8 mt-1 mr-3
+    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none ml-2 mt-1 mr-2
     focus:ring-0 transition duration-150 ease-in-out;
 }
 
@@ -555,6 +555,11 @@
     height: 100vh;
     background-color: #000000;
   }
+
+  .modal-body {
+    max-height: calc(100vh - 210px);
+    overflow-y: auto;
+}
 
 
 

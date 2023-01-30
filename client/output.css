@@ -5546,6 +5546,8 @@ textarea.form-control.is-invalid {
 .appFrame-modal-body {
   position: relative;
   padding: 1rem;
+  max-height: calc(100vh - 210px);
+  overflow-y: auto;
 }
 
 .modal-fullscreen .appFrame-modal-footer {
@@ -6540,6 +6542,7 @@ textarea.appFrame-input-password.is-invalid {
 
 .deviceList-main-card {
   margin: 0.5rem;
+  height: auto;
   width: auto;
   min-width: 35rem;
   -webkit-user-select: none;
@@ -6553,7 +6556,6 @@ textarea.appFrame-input-password.is-invalid {
   border-bottom-color: rgb(218 219 220 / var(--tw-border-opacity));
   --tw-bg-opacity: 1;
   background-color: rgb(255 255 255 / var(--tw-bg-opacity));
-  padding-left: 0.5rem;
   --tw-text-opacity: 1;
   color: rgb(0 0 0 / var(--tw-text-opacity));
   --tw-drop-shadow: drop-shadow(0 25px 25px rgb(0 0 0 / 0.15));
@@ -6602,8 +6604,6 @@ textarea.appFrame-input-password.is-invalid {
   display: flex;
   width: 100%;
   justify-content: space-between;
-  padding-left: 0.25rem;
-  padding-right: 0.25rem;
 }
 
 .deviceList-flex-justify-end {
@@ -6815,7 +6815,7 @@ textarea.appFrame-input-password.is-invalid {
 
 .deviceList-content {
   display: flex;
-  height: auto;
+  height: 100%;
   width: 100%;
   flex-direction: row;
   justify-content: space-between;
@@ -6823,9 +6823,9 @@ textarea.appFrame-input-password.is-invalid {
 }
 
 .deviceList-devices-div {
-  height: auto;
-  min-height: 3rem;
-  width: auto;
+  height: 80rem;
+  min-height: 10rem;
+  width: 100%;
   min-width: 3rem;
   padding-bottom: 1rem;
   padding-top: 0.5rem;
@@ -7573,8 +7573,8 @@ textarea.deviceList-text-area.is-invalid {
 
 .deviceList-btn-handel {
   display: inline-block;
-  height: 1.75rem;
-  width: 1.75rem;
+  height: 1.5rem;
+  width: 1.5rem;
   cursor: grabbing;
   background-image: url('./controls/img/dots-six-vertical-bold.svg');
   background-size: cover;
@@ -7934,6 +7934,8 @@ textarea.deviceList-text-area.is-invalid {
 .deviceList-modal-body {
   position: relative;
   padding: 1rem;
+  max-height: calc(100vh - 210px);
+  overflow-y: auto;
 }
 
 .modal-fullscreen .deviceList-modal-footer {
@@ -8055,11 +8057,10 @@ textarea.deviceList-text-area.is-invalid {
 
 .audioDevice-main-card {
   margin: 0.25rem;
-  width: 30.05rem;
+  width: 18rem;
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
-  overflow: hidden;
   border-radius: 0.5rem;
   border-width: 1px;
   border-style: solid;
@@ -8111,9 +8112,9 @@ textarea.deviceList-text-area.is-invalid {
 }
 
 .audioDevice-btn-mute {
-  margin-left: 2rem;
+  margin-left: 0.5rem;
   margin-top: 0.25rem;
-  margin-right: 0.75rem;
+  margin-right: 0.5rem;
   display: inline-block;
   height: 2.75rem;
   width: 2.75rem;
@@ -9151,6 +9152,8 @@ textarea.audioDevice-text-area.is-invalid {
 .message-modal-body {
   position: relative;
   padding: 1rem;
+  max-height: calc(100vh - 210px);
+  overflow-y: auto;
 }
 
 .modal-fullscreen .message-modal-footer {
@@ -9272,6 +9275,11 @@ textarea.audioDevice-text-area.is-invalid {
   background-color: #000000;
 }
 
+.modal-body {
+  max-height: calc(100vh - 210px);
+  overflow-y: auto;
+}
+
 /* . {
     @apply ;
 } */
@@ -9356,6 +9364,14 @@ textarea.audioDevice-text-area.is-invalid {
 
 .isolation-auto {
   isolation: auto;
+}
+
+.z-10 {
+  z-index: 10;
+}
+
+.z-50 {
+  z-index: 50;
 }
 
 .z-\[1050\] {
@@ -9761,6 +9777,10 @@ textarea.audioDevice-text-area.is-invalid {
 
 .cursor-pointer {
   cursor: pointer;
+}
+
+.cursor-move {
+  cursor: move;
 }
 
 .touch-auto {

@@ -72,18 +72,18 @@ class DeviceList extends ui {
                 <div class="deviceList-line"></div>
 
                 <!--    MORE INFO CONTAINER       -->
-                <div class="deviceList-content">
+                <div id="@{_moreInfo}" class="deviceList-content">
 
                     <!--    CHILD DEVICE    -->
-                    <div id="@{_controlsDiv}" class="deviceList-devices-div"></div>
+                    <div id="@{_controlsDiv}" class="deviceList-devices-div z-10"></div>
 
                     <!--    SETTINGS BUTTON       -->
-                    <div class="justify-between mt-1">
+                    <div class="justify-between mt-1 z-50">
                         <button id="@{_btnSettings}" class="deviceList-btn-settings"
                         type="button" title="Open Device List Settings"> </button>
                     </div>
 
-                    <div id="@{_settingsContainer}" class="deviceList-settingsContainer" >
+                    <div id="@{_settingsContainer}" class="deviceList-settingsContainer z-50"  >
 
                         <!--    EXIT SETTING BUTTON       -->
                         <div class="deviceList-flex-justify-between">
