@@ -41,7 +41,7 @@ class configManager {
                 return new config(this.defaultConfig)._load();
             } else {
                 console.log(`Unable to load configuration from file (${this.path}): ${err.message}`);
-                return undefined;
+                return {};
             }
         }
     }
