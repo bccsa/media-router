@@ -74,9 +74,11 @@ class DeviceList extends ui {
                 <!--    MORE INFO CONTAINER       -->
                 <div id="@{_moreInfo}" class="deviceList-content">
 
+
                     <!--    CHILD DEVICE    -->
                     <div id="@{_controlsDiv}" class="deviceList-devices-div z-10"></div>
 
+                    
                     <!--    SETTINGS BUTTON       -->
                     <div class="justify-between mt-1 z-50">
                         <button id="@{_btnSettings}" class="deviceList-btn-settings"

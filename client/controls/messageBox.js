@@ -22,10 +22,53 @@ class messageBox extends ui {
 
         return `
 
+        <head>
+            <style>
+                
+                /* Styling modal */
+                .modal:before {
+                    
+                }
+                
+                .modal-dialog {
+                }
+                
+                .modal .modal-content {
+                    
+                    -webkit-animation-name: modal-animation;
+                    -webkit-animation-duration: 0.5s;
+                    animation-name: modal-animation;
+                    animation-duration: 0.5s;
+                }
+                
+                @-webkit-keyframes modal-animation {
+                    from {
+                        top: -100px;
+                        opacity: 0;
+                    }
+                    to {
+                        top: 0px;
+                        opacity: 1;
+                    }
+                }
+                
+                @keyframes modal-animation {
+                    from {
+                        top: -100px;
+                        opacity: 0;
+                    }
+                    to {
+                        top: 0px;
+                        opacity: 1;
+                    }
+                }
+            </style>
+        </head>
+
         <!--    MESSAGE BOX MODAL    -->
-        <div id="@{_modalMessageBox}" class="message-modal z-[1050] bg-[#00000050]" tabindex="-1" aria-hidden="false">
-            <div class="modal-dialog message-modal-dialog">
-                <div class="message-modal-content">
+        <div id="@{_modalMessageBox}" class="message-modal z-[1050] bg-[#00000050] modal" tabindex="-1" aria-hidden="false">
+            <div class="message-modal-dialog modal-dialog">
+                <div class="message-modal-content modal-content">
 
                     <div class="message-modal-header">
                         <div class="message-modal-img ${this.img}"></div>

@@ -27,6 +27,8 @@ module.exports = {
         'handel_drag': "url('./controls/img/handel_drag.svg')",
         'dots-six-vertical-bold': "url('./controls/img/dots-six-vertical-bold.svg')",
         'dots-vertical': "url('./controls/img/dots-vertical.svg')",
+        'dots_horizontal_wt': "url('./controls/img/dots_horizontal_wt.svg')",
+        'settings_wt': "url('./controls/img/settings_wt.svg')",
       }
     }
   }

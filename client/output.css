@@ -5546,8 +5546,6 @@ textarea.form-control.is-invalid {
 .appFrame-modal-body {
   position: relative;
   padding: 1rem;
-  max-height: calc(100vh - 210px);
-  overflow-y: auto;
 }
 
 .modal-fullscreen .appFrame-modal-footer {
@@ -7934,8 +7932,6 @@ textarea.deviceList-text-area.is-invalid {
 .deviceList-modal-body {
   position: relative;
   padding: 1rem;
-  max-height: calc(100vh - 210px);
-  overflow-y: auto;
 }
 
 .modal-fullscreen .deviceList-modal-footer {
@@ -8057,7 +8053,8 @@ textarea.deviceList-text-area.is-invalid {
 
 .audioDevice-main-card {
   margin: 0.25rem;
-  width: 18rem;
+  width: 20.4rem;
+  cursor: move;
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
@@ -8114,7 +8111,6 @@ textarea.deviceList-text-area.is-invalid {
 .audioDevice-btn-mute {
   margin-left: 0.5rem;
   margin-top: 0.25rem;
-  margin-right: 0.5rem;
   display: inline-block;
   height: 2.75rem;
   width: 2.75rem;
@@ -8149,31 +8145,205 @@ textarea.deviceList-text-area.is-invalid {
   box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
 }
 
-.audioDevice-toggle-div {
-  margin-left: 0.5rem;
-  display: flex;
-  height: 100%;
-  width: 1rem;
-  align-items: flex-start;
-  justify-items: end;
+.was-validated .form-check-input:valid ~ .audioDevice-label {
+  color: #198754;
 }
 
-.audioDevice-toggle-arrow {
-  margin-right: 0.25rem;
-  margin-top: 0.25rem;
-  transform-origin: left;
-  border-width: 8px;
+.form-check-input.is-valid ~ .audioDevice-label {
+  color: #198754;
+}
+
+.was-validated .form-check-input:invalid ~ .audioDevice-label {
+  color: #dc3545;
+}
+
+.form-check-input.is-invalid ~ .audioDevice-label {
+  color: #dc3545;
+}
+
+.audioDevice-label {
+  margin-right: 0.5rem;
+  display: inline-block;
+  font-size: 15px;
+  letter-spacing: 0.05em;
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity));
+}
+
+.audioDevice-toggle:checked {
+  background-color: #0d6efd;
+  border-color: #0d6efd;
+}
+
+.audioDevice-toggle:checked[type=checkbox] {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='M6 10l3 3l6-6'/%3e%3c/svg%3e");
+}
+
+.audioDevice-toggle:checked[type=radio] {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='2' fill='%23fff'/%3e%3c/svg%3e");
+}
+
+.audioDevice-toggle[type=checkbox]:indeterminate {
+  background-color: #0d6efd;
+  border-color: #0d6efd;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23fff' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='M6 10h8'/%3e%3c/svg%3e");
+}
+
+.audioDevice-toggle:disabled {
+  pointer-events: none;
+  filter: none;
+  opacity: 0.5;
+}
+
+.form-switch .audioDevice-toggle {
+  margin-top: 0.1rem;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23fff'/%3e%3c/svg%3e");
+  background-position: left center;
+  transition: background-position 0.15s ease-in-out;
+}
+
+.form-switch .audioDevice-toggle:focus {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23fff'/%3e%3c/svg%3e");
+}
+
+.form-switch .audioDevice-toggle:checked {
+  background-position: right center;
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23fff'/%3e%3c/svg%3e");
+}
+
+.was-validated .audioDevice-toggle:valid {
+  border-color: #198754;
+}
+
+.audioDevice-toggle.is-valid {
+  border-color: #198754;
+}
+
+.was-validated .audioDevice-toggle:valid:checked {
+  background-color: #198754;
+}
+
+.audioDevice-toggle.is-valid:checked {
+  background-color: #198754;
+}
+
+.was-validated .audioDevice-toggle:valid:focus {
+  box-shadow: 0 0 0 0.25rem rgba(25, 135, 84, 0.25);
+}
+
+.audioDevice-toggle.is-valid:focus {
+  box-shadow: 0 0 0 0.25rem rgba(25, 135, 84, 0.25);
+}
+
+.was-validated .audioDevice-toggle:valid ~ .form-check-label {
+  color: #198754;
+}
+
+.audioDevice-toggle.is-valid ~ .form-check-label {
+  color: #198754;
+}
+
+.form-check-inline .audioDevice-toggle ~ .valid-feedback {
+  margin-left: 0.5em;
+}
+
+.was-validated .audioDevice-toggle:invalid {
+  border-color: #dc3545;
+}
+
+.audioDevice-toggle.is-invalid {
+  border-color: #dc3545;
+}
+
+.was-validated .audioDevice-toggle:invalid:checked {
+  background-color: #dc3545;
+}
+
+.audioDevice-toggle.is-invalid:checked {
+  background-color: #dc3545;
+}
+
+.was-validated .audioDevice-toggle:invalid:focus {
+  box-shadow: 0 0 0 0.25rem rgba(220, 53, 69, 0.25);
+}
+
+.audioDevice-toggle.is-invalid:focus {
+  box-shadow: 0 0 0 0.25rem rgba(220, 53, 69, 0.25);
+}
+
+.was-validated .audioDevice-toggle:invalid ~ .form-check-label {
+  color: #dc3545;
+}
+
+.audioDevice-toggle.is-invalid ~ .form-check-label {
+  color: #dc3545;
+}
+
+.form-check-inline .audioDevice-toggle ~ .invalid-feedback {
+  margin-left: 0.5em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .form-switch .audioDevice-toggle {
+    transition: none;
+  }
+}
+
+.audioDevice-toggle {
+  float: left;
+  margin-left: -2.5rem;
+  height: 1.25rem;
+  width: 2.25rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+     -moz-appearance: none;
+          appearance: none;
+  border-radius: 9999px;
+  --tw-bg-opacity: 1;
+  background-color: rgb(209 213 219 / var(--tw-bg-opacity));
+  background-size: contain;
+  background-repeat: no-repeat;
+  vertical-align: top;
+  --tw-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --tw-shadow-colored: 0 1px 2px 0 var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+}
+
+.audioDevice-toggle:focus {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.audioDevice-btn-settings {
+  display: inline-block;
+  height: 1.5rem;
+  width: 1.5rem;
+  border-radius: 9999px;
+  border-width: 2px;
   border-color: transparent;
-  --tw-border-opacity: 1;
-  border-left-color: rgb(255 255 255 / var(--tw-border-opacity));
-  transition-property: transform;
+  background-image: url('./controls/img/settings_wt.svg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  padding: 0.25rem;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-backdrop-filter;
+  transition-duration: 200ms;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-  transition-duration: 150ms;
 }
 
-.group\/audioDevice[open] .audioDevice-toggle-arrow {
-  --tw-rotate: 90deg;
-  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+.audioDevice-btn-settings:hover {
+  --tw-bg-opacity: 1;
+  background-color: rgb(41 53 72 / var(--tw-bg-opacity));
+  --tw-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --tw-shadow-colored: 0 1px 2px 0 var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+  --tw-shadow-color: #75C4EB;
+  --tw-shadow: var(--tw-shadow-colored);
+  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
+  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color);
+  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
 }
 
 .audioDevice-line {
@@ -8752,7 +8922,7 @@ textarea.audioDevice-text-area.is-invalid {
   border-radius: 9999px;
   border-width: 2px;
   border-color: transparent;
-  background-image: url('./controls/img/content_duplicate_wt.svg');
+  background-image: url('./controls/img/content_duplicate_bl.svg');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -8784,7 +8954,7 @@ textarea.audioDevice-text-area.is-invalid {
   border-radius: 9999px;
   border-width: 2px;
   border-color: transparent;
-  background-image: url('./controls/img/delete_wt.svg');
+  background-image: url('./controls/img/delete_bl.svg');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -9152,8 +9322,6 @@ textarea.audioDevice-text-area.is-invalid {
 .message-modal-body {
   position: relative;
   padding: 1rem;
-  max-height: calc(100vh - 210px);
-  overflow-y: auto;
 }
 
 .modal-fullscreen .message-modal-footer {
@@ -9261,24 +9429,51 @@ textarea.audioDevice-text-area.is-invalid {
 /*-------------------------*/
 
 .modal {
-  z-index: 1055;
+  z-index: 9999;
   background-color: #0000004d;
 }
+
+/* .modal {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: white;
+    width: 80%;
+    max-width: 500px;
+    padding: 20px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px #333;
+    z-index: 10000;
+} */
 
 .modal-backdrop {
   position: relative;
   top: 0;
   left: 0;
-  z-index: 1050;
+  z-index: 9995;
   width: 100vw;
   height: 100vh;
   background-color: #000000;
 }
 
-.modal-body {
-  max-height: calc(100vh - 210px);
-  overflow-y: auto;
-}
+/* .modal-body {
+    max-height: calc(100vh - 210px);
+    overflow-y: auto;
+} */
+
+/* .modal-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+} */
 
 /* . {
     @apply ;

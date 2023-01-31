@@ -398,7 +398,7 @@
 
 /* Audio Device css */
 .audioDevice-main-card {
-    @apply m-1 select-none w-[18rem] bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
+    @apply  cursor-move m-1 select-none w-[20.4rem] bg-[#1E293B] rounded-lg text-white border-solid border border-b-[#75C4EB];
 }
 
 .audioDevice-summary-container {
@@ -411,17 +411,25 @@
 
 .audioDevice-btn-mute {
     @apply h-11 w-11 inline-block leading-tight
-    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none ml-2 mt-1 mr-2
+    uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none ml-2 mt-1
     focus:ring-0 transition duration-150 ease-in-out;
 }
 
-.audioDevice-toggle-div {
-    @apply flex w-4 h-full items-start justify-items-end ml-2;
+.audioDevice-label{
+    @apply 
+    text-[15px] tracking-wider form-check-label inline-block text-white mr-2;
 }
 
-.audioDevice-toggle-arrow {
-    @apply border-8 border-transparent border-l-white mr-1 mt-1
-    group-open/audioDevice:rotate-90 transition-transform origin-left;
+.audioDevice-toggle {
+    @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-gray-300
+    focus:outline-none cursor-pointer shadow-sm;
+}
+
+.audioDevice-btn-settings {
+    @apply
+    bg-settings_wt bg-center bg-cover bg-no-repeat 
+    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    duration-200 ease-in-out w-6 h-6 border-2 border-transparent p-1;
 }
 
 .audioDevice-line {
@@ -464,13 +472,13 @@
 }
 
 .audioDevice-btn-duplicate{
-    @apply bg-content_duplicate_wt bg-center bg-cover bg-no-repeat 
+    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat 
     inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
 .audioDevice-btn-delete{
-    @apply bg-delete_wt bg-center bg-cover bg-no-repeat 
+    @apply bg-delete_bl bg-center bg-cover bg-no-repeat 
     inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
@@ -542,24 +550,54 @@
 /*-------------------------*/
 
 .modal {
-    z-index: 1055;
+    z-index: 9999;
     background-color: #0000004d;
-  }
+}
+
+/* .modal {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: white;
+    width: 80%;
+    max-width: 500px;
+    padding: 20px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px #333;
+    z-index: 10000;
+} */
 
 .modal-backdrop {
     position: relative;
     top: 0;
     left: 0;
-    z-index: 1050;
+    z-index: 9995;
     width: 100vw;
     height: 100vh;
     background-color: #000000;
-  }
+}
 
-  .modal-body {
+/* .modal-body {
     max-height: calc(100vh - 210px);
     overflow-y: auto;
-}
+} */
+
+/* .modal-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+} */
+  
+  
+
 
 
 
