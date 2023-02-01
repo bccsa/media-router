@@ -343,7 +343,7 @@
 
 .deviceList-modal-content{
     @apply 
-    modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
+    min-w-[30rem] modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
 }
 
 .deviceList-modal-header{
@@ -445,7 +445,7 @@
 }
 
 .audioDevice-text-area {
-    @apply max-h-40 min-h-[2rem] mr-4 form-control block w-full max-w-[28rem] text-sm font-normal
+    @apply max-h-40 min-h-[2rem] mr-4 form-control block w-full text-sm font-normal
     text-white bg-[#293548] border border-solid border-gray-300
     rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 
     focus:outline-none px-2 py-1;
@@ -472,16 +472,16 @@
 }
 
 .audioDevice-btn-duplicate{
-    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat 
-    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
+    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 
+    inline-block rounded-full transition hover:shadow-lg
     duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
 .audioDevice-btn-delete{
-    @apply bg-delete_bl bg-center bg-cover bg-no-repeat 
-    inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548]
-    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
-}
+    @apply bg-delete_bl ml-4 bg-no-repeat bg-cover bg-center 
+    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
+    duration-150 ease-in-out w-8 h-8;
+    }
 
 /*-------------------------*/
 

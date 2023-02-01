@@ -20,57 +20,81 @@ class _audioInputDevice extends _audioDevice {
                 >${this.destinations.join(',')}</textarea>
         </div>
 
+        <!--    CHILD Checkboxes    -->
+        <div id="@{_controlsDiv}" class="w-full flex flex-wrap mr-2 mb-2 justify-start"></div>
+
         <!-- Additional controls  --> 
         %additionalHtml%
 
         `);
     }
 
- 
+
     Init() {
         super.Init();
-        // this._destinations = document.getElementById(`${this._uuid}_destinations`);
 
         //Event subscriptions
         this._destinations.addEventListener('change', (e) => {
             this.destinations = this._destinations.value.split(',');
             this.NotifyProperty("destinations");
         });
-        
+
         // Handle property changes
         this.on('destinations', () => {
             this._setDestinations()
         });
 
-        // Scan for valid destinations (objects extending the _audioOutputDevice class)
-        this._destinationsList = [];
-        try {
-            Object.values(this._parent._controls).filter(t => t instanceof _audioOutputDevice).forEach(d => {
-                this._destinationsList.push(d.name);
-            });
-        } catch {}
-        
+        // Scan for valid destination
+        // Object.values(this._parent._controls).forEach(control => {
+        //     this._addDestination(control);
+        // })
 
         // Add destination if new _audioInputDevice control is added to the parent
-        this._parent.on('controlAdded', c => {
-            try {
-                if (c instanceof _audioOutputDevice) {
-                    this._destinationsList.push(c.name);
-                }
-            } catch {}
+        this._parent.on('newChildControl', c => {
+            this._addDestination(c);
         });
 
-        // Remove destination if _audioInputDevice control is removed from the parent
-        this._parent.on('controlRemoved', c => {
+        this.on('newChildControl', control => {
             try {
-                if (c instanceof _audioOutputDevice) {
-                    this._destinationsList.splice(this._destinationsList.indexOf(c.name), 1);
+                if (control instanceof checkBox) {
+                    let dstName = control.name.replace('dst_', '');
+                    let dstControl = this._parent[dstName];
+                    if (dstControl) {
+                        this._addDestination(dstControl);
+                    }
                 }
-            } catch {}
+            } catch { }
         });
     }
 
-    _setDestinations(){
+    _setDestinations() {
         this._destinations.value = this.destinations.join(',');
+    }
+
+    //Add destination if new _audioInputDevice control is added to the parent
+    _addDestination(dstControl) {
+        try {
+            if (dstControl instanceof _audioOutputDevice) {
+                let name = 'dst_' + dstControl.name;
+                let existing = this[name] != undefined;
+
+                // Create new checkbox
+                if (!existing) {
+                    // Create new checkBox control
+                    this.one(name, control => {
+                        // send newly created audio device's data to manager
+                        this._notify({ [name]: control.GetData() });
+                    });
+
+                    this.SetData({ [name]: { controlType: "checkBox", label: dstControl.name } });
+                } else {
+                    // Subscribe to control remove event to remove destination checkbox controls
+                    dstControl.one('remove', control => {
+                        this.SetData({ [name]: { remove: true } });
+                        this._notify({ [name]: { remove: true } });
+                    });
+                }
+            }
+        } catch { }
     }
 }
