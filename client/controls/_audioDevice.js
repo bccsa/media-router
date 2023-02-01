@@ -315,6 +315,8 @@ class _audioDevice extends ui {
                         if (data == 'Yes') {
                             a._notify({ remove: true });
                             a.SetData({ remove: true });
+
+                            a._parent.emit('controlRemoved', a);
                         }
                     }
                 }, 'top');
@@ -343,6 +345,8 @@ class _audioDevice extends ui {
 
             // send newly created audio device's data to manager
             this._parent._notify({ [name]: dup });
+
+            this._parent.emit('controlAdded', this._parent[name]);
         });
 
         // Add VU meter

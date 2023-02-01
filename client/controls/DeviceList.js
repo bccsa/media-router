@@ -319,6 +319,7 @@ class DeviceList extends ui {
             this.on(name, control => {
                 // send newly created audio device's data to manager
                 this._notify({[name]: control.GetData()});
+                this.emit('controlAdded', this[name]);
             });
         });
 

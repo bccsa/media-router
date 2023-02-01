@@ -2,6 +2,7 @@ class _audioInputDevice extends _audioDevice {
     constructor() {
         super();
         this.destinations = ["Destination1", "Destination2", "Destination3"]; // Split with comma from string
+        this._destinationsList = [];
     }
 
     get html() {
@@ -35,11 +36,37 @@ class _audioInputDevice extends _audioDevice {
             this.destinations = this._destinations.value.split(',');
             this.NotifyProperty("destinations");
         });
-
+        
         // Handle property changes
-
         this.on('destinations', () => {
             this._setDestinations()
+        });
+
+        // Scan for valid destinations (objects extending the _audioOutputDevice class)
+        this._destinationsList = [];
+        try {
+            Object.values(this._parent._controls).filter(t => t instanceof _audioOutputDevice).forEach(d => {
+                this._destinationsList.push(d.name);
+            });
+        } catch {}
+        
+
+        // Add destination if new _audioInputDevice control is added to the parent
+        this._parent.on('controlAdded', c => {
+            try {
+                if (c instanceof _audioOutputDevice) {
+                    this._destinationsList.push(c.name);
+                }
+            } catch {}
+        });
+
+        // Remove destination if _audioInputDevice control is removed from the parent
+        this._parent.on('controlRemoved', c => {
+            try {
+                if (c instanceof _audioOutputDevice) {
+                    this._destinationsList.splice(this._destinationsList.indexOf(c.name), 1);
+                }
+            } catch {}
         });
     }
 

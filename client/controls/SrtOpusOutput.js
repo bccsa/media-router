@@ -1,4 +1,4 @@
-class SrtOpusOutput extends _audioDevice {
+class SrtOpusOutput extends _audioOutputDevice {
     constructor() {
         super();
         this.deviceType = "SrtOpusOutput";
