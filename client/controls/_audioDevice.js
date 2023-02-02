@@ -221,11 +221,8 @@ class _audioDevice extends ui {
             </div>
         </div>
 
-        <div id="@{_element1}" class="element top-28 left-28 absolute">Element 1</div>
-        <div id="@{_element2}" class="element top-[500px] left-[500px] absolute">Element 2</div>
-
-        <div id="@{_line}" class="absolute bg-black w-1 h-1">
-            
+        <div id="@{_externalControls}">
+            <!-- Place external controls (e.g. connector lines etc.) in this div -->
         </div>
         `;
     }

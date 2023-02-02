@@ -21,7 +21,7 @@ class _audioInputDevice extends _audioDevice {
         </div>
 
         <!--    CHILD Checkboxes    -->
-        <div id="@{_controlsDiv}" class="w-full flex flex-wrap mr-2 mb-2 justify-start"></div>
+        <div id="@{_checkboxes}" class="w-full flex flex-wrap mr-2 mb-2 justify-start"></div>
 
         <!-- Additional controls  --> 
         %additionalHtml%
@@ -79,6 +79,8 @@ class _audioInputDevice extends _audioDevice {
         try {
             if (dstControl instanceof _audioOutputDevice) {
                 let name = 'dst_' + dstControl.name;
+                let line = 'line_' + dstControl.name;
+
                 let existing = this[name] != undefined;
 
                 // Create new checkbox
@@ -89,12 +91,15 @@ class _audioInputDevice extends _audioDevice {
                         this._notify({ [name]: control.GetData() });
                     });
 
-                    this.SetData({ [name]: { controlType: "checkBox", label: dstControl.name } });
+                    this.SetData({ [name]: { controlType: "checkBox", label: dstControl.name, parentElement: "_checkboxes" } });
+                    this.SetData({ [line]: { controlType: "line", bottom: 200, right: 200, parentElement: "_externalControls" } });
                 } else {
                     // Subscribe to control remove event to remove destination checkbox controls
                     dstControl.one('remove', control => {
                         this.SetData({ [name]: { remove: true } });
                         this._notify({ [name]: { remove: true } });
+                        this.SetData({ [line]: { remove: true } });
+                        this._notify({ [line]: { remove: true } });
                     });
                 }
             }
