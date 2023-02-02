@@ -74,9 +74,12 @@ class DeviceList extends ui {
                 <!--    MORE INFO CONTAINER       -->
                 <div id="@{_moreInfo}" class="deviceList-content">
 
+                    <!--    ADD BUTTON    -->
+                    <button class="deviceList-btn-add" type="button" data-bs-toggle="modal"
+                    data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
 
                     <!--    CHILD DEVICE    -->
-                    <div id="@{_controlsDiv}" class="deviceList-devices-div z-10"></div>
+                    <div id="@{_controlsDiv}" class="deviceList-devices-div z-10 relative"></div>
 
                     
                     <!--    SETTINGS BUTTON       -->
@@ -91,22 +94,25 @@ class DeviceList extends ui {
                         <div class="deviceList-flex-justify-between">
                             <div class="deviceList-flex-justify-end">
 
-                                <!--    ADD BUTTON    -->
-                                <button class="deviceList-btn-add" type="button" data-bs-toggle="modal"
-                                data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
-
+                                
                                 <!--    DUPLICATE BUTTON      -->
                                 <button id="@{_btnDuplicate}" class="deviceList-btn-duplicate" 
                                 type="button" title="Duplicate DeviceList"></button>
 
+                                <!--    DELETE DEVICE LIST     -->
+                                <button class="deviceList-btn-delete" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalDelete}" title="Remove DeviceList"></button>
+                                
                             </div>
-                            
+
                             <!--    EXIT BUTTON   -->
                             <div class="justify-end">
                                 <button id="@{_btnExit}" class="deviceList-btn-exit"
                                 type="button" title="Close Device List Settings"></button>
                             </div>
                         </div>
+
+                        <hr class="w-full h-[0.0625rem] bg-gray-500 mb-2"> 
 
                         <!--    DISPLAY NAME      -->
                         <label for="@{_displayName}" class="deviceList-label-settings">Display Name: </label>
@@ -165,11 +171,6 @@ class DeviceList extends ui {
                             </div>
                         </div>
 
-                        <!--    DELETE DEVICE LIST     -->
-                        <div class="flex justify-end mb-2">
-                            <button class="deviceList-btn-delete" type="button" data-bs-toggle="modal"
-                            data-bs-target="#@{_modalDelete}" title="Remove DeviceList"></button>
-                        </div>
                     </div>
                 </div>  
             </details> 

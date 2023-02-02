@@ -43,16 +43,19 @@ class _audioInputDevice extends _audioDevice {
         this.on('destinations', () => {
             this._setDestinations()
         });
-
-        // Scan for valid destination
-        // Object.values(this._parent._controls).forEach(control => {
-        //     this._addDestination(control);
-        // })
-
-        // Add destination if new _audioInputDevice control is added to the parent
+        
         this._parent.on('newChildControl', c => {
             this._addDestination(c);
         });
+
+        // Add destination if new _audioInputDevice control is added to the parent
+        this.on('init', () => {
+            // Scan for valid destination
+            Object.values(this._parent._controls).forEach(control => {
+                this._addDestination(control);
+            });
+        });
+        
 
         this.on('newChildControl', control => {
             try {

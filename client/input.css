@@ -79,8 +79,11 @@
 
 .appFrame-modal-btn-close{
     @apply 
-    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
-    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline;
+    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-full opacity-50 focus:shadow-none transition hover:shadow-lg
+    duration-200 ease-in-out
+    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline
+    bg-center bg-cover bg-no-repeat m-2 
+    inline-block border-2 border-transparent;
 }
 
 .appFrame-modal-body{
@@ -311,7 +314,7 @@
 }
 
 .deviceList-btn-delete{
-    @apply bg-delete_bl ml-4 bg-no-repeat bg-cover bg-center 
+    @apply bg-delete_bl m-2 bg-no-repeat bg-cover bg-center 
     inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
     duration-150 ease-in-out w-8 h-8;
 }
@@ -368,8 +371,11 @@
 
 .deviceList-modal-btn-close{
     @apply 
-    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
-    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline;
+    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-full opacity-50 focus:shadow-none transition hover:shadow-lg
+    duration-200 ease-in-out
+    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline
+    bg-center bg-cover bg-no-repeat m-2 
+    inline-block border-2 border-transparent;
 }
 
 .deviceList-modal-body{
@@ -478,9 +484,9 @@
 }
 
 .audioDevice-btn-delete{
-    @apply bg-delete_bl ml-4 bg-no-repeat bg-cover bg-center 
-    inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition 
-    duration-150 ease-in-out w-8 h-8;
+    @apply bg-delete_bl bg-center bg-cover bg-no-repeat m-2 
+    inline-block rounded-full transition hover:shadow-lg
+    duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
     }
 
 /*-------------------------*/
@@ -527,8 +533,12 @@
 
 .message-modal-btn-close{
     @apply 
-    btn-close box-content w-4 h-4 p-1 text-black border-none rounded-none opacity-50 focus:shadow-none
-    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline;
+    btn-close box-content w-4 h-4 p-1 text-black border-none opacity-50 focus:shadow-none transition hover:shadow-lg
+    duration-200 ease-in-out rounded-full
+    focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline
+    
+    bg-center bg-cover bg-no-repeat m-2 
+    inline-block border-2 border-transparent;
 }
 
 .message-modal-body{

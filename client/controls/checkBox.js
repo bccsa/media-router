@@ -1,5 +1,5 @@
 class checkBox extends ui {
-    constructor () {
+    constructor() {
         super();
 
         this.value = false;
@@ -36,6 +36,36 @@ class checkBox extends ui {
         this._check.addEventListener('click', value => {
             this.value = !this.value;
             this.NotifyProperty('value');
+            this._drawLines()
         })
+
     }
+
+    _drawLines() {
+        let AudioOutputName = this.label;
+
+        const element1 = this._parent._element1;
+        const element2 = this._parent._element2;
+        const line = this._parent._line;
+
+        const x1 = element1.offsetLeft + (element1.offsetWidth / 2);
+        const y1 = element1.offsetTop + (element1.offsetHeight / 2);
+        const x2 = element2.offsetLeft + (element2.offsetWidth / 2);
+        const y2 = element2.offsetTop + (element2.offsetHeight / 2);
+
+        const length = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+        line.style.width = length + "px";
+
+        const angleR = Math.atan2(y2 - y1, x2 - x1);
+        const angle = angleR * 180 / Math.PI;
+        line.style.transform = `rotate(${angle}deg)`;
+
+        var offsetX = -length/2 * (1-Math.cos(angleR));
+        var offsetY = length/2 * Math.sin(angleR);
+
+        line.style.top = (y1 + offsetY) + "px";
+        line.style.left = (x1 + offsetX) + "px";
+    }
+
+
 }

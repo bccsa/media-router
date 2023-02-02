@@ -45,7 +45,7 @@ class _audioDevice extends ui {
                                 <button id="@{_btnDelete}" class="audioDevice-btn-delete"
                                 type="button" data-bs-dismiss="modal" title="Delete Audio Device"></button>
 
-                            </div>
+                            </div> 
 
                             <h5 class="deviceList-modal-heading"> ${this.name}</h5>
 
@@ -190,7 +190,7 @@ class _audioDevice extends ui {
         <!-- ${this.name} -->
 
         <!--    MAIN CARD CONTAINER     -->
-        <div id="@{_draggable}" class="audioDevice-main-card list-group-item fixed" draggable="true">
+        <div id="@{_draggable}" class="audioDevice-main-card list-group-item absolute" draggable="true">
             <!--    TOP HEADING CONTAINER    -->
             <div class="audioDevice-heading">
 
@@ -204,7 +204,7 @@ class _audioDevice extends ui {
 
                     <div class="flex justify-end"
                     <!--    SETTINGS BUTTON     -->
-                    <button id=@{"_btnSettings"} class="audioDevice-btn-settings" type="button" 
+                    <button id="@{_btnSettings}" class="audioDevice-btn-settings" type="button" 
                     title="Open Device Settings" data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
                     </div>
 
@@ -219,6 +219,13 @@ class _audioDevice extends ui {
 
                 </div>
             </div>
+        </div>
+
+        <div id="@{_element1}" class="element top-28 left-28 absolute">Element 1</div>
+        <div id="@{_element2}" class="element top-[500px] left-[500px] absolute">Element 2</div>
+
+        <div id="@{_line}" class="absolute bg-black w-1 h-1">
+            
         </div>
         `;
     }
@@ -315,8 +322,6 @@ class _audioDevice extends ui {
                         if (data == 'Yes') {
                             a._notify({ remove: true });
                             a.SetData({ remove: true });
-
-                            a._parent.emit('controlRemoved', a);
                         }
                     }
                 }, 'top');
@@ -345,8 +350,6 @@ class _audioDevice extends ui {
 
             // send newly created audio device's data to manager
             this._parent._notify({ [name]: dup });
-
-            this._parent.emit('controlAdded', this._parent[name]);
         });
 
         // Add VU meter

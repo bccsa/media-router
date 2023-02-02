@@ -5474,15 +5474,27 @@ textarea.form-control.is-invalid {
 }
 
 .appFrame-modal-btn-close {
+  margin: 0.5rem;
   box-sizing: content-box;
+  display: inline-block;
   height: 1rem;
   width: 1rem;
-  border-radius: 0px;
+  border-radius: 9999px;
+  border-width: 2px;
   border-style: none;
+  border-color: transparent;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
   padding: 0.25rem;
   --tw-text-opacity: 1;
   color: rgb(0 0 0 / var(--tw-text-opacity));
   opacity: 0.5;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-backdrop-filter;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .appFrame-modal-btn-close:hover {
@@ -5490,6 +5502,9 @@ textarea.form-control.is-invalid {
   color: rgb(0 0 0 / var(--tw-text-opacity));
   text-decoration-line: none;
   opacity: 0.75;
+  --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --tw-shadow-colored: 0 10px 15px -3px var(--tw-shadow-color), 0 4px 6px -4px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 }
 
 .appFrame-modal-btn-close:focus {
@@ -7314,7 +7329,7 @@ textarea.deviceList-text-area.is-invalid {
 }
 
 .deviceList-btn-delete {
-  margin-left: 1rem;
+  margin: 0.5rem;
   display: inline-block;
   height: 2rem;
   width: 2rem;
@@ -7861,15 +7876,27 @@ textarea.deviceList-text-area.is-invalid {
 }
 
 .deviceList-modal-btn-close {
+  margin: 0.5rem;
   box-sizing: content-box;
+  display: inline-block;
   height: 1rem;
   width: 1rem;
-  border-radius: 0px;
+  border-radius: 9999px;
+  border-width: 2px;
   border-style: none;
+  border-color: transparent;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
   padding: 0.25rem;
   --tw-text-opacity: 1;
   color: rgb(0 0 0 / var(--tw-text-opacity));
   opacity: 0.5;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-backdrop-filter;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .deviceList-modal-btn-close:hover {
@@ -7877,6 +7904,9 @@ textarea.deviceList-text-area.is-invalid {
   color: rgb(0 0 0 / var(--tw-text-opacity));
   text-decoration-line: none;
   opacity: 0.75;
+  --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --tw-shadow-colored: 0 10px 15px -3px var(--tw-shadow-color), 0 4px 6px -4px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 }
 
 .deviceList-modal-btn-close:focus {
@@ -8942,23 +8972,22 @@ textarea.audioDevice-text-area.is-invalid {
 }
 
 .audioDevice-btn-delete {
-  margin-left: 1rem;
+  margin: 0.5rem;
   display: inline-block;
   height: 2rem;
   width: 2rem;
   border-radius: 9999px;
+  border-width: 2px;
+  border-color: transparent;
   background-image: url('./controls/img/delete_bl.svg');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  text-transform: uppercase;
-  line-height: 1.5;
-  --tw-text-opacity: 1;
-  color: rgb(255 255 255 / var(--tw-text-opacity));
+  padding: 0.25rem;
   transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-backdrop-filter;
   transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
   transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-backdrop-filter;
-  transition-duration: 150ms;
+  transition-duration: 200ms;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -8966,11 +8995,6 @@ textarea.audioDevice-text-area.is-invalid {
   --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   --tw-shadow-colored: 0 10px 15px -3px var(--tw-shadow-color), 0 4px 6px -4px var(--tw-shadow-color);
   box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
-  outline: 2px solid transparent;
-  outline-offset: 2px;
-  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
-  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color);
-  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
 }
 
 /*-------------------------*/
@@ -9244,15 +9268,27 @@ textarea.audioDevice-text-area.is-invalid {
 }
 
 .message-modal-btn-close {
+  margin: 0.5rem;
   box-sizing: content-box;
+  display: inline-block;
   height: 1rem;
   width: 1rem;
-  border-radius: 0px;
+  border-radius: 9999px;
+  border-width: 2px;
   border-style: none;
+  border-color: transparent;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
   padding: 0.25rem;
   --tw-text-opacity: 1;
   color: rgb(0 0 0 / var(--tw-text-opacity));
   opacity: 0.5;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, -webkit-backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter, -webkit-backdrop-filter;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .message-modal-btn-close:hover {
@@ -9260,6 +9296,9 @@ textarea.audioDevice-text-area.is-invalid {
   color: rgb(0 0 0 / var(--tw-text-opacity));
   text-decoration-line: none;
   opacity: 0.75;
+  --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --tw-shadow-colored: 0 10px 15px -3px var(--tw-shadow-color), 0 4px 6px -4px var(--tw-shadow-color);
+  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
 }
 
 .message-modal-btn-close:focus {
@@ -9547,6 +9586,50 @@ textarea.audioDevice-text-area.is-invalid {
   left: -0.25rem;
 }
 
+.top-\[250px\] {
+  top: 250px;
+}
+
+.left-\[025px\] {
+  left: 025px;
+}
+
+.left-\[250px\] {
+  left: 250px;
+}
+
+.top-3 {
+  top: 0.75rem;
+}
+
+.left-3 {
+  left: 0.75rem;
+}
+
+.top-28 {
+  top: 7rem;
+}
+
+.left-28 {
+  left: 7rem;
+}
+
+.top-96 {
+  top: 24rem;
+}
+
+.left-96 {
+  left: 24rem;
+}
+
+.top-\[500px\] {
+  top: 500px;
+}
+
+.left-\[500px\] {
+  left: 500px;
+}
+
 .isolate {
   isolation: isolate;
 }
@@ -9676,24 +9759,12 @@ textarea.audioDevice-text-area.is-invalid {
   margin-bottom: 0px;
 }
 
+.mt-4 {
+  margin-top: 1rem;
+}
+
 .mb-6 {
   margin-bottom: 1.5rem;
-}
-
-.mb-4 {
-  margin-bottom: 1rem;
-}
-
-.-ml-4 {
-  margin-left: -1rem;
-}
-
-.-mr-16 {
-  margin-right: -4rem;
-}
-
-.mt-3 {
-  margin-top: 0.75rem;
 }
 
 .mt-5 {
@@ -9824,8 +9895,16 @@ textarea.audioDevice-text-area.is-invalid {
   height: 3rem;
 }
 
+.h-\[0\.0625rem\] {
+  height: 0.0625rem;
+}
+
 .h-full {
   height: 100%;
+}
+
+.h-1 {
+  height: 0.25rem;
 }
 
 .h-\[calc\(100\%-theme\(\'spacing\.1\'\)\)\] {
@@ -9834,6 +9913,14 @@ textarea.audioDevice-text-area.is-invalid {
 
 .h-\[calc\(100\%-theme\(\"spacing\.1\"\)\)\] {
   height: calc(100% - 0.25rem);
+}
+
+.h-8 {
+  height: 2rem;
+}
+
+.h-96 {
+  height: 24rem;
 }
 
 .max-h-40 {
@@ -9884,28 +9971,24 @@ textarea.audioDevice-text-area.is-invalid {
   width: 50%;
 }
 
-.w-\[30rem\] {
-  width: 30rem;
-}
-
-.w-4\/12 {
-  width: 33.333333%;
-}
-
-.w-3\/12 {
-  width: 25%;
-}
-
-.w-5\/12 {
-  width: 41.666667%;
-}
-
 .w-1\/6 {
   width: 16.666667%;
 }
 
+.w-1 {
+  width: 0.25rem;
+}
+
 .w-6 {
   width: 1.5rem;
+}
+
+.w-8 {
+  width: 2rem;
+}
+
+.w-96 {
+  width: 24rem;
 }
 
 .max-w-\[27\.5rem\] {
@@ -10843,6 +10926,16 @@ textarea.audioDevice-text-area.is-invalid {
   background-color: rgb(41 53 72 / var(--tw-bg-opacity));
 }
 
+.bg-gray-500 {
+  --tw-bg-opacity: 1;
+  background-color: rgb(107 114 128 / var(--tw-bg-opacity));
+}
+
+.bg-black {
+  --tw-bg-opacity: 1;
+  background-color: rgb(0 0 0 / var(--tw-bg-opacity));
+}
+
 .bg-\[\#00000050\] {
   background-color: #00000050;
 }
@@ -10855,6 +10948,10 @@ textarea.audioDevice-text-area.is-invalid {
 .bg-\[rgb\(255\2c 0\2c 0\)\] {
   --tw-bg-opacity: 1;
   background-color: rgb(255 0 0 / var(--tw-bg-opacity));
+}
+
+.bg-transparent {
+  background-color: transparent;
 }
 
 .bg-delete_bl {
