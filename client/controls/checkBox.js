@@ -26,6 +26,9 @@ class checkBox extends ui {
         // Handle property changes
         this.on('value', value => {
             this._check.checked = value;
+
+            this.emit('check', this.value);
+
         });
 
         this.on('label', label => {
@@ -40,7 +43,9 @@ class checkBox extends ui {
 
     }
 
-    
+
+
+
 
 
 }

@@ -1,7 +1,7 @@
-class DeviceList extends ui {
+class Router extends ui {
     constructor() {
         super();
-        this.deviceType = "DeviceList";
+        this.deviceType = "Router";
         this.description = "";
         this.autoStart = false;
         this.autoStartDelay = 500;  // milliseconds
@@ -9,6 +9,7 @@ class DeviceList extends ui {
         this.username = "";
         this.password = "";
         this.displayName = "New Router";
+        this.online = false;
     }
 
     get html() {
@@ -16,52 +17,52 @@ class DeviceList extends ui {
         <!-- ${this.name} -->
 
         <!--    MAIN CARD CONTAINER     -->
-        <div class="deviceList-main-card list-group-item">
+        <div class="router-main-card list-group-item">
             <details id="@{_details}" class="rounded group">
 
                 <!--    TOP HEADING CONTAINER    -->
-                <summary class="deviceList-summary-container">
-                    <div class="deviceList-top-bar">
-                        <div class="deviceList-top-flex-div">
+                <summary class="router-summary-container">
+                    <div class="router-top-bar">
+                        <div class="router-top-flex-div">
 
-                            <div class="deviceList-flex-justify-end">
+                            <div class="router-flex-justify-end">
 
                                 <!--    LIST HANDEL  -->
-                                <div class="deviceList-btn-handel" title="Drag and drop"></div>
+                                <div class="router-btn-handel" title="Drag and drop"></div>
 
-                                <!--    DEVICE LIST NAME    -->
+                                <!--    ROUTER NAME    -->
                                 <div class="ml-4">
-                                    <span id="@{_name}" class="font-semibold text-2xl" title="Device List Name">${this.displayName}</span>
+                                    <span id="@{_name}" class="font-medium text-2xl" title="Router Name">${this.displayName}</span>
                                 </div>
                             </div>
 
-                            <div class="deviceList-flex-justify-end">
+                            
+                            <div class="router-flex-justify-end">
 
                                 <!--    ONLINE/OFFLINE -->
-                                <div class="deviceList-btn-signal"
-                                    title="Add a new DeviceList">
-                                </div>
+                                <span id="@{_online}" class="hidden items-center bg-green-100 text-green-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-green-900 dark:text-green-300">
+                                <span class="w-2 h-2 mr-1 bg-green-500 rounded-full"></span>
+                                Online
+                                </span>
 
-                                <div class="ml-4">
-                                     <span class="font-medium text-xl" title="Device List Name">Online/Offline</span>
-                                </div>
-                            </div>
-
-                            <div class="deviceList-flex-justify-end">
+                                <span id="@{_offline}" class="inline-flex items-center bg-red-100 text-red-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-red-900 dark:text-red-300">
+                                <span class="w-2 h-2 mr-1 bg-red-500 rounded-full"></span>
+                                Offline
+                                </span>
                                 
                                 <!--    TOGGLE ON/OFF     -->
-                                <div class="mr-4 flex">
-                                    <label for="@{_switchOnOff}" class="deviceList-label">Off</label>
+                                <div class="mr-4 flex text-[15px]">
+                                    <label for="@{_switchOnOff}" class="router-label">Off</label>
                                     <div class="form-check form-switch">
-                                        <input id="@{_switchOnOff}" class="deviceList-toggle" type="checkbox"
-                                        role="switch" title="Switch Device list on or off">
-                                        <label for="@{_switchOnOff}" class="deviceList-label">On</label>
+                                        <input id="@{_switchOnOff}" class="router-toggle" type="checkbox"
+                                        role="switch" title="Switch Router on or off">
+                                        <label for="@{_switchOnOff}" class="router-label">On</label>
                                     </div>
                                 </div>
 
                                 <!--    CONTAINER TOGGLE     -->
                                 <div class="mr-1">
-                                    <div class="deviceList-toggle-arrow"></div>
+                                    <div class="router-toggle-arrow"></div>
                                 </div>
                             </div>
                         </div>
@@ -69,104 +70,104 @@ class DeviceList extends ui {
                 </summary>
 
                 <!--    DIVIDER LINE      -->
-                <div class="deviceList-line"></div>
+                <div class="router-line"></div>
 
                 <!--    MORE INFO CONTAINER       -->
-                <div id="@{_moreInfo}" class="deviceList-content">
+                <div id="@{_moreInfo}" class="router-content">
 
                     <!--    ADD BUTTON    -->
-                    <button class="deviceList-btn-add" type="button" data-bs-toggle="modal"
+                    <button class="router-btn-add" type="button" data-bs-toggle="modal"
                     data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
 
                     <!--    CHILD DEVICE    -->
-                    <div id="@{_controlsDiv}" class="deviceList-devices-div z-10 relative"></div>
+                    <div id="@{_controlsDiv}" class="router-devices-div z-10 relative"></div>
 
                     
                     <!--    SETTINGS BUTTON       -->
-                    <div class="justify-between mt-1 z-50">
-                        <button id="@{_btnSettings}" class="deviceList-btn-settings"
-                        type="button" title="Open Device List Settings"> </button>
+                    <div class="justify-between mt-1 z-0">
+                        <button id="@{_btnSettings}" class="router-btn-settings"
+                        type="button" title="Open Router Settings"> </button>
                     </div>
 
-                    <div id="@{_settingsContainer}" class="deviceList-settingsContainer z-50"  >
+                    <div id="@{_settingsContainer}" class="router-settingsContainer z-50"  >
 
                         <!--    EXIT SETTING BUTTON       -->
-                        <div class="deviceList-flex-justify-between">
-                            <div class="deviceList-flex-justify-end">
+                        <div class="router-flex-justify-between">
+                            <div class="router-flex-justify-end">
 
                                 
                                 <!--    DUPLICATE BUTTON      -->
-                                <button id="@{_btnDuplicate}" class="deviceList-btn-duplicate" 
-                                type="button" title="Duplicate DeviceList"></button>
+                                <button id="@{_btnDuplicate}" class="router-btn-duplicate" 
+                                type="button" title="Duplicate Router"></button>
 
-                                <!--    DELETE DEVICE LIST     -->
-                                <button class="deviceList-btn-delete" type="button" data-bs-toggle="modal"
-                                data-bs-target="#@{_modalDelete}" title="Remove DeviceList"></button>
+                                <!--    DELETE ROUTER     -->
+                                <button class="router-btn-delete" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalDelete}" title="Remove Router"></button>
                                 
                             </div>
 
                             <!--    EXIT BUTTON   -->
                             <div class="justify-end">
-                                <button id="@{_btnExit}" class="deviceList-btn-exit"
-                                type="button" title="Close Device List Settings"></button>
+                                <button id="@{_btnExit}" class="router-btn-exit"
+                                type="button" title="Close Router Settings"></button>
                             </div>
                         </div>
 
                         <hr class="w-full h-[0.0625rem] bg-gray-500 mb-2"> 
 
                         <!--    DISPLAY NAME      -->
-                        <label for="@{_displayName}" class="deviceList-label-settings">Display Name: </label>
-                        <div class="deviceList-container">
+                        <label for="@{_displayName}" class="router-label-settings">Display Name: </label>
+                        <div class="router-container">
                             <div class="mr-4 w-full">
                             
-                                <input id="@{_displayName}" class="deviceList-text-area" type="text" maxlength="30"
-                                placeholder="Your display name" title="Device List display name" value="${this.displayName}"/>
+                                <input id="@{_displayName}" class="router-text-area" type="text" maxlength="30"
+                                placeholder="Your display name" title="Router display name" value="${this.displayName}"/>
 
                             </div>
                         </div>
                                     
                         <!--    DESCRIPTION       -->
-                        <label for="@{_description}" class="deviceList-label-settings">Description: </label>
-                        <div class="deviceList-container">
+                        <label for="@{_description}" class="router-label-settings">Description: </label>
+                        <div class="router-container">
                             <div class="mr-4 w-full">
                             
-                                <textarea id="@{_description}" class="deviceList-text-area" rows="2"
-                                placeholder="Your description" title="Device List description">${this.description}</textarea>
+                                <textarea id="@{_description}" class="router-text-area" rows="2"
+                                placeholder="Your description" title="Router description">${this.description}</textarea>
 
                             </div>
                         </div>
 
                         <!--    AUTO START DELAY      -->
-                        <label for="@{_autoStartDelay}" class="deviceList-label-settings">Auto Start Delay: </label>
-                        <div class="deviceList-container">
+                        <label for="@{_autoStartDelay}" class="router-label-settings">Auto Start Delay: </label>
+                        <div class="router-container">
                             <div class="mr-4 w-full">
                                 
-                                <input id="@{_autoStartDelay}" class="deviceList-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                <input id="@{_autoStartDelay}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
                                 title="Set the delay in milliseconds" name="maxVolume" step="1" value="${this.autoStartDelay}"/>
 
                             </div>
                         </div>
 
                         <!--    AUTO START CHECKBOX      --> 
-                        <div class="deviceList-container">
-                            <input id="@{_autoStart}" class="deviceList-checkbox" type="checkbox"  value="${this.autoStart}"  title="Enable or disable the auto start"/>  
+                        <div class="router-container">
+                            <input id="@{_autoStart}" class="router-checkbox" type="checkbox"  value="${this.autoStart}"  title="Enable or disable the auto start"/>  
                             <label for="@{_autoStart}" class="ml-2">Auto Start</label>  
                         </div>
 
                         <!--    USERNAME      -->
-                        <label for="@{_userName}" class="deviceList-label-settings">Username: </label>
-                        <div class="deviceList-container">
+                        <label for="@{_userName}" class="router-label-settings">Username: </label>
+                        <div class="router-container">
                             <div class="mr-4 w-full">
-                                <textarea id="@{_userName}" class="deviceList-text-area" rows="1"
+                                <textarea id="@{_userName}" class="router-text-area" rows="1"
                                 placeholder="Your Username" title="Enter a username">${this.username}</textarea>
                             </div>
                         </div>
 
                         <!--    PASSWORD      -->
-                        <label for="@{_password}" class="deviceList-label-settings">Password: </label>
-                        <div class="deviceList-container">
+                        <label for="@{_password}" class="router-label-settings">Password: </label>
+                        <div class="router-container">
                             <div class="mr-4 w-full">
-                                <textarea id="@{_password}" class="deviceList-text-area" rows="1"
+                                <textarea id="@{_password}" class="router-text-area" rows="1"
                                 placeholder="Your password" title="Enter a password">${this.password}</textarea>
                             </div>
                         </div>
@@ -177,23 +178,23 @@ class DeviceList extends ui {
         </div>
 
         <!--    MODAL ADD DEVICES    -->
-        <div id="@{_modalAddDevice}" class="deviceList-modal modal fade" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog modal-sm deviceList-modal-dialog">
-                <div class="deviceList-modal-content">
+        <div id="@{_modalAddDevice}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
 
-                    <div class="deviceList-modal-header">
-                        <div class="deviceList-modal-img-add"></div>
-                        <h5 class="deviceList-modal-heading"> Add Audio Device</h5>
-                        <button class="deviceList-modal-btn-close" type="button"
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-add"></div>
+                        <h5 class="router-modal-heading"> Add Audio Device</h5>
+                        <button class="router-modal-btn-close" type="button"
                         data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
 
-                    <div class="deviceList-modal-body">
+                    <div class="router-modal-body">
 
                         <!--    DEVICE TYPE      -->
                         <label for="@{_deviceType}" class="form-label inline-block mb-2">Device Type:</label>
                         <div class="mb-3 w-full">
-                            <select id="@{_deviceType}" class="deviceList-select" 
+                            <select id="@{_deviceType}" class="router-select" 
                             title="Choose a Device type" value="" type="text">
                             <option value="AudioInput">AudioInput</option>
                             <option value="SrtOpusInput">SrtOpusInput</option>
@@ -203,12 +204,12 @@ class DeviceList extends ui {
                         </div>
                     </div>
 
-                    <div class="deviceList-modal-footer">
+                    <div class="router-modal-footer">
                         
-                        <button class="deviceList-modal-btn mr-2" type="button"  
+                        <button class="router-modal-btn mr-2" type="button"  
                         data-bs-dismiss="modal"> Cancel</button>
                         
-                        <button id="@{_btnAddDevice}" class="deviceList-modal-btn"
+                        <button id="@{_btnAddDevice}" class="router-modal-btn"
                         type="button" data-bs-dismiss="modal"> Add</button>
                     </div>
                     
@@ -216,28 +217,28 @@ class DeviceList extends ui {
             </div>
         </div>
 
-        <!--    MODAL DELETE DEVICE LIST -->
-        <div id="@{_modalDelete}" class="deviceList-modal modal fade" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog modal-sm deviceList-modal-dialog">
-                <div class="deviceList-modal-content">
+        <!--    MODAL DELETE ROUTER -->
+        <div id="@{_modalDelete}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
 
-                    <div class="deviceList-modal-header">
-                        <div class="deviceList-modal-img-rm"></div>
-                        <h5 class="deviceList-modal-heading"> Delete DeviceList</h5>
-                        <button class="deviceList-modal-btn-close" type="button"
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-rm"></div>
+                        <h5 class="router-modal-heading"> Delete Router</h5>
+                        <button class="router-modal-btn-close" type="button"
                         data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
 
-                    <div class="deviceList-modal-body">
-                    Are you sure you want to delete the DeviceList?
+                    <div class="router-modal-body">
+                    Are you sure you want to delete the Router?
                     </div>
 
-                    <div class="deviceList-modal-footer">
+                    <div class="router-modal-footer">
                         
-                        <button class="deviceList-modal-btn mr-2" type="button"  
+                        <button class="router-modal-btn mr-2" type="button"  
                         data-bs-dismiss="modal"> Cancel</button>
                         
-                        <button id="@{_btnDeleteDeviceList}" class="deviceList-modal-btn"
+                        <button id="@{_btnDeleteRouter}" class="router-modal-btn"
                         type="button" data-bs-dismiss="modal"> Delete</button>
                     </div>
                 </div>
@@ -252,6 +253,7 @@ class DeviceList extends ui {
         this._toggleSettingContainer();
         this._switchOnOff.checked = this.run;
         this._autoStart.checked = this.autoStart;
+        this._checkOnline();
 
         // Event subscriptions 
         this._switchOnOff.addEventListener("click", () => {
@@ -298,7 +300,7 @@ class DeviceList extends ui {
             this.NotifyProperty("password");
         });
 
-        this._btnDeleteDeviceList.addEventListener('click', (e) => {
+        this._btnDeleteRouter.addEventListener('click', (e) => {
             this._notify({remove: true});
             this.SetData({remove: true});
         });
@@ -349,6 +351,10 @@ class DeviceList extends ui {
         });
 
         // Handle property changes
+        this.on('online', online => {
+            this._checkOnline();
+        });
+
         this.on('run', run => {
             this._switchOnOff.checked = run;
         });
@@ -369,6 +375,20 @@ class DeviceList extends ui {
         this.on('autoStart', autoStart => {
             this._autoStart.checked = autoStart;
         });
+    }
+
+    _checkOnline(){
+
+        if(this.online)
+        {
+            this._online.style.display = "inline-flex";
+            this._offline.style.display = "none";
+        }
+        else{
+            this._online.style.display = "none";
+            this._offline.style.display = "inline-flex";
+        }
+        
     }
 
     _toggleSettingContainer() {

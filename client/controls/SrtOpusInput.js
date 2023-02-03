@@ -15,7 +15,7 @@ class SrtOpusInput extends _audioInputDevice {
     get html() {
         return super.html.replace('%additionalHtml%', `
 
-        <div class="deviceList-modal-footer mt-4">
+        <div class="router-modal-footer mt-4">
 
 
             <div class="w-full mb-6 items-center justify-items-center justify-center">

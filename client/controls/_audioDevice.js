@@ -30,11 +30,11 @@ class _audioDevice extends ui {
 
         <div id="@{_modalContainer}" class="hidden" >
              <!--    MODAL DEVICE    -->
-                <div id="@{_modalDeviceDetails}" class="deviceList-modal modal fade" tabindex="-1" aria-hidden="true">
-                    <div class="modal-dialog modal-lg deviceList-modal-dialog">
-                        <div class="deviceList-modal-content">
+                <div id="@{_modalDeviceDetails}" class="audioDevice-modal modal fade" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog modal-lg audioDevice-modal-dialog">
+                        <div class="audioDevice-modal-content">
         
-                        <div class="deviceList-modal-header">
+                        <div class="audioDevice-modal-header">
                             <div class="mr-4 flex justify-start">
                                 
                                 <!--    DUPLICATE    -->
@@ -47,13 +47,13 @@ class _audioDevice extends ui {
 
                             </div> 
 
-                            <h5 class="deviceList-modal-heading"> ${this.name}</h5>
+                            <h5 class="audioDevice-modal-heading"> ${this.name}</h5>
 
-                            <button class="deviceList-modal-btn-close" type="button"
+                            <button class="audioDevice-modal-btn-close" type="button"
                             data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
         
-                        <div class="deviceList-modal-body">
+                        <div class="audioDevice-modal-body">
 
                             
                         
@@ -176,7 +176,7 @@ class _audioDevice extends ui {
                             %additionalHtml%
                         </div>
 
-                        <div class="deviceList-modal-footer">
+                        <div class="audioDevice-modal-footer">
                             
                         </div>
                             
@@ -230,7 +230,7 @@ class _audioDevice extends ui {
     Init() {
         //Set initial values
         // this._setMute();
-        
+
         this._btnMute.checked = this.mute;
         this._channels.value = this.channels;
         this._sampleRate.value = this.sampleRate;
@@ -340,6 +340,7 @@ class _audioDevice extends ui {
             // Create new audio device
             let dup = this.GetData();
             delete dup.name;
+            delete dup.destinations;
             dup.top += 50;
             dup.left += 25;
 
@@ -419,53 +420,60 @@ class _audioDevice extends ui {
             isMoving = true;
             var style = window.getComputedStyle(event.target, null);
             event.dataTransfer.setData("text/plain",
-            (parseInt(style.getPropertyValue("left"),10) - event.clientX) + ',' + (parseInt(style.getPropertyValue("top"),10) - event.clientY));
-        } 
-        function drag_over(event) { 
-            event.preventDefault(); 
-            return false; 
-        } 
-        function drop(event) { 
-            if (isMoving)
-            {
-                var offset = event.dataTransfer.getData("text/plain").split(',');
-                a._draggable.style.left = (event.clientX + parseInt(offset[0],10)) + 'px';
-                a._draggable.style.top = (event.clientY + parseInt(offset[1],10)) + 'px';
+                (parseInt(style.getPropertyValue("left"), 10) - event.clientX) + ',' + (parseInt(style.getPropertyValue("top"), 10) - event.clientY));
+        }
+        function drag_over(event) {
+            event.preventDefault();
+            return false;
+        }
 
-                a.left = (event.clientX + parseInt(offset[0],10));
-                a.top = (event.clientY + parseInt(offset[1],10));
-                
+        this._draggable.addEventListener('dragstart', drag_start, false);
+        this._parent._controlsDiv.addEventListener('dragover', drag_over, false);
+
+
+        this._parent._controlsDiv.addEventListener('drop', event => {
+            if (isMoving) {
+                var offset = event.dataTransfer.getData("text/plain").split(',');
+                a._draggable.style.left = (event.clientX + parseInt(offset[0], 10)) + 'px';
+                a._draggable.style.top = (event.clientY + parseInt(offset[1], 10)) + 'px';
+
+                a.left = (event.clientX + parseInt(offset[0], 10));
+                a.top = (event.clientY + parseInt(offset[1], 10));
+
                 a.NotifyProperty("left");
                 a.NotifyProperty("top");
-                
+
                 event.preventDefault();
                 isMoving = false;
-                return false;
-            }
 
-            
-            
-        } 
-        this._draggable.addEventListener('dragstart',drag_start,false); 
-        this._parent._controlsDiv.addEventListener('dragover',drag_over,false); 
-        this._parent._controlsDiv.addEventListener('drop',drop,false); 
-            
-       
+                this.emit('posChanged', this.calcConnectors());
+                    
+            }
+        });
+
+
         // As we are using CSS transforms (in tailwind CSS), it is not possible to set an element fixed to the browser viewport. A workaround is to move the modal element out of the elements styled by the transform, and move it back when done.
         this._topLevelParent._controlsDiv.prepend(this._modalDeviceDetails);
-        
-        
-         // do this when clicking the modal close button
+
+
+        // do this when clicking the modal close button
         this._modalDeviceDetails.addEventListener('hidden', (e) => {
             this._modalContainer.append(this._modalDeviceDetails);
         })
-            
-        
 
-        
+
     }
 
-    
+    /**
+     * Calculate connector positions
+     * @returns 
+     */
+    calcConnectors() {
+        return {
+            leftConnector: { top: (this.top + (this._draggable.clientHeight / 2) + 4), left: this.left + 5 },
+            rightConnector: { top: (this.top + (this._draggable.clientHeight / 2)+ 4), left: (this.left + (this._draggable.clientWidth) + 5) }
+        };
+    }
     // _setMute() {
     //     if (this.mute) {
     //         this._btnMute.style.borderColor = "rgb(6, 154, 46)";

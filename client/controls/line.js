@@ -9,18 +9,35 @@ class line extends ui {
 
     get html() {
         return `
-        <div id="@{_line}" class="absolute bg-black w-1 h-1">
-        </div>`
+        <div id="@{_line}" class="absolute bg-blue-600 w-[0.125rem] h-[0.125rem] z-0"></div>
+
+        <div id="@{_arrowHead}" class="w-0 h-0 border-t-[0.25rem] border-t-transparent border-b-[0.25rem] border-b-transparent border-l-[0.5rem] border-sky-900 absolute"></div>
+        
+          
+        `
+        
     }
 
     Init() {
         this._drawLine();
 
         // Event Handling
-        this.on('top', this._drawLine);
-        this.on('left', this._drawLine);
-        this.on('bottom', this._drawLine);
-        this.on('right', this._drawLine);
+        this.on('top', (e) => {
+            this._drawLine();
+        })
+
+        this.on('left', (e) => {
+            this._drawLine();
+        })
+        this.on('bottom', (e) => {
+            this._drawLine();
+        })
+        this.on('right', (e) => {
+            this._drawLine();
+        })
+
+        
+        // <div class="w-0 h-0 border-t-[0.5rem] border-t-transparent border-b-[0.5rem] border-b-transparent border-l-[0.5rem] border-l-black float-right"></div>
     }
 
     _drawLine() {
@@ -36,5 +53,17 @@ class line extends ui {
 
         this._line.style.top = (this.top + offsetY) + "px";
         this._line.style.left = (this.left + offsetX) + "px";
+
+        const midY = (this.top + this.bottom - this._arrowHead.offsetHeight + this._line.offsetHeight)/2 ;
+        const midX = (this.left + this.right - this._arrowHead.offsetWidth)/2;
+
+        // const midY = (this.top + this.bottom)/2;
+        // const midX = (this.left + this.right)/2;
+
+        this._arrowHead.style.transform = `rotate(${angle}deg)`;
+
+        
+        this._arrowHead.style.top = (midY) + "px";
+        this._arrowHead.style.left = (midX) + "px";
     }
 }

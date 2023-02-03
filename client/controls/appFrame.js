@@ -9,7 +9,7 @@ class appFrame extends ui {
         <nav class="appFrame-top-bar"> <div class="appFrame-top-flex-div">
 
             <!--    ADD BUTTON    -->
-            <button id="@{_btnAddDeviceList}" class="appFrame-btn-add" type="button" title="Add a new DeviceList"></button>
+            <button id="@{_btnAddRouter}" class="appFrame-btn-add" type="button" title="Add a new Router"></button>
 
             <!--    HEADING   -->
             <div class="container-fluid"> <a class="appFrame-heading" href="#">Media Router Manager</a></div>
@@ -95,7 +95,7 @@ class appFrame extends ui {
             </div>
         </div> 
 
-        <!--    DEVICE LIST     -->
+        <!--    ROUTER     -->
         <div id="@{_controlsDiv}" class="list-group appFrame-controls-div"></div>
         `;
     }
@@ -105,11 +105,11 @@ class appFrame extends ui {
         // Set initial values
         this._incorrectPassAlert.style.display = "none";
         this._disconnectAlert.style.display = "none";
-        this._btnAddDeviceList.disabled = true;
+        this._btnAddRouter.disabled = true;
         this._btnUser.disabled = true;
 
         // Event subscriptions
-        this._btnAddDeviceList.addEventListener('click', (e) => {
+        this._btnAddRouter.addEventListener('click', (e) => {
             // Get unique random name
             function randomName() {
                 return "router_" + Math.round(Math.random() * 10000);
@@ -121,7 +121,7 @@ class appFrame extends ui {
             }
 
             // Create new router
-            this.SetData({[name]: {controlType: "DeviceList"}});
+            this.SetData({[name]: {controlType: "Router"}});
             this.on(name, control => {
                 // send newly created router's data to manager
                 this._notify({[name]: control.GetData()});
@@ -131,7 +131,7 @@ class appFrame extends ui {
 
         this._logOutButton.addEventListener('click', (e) => {
             this.clearControls();
-            this._btnAddDeviceList.disabled = true;
+            this._btnAddRouter.disabled = true;
             this._btnUser.disabled = true;
             this._formLogIn.style.display = "flex";
             this._controlsDiv.style.display = "none";
@@ -150,9 +150,9 @@ class appFrame extends ui {
 
         });
 
-        // Save the list order when the device list order is changed
+        // Save the list order when the router order is changed
         var sortable = Sortable.create(this._controlsDiv, {
-            handle: '.deviceList-btn-handel',
+            handle: '.router-btn-handel',
             animation: 350,
             chosenClass: "sortable-chosen",
             dragClass: "sortable-drag",
@@ -175,7 +175,7 @@ class appFrame extends ui {
         // Load the list order when the mouse is over the controls div
         this._controlsDiv.addEventListener('mouseover', (e) => {
             Sortable.create(this._controlsDiv, {
-                handle: '.deviceList-btn-handel',
+                handle: '.router-btn-handel',
                 animation: 350,
                 chosenClass: "sortable-chosen",
                 dragClass: "sortable-drag",
@@ -199,7 +199,7 @@ class appFrame extends ui {
     }
 
     logIn() {
-        this._btnAddDeviceList.disabled = false;
+        this._btnAddRouter.disabled = false;
         this._btnUser.disabled = false;
         this._controlsDiv.style.display = "block";
         this._formLogIn.style.display = "none";

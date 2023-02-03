@@ -29,6 +29,7 @@ module.exports = {
         'dots-vertical': "url('./controls/img/dots-vertical.svg')",
         'dots_horizontal_wt': "url('./controls/img/dots_horizontal_wt.svg')",
         'settings_wt': "url('./controls/img/settings_wt.svg')",
+        'settings_bl': "url('./controls/img/settings_bl.svg')",
       }
     }
   }
