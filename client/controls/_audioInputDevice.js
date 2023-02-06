@@ -94,13 +94,19 @@ class _audioInputDevice extends _audioDevice {
                                 }
                             }
                         });
+
+                        dstControl.on('displayName', displayName => {
+                            control.label = displayName;
+                        }); 
+
                     });
 
                     let sourceCon = this.calcConnectors();
                     let dstCon = dstControl.calcConnectors();
 
-                    this.SetData({ [check]: { controlType: "checkBox", label: dstControl.name, parentElement: "_checkboxes", hideData: true } });
-
+                    this.SetData({ [check]: { controlType: "checkBox", label: dstControl.displayName, parentElement: "_checkboxes", hideData: true } });
+                    
+                        
                     this.one(line, lineControl => {
                         this.on('posChanged', sourceCon =>{
                             lineControl.top = sourceCon.rightConnector.top;

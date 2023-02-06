@@ -18,10 +18,14 @@ class _audioDevice extends ui {
         this.soloGroup = "";
         this.showVolumeControl = true;
         this.showMuteControl = true;
+        this.displayName = "New " + this.controlType;
         this.displayOrder = 0;
         this.peak = 0;
         this.left = 50;
         this.top = 50;
+        
+        this.width = 328.8;
+        this.height = 68;
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
     }
 
@@ -47,7 +51,7 @@ class _audioDevice extends ui {
 
                             </div> 
 
-                            <h5 class="audioDevice-modal-heading"> ${this.name}</h5>
+                            <h5 id="@{_modalHeading}" class="audioDevice-modal-heading"> ${this.displayName}</h5>
 
                             <button class="audioDevice-modal-btn-close" type="button"
                             data-bs-dismiss="modal" aria-label="Close"></button>
@@ -55,8 +59,14 @@ class _audioDevice extends ui {
         
                         <div class="audioDevice-modal-body">
 
-                            
-                        
+                            <!--    DISPLAY NAME      -->
+                            <div class="w-full mb-1 mr-4">
+                                <div class="mr-4 w-full">
+                                    <label for="@{_displayName}" class="mb-2">Display Name: </label>
+                                    <input id="@{_displayName}" class="audioDevice-text-area" type="text" maxlength="30"
+                                    placeholder="Your display name" title="Device display name" value="${this.displayName}"/>
+                                </div>
+                            </div>
                 
                             <!--    DESCRIPTION TEXT AREA     -->
                             <div class="w-full mb-1 mr-4">
@@ -68,9 +78,9 @@ class _audioDevice extends ui {
                             <!--    SOLO GROUP    -->
                             <div class="w-full mr-4">
                                 <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
-                                    <textarea id="@{_soloGroup}" class="audioDevice-text-area" rows="1" cols="3"
+                                    <input id="@{_soloGroup}" class="audioDevice-text-area" type="text" 
                                     title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
-                                    placeholder="Solo group name:">${this.soloGroup}</textarea>
+                                    placeholder="Solo group name:" value="${this.soloGroup}"/>
                             </div>
 
                             <!--    VOLUME SLIDER     -->
@@ -190,13 +200,13 @@ class _audioDevice extends ui {
         <!-- ${this.name} -->
 
         <!--    MAIN CARD CONTAINER     -->
-        <div id="@{_draggable}" class="audioDevice-main-card list-group-item absolute" draggable="true">
+        <div id="@{_draggable}" class="audioDevice-main-card absolute" draggable="true">
             <!--    TOP HEADING CONTAINER    -->
             <div class="audioDevice-heading">
 
                 <!--    NAME AND VOLUME INDICATOR      -->
                 <div class="mb-1 col-span-2">
-                    <div class="font-medium text-lg" title="Audio Input Name">${this.name}</div>
+                    <div id="@{_name}" class="font-medium text-lg" title="Audio Input Name">${this.displayName}</div>
                     <div id="@{_volume_slit}" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                 </div>
 
@@ -237,8 +247,11 @@ class _audioDevice extends ui {
         this._bitDepth.value = this.bitDepth;
         this._showVolumeControl.checked = this.showVolumeControl;
         this._showMuteControl.checked = this.showMuteControl;
+        // this._checkCollision(this.left, this.top, "down");
         this._draggable.style.left = this.left + "px";
         this._draggable.style.top = this.top + "px";
+        this._draggable.style.offsetHeight = this.height;
+        this._draggable.style.offsetWidth = this.width;
 
         //Event subscriptions
         this._btnMute.addEventListener('click', (e) => {
@@ -246,6 +259,13 @@ class _audioDevice extends ui {
             // this._setMute();
             this.NotifyProperty("mute");
         });
+
+        this._displayName.addEventListener('change', (e) => {
+            this.displayName = this._displayName.value;
+            this._name.innerText = this.displayName;
+            this._modalHeading.innerText = this.displayName;
+            this.NotifyProperty("displayName");
+        })
 
         this._description.addEventListener('change', (e) => {
             this.description = this._description.value;
@@ -312,7 +332,7 @@ class _audioDevice extends ui {
             this.emit('messageBox',
                 {
                     buttons: ["Cancel", "Yes"],
-                    title: `Delete ${a.name}?`,
+                    title: `Delete ${a.displayName}?`,
                     text: 'Are you sure you want to delete the device?',
                     img: 'bg-delete_bl',
                     callback: function (data) {
@@ -341,8 +361,11 @@ class _audioDevice extends ui {
             let dup = this.GetData();
             delete dup.name;
             delete dup.destinations;
-            dup.top += 50;
-            dup.left += 25;
+
+            dup.displayName += "(copy)";
+            let position = this._checkCollision((dup.top + 70), (dup.left), "down");
+            dup.top = position.newTop;
+            dup.left = position.newLeft;
 
             this._parent.SetData({ [name]: dup });
 
@@ -370,6 +393,11 @@ class _audioDevice extends ui {
         this.on('mute', mute => {
             this._btnMute.checked = mute;
         });
+
+        this.on('displayName', displayName => {
+            this._displayName.value = displayName;
+            this._name.innerHTML = displayName;
+        })
 
         this.on('description', description => {
             this._description.value = description;
@@ -432,13 +460,24 @@ class _audioDevice extends ui {
 
 
         this._parent._controlsDiv.addEventListener('drop', event => {
+
+            // Check for collision with other child elements
+            var offset = event.dataTransfer.getData("text/plain").split(',');
+            let newLeft = event.clientX + parseInt(offset[0], 10);
+            let newTop = event.clientY + parseInt(offset[1], 10);
+
+            // console.log(newTop + " " + newLeft );
+
+            let position = this._checkCollision(newTop, newLeft);
+
+
             if (isMoving) {
                 var offset = event.dataTransfer.getData("text/plain").split(',');
-                a._draggable.style.left = (event.clientX + parseInt(offset[0], 10)) + 'px';
-                a._draggable.style.top = (event.clientY + parseInt(offset[1], 10)) + 'px';
+                a._draggable.style.left = position.newLeft + 'px';
+                a._draggable.style.top = position.newTop + 'px';
 
-                a.left = (event.clientX + parseInt(offset[0], 10));
-                a.top = (event.clientY + parseInt(offset[1], 10));
+                a.left = position.newLeft;
+                a.top = position.newTop;
 
                 a.NotifyProperty("left");
                 a.NotifyProperty("top");
@@ -447,9 +486,13 @@ class _audioDevice extends ui {
                 isMoving = false;
 
                 this.emit('posChanged', this.calcConnectors());
-                    
+
             }
         });
+
+        this._draggable.addEventListener("dragend", event => {
+            isMoving = false;
+        })
 
 
         // As we are using CSS transforms (in tailwind CSS), it is not possible to set an element fixed to the browser viewport. A workaround is to move the modal element out of the elements styled by the transform, and move it back when done.
@@ -471,23 +514,9 @@ class _audioDevice extends ui {
     calcConnectors() {
         return {
             leftConnector: { top: (this.top + (this._draggable.clientHeight / 2) + 4), left: this.left + 5 },
-            rightConnector: { top: (this.top + (this._draggable.clientHeight / 2)+ 4), left: (this.left + (this._draggable.clientWidth) + 5) }
+            rightConnector: { top: (this.top + (this._draggable.clientHeight / 2) + 4), left: (this.left + (this._draggable.clientWidth) + 5) }
         };
     }
-    // _setMute() {
-    //     if (this.mute) {
-    //         this._btnMute.style.borderColor = "rgb(6, 154, 46)";
-    //         this._btnMute.style.backgroundColor = "rgb(34, 75, 18,0.9)";
-    //         this._btnMute.style.boxShadow = "0 0 1px 1px rgb(6, 154, 46, 0.3)";
-    //         this._btnMute_text.textContent = "OFF";
-    //     }
-    //     else {
-    //         this._btnMute.style.borderColor = "rgb(12, 255, 77)";
-    //         this._btnMute.style.backgroundColor = "rgb(6, 154, 46)";
-    //         this._btnMute.style.boxShadow = "0 0 10px 5px rgb(6, 154, 46, 0.6)";
-    //         this._btnMute_text.textContent = "ON";
-    //     }
-    // }
 
     _setVolume() {
         if (!this._sliderActive) {
@@ -499,5 +528,75 @@ class _audioDevice extends ui {
 
     showSliderValue() {
         this._rangeBullet.innerHTML = Math.round(this._volume_slider.value * 100) + " %";
+    }
+
+    _checkCollision(newTop, newLeft, direction = "") {
+        // Check for collision with other child elements
+        let collision = true;
+        let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
+        let dropZoneTop = this._parent._controlsDiv.offsetTop - 40;
+        let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
+        let dropZoneHeight = this._parent._controlsDiv.offsetHeight;
+
+        while (collision) {
+            collision = false;
+
+            Object.values(this._parent._controls).forEach(control => {
+
+
+                if (this._draggable != control._draggable) {
+                    let childLeft = control.left - 8;
+                    let childTop = control.top - 8;
+                    let childWidth = control.width + 8;
+                    let childHeight = control.height + 8;
+
+                    let midX = newLeft + this.width / 2;
+                    let midY = newTop + this.height/ 2;
+                    let childMidX = control.left + control.width/ 2;
+                    let childMidY = control.top + control.height / 2;
+
+                    while (newLeft < childLeft + childWidth && newLeft + this.width > childLeft &&
+                        newTop < childTop + childHeight && newTop + this.height > childTop) {
+                        collision = true;
+
+                        if (direction === "") {
+                            if (childMidX - 180 >= midX) {
+                                direction = "left";
+                            } else if (midX >= childMidX + 180) {
+                                direction = "right";
+                            } else if (childMidY > midY) {
+                                direction = "up";
+                            } else if (childMidY <= midY) {
+                                direction = "down";
+                            }
+                        }
+
+                        if (direction === "left") {
+                            newLeft -= 1;
+                        } else if (direction === "right") {
+                            newLeft += 1;
+                        } else if (direction === "up") {
+                            newTop -= 1;
+                        } else if (direction === "down") {
+                            newTop += 1;
+                        }
+
+                        newLeft = Math.max(dropZoneLeft, Math.min(newLeft, dropZoneLeft + dropZoneWidth - this.width));
+                        newTop = Math.max(dropZoneTop, Math.min(newTop, dropZoneTop + dropZoneHeight - this.height));
+
+                        if (newLeft === dropZoneLeft || newLeft === dropZoneLeft + dropZoneWidth - this.width ||
+                            newTop === dropZoneTop || newTop === dropZoneTop + dropZoneHeight - this.height) {
+                            collision = false;
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        return {
+            newLeft,
+            newTop
+        }
     }
 }

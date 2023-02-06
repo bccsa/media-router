@@ -10,8 +10,8 @@ class checkBox extends ui {
         return `
         
             <!--    CHECKBOX    --> 
-            <div class="w-1/2 mr-2 mb-2 flex items-center">
-                <input id="@{_check}" class="mb-2 mr-2 mt-1 h-6 w-6" type="checkbox" checked  value="${this.value}"/>  
+            <div class="basis-1/4 mr-2 mb-2 flex items-center">
+                <input id="@{_check}" class="mb-2 mr-2 mt-1 h-4 w-4" type="checkbox" checked  value="${this.value}"/>  
                 <label id="@{_label}" for="@{_check}" class="mb-2 mr-2 mt-1">${this.label}</label>
             </div>
 
@@ -21,7 +21,7 @@ class checkBox extends ui {
     Init() {
         //Set initial values
         this._check.checked = this.value;
-        this._label.innerHtml = this.label;
+        this._label.innerText = this.label;
 
         // Handle property changes
         this.on('value', value => {
@@ -32,7 +32,7 @@ class checkBox extends ui {
         });
 
         this.on('label', label => {
-            this._label.innerHtml = label;
+            this._label.innerText = label;
         });
 
         // Event subscriptions

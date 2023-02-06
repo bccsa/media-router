@@ -5,6 +5,9 @@ class line extends ui {
         this.left = 0;
         this.bottom = 0;
         this.right = 0;
+        this.lineHeight = 2;
+        this.arrowHeadHeight = 8;
+        this.arrowHeadWidth = 8;
     }
 
     get html() {
@@ -54,8 +57,8 @@ class line extends ui {
         this._line.style.top = (this.top + offsetY) + "px";
         this._line.style.left = (this.left + offsetX) + "px";
 
-        const midY = (this.top + this.bottom - this._arrowHead.offsetHeight + this._line.offsetHeight)/2 ;
-        const midX = (this.left + this.right - this._arrowHead.offsetWidth)/2;
+        const midY = (this.top + this.bottom - this.arrowHeadHeight + this.lineHeight)/2  ;
+        const midX = (this.left + this.right - this.arrowHeadWidth)/2;
 
         // const midY = (this.top + this.bottom)/2;
         // const midX = (this.left + this.right)/2;

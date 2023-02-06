@@ -6871,11 +6871,10 @@ textarea.appFrame-input-password.is-invalid {
 }
 
 .router-settingsContainer {
-  margin-left: 1rem;
   margin-top: 0.05rem;
   display: none;
   height: auto;
-  width: auto;
+  width: 20rem;
   max-width: 20rem;
   border-width: 1px;
   border-style: solid;
@@ -7174,8 +7173,8 @@ textarea.router-text-area.is-invalid {
   background-clip: padding-box;
   padding-left: 0.75rem;
   padding-right: 0.75rem;
-  padding-top: 0.375rem;
-  padding-bottom: 0.375rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
   font-size: 1rem;
   line-height: 1.5rem;
   font-weight: 400;
@@ -10251,10 +10250,6 @@ textarea.audioDevice-text-area.is-invalid {
   width: 16.666667%;
 }
 
-.w-6 {
-  width: 1.5rem;
-}
-
 .w-\[0\.125rem\] {
   width: 0.125rem;
 }
@@ -10281,6 +10276,10 @@ textarea.audioDevice-text-area.is-invalid {
 
 .grow {
   flex-grow: 1;
+}
+
+.basis-1\/4 {
+  flex-basis: 25%;
 }
 
 .table-auto {

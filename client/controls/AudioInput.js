@@ -11,13 +11,9 @@ class AudioInput extends _audioInputDevice {
         <!-- Device  -->
         <div class="w-full mb-2 mr-4">
             <label for="@{_device}" class="form-label inline-block mb-2">Device:</label>
-                <textarea
-                    class="audioDevice-text-area"
-                    id="@{_device}"
-                    title="ALSA Device name - see aplay -L (Default = default)"
-                    rows="1" cols="3"
-                    placeholder="Your device"
-                >${this.device}</textarea>
+            <input id="@{_device}" class="audioDevice-text-area" type="text" 
+            title="ALSA Device name - see aplay -L (Default = default)" placeholder="Your device"
+            value="${this.device}">
         </div>
         
         <div class="w-full mb-1 flex ">

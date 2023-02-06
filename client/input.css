@@ -187,7 +187,7 @@
 }
 
 .router-settingsContainer {
-    @apply bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-auto h-auto ml-4 max-w-xs mt-[0.05rem] ease-in-out hidden text-[15px];
+    @apply bg-[#F8FAFC] border-l-[#DADBDC] border-solid border w-[20rem] h-auto max-w-xs mt-[0.05rem] ease-in-out hidden text-[15px];
 }
 
 .router-flex-justify-between {
@@ -199,7 +199,7 @@
 }
 
 .router-text-area {
-    @apply form-control block w-full px-3 py-1.5 text-base font-normal text-gray-700 bg-white bg-clip-padding border border-solid border-gray-300 rounded transition ease-in-out max-h-40 min-h-[2.4rem] focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
+    @apply form-control block w-full px-3 py-1 text-base font-normal text-gray-700 bg-white bg-clip-padding border border-solid border-gray-300 rounded transition ease-in-out max-h-40 min-h-[2.4rem] focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
 }
 
 .router-btn-add {

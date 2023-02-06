@@ -158,8 +158,8 @@ class Router extends ui {
                         <label for="@{_userName}" class="router-label-settings">Username: </label>
                         <div class="router-container">
                             <div class="mr-4 w-full">
-                                <textarea id="@{_userName}" class="router-text-area" rows="1"
-                                placeholder="Your Username" title="Enter a username">${this.username}</textarea>
+                                <input id="@{_userName}" class="router-text-area"
+                                placeholder="Your Username" title="Enter a username" value="${this.username}"/>
                             </div>
                         </div>
 
@@ -167,8 +167,8 @@ class Router extends ui {
                         <label for="@{_password}" class="router-label-settings">Password: </label>
                         <div class="router-container">
                             <div class="mr-4 w-full">
-                                <textarea id="@{_password}" class="router-text-area" rows="1"
-                                placeholder="Your password" title="Enter a password">${this.password}</textarea>
+                                <input id="@{_password}" class="router-text-area"
+                                placeholder="Your password" title="Enter a password" value="${this.password}"/>
                             </div>
                         </div>
 
@@ -374,6 +374,14 @@ class Router extends ui {
 
         this.on('autoStart', autoStart => {
             this._autoStart.checked = autoStart;
+        });
+
+        this.on('username', username => {
+            this._userName.value = username;
+        });
+
+        this.on('password', password => {
+            this._password.value = password;
         });
     }
 

@@ -26,13 +26,8 @@ class SrtOpusInput extends _audioInputDevice {
             <!-- SRT host  -->
             <div class="w-full mb-2">
                 <label for="@{_srtHost}" class="form-label inline-block mb-2">SRT Host:</label>
-                    <textarea
-                        class="audioDevice-text-area"
-                        id="@{_srtHost}"
-                        title="SRT host name / ip address"
-                        rows="1" cols="3"
-                        placeholder="Your srt Host"
-                    >${this.srtHost}</textarea>
+                    <input id="@{_srtHost}" class="audioDevice-text-area" type="text"
+                    title="SRT host name / ip address" placeholder="Your srt Host" value="${this.srtHost}"/>
             </div>
 
             <div class="w-full mb-2 flex ">
@@ -95,25 +90,15 @@ class SrtOpusInput extends _audioInputDevice {
             <!-- SRT Passphrase  -->
             <div class="w-full mb-2">
                 <label for="@{_srtPassphrase}" class="form-label inline-block mb-2">SRT Passphrase:</label>
-                    <textarea
-                        class="audioDevice-text-area"
-                        id="@{_srtPassphrase}"
-                        title="SRT encryption passphrase"
-                        rows="1" cols="3"
-                        placeholder="Your srt Passphrase"
-                    >${this.srtPassphrase}</textarea>
+                <input id="@{_srtPassphrase}" class="audioDevice-text-area" type="text" 
+                title="SRT encryption passphrase" placeholder="Your srt Passphrase" value="${this.srtPassphrase}"/>
             </div>
 
             <!-- SRT StreamID  -->
             <div class="w-full mb-2">
                 <label for="@{_srtStreamID}" class="form-label inline-block mb-2">SRT Stream ID:</label>
-                    <textarea
-                        class="audioDevice-text-area"
-                        id="@{_srtStreamID}"
-                        title="SRT Stream ID"
-                        rows="1" cols="3"
-                        placeholder="Your srt StreamID"
-                    >${this.srtStreamID}</textarea>
+                    <input id="@{_srtStreamID}" class="audioDevice-text-area" type="text" 
+                    title="SRT Stream ID" placeholder="Your srt StreamID" value="${this.srtStreamID}"/>
             </div>
         </div>
 
