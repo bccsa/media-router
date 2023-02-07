@@ -23,7 +23,7 @@ class _audioDevice extends ui {
         this.peak = 0;
         this.left = 50;
         this.top = 50;
-        
+
         this.width = 328.8;
         this.height = 68;
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
@@ -200,7 +200,7 @@ class _audioDevice extends ui {
         <!-- ${this.name} -->
 
         <!--    MAIN CARD CONTAINER     -->
-        <div id="@{_draggable}" class="audioDevice-main-card absolute" draggable="true">
+        <div id="@{_draggable}" class="audioDevice-main-card absolute">
             <!--    TOP HEADING CONTAINER    -->
             <div class="audioDevice-heading">
 
@@ -247,9 +247,16 @@ class _audioDevice extends ui {
         this._bitDepth.value = this.bitDepth;
         this._showVolumeControl.checked = this.showVolumeControl;
         this._showMuteControl.checked = this.showMuteControl;
-        // this._checkCollision(this.left, this.top, "down");
-        this._draggable.style.left = this.left + "px";
-        this._draggable.style.top = this.top + "px";
+        let position = this._checkCollision(this.left, this.top, "down");
+        this._draggable.style.left = position.newLeft + "px";
+        this._draggable.style.top = position.newTop + "px";
+        this.left = (position.newLeft);
+        this.top = (position.newTop);
+
+        this.NotifyProperty("left");
+        this.NotifyProperty("top");
+
+
         this._draggable.style.offsetHeight = this.height;
         this._draggable.style.offsetWidth = this.width;
 
@@ -363,7 +370,7 @@ class _audioDevice extends ui {
             delete dup.destinations;
 
             dup.displayName += "(copy)";
-            let position = this._checkCollision((dup.top + 70), (dup.left), "down");
+            let position = this._checkCollision((dup.left), (dup.top + 70), "down");
             dup.top = position.newTop;
             dup.left = position.newLeft;
 
@@ -442,60 +449,170 @@ class _audioDevice extends ui {
 
         // Drag drop
 
+        // let isMoving = false;
+
+        // function drag_start(event) {
+        //     isMoving = true;
+        //     var style = window.getComputedStyle(event.target, null);
+        //     event.dataTransfer.setData("text/plain",
+        //         (parseInt(style.getPropertyValue("left"), 10) - event.clientX) + ',' + (parseInt(style.getPropertyValue("top"), 10) - event.clientY));
+        // }
+        // function drag_over(event) {
+        //     event.preventDefault();
+        //     return false;
+        // }
+
+        // this._draggable.addEventListener('dragstart', drag_start, false);
+        // this._parent._controlsDiv.addEventListener('dragover', drag_over, false);
+
+
+        // this._parent._controlsDiv.addEventListener('drop', event => {
+
+        //     // Check for collision with other child elements
+        //     var offset = event.dataTransfer.getData("text/plain").split(',');
+        //     let newLeft = event.clientX + parseInt(offset[0], 10);
+        //     let newTop = event.clientY + parseInt(offset[1], 10);
+
+        //     // console.log(newTop + " " + newLeft );
+
+        //     let position = this._checkCollision(newLeft, newTop);
+
+
+        //     if (isMoving) {
+        //         var offset = event.dataTransfer.getData("text/plain").split(',');
+        //         a._draggable.style.left = position.newLeft + 'px';
+        //         a._draggable.style.top = position.newTop + 'px';
+
+        //         a.left = position.newLeft;
+        //         a.top = position.newTop;
+
+        //         a.NotifyProperty("left");
+        //         a.NotifyProperty("top");
+
+        //         event.preventDefault();
+        //         isMoving = false;
+
+        //         this.emit('posChanged', this.calcConnectors());
+
+        //     }
+        // });
+
+        // this._draggable.addEventListener("dragend", event => {
+        //     isMoving = false;
+        // })
+
         let isMoving = false;
+        let newLeft, newTop;
+        let offsetH = 0, offsetW = 0;
 
-        function drag_start(event) {
+        this._draggable.addEventListener("mousedown", event => {
+
+
+
+            newTop = event.clientY - a._draggable.getBoundingClientRect().top;
+            newLeft = event.clientX - a._draggable.getBoundingClientRect().left;
+
+            offsetH = newTop;
+            offsetW = newLeft;
+
+            this._draggable.style.zIndex = "100";
+
+
             isMoving = true;
-            var style = window.getComputedStyle(event.target, null);
-            event.dataTransfer.setData("text/plain",
-                (parseInt(style.getPropertyValue("left"), 10) - event.clientX) + ',' + (parseInt(style.getPropertyValue("top"), 10) - event.clientY));
-        }
-        function drag_over(event) {
-            event.preventDefault();
-            return false;
-        }
-
-        this._draggable.addEventListener('dragstart', drag_start, false);
-        this._parent._controlsDiv.addEventListener('dragover', drag_over, false);
 
 
-        this._parent._controlsDiv.addEventListener('drop', event => {
-
-            // Check for collision with other child elements
-            var offset = event.dataTransfer.getData("text/plain").split(',');
-            let newLeft = event.clientX + parseInt(offset[0], 10);
-            let newTop = event.clientY + parseInt(offset[1], 10);
-
-            // console.log(newTop + " " + newLeft );
-
-            let position = this._checkCollision(newTop, newLeft);
-
-
-            if (isMoving) {
-                var offset = event.dataTransfer.getData("text/plain").split(',');
-                a._draggable.style.left = position.newLeft + 'px';
-                a._draggable.style.top = position.newTop + 'px';
-
-                a.left = position.newLeft;
-                a.top = position.newTop;
-
-                a.NotifyProperty("left");
-                a.NotifyProperty("top");
-
-                event.preventDefault();
-                isMoving = false;
-
-                this.emit('posChanged', this.calcConnectors());
-
-            }
-        });
-
-        this._draggable.addEventListener("dragend", event => {
-            isMoving = false;
         })
 
 
-        // As we are using CSS transforms (in tailwind CSS), it is not possible to set an element fixed to the browser viewport. A workaround is to move the modal element out of the elements styled by the transform, and move it back when done.
+
+        this._parent._controlsDiv.addEventListener("mousemove", event => {
+
+            newTop = event.clientY - a._parent._controlsDiv.getBoundingClientRect().top;
+            newLeft = event.clientX - a._parent._controlsDiv.getBoundingClientRect().left;
+
+
+            newTop -= offsetH;
+            newLeft -= offsetW;
+
+
+            if (isMoving) {
+                setDevicePosition();
+            }
+
+        });
+
+
+
+        function setDevicePosition() {
+            // check visor bounds
+
+            let dropZoneLeft = a._parent._controlsDiv.offsetLeft - 60;
+            let dropZoneTop = a._parent._controlsDiv.offsetTop - 10;
+            let dropZoneWidth = a._parent._controlsDiv.getBoundingClientRect().width - 304;
+            let dropZoneHeight = a._parent._controlsDiv.getBoundingClientRect().height - 76;
+
+            // verify and adapt shot x and y positions
+            if (newLeft < dropZoneLeft) { newLeft = dropZoneLeft }
+            if (newLeft > dropZoneWidth) { newLeft = dropZoneWidth }
+            if (newTop < dropZoneTop) { newTop = dropZoneTop }
+            if (newTop > dropZoneHeight) { newTop = dropZoneHeight }
+
+            let position = a._checkCollision(newLeft, newTop);
+
+            a._draggable.style.left = (position.newLeft) + "px";
+            a._draggable.style.top = (position.newTop) + "px";
+
+            a.left = (position.newLeft);
+            a.top = (position.newTop);
+
+            // a._draggable.style.left = (newLeft) + "px";
+            // a._draggable.style.top = (newTop) + "px";
+
+
+            // a.left = (newLeft);
+            // a.top = (newTop);
+
+            a.NotifyProperty("left");
+            a.NotifyProperty("top");
+
+            a.emit('posChanged', a.calcConnectors());
+        }
+
+        document.addEventListener("mouseup", event => {
+            a._draggable.style.zIndex = "10";
+            if (isMoving) {
+
+                let position;
+                
+                if (a.top > (a._parent._controlsDiv.getBoundingClientRect().height - 76)) {
+                    position = a._checkCollision(a.left, a.top, "up");
+                }
+                else {
+                    position = a._checkCollision(a.left, a.top, "down");
+
+                }
+
+                a._draggable.style.left = position.newLeft + "px";
+                a._draggable.style.top = position.newTop + "px";
+                a.left = (position.newLeft);
+                a.top = (position.newTop);
+                a.NotifyProperty("left");
+                a.NotifyProperty("top");
+
+                a.emit('posChanged', a.calcConnectors());
+
+            }
+
+
+            isMoving = false;
+        });
+
+
+
+
+
+        // As we are using CSS transforms (in tailwind CSS), it is not possible to set an element fixed to the browser viewport.
+        // A workaround is to move the modal element out of the elements styled by the transform, and move it back when done.
         this._topLevelParent._controlsDiv.prepend(this._modalDeviceDetails);
 
 
@@ -530,11 +647,15 @@ class _audioDevice extends ui {
         this._rangeBullet.innerHTML = Math.round(this._volume_slider.value * 100) + " %";
     }
 
-    _checkCollision(newTop, newLeft, direction = "") {
+    _checkCollision(newLeft, newTop, direction = "") {
         // Check for collision with other child elements
         let collision = true;
+        // let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
+        // let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
+        // let dropZoneWidth = this._parent._controlsDiv.getBoundingClientRect().width - 304;
+        // let dropZoneHeight = this._parent._controlsDiv.getBoundingClientRect().height - 76;
         let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
-        let dropZoneTop = this._parent._controlsDiv.offsetTop - 40;
+        let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
         let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
         let dropZoneHeight = this._parent._controlsDiv.offsetHeight;
 
@@ -543,24 +664,24 @@ class _audioDevice extends ui {
 
             Object.values(this._parent._controls).forEach(control => {
 
-
                 if (this._draggable != control._draggable) {
-                    let childLeft = control.left - 8;
-                    let childTop = control.top - 8;
-                    let childWidth = control.width + 8;
-                    let childHeight = control.height + 8;
+
+                    let childLeft = control.left;
+                    let childTop = control.top;
+                    let childWidth = control.width;
+                    let childHeight = control.height;
 
                     let midX = newLeft + this.width / 2;
-                    let midY = newTop + this.height/ 2;
-                    let childMidX = control.left + control.width/ 2;
+                    let midY = newTop + this.height / 2;
+                    let childMidX = control.left + control.width / 2;
                     let childMidY = control.top + control.height / 2;
 
-                    while (newLeft < childLeft + childWidth && newLeft + this.width > childLeft &&
+                    if (newLeft < childLeft + childWidth && newLeft + this.width > childLeft &&
                         newTop < childTop + childHeight && newTop + this.height > childTop) {
                         collision = true;
 
-                        if (direction === "") {
-                            if (childMidX - 180 >= midX) {
+                        if (direction == "") {
+                            if (childMidX - 200 >= midX) {
                                 direction = "left";
                             } else if (midX >= childMidX + 180) {
                                 direction = "right";
@@ -571,14 +692,14 @@ class _audioDevice extends ui {
                             }
                         }
 
-                        if (direction === "left") {
-                            newLeft -= 1;
-                        } else if (direction === "right") {
-                            newLeft += 1;
-                        } else if (direction === "up") {
-                            newTop -= 1;
-                        } else if (direction === "down") {
-                            newTop += 1;
+                        if (direction == "left") {
+                            newLeft = childLeft - childWidth - 2;
+                        } else if (direction == "right") {
+                            newLeft = childLeft + childWidth + 2;
+                        } else if (direction == "up") {
+                            newTop = childTop - childHeight - 2;
+                        } else if (direction == "down") {
+                            newTop = childTop + childHeight + 2;
                         }
 
                         newLeft = Math.max(dropZoneLeft, Math.min(newLeft, dropZoneLeft + dropZoneWidth - this.width));
@@ -587,7 +708,6 @@ class _audioDevice extends ui {
                         if (newLeft === dropZoneLeft || newLeft === dropZoneLeft + dropZoneWidth - this.width ||
                             newTop === dropZoneTop || newTop === dropZoneTop + dropZoneHeight - this.height) {
                             collision = false;
-                            break;
                         }
                     }
                 }
@@ -599,4 +719,5 @@ class _audioDevice extends ui {
             newTop
         }
     }
+
 }
