@@ -4,15 +4,18 @@ class checkBox extends ui {
 
         this.value = false;
         this.label = '';
+        this.color = "#293548";
     }
 
     get html() {
         return `
         
-            <!--    CHECKBOX    --> 
+            <!--    CHECKBOX -->
             <div class="basis-1/4 mr-2 mb-2 flex items-center">
-                <input id="@{_check}" class="mb-2 mr-2 mt-1 h-4 w-4" type="checkbox" checked  value="${this.value}"/>  
-                <label id="@{_label}" for="@{_check}" class="mb-2 mr-2 mt-1">${this.label}</label>
+                <div id="@{_container}" class="flex justify-center items-center bg-[#1E293B] text-white  mr-2 px-2.5 py-1 rounded-full">
+                    <input id="@{_check}" class="h-4 w-4 mr-2 form-label inline-block" type="checkbox" checked  value="${this.value}"/>  
+                    <label id="@{_label}" for="@{_check}" class="form-label inline-block">${this.label}</label>
+                </div>
             </div>
 
         `;
@@ -22,6 +25,7 @@ class checkBox extends ui {
         //Set initial values
         this._check.checked = this.value;
         this._label.innerText = this.label;
+        this._container.style.backgroundColor = this.color;
 
         // Handle property changes
         this.on('value', value => {

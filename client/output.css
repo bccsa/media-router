@@ -8077,11 +8077,13 @@ textarea.router-text-area.is-invalid {
   z-index: 10;
   margin: 0.25rem;
   width: 20.4rem;
-  cursor: move;
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
-  border-radius: 0.5rem;
+  border-top-left-radius: 0.75rem;
+  border-top-right-radius: 0.75rem;
+  border-bottom-right-radius: 0.5rem;
+  border-bottom-left-radius: 0.5rem;
   border-width: 1px;
   border-style: solid;
   --tw-border-opacity: 1;
@@ -8120,15 +8122,27 @@ textarea.router-text-area.is-invalid {
   border-bottom-left-radius: 0px;
 }
 
-.audioDevice-heading {
-  margin-top: 0.25rem;
+.audioDevice-card-heading {
   margin-bottom: 0.25rem;
   display: flex;
-  height: 3.5rem;
+  height: 1.75rem;
   width: 100%;
+  cursor: move;
   align-items: center;
   justify-content: space-between;
+  border-top-left-radius: 0.5rem;
+  border-top-right-radius: 0.5rem;
   padding-left: 1rem;
+  padding-right: 1rem;
+  padding-top: 0.25rem;
+}
+
+.audioDevice-card-body {
+  height: 3.75rem;
+  width: 100%;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  padding-top: 0.25rem;
 }
 
 .audioDevice-btn-mute {
@@ -9957,6 +9971,16 @@ textarea.audioDevice-text-area.is-invalid {
   margin: 1rem;
 }
 
+.mx-\[-1rem\] {
+  margin-left: -1rem;
+  margin-right: -1rem;
+}
+
+.my-2 {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
 .mx-96 {
   margin-left: 24rem;
   margin-right: 24rem;
@@ -10030,16 +10054,12 @@ textarea.audioDevice-text-area.is-invalid {
   margin-bottom: 0px;
 }
 
-.mt-4 {
-  margin-top: 1rem;
+.mt-5 {
+  margin-top: 1.25rem;
 }
 
 .mb-6 {
   margin-bottom: 1.5rem;
-}
-
-.mt-5 {
-  margin-top: 1.25rem;
 }
 
 .box-border {
@@ -11063,6 +11083,11 @@ textarea.audioDevice-text-area.is-invalid {
   border-radius: 9999px;
 }
 
+.rounded-b-md {
+  border-bottom-right-radius: 0.375rem;
+  border-bottom-left-radius: 0.375rem;
+}
+
 .rounded-t {
   border-top-left-radius: 0.25rem;
   border-top-right-radius: 0.25rem;
@@ -11117,6 +11142,10 @@ textarea.audioDevice-text-area.is-invalid {
   border-bottom-width: 1px;
 }
 
+.border-t {
+  border-top-width: 1px;
+}
+
 .border-t-\[0\.25rem\] {
   border-top-width: 0.25rem;
 }
@@ -11135,10 +11164,6 @@ textarea.audioDevice-text-area.is-invalid {
 
 .border-b-\[0\.5rem\] {
   border-bottom-width: 0.5rem;
-}
-
-.border-t {
-  border-top-width: 1px;
 }
 
 .border-r {
@@ -11189,6 +11214,11 @@ textarea.audioDevice-text-area.is-invalid {
 .border-black {
   --tw-border-opacity: 1;
   border-color: rgb(0 0 0 / var(--tw-border-opacity));
+}
+
+.border-gray-200 {
+  --tw-border-opacity: 1;
+  border-color: rgb(229 231 235 / var(--tw-border-opacity));
 }
 
 .border-sky-900 {
@@ -11264,18 +11294,23 @@ textarea.audioDevice-text-area.is-invalid {
   background-color: rgb(107 114 128 / var(--tw-bg-opacity));
 }
 
+.bg-\[\#00000050\] {
+  background-color: #00000050;
+}
+
 .bg-blue-600 {
   --tw-bg-opacity: 1;
   background-color: rgb(37 99 235 / var(--tw-bg-opacity));
 }
 
-.bg-\[\#00000050\] {
-  background-color: #00000050;
-}
-
 .bg-\[rgb\(255\2c 0\2c 0\)\] {
   --tw-bg-opacity: 1;
   background-color: rgb(255 0 0 / var(--tw-bg-opacity));
+}
+
+.bg-\[\#e1d6c4\] {
+  --tw-bg-opacity: 1;
+  background-color: rgb(225 214 196 / var(--tw-bg-opacity));
 }
 
 .bg-delete_bl {
@@ -11488,6 +11523,10 @@ textarea.audioDevice-text-area.is-invalid {
 
 .pl-1 {
   padding-left: 0.25rem;
+}
+
+.pb-3 {
+  padding-bottom: 0.75rem;
 }
 
 .pt-3 {

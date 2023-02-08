@@ -7,8 +7,16 @@ class _audioInputDevice extends _audioDevice {
 
     get html() {
         return super.html.replace('%additionalHtml%', `
+
+        <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
+
+
+        <div class="w-full items-center justify-items-center justify-center">
+            <div class="text-center align-top font-semibold text-base">Hardware Settings</div>
+        </div>
+
         <!-- Destinations  -->
-        <div class="w-full mt-2 mr-4">
+        <div class="w-full mr-4">
             <label for="@{_destinations}" class="form-label inline-block mb-2">Destinations:</label>
         </div>
 
@@ -24,7 +32,7 @@ class _audioInputDevice extends _audioDevice {
 
     Init() {
         super.Init();
-        
+
         this._parent.on('newChildControl', c => {
             this._addDestination(c);
         });
@@ -60,7 +68,7 @@ class _audioInputDevice extends _audioDevice {
             if (dstControl instanceof _audioOutputDevice) {
                 let check = 'dst_' + dstControl.name;
                 let line = 'line_' + this.name + "To" + dstControl.name;
-  
+
                 let existing = this[check] != undefined;
 
                 // Create new checkbox
@@ -72,56 +80,62 @@ class _audioInputDevice extends _audioDevice {
 
                         control.on('check', value => {
 
-                            const index = this.destinations.indexOf(dstControl.name);  
+                            const index = this.destinations.indexOf(dstControl.name);
                             if (value) {
                                 this[line].Show();
-                                
+
                                 // Add Destination to array if it is not existing
-                                if(index == -1)
-                                {
+                                if (index == -1) {
                                     this.destinations.push(dstControl.name)
                                     this.NotifyProperty('destinations');
                                 }
-                                
+
                             } else {
                                 this[line].Hide();
 
                                 // Remove Destination from array if it is existing
-                                if(index != -1)
-                                {
-                                this.destinations.splice(index, 1); 
-                                this.NotifyProperty('destinations');
+                                if (index != -1) {
+                                    this.destinations.splice(index, 1);
+                                    this.NotifyProperty('destinations');
                                 }
                             }
                         });
 
                         dstControl.on('displayName', displayName => {
                             control.label = displayName;
-                        }); 
+                        });
 
                     });
 
                     let sourceCon = this.calcConnectors();
                     let dstCon = dstControl.calcConnectors();
 
-                    this.SetData({ [check]: { controlType: "checkBox", label: dstControl.displayName, parentElement: "_checkboxes", hideData: true } });
-                    
-                        
+                    this.SetData({
+                        [check]:
+                    {
+                        controlType: "checkBox",
+                        label: dstControl.displayName,
+                        color: dstControl._heading.style.backgroundColor,
+                        parentElement: "_checkboxes",
+                        hideData: true
+                    }
+                    });
+
+
                     this.one(line, lineControl => {
-                        this.on('posChanged', sourceCon =>{
+                        this.on('posChanged', sourceCon => {
                             lineControl.top = sourceCon.rightConnector.top;
                             lineControl.left = sourceCon.rightConnector.left;
 
-                        }) 
-                        dstControl.on('posChanged', dstCon =>{
+                        })
+                        dstControl.on('posChanged', dstCon => {
                             lineControl.bottom = dstCon.leftConnector.top;
                             lineControl.right = dstCon.leftConnector.left;
                         });
 
                         // Set checkbox value to true if it in the destination array
                         const index = this.destinations.indexOf(dstControl.name);
-                        if(index != -1)
-                        {
+                        if (index != -1) {
                             this[check].value = true;
                         }
 
@@ -133,15 +147,18 @@ class _audioInputDevice extends _audioDevice {
                         }
                     })
 
-                    this.SetData({ [line]: { 
-                        controlType: "line", 
-                        top: sourceCon.rightConnector.top, 
-                        left: sourceCon.rightConnector.left,
-                        bottom: dstCon.leftConnector.top, 
-                        right: dstCon.leftConnector.left, 
-                        parentElement: "_externalControls",
-                        hideData: true
-                    }});
+                    this.SetData({
+                        [line]: {
+                            controlType: "line",
+                            top: sourceCon.rightConnector.top,
+                            left: sourceCon.rightConnector.left,
+                            bottom: dstCon.leftConnector.top,
+                            right: dstCon.leftConnector.left,
+                            // color: dstControl._heading.style.backgroundColor,
+                            parentElement: "_externalControls",
+                            hideData: true
+                        }
+                    });
 
                 } else {
                     // Subscribe to control remove event to remove destination checkbox controls

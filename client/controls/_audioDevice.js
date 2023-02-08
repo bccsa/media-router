@@ -10,11 +10,11 @@ class _audioDevice extends ui {
         this.level = 0;
         this.mute = true;
         this.description = "";
-        this.volume = 1;
+        this.volume = 100;
         this.channels = 1;
         this.sampleRate = 48000;
         this.bitDepth = 16;
-        this.maxVolume = 1.5;
+        this.maxVolume = 150;
         this.soloGroup = "";
         this.showVolumeControl = true;
         this.showMuteControl = true;
@@ -24,8 +24,8 @@ class _audioDevice extends ui {
         this.left = 50;
         this.top = 50;
 
-        this.width = 328.8;
-        this.height = 68;
+        this.width = 326.4;
+        this.height = 93.6;
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
     }
 
@@ -34,8 +34,8 @@ class _audioDevice extends ui {
 
         <div id="@{_modalContainer}" class="hidden" >
              <!--    MODAL DEVICE    -->
-                <div id="@{_modalDeviceDetails}" class="audioDevice-modal modal fade" tabindex="-1" aria-hidden="true">
-                    <div class="modal-dialog modal-lg audioDevice-modal-dialog">
+                <div id="@{_modalDeviceDetails}" class="audioDevice-modal modal fade select-none" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog audioDevice-modal-dialog">
                         <div class="audioDevice-modal-content">
         
                         <div class="audioDevice-modal-header">
@@ -75,36 +75,7 @@ class _audioDevice extends ui {
                                     title="Device description" placeholder="Your description" >${this.description}</textarea>
                             </div>
 
-                            <!--    SOLO GROUP    -->
-                            <div class="w-full mr-4">
-                                <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
-                                    <input id="@{_soloGroup}" class="audioDevice-text-area" type="text" 
-                                    title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
-                                    placeholder="Solo group name:" value="${this.soloGroup}"/>
-                            </div>
-
-                            <!--    VOLUME SLIDER     -->
-                            <div class="w-full mb-2 flex flex-row items-end">
-
-                                <label for="@{_volume}" class="mt-5 w-1/6">Volume:</label>
-
-                                <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
-                                name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" >
-                                
-                                <datalist id="@{_tickMarks}">
-                                    <option value="0.00"></option> <option value="0.10"></option> <option value="0.20"></option> 
-                                    <option value="0.30"></option> <option value="0.40"></option> <option value="0.50"></option>
-                                    <option value="0.60"></option> <option value="0.70"></option> <option value="0.80"></option> 
-                                    <option value="0.90"></option> <option value="1.0"0></option> <option value="1.10"></option>
-                                    <option value="1.20"></option> <option value="1.30"></option> <option value="1.40"></option> 
-                                    <option value="1.50"></option>
-                                </datalist>
-
-                                <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume * 100} %</label>
-                                
-                            </div>
-
-                            <div class="w-full mb-1 flex ">
+                            <div class="w-full flex">
 
                                 <!--    CHANNELS      -->
                                 <div class="w-1/4 mr-3">
@@ -143,12 +114,40 @@ class _audioDevice extends ui {
                                 <div class="w-1/4">
                                     <label for="@{_maxVolume}" class="mb-2">Max Volume:</label>
                                     <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
-                                    title="Maximum volume that the client WebApp can request" name="maxVolume" step="0.1"
+                                    title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
                                     class="audioDevice-pos-decimal-input" value="${this.maxVolume}">
                                 </div>
 
                             </div>
 
+                            <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
+
+                            <div class="w-full items-center justify-items-center justify-center">
+                                <div class="text-center align-top font-semibold text-base">Client Controls Settings</div>
+                            </div>
+                            
+                            <!--    VOLUME SLIDER     -->
+                            <div class="w-full mb-2 flex flex-row items-center">
+
+                                <label for="@{_volume}" class="mt-5 w-1/6">Volume:</label>
+
+                                <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
+                                name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" >
+                                
+                                <datalist id="@{_tickMarks}">
+                                    <option value="0"></option> <option value="10"></option> <option value="20"></option> 
+                                    <option value="30"></option> <option value="40"></option> <option value="50"></option>
+                                    <option value="60"></option> <option value="70"></option> <option value="80"></option> 
+                                    <option value="90"></option> <option value="100"></option> <option value="110"></option>
+                                    <option value="120"></option> <option value="130"></option> <option value="140"></option> 
+                                    <option value="150"></option>
+                                </datalist>
+
+                                <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume} %</label>
+                                
+                            </div>
+
+                            
                             <div class="w-full mb-1 flex ">
 
                                 <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
@@ -158,7 +157,7 @@ class _audioDevice extends ui {
                                 </div>
 
                                 <!--    SHOW MUTE CONTROL CHECKBOX      --> 
-                                <div class="w-1/2 mb-2 flex">
+                                <div class="w-1/2 mb-2 ml-2 flex">
                                     <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked value="${this.showMuteControl}"/>  
                                     <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
                                 </div>
@@ -170,16 +169,21 @@ class _audioDevice extends ui {
 
                                 <div class="w-1/4 mr-3">
                                     <label for="@{_displayOrder}" class="mb-2">Display Order:</label>
-                                </div>
-                    
-                                <div class="w-1/4 mr-3">
                                     <input id="@{_displayOrder}" class="audioDevice-pos-number-input" type="number" min="0"
                                     oninput="validity.valid||(value='')" title="Display order in the client WebApp."
-                                    name="maxVolume" step="1" value="${this.displayOrder}">
+                                    name="displayOrder" step="1" value="${this.displayOrder}">
                                 </div>
 
-                                <div class="w-1/4 mr-3"></div> <div class="w-1/4"></div>
+                                <div class="w-1/4 mr-3"></div> <div class="w-1/4 mr-3"></div>  <div class="w-1/4"></div>
 
+                            </div>
+
+                            <!--    SOLO GROUP    -->
+                            <div class="w-full pb-3 mr-4">
+                                <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
+                                    <input id="@{_soloGroup}" class="audioDevice-text-area" type="text" 
+                                    title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
+                                    placeholder="Solo group name:" value="${this.soloGroup}"/>
                             </div>
 
                             <!-- EXTENDS AUDIO DEVICE  --> 
@@ -202,24 +206,21 @@ class _audioDevice extends ui {
         <!--    MAIN CARD CONTAINER     -->
         <div id="@{_draggable}" class="audioDevice-main-card absolute">
             <!--    TOP HEADING CONTAINER    -->
-            <div class="audioDevice-heading">
+            <div id="@{_heading}"  class="audioDevice-card-heading">
 
-                <!--    NAME AND VOLUME INDICATOR      -->
-                <div class="mb-1 col-span-2">
+                <!--    NAME     -->
+                <div class="col-span-2">
                     <div id="@{_name}" class="font-medium text-lg" title="Audio Input Name">${this.displayName}</div>
-                    <div id="@{_volume_slit}" class="audioDevice_volume_slit" title="Audio Indicator"></div>
                 </div>
 
-                <div class="">
+            </div>
 
-                    <div class="flex justify-end"
-                    <!--    SETTINGS BUTTON     -->
-                    <button id="@{_btnSettings}" class="audioDevice-btn-settings" type="button" 
-                    title="Open Device Settings" data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
-                    </div>
+            <div class="audioDevice-card-body">
 
+                <div class="flex justify-between items-center">
+                    
                     <!--    MUTE TOGGLE     -->
-                    <div class="mr-4 flex">
+                    <div class="flex">
                         <label for="@{_btnMute}" class="audioDevice-label">Off</label>
                         <div class="form-check form-switch">
                             <input id="@{_btnMute}" class="audioDevice-toggle" type="checkbox" role="switch" title="Switch Mute on or off">
@@ -227,7 +228,16 @@ class _audioDevice extends ui {
                         </div>
                     </div>
 
+                    <!--    SETTINGS BUTTON     -->
+                    <button id="@{_btnSettings}" class="audioDevice-btn-settings" type="button" 
+                    title="Open Device Settings" data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
+                    
                 </div>
+                
+                <!--    VOLUME INDICATOR      -->
+                <div id="@{_volume_slit}" class="audioDevice_volume_slit" title="Audio Indicator"></div>
+
+                
             </div>
         </div>
 
@@ -247,6 +257,7 @@ class _audioDevice extends ui {
         this._bitDepth.value = this.bitDepth;
         this._showVolumeControl.checked = this.showVolumeControl;
         this._showMuteControl.checked = this.showMuteControl;
+        this.showSliderValue();
         let position = this._checkCollision(this.left, this.top, "down");
         this._draggable.style.left = position.newLeft + "px";
         this._draggable.style.top = position.newTop + "px";
@@ -259,6 +270,23 @@ class _audioDevice extends ui {
 
         this._draggable.style.offsetHeight = this.height;
         this._draggable.style.offsetWidth = this.width;
+
+        if (this.controlType == "AudioInput") {
+            this._heading.style.backgroundColor = "#012F74"; // cc6666
+        }
+
+        if (this.controlType == "SrtOpusInput") {
+            this._heading.style.backgroundColor = "#0D6EFD"; // 1D1F4C 00067B C92C6D
+        }
+
+
+        if (this.controlType == "AudioOutput") {
+            this._heading.style.backgroundColor = "#007F6A"; // 602100 D98324
+        }
+
+        if (this.controlType == "SrtOpusOutput") {
+            this._heading.style.backgroundColor = "#00C3A3"; // 753B1C 9D3700 A33900 bb6528
+        }
 
         //Event subscriptions
         this._btnMute.addEventListener('click', (e) => {
@@ -301,7 +329,7 @@ class _audioDevice extends ui {
         });
 
         this._maxVolume.addEventListener('change', (e) => {
-            this.maxVolume = Number.parseFloat(this._maxVolume.value);
+            this.maxVolume = Number.parseInt(this._maxVolume.value);
             this._volume_slider.max = this.maxVolume;
             this.showSliderValue();
             this.NotifyProperty("maxVolume");
@@ -505,12 +533,12 @@ class _audioDevice extends ui {
         let newLeft, newTop;
         let offsetH = 0, offsetW = 0;
 
-        this._draggable.addEventListener("mousedown", event => {
+        this._heading.addEventListener("mousedown", event => {
 
 
 
-            newTop = event.clientY - a._draggable.getBoundingClientRect().top;
-            newLeft = event.clientX - a._draggable.getBoundingClientRect().left;
+            newTop = event.clientY - a._heading.getBoundingClientRect().top;
+            newLeft = event.clientX - a._heading.getBoundingClientRect().left;
 
             offsetH = newTop;
             offsetW = newLeft;
@@ -583,8 +611,8 @@ class _audioDevice extends ui {
             if (isMoving) {
 
                 let position;
-                
-                if (a.top > (a._parent._controlsDiv.getBoundingClientRect().height - 76)) {
+
+                if (a.top > (a._parent._controlsDiv.getBoundingClientRect().height - 90)) {
                     position = a._checkCollision(a.left, a.top, "up");
                 }
                 else {
@@ -636,15 +664,22 @@ class _audioDevice extends ui {
     }
 
     _setVolume() {
+
+        if (this.volume > this.maxVolume) {
+            this.maxVolume = this.volume;
+            this.NotifyProperty("maxVolume");
+        }
+
         if (!this._sliderActive) {
             this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
         }
         this._volume_slider.value = this.volume;
-        this._rangeBullet.innerHTML = Math.round(this.volume * 100) + " %";
+        this._rangeBullet.innerHTML = this.volume + " %";
+        this.NotifyProperty("volume");
     }
 
     showSliderValue() {
-        this._rangeBullet.innerHTML = Math.round(this._volume_slider.value * 100) + " %";
+        this._rangeBullet.innerHTML = Math.round(this._volume_slider.value) + " %";
     }
 
     _checkCollision(newLeft, newTop, direction = "") {
@@ -657,7 +692,7 @@ class _audioDevice extends ui {
         let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
         let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
         let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
-        let dropZoneHeight = this._parent._controlsDiv.offsetHeight;
+        let dropZoneHeight = this._parent._controlsDiv.offsetHeight - 40;
 
         while (collision) {
             collision = false;

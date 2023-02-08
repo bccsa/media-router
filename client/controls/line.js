@@ -8,11 +8,12 @@ class line extends ui {
         this.lineHeight = 2;
         this.arrowHeadHeight = 8;
         this.arrowHeadWidth = 8;
+        this.color = "#2563EB";
     }
 
     get html() {
         return `
-        <div id="@{_line}" class="absolute bg-blue-600 w-[0.125rem] h-[0.125rem] z-0"></div>
+        <div id="@{_line}" class="absolute w-[0.125rem] h-[0.125rem] z-0"></div>
 
         <div id="@{_arrowHead}" class="w-0 h-0 border-t-[0.25rem] border-t-transparent border-b-[0.25rem] border-b-transparent border-l-[0.5rem] border-sky-900 absolute"></div>
         
@@ -23,6 +24,7 @@ class line extends ui {
 
     Init() {
         this._drawLine();
+        this._line.style.backgroundColor = this.color;
 
         // Event Handling
         this.on('top', (e) => {

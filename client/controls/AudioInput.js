@@ -8,18 +8,27 @@ class AudioInput extends _audioInputDevice {
 
     get html() {
         return super.html.replace('%additionalHtml%', `
-        <!-- Device  -->
-        <div class="w-full mb-2 mr-4">
-            <label for="@{_device}" class="form-label inline-block mb-2">Device:</label>
-            <input id="@{_device}" class="audioDevice-text-area" type="text" 
-            title="ALSA Device name - see aplay -L (Default = default)" placeholder="Your device"
-            value="${this.device}">
-        </div>
+        
         
         <div class="w-full mb-1 flex ">
 
+            <!-- Device  -->
+            <div class="w-1/2 mr-3">
+                <label for="@{_device}" class="form-label inline-block mb-2">Device:</label>
+                <select id="@{_device}" class="audioDevice-select" type="text" 
+                title="ALSA Device name - see aplay -L (Default = default)"
+                value="${this.device}" >
+                    <option value="Device 1">Device 1</option>
+                    <option value="Device 2">Device 2</option>
+                    <option value="Device 3">Device 3</option>
+                    <option value="Device 4">Device 4</option>
+                    <option value="Device 5">Device 5</option>
+                    <option value="Device 6">Device 6</option>
+                    <option value="Device 7">Device 7</option></select>
+            </div>
+
             <!-- Buffer Size  -->    
-            <div class="w-1/4 mr-3">
+            <div class="w-1/2">
                 <label for="@{_bufferSize}" class="form-label inline-block mb-2">Buffer Size:</label>
                 <select id="@{_bufferSize}" title="ALSA buffer size in bytes (Default = 64)" value="${this.bufferSize}" 
                 name="bufferSize" class="audioDevice-select" type="text">
@@ -33,9 +42,6 @@ class AudioInput extends _audioInputDevice {
                 </select>
             </div>
 
-            <div class="w-1/4 mr-3"></div>
-            <div class="w-1/4 mr-3"></div>
-            <div class="w-1/4"></div>
 
         </div>
         `);
