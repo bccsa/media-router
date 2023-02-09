@@ -52,7 +52,7 @@ class _audioDevice extends ui {
 
                             </div> 
 
-                            <h5 id="@{_modalHeading}" class="audioDevice-modal-heading"> ${this.displayName}</h5>
+                            <h5 id="@{_modalHeading}" class="audioDevice-modal-heading"> @{displayName}</h5>
 
                             <button class="audioDevice-modal-btn-close" type="button"
                             data-bs-dismiss="modal" aria-label="Close"></button>
@@ -65,7 +65,7 @@ class _audioDevice extends ui {
                                 <div class="mr-4 w-full">
                                     <label for="@{_displayName}" class="mb-2">Display Name: </label>
                                     <input id="@{_displayName}" class="audioDevice-text-area" type="text" maxlength="30"
-                                    placeholder="Your display name" title="Device display name" value="${this.displayName}"/>
+                                    placeholder="Your display name" title="Device display name" value="@{displayName}"/>
                                 </div>
                             </div>
                 
@@ -73,7 +73,7 @@ class _audioDevice extends ui {
                             <div class="w-full mb-1 mr-4">
                                 <label for="@{_description}" class="mb-2">Description:</label>
                                     <textarea id="@{_description}" class="audioDevice-text-area" rows="1" cols="3"
-                                    title="Device description" placeholder="Your description" >${this.description}</textarea>
+                                    title="Device description" placeholder="Your description" >@{description}</textarea>
                             </div>
 
                             <div class="w-full flex">
@@ -83,7 +83,7 @@ class _audioDevice extends ui {
                                     <label for="@{_channels}" class="mb-2">Channels:</label>
                                         <div class="mb-3 w-full">
                                             <select id="@{_channels}" class="audioDevice-select" title="Audio channel number (default = 1)"
-                                            value="${this.channels}" name="channel" type="text">
+                                            value="@{channels}" name="channel" type="text">
                                                 <option value="1">1</option>
                                                 <option value="2">2</option>
                                             </select>
@@ -94,7 +94,7 @@ class _audioDevice extends ui {
                                 <div class="w-1/4 mr-3">
                                     <label for="@{_sampleRate}" class="mb-2">Sample Rate:</label>
                                     <select id="@{_sampleRate}" class="audioDevice-select" title="Audio sample rate (default = 48000)"
-                                    value="${this.sampleRate}" name="sampleRate" type="text">
+                                    value="@{sampleRate}" name="sampleRate" type="text">
                                         <option value="44100">44100 Hz</option>
                                         <option value="48000">48000 Hz</option>
                                     </select>
@@ -104,7 +104,7 @@ class _audioDevice extends ui {
                                 <div class="w-1/4 mr-3">
                                     <label for="@{_bitDepth}" class="mb-2">Bit Depth:</label>
                                     <select id="@{_bitDepth}" class="audioDevice-select" title="Audio bit depth (default = 16)"
-                                    value="${this.bitDepth}" name="bitDepth" type="text">
+                                    value="@{bitDepth}" name="bitDepth" type="text">
                                         <option value="16">16</option>
                                         <option value="24">24</option>
                                         <option value="32">32</option>
@@ -116,7 +116,7 @@ class _audioDevice extends ui {
                                     <label for="@{_maxVolume}" class="mb-2">Max Volume:</label>
                                     <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
                                     title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
-                                    class="audioDevice-pos-decimal-input" value="${this.maxVolume}">
+                                    class="audioDevice-pos-decimal-input" value="@{maxVolume}">
                                 </div>
 
                             </div>
@@ -125,8 +125,8 @@ class _audioDevice extends ui {
 
                                 <!--    SHOW CONTROL IN TOP BAR     --> 
                                 <div class="w-full mr-2 mb-2 flex">
-                                    <input id="@{_showVuMeter}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  value="@{showInTopBar}"/>  
-                                    <label for="@{_showVuMeter}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
+                                    <input id="@{_showInTopBar}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  value="@{showInTopBar}"/>  
+                                    <label for="@{_showInTopBar}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
                                 </div>
 
 
@@ -144,7 +144,7 @@ class _audioDevice extends ui {
                                 <label for="@{_volume}" class="mt-5 w-1/6">Volume:</label>
 
                                 <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
-                                name="volume" step="0.01" min="0" max="${this.maxVolume}" value="${this.volume}" >
+                                name="volume" step="1" min="0" max="@{maxVolume}" value="@{volume}" >
                                 
                                 <datalist id="@{_tickMarks}">
                                     <option value="0"></option> <option value="10"></option> <option value="20"></option> 
@@ -155,7 +155,7 @@ class _audioDevice extends ui {
                                     <option value="150"></option>
                                 </datalist>
 
-                                <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume} %</label>
+                                <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">@{volume} %</label>
                                 
                             </div>
 
@@ -164,13 +164,13 @@ class _audioDevice extends ui {
 
                                 <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
                                 <div class="w-1/2 mr-2 mb-2 flex">
-                                    <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked  value="${this.showVolumeControl}"/>  
+                                    <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked  value="@{showVolumeControl}"/>  
                                     <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Show client volume control</label> 
                                 </div>
 
                                 <!--    SHOW MUTE CONTROL CHECKBOX      --> 
                                 <div class="w-1/2 mb-2 ml-2 flex">
-                                    <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked value="${this.showMuteControl}"/>  
+                                    <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked value="@{showMuteControl}"/>  
                                     <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
                                 </div>
 
@@ -183,7 +183,7 @@ class _audioDevice extends ui {
                                     <label for="@{_displayOrder}" class="mb-2">Display Order:</label>
                                     <input id="@{_displayOrder}" class="audioDevice-pos-number-input" type="number" min="0"
                                     oninput="validity.valid||(value='')" title="Display order in the client WebApp."
-                                    name="displayOrder" step="1" value="${this.displayOrder}">
+                                    name="displayOrder" step="1" value="@{displayOrder}">
                                 </div>
 
                                 <div class="w-1/4 mr-3"></div> <div class="w-1/4 mr-3"></div>  <div class="w-1/4"></div>
@@ -195,7 +195,7 @@ class _audioDevice extends ui {
                                 <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
                                     <input id="@{_soloGroup}" class="audioDevice-text-area" type="text" 
                                     title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
-                                    placeholder="Solo group name:" value="${this.soloGroup}"/>
+                                    placeholder="Solo group name:" value="@{soloGroup}"/>
                             </div>
 
                             <!-- EXTENDS AUDIO DEVICE  --> 
@@ -222,7 +222,7 @@ class _audioDevice extends ui {
 
                 <!--    NAME     -->
                 <div class="col-span-2">
-                    <div id="@{_name}" class="font-medium text-lg" title="Audio Input Name">${this.displayName}</div>
+                    <div id="@{_name}" class="font-medium text-lg" title="Audio Input Name">@{displayName}</div>
                 </div>
 
             </div>
@@ -235,7 +235,7 @@ class _audioDevice extends ui {
                     <div class="flex">
                         <label for="@{_btnMute}" class="audioDevice-label">Off</label>
                         <div class="form-check form-switch">
-                            <input id="@{_btnMute}" class="audioDevice-toggle" type="checkbox" role="switch" title="Switch Mute on or off">
+                            <input id="@{_btnMute}" class="audioDevice-toggle" type="checkbox" role="switch" title="Switch Mute on or off" value="@{mute}">
                             <label for="@{_btnMute}" class="audioDevice-label">On</label>
                         </div>
                     </div>
@@ -264,11 +264,15 @@ class _audioDevice extends ui {
         // this._setMute();
 
         this._btnMute.checked = this.mute;
+
         this._channels.value = this.channels;
         this._sampleRate.value = this.sampleRate;
         this._bitDepth.value = this.bitDepth;
-        this._showVolumeControl.checked = this.showVolumeControl;
-        this._showMuteControl.checked = this.showMuteControl;
+
+        this._showInTopBar.checked = this.showInTopBar;
+
+        // this._showVolumeControl.checked = this.showVolumeControl;
+        // this._showMuteControl.checked = this.showMuteControl;
         this.showSliderValue();
         let position = this._checkCollision(this.left, this.top, "down");
         this._draggable.style.left = position.newLeft + "px";
@@ -283,22 +287,12 @@ class _audioDevice extends ui {
         this._draggable.style.offsetHeight = this.height;
         this._draggable.style.offsetWidth = this.width;
 
-        if (this.controlType == "AudioInput") {
-            this._heading.style.backgroundColor = "#012F74"; // cc6666  012F74
-        }
+        
 
-        if (this.controlType == "SrtOpusInput") {
-            this._heading.style.backgroundColor = "#0D6EFD"; // 1D1F4C 00067B C92C6D 0D6EFD
-        } 
+        this._showInControlInTopBar();
+        this._setDeviceColor();
 
 
-        if (this.controlType == "AudioOutput") {
-            this._heading.style.backgroundColor = "#007F6A"; // 602100 D98324 #A24936
-        }
-
-        if (this.controlType == "SrtOpusOutput") {
-            this._heading.style.backgroundColor = "#00C3A3"; // 753B1C 9D3700 A33900 bb6528 #D36135
-        }
 
         //Event subscriptions
         this._btnMute.addEventListener('click', (e) => {
@@ -307,12 +301,13 @@ class _audioDevice extends ui {
             this.NotifyProperty("mute");
         });
 
-        this._displayName.addEventListener('change', (e) => {
-            this.displayName = this._displayName.value;
-            this._name.innerText = this.displayName;
-            this._modalHeading.innerText = this.displayName;
-            this.NotifyProperty("displayName");
-        })
+        // this._displayName.addEventListener('change', (e) => {
+        //     this.displayName = this._displayName.value;
+        //     this._name.innerText = this.displayName;
+        //     this._modalHeading.innerText = this.displayName;
+
+        //     this.NotifyProperty("displayName");
+        // })
 
         this._description.addEventListener('change', (e) => {
             this.description = this._description.value;
@@ -320,47 +315,61 @@ class _audioDevice extends ui {
         });
 
         this._volume_slider.addEventListener('input', (e) => {
-            this.volume = Number.parseFloat(this._volume_slider.value);
+            // this.volume = Number.parseFloat(this._volume_slider.value);
             this.showSliderValue();
-            this.NotifyProperty("volume");
+            // this.NotifyProperty("volume");
         });
 
-        this._channels.addEventListener('change', (e) => {
-            this.channels = Number.parseInt(this._channels.value);
-            this.NotifyProperty("channels");
-        });
+        // this._channels.addEventListener('change', (e) => {
+        //     this.channels = Number.parseInt(this._channels.value);
+        //     this.NotifyProperty("channels");
+        // });
 
-        this._sampleRate.addEventListener('change', (e) => {
-            this.sampleRate = Number.parseInt(this._sampleRate.value);
-            this.NotifyProperty("sampleRate");
-        });
+        // this._sampleRate.addEventListener('change', (e) => {
+        //     this.sampleRate = Number.parseInt(this._sampleRate.value);
+        //     this.NotifyProperty("sampleRate");
+        // });
 
-        this._bitDepth.addEventListener('change', (e) => {
-            this.bitDepth = Number.parseInt(this._bitDepth.value);
-            this.NotifyProperty("bitDepth");
-        });
+        // this._bitDepth.addEventListener('change', (e) => {
+        //     this.bitDepth = Number.parseInt(this._bitDepth.value);
+        //     this.NotifyProperty("bitDepth");
+        // });
 
         this._maxVolume.addEventListener('change', (e) => {
-            this.maxVolume = Number.parseInt(this._maxVolume.value);
-            this._volume_slider.max = this.maxVolume;
+            // this.maxVolume = Number.parseInt(this._maxVolume.value);
+            // this._volume_slider.max = this.maxVolume;
             this.showSliderValue();
-            this.NotifyProperty("maxVolume");
+            // this.NotifyProperty("maxVolume");
 
             if (this.maxVolume <= this.volume) {
                 this.volume = Number.parseFloat(this._volume_slider.value);
                 this.showSliderValue();
-                this.NotifyProperty("volume");
+                // this.NotifyProperty("volume");
             }
         });
 
-        this._soloGroup.addEventListener('change', (e) => {
-            this.soloGroup = this._soloGroup.value;
-            this.NotifyProperty("soloGroup");
-        });
+        // this._soloGroup.addEventListener('change', (e) => {
+        //     this.soloGroup = this._soloGroup.value;
+        //     this.NotifyProperty("soloGroup");
+        // });
 
         this._showVolumeControl.addEventListener('change', (e) => {
             this.showVolumeControl = !this.showVolumeControl;
             this.NotifyProperty("showVolumeControl");
+        });
+
+        this._showInTopBar.addEventListener('change', (e) => {
+            this.showInTopBar = !this.showInTopBar;
+            this.NotifyProperty("showInTopBar");
+
+            if (this.showInTopBar) {
+                this._showInControlInTopBar();
+            }
+            else {
+                this._parent[this.name + "_vu"].SetData({ remove: true });
+            }
+
+
         });
 
         this._showMuteControl.addEventListener('change', (e) => {
@@ -368,10 +377,10 @@ class _audioDevice extends ui {
             this.NotifyProperty("showMuteControl");
         });
 
-        this._displayOrder.addEventListener('change', (e) => {
-            this.displayOrder = Number.parseInt(this._displayOrder.value);
-            this.NotifyProperty("displayOrder");
-        });
+        // this._displayOrder.addEventListener('change', (e) => {
+        //     this.displayOrder = Number.parseInt(this._displayOrder.value);
+        //     this.NotifyProperty("displayOrder");
+        // });
 
         let a = this;
         this._btnDelete.addEventListener('click', (e) => {
@@ -442,9 +451,18 @@ class _audioDevice extends ui {
             this._btnMute.checked = mute;
         });
 
+        this.on('showInTopBar', showInTopBar => {
+            this._showInTopBar.checked = showInTopBar;
+        });
+
         this.on('displayName', displayName => {
-            this._displayName.value = displayName;
-            this._name.innerHTML = displayName;
+            // this._displayName.value = displayName;
+            // this._name.innerHTML = displayName;
+            if(this._parent[this.name + "_vu"])
+            {
+                this._parent[this.name + "_vu"].title = displayName;
+            }
+           
         })
 
         this.on('description', description => {
@@ -455,9 +473,9 @@ class _audioDevice extends ui {
             this._setVolume();
         });
 
-        this.on('channels', channels => {
-            this._channels.value = channels;
-        });
+        // this.on('channels', channels => {
+        //     this._channels.value = channels;
+        // });
 
         this.on('sampleRate', sampleRate => {
             this._sampleRate.value = sampleRate;
@@ -676,23 +694,78 @@ class _audioDevice extends ui {
         };
     }
 
+    _setDeviceColor() {
+
+        if (this.controlType == "AudioInput") {
+            this._heading.style.backgroundColor = "#012F74"; // cc6666  012F74
+        }
+
+        if (this.controlType == "SrtOpusInput") {
+            this._heading.style.backgroundColor = "#0D6EFD"; // 1D1F4C 00067B C92C6D 0D6EFD
+        }
+
+
+        if (this.controlType == "AudioOutput") {
+            this._heading.style.backgroundColor = "#007F6A"; // 602100 D98324 #A24936
+        }
+
+        if (this.controlType == "SrtOpusOutput") {
+            this._heading.style.backgroundColor = "#00C3A3"; // 753B1C 9D3700 A33900 bb6528 #D36135
+        }
+    }
+
     _setVolume() {
 
         if (this.volume > this.maxVolume) {
             this.maxVolume = this.volume;
-            this.NotifyProperty("maxVolume");
+            // this.NotifyProperty("maxVolume");
         }
 
         if (!this._sliderActive) {
             this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
         }
         this._volume_slider.value = this.volume;
-        this._rangeBullet.innerHTML = this.volume + " %";
+        this._rangeBullet.innerHTML = Math.round(this.volume) + " %";
         this.NotifyProperty("volume");
     }
 
     showSliderValue() {
         this._rangeBullet.innerHTML = Math.round(this._volume_slider.value) + " %";
+    }
+
+    _showInControlInTopBar() {
+        if (this.showInTopBar) {
+            // Add VU meter
+            this._parent.SetData({
+                [this.name + "_vu"]: {
+                    controlType: "VuMeter",
+                    hideData: true,
+                    parentElement: `_topBarControls`,
+                    orientation: "horizontal",
+                    borderRadius: "25px",
+                    background: `linear-gradient(
+                        to left,
+                        hsla(120, 100%, 25%, 0.200) 66.6666%,
+                        rgba(255, 166, 0, 0.200) 66.6666% 85%,
+                        rgba(255, 0, 0, 0.200) 85%)`,
+
+                    width: "120px",
+                    height: "16px",
+                    margin: "4px",
+                    marginTop: "0px",
+                    marginBottom: "0px",
+                    borderStyle: "inset",
+                    borderWidth: "1px",
+                    borderColor: "rgba(117, 196, 235, 0.58)",
+                    borderRadius: "25px",
+                    boxShadow: "white",
+                    transform: "rotate(180deg)",
+
+                    display: "block",
+                    title: this.displayName,
+                }
+            });
+        }
     }
 
     _checkCollision(newLeft, newTop, direction = "") {

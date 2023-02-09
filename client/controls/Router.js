@@ -25,7 +25,7 @@ class Router extends ui {
                     <div class="router-top-bar">
                         <div class="router-top-flex-div">
 
-                            <div class="router-flex-justify-end">
+                            <div class="router-flex-justify-end min-w-[12rem]">
 
                                 <!--    LIST HANDEL  -->
                                 <div class="router-btn-handel" title="Drag and drop"></div>
@@ -40,7 +40,7 @@ class Router extends ui {
                             <div class="router-flex-justify-end">
 
                                 <!--    TOP BAR CONTROLS     -->
-                                <div id="@{_topBarControls}" class="h-auto w-auto" title=""></div>
+                                <div id="@{_topBarControls}" class="h-auto w-auto flex mr-2 items-center" title=""></div>
 
 
                                 <!--    ONLINE/OFFLINE -->

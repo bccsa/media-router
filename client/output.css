@@ -10282,6 +10282,14 @@ textarea.audioDevice-text-area.is-invalid {
   width: auto;
 }
 
+.min-w-\[10rem\] {
+  min-width: 10rem;
+}
+
+.min-w-\[12rem\] {
+  min-width: 12rem;
+}
+
 .max-w-\[27\.5rem\] {
   max-width: 27.5rem;
 }

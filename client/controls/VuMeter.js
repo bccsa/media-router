@@ -27,15 +27,17 @@ class VuMeter extends ui {
         this.borderWidth = 0;
         this.borderColor = "none";
         this.borderRadius = "25px";
-        this.display = "block";
         this.boxShadow = "none";
         this.transform = "none";
+
+        this.title = "Vu Meter";
+        this.display = "none";
     }
 
     get html() {
         return `
         <!-- ${this.name} -->
-        <div id="@{_div}" style="display: block; ">
+        <div id="@{_div}" style="display: block;" title="@{title}">
             <canvas id="@{_canvas}" style="border-radius: ${this.borderRadius}; "></canvas>    
         </div>`
     }
@@ -95,6 +97,8 @@ class VuMeter extends ui {
         this._div.style.display = this.display;
         this._div.style.boxShadow = this.boxShadow;
         this._div.style.transform = this.transform;
+
+        this._div.title = this.title;
 
 
 
