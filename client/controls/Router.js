@@ -39,6 +39,10 @@ class Router extends ui {
                             
                             <div class="router-flex-justify-end">
 
+                                <!--    TOP BAR CONTROLS     -->
+                                <div id="@{_topBarControls}" class="h-auto w-auto" title=""></div>
+
+
                                 <!--    ONLINE/OFFLINE -->
                                 <span id="@{_online}" class="hidden items-center bg-green-100 text-green-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-green-900 dark:text-green-300">
                                 <span class="w-2 h-2 mr-1 bg-green-500 rounded-full"></span>

@@ -10278,6 +10278,10 @@ textarea.audioDevice-text-area.is-invalid {
   width: 0px;
 }
 
+.w-auto {
+  width: auto;
+}
+
 .max-w-\[27\.5rem\] {
   max-width: 27.5rem;
 }
@@ -11306,11 +11310,6 @@ textarea.audioDevice-text-area.is-invalid {
 .bg-\[rgb\(255\2c 0\2c 0\)\] {
   --tw-bg-opacity: 1;
   background-color: rgb(255 0 0 / var(--tw-bg-opacity));
-}
-
-.bg-\[\#e1d6c4\] {
-  --tw-bg-opacity: 1;
-  background-color: rgb(225 214 196 / var(--tw-bg-opacity));
 }
 
 .bg-delete_bl {

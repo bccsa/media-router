@@ -26,6 +26,7 @@ class _audioDevice extends ui {
 
         this.width = 326.4;
         this.height = 93.6;
+        this.showInTopBar = false;
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
     }
 
@@ -117,6 +118,17 @@ class _audioDevice extends ui {
                                     title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
                                     class="audioDevice-pos-decimal-input" value="${this.maxVolume}">
                                 </div>
+
+                            </div>
+
+                            <div class="w-full mb-1 flex ">
+
+                                <!--    SHOW CONTROL IN TOP BAR     --> 
+                                <div class="w-full mr-2 mb-2 flex">
+                                    <input id="@{_showVuMeter}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  value="@{showInTopBar}"/>  
+                                    <label for="@{_showVuMeter}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
+                                </div>
+
 
                             </div>
 
@@ -272,20 +284,20 @@ class _audioDevice extends ui {
         this._draggable.style.offsetWidth = this.width;
 
         if (this.controlType == "AudioInput") {
-            this._heading.style.backgroundColor = "#012F74"; // cc6666
+            this._heading.style.backgroundColor = "#012F74"; // cc6666  012F74
         }
 
         if (this.controlType == "SrtOpusInput") {
-            this._heading.style.backgroundColor = "#0D6EFD"; // 1D1F4C 00067B C92C6D
-        }
+            this._heading.style.backgroundColor = "#0D6EFD"; // 1D1F4C 00067B C92C6D 0D6EFD
+        } 
 
 
         if (this.controlType == "AudioOutput") {
-            this._heading.style.backgroundColor = "#007F6A"; // 602100 D98324
+            this._heading.style.backgroundColor = "#007F6A"; // 602100 D98324 #A24936
         }
 
         if (this.controlType == "SrtOpusOutput") {
-            this._heading.style.backgroundColor = "#00C3A3"; // 753B1C 9D3700 A33900 bb6528
+            this._heading.style.backgroundColor = "#00C3A3"; // 753B1C 9D3700 A33900 bb6528 #D36135
         }
 
         //Event subscriptions
@@ -415,6 +427,7 @@ class _audioDevice extends ui {
                 hideData: true,
                 parentElement: `_volume_slit`,
                 orientation: "horizontal",
+                borderRadius: "25px",
             }
         });
 

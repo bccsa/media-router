@@ -17,27 +17,86 @@ class VuMeter extends ui {
         this._bot2Prev = 0;
         this._top3Prev = 0;
         this._bot3Prev = 0;
+        this.height = "100%";
+        this.width = "100%";
+        this.background = "none";
+        this.margin = 0;
+        this.marginTop = 0;
+        this.marginBottom = 0;
+        this.borderStyle = "none";
+        this.borderWidth = 0;
+        this.borderColor = "none";
+        this.borderRadius = "25px";
+        this.display = "block";
+        this.boxShadow = "none";
+        this.transform = "none";
     }
 
     get html() {
         return `
         <!-- ${this.name} -->
-        <div id="${this._uuid}_div" style="display: block; width: 100%; height: 100%;">
-            <canvas id="${this._uuid}_canvas"></canvas>    
+        <div id="@{_div}" style="display: block; ">
+            <canvas id="@{_canvas}" style="border-radius: ${this.borderRadius}; "></canvas>    
         </div>`
     }
 
     Init() {
-        this._div = document.getElementById(`${this._uuid}_div`);
-        this._canvas = document.getElementById(`${this._uuid}_canvas`);
         this._canvas.style.position = 'absolute';
         this._ctx = this._canvas.getContext("2d");
 
-        // Listen for div size changes
-        const divResizeObserver = new ResizeObserver(() => {
-            this._setSize();
-        });
-        divResizeObserver.observe(this._div); 
+        if (typeof this.height == 'number') {
+            this._div.style.height = this.height + "px";
+        } else {
+            this._div.style.height = this.height;
+        }
+
+        if (typeof this.width == 'number') {
+            this._div.style.width = this.width + "px";
+        } else {
+            this._div.style.width = this.width;
+        }
+        
+        this._div.style.background = this.background;
+
+        if (typeof this.margin == 'number') {
+            this._div.style.margin = this.margin + "px";
+        } else {
+            this._div.style.margin = this.margin;
+        }
+
+        if (typeof this.marginTop == 'number') {
+            this._div.style.marginTop = this.marginTop + "px";
+        } else {
+            this._div.style.marginTop = this.marginTop;
+        }
+
+        if (typeof this.marginBottom == 'number') {
+            this._div.style.marginBottom = this.marginBottom + "px";
+        } else {
+            this._div.style.marginBottom = this.marginBottom;
+        }
+
+        this._div.style.borderStyle = this.borderStyle;
+
+        if (typeof this.borderWidth == 'number') {
+            this._div.style.borderWidth = this.borderWidth + "px";
+        } else {
+            this._div.style.borderWidth = this.borderWidth;
+        }
+
+        this._div.style.borderColor = this.borderColor;
+
+        if (typeof this.borderRadius == 'number') {
+            this._div.style.borderRadius = this.borderRadius + "px";
+        } else {
+            this._div.style.borderRadius = this.borderRadius;
+        }
+
+        this._div.style.display = this.display;
+        this._div.style.boxShadow = this.boxShadow;
+        this._div.style.transform = this.transform;
+
+
 
         // Handle property changes
         if (this.orientation == 'vertical') {
@@ -50,6 +109,97 @@ class VuMeter extends ui {
                 this._setLevelHorizontal(level);
             });
         }
+
+        this._setSize();
+
+        this.on('width', width => {
+            if (typeof width == 'number') {
+                this._div.style.width = width + "px";
+            } else {
+                this._div.style.width = width;
+            }
+        });
+
+        this.on('height', height => {
+            if (typeof height == 'number') {
+                this._div.style.height = height + "px";
+            } else {
+                this._div.style.height = height;
+            }
+        });
+
+        this.on('background', background => {
+            this._div.style.background = background;
+        });
+
+        this.on('margin', margin => {
+            if (typeof margin == 'number') {
+                this._div.style.margin = margin + "px";
+            } else {
+                this._div.style.margin = margin;
+            }
+        });
+
+        this.on('marginTop', marginTop => {
+            if (typeof marginTop == 'number') {
+                this._div.style.marginTop = marginTop + "px";
+            } else {
+                this._div.style.marginTop = marginTop;
+            }
+        });
+
+        this.on('marginBottom', marginBottom => {
+            if (typeof marginBottom == 'number') {
+                this._div.style.marginBottom = marginBottom + "px";
+            } else {
+                this._div.style.marginBottom = marginBottom;
+            }
+        });
+
+        this.on('borderStyle', borderStyle => {
+            this._div.style.borderStyle = borderStyle;
+        });
+
+        this.on('borderWidth', borderWidth => {
+            if (typeof borderWidth == 'number') {
+                this._div.style.borderWidth = borderWidth + "px";
+            } else {
+                this._div.style.borderWidth = borderWidth;
+            }
+        });
+
+        this.on('borderColor', borderColor => {
+            this._div.style.borderColor = borderColor;
+        });
+
+        this.on('borderRadius', borderRadius => {
+            if (typeof borderRadius == 'number') {
+                this._div.style.borderRadius = borderRadius + "px";
+                this._canvas.style.borderRadius = borderRadius + "px";
+            } else {
+                this._div.style.borderRadius = borderRadius;
+                this._canvas.style.borderRadius = borderRadius;
+            }
+        });
+
+        this.on('display', display => {
+            this._div.style.display = display;
+        });
+
+        this.on('boxShadow', boxShadow => {
+            this._div.style.boxShadow = boxShadow;
+        });
+
+        this.on('transform', transform => {
+            this._div.style.transform = transform;
+        });
+
+
+        // Listen for div size changes
+        const divResizeObserver = new ResizeObserver(() => {
+            this._setSize();
+        });
+        divResizeObserver.observe(this._div); 
     }
 
     _setSize() {
