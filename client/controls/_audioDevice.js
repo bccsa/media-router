@@ -125,8 +125,8 @@ class _audioDevice extends ui {
 
                                 <!--    SHOW CONTROL IN TOP BAR     --> 
                                 <div class="w-full mr-2 mb-2 flex">
-                                    <input id="@{_showInTopBar}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  value="@{showInTopBar}"/>  
-                                    <label for="@{_showInTopBar}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
+                                    <input id="@{_showInTopBar_input}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  checked="@{showInTopBar}"/>  
+                                    <label for="@{_showInTopBar_input}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
                                 </div>
 
 
@@ -141,7 +141,7 @@ class _audioDevice extends ui {
                             <!--    VOLUME SLIDER     -->
                             <div class="w-full mb-2 flex flex-row items-center">
 
-                                <label for="@{_volume}" class="mt-5 w-1/6">Volume:</label>
+                                <label for="@{_volume_slider}" class="mt-5 w-1/6">Volume:</label>
 
                                 <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
                                 name="volume" step="1" min="0" max="@{maxVolume}" value="@{volume}" >
@@ -155,7 +155,7 @@ class _audioDevice extends ui {
                                     <option value="150"></option>
                                 </datalist>
 
-                                <label for="@{_volume}" id="@{_rangeBullet}" class="ml-2 w-1/6">@{volume} %</label>
+                                <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume} %</label>
                                 
                             </div>
 
@@ -164,13 +164,13 @@ class _audioDevice extends ui {
 
                                 <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
                                 <div class="w-1/2 mr-2 mb-2 flex">
-                                    <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked  value="@{showVolumeControl}"/>  
+                                    <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showVolumeControl}"/>  
                                     <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Show client volume control</label> 
                                 </div>
 
                                 <!--    SHOW MUTE CONTROL CHECKBOX      --> 
                                 <div class="w-1/2 mb-2 ml-2 flex">
-                                    <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked value="@{showMuteControl}"/>  
+                                    <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showMuteControl}"/>  
                                     <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
                                 </div>
 
@@ -263,13 +263,13 @@ class _audioDevice extends ui {
         //Set initial values
         // this._setMute();
 
-        this._btnMute.checked = this.mute;
+        // this._btnMute.checked = this.mute;
 
-        this._channels.value = this.channels;
-        this._sampleRate.value = this.sampleRate;
-        this._bitDepth.value = this.bitDepth;
+        // this._channels.value = this.channels;
+        // this._sampleRate.value = this.sampleRate;
+        // this._bitDepth.value = this.bitDepth;
 
-        this._showInTopBar.checked = this.showInTopBar;
+        // this._showInTopBar.checked = this.showInTopBar;
 
         // this._showVolumeControl.checked = this.showVolumeControl;
         // this._showMuteControl.checked = this.showMuteControl;
@@ -287,19 +287,19 @@ class _audioDevice extends ui {
         this._draggable.style.offsetHeight = this.height;
         this._draggable.style.offsetWidth = this.width;
 
-        
 
-        this._showInControlInTopBar();
+
+        this._showInTopBar(this.showInTopBar);
         this._setDeviceColor();
 
 
 
         //Event subscriptions
-        this._btnMute.addEventListener('click', (e) => {
-            this.mute = !this.mute;
-            // this._setMute();
-            this.NotifyProperty("mute");
-        });
+        // this._btnMute.addEventListener('click', (e) => {
+        //     this.mute = !this.mute;
+        //     // this._setMute();
+        //     this.NotifyProperty("mute");
+        // });
 
         // this._displayName.addEventListener('change', (e) => {
         //     this.displayName = this._displayName.value;
@@ -309,16 +309,16 @@ class _audioDevice extends ui {
         //     this.NotifyProperty("displayName");
         // })
 
-        this._description.addEventListener('change', (e) => {
-            this.description = this._description.value;
-            this.NotifyProperty("description");
-        });
+        // this._description.addEventListener('change', (e) => {
+        //     this.description = this._description.value;
+        //     this.NotifyProperty("description");
+        // });
 
-        this._volume_slider.addEventListener('input', (e) => {
-            // this.volume = Number.parseFloat(this._volume_slider.value);
-            this.showSliderValue();
-            // this.NotifyProperty("volume");
-        });
+        // this._volume_slider.addEventListener('input', (e) => {
+        //     // this.volume = Number.parseFloat(this._volume_slider.value);
+        //     this.showSliderValue();
+        //     // this.NotifyProperty("volume");
+        // });
 
         // this._channels.addEventListener('change', (e) => {
         //     this.channels = Number.parseInt(this._channels.value);
@@ -353,29 +353,28 @@ class _audioDevice extends ui {
         //     this.NotifyProperty("soloGroup");
         // });
 
-        this._showVolumeControl.addEventListener('change', (e) => {
-            this.showVolumeControl = !this.showVolumeControl;
-            this.NotifyProperty("showVolumeControl");
+        // this._showVolumeControl.addEventListener('change', (e) => {
+        //     this.showVolumeControl = !this.showVolumeControl;
+        //     this.NotifyProperty("showVolumeControl");
+        // });
+
+        // this._showInTopBar.addEventListener('change', (e) => {
+        //     this.showInTopBar = !this.showInTopBar;
+        //     this.NotifyProperty("showInTopBar");
+
+        this.on('showInTopBar', val => {
+            // Add or remove VU meter in router top bar
+            this._showInTopBar(val);
         });
 
-        this._showInTopBar.addEventListener('change', (e) => {
-            this.showInTopBar = !this.showInTopBar;
-            this.NotifyProperty("showInTopBar");
-
-            if (this.showInTopBar) {
-                this._showInControlInTopBar();
-            }
-            else {
-                this._parent[this.name + "_vu"].SetData({ remove: true });
-            }
 
 
-        });
+        // });
 
-        this._showMuteControl.addEventListener('change', (e) => {
-            this.showMuteControl = !this.showMuteControl;
-            this.NotifyProperty("showMuteControl");
-        });
+        // this._showMuteControl.addEventListener('change', (e) => {
+        //     this.showMuteControl = !this.showMuteControl;
+        //     this.NotifyProperty("showMuteControl");
+        // });
 
         // this._displayOrder.addEventListener('change', (e) => {
         //     this.displayOrder = Number.parseInt(this._displayOrder.value);
@@ -447,64 +446,64 @@ class _audioDevice extends ui {
             }
         });
 
-        this.on('mute', mute => {
-            this._btnMute.checked = mute;
-        });
+        // this.on('mute', mute => {
+        //     this._btnMute.checked = mute;
+        // });
 
-        this.on('showInTopBar', showInTopBar => {
-            this._showInTopBar.checked = showInTopBar;
-        });
+        // this.on('showInTopBar', showInTopBar => {
+        //     this._showInTopBar.checked = showInTopBar;
+        // });
 
-        this.on('displayName', displayName => {
-            // this._displayName.value = displayName;
-            // this._name.innerHTML = displayName;
-            if(this._parent[this.name + "_vu"])
-            {
-                this._parent[this.name + "_vu"].title = displayName;
-            }
-           
-        })
+        // this.on('displayName', displayName => {
+        //     // this._displayName.value = displayName;
+        //     // this._name.innerHTML = displayName;
+        //     if(this._parent[this.name + "_vu"])
+        //     {
+        //         this._parent[this.name + "_vu"].title = displayName;
+        //     }
 
-        this.on('description', description => {
-            this._description.value = description;
-        });
+        // })
 
-        this.on('volume', () => {
-            this._setVolume();
-        });
+        // this.on('description', description => {
+        //     this._description.value = description;
+        // });
+
+        // this.on('volume', () => {
+        //     this._setVolume();
+        // });
 
         // this.on('channels', channels => {
         //     this._channels.value = channels;
         // });
 
-        this.on('sampleRate', sampleRate => {
-            this._sampleRate.value = sampleRate;
-        });
+        // this.on('sampleRate', sampleRate => {
+        //     this._sampleRate.value = sampleRate;
+        // });
 
-        this.on('bitDepth', bitDepth => {
-            this._bitDepth.value = bitDepth;
-        });
+        // this.on('bitDepth', bitDepth => {
+        //     this._bitDepth.value = bitDepth;
+        // });
 
-        this.on('maxVolume', maxVolume => {
-            this._maxVolume.value = maxVolume;
-            this._volume_slider.max = this.maxVolume;
-        });
+        // this.on('maxVolume', maxVolume => {
+        //     this._maxVolume.value = maxVolume;
+        //     this._volume_slider.max = this.maxVolume;
+        // });
 
-        this.on('soloGroup', soloGroup => {
-            this._soloGroup.value = soloGroup;
-        });
+        // this.on('soloGroup', soloGroup => {
+        //     this._soloGroup.value = soloGroup;
+        // });
 
-        this.on('showVolumeControl', showVolumeControl => {
-            this._showVolumeControl.checked = showVolumeControl;
-        });
+        // this.on('showVolumeControl', showVolumeControl => {
+        //     this._showVolumeControl.checked = showVolumeControl;
+        // });
 
-        this.on('showMuteControl', showMuteControl => {
-            this._showMuteControl.checked = showMuteControl;
-        });
+        // this.on('showMuteControl', showMuteControl => {
+        //     this._showMuteControl.checked = showMuteControl;
+        // });
 
-        this.on('displayOrder', displayOrder => {
-            this._displayOrder.value = displayOrder;
-        });
+        // this.on('displayOrder', displayOrder => {
+        //     this._displayOrder.value = displayOrder;
+        // });
 
         // Drag drop
 
@@ -724,17 +723,21 @@ class _audioDevice extends ui {
         if (!this._sliderActive) {
             this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
         }
-        this._volume_slider.value = this.volume;
+        // this._volume_slider.value = this.volume;
         this._rangeBullet.innerHTML = Math.round(this.volume) + " %";
-        this.NotifyProperty("volume");
+        // this.NotifyProperty("volume");
     }
 
     showSliderValue() {
-        this._rangeBullet.innerHTML = Math.round(this._volume_slider.value) + " %";
+        this._rangeBullet.textContent = Math.round(this._volume_slider.value) + " %";
     }
 
-    _showInControlInTopBar() {
-        if (this.showInTopBar) {
+    /**
+     * Create or remove a VU meter in the parent top bar
+     * @param {*} show 
+     */
+    _showInTopBar(show) {
+        if (show) {
             // Add VU meter
             this._parent.SetData({
                 [this.name + "_vu"]: {
@@ -765,6 +768,11 @@ class _audioDevice extends ui {
                     title: this.displayName,
                 }
             });
+        } else {
+            // Remove from parent control
+            if (this._parent[this.name + "_vu"]) {
+                this._parent[this.name + "_vu"].SetData({ remove: true });
+            }
         }
     }
 
