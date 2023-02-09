@@ -73,7 +73,7 @@ class _audioDevice extends ui {
                             <div class="w-full mb-1 mr-4">
                                 <label for="@{_description}" class="mb-2">Description:</label>
                                     <textarea id="@{_description}" class="audioDevice-text-area" rows="1" cols="3"
-                                    title="Device description" placeholder="Your description" >@{description}</textarea>
+                                    title="Device description" placeholder="Your description" value="@{description}"></textarea>
                             </div>
 
                             <div class="w-full flex">
