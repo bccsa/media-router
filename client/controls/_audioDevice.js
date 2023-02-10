@@ -8,7 +8,7 @@ class _audioDevice extends ui {
         super();
         this._styles.push('_audioDevice.css');
         this.level = 0;
-        this.mute = true;
+        this.active = true;
         this.description = "";
         this.volume = 100;
         this.channels = 1;
@@ -231,12 +231,12 @@ class _audioDevice extends ui {
 
                 <div class="flex justify-between items-center">
                     
-                    <!--    MUTE TOGGLE     -->
+                    <!--    ACTIVE TOGGLE     -->
                     <div class="flex">
-                        <label for="@{_btnMute}" class="audioDevice-label">Off</label>
+                        <label for="@{_btnActive}" class="audioDevice-label">Off</label>
                         <div class="form-check form-switch">
-                            <input id="@{_btnMute}" class="audioDevice-toggle" type="checkbox" role="switch" title="Switch Mute on or off" value="@{mute}">
-                            <label for="@{_btnMute}" class="audioDevice-label">On</label>
+                            <input id="@{_btnActive}" class="audioDevice-toggle" type="checkbox" role="switch" title="Switch Active on or off" checked="@{active}">
+                            <label for="@{_btnActive}" class="audioDevice-label">On</label>
                         </div>
                     </div>
 
@@ -737,40 +737,59 @@ class _audioDevice extends ui {
      * @param {*} show 
      */
     _showInTopBar(show) {
+
+        let a = this;
+
+        function _VuData(data)
+        {
+            a._parent[a.name + "_vu"].level = data;
+        }
+
         if (show) {
-            // Add VU meter
-            this._parent.SetData({
-                [this.name + "_vu"]: {
-                    controlType: "VuMeter",
-                    hideData: true,
-                    parentElement: `_topBarControls`,
-                    orientation: "horizontal",
-                    borderRadius: "25px",
-                    background: `linear-gradient(
-                        to left,
-                        hsla(120, 100%, 25%, 0.200) 66.6666%,
-                        rgba(255, 166, 0, 0.200) 66.6666% 85%,
-                        rgba(255, 0, 0, 0.200) 85%)`,
 
-                    width: "120px",
-                    height: "16px",
-                    margin: "4px",
-                    marginTop: "0px",
-                    marginBottom: "0px",
-                    borderStyle: "inset",
-                    borderWidth: "1px",
-                    borderColor: "rgba(117, 196, 235, 0.58)",
-                    borderRadius: "25px",
-                    boxShadow: "white",
-                    transform: "rotate(180deg)",
+            if (!this._parent[this.name + "_vu"]) {
+                this._parent.on(this.name + "_vu", control =>
+                {
+                    this.on('level', _VuData);
+                })
 
-                    display: "block",
-                    title: this.displayName,
-                }
-            });
+                // Add VU meter
+                this._parent.SetData({
+                    [this.name + "_vu"]: {
+                        controlType: "VuMeter",
+                        hideData: true,
+                        parentElement: `_topBarControls`,
+                        orientation: "horizontal",
+                        borderRadius: "25px",
+                        background: `linear-gradient(
+                            to right,
+                            hsla(120, 100%, 25%, 0.200) 66.6666%,
+                            rgba(255, 166, 0, 0.200) 66.6666% 85%,
+                            rgba(255, 0, 0, 0.200) 85%)`,
+
+                        width: "120px",
+                        height: "20px",
+                        marginLeft: "4px",
+                        marginRight: "4px",
+                        borderRadius: "25px",
+                        boxShadow: "white",
+                        transform: "rotate(180deg)",
+
+                        
+                        title: this.displayName,
+                    }
+                });
+
+                
+            }
+
+            
+
+            
         } else {
             // Remove from parent control
             if (this._parent[this.name + "_vu"]) {
+                this.off('level', _VuData);
                 this._parent[this.name + "_vu"].SetData({ remove: true });
             }
         }

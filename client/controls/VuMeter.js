@@ -23,6 +23,8 @@ class VuMeter extends ui {
         this.margin = 0;
         this.marginTop = 0;
         this.marginBottom = 0;
+        this.marginLeft = 0;
+        this.marginRight = 0; 
         this.borderStyle = "none";
         this.borderWidth = 0;
         this.borderColor = "none";
@@ -31,7 +33,6 @@ class VuMeter extends ui {
         this.transform = "none";
 
         this.title = "Vu Meter";
-        this.display = "none";
     }
 
     get html() {
@@ -43,7 +44,7 @@ class VuMeter extends ui {
     }
 
     Init() {
-        this._canvas.style.position = 'absolute';
+        this._canvas.style.position = 'sticky';
         this._ctx = this._canvas.getContext("2d");
 
         if (typeof this.height == 'number') {
@@ -78,6 +79,18 @@ class VuMeter extends ui {
             this._div.style.marginBottom = this.marginBottom;
         }
 
+        if (typeof this.marginRight == 'number') {
+            this._div.style.marginRight = this.marginRight + "px";
+        } else {
+            this._div.style.marginRight = this.marginRight;
+        }
+
+        if (typeof this.marginLeft == 'number') {
+            this._div.style.marginLeft = this.marginLeft + "px";
+        } else {
+            this._div.style.marginLeft = this.marginLeft;
+        }
+
         this._div.style.borderStyle = this.borderStyle;
 
         if (typeof this.borderWidth == 'number') {
@@ -94,9 +107,8 @@ class VuMeter extends ui {
             this._div.style.borderRadius = this.borderRadius;
         }
 
-        this._div.style.display = this.display;
         this._div.style.boxShadow = this.boxShadow;
-        this._div.style.transform = this.transform;
+        // this._div.style.transform = this.transform;
 
         this._div.title = this.title;
 
@@ -160,6 +172,22 @@ class VuMeter extends ui {
             }
         });
 
+        this.on('marginRight', marginRight => {
+            if (typeof marginRight == 'number') {
+                this._div.style.marginRight = marginRight + "px";
+            } else {
+                this._div.style.marginRight = marginRight;
+            }
+        });
+
+        this.on('marginLeft', marginLeft => {
+            if (typeof marginLeft == 'number') {
+                this._div.style.marginLeft = marginLeft + "px";
+            } else {
+                this._div.style.marginLeft = marginLeft;
+            }
+        });
+
         this.on('borderStyle', borderStyle => {
             this._div.style.borderStyle = borderStyle;
         });
@@ -186,9 +214,6 @@ class VuMeter extends ui {
             }
         });
 
-        this.on('display', display => {
-            this._div.style.display = display;
-        });
 
         this.on('boxShadow', boxShadow => {
             this._div.style.boxShadow = boxShadow;
@@ -278,36 +303,40 @@ class VuMeter extends ui {
         let width2 = Math.min(Math.max((p + 20), 0), 20 - 9) * this._width / 60;   // Start showing from -20dB. Max width at -9dB (11dB width)
         let width3 = Math.min(Math.max((p + 9), 0), 9 - 0) * this._width / 60;     // Start showing from -9dB. Max width at -0dB (9dB width)
 
-        let bot1 = this._width;
-        let top1 = this._width - width1;
+        let bot1 = 0;
+        let top1 = width1;
         let bot2 = top1;
-        let top2 = bot2 - width2;
+        let top2 = bot2 + width2;
         let bot3 = top2;
-        let top3 = bot3 - width3;
+        let top3 = bot3 + width3;
 
         let total = width1 + width2 + width3;
 
         // Clear
         if (total < this._totalPrev) {
-            this._ctx.clearRect(this._top3Prev - 1, 0, top3 - this._top3Prev, this._height);
+            this._ctx.clearRect(this._top3Prev + 2, 0, top3 - this._top3Prev, this._height);
+            if (level == 0)
+            {
+                this._ctx.clearRect(this._top3Prev, 0, top3 - this._top3Prev, this._height);
+            }
         }
         // Draw
         else if (total > this._totalPrev) {
-            if (top1 < this._top1Prev) {
+            if (top1 > this._top1Prev) {
                 this._ctx.fillStyle = "green";
-                this._ctx.fillRect(top1, 0, this._top1Prev - top1 + 1, this._height);
+                this._ctx.fillRect(bot1, 0, width1 + 1, this._height);
             }
-            if (top2 < this._top2Prev && top2 < bot2) {
+            if (top2 > this._top2Prev && top2 > bot2) {
                 let bot = this._top2Prev;
                 if (this._top2Prev > bot2) bot = bot2;
                 this._ctx.fillStyle = "orange";
-                this._ctx.fillRect(top2, 0, bot - top2 + 1, this._height);
+                this._ctx.fillRect(bot2, 0, width2 + 1, this._height);
             }
-            if (top3 < this._top3Prev && top3 < bot3) {
+            if (top3 > this._top3Prev && top3 > bot3) {
                 let bot = this._top3Prev;
                 if (this._top3Prev > bot3) bot = bot3;
                 this._ctx.fillStyle = "red";
-                this._ctx.fillRect(top3, 0, bot - top3 + 1, this._height);
+                this._ctx.fillRect(bot3, 0, width3 + 1, this._height);
             }
         }
 

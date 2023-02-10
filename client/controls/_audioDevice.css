@@ -2,7 +2,7 @@
 /* Audio Indicator */
     .audioDevice_volume_slit {
         background: linear-gradient(
-        to left,
+        to right,
         hsla(120, 100%, 25%, 0.200) 66.6666%,
         rgba(255, 166, 0, 0.200) 66.6666% 85%,
         rgba(255, 0, 0, 0.200) 85%);
@@ -18,7 +18,6 @@
         border-radius: 25px;
         display: block;
         box-shadow: white;
-        transform: rotate(180deg);
     }
     
     .audioDevice_volume_slit div {
