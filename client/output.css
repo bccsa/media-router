@@ -10058,6 +10058,10 @@ textarea.audioDevice-text-area.is-invalid {
   margin-top: 1.25rem;
 }
 
+.ml-1 {
+  margin-left: 0.25rem;
+}
+
 .mb-6 {
   margin-bottom: 1.5rem;
 }
@@ -10262,6 +10266,10 @@ textarea.audioDevice-text-area.is-invalid {
   width: 50%;
 }
 
+.w-auto {
+  width: auto;
+}
+
 .w-2 {
   width: 0.5rem;
 }
@@ -10276,14 +10284,6 @@ textarea.audioDevice-text-area.is-invalid {
 
 .w-0 {
   width: 0px;
-}
-
-.w-auto {
-  width: auto;
-}
-
-.min-w-\[10rem\] {
-  min-width: 10rem;
 }
 
 .min-w-\[12rem\] {

@@ -13,7 +13,7 @@ class checkBox extends ui {
             <!--    CHECKBOX -->
             <div class="basis-1/4 mr-2 mb-2 flex items-center">
                 <div id="@{_container}" class="flex justify-center items-center bg-[#1E293B] text-white  mr-2 px-2.5 py-1 rounded-full">
-                    <input id="@{_check}" class="h-4 w-4 mr-2 form-label inline-block" type="checkbox" checked  value="${this.value}"/>  
+                    <input id="@{_check}" class="h-4 w-4 mr-2 form-label inline-block" type="checkbox" checked="@{value}"  value=""/>  
                     <label id="@{_label}" for="@{_check}" class="form-label inline-block">${this.label}</label>
                 </div>
             </div>

@@ -23,7 +23,6 @@ class _audioDevice extends ui {
         this.peak = 0;
         this.left = 50;
         this.top = 50;
-
         this.width = 326.4;
         this.height = 93.6;
         this.showInTopBar = false;
@@ -154,9 +153,10 @@ class _audioDevice extends ui {
                                     <option value="120"></option> <option value="130"></option> <option value="140"></option> 
                                     <option value="150"></option>
                                 </datalist>
-
-                                <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-2 w-1/6">${this.volume} %</label>
-                                
+                                <div class="w-1/6">
+                                    <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-2">@{volume}</label>
+                                    <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-1">%</label>
+                                </div>
                             </div>
 
                             
@@ -218,7 +218,7 @@ class _audioDevice extends ui {
         <!--    MAIN CARD CONTAINER     -->
         <div id="@{_draggable}" class="audioDevice-main-card absolute">
             <!--    TOP HEADING CONTAINER    -->
-            <div id="@{_heading}"  class="audioDevice-card-heading">
+            <div id="@{_heading}"  class="audioDevice-card-heading overflow-hidden">
 
                 <!--    NAME     -->
                 <div class="col-span-2">
@@ -261,106 +261,31 @@ class _audioDevice extends ui {
 
     Init() {
         //Set initial values
-        // this._setMute();
 
-        // this._btnMute.checked = this.mute;
-
-        // this._channels.value = this.channels;
-        // this._sampleRate.value = this.sampleRate;
-        // this._bitDepth.value = this.bitDepth;
-
-        // this._showInTopBar.checked = this.showInTopBar;
-
-        // this._showVolumeControl.checked = this.showVolumeControl;
-        // this._showMuteControl.checked = this.showMuteControl;
-        this.showSliderValue();
         let position = this._checkCollision(this.left, this.top, "down");
         this._draggable.style.left = position.newLeft + "px";
         this._draggable.style.top = position.newTop + "px";
         this.left = (position.newLeft);
         this.top = (position.newTop);
-
-        this.NotifyProperty("left");
-        this.NotifyProperty("top");
-
-
         this._draggable.style.offsetHeight = this.height;
         this._draggable.style.offsetWidth = this.width;
-
-
-
         this._showInTopBar(this.showInTopBar);
         this._setDeviceColor();
 
-
-
         //Event subscriptions
-        // this._btnMute.addEventListener('click', (e) => {
-        //     this.mute = !this.mute;
-        //     // this._setMute();
-        //     this.NotifyProperty("mute");
-        // });
-
-        // this._displayName.addEventListener('change', (e) => {
-        //     this.displayName = this._displayName.value;
-        //     this._name.innerText = this.displayName;
-        //     this._modalHeading.innerText = this.displayName;
-
-        //     this.NotifyProperty("displayName");
-        // })
-
-        // this._description.addEventListener('change', (e) => {
-        //     this.description = this._description.value;
-        //     this.NotifyProperty("description");
-        // });
-
-        // this._volume_slider.addEventListener('input', (e) => {
-        //     // this.volume = Number.parseFloat(this._volume_slider.value);
-        //     this.showSliderValue();
-        //     // this.NotifyProperty("volume");
-        // });
-
-        // this._channels.addEventListener('change', (e) => {
-        //     this.channels = Number.parseInt(this._channels.value);
-        //     this.NotifyProperty("channels");
-        // });
-
-        // this._sampleRate.addEventListener('change', (e) => {
-        //     this.sampleRate = Number.parseInt(this._sampleRate.value);
-        //     this.NotifyProperty("sampleRate");
-        // });
-
-        // this._bitDepth.addEventListener('change', (e) => {
-        //     this.bitDepth = Number.parseInt(this._bitDepth.value);
-        //     this.NotifyProperty("bitDepth");
-        // });
-
         this._maxVolume.addEventListener('change', (e) => {
-            // this.maxVolume = Number.parseInt(this._maxVolume.value);
-            // this._volume_slider.max = this.maxVolume;
-            this.showSliderValue();
-            // this.NotifyProperty("maxVolume");
 
             if (this.maxVolume <= this.volume) {
                 this.volume = Number.parseFloat(this._volume_slider.value);
-                this.showSliderValue();
-                // this.NotifyProperty("volume");
+                this.NotifyProperty("volume");
             }
         });
 
-        // this._soloGroup.addEventListener('change', (e) => {
-        //     this.soloGroup = this._soloGroup.value;
-        //     this.NotifyProperty("soloGroup");
-        // });
+        // this._volume_slider.addEventListener('change', (e) => {
 
-        // this._showVolumeControl.addEventListener('change', (e) => {
-        //     this.showVolumeControl = !this.showVolumeControl;
-        //     this.NotifyProperty("showVolumeControl");
-        // });
+        //     this.showSliderValue();
 
-        // this._showInTopBar.addEventListener('change', (e) => {
-        //     this.showInTopBar = !this.showInTopBar;
-        //     this.NotifyProperty("showInTopBar");
+        // });
 
         this.on('showInTopBar', val => {
             // Add or remove VU meter in router top bar
@@ -368,20 +293,8 @@ class _audioDevice extends ui {
         });
 
 
-
-        // });
-
-        // this._showMuteControl.addEventListener('change', (e) => {
-        //     this.showMuteControl = !this.showMuteControl;
-        //     this.NotifyProperty("showMuteControl");
-        // });
-
-        // this._displayOrder.addEventListener('change', (e) => {
-        //     this.displayOrder = Number.parseInt(this._displayOrder.value);
-        //     this.NotifyProperty("displayOrder");
-        // });
-
         let a = this;
+        // Delete Device
         this._btnDelete.addEventListener('click', (e) => {
             // Show message box
             this.emit('messageBox',
@@ -399,6 +312,7 @@ class _audioDevice extends ui {
                 }, 'top');
         });
 
+        // Duplicate Device
         this._btnDuplicate.addEventListener('click', (e) => {
 
             // Get unique random name
@@ -446,175 +360,54 @@ class _audioDevice extends ui {
             }
         });
 
-        // this.on('mute', mute => {
-        //     this._btnMute.checked = mute;
-        // });
-
-        // this.on('showInTopBar', showInTopBar => {
-        //     this._showInTopBar.checked = showInTopBar;
-        // });
-
-        // this.on('displayName', displayName => {
-        //     // this._displayName.value = displayName;
-        //     // this._name.innerHTML = displayName;
-        //     if(this._parent[this.name + "_vu"])
-        //     {
-        //         this._parent[this.name + "_vu"].title = displayName;
-        //     }
-
-        // })
-
-        // this.on('description', description => {
-        //     this._description.value = description;
-        // });
-
-        // this.on('volume', () => {
-        //     this._setVolume();
-        // });
-
-        // this.on('channels', channels => {
-        //     this._channels.value = channels;
-        // });
-
-        // this.on('sampleRate', sampleRate => {
-        //     this._sampleRate.value = sampleRate;
-        // });
-
-        // this.on('bitDepth', bitDepth => {
-        //     this._bitDepth.value = bitDepth;
-        // });
-
-        // this.on('maxVolume', maxVolume => {
-        //     this._maxVolume.value = maxVolume;
-        //     this._volume_slider.max = this.maxVolume;
-        // });
-
-        // this.on('soloGroup', soloGroup => {
-        //     this._soloGroup.value = soloGroup;
-        // });
-
-        // this.on('showVolumeControl', showVolumeControl => {
-        //     this._showVolumeControl.checked = showVolumeControl;
-        // });
-
-        // this.on('showMuteControl', showMuteControl => {
-        //     this._showMuteControl.checked = showMuteControl;
-        // });
-
-        // this.on('displayOrder', displayOrder => {
-        //     this._displayOrder.value = displayOrder;
-        // });
-
-        // Drag drop
-
-        // let isMoving = false;
-
-        // function drag_start(event) {
-        //     isMoving = true;
-        //     var style = window.getComputedStyle(event.target, null);
-        //     event.dataTransfer.setData("text/plain",
-        //         (parseInt(style.getPropertyValue("left"), 10) - event.clientX) + ',' + (parseInt(style.getPropertyValue("top"), 10) - event.clientY));
-        // }
-        // function drag_over(event) {
-        //     event.preventDefault();
-        //     return false;
-        // }
-
-        // this._draggable.addEventListener('dragstart', drag_start, false);
-        // this._parent._controlsDiv.addEventListener('dragover', drag_over, false);
-
-
-        // this._parent._controlsDiv.addEventListener('drop', event => {
-
-        //     // Check for collision with other child elements
-        //     var offset = event.dataTransfer.getData("text/plain").split(',');
-        //     let newLeft = event.clientX + parseInt(offset[0], 10);
-        //     let newTop = event.clientY + parseInt(offset[1], 10);
-
-        //     // console.log(newTop + " " + newLeft );
-
-        //     let position = this._checkCollision(newLeft, newTop);
-
-
-        //     if (isMoving) {
-        //         var offset = event.dataTransfer.getData("text/plain").split(',');
-        //         a._draggable.style.left = position.newLeft + 'px';
-        //         a._draggable.style.top = position.newTop + 'px';
-
-        //         a.left = position.newLeft;
-        //         a.top = position.newTop;
-
-        //         a.NotifyProperty("left");
-        //         a.NotifyProperty("top");
-
-        //         event.preventDefault();
-        //         isMoving = false;
-
-        //         this.emit('posChanged', this.calcConnectors());
-
-        //     }
-        // });
-
-        // this._draggable.addEventListener("dragend", event => {
-        //     isMoving = false;
-        // })
+        //-------------- Dragging Device --------------------
 
         let isMoving = false;
         let newLeft, newTop;
         let offsetH = 0, offsetW = 0;
 
+        // Mouse down on heading, start to move the Device position
         this._heading.addEventListener("mousedown", event => {
-
-
 
             newTop = event.clientY - a._heading.getBoundingClientRect().top;
             newLeft = event.clientX - a._heading.getBoundingClientRect().left;
-
             offsetH = newTop;
             offsetW = newLeft;
 
             this._draggable.style.zIndex = "100";
-
-
             isMoving = true;
-
-
         })
 
 
-
+        // Mouse move on the container
         this._parent._controlsDiv.addEventListener("mousemove", event => {
 
             newTop = event.clientY - a._parent._controlsDiv.getBoundingClientRect().top;
             newLeft = event.clientX - a._parent._controlsDiv.getBoundingClientRect().left;
-
-
             newTop -= offsetH;
             newLeft -= offsetW;
-
 
             if (isMoving) {
                 setDevicePosition();
             }
-
         });
 
-
-
+        // Change Device position as the mouse is moving
         function setDevicePosition() {
-            // check visor bounds
 
+            // check container bounds
             let dropZoneLeft = a._parent._controlsDiv.offsetLeft - 60;
             let dropZoneTop = a._parent._controlsDiv.offsetTop - 10;
             let dropZoneWidth = a._parent._controlsDiv.getBoundingClientRect().width - 304;
             let dropZoneHeight = a._parent._controlsDiv.getBoundingClientRect().height - 76;
 
-            // verify and adapt shot x and y positions
+            // verify and adapt newLeft and newTop positions
             if (newLeft < dropZoneLeft) { newLeft = dropZoneLeft }
             if (newLeft > dropZoneWidth) { newLeft = dropZoneWidth }
             if (newTop < dropZoneTop) { newTop = dropZoneTop }
             if (newTop > dropZoneHeight) { newTop = dropZoneHeight }
 
+            // Check Collision so that no Device stack on each other
             let position = a._checkCollision(newLeft, newTop);
 
             a._draggable.style.left = (position.newLeft) + "px";
@@ -623,63 +416,60 @@ class _audioDevice extends ui {
             a.left = (position.newLeft);
             a.top = (position.newTop);
 
-            // a._draggable.style.left = (newLeft) + "px";
-            // a._draggable.style.top = (newTop) + "px";
-
-
-            // a.left = (newLeft);
-            // a.top = (newTop);
-
-            a.NotifyProperty("left");
-            a.NotifyProperty("top");
-
+            // Emit event posChanged, so that the Lines are updated when Device is moved
             a.emit('posChanged', a.calcConnectors());
         }
 
+        // Mouse up on document, stop to move the Device position
         document.addEventListener("mouseup", event => {
             a._draggable.style.zIndex = "10";
             if (isMoving) {
 
                 let position;
-
+                // Check if the Device is at the upper or lower bound and adjust accordingly
                 if (a.top > (a._parent._controlsDiv.getBoundingClientRect().height - 90)) {
                     position = a._checkCollision(a.left, a.top, "up");
                 }
                 else {
                     position = a._checkCollision(a.left, a.top, "down");
-
                 }
 
                 a._draggable.style.left = position.newLeft + "px";
                 a._draggable.style.top = position.newTop + "px";
                 a.left = (position.newLeft);
                 a.top = (position.newTop);
-                a.NotifyProperty("left");
-                a.NotifyProperty("top");
+
+                this.NotifyProperty("left");
+                this.NotifyProperty("top");
 
                 a.emit('posChanged', a.calcConnectors());
-
             }
-
 
             isMoving = false;
         });
 
 
 
+        this.on('left', (e) => {
+            this._draggable.style.left = this.left + "px";
+            this.emit('posChanged', this.calcConnectors());
+        });
 
+        this.on('top', (e) => {
+            this._draggable.style.top = this.top + "px";
+            this.emit('posChanged', this.calcConnectors());
+        });
+
+        //-------------------------------------------------------------------------
 
         // As we are using CSS transforms (in tailwind CSS), it is not possible to set an element fixed to the browser viewport.
         // A workaround is to move the modal element out of the elements styled by the transform, and move it back when done.
         this._topLevelParent._controlsDiv.prepend(this._modalDeviceDetails);
 
-
         // do this when clicking the modal close button
         this._modalDeviceDetails.addEventListener('hidden', (e) => {
             this._modalContainer.append(this._modalDeviceDetails);
         })
-
-
     }
 
     /**
@@ -693,43 +483,21 @@ class _audioDevice extends ui {
         };
     }
 
+    // Set the different colors for the Devices
     _setDeviceColor() {
 
         if (this.controlType == "AudioInput") {
             this._heading.style.backgroundColor = "#012F74"; // cc6666  012F74
         }
-
         if (this.controlType == "SrtOpusInput") {
             this._heading.style.backgroundColor = "#0D6EFD"; // 1D1F4C 00067B C92C6D 0D6EFD
         }
-
-
         if (this.controlType == "AudioOutput") {
             this._heading.style.backgroundColor = "#007F6A"; // 602100 D98324 #A24936
         }
-
         if (this.controlType == "SrtOpusOutput") {
             this._heading.style.backgroundColor = "#00C3A3"; // 753B1C 9D3700 A33900 bb6528 #D36135
         }
-    }
-
-    _setVolume() {
-
-        if (this.volume > this.maxVolume) {
-            this.maxVolume = this.volume;
-            // this.NotifyProperty("maxVolume");
-        }
-
-        if (!this._sliderActive) {
-            this._volume_slider.style.top = `${this._sliderBottom - this.volume / this.maxVolume * this._sliderRange}px`;
-        }
-        // this._volume_slider.value = this.volume;
-        this._rangeBullet.innerHTML = Math.round(this.volume) + " %";
-        // this.NotifyProperty("volume");
-    }
-
-    showSliderValue() {
-        this._rangeBullet.textContent = Math.round(this._volume_slider.value) + " %";
     }
 
     /**
@@ -740,20 +508,18 @@ class _audioDevice extends ui {
 
         let a = this;
 
-        function _VuData(data)
-        {
+        function _VuData(data) {
             a._parent[a.name + "_vu"].level = data;
         }
 
         if (show) {
 
             if (!this._parent[this.name + "_vu"]) {
-                this._parent.on(this.name + "_vu", control =>
-                {
+                this._parent.on(this.name + "_vu", control => {
                     this.on('level', _VuData);
                 })
 
-                // Add VU meter
+                // Add VU meter to Router Top Bar
                 this._parent.SetData({
                     [this.name + "_vu"]: {
                         controlType: "VuMeter",
@@ -774,18 +540,10 @@ class _audioDevice extends ui {
                         borderRadius: "25px",
                         boxShadow: "white",
                         transform: "rotate(180deg)",
-
-                        
                         title: this.displayName,
                     }
                 });
-
-                
             }
-
-            
-
-            
         } else {
             // Remove from parent control
             if (this._parent[this.name + "_vu"]) {
@@ -795,13 +553,10 @@ class _audioDevice extends ui {
         }
     }
 
+    // Check for collision with other Device elements
     _checkCollision(newLeft, newTop, direction = "") {
-        // Check for collision with other child elements
         let collision = true;
-        // let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
-        // let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
-        // let dropZoneWidth = this._parent._controlsDiv.getBoundingClientRect().width - 304;
-        // let dropZoneHeight = this._parent._controlsDiv.getBoundingClientRect().height - 76;
+
         let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
         let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
         let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
@@ -824,6 +579,7 @@ class _audioDevice extends ui {
                     let childMidX = control.left + control.width / 2;
                     let childMidY = control.top + control.height / 2;
 
+                    // Check Collision
                     if (newLeft < childLeft + childWidth && newLeft + this.width > childLeft &&
                         newTop < childTop + childHeight && newTop + this.height > childTop) {
                         collision = true;
@@ -850,6 +606,7 @@ class _audioDevice extends ui {
                             newTop = childTop + childHeight + 2;
                         }
 
+                        // Check border bounds and limit movement
                         newLeft = Math.max(dropZoneLeft, Math.min(newLeft, dropZoneLeft + dropZoneWidth - this.width));
                         newTop = Math.max(dropZoneTop, Math.min(newTop, dropZoneTop + dropZoneHeight - this.height));
 
@@ -867,5 +624,4 @@ class _audioDevice extends ui {
             newTop
         }
     }
-
 }

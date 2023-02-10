@@ -1,8 +1,8 @@
 class _audioInputDevice extends _audioDevice {
     constructor() {
         super();
-        this.destinations = []; // Split with comma from string
-        this._destinationsList = [];
+        this.destinations = [];
+        this._destinations_prev = [];
     }
 
     get html() {
@@ -36,9 +36,42 @@ class _audioInputDevice extends _audioDevice {
         this._parent.on('newChildControl', c => {
             this._addDestination(c);
         });
+        
+        let a = this;
+        function showHideDest(destinations) {
+            a._destinations_prev.forEach(dest => {
+                let line = 'line_' + a.name + "To" + dest;
+                let check = 'dst_' + dest;
+                if (!destinations.find(t => t == dest) && a[line]) {
+                    a[check].value = false;
+                    a[line].Hide();
+                }
+            })
 
+            // Clear prev destinations list
+            a._destinations_prev = [];
 
+            destinations.forEach(dest => {
+                let line = 'line_' + a.name + "To" + dest;
+                let check = 'dst_' + dest;
 
+                if(a[line])
+                {
+                    a[check].value = true;
+                    a[line].Show();
+                }
+
+                // Update previous dest list
+                a._destinations_prev.push(dest);
+            });
+        }
+
+        this.on('destinations', destinations => {
+            showHideDest(destinations);
+        });
+
+        // Set initial destination lines
+        showHideDest(this.destinations);
 
         // Add destination if new _audioInputDevice control is added to the parent
         this.on('init', () => {
@@ -76,26 +109,23 @@ class _audioInputDevice extends _audioDevice {
                     // Create new checkBox control if the checkbox is not already existing
                     this.one(check, control => {
                         // send newly created audio device's data to manager
-                        // this._notify({ [check]: control.GetData() });
-
                         control.on('check', value => {
 
                             const index = this.destinations.indexOf(dstControl.name);
                             if (value) {
-                                this[line].Show();
 
                                 // Add Destination to array if it is not existing
                                 if (index == -1) {
-                                    this.destinations.push(dstControl.name)
+                                    this.destinations.push(dstControl.name);
+                                    this[line].Show();
                                     this.NotifyProperty('destinations');
                                 }
 
                             } else {
-                                this[line].Hide();
-
                                 // Remove Destination from array if it is existing
                                 if (index != -1) {
                                     this.destinations.splice(index, 1);
+                                    this[line].Hide();
                                     this.NotifyProperty('destinations');
                                 }
                             }

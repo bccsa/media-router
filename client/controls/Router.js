@@ -6,7 +6,6 @@ class Router extends ui {
         this.autoStart = false;
         this.autoStartDelay = 500;  // milliseconds
         this.run = false;
-        this.username = "";
         this.password = "";
         this.displayName = "New Router";
         this.online = false;
@@ -158,15 +157,6 @@ class Router extends ui {
                             <label for="@{_autoStart}" class="ml-2">Auto Start</label>  
                         </div>
 
-                        <!--    USERNAME      -->
-                        <label for="@{_userName}" class="router-label-settings">Username: </label>
-                        <div class="router-container">
-                            <div class="mr-4 w-full">
-                                <input id="@{_userName}" class="router-text-area"
-                                placeholder="Your Username" title="Enter a username" value="${this.username}"/>
-                            </div>
-                        </div>
-
                         <!--    PASSWORD      -->
                         <label for="@{_password}" class="router-label-settings">Password: </label>
                         <div class="router-container">
@@ -294,10 +284,7 @@ class Router extends ui {
             this.NotifyProperty("autoStart");
         });
 
-        this._userName.addEventListener('change', (e) => {
-            this.username = this._userName.value;
-            this.NotifyProperty("username");
-        });
+    
 
         this._password.addEventListener('change', (e) => {
             this.password = this._password.value;
@@ -378,10 +365,6 @@ class Router extends ui {
 
         this.on('autoStart', autoStart => {
             this._autoStart.checked = autoStart;
-        });
-
-        this.on('username', username => {
-            this._userName.value = username;
         });
 
         this.on('password', password => {
