@@ -32,181 +32,180 @@ class _audioDevice extends ui {
     get html() {
         return `
 
-        <div id="@{_modalContainer}" class="hidden" >
+
              <!--    MODAL DEVICE    -->
-                <div id="@{_modalDeviceDetails}" class="audioDevice-modal modal fade select-none" tabindex="-1" aria-hidden="true">
-                    <div class="modal-dialog audioDevice-modal-dialog">
-                        <div class="audioDevice-modal-content">
-        
-                        <div class="audioDevice-modal-header">
-                            <div class="mr-4 flex justify-start">
-                                
-                                <!--    DUPLICATE    -->
-                                <button id="@{_btnDuplicate}" class="audioDevice-btn-duplicate"
-                                type="button" data-bs-dismiss="modal" title="Duplicate Audio Device"></button>
-
-                                <!--    DELETE   -->
-                                <button id="@{_btnDelete}" class="audioDevice-btn-delete"
-                                type="button" data-bs-dismiss="modal" title="Delete Audio Device"></button>
-
-                            </div> 
-
-                            <h5 id="@{_modalHeading}" class="audioDevice-modal-heading"> @{displayName}</h5>
-
-                            <button class="audioDevice-modal-btn-close" type="button"
-                            data-bs-dismiss="modal" aria-label="Close"></button>
-                        </div>
-        
-                        <div class="audioDevice-modal-body">
-
-                            <!--    DISPLAY NAME      -->
-                            <div class="w-full mb-1 mr-4">
-                                <div class="mr-4 w-full">
-                                    <label for="@{_displayName}" class="mb-2">Display Name: </label>
-                                    <input id="@{_displayName}" class="audioDevice-text-area" type="text" maxlength="30"
-                                    placeholder="Your display name" title="Device display name" value="@{displayName}"/>
-                                </div>
-                            </div>
-                
-                            <!--    DESCRIPTION TEXT AREA     -->
-                            <div class="w-full mb-1 mr-4">
-                                <label for="@{_description}" class="mb-2">Description:</label>
-                                    <textarea id="@{_description}" class="audioDevice-text-area" rows="1" cols="3"
-                                    title="Device description" placeholder="Your description" value="@{description}"></textarea>
-                            </div>
-
-                            <div class="w-full flex">
-
-                                <!--    CHANNELS      -->
-                                <div class="w-1/4 mr-3">
-                                    <label for="@{_channels}" class="mb-2">Channels:</label>
-                                        <div class="mb-3 w-full">
-                                            <select id="@{_channels}" class="audioDevice-select" title="Audio channel number (default = 1)"
-                                            value="@{channels}" name="channel" type="text">
-                                                <option value="1">1</option>
-                                                <option value="2">2</option>
-                                            </select>
-                                        </div>
-                                </div>
-                                
-                                <!--    SAMPLE RATE    -->
-                                <div class="w-1/4 mr-3">
-                                    <label for="@{_sampleRate}" class="mb-2">Sample Rate:</label>
-                                    <select id="@{_sampleRate}" class="audioDevice-select" title="Audio sample rate (default = 48000)"
-                                    value="@{sampleRate}" name="sampleRate" type="text">
-                                        <option value="44100">44100 Hz</option>
-                                        <option value="48000">48000 Hz</option>
-                                    </select>
-                                </div>
-
-                                <!-- BIT DEPTH   -->    
-                                <div class="w-1/4 mr-3">
-                                    <label for="@{_bitDepth}" class="mb-2">Bit Depth:</label>
-                                    <select id="@{_bitDepth}" class="audioDevice-select" title="Audio bit depth (default = 16)"
-                                    value="@{bitDepth}" name="bitDepth" type="text">
-                                        <option value="16">16</option>
-                                        <option value="24">24</option>
-                                        <option value="32">32</option>
-                                    </select>
-                                </div>
-
-                                <!--    MAX VOLUME    --> 
-                                <div class="w-1/4">
-                                    <label for="@{_maxVolume}" class="mb-2">Max Volume:</label>
-                                    <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
-                                    title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
-                                    class="audioDevice-pos-decimal-input" value="@{maxVolume}">
-                                </div>
-
-                            </div>
-
-                            <div class="w-full mb-1 flex ">
-
-                                <!--    SHOW CONTROL IN TOP BAR     --> 
-                                <div class="w-full mr-2 mb-2 flex">
-                                    <input id="@{_showInTopBar_input}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  checked="@{showInTopBar}"/>  
-                                    <label for="@{_showInTopBar_input}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
-                                </div>
-
-
-                            </div>
-
-                            <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
-
-                            <div class="w-full items-center justify-items-center justify-center">
-                                <div class="text-center align-top font-semibold text-base">Client Controls Settings</div>
-                            </div>
+            <div id="@{_modalDeviceDetails}" class="audioDevice-modal modal fade select-none" tabindex="-1" aria-hidden="true">
+                <div class="modal-dialog audioDevice-modal-dialog">
+                    <div class="audioDevice-modal-content">
+    
+                    <div class="audioDevice-modal-header">
+                        <div class="mr-4 flex justify-start">
                             
-                            <!--    VOLUME SLIDER     -->
-                            <div class="w-full mb-2 flex flex-row items-center">
+                            <!--    DUPLICATE    -->
+                            <button id="@{_btnDuplicate}" class="audioDevice-btn-duplicate"
+                            type="button" data-bs-dismiss="modal" title="Duplicate Audio Device"></button>
 
-                                <label for="@{_volume_slider}" class="mt-5 w-1/6">Volume:</label>
+                            <!--    DELETE   -->
+                            <button id="@{_btnDelete}" class="audioDevice-btn-delete"
+                            type="button" data-bs-dismiss="modal" title="Delete Audio Device"></button>
 
-                                <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
-                                name="volume" step="1" min="0" max="@{maxVolume}" value="@{volume}" >
-                                
-                                <datalist id="@{_tickMarks}">
-                                    <option value="0"></option> <option value="10"></option> <option value="20"></option> 
-                                    <option value="30"></option> <option value="40"></option> <option value="50"></option>
-                                    <option value="60"></option> <option value="70"></option> <option value="80"></option> 
-                                    <option value="90"></option> <option value="100"></option> <option value="110"></option>
-                                    <option value="120"></option> <option value="130"></option> <option value="140"></option> 
-                                    <option value="150"></option>
-                                </datalist>
-                                <div class="w-1/6">
-                                    <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-2">@{volume}</label>
-                                    <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-1">%</label>
-                                </div>
-                            </div>
+                        </div> 
 
-                            
-                            <div class="w-full mb-1 flex ">
+                        <h5 id="@{_modalHeading}" class="audioDevice-modal-heading"> @{displayName}</h5>
 
-                                <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
-                                <div class="w-1/2 mr-2 mb-2 flex">
-                                    <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showVolumeControl}"/>  
-                                    <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Show client volume control</label> 
-                                </div>
-
-                                <!--    SHOW MUTE CONTROL CHECKBOX      --> 
-                                <div class="w-1/2 mb-2 ml-2 flex">
-                                    <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showMuteControl}"/>  
-                                    <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
-                                </div>
-
-                            </div>
-                            
-                            <!--    DISPLAY ORDER     -->
-                            <div class="w-full mb-1 flex ">
-
-                                <div class="w-1/4 mr-3">
-                                    <label for="@{_displayOrder}" class="mb-2">Display Order:</label>
-                                    <input id="@{_displayOrder}" class="audioDevice-pos-number-input" type="number" min="0"
-                                    oninput="validity.valid||(value='')" title="Display order in the client WebApp."
-                                    name="displayOrder" step="1" value="@{displayOrder}">
-                                </div>
-
-                                <div class="w-1/4 mr-3"></div> <div class="w-1/4 mr-3"></div>  <div class="w-1/4"></div>
-
-                            </div>
-
-                            <!--    SOLO GROUP    -->
-                            <div class="w-full pb-3 mr-4">
-                                <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
-                                    <input id="@{_soloGroup}" class="audioDevice-text-area" type="text" 
-                                    title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
-                                    placeholder="Solo group name:" value="@{soloGroup}"/>
-                            </div>
-
-                            <!-- EXTENDS AUDIO DEVICE  --> 
-                            %additionalHtml%
-                        </div>
-
-                        <div class="audioDevice-modal-footer">
-                            
-                        </div>
-                            
+                        <button class="audioDevice-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
+    
+                    <div class="audioDevice-modal-body">
+
+                        <!--    DISPLAY NAME      -->
+                        <div class="w-full mb-1 mr-4">
+                            <div class="mr-4 w-full">
+                                <label for="@{_displayName}" class="mb-2">Display Name: </label>
+                                <input id="@{_displayName}" class="audioDevice-text-area" type="text" maxlength="30"
+                                placeholder="Your display name" title="Device display name" value="@{displayName}"/>
+                            </div>
+                        </div>
+            
+                        <!--    DESCRIPTION TEXT AREA     -->
+                        <div class="w-full mb-1 mr-4">
+                            <label for="@{_description}" class="mb-2">Description:</label>
+                                <textarea id="@{_description}" class="audioDevice-text-area" rows="1" cols="3"
+                                title="Device description" placeholder="Your description" value="@{description}"></textarea>
+                        </div>
+
+                        <div class="w-full flex">
+
+                            <!--    CHANNELS      -->
+                            <div class="w-1/4 mr-3">
+                                <label for="@{_channels}" class="mb-2">Channels:</label>
+                                    <div class="mb-3 w-full">
+                                        <select id="@{_channels}" class="audioDevice-select" title="Audio channel number (default = 1)"
+                                        value="@{channels}" name="channel" type="text">
+                                            <option value="1">1</option>
+                                            <option value="2">2</option>
+                                        </select>
+                                    </div>
+                            </div>
+                            
+                            <!--    SAMPLE RATE    -->
+                            <div class="w-1/4 mr-3">
+                                <label for="@{_sampleRate}" class="mb-2">Sample Rate:</label>
+                                <select id="@{_sampleRate}" class="audioDevice-select" title="Audio sample rate (default = 48000)"
+                                value="@{sampleRate}" name="sampleRate" type="text">
+                                    <option value="44100">44100 Hz</option>
+                                    <option value="48000">48000 Hz</option>
+                                </select>
+                            </div>
+
+                            <!-- BIT DEPTH   -->    
+                            <div class="w-1/4 mr-3">
+                                <label for="@{_bitDepth}" class="mb-2">Bit Depth:</label>
+                                <select id="@{_bitDepth}" class="audioDevice-select" title="Audio bit depth (default = 16)"
+                                value="@{bitDepth}" name="bitDepth" type="text">
+                                    <option value="16">16</option>
+                                    <option value="24">24</option>
+                                    <option value="32">32</option>
+                                </select>
+                            </div>
+
+                            <!--    MAX VOLUME    --> 
+                            <div class="w-1/4">
+                                <label for="@{_maxVolume}" class="mb-2">Max Volume:</label>
+                                <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
+                                title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
+                                class="audioDevice-pos-decimal-input" value="@{maxVolume}">
+                            </div>
+
+                        </div>
+
+                        <div class="w-full mb-1 flex ">
+
+                            <!--    SHOW CONTROL IN TOP BAR     --> 
+                            <div class="w-full mr-2 mb-2 flex">
+                                <input id="@{_showInTopBar_input}" class="mr-2 mt-1 h-4 w-4" type="checkbox"  checked="@{showInTopBar}"/>  
+                                <label for="@{_showInTopBar_input}" class="" title="Show the volume control in the top bar">Show the volume meter in the top bar</label> 
+                            </div>
+
+
+                        </div>
+
+                        <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
+
+                        <div class="w-full items-center justify-items-center justify-center">
+                            <div class="text-center align-top font-semibold text-base">Client Controls Settings</div>
+                        </div>
+                        
+                        <!--    VOLUME SLIDER     -->
+                        <div class="w-full mb-2 flex flex-row items-center">
+
+                            <label for="@{_volume_slider}" class="mt-5 w-1/6">Volume:</label>
+
+                            <input id="@{_volume_slider}" class="audioDevice-slider" type="range" list="@{_tickMarks}"  title="Audio volume (1 = unity gain)" 
+                            name="volume" step="1" min="0" max="@{maxVolume}" value="@{volume}" >
+                            
+                            <datalist id="@{_tickMarks}">
+                                <option value="0"></option> <option value="10"></option> <option value="20"></option> 
+                                <option value="30"></option> <option value="40"></option> <option value="50"></option>
+                                <option value="60"></option> <option value="70"></option> <option value="80"></option> 
+                                <option value="90"></option> <option value="100"></option> <option value="110"></option>
+                                <option value="120"></option> <option value="130"></option> <option value="140"></option> 
+                                <option value="150"></option>
+                            </datalist>
+                            <div class="w-1/6">
+                                <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-2">@{volume}</label>
+                                <label for="@{_volume_slider}" id="@{_rangeBullet}" class="ml-1">%</label>
+                            </div>
+                        </div>
+
+                        
+                        <div class="w-full mb-1 flex ">
+
+                            <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
+                            <div class="w-1/2 mr-2 mb-2 flex">
+                                <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showVolumeControl}"/>  
+                                <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Show client volume control</label> 
+                            </div>
+
+                            <!--    SHOW MUTE CONTROL CHECKBOX      --> 
+                            <div class="w-1/2 mb-2 ml-2 flex">
+                                <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showMuteControl}"/>  
+                                <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
+                            </div>
+
+                        </div>
+                        
+                        <!--    DISPLAY ORDER     -->
+                        <div class="w-full mb-1 flex ">
+
+                            <div class="w-1/4 mr-3">
+                                <label for="@{_displayOrder}" class="mb-2">Display Order:</label>
+                                <input id="@{_displayOrder}" class="audioDevice-pos-number-input" type="number" min="0"
+                                oninput="validity.valid||(value='')" title="Display order in the client WebApp."
+                                name="displayOrder" step="1" value="@{displayOrder}">
+                            </div>
+
+                            <div class="w-1/4 mr-3"></div> <div class="w-1/4 mr-3"></div>  <div class="w-1/4"></div>
+
+                        </div>
+
+                        <!--    SOLO GROUP    -->
+                        <div class="w-full pb-3 mr-4">
+                            <label for="@{_soloGroup}" class="mb-2">Solo Group:</label>
+                                <input id="@{_soloGroup}" class="audioDevice-text-area" type="text" 
+                                title="If not blank, mutes all AudioMixerInputs with the same soloGroup text.";
+                                placeholder="Solo group name:" value="@{soloGroup}"/>
+                        </div>
+
+                        <!-- EXTENDS AUDIO DEVICE  --> 
+                        %additionalHtml%
+                    </div>
+
+                    <div class="audioDevice-modal-footer">
+                        
+                    </div>
+                        
                 </div>
             </div>
         </div>
@@ -463,13 +462,13 @@ class _audioDevice extends ui {
         //-------------------------------------------------------------------------
 
         // As we are using CSS transforms (in tailwind CSS), it is not possible to set an element fixed to the browser viewport.
-        // A workaround is to move the modal element out of the elements styled by the transform, and move it back when done.
+        // A workaround is to move the modal element out of the elements styled by the transform.
         this._topLevelParent._controlsDiv.prepend(this._modalDeviceDetails);
 
-        // do this when clicking the modal close button
-        this._modalDeviceDetails.addEventListener('hidden', (e) => {
-            this._modalContainer.append(this._modalDeviceDetails);
-        })
+        // Delete modal when this control is removed
+        this.on('remove', () => {
+            this._modalDeviceDetails.remove();
+        });
     }
 
     /**
