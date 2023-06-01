@@ -18,13 +18,14 @@ class AudioInput extends _audioInputDevice {
                 <select id="@{_device}" class="audioDevice-select" type="text" 
                 title="ALSA Device name - see aplay -L (Default = default)"
                 value="${this.device}" >
-                    <option value="Device 1">Device 1</option>
+                    <option value="default">default</option>
                     <option value="Device 2">Device 2</option>
                     <option value="Device 3">Device 3</option>
                     <option value="Device 4">Device 4</option>
                     <option value="Device 5">Device 5</option>
                     <option value="Device 6">Device 6</option>
-                    <option value="Device 7">Device 7</option></select>
+                    <option value="Device 7">Device 7</option>
+                </select>
             </div>
 
             <!-- Buffer Size  -->    

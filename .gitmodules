@@ -4,3 +4,6 @@
 [submodule "client/modular-ui"]
 	path = client/modular-ui
 	url = https://github.com/bccsa/modular-ui
+[submodule "server/modular-dm"]
+	path = server/modular-dm
+	url = https://github.com/bccsa/modular-dm.git

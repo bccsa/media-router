@@ -81,7 +81,7 @@ manager_io.on('connection', manager_socket => {
         // Forward data to routers
         Object.keys(data).forEach(routerName => {
             if (router_sockets[routerName]) {
-                router_sockets[routerName].emit(data[routerName]);
+                router_sockets[routerName].emit('data', data[routerName]);
             }
         });
     });
@@ -96,8 +96,8 @@ router_io.listen(3000);
 console.log('Listening for router connections on http://*:3000');
 
 // Add authentication middleware
-router_io.use((router_socket, next) => {
-    if (router_socket.handshake.auth.username == 'testRouter1' && router_socket.handshake.auth.password == 'testPass') {
+router_io.use((socket, next) => {
+    if (socket.handshake.auth.username == 'testRouter1' && socket.handshake.auth.password == 'testPass') {
         next();
     } else {
         next(new Error('Invalid username or password'));
@@ -105,27 +105,37 @@ router_io.use((router_socket, next) => {
 });
 
 // Handle router connections
-router_io.on('connection', router_socket => {
-    let routerName = router_socket.handshake.auth.username;
+router_io.on('connection', socket => {
+    let routerName = socket.handshake.auth.username;
     console.log(`router ${routerName} connected`);
 
+    // Get router ID
+    // Identify router by router name - add this to the socket's data object (socket.data.routerID)
+    let routerConf = Object.values(confManager.config).find(v => v.displayName == routerName);
+    if (routerConf && routerConf.name) {
+        socket.data.routerID = routerConf.name;
+    } else {
+        return;
+    }
+
+    // Map router id's to sockets
+    router_sockets[routerConf.name] = socket;
+
+
     // Send full router configuration to the router on connection
-    router_socket.emit('data', { [routerName]: confManager.config[routerName] });
+    socket.emit('data', confManager.config[socket.data.routerID]);
 
     // Data received from router
-    router_socket.on('data', data => {
-        // Add socekt to routers sockets list
-        router_sockets[routerName] = router_socket;
-
+    socket.on('data', data => {
         // Forward data to manager client UI
-        manager_io.emit('data', { [routerName]: data });
+        manager_io.emit('data', { [socket.data.routerID]: data });
 
         // To do: add online status to be emitted to manager UI
     });
 
-    router_socket.on('disconnect', data => {
+    socket.on('disconnect', data => {
         // Remove socket from routers sockets list
-        delete router_sockets[routerName];
+        delete router_sockets[socket.data.routerID];
 
         // To do: emit offline status to manager UI
     });

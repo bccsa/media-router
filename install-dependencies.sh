@@ -29,7 +29,8 @@ npm install
 
 cd server
 npm install
+cd submodules/audio-mixer
+npm install
 
-cd ..
-cd client
+cd ../../../client
 npm install
