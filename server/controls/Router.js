@@ -2,7 +2,6 @@ let { dm } = require('../modular-dm');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 
-
 /**
  * Router control
  */
@@ -14,17 +13,18 @@ class Router extends dm {
         this.username = "";
         this.password = "";
         this.description = "";
-        this.sources = [];
-        this.sinks = [];
+        this._sources = {};
+        this._sinks = {};
+        this.sources = "{}"; // json sources list for front-end
+        this.sinks = "{}" // json sinks list for front-end
     }
 
     Init() {
-        this.getPAarr('sources').then(data => {
-            this.sources = data;
-        });
-        this.getPAarr('sinks').then(data => {
-            this.sinks = data;
-        });
+        // PulseAudio items detection
+        if (this._updatePAlist('sources', this._sources)) this.sources = JSON.stringify(this._sources);
+        if (this._updatePAlist('sinks', this._sinks)) this.sinks = JSON.stringify(this._sinks);
+        setInterval(() => { if (this._updatePAlist('sources', this._sources)) this.sources = JSON.stringify(this._sources) }, 1000);
+        setInterval(() => { if (this._updatePAlist('sinks', this._sinks)) this.sinks = JSON.stringify(this._sinks) }, 1000);
     }
 
     /**
@@ -32,7 +32,7 @@ class Router extends dm {
      * @param {string} type - Valid type are modules, sinks, sources, sink-inputs, source-outputs, clients, samples, cards
      * @returns - Promise
      */
-    getPA(type) {
+    _getPA(type) {
         // code adapted from https://github.com/ctemplin/pactl-lists-json/blob/master/index.js
         function unquote(s) {
             return s.replace(/^[\"\']/, '').replace(/[\"\']$/, '')
@@ -91,32 +91,67 @@ class Router extends dm {
     }
 
     /**
-     * Gets a simple array of PulseAudio items
+     * Update a list of PulseAudio items
      * @param {string} type - Valid types are modules, sinks, sources, sink-inputs, source-outputs, clients, samples, cards
-     * @returns - Promise
+     * @param {object} dst - Destination object to be updated with sources and destinations
+     * @returns {boolean} - Returns true if the destination object (dst) has been updated
      */
-    getPAarr(type) {
-        return new Promise((resolve, reject) => {
-            this.getPA(type).then(data => {
-                let arr = [];
-                Object.values(data).forEach(item => {
-                    let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
-                    if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
-                    if (item.Name && item.Description && typeof ch === 'number' && ch > 0) {
-                        arr.push({
-                            name: item.Name,
-                            description: item.Description,
-                            channels: ch,
-                            monitorsource: item['Monitor Source']
-                        });
-                    }
-                });
+    async _updatePAlist(type, dst) {
+        try {
+            let data = await this._getPA(type);
+            let active = {};
+            let updated = false;
 
-                resolve(arr);
-            }).catch(err => {
-                reject(err);
+            // Add new items to dst
+            Object.values(data).forEach(item => {
+                if (item.Name) {
+                    // Mark item as active
+                    active[item.Name] = true;
+
+                    // Add to dst if not existing
+                    if (!dst[item.Name]) {
+                        // channel number
+                        let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
+                        if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
+
+                        // description
+                        let description = item.Description;
+                        let descIteration = 0;
+                        while (Object.values(dst).find(t => t.description == description) != undefined) {
+                            descIteration++;
+                            description = `${item.Description} (${descIteration})`;
+                        }
+
+                        if (item.Description && typeof ch === 'number' && ch > 0) {
+                            dst[item.Name] = {
+                                name: item.Name,
+                                description: description,
+                                channels: ch,
+                                monitorsource: item['Monitor Source'],
+                                channelmap: item['Channel Map'].split(','),
+                            };
+                        }
+
+                        updated = true;
+                        console.log(`PulseAudio ${type} detected: ${item.Name}`);
+                    }
+                }
             });
-        });
+
+            // Remove old items from dst
+            Object.keys(dst).forEach(itemName => {
+                if (!active[itemName]) {
+                    delete dst[itemName];
+                    updated = true;
+                    console.log(`PulseAudio ${type} removed: ${itemName}`);
+                }
+            });
+
+            return updated;
+        } catch (err) {
+            console.log(err.message);
+            return false;
+        }
     }
 }
 

@@ -1,16 +1,25 @@
-let _paAudioModule = require('_paAudioModule');
+let _paAudioModule = require('./_paAudioModule');
 
 class AudioInput extends _paAudioModule {
     constructor() {
         super();
-        this.source = ""; // PulseAudio source
-        this.sourceDescription = "";
+        this.source = ""; // PulseAudio source name
     }
 
     Init() {
-        // Set monitor source (from inherited _paAudioModule) to source
-        this.on('source', val => {
-            this.monitor = val;
+        super.Init();
+
+        this.on('source', source => {
+            // monitor is used for VU meter. For PulseAudio sources, the monitor source is the same as the actual source.
+            this.monitor = source;
+
+            // Get the source channel count
+            if (this._parent._sources[this.source]) this.channels = this._parent._sources[this.source].channels;
+        });
+
+        this._parent.on('sources', () => {
+            // Get the source channel count
+            if (this._parent._sources[this.source]) this.channels = this._parent._sources[this.source].channels;
         });
     }
 }
