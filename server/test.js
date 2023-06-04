@@ -25,6 +25,10 @@ test.Set({
         output1: {
             controlType: 'AudioOutput',
             sink: 'alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
+        },
+
+        nullSink1: {
+            controlType: '_paNullSink',
         }
     }
 });
@@ -32,9 +36,9 @@ test.Set({
 setTimeout(() => { test.testRouter1.run = true }, 500)
 
 setTimeout(() => {
-    test.testRouter1.input1.loopback1.run = true;
+    test.testRouter1.nullSink1.run = true;
 }, 1000);
 
 setTimeout(() => {
-    test.testRouter1.input1.loopback1.run = false;
-}, 40000);
+    test.testRouter1.nullSink1.run = false;
+}, 10000);

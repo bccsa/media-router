@@ -3,9 +3,9 @@ let { dm } = require('../modular-dm');
 const { spawn } = require('child_process');
 
 /**
- * Base class for PulseAudio modules
+ * Base class for PulseAudio sources and sinks
  */
-class _paAudioModule extends dm {
+class _paAudioBase extends dm {
     constructor() {
         super();
         this.soloGroup = "";
@@ -113,4 +113,4 @@ class _paAudioModule extends dm {
     }
 }
 
-module.exports = _paAudioModule;
+module.exports = _paAudioBase;

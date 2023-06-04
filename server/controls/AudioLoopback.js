@@ -45,7 +45,7 @@ class AudioLoopback extends dm {
         }
     }
 
-    // Remove a PulseAudio loopback-module disconnecting the source from the sink
+    // Remove PulseAudio module
     _stopLoopback() {
         if (this._paModuleID) {
             let cmd = `pactl unload-module ${this._paModuleID}`;

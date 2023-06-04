@@ -1,6 +1,6 @@
-let _paAudioModule = require('./_paAudioModule');
+let _paAudioBase = require('./_paAudioBase');
 
-class AudioOutput extends _paAudioModule {
+class AudioOutput extends _paAudioBase {
     constructor() {
         super();
         this.sink = ""; // PulseAudio sink name

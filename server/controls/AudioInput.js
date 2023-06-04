@@ -1,6 +1,6 @@
-let _paAudioModule = require('./_paAudioModule');
+let _paAudioBase = require('./_paAudioBase');
 
-class AudioInput extends _paAudioModule {
+class AudioInput extends _paAudioBase {
     constructor() {
         super();
         this.source = ""; // PulseAudio source name
