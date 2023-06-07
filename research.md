@@ -1,64 +1,97 @@
-arecord uses a lot less CPU to capture an audio input compared to ffmpeg. Therefore arecord is preferred to capture audio. There is however a bigger latency when piping arecord into ffmpeg compared to piping to aplay directly.
-
-The problem only seems to exist when piping from arecord to ffmpeg, and not when piping between ffmpeg processes, or when ffmpeg pipes to aplay.
-
-250ms Delay when piping arecord into ffmpeg:
-arecord -D plughw:CARD=S2,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100 | \
-ffmpeg -f s16le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 44100 -c:a pcm_s16le -i - -f s16le -c:a pcm_s16le -ac 2 -sample_rate 44100 - | \
-aplay -D hw:CARD=Headphones,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100
-
-arecord -D plughw:CARD=S2,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100 | \
-ffmpeg -f s16le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 44100 -c:a pcm_s16le -i - -f s16le -c:a copy - | \
-aplay -D hw:CARD=Headphones,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -c:a libopus -sample_rate 48000 -ac 2 -packet_loss 5 -fec 1 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts /dev/null
 
 
-arecord -D plughw:CARD=S2,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100 | \
-
-No delay when ffmpeg captures and outputs to aplay:
-ffmpeg -f alsa -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 44100 -c:a pcm_s16le -i plughw:CARD=S2,DEV=0 -f s16le -c:a pcm_s16le -ac 2 -sample_rate 44100 - | \
-aplay -D hw:CARD=Headphones,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100
-
-Piping ffmpeg into ffmpeg gives no additional delay:
-ffmpeg -f alsa -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 44100 -c:a pcm_s16le -i plughw:CARD=S2,DEV=0 -f s16le -c:a pcm_s16le -ac 2 -sample_rate 44100 - | \
-ffmpeg -f s16le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 44100 -c:a pcm_s16le -i - -f s16le -c:a pcm_s16le -ac 2 -sample_rate 44100 - | \
-aplay -D hw:CARD=Headphones,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100
-
-Try to set the file type for arecord (still a delay)
-arecord -t raw -D plughw:CARD=S2,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100 | \
-ffmpeg -f s16le -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 44100 -c:a pcm_s16le -i - -f s16le -c:a pcm_s16le -ac 2 -sample_rate 44100 - | \
-aplay -D hw:CARD=Headphones,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100
-
-Initially less delay, but gives many underruns, and delay increases
-arecord -D plughw:CARD=S2,DEV=0 -c 2 -f S16_LE -r 44100 | \
-ffmpeg -fflags nobuffer -flags low_delay -i - -f s16le -c:a pcm_s16le -ac 2 -sample_rate 44100 - | \
-aplay -D hw:CARD=Headphones,DEV=0 --buffer-size=2048 -c 2 -f S16_LE -r 44100
-
-
-Errors after SSL2 stops:
-AudioMixer | MicInput: size= 1048544kB time=03:22:53.59 bitrate= 705.6kbits/s speed=   1x    
-AudioInput | SSL2: Closed (0)
-AudioMixer | MicInput: size= 1048574kB time=03:22:53.94 bitrate= 705.6kbits/s speed=   1x    
-video:0kB audio:1048574kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: 0.000000%
-
-AudioOutput | Output: Stopping aplay...
-AudioMixer | MicInput: Closed (0)
-AudioOutput | Output: Closed (null)
-AudioInput | SSL2: Restarting arecord...
-AudioInput | SSL2: Starting arecord...
-AudioMixer | MicInput: Restarting ffmpeg...
-AudioOutput | Output: Starting aplay...
-AudioInput | SSL2: Stopping arecord...
-AudioMixer | MicInput: Stopping ffmpeg...
-AudioOutput | Output: Stopping aplay...
-Uncaught Error [ERR_STREAM_WRITE_AFTER_END]: write after end
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a libopus -sample_rate 48000 -b:a 64000 -ac 1 -packet_loss 5 -fec 0 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts test.ts
 
 
 
 
-To do: Create events for config updated. Use events to relay settings further where needed (e.g. volume transform)
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a libopus -sample_rate 48000 -b:a 64000 -ac 1 -packet_loss 5 -fec 0 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts "udp://127.0.0.1:2345?pkt_size=188&buffer_size=0"
 
-Findings:
-Big (and/or growing latency) when sending 44100 sample rate to RtpOpusOutput and / or receiving it back to 44100.
-AudioMixer latency seems to be quite random (different for every restart)
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i testsink1.monitor -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a libopus -sample_rate 48000 -b:a 64000 -ac 1 -packet_loss 5 -fec 1 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct -f mpegts "udp://127.0.0.1:2345?pkt_size=188&buffer_size=0"
 
-The AudioMixer latency is more when receiving audio directly compared to receiving via RtpOpusInput
+"udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=0"
+
+udp://127.0.0.1:${this._udpSocketPort}
+
+alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+# ffmpeg loopback
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo \
+test.wav
+
+ffmpeg -i test.wav -f pulse alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -hide_banner -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -c:a pcm_s16le -f s16le - | ffmpeg -ac 2 -sample_rate 48000 -f s16le -i - -f pulse alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -y -hide_banner -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -c:a pcm_s16le -f s16le test1.wav
+ffmpeg -y -hide_banner -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo test1.wav
+ffmpeg -y -ac 2 -sample_rate 48000 -f s16le -i test1.wav -f pulse alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -y -hide_banner -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -c:a pcm_s16le -f s16le - | \
+ffmpeg -y -hide_banner -ac 2 -sample_rate 48000 -f s16le -i - -f pulse alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -rtbufsize 512 -blocksize 512 -flush_packets 1 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB  -c:a pcm_s16le -f s16le - | \
+ffmpeg -y -flush_packets 1 -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 48000 -f s16le -i - -rtbufsize 512 -blocksize 512 -flush_packets 1 -f pulse alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -y -hide_banner -c:a pcm_s16le -r 48000 -ac 2 -f s16le -i test1.wav -f alsa pulse:alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -f alsa -i pulse:alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s16le -f s16le - | \
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -ac 2 -sample_rate 48000 -f s16le -i - -f alsa pulse:alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -f pulse -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -rtbufsize 512 -blocksize 512 -flush_packets 1 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB  -c:a pcm_s16le -f s16le - | \
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -ac 2 -sample_rate 48000 -f s16le -i - -rtbufsize 512 -blocksize 512 -flush_packets 1 -c:a pcm_s16le - | \
+paplay -d alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -flush_packets 1 -f pulse \
+-i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -ac 2 -sample_rate 48000 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s16le -f s16le - | \
+paplay -d alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=48000 --channels=2 --format=s16le --raw --latency-msec=1
+
+
+# Working configuration (route source to sink via ffmpeg)
+# See https://www.reddit.com/r/ffmpeg/comments/pjyhk1/minimize_audio_input_latency/ for info on pulseaudio buffer_size
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -f pulse -ac 2 -sample_rate 48000 -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s16le -f s16le - | \
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -f s16le -ac 2 -sample_rate 48000 -i - -f pulse -buffer_size 4096 alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+# Route null-sink source to null-sink sink (issues with latency between loopbacks and null-sinks)
+pactl load-module module-null-sink sink_name=testSink1
+pactl load-module module-null-sink sink_name=testSink2
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=testSink1 latency_msec=1 channels=2 adjust_time=0
+pactl load-module module-loopback source=testSink2.monitor sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1 channels=2 adjust_time=0
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -f pulse -fragment_size 16 -ac 2 -sample_rate 48000 -i testSink1.monitor -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s16le -f s16le - | \
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -f s16le -ac 2 -sample_rate 48000 -i - -f pulse -fragment_size 16 -buffer_size 4096 testSink2
+
+
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1 channels=2
+pactl load-module module-loopback source=testSink1.monitor sink=testSink2 latency_msec=1 channels=2
+
+# Route null-sink source to null-sink sink. Connect input source to null-sink with parec & paplay. Do the same for connecting the second null-sink to the output
+# https://thelinuxexperiment.com/fix-pulseaudio-loopback-delay/
+pactl load-module module-null-sink sink_name=testSink1 rate=44100 format=s16le channels=2 latency_msec=1
+pactl load-module module-null-sink sink_name=testSink2 sink_properties=max_latency_msec=20
+pacat -r --latency-msec=1 --device alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo | pacat -p --latency-msec=1 --device testSink1
+pacat -r --latency-msec=1 --device testSink2.monitor | pacat -p --latency-msec=1 --device alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+pacat -r --latency-msec=1 --device testSink1.monitor | pacat -p --latency-msec=1 --device testSink2
+
+pacat -r --latency-msec=1 --device testSink1.monitor | pacat -p --latency-msec=1 --device alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+31
+32
+
+
+# Compile pulseaudio
+N/A: https://ubuntuforums.org/showthread.php?t=2210602
+https://gist.github.com/ford-prefect/924cb946631d82c8195b464a7be21d53
+Add deb-src (/etc/apt/sources.list) https://forums.raspberrypi.com/viewtopic.php?t=73666
+
+Install build dependencies
+sudo apt-get build-dep pulseaudio
+
+Download and extract the required PulseAudio release: https://www.freedesktop.org/wiki/Software/PulseAudio/Download/
+Build PulseAudio: https://www.freedesktop.org/wiki/Software/PulseAudio/Documentation/Developer/PulseAudioFromGit/
+
+
+# module-pipe-source (use for ffmpeg etc.)
+https://unix.stackexchange.com/questions/576785/redirecting-pulseaudio-sink-to-a-virtual-source
