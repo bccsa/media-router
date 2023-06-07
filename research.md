@@ -70,6 +70,7 @@ pactl load-module module-loopback source=testSink1.monitor sink=testSink2 latenc
 
 # Route null-sink source to null-sink sink. Connect input source to null-sink with parec & paplay. Do the same for connecting the second null-sink to the output
 # https://thelinuxexperiment.com/fix-pulseaudio-loopback-delay/
+```shell
 pactl load-module module-null-sink sink_name=testSink1 rate=44100 format=s16le channels=2 latency_msec=1
 pactl load-module module-null-sink sink_name=testSink2 sink_properties=max_latency_msec=20
 pacat -r --latency-msec=1 --device alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo | pacat -p --latency-msec=1 --device testSink1
@@ -77,11 +78,26 @@ pacat -r --latency-msec=1 --device testSink2.monitor | pacat -p --latency-msec=1
 pacat -r --latency-msec=1 --device testSink1.monitor | pacat -p --latency-msec=1 --device testSink2
 
 pacat -r --latency-msec=1 --device testSink1.monitor | pacat -p --latency-msec=1 --device alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
-31
-32
+```
+*Issue: module-null-sink introduces additional latency, which I was unable to remove. Newer versions of PulseAudio includes a max_latency_msec option according to the documentation (V15+), but I could not get that to work with pactl*
 
+# Use a pipe-sink and source to connect ffmpeg
+This can be used for processing nodes (e.g. an EQ, Compressor, etc.). Currently not usable due to latency issues.
+
+https://unix.stackexchange.com/questions/576785/redirecting-pulseaudio-sink-to-a-virtual-source
+
+```shell
+pactl load-module module-pipe-sink sink_name=ffmpeg_in rate=44100 format=s16le channels=2 file=/tmp/ffmpeg_in
+pactl load-module module-pipe-source source_name=ffmpeg_out rate=44100 format=s16le channels=2 file=/tmp/ffmpeg_out
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=ffmpeg_in rate=44100 format=s16le channels=2 latency_msec=1
+pactl load-module module-loopback source=ffmpeg_out sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo rate=44100 format=s16le channels=2 latency_msec=1
+ffmpeg -y -re -hide_banner -probesize 32 -analyzeduration 0 -f s16le -ac 2 -sample_rate 44100 -i /tmp/ffmpeg_in -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s16le -f s16le - > /tmp/ffmpeg_out
+```
+
+*Issue: pipe fifo buffer size is not restricted, resulting in a lot of data being buffered and huge latencies. Consider creating a process that drops backpressure data from the pipe (e.g. in NodeJS)*
 
 # Compile pulseaudio
+Needed if PulseAudio 15 or newer is needed (included version on RPI OS is 14)
 N/A: https://ubuntuforums.org/showthread.php?t=2210602
 https://gist.github.com/ford-prefect/924cb946631d82c8195b464a7be21d53
 Add deb-src (/etc/apt/sources.list) https://forums.raspberrypi.com/viewtopic.php?t=73666
@@ -91,7 +107,3 @@ sudo apt-get build-dep pulseaudio
 
 Download and extract the required PulseAudio release: https://www.freedesktop.org/wiki/Software/PulseAudio/Download/
 Build PulseAudio: https://www.freedesktop.org/wiki/Software/PulseAudio/Documentation/Developer/PulseAudioFromGit/
-
-
-# module-pipe-source (use for ffmpeg etc.)
-https://unix.stackexchange.com/questions/576785/redirecting-pulseaudio-sink-to-a-virtual-source

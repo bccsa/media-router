@@ -1,8 +1,9 @@
-const _paNullSink = require('./_paNullSink');
+const _paAudioSourceBase = require('./_paAudioSourceBase');
 const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
+const { pcm_buffer } = require('../modules/pcm_buffer');
 
-class OpusOutput extends _paNullSink {
+class OpusOutput extends _paAudioSourceBase {
     constructor() {
         super();
 
@@ -10,18 +11,16 @@ class OpusOutput extends _paNullSink {
         this._fec = 0;              // Internal FEC value
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this._ffmpeg;
-        this._pipe = new PassThrough();
+        this._pipe = new pcm_buffer(2, 16, 2048);
         this._srt;
         this.srtHost = '127.0.0.1';
         this.srtPort = 1234;
         this.srtMode = 'caller';
-        this.srtLatency = 1000;
+        this.srtLatency = 200;
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 2346;
-
-        this.sampleRate = 48000;
     }
 
     Init() {
@@ -34,7 +33,7 @@ class OpusOutput extends _paNullSink {
             }
         });
 
-        this.on('null-sink', state => {
+        this.on('run', state => {
             if (state) {
                 // Start SRT and ffmpeg after the PulseAudio null-sink module is created
                 // this._start_srt();
@@ -50,15 +49,15 @@ class OpusOutput extends _paNullSink {
     _start_ffmpeg() {
         if (!this._ffmpeg) {
             try {
-                // Opus sample rate is always 48000. Input is therefore converted to 48000
+                // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 console.log(`${this._controlName}: Starting opus encoder (ffmpeg)`);
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f pulse -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitdepth}le -ac ${this.channels} -i ${this.source} -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
                 -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${this._fec} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                -f mpegts /dev/null`
-                this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "), { shell: true                                                                     });
+                -f mpegts -`
+                this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
@@ -67,6 +66,10 @@ class OpusOutput extends _paNullSink {
 
                 // Pipe ffmpeg output to internal passthrough stream
                 this._ffmpeg.stdout.pipe(this._pipe);
+                this._pipe.on('data', data => {
+                    // console.log(data.length);
+                    // tmp discard data
+                })
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
@@ -90,7 +93,7 @@ class OpusOutput extends _paNullSink {
         if (this._ffmpeg) {
             console.log(`${this._controlName}: Stopping opus encoder (ffmpeg)...`);
             try {
-                this._ffmpeg.stdout.unpipe(this._pipe);
+                // this._ffmpeg.stdout.unpipe(this._pipe);
             } catch {}
         }
         this._kill_ffmpeg();
@@ -168,7 +171,7 @@ class OpusOutput extends _paNullSink {
         if (this._srt) {
             console.log(`${this._controlName}: Stopping SRT...`);
             try {
-                this._pipe.unpipe(this._srt.stdin);
+                // this._pipe.unpipe(this._srt.stdin);
             } catch {}
 
             try {

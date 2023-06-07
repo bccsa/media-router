@@ -21,7 +21,10 @@ class _paAudioBase extends dm {
         this._vuResetPeak = false;
         this.vuInterval = 100;  // VU meter indication interval in milliseconds
         this.vu = [];           // VU indication per channel (0 - 100%)
-        this.channels = 1;      // Input audio channels
+        this.channels = 1;      // Audio channels
+        this.bitdepth = 16;     // Audio bit depth
+        this.sampleRate = 44100;// Audio sample rate
+        this.run = false;       // Set to true to start the VU meter and extended class processes.
     }
 
     Init() {
@@ -35,7 +38,7 @@ class _paAudioBase extends dm {
         });
 
         // Start / stop the VU meter
-        this._parent.on('run', run => {
+        this.on('run', run => {
             if (run) {
                 this._startVU();
                 this._vuInterval = setInterval(() => {
