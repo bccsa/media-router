@@ -107,3 +107,21 @@ sudo apt-get build-dep pulseaudio
 
 Download and extract the required PulseAudio release: https://www.freedesktop.org/wiki/Software/PulseAudio/Download/
 Build PulseAudio: https://www.freedesktop.org/wiki/Software/PulseAudio/Documentation/Developer/PulseAudioFromGit/
+
+
+
+
+
+
+# Test connecting pipe-source to sink, and playing from source to named pipe to test latency
+Working setup. Important: Start the pipe-source to soundcard sink connection first so that the named pipe fifo stays empty, as we have no way to drain the fifo.
+```shell
+# load pipe-source module
+pactl load-module module-pipe-source source_name=ffmpeg_out rate=44100 format=s16le channels=2 file=/tmp/ffmpeg_out
+
+# Connect pipe-source to soundcard sink
+parec --device=ffmpeg_out --rate=44100 --channels=2 --format=s16le --latency=1 --raw | paplay --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+
+# record soundcard source, and output stream to named pipe created by pipe-source
+parec --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw /tmp/ffmpeg_out
+```

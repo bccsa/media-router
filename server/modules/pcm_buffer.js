@@ -1,5 +1,8 @@
 const { Transform } = require("stream");
 
+/**
+ * Transform stream that implements a configurable PCM buffer
+ */
 class pcm_buffer extends Transform {
     constructor(channels = 1, bitdepth = 16, buffersize = 512) {
         super();
