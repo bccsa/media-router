@@ -125,3 +125,47 @@ parec --device=ffmpeg_out --rate=44100 --channels=2 --format=s16le --latency=1 -
 # record soundcard source, and output stream to named pipe created by pipe-source
 parec --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw /tmp/ffmpeg_out
 ```
+
+# Test if a null sink's monitor source produces a silent stream or no stream when no audio is played to the sink.
+```shell
+pactl load-module module-null-sink rate=44100 format=s16le channels=2 sink_name=test123
+parec --device=test123.monitor --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+```
+result: no audio
+
+# Generate silent audio
+```shell
+pactl load-module module-sine-source rate=44100 source_name=silent
+pactl set-source-mute silent 1
+parec silent
+```
+result: when muted or volume set to 0, the source stops streaming data
+
+# Test if ffmpeg continues to play on empty stream
+```shell
+pactl load-module module-pipe-sink sink_name=test rate=44100 format=s16le channels=2 file=/tmp/test_sink
+ffmpeg -y -hide_banner -probesize 32 -analyzeduration 0 -f s16le -ac 2 -sample_rate 44100 -i /tmp/test_sink -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s16le -f s16le /dev/null
+```
+
+Try playing feeding some audio to the pipe sink, and removing it to check if ffmpeg still works
+```shell
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=test
+pactl unload-module <module-ID>
+```
+result: ffmpeg seems to handle the stopping and starting of streams well as no EOF signals are sent through the pipe. Need to test if it affects latency / audio quality
+
+# Test if parec can drain the named pipe of a pipe-source
+```shell
+# load pipe-source module
+pactl load-module module-pipe-source source_name=test rate=44100 format=s16le channels=2 file=/tmp/test
+
+# Start recording process to drain pipe
+parec --device=test --rate=44100 --channels=2 --format=s16le --latency=1 --raw /dev/null
+
+# record from mic into pipe
+parec --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw /tmp/test
+
+# connect source to speaker sink to check latency
+pactl load-module module-loopback source=test sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1
+```
+result: parec works well to keep the pipe-source's named pipe drained, preventing latency buildup.
