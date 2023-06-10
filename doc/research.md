@@ -169,3 +169,9 @@ parec --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44
 pactl load-module module-loopback source=test sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1
 ```
 result: parec works well to keep the pipe-source's named pipe drained, preventing latency buildup.
+
+
+
+# test commands
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=opusOut1 latency_msec=1
+pactl load-module module-loopback source=opusIn1 sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1

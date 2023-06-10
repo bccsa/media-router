@@ -1,6 +1,5 @@
 const _paPipeSourceBase = require('./_paPipeSourceBase');
 const { spawn } = require('child_process');
-const { PassThrough } = require('stream');
 
 class OpusInput extends _paPipeSourceBase {
     constructor() {
@@ -47,10 +46,13 @@ class OpusInput extends _paPipeSourceBase {
                 // -f mpegts -c:a libopus -i - \
                 // -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 // -f pulse ${this.sink}`
+                let _fec = 0;
+                if (this.fec) _fec = 1;
 
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                -f pulse -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo \
-                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
+                -f mpegts -c:a libopus -ac ${this.channels} \
+                -i udp://127.0.0.1:2346?pkt_size=188&buffer_size=2048 \
+                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 -f s${this.bitDepth}le ${this._pipename}`;
 
                 this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
@@ -95,26 +97,8 @@ class OpusInput extends _paPipeSourceBase {
             } finally {
                 this._ffmpeg = undefined;
             }
-            // console.log(`${this._controlName}: Stopping opus decoder (ffmpeg)...`);
-            // try {
-            //     // this._ffmpeg.stdout.unpipe(this._pipe);
-            // } catch {}
         }
-        // this._kill_ffmpeg();
     }
-
-    // _kill_ffmpeg() {
-    //     try {
-    //         this._ffmpeg.kill('SIGTERM');
-    //         // ffmpeg stops on SIGTERM, but does not exit.
-    //         // Send SIGKILL to quit process
-    //         this._ffmpeg.kill('SIGKILL');
-    //     } catch {
-
-    //     } finally {
-    //         this._ffmpeg = undefined;
-    //     }
-    // }
 
     _start_srt() {
         if (!this._srt) {

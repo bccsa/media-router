@@ -24,7 +24,13 @@ test.Set({
 
         opusIn1: {
             controlType: 'OpusInput',
-            // source: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo'
+            channels: 2,
+            run: true,
+        },
+
+        opusOut1: {
+            controlType: 'OpusOutput',
+            channels: 2,
             run: true,
         },
 

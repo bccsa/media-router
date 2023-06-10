@@ -1,17 +1,13 @@
-const _paAudioSourceBase = require('./_paAudioSourceBase');
+const _paPipeSinkBase = require('./_paPipeSinkBase');
 const { spawn } = require('child_process');
-const { PassThrough } = require('stream');
-const { pcm_buffer } = require('../modules/pcm_buffer');
 
-class OpusOutput extends _paAudioSourceBase {
+class OpusOutput extends _paPipeSinkBase {
     constructor() {
         super();
 
         this.fec = true;            // Enable opus Forward Error Correction
-        this._fec = 0;              // Internal FEC value
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this._ffmpeg;
-        this._pipe = new pcm_buffer(2, 16, 2048);
         this._srt;
         this.srtHost = '127.0.0.1';
         this.srtPort = 1234;
@@ -25,25 +21,20 @@ class OpusOutput extends _paAudioSourceBase {
 
     Init() {
         super.Init();
-        this.on('fec', fec => {
-            if (fec) {
-                this._fec = 1;
-            } else {
-                this._fec = 0;
-            }
+
+        // Start external processes when the underlying pipe-sink is ready (from extended class)
+        this.on('pipe-sink-ready', () => {
+            // this._start_srt();
+            this._start_ffmpeg();
         });
 
-        this.on('run', state => {
-            if (state) {
-                // Start SRT and ffmpeg after the PulseAudio null-sink module is created
-                // this._start_srt();
-                this._start_ffmpeg();
-            } else {
-                // Stop SRT and ffmpeg before the PulseAudio null-sink module is removed
+        // Stop external processes when the control is stopped (through setting this.run to false)
+        this.on('run', run => {
+            if (!run) {
                 // this._stop_srt();
                 this._stop_ffmpeg();
             }
-        });
+        })
     }
 
     _start_ffmpeg() {
@@ -52,29 +43,40 @@ class OpusOutput extends _paAudioSourceBase {
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 console.log(`${this._controlName}: Starting opus encoder (ffmpeg)`);
-                let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                -f pulse -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitdepth}le -ac ${this.channels} -i ${this.source} -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
-                -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${this._fec} \
+                // let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
+                // -f pulse -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -i ${this.source} -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
+                // -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${this._fec} \
+                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
+                // -f mpegts -`
+                let _fec = 0;
+                if (this.fec) _fec = 1;
+
+                let args = `-y -re -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
+                -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -i ${this._pipename} \
+                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
+                -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                -f mpegts -`
+                -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=2048`;
+
+                // let args = `--device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=${this.sampleRate} --channels=${this.channels} --format=s${this.bitDepth}le --latency=1 --raw ${this._pipename}`
+
                 this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
+                // this._ffmpeg = spawn('paplay', args.replace(/\s+/g, ' ').split(" "));
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    console.log(data.toString())
+                    // console.log(data.toString())
                 });
 
-                // Pipe ffmpeg output to internal passthrough stream
-                this._ffmpeg.stdout.pipe(this._pipe);
-                this._pipe.on('data', data => {
-                    // console.log(data.length);
-                    // tmp discard data
-                })
+                // Handle stdout
+                this._ffmpeg.stdout.on('data', data => {
+                    // console.log(data.toString());
+                });
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
                     if (code != null) { console.log(`${this._controlName}: opus encoder (ffmpeg) stopped (${code})`) }
-                    this._kill_ffmpeg();
+                    this._stop_ffmpeg();
                 });
 
                 // Handle process error events
@@ -84,31 +86,23 @@ class OpusOutput extends _paAudioSourceBase {
             }
             catch (err) {
                 console.log(`${this._controlName}: opus encoder (ffmpeg) error ${err.message}`);
-                this._kill_ffmpeg();
+                this._stop_ffmpeg();
             }
         }
     }
 
     _stop_ffmpeg() {
         if (this._ffmpeg) {
-            console.log(`${this._controlName}: Stopping opus encoder (ffmpeg)...`);
             try {
-                // this._ffmpeg.stdout.unpipe(this._pipe);
-            } catch {}
-        }
-        this._kill_ffmpeg();
-    }
+                this._ffmpeg.kill('SIGTERM');
+                // ffmpeg stops on SIGTERM, but does not exit.
+                // Send SIGKILL to quit process
+                this._ffmpeg.kill('SIGKILL');
+            } catch {
 
-    _kill_ffmpeg() {
-        try {
-            this._ffmpeg.kill('SIGTERM');
-            // ffmpeg stops on SIGTERM, but does not exit.
-            // Send SIGKILL to quit process
-            this._ffmpeg.kill('SIGKILL');
-        } catch {
-            
-        } finally {
-            this._ffmpeg = undefined;
+            } finally {
+                this._ffmpeg = undefined;
+            }
         }
     }
 
@@ -172,11 +166,11 @@ class OpusOutput extends _paAudioSourceBase {
             console.log(`${this._controlName}: Stopping SRT...`);
             try {
                 // this._pipe.unpipe(this._srt.stdin);
-            } catch {}
+            } catch { }
 
             try {
                 this._srt.kill('SIGTERM');
-            } catch {}
+            } catch { }
         }
         this._srt = undefined;
     }

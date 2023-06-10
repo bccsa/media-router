@@ -17,12 +17,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
     Init() {
         super.Init();
 
-        // Wait till next tick to ensure that all properties are set before starting processes.
-
         this.on('run', run => {
-            process.nextTick(() => {
-                
-            });
             if (run) {
                 this._startPipeSource();
             } else {
@@ -49,7 +44,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
-                console.log(`Created pipe-source ${this._controlName}; ID: ${this._paModuleID}`);
+                console.log(`${this._controlName}: Created pipe-source; ID: ${this._paModuleID}`);
                 this.emit('pipe-source-create');
             }
         }).catch(err => {
@@ -65,7 +60,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
                 } else {
-                    console.log(`Removed pipe-source ${this._controlName}`);
+                    console.log(`${this._controlName}: Removed pipe-source`);
                 }
 
                 this._paModuleID = undefined;
