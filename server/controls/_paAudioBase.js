@@ -22,7 +22,7 @@ class _paAudioBase extends dm {
         this.vuInterval = 100;  // VU meter indication interval in milliseconds
         this.vu = [];           // VU indication per channel (0 - 100%)
         this.channels = 1;      // Audio channels
-        this.bitdepth = 16;     // Audio bit depth
+        this.bitDepth = 16;     // Audio bit depth
         this.sampleRate = 44100;// Audio sample rate
         this.run = false;       // Set to true to start the VU meter and extended class processes.
     }

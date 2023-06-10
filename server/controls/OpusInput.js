@@ -1,16 +1,14 @@
-const _paNullSink = require('./_paNullSink');
+const _paPipeSourceBase = require('./_paPipeSourceBase');
 const { spawn } = require('child_process');
 const { PassThrough } = require('stream');
 
-class OpusInput extends _paNullSink {
+class OpusInput extends _paPipeSourceBase {
     constructor() {
         super();
 
         this.fec = true;            // Enable opus Forward Error Correction
-        this._fec = 0;              // Internal FEC value
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this._ffmpeg;
-        this._pipe = new PassThrough();
         this._srt;
         this.srtHost = '127.0.0.1';
         this.srtPort = 1234;
@@ -23,25 +21,20 @@ class OpusInput extends _paNullSink {
 
     Init() {
         super.Init();
-        this.on('fec', fec => {
-            if (fec) {
-                this._fec = 1;
-            } else {
-                this._fec = 0;
-            }
+
+        // Start external processes when the underlying pipe-source is ready (from extended class)
+        this.on('pipe-source-ready', () => {
+            // this._start_srt();
+            this._start_ffmpeg();
         });
 
-        this.on('null-sink', state => {
-            if (state) {
-                // Start SRT and ffmpeg after the PulseAudio null-sink module is created
-                this._start_srt();
-                this._start_ffmpeg();
-            } else {
-                // Stop SRT and ffmpeg before the PulseAudio null-sink module is removed
-                this._stop_srt();
+        // Stop external processes when the control is stopped (through setting this.run to false)
+        this.on('run', run => {
+            if (!run) {
+                // this._stop_srt();
                 this._stop_ffmpeg();
             }
-        });
+        })
     }
 
     _start_ffmpeg() {
@@ -50,10 +43,15 @@ class OpusInput extends _paNullSink {
                 // Opus sample rate is always 48000. Input is therefore set to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 console.log(`${this._controlName}: Starting opus decoder (ffmpeg)`);
+                // let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
+                // -f mpegts -c:a libopus -i - \
+                // -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
+                // -f pulse ${this.sink}`
+
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                -f mpegts -c:a libopus -i - \
-                -c:a pcm_s${this.bitdepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
-                -f pulse ${this.sink}`
+                -f pulse -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} -i alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo \
+                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
+                -f s${this.bitDepth}le ${this._pipename}`;
 
                 this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
 
@@ -62,9 +60,7 @@ class OpusInput extends _paNullSink {
                     console.log(data.toString())
                 });
 
-                // Pipe to ffmpeg
-                this._pipe.pipe(this._ffmpeg.stdin);
-
+                // Handle stdout
                 this._ffmpeg.stdout.on('data', data => {
                     console.log(data.toString());
                 });
@@ -72,7 +68,7 @@ class OpusInput extends _paNullSink {
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
                     if (code != null) { console.log(`${this._controlName}: opus decoder (ffmpeg) stopped (${code})`) }
-                    this._kill_ffmpeg();
+                    this._stop_ffmpeg();
                 });
 
                 // Handle process error events
@@ -82,39 +78,48 @@ class OpusInput extends _paNullSink {
             }
             catch (err) {
                 console.log(`${this._controlName}: opus decoder (ffmpeg) error ${err.message}`);
-                this._kill_ffmpeg();
+                this._stop_ffmpeg();
             }
         }
     }
 
     _stop_ffmpeg() {
         if (this._ffmpeg) {
-            console.log(`${this._controlName}: Stopping opus decoder (ffmpeg)...`);
             try {
-                this._ffmpeg.stdout.unpipe(this._pipe);
-            } catch {}
+                this._ffmpeg.kill('SIGTERM');
+                // ffmpeg stops on SIGTERM, but does not exit.
+                // Send SIGKILL to quit process
+                this._ffmpeg.kill('SIGKILL');
+            } catch {
+
+            } finally {
+                this._ffmpeg = undefined;
+            }
+            // console.log(`${this._controlName}: Stopping opus decoder (ffmpeg)...`);
+            // try {
+            //     // this._ffmpeg.stdout.unpipe(this._pipe);
+            // } catch {}
         }
-        this._kill_ffmpeg();
+        // this._kill_ffmpeg();
     }
 
-    _kill_ffmpeg() {
-        try {
-            this._ffmpeg.kill('SIGTERM');
-            // ffmpeg stops on SIGTERM, but does not exit.
-            // Send SIGKILL to quit process
-            this._ffmpeg.kill('SIGKILL');
-        } catch {
-            
-        } finally {
-            this._ffmpeg = undefined;
-        }
-    }
+    // _kill_ffmpeg() {
+    //     try {
+    //         this._ffmpeg.kill('SIGTERM');
+    //         // ffmpeg stops on SIGTERM, but does not exit.
+    //         // Send SIGKILL to quit process
+    //         this._ffmpeg.kill('SIGKILL');
+    //     } catch {
+
+    //     } finally {
+    //         this._ffmpeg = undefined;
+    //     }
+    // }
 
     _start_srt() {
         if (!this._srt) {
             try {
                 // SRT external process
-                `${this._controlName}: Starting SRT...`
                 let crypto = '';
                 if (this.srtPassphrase) {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
@@ -165,11 +170,11 @@ class OpusInput extends _paNullSink {
             console.log(`${this._controlName}: Stopping SRT...`);
             try {
                 this._pipe.unpipe(this._srt.stdin);
-            } catch {}
+            } catch { }
 
             try {
                 this._srt.kill('SIGTERM');
-            } catch {}
+            } catch { }
         }
         this._srt = undefined;
     }
