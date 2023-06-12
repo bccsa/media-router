@@ -32,7 +32,14 @@ class pcm_pipe_in extends Readable {
             
             // Now `pipe` is a stream that can be used for reading from the FIFO.
             this._pipe.on('data', chunk => {
-                Buffer.concat([this._buffer, chunk]);
+                this._buffer = Buffer.concat([this._buffer, chunk]);
+
+                if (this._buffer.length > this._bufferMax) {
+                    let overrun = this._buffer.length - this._bufferMax;
+                    this._buffer = this._buffer.slice(overrun, this._buffer.length);
+                    console.log('buffer overrun by ' + overrun + ' bytes');
+                }
+                // console.log('write');
             });
         });
     }
@@ -42,6 +49,7 @@ class pcm_pipe_in extends Readable {
         if (this._buffer.length > 0) {
             this.push(this._buffer);
             this._buffer = Buffer.alloc(0);
+            // console.log('read');
         } else {
             // Wait for data before pushing
             setTimeout(this._read.bind(this), 20);

@@ -51,7 +51,7 @@ class OpusInput extends _paPipeSourceBase {
 
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f mpegts -c:a libopus -ac ${this.channels} \
-                -i udp://127.0.0.1:2346?pkt_size=188&buffer_size=2048 \
+                -i udp://127.0.0.1:2346?pkt_size=188&buffer_size=512 \
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 -f s${this.bitDepth}le ${this._pipename}`;
 

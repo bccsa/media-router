@@ -5,7 +5,7 @@ const exec = util.promisify(require('child_process').exec);
 /**
  * PulseAudio Null Sink. This is used as a base class for virtual inputs and outputs.
  */
-class _paNullSink extends _paAudioBase {
+class _paNullSinkBase extends _paAudioBase {
     constructor() {
         super();
         this.source = "";   // PulseAudio module-null-sink source name (xxx.monitor)
@@ -13,7 +13,8 @@ class _paNullSink extends _paAudioBase {
         this.channels = 1;
         this.bitdepth = 16;
         this.sampleRate = 44100;
-
+        this.latency_msec = 1;  // PulseAudio module-null-sink latency (PulseAudio v15+)
+        this.description = 'test description';
         this._paModuleID;   // PulseAudio module instance ID
         this.run = false;   // Set to true to start; Set to false to stop;
     }
@@ -36,7 +37,8 @@ class _paNullSink extends _paAudioBase {
 
     // Create a PulseAudio loopback-module linking the source to the sink
     _startNullSink() {
-        let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels}`;
+        // let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this.latency_msec},device.description='${this.description}'"`;
+        let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this.latency_msec}"`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
                 console.log(data.stderr.toString());
@@ -45,7 +47,7 @@ class _paNullSink extends _paAudioBase {
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
                 console.log(`Created null-sink ${this._controlName}; ID: ${this._paModuleID}`);
-                this.emit('null-sink', true);   // notify that the null-sink has been created
+                this.emit('null-sink-ready');   // notify that the null-sink has been created
             }
         }).catch(err => {
             console.log(err.message);
@@ -72,4 +74,4 @@ class _paNullSink extends _paAudioBase {
     }
 }
 
-module.exports = _paNullSink;
+module.exports = _paNullSinkBase;

@@ -103,9 +103,22 @@ https://gist.github.com/ford-prefect/924cb946631d82c8195b464a7be21d53
 Add deb-src (/etc/apt/sources.list) https://forums.raspberrypi.com/viewtopic.php?t=73666
 
 Install build dependencies
+sudo apt update
 sudo apt-get build-dep pulseaudio
+sudo apt install meson
 
 Download and extract the required PulseAudio release: https://www.freedesktop.org/wiki/Software/PulseAudio/Download/
+https://freedesktop.org/software/pulseaudio/releases/
+```shell
+wget https://freedesktop.org/software/pulseaudio/releases/pulseaudio-16.1.tar.xz
+```
+Extract archive from file manager
+```shell
+meson build
+ninja -C build
+sudo ninja -C build install
+sudo ldconfig
+```
 Build PulseAudio: https://www.freedesktop.org/wiki/Software/PulseAudio/Documentation/Developer/PulseAudioFromGit/
 
 
@@ -175,3 +188,53 @@ result: parec works well to keep the pipe-source's named pipe drained, preventin
 # test commands
 pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=opusOut1 latency_msec=1
 pactl load-module module-loopback source=opusIn1 sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1
+
+
+
+
+pactl load-module module-pipe-sink sink_name=test123 format=s16le rate=44100 channels=2 file=/tmp/test123
+paplay --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw /tmp/test123
+parec --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw | paplay --device=test123 --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+
+# play from pipe-sink using ffmpeg
+```shell
+pactl load-module module-pipe-sink sink_name=test123 format=s16le rate=44100 channels=2 file=/tmp/test123
+ffmpeg -rtbufsize 16 -thread_queue_size 16 -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 -fflags nobuffer -fflags flush_packets -flags low_delay -use_wallclock_as_timestamps 1 -max_delay 100 -ss 0 -f s16le -ac 2 -sample_rate 44100 -i /tmp/test123 -c:a copy -f s16le - | pacat -p --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1024 --raw
+
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=opusOut1 latency_msec=1
+pactl load-module module-loopback source=opusIn1 sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1
+
+cat /tmp/test123 | ffmpeg -y -rtbufsize 16 -hide_banner -probesize 32 -analyzeduration 0 -f s16le -ac 2 -sample_rate 44100 -i - -c:a copy -f pulse -buffer_duration 1 alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo
+
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=test123 latency_msec=10
+
+pacat -r --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw | pacat -p --device=test123 --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+
+
+pacat -p --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw /tmp/test123
+```
+node server/modules/pcm_buffer -buffersize 20480000 < /tmp/test123 | pacat -p --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+pacat -r --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw | pacat -p --device=test123 --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+
+
+
+
+parec --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw | paplay --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+
+
+cat /tmp/test123 | node server/modules/pcm_buffer -buffersize 2048 > /dev/null
+
+pacat -r --device=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=44100 --channels=2 --format=s16le --latency=1 --raw | pacat -p --device=opusOut1 --rate=44100 --channels=2 --format=s16le --latency=1 --raw
+
+
+# Configuring null-sink for low latency
+From ChatGPT: https://chat.openai.com/share/e58dd653-6617-4173-9403-16f18d8fc977
+
+```shell
+pactl load-module module-null-sink sink_name=virtual_sink sink_properties="latency_msec=1"
+pactl load-module module-loopback source=alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo sink=virtual_sink latency_msec=1
+pactl load-module module-loopback source=virtual_sink.monitor sink=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo latency_msec=1
+```
+
+Result: Works well with PulseAudio 16.1 (see section on building and installing PulseAudio from source)
+Virually no latency with the above configuration. Will run for a while to check if it is stable.
