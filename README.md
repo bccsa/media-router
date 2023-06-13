@@ -27,8 +27,9 @@ This project has been tested on Raspberry Pi OS Buster
 ## Development environment
 * Clone the project to your Raspberry Pi.
 * Navigate to the ```media-router``` directory
-* Install dependencies ```sudo ./install-dependencies.sh```
-* Run the router.js with NodeJS: ```node server.js```
+* Open /etc/apt/sources.list and uncomment the ```deb-src``` line to enable the debian source repository (Raspberry Pi OS).
+* Install dependencies ```./install-dependencies.sh```
+* Run the router.js with NodeJS: ```node router.js```
 
 ## Installation: Tailwind CLI and Tailwind Elements
 

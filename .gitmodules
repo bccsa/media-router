@@ -1,6 +1,3 @@
-[submodule "submodules/audio-mixer"]
-	path = server/submodules/audio-mixer
-	url = https://github.com/bccsa/audio-mixer.git
 [submodule "client/modular-ui"]
 	path = client/modular-ui
 	url = https://github.com/bccsa/modular-ui
