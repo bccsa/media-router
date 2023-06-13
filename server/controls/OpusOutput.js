@@ -23,6 +23,7 @@ class OpusOutput extends _paNullSinkBase {
         this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.outBitrate = 0;        // Opus encoder output bitrate
         this._ffmpegParser = new ffmpeg_stderr_parser();
+        this.srtStats = '';         // SRT statistics in JSON string format
     }
 
     Init() {
@@ -140,12 +141,12 @@ class OpusOutput extends _paNullSinkBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&rcvbuf=${this.udpBufferSize} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 -chunk 188`;
+                let args = `-chunk 188 -s 1000 -pf json udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&rcvbuf=${this.udpBufferSize} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stdout
                 this._srt.stdout.on('data', data => {
-
+                    this.srtStats = data.toString();
                 });
 
                 // Handle stderr

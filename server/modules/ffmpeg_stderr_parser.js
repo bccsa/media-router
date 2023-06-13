@@ -13,7 +13,7 @@ class ffmpeg_stderr_parser extends event {
     }
 
     /**
-     * Set ffmpeg stderr string. Emits events 
+     * Set ffmpeg stderr string.
      * Changes are notified through the following events:
      * bitrate: includes the updated bitrate value in bits/s
      */

@@ -18,6 +18,7 @@ class OpusInput extends _paPipeSourceBase {
         this.srtPassphrase = '';
         this._udpSocketPort = 2347;
         this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
+        this.srtStats = '';         // SRT statistics in JSON string format
     }
 
     Init() {
@@ -121,7 +122,7 @@ class OpusInput extends _paPipeSourceBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&sndbuf=${this.udpBufferSize} -chunk 188`;
+                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&sndbuf=${this.udpBufferSize}`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stderr
@@ -131,7 +132,7 @@ class OpusInput extends _paPipeSourceBase {
 
                 // Handle stderr
                 this._srt.stdout.on('data', data => {
-                    
+                    this.srtStats = data.toString();
                 });
 
                 // Handle process exit event
