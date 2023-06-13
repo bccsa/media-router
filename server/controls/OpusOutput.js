@@ -19,6 +19,7 @@ class OpusOutput extends _paNullSinkBase {
         this.srtPassphrase = '';
         this._udpSocketPort = 2346;
         this.ffmpegPulseLatency = 50;
+        this.udpBufferSize = 512;
     }
 
     Init() {
@@ -87,16 +88,9 @@ class OpusOutput extends _paNullSinkBase {
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
                 -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=512`;
+                -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize}`;
 
-                //-device alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo -buffer_duration ${this.ffmpegPulseLatency}
-
-                // let args = `pacat -p --device=alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo --rate=${this.sampleRate} --channels=${this.channels} --format=s${this.bitDepth}le --raw`
-
-                this._ffmpeg = spawn(args, { shell: 'bash' });
-                // this._ffmpeg = spawn('ffmpeg', args.split(" "));
                 this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
-                // this._ffmpeg = spawn(args, { shell: 'bash' });
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
