@@ -16,13 +16,16 @@ class OpusInput extends _paPipeSourceBase {
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
-        this._udpSocketPort = 2347;
+        this._udpSocketPort = 0;
         this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.srtStats = '';         // SRT statistics in JSON string format
     }
 
     Init() {
         super.Init();
+
+        // Get unique UDP socket port
+        this._udpSocketPort = this._parent.GetUdpSocketPort();
 
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('pipe-source-ready', () => {

@@ -22,27 +22,26 @@ test.Set({
         //     sink: 'alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
         // },
 
-        opusIn1: {
-            controlType: 'OpusInput',
-            channels: 2,
-            run: true,
-        },
-
         opusOut1: {
             controlType: 'OpusOutput',
             channels: 2,
             run: true,
+            srtHost: '0.0.0.0',
+            srtPort: 1234,
+            srtMode: 'listener',
+            srtLatency: 10,
         },
 
         // opusIn1: {
         //     controlType: 'OpusInput',
         // },
 
-        // loopback1: {
-        //     controlType: 'AudioLoopback',
-        //     source: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
-        //     sink: 'opusOut1',
-        // },
+        loopback1: {
+            controlType: 'AudioLoopback',
+            source: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
+            sink: 'opusOut1',
+            channels: 2,
+        },
 
         // loopback2: {
         //     controlType: 'AudioLoopback',
@@ -55,12 +54,8 @@ test.Set({
 // setTimeout(() => { test.testRouter1.run = true }, 500)
 
 setTimeout(() => {
-    // test.testRouter1.opusIn1.on('srtStats', val => {
-    //     console.log(val);
-    // })
-    // test.testRouter1.opusOut1.run = true;
-    // test.testRouter1.opusIn1.run = true;
-}, 500);
+    test.testRouter1.loopback1.run = true;
+}, 1000);
 
 setTimeout(() => {
     // test.testRouter1.loopback1.run = true;
@@ -76,18 +71,18 @@ setTimeout(() => {
 }, 40000);
 
 
-process.on('exit', cleanup);
-process.on('SIGINT', cleanup);
-process.on('SIGTERM', cleanup);
+// process.on('exit', cleanup);
+// process.on('SIGINT', cleanup);
+// process.on('SIGTERM', cleanup);
 
-var _exit = false;
-function cleanup() {
-    if (!_exit) {
-        // Stop devicelist on exit
-        test.testRouter1.opusIn1.run = false;
-        setTimeout(() => {
-            _exit = true;
-            process.exit();
-        }, 1000);
-    }
-}
+// var _exit = false;
+// function cleanup() {
+//     if (!_exit) {
+//         // Stop devicelist on exit
+//         test.testRouter1.opusIn1.run = false;
+//         setTimeout(() => {
+//             _exit = true;
+//             process.exit();
+//         }, 1000);
+//     }
+// }

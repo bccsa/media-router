@@ -17,6 +17,7 @@ class Router extends dm {
         this._sinks = {};
         this.sources = "{}"; // json sources list for front-end
         this.sinks = "{}" // json sinks list for front-end
+        this._udpSocketPortIndex = 2000;
     }
 
     Init() {
@@ -152,6 +153,14 @@ class Router extends dm {
             console.log(err.message);
             return false;
         }
+    }
+
+    /**
+     * Get next available UDP socket port
+     */
+    GetUdpSocketPort() {
+        this._udpSocketPortIndex++;
+        return this._udpSocketPortIndex;
     }
 }
 

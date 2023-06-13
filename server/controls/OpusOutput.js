@@ -18,7 +18,7 @@ class OpusOutput extends _paNullSinkBase {
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
-        this._udpSocketPort = 2346;
+        this._udpSocketPort = 0;
         this.ffmpegPulseLatency = 50;
         this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.outBitrate = 0;        // Opus encoder output bitrate
@@ -29,6 +29,9 @@ class OpusOutput extends _paNullSinkBase {
     Init() {
         super.Init();
 
+        // Get unique UDP socket port
+        this._udpSocketPort = this._parent.GetUdpSocketPort();
+        
         // Start external processes when the underlying null-sink is ready (from extended class)
         this.on('null-sink-ready', () => {
             this._start_srt();
