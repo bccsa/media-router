@@ -26,12 +26,17 @@ test.Set({
             controlType: 'OpusInput',
             channels: 2,
             run: true,
+            srtHost: '10.9.1.165',
+            srtPort: 1234,
+            srtMode: 'caller',
+            srtLatency: 10,
         },
 
-        opusOut1: {
-            controlType: 'OpusOutput',
+        loopback1: {
+            controlType: 'AudioLoopback',
+            source: 'opusIn1',
+            sink: 'alsa_output.platform-fef00700.hdmi.hdmi-stereo',
             channels: 2,
-            run: true,
         },
 
         // opusIn1: {
@@ -55,12 +60,8 @@ test.Set({
 // setTimeout(() => { test.testRouter1.run = true }, 500)
 
 setTimeout(() => {
-    // test.testRouter1.opusIn1.on('srtStats', val => {
-    //     console.log(val);
-    // })
-    // test.testRouter1.opusOut1.run = true;
-    // test.testRouter1.opusIn1.run = true;
-}, 500);
+    test.testRouter1.loopback1.run = true;
+}, 1000);
 
 setTimeout(() => {
     // test.testRouter1.loopback1.run = true;
@@ -76,18 +77,18 @@ setTimeout(() => {
 }, 40000);
 
 
-process.on('exit', cleanup);
-process.on('SIGINT', cleanup);
-process.on('SIGTERM', cleanup);
+// process.on('exit', cleanup);
+// process.on('SIGINT', cleanup);
+// process.on('SIGTERM', cleanup);
 
-var _exit = false;
-function cleanup() {
-    if (!_exit) {
-        // Stop devicelist on exit
-        test.testRouter1.opusIn1.run = false;
-        setTimeout(() => {
-            _exit = true;
-            process.exit();
-        }, 1000);
-    }
-}
+// var _exit = false;
+// function cleanup() {
+//     if (!_exit) {
+//         // Stop devicelist on exit
+//         test.testRouter1.opusIn1.run = false;
+//         setTimeout(() => {
+//             _exit = true;
+//             process.exit();
+//         }, 1000);
+//     }
+// }
