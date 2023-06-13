@@ -13,13 +13,13 @@ class OpusOutput extends _paNullSinkBase {
         this.srtHost = '127.0.0.1';
         this.srtPort = 1234;
         this.srtMode = 'caller';
-        this.srtLatency = 200;
+        this.srtLatency = 10;
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 2346;
         this.ffmpegPulseLatency = 50;
-        this.udpBufferSize = 512;
+        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable comms to srt-live-transmit
     }
 
     Init() {
@@ -27,9 +27,8 @@ class OpusOutput extends _paNullSinkBase {
 
         // Start external processes when the underlying null-sink is ready (from extended class)
         this.on('null-sink-ready', () => {
-            // this._start_srt();
+            this._start_srt();
             this._start_ffmpeg();
-            // this._start_pipe();
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
@@ -38,9 +37,8 @@ class OpusOutput extends _paNullSinkBase {
                 
             }
             else {
-                // this._stop_srt();
+                this._stop_srt();
                 this._stop_ffmpeg();
-                // this._stop_pipe();
             }
         })
     }
@@ -51,36 +49,19 @@ class OpusOutput extends _paNullSinkBase {
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 console.log(`${this._controlName}: Starting opus encoder (ffmpeg)`);
-                // let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                // -f pulse -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -i ${this.source} -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
-                // -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${this._fec} \
-                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                // -f mpegts -`
+
                 let _fec = 0;
                 if (this.fec) _fec = 1;
 
-                // let args = `-y -re -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                // -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -thread_queue_size 16 -i ${this._pipename} \
-                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
-                // -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} \
-                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                // -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=2048`;
-
-                // let args = `cat ${this._pipename} | ffmpeg -y -re -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                // -f s${this.bitDepth}le -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -ac ${this.channels} -i - \
-                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
-                // -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} \
-                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                // -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=2048`;
-
                 let fragSize = this.ffmpegPulseLatency / 1000 * this.sampleRate * this.bitDepth / 8 * this.channels;
 
-                // let args = `-rtbufsize 16 -thread_queue_size 16 -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
-                // -fflags nobuffer -fflags flush_packets -flags low_delay -use_wallclock_as_timestamps 1 -max_delay 100 -ss 0 \
-                // -f pulse -ac ${this.channels} -sample_rate ${this.sampleRate} -fragment_size ${fragSize} -i ${this.source} \
-                // -c:a copy \
-                // -f pulse -device alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo -buffer_duration ${this.ffmpegPulseLatency}
-                // `
+                // let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
+                // -fflags nobuffer -flags low_delay \
+                // -f pulse -channels ${this.channels} -sample_rate ${this.sampleRate} -fragment_size ${fragSize} -i ${this.source} \
+                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
+                // -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} \
+                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
+                // -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize}`;
 
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 -fflags nobuffer -flags low_delay \
@@ -94,7 +75,7 @@ class OpusOutput extends _paNullSinkBase {
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    console.log(data.toString())
+                    // console.log(data.toString())
                 });
 
                 // Handle stdout
@@ -158,16 +139,13 @@ class OpusOutput extends _paNullSinkBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `file://con srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}`;
+                let args = `udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&rcvbuf=${this.udpBufferSize} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 -chunk 188`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stdout
                 this._srt.stdout.on('data', data => {
-                    console.log(data.toString().trim());
+                    
                 });
-
-                // Pipe data to srt-live-transmit
-                this._pipe.pipe(this._srt.stdin);
 
                 // Handle stderr
                 this._srt.stderr.on('data', data => {
@@ -181,7 +159,7 @@ class OpusOutput extends _paNullSinkBase {
 
                 // Handle process error events
                 this._srt.on('error', code => {
-                    console.log(`Error "${code}"`);
+                    console.log(`${this._controlName}: SRT error "${code}"`);
                 });
             }
             catch (err) {

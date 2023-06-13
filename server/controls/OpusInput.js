@@ -12,12 +12,12 @@ class OpusInput extends _paPipeSourceBase {
         this.srtHost = '127.0.0.1';
         this.srtPort = 1234;
         this.srtMode = 'listener';
-        this.srtLatency = 1000;
+        this.srtLatency = 10;
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
-        this._udpSocketPort = 2346;
-        this.udpBufferSize = 512;
+        this._udpSocketPort = 2347;
+        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable comms to srt-live-transmit
     }
 
     Init() {
@@ -25,15 +25,15 @@ class OpusInput extends _paPipeSourceBase {
 
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('pipe-source-ready', () => {
-            // this._start_srt();
             this._start_ffmpeg();
+            this._start_srt();
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
-                // this._stop_srt();
                 this._stop_ffmpeg();
+                this._stop_srt();
             }
         })
     }
@@ -44,12 +44,15 @@ class OpusInput extends _paPipeSourceBase {
                 // Opus sample rate is always 48000. Input is therefore set to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 console.log(`${this._controlName}: Starting opus decoder (ffmpeg)`);
-                // let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                // -f mpegts -c:a libopus -i - \
-                // -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
-                // -f pulse ${this.sink}`
+
                 let _fec = 0;
                 if (this.fec) _fec = 1;
+
+                // let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
+                // -f mpegts -c:a libopus -ac ${this.channels} \
+                // -i udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize} \
+                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
+                // -f s${this.bitDepth}le ${this._pipename}`;
 
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f mpegts -c:a libopus -ac ${this.channels} \
@@ -61,7 +64,7 @@ class OpusInput extends _paPipeSourceBase {
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    console.log(data.toString())
+                    // console.log(data.toString())
                 });
 
                 // Handle stdout
@@ -123,15 +126,17 @@ class OpusInput extends _paPipeSourceBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto} file://con`;
+                let args = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&sndbuf=${this.udpBufferSize} -chunk 188`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
-
-                // Pipe data from srt-live-transmit
-                this._srt.stdout.pipe(this._pipe);
 
                 // Handle stderr
                 this._srt.stderr.on('data', data => {
                     console.error(data.toString().trim());
+                });
+
+                // Handle stderr
+                this._srt.stdout.on('data', data => {
+                    
                 });
 
                 // Handle process exit event
