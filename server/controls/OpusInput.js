@@ -17,7 +17,7 @@ class OpusInput extends _paPipeSourceBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 2347;
-        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable comms to srt-live-transmit
+        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
     }
 
     Init() {
@@ -41,19 +41,14 @@ class OpusInput extends _paPipeSourceBase {
     _start_ffmpeg() {
         if (!this._ffmpeg) {
             try {
-                // Opus sample rate is always 48000. Input is therefore set to 48000
-                // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 console.log(`${this._controlName}: Starting opus decoder (ffmpeg)`);
 
                 let _fec = 0;
                 if (this.fec) _fec = 1;
 
-                // let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                // -f mpegts -c:a libopus -ac ${this.channels} \
-                // -i udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize} \
-                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
-                // -f s${this.bitDepth}le ${this._pipename}`;
-
+                // Opus sample rate is always 48000. Input is therefore assumed to be 48000
+                // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
+                // Connecting with a UDP socket seems to be the best solution. Piping directly to srt-live-transmit gave very unstable / choppy audio.
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f mpegts -c:a libopus -ac ${this.channels} \
                 -i udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize} \
@@ -159,9 +154,6 @@ class OpusInput extends _paPipeSourceBase {
     _stop_srt() {
         if (this._srt) {
             console.log(`${this._controlName}: Stopping SRT...`);
-            try {
-                this._pipe.unpipe(this._srt.stdin);
-            } catch { }
 
             try {
                 this._srt.kill('SIGTERM');

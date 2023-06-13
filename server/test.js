@@ -55,9 +55,12 @@ test.Set({
 // setTimeout(() => { test.testRouter1.run = true }, 500)
 
 setTimeout(() => {
+    test.testRouter1.opusOut1.on('outBitrate', bitrate => {
+        console.log(bitrate);
+    })
     // test.testRouter1.opusOut1.run = true;
     // test.testRouter1.opusIn1.run = true;
-}, 1000);
+}, 500);
 
 setTimeout(() => {
     // test.testRouter1.loopback1.run = true;
