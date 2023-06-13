@@ -32,22 +32,16 @@ test.Set({
             srtLatency: 10,
         },
 
-        loopback1: {
-            controlType: 'AudioLoopback',
-            source: 'opusIn1',
-            sink: 'alsa_output.platform-fef00700.hdmi.hdmi-stereo',
-            channels: 2,
-        },
-
         // opusIn1: {
         //     controlType: 'OpusInput',
         // },
 
-        // loopback1: {
-        //     controlType: 'AudioLoopback',
-        //     source: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
-        //     sink: 'opusOut1',
-        // },
+        loopback1: {
+            controlType: 'AudioLoopback',
+            source: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
+            sink: 'opusOut1',
+            channels: 2,
+        },
 
         // loopback2: {
         //     controlType: 'AudioLoopback',
