@@ -1,12 +1,10 @@
 const _paPipeSourceBase = require('./_paPipeSourceBase');
 const { spawn } = require('child_process');
 
-class OpusInput extends _paPipeSourceBase {
+class SrtOpusInput extends _paPipeSourceBase {
     constructor() {
         super();
 
-        this.fec = true;            // Enable opus Forward Error Correction
-        this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this._ffmpeg;
         this._srt;
         this.srtHost = '127.0.0.1';
@@ -46,9 +44,6 @@ class OpusInput extends _paPipeSourceBase {
         if (!this._ffmpeg) {
             try {
                 console.log(`${this._controlName}: Starting opus decoder (ffmpeg)`);
-
-                let _fec = 0;
-                if (this.fec) _fec = 1;
 
                 // Opus sample rate is always 48000. Input is therefore assumed to be 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
@@ -167,4 +162,4 @@ class OpusInput extends _paPipeSourceBase {
     }
 }
 
-module.exports = OpusInput;
+module.exports = SrtOpusInput;

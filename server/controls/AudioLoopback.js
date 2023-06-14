@@ -32,15 +32,15 @@ class AudioLoopback extends dm {
             let cmd = `pactl load-module module-loopback source=${this.source} sink=${this.sink} latency_msec=${this.latency} channels=${this.channels}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    console.error(`${this._controlName}: ${data.stderr.toString()}`);
                 }
 
                 if (data.stdout.length) {
                     this._paModuleID = data.stdout.toString().trim();
-                    console.log(`Connected ${this.source} to ${this.sink}; ID: ${this._paModuleID}`);
+                    console.log(`${this._controlName}: Connected ${this.source} to ${this.sink}; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
-                console.log(err.message);
+                console.error(`${this._controlName}: ${err.message}`);
             });
         }
     }
@@ -51,14 +51,14 @@ class AudioLoopback extends dm {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    console.error(`${this._controlName}: ${data.stderr.toString()}`);
                 } else {
-                    console.log(`Disconnected ${this.source} from ${this.sink}`);
+                    console.log(`${this._controlName}: Disconnected ${this.source} from ${this.sink}`);
                 }
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                console.log(err.message);
+                console.error(`${this._controlName}: ${err.message}`);
             });
         }
     }

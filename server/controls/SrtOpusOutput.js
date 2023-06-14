@@ -1,8 +1,9 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
 const { ffmpeg_stderr_parser } = require('../modules/ffmpeg_stderr_parser');
+const { read } = require('fs');
 
-class OpusOutput extends _paNullSinkBase {
+class SrtOpusOutput extends _paNullSinkBase {
     constructor() {
         super();
 
@@ -31,11 +32,13 @@ class OpusOutput extends _paNullSinkBase {
 
         // Get unique UDP socket port
         this._udpSocketPort = this._parent.GetUdpSocketPort();
-        
+
         // Start external processes when the underlying null-sink is ready (from extended class)
-        this.on('null-sink-ready', () => {
-            this._start_srt();
-            this._start_ffmpeg();
+        this.on('ready', ready => {
+            if (ready) {
+                this._start_srt();
+                this._start_ffmpeg();
+            }
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
@@ -186,4 +189,4 @@ class OpusOutput extends _paNullSinkBase {
     }
 }
 
-module.exports = OpusOutput;
+module.exports = SrtOpusOutput;

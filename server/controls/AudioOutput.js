@@ -10,12 +10,22 @@ class AudioOutput extends _paAudioSinkBase {
 
         this.on('sink', sink => {
             // Get the sink channel count
-            if (this._parent._sinks[this.sink]) this.channels = this._parent._sinks[this.sink].channels;
-        });
+            if (this._parent._sinks[this.sink]) {
+                this.channels = this._parent._sinks[this.sink].channels;
+                this.ready = true;
+            } else {
+                this.ready = false;
+            }
+        }, { immediate: true });
 
         this._parent.on('sinks', () => {
             // Get the sink channel count
-            if (this._parent._sinks[this.sink]) this.channels = this._parent._sinks[this.sink].channels;
+            if (this._parent._sinks[this.sink]) {
+                this.channels = this._parent._sinks[this.sink].channels;
+                this.ready = true
+            } else {
+                this.ready = false;
+            }
         });
     }
 }

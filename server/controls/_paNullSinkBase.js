@@ -16,7 +16,6 @@ class _paNullSinkBase extends _paAudioBase {
         this.latency_msec = 1;  // PulseAudio module-null-sink latency (PulseAudio v15+)
         this.description = 'test description';
         this._paModuleID;   // PulseAudio module instance ID
-        this.run = false;   // Set to true to start; Set to false to stop;
     }
 
     Init() {
@@ -46,8 +45,8 @@ class _paNullSinkBase extends _paAudioBase {
 
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
-                console.log(`Created null-sink ${this._controlName}; ID: ${this._paModuleID}`);
-                this.emit('null-sink-ready');   // notify that the null-sink has been created
+                console.log(`${this._controlName}: Created null-sink; ID: ${this._paModuleID}`);
+                this.ready = true;
             }
         }).catch(err => {
             console.log(err.message);
@@ -56,14 +55,15 @@ class _paNullSinkBase extends _paAudioBase {
 
     // Remove PulseAudio module
     _stopNullSink() {
+        this.ready = false;
+
         if (this._paModuleID) {
-            this.emit('null-sink', false);      // notify that the null-sink is about to be removed
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
                 } else {
-                    console.log(`Removed null-sink ${this._controlName}`);
+                    console.log(`${this._controlName}: Removed null-sink`);
                 }
 
                 this._paModuleID = undefined;

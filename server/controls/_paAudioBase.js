@@ -24,7 +24,8 @@ class _paAudioBase extends dm {
         this.channels = 1;      // Audio channels
         this.bitDepth = 16;     // Audio bit depth
         this.sampleRate = 44100;// Audio sample rate
-        this.run = false;       // Set to true to start the VU meter and extended class processes.
+        this.ready = false;     // Ready indication to be set by implementing class when internal processes are running and the module is ready for linking to other modules.
+        this._run = false;      // Run implemented manually with getter and setter to prevent setting values through Set()
     }
 
     Init() {
@@ -35,7 +36,7 @@ class _paAudioBase extends dm {
                     if (m.name != this.name && !m.mute) m.mute = true;
                 });
             }
-        });
+        }, { immediate: true });
 
         // Start / stop the VU meter
         this.on('run', run => {
@@ -63,7 +64,26 @@ class _paAudioBase extends dm {
                 }
                 this.vu = [...this._vu]; // create a shallow copy of the internal VU array
             }
-        });
+        }, { immediate: true });
+    }
+
+    /**
+     * Get the running status
+     */
+    get run() {
+        return this._run;
+    }
+
+    /**
+     * Set the running status, and trigger the 'run' event if the running status has changed
+     */
+    set run(val) {
+        if (typeof val == 'boolean') {
+            if (val != this._run) {
+                this._run = val;
+                this.emit('run', val);
+            }
+        }
     }
 
     _startVU() {

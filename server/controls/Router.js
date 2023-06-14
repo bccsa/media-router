@@ -10,6 +10,7 @@ class Router extends dm {
         super();
         this.run = false;
         this.autoStart = false;
+        this.autoStartDelay = 500,
         this.username = "";
         this.password = "";
         this.description = "";
@@ -21,11 +22,32 @@ class Router extends dm {
     }
 
     Init() {
+        super.Init();
+
+        // reset run without triggering event
+        this._properties.run = false;
+        
+        // Auto start
+        if (this.autoStart) {
+            setTimeout(() => {
+                this.run = true;
+            }, this.autoStartDelay);
+        }
+
         // PulseAudio items detection
         if (this._updatePAlist('sources', this._sources)) this.sources = JSON.stringify(this._sources);
         if (this._updatePAlist('sinks', this._sinks)) this.sinks = JSON.stringify(this._sinks);
         setInterval(() => { if (this._updatePAlist('sources', this._sources)) this.sources = JSON.stringify(this._sources) }, 1000);
         setInterval(() => { if (this._updatePAlist('sinks', this._sinks)) this.sinks = JSON.stringify(this._sinks) }, 1000);
+
+        // Start/stop submodules
+        this.on('run', run => {
+            Object.values(this._controls).forEach(control => {
+                if (control.run != undefined) {
+                    control.run = run;
+                }
+            });
+        });
     }
 
     /**
