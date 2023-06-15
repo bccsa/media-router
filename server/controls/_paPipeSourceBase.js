@@ -45,6 +45,9 @@ class _paPipeSourceBase extends _paAudioSourceBase {
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
                 console.log(`${this._controlName}: Created pipe-source; ID: ${this._paModuleID}`);
+
+                this.source = this._controlName;
+                this.monitor = this._controlName; // Monitor source is the same as source for PulseAudio sources.
                 this.emit('pipe-source-create');
             }
         }).catch(err => {
@@ -54,6 +57,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
     // Remove PulseAudio module
     _stopPipeSource() {
+        this.ready = false;
         if (this._paModuleID) {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
@@ -99,7 +103,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
                 });
 
                 // notify that pipe-source is ready. This can be used by implementing classes to start their processes feeding data to the 'named pipe'
-                this.emit('pipe-source-ready');
+                this.ready = true;
             }
             catch (err) {
                 console.log(`${this._controlName}: pipe-source drain error ${err.message}`);

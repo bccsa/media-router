@@ -26,9 +26,11 @@ class SrtOpusInput extends _paPipeSourceBase {
         this._udpSocketPort = this._parent.GetUdpSocketPort();
 
         // Start external processes when the underlying pipe-source is ready (from extended class)
-        this.on('pipe-source-ready', () => {
-            this._start_ffmpeg();
-            this._start_srt();
+        this.on('ready', ready => {
+            if (ready) {
+                this._start_ffmpeg();
+                this._start_srt();
+            }
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
@@ -37,7 +39,7 @@ class SrtOpusInput extends _paPipeSourceBase {
                 this._stop_ffmpeg();
                 this._stop_srt();
             }
-        })
+        });
     }
 
     _start_ffmpeg() {

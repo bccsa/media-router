@@ -20,30 +20,33 @@ test.Set({
             ],
         },
 
-        // output1: {
-        //     controlType: 'AudioOutput',
-        //     sink: 'alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
-        // },
+        output1: {
+            controlType: 'AudioOutput',
+            sink: 'alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
+            channels: 2,
+        },
 
         opusOut1: {
             controlType: 'SrtOpusOutput',
             channels: 2,
-            srtHost: '0.0.0.0',
+            srtHost: '127.0.0.1',
             srtPort: 1234,
             srtMode: 'listener',
             srtLatency: 10,
             udpBufferSize: 2048,
         },
 
-        // opusIn1: {
-        //     controlType: 'OpusInput',
-        // },
-
-        // loopback2: {
-        //     controlType: 'AudioLoopback',
-        //     source: 'opusIn1.monitor',
-        //     sink: 'alsa_output.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
-        // },
+        opusIn1: {
+            controlType: 'SrtOpusInput',
+            channels: 2,
+            srtHost: '127.0.0.1',
+            srtMode: 'caller',
+            srtLatency: 10,
+            udpBufferSize: 2048,
+            destinations: [
+                'output1'
+            ],
+        },
     }
 });
 
@@ -66,7 +69,7 @@ setTimeout(() => {
 
     // test.testRouter1.loopback1.run = false;
     // test.testRouter1.loopback2.run = false;
-}, 10000);
+}, 20000);
 
 
 // process.on('exit', cleanup);
