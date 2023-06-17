@@ -96,7 +96,7 @@ class _paAudioBase extends ui {
                                 <label for="@{_sampleRate}" class="mb-2">Sample Rate:</label>
                                 <div class="mb-3 w-full">
                                     <select id="@{_sampleRate}" class="paAudioBase-select" title="Audio sample rate (default = 48000)"
-                                    value="@{sampleRate}" name="sampleRate" type="text" hidden="@{formatHideRW}>
+                                    value="@{sampleRate}" name="sampleRate" type="text" hidden="@{formatHideRW}">
                                         <option value="44100">44100 Hz</option>
                                         <option value="48000">48000 Hz</option>
                                     </select>
@@ -109,7 +109,7 @@ class _paAudioBase extends ui {
                                 <label for="@{_bitDepth}" class="mb-2">Bit Depth:</label>
                                 <div class="mb-3 w-full">
                                     <select id="@{_bitDepth}" class="paAudioBase-select" title="Audio bit depth (default = 16)"
-                                    value="@{bitDepth}" name="bitDepth" type="text" hidden="@{formatHideRW}>
+                                    value="@{bitDepth}" name="bitDepth" type="text" hidden="@{formatHideRW}">
                                         <option value="16">16</option>
                                         <option value="24">24</option>
                                         <option value="32">32</option>

@@ -7,9 +7,9 @@ class SrtOpusInput extends _paPipeSourceBase {
 
         this._ffmpeg;
         this._srt;
-        this.srtHost = '127.0.0.1';
+        this.srtHost = 'srt.invalid';
         this.srtPort = 1234;
-        this.srtMode = 'listener';
+        this.srtMode = 'caller';
         this.srtLatency = 10;
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
@@ -17,6 +17,7 @@ class SrtOpusInput extends _paPipeSourceBase {
         this._udpSocketPort = 0;
         this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.srtStats = '';         // SRT statistics in JSON string format
+        this.SetAccess('srtStats', { Set: 'none' });
     }
 
     Init() {

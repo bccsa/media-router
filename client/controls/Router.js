@@ -192,10 +192,10 @@ class Router extends ui {
                         <div class="mb-3 w-full">
                             <select id="@{_deviceType}" class="router-select" 
                             title="Choose a Device type" value="" type="text">
-                            <option value="AudioInput">AudioInput</option>
-                            <option value="SrtOpusInput">SrtOpusInput</option>
-                            <option value="AudioOutput">AudioOutput</option>
-                            <option value="SrtOpusOutput">SrtOpusOutput</option>
+                            <option value="AudioInput">Audio Input</option>
+                            <option value="AudioOutput">Audio Output</option>
+                            <option value="SrtOpusInput">Opus over SRT Input</option>
+                            <option value="SrtOpusOutput">Opus over SRT Output</option>
                             </select>
                         </div>
                     </div>

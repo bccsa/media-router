@@ -52,11 +52,15 @@ class _paAudioSourceBase extends _paAudioBase {
                         });
                     }
 
+                    // Start / stop loopback controls
+                    // ToDo: move logic to AudioLoopback to be able to self determine if source and destinations are ready before starting the loopback.
                     Object.values(this._controls).forEach(control => {
                         if (control.run != undefined) {
-                            control.run = run;
+                            control.run = false;
                         }
                     });
+
+
                 }, { immediate: true });
                 init = true;
             }

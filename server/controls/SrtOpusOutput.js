@@ -12,7 +12,7 @@ class SrtOpusOutput extends _paNullSinkBase {
         this._ffmpeg;
         this._srt;
         this._pipe;                 // named pipe output stream produced by the PulseAudio pipe-sink
-        this.srtHost = '127.0.0.1';
+        this.srtHost = 'srt.invalid';
         this.srtPort = 1234;
         this.srtMode = 'caller';
         this.srtLatency = 10;
@@ -23,8 +23,10 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.ffmpegPulseLatency = 50;
         this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.outBitrate = 0;        // Opus encoder output bitrate
+        this.SetAccess('outBitrate', { Set: 'none' });
         this._ffmpegParser = new ffmpeg_stderr_parser();
         this.srtStats = '';         // SRT statistics in JSON string format
+        this.SetAccess('srtStats', { Set: 'none' });
     }
 
     Init() {
