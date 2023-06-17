@@ -69,7 +69,8 @@ module.exports = {
 * Save all your files before running the build process
 * Run the CLI tool to scan your template files for classes and build your CSS.
 ```
-sudo npx tailwindcss -i ./input.css -o ./client/output.css
+cd client
+sudo npx tailwindcss -i ./input.css -o ./output.css
 ```
 
 

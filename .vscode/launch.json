@@ -7,24 +7,6 @@
         {
             "type": "node",
             "request": "launch",
-            "name": "test2.js",
-            "skipFiles": [
-                "<node_internals>/**"
-            ],
-            "program": "${workspaceFolder}/server/test2.js"
-        },
-        {
-            "type": "node",
-            "request": "launch",
-            "name": "test.js",
-            "skipFiles": [
-                "<node_internals>/**"
-            ],
-            "program": "${workspaceFolder}/server/test.js"
-        },
-        {
-            "type": "node",
-            "request": "launch",
             "name": "router.js",
             "skipFiles": [
                 "<node_internals>/**"

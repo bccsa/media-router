@@ -30,7 +30,6 @@ class _paAudioSourceBase extends _paAudioBase {
         `);
     }
 
-
     Init() {
         super.Init();
 
@@ -96,10 +95,10 @@ class _paAudioSourceBase extends _paAudioBase {
         });
     }
 
-    //Add destination if new _audioInputDevice control is added to the parent
+    //Add destination if new _paAudioSinkBase control is added to the parent
     _addDestination(dstControl) {
         try {
-            if (dstControl instanceof _audioOutputDevice) {
+            if (dstControl instanceof _paAudioSinkBase) {
                 let check = 'dst_' + dstControl.name;
                 let line = 'line_' + this.name + "To" + dstControl.name;
 

@@ -1,70 +1,53 @@
-class AudioOutput extends _audioOutputDevice {
+class AudioOutput extends _paAudioSinkBase {
     constructor() {
         super();
-        this.deviceType = "AudioOutput";
-        this.device = "New Device";
-        this.bufferSize = 64; // 64, 128, 256, 512, 1024, 2048, 4096
+        this.formatHideRW = true;   // true = Disable Read Write audio format controls
+        this.formatHideRO = false;  // true = Disable Read Only audio format controls
     }
 
     get html() {
         return super.html.replace('%additionalHtml%', `
-        <!-- Device  -->
+        <!-- Sink  -->
         <div class="w-full mb-2 mr-4">
-            <label for="@{_device}" class="form-label inline-block mb-2">Device:</label>
-            <input id="@{_device}" class="audioDevice-text-area" type="text" 
-            title="ALSA Device name - see aplay -L (Default = default)" placeholder="Your device"
-            value="${this.device}">
-        </div>
-        
-        <!-- Buffer Size  -->    
-        <div class="w-1/4 mr-3">
-            <label for="@{_bufferSize}" class="form-label inline-block mb-2">Buffer Size:</label>
-            <select id="@{_bufferSize}" title="ALSA buffer size in bytes (Default = 64)" value="${this.bufferSize}" 
-            name="bufferSize" class="audioDevice-select" type="text">
-                <option value="64">64</option>
-                <option value="128">128</option>
-                <option value="256">256</option>
-                <option value="512">512</option>
-                <option value="1024">1024</option>
-                <option value="2048">2048</option>
-                <option value="4096">4096</option>
-            </select>
+            <label for="@{_sink}" class="form-label inline-block mb-2">Sink:</label>
+            <select id="@{_sink}" class="paAudioBase-select" type="text" title="PulseAudio sink" value="@{sink}"></select>
         </div>
         `);
     }
 
- 
+
     Init() {
-        // super.Init();
-        // // Set index / source
-        // let o = [...this._source.options].find(t => t.value == this.source);
-        // if (o) {
-        //     this._source.selectedIndex = o.index;
-        // } else {
-        //     if (this._source.selectedIndex >= 0) {
-        //         this.source = this._source.options[this._source.selectedIndex].value;
-        //     }
-        // }
+        super.Init();
 
-        //Event subscriptions
-        this._device.addEventListener('change', (e) => {
-            this.device = this._device.value;
-            this.NotifyProperty("device");
-        });
+        // Populate input values
+        this._parent.on('sinks', sinks => {
+            // add new options
+            sinks.forEach(sink => {
+                if (![...this._sink.options].find(t => t.value == sink.name)) {
+                    let o = document.createElement('option');
+                    o.value = sink.name;
+                    o.text = sink.description;
+                    this._sink.options.add(o);
+                }
+            });
 
-        this._bufferSize.addEventListener('change', (e) => {
-            this.bufferSize = Number.parseInt(this._bufferSize.value);
-            this.NotifyProperty("bufferSize");
-        });
+            // remove invalid options
+            [...this._sink.options].forEach(option => {
+                if (!sinks.find(t => t.name == option.value)) {
+                    this._sink.options.remove(option.index);
+                }
+            });
 
-        // Handle property changes
-
-        this.on('device', device => {
-            this._device.value = device;
-        });
-
-        this.on('bufferSize', bufferSize => {
-            this._bufferSize.value = bufferSize;
-        });
+            // Set index / sink
+            let o = [...this._sink.options].find(t => t.value == this.sink);
+            if (o) {
+                this._sink.selectedIndex = o.index;
+            } else {
+                if (this._sink.selectedIndex >= 0) {
+                    this.sink = this._sink.options[this._sink.selectedIndex].value;
+                    this.NotifyProperty('sink');
+                }
+            }
+        }, { immediate: true });
     }
 }

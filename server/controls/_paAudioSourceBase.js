@@ -39,7 +39,7 @@ class _paAudioSourceBase extends _paAudioBase {
                     if (run) {
                         // remove destinations
                         Object.keys(this._destinations).forEach(dst => {
-                            if (!this.destinations.find(dst)) {
+                            if (!this.destinations.find(t => t == dst)) {
                                 this._removeDestination(dst);
                             }
                         });
@@ -105,11 +105,12 @@ class _paAudioSourceBase extends _paAudioBase {
     }
 
     _removeDestination(dstName) {
-        let loopback = this[this._controlName + '_loopback_' + dstName];
+        let loopbackName = this._controlName + '_loopback_' + dstName;
+        let loopback = this[loopbackName];
         if (loopback) {
             loopback.run = false;
             this.Set({
-                ['loopback_' + dest]: {
+                [loopbackName]: {
                     remove: true
                 }
             });
