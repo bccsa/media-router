@@ -35,9 +35,16 @@ class AudioOutput extends _audioOutputDevice {
 
  
     Init() {
-        super.Init();
-        // this._device = document.getElementById(`${this._uuid}_device`);
-        // this._bufferSize = document.getElementById(`${this._uuid}_bufferSize`);
+        // super.Init();
+        // // Set index / source
+        // let o = [...this._source.options].find(t => t.value == this.source);
+        // if (o) {
+        //     this._source.selectedIndex = o.index;
+        // } else {
+        //     if (this._source.selectedIndex >= 0) {
+        //         this.source = this._source.options[this._source.selectedIndex].value;
+        //     }
+        // }
 
         //Event subscriptions
         this._device.addEventListener('change', (e) => {

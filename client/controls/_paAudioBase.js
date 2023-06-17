@@ -25,6 +25,8 @@ class _paAudioBase extends ui {
         this.width = 326.4;
         this.height = 93.6;
         this.showInTopBar = false;
+        this.formatHideRW = false;   // true = Disable Read Write audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
+        this.formatHideRO = true;  // true = Disable Read Only audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
     }
 
@@ -79,42 +81,51 @@ class _paAudioBase extends ui {
                             <!--    CHANNELS      -->
                             <div class="w-1/4 mr-3">
                                 <label for="@{_channels}" class="mb-2">Channels:</label>
-                                    <div class="mb-3 w-full">
-                                        <select id="@{_channels}" class="paAudioBase-select" title="Audio channel number (default = 1)"
-                                        value="@{channels}" name="channel" type="text">
-                                            <option value="1">1</option>
-                                            <option value="2">2</option>
-                                        </select>
-                                    </div>
+                                <div class="mb-3 w-full">
+                                    <select id="@{_channels}" class="paAudioBase-select" title="Audio channel number (default = 1)"
+                                    value="@{channels}" name="channel" type="text" hidden="@{formatHideRW}">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                    </select>
+                                    <label hidden="@{formatHideRO}">@{channels}</label>
+                                </div>
                             </div>
                             
                             <!--    SAMPLE RATE    -->
                             <div class="w-1/4 mr-3">
                                 <label for="@{_sampleRate}" class="mb-2">Sample Rate:</label>
-                                <select id="@{_sampleRate}" class="paAudioBase-select" title="Audio sample rate (default = 48000)"
-                                value="@{sampleRate}" name="sampleRate" type="text">
-                                    <option value="44100">44100 Hz</option>
-                                    <option value="48000">48000 Hz</option>
-                                </select>
+                                <div class="mb-3 w-full">
+                                    <select id="@{_sampleRate}" class="paAudioBase-select" title="Audio sample rate (default = 48000)"
+                                    value="@{sampleRate}" name="sampleRate" type="text" hidden="@{formatHideRW}>
+                                        <option value="44100">44100 Hz</option>
+                                        <option value="48000">48000 Hz</option>
+                                    </select>
+                                    <label hidden="@{formatHideRO}">@{sampleRate}</label>
+                                </div>
                             </div>
 
                             <!-- BIT DEPTH   -->    
                             <div class="w-1/4 mr-3">
                                 <label for="@{_bitDepth}" class="mb-2">Bit Depth:</label>
-                                <select id="@{_bitDepth}" class="paAudioBase-select" title="Audio bit depth (default = 16)"
-                                value="@{bitDepth}" name="bitDepth" type="text">
-                                    <option value="16">16</option>
-                                    <option value="24">24</option>
-                                    <option value="32">32</option>
-                                </select>
+                                <div class="mb-3 w-full">
+                                    <select id="@{_bitDepth}" class="paAudioBase-select" title="Audio bit depth (default = 16)"
+                                    value="@{bitDepth}" name="bitDepth" type="text" hidden="@{formatHideRW}>
+                                        <option value="16">16</option>
+                                        <option value="24">24</option>
+                                        <option value="32">32</option>
+                                    </select>
+                                    <label hidden="@{formatHideRO}">@{bitDepth}</label>
+                                </div>
                             </div>
 
                             <!--    MAX VOLUME    --> 
                             <div class="w-1/4">
                                 <label for="@{_maxVolume}" class="mb-2">Max Volume:</label>
-                                <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
-                                title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
-                                class="paAudioBase-pos-decimal-input" value="@{maxVolume}">
+                                <div class="mb-3 w-full">
+                                    <input id="@{_maxVolume}" type="number" min="0" oninput="validity.valid||(value='')" 
+                                    title="Maximum volume that the client WebApp can request" name="maxVolume" step="1"
+                                    class="paAudioBase-pos-decimal-input" value="@{maxVolume}">
+                                </div>
                             </div>
 
                         </div>

@@ -1,6 +1,8 @@
 class AudioInput extends _paAudioSourceBase {
     constructor() {
         super();
+        this.formatHideRW = true;   // true = Disable Read Write audio format controls
+        this.formatHideRO = false;  // true = Disable Read Only audio format controls
     }
 
     get html() {
@@ -37,6 +39,16 @@ class AudioInput extends _paAudioSourceBase {
                     this._source.options.remove(option.index);
                 }
             });
+
+            // Set index / source
+            let o = [...this._source.options].find(t => t.value == this.source);
+            if (o) {
+                this._source.selectedIndex = o.index;
+            } else {
+                if (this._source.selectedIndex >= 0) {
+                    this.source = this._source.options[this._source.selectedIndex].value;
+                }
+            }
         }, { immediate: true });
     }
 }

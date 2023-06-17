@@ -3,6 +3,10 @@ let _paAudioSourceBase = require('./_paAudioSourceBase');
 class AudioInput extends _paAudioSourceBase {
     constructor() {
         super();
+        // Set audio format settings to read-only. These settings are read from the PulseAudio server, and cannot be modified by the user.
+        this.SetAccess('channels', { Set: 'none'} );
+        this.SetAccess('bitDepth', { Set: 'none'} );
+        this.SetAccess('sampleRate', { Set: 'none'} );
     }
 
     Init() {
