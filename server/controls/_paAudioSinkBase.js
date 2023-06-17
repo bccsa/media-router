@@ -15,6 +15,16 @@ class _paAudioSinkBase extends _paAudioBase {
         this.on('sink', sink => {
             // monitor is used for VU meter. For PulseAudio sinks, the monitor source is [sink].monitor.
             this.monitor = sink + '.monitor';
+
+            // Restart if running
+            if (this.run) {
+                this.run = false;
+                setTimeout(() => {
+                    if (this._parent.run) {
+                        this.run = true;
+                    }
+                }, 500);
+            }
         }, { immediate: true });
     }
 }

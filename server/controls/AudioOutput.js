@@ -12,6 +12,8 @@ class AudioOutput extends _paAudioSinkBase {
             // Get the sink channel count
             if (this._parent._sinks[this.sink]) {
                 this.channels = this._parent._sinks[this.sink].channels;
+                this.sampleRate = this._parent._sinks[this.sink].sampleRate;
+                this.bitDepth = this._parent._sinks[this.sink].bitDepth;
                 this.ready = true;
             } else {
                 this.ready = false;
@@ -22,6 +24,8 @@ class AudioOutput extends _paAudioSinkBase {
             // Get the sink channel count
             if (this._parent._sinks[this.sink]) {
                 this.channels = this._parent._sinks[this.sink].channels;
+                this.sampleRate = this._parent._sinks[this.sink].sampleRate;
+                this.bitDepth = this._parent._sinks[this.sink].bitDepth;
                 this.ready = true
             } else {
                 this.ready = false;

@@ -137,9 +137,14 @@ class Router extends dm {
 
                     // Add to dst if not existing
                     if (!dst[item.Name]) {
-                        // channel number
                         let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
                         if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
+
+                        let bitDepth = item['Sample Specification'].match(/[sf]\d{1,2}[a-z]{0,2}/gi);
+                        if (bitDepth[0]) bitDepth = parseInt(bitDepth[0].match(/[0-9][0-9]*/gi));
+
+                        let sampleRate = item['Sample Specification'].match(/[1-9]\d*Hz/gi);
+                        if (sampleRate[0]) sampleRate = parseInt(sampleRate[0].match(/[0-9][0-9]*/gi));
 
                         // description
                         let description = item.Description;
@@ -154,6 +159,8 @@ class Router extends dm {
                                 name: item.Name,
                                 description: description,
                                 channels: ch,
+                                bitDepth: bitDepth,
+                                sampleRate: sampleRate,
                                 monitorsource: item['Monitor Source'],
                                 channelmap: item['Channel Map'].split(','),
                             };

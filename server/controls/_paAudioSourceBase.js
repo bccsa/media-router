@@ -17,6 +17,16 @@ class _paAudioSourceBase extends _paAudioBase {
         this.on('source', source => {
             // monitor is used for VU meter. For PulseAudio sources, the monitor source is the same as the actual source.
             this.monitor = source;
+
+            // Restart if running
+            if (this.run) {
+                this.run = false;
+                setTimeout(() => {
+                    if (this._parent.run) {
+                        this.run = true;
+                    }
+                }, 500);
+            }
         }, { immediate: true });
 
         // Set running status on child controls (AudioLoopBack controls)
