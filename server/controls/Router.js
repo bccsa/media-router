@@ -6,18 +6,22 @@ const exec = util.promisify(require('child_process').exec);
  * Router control
  */
 class Router extends dm {
-    constructor() {
-        super();
+    /**
+     * @param {string} path - path to modular-dm control class files. This should be the absolute path to the control files directory or the relative path from the directory where modular-dm is installed.
+     */
+    constructor(path) {
+        super(path);
         this.run = false;
         this.autoStart = false;
         this.autoStartDelay = 500,
-        this.username = "";
+        this.DisplayName = "";                      // Used as router username
         this.password = "";
-        this.description = "";
         this._sources = {};
         this._sinks = {};
-        this.sources = "{}"; // json sources list for front-end
-        this.sinks = "{}" // json sinks list for front-end
+        this.sources = [];                        // json sources list for front-end
+        this.SetAccess('sources', { Set: 'none' }); // Disable Set() access to prevent frontend changing the property
+        this.sinks = [];                           // json sinks list for front-end
+        this.SetAccess('sinks', { Set: 'none' });   // Disable Set() access to prevent frontend changing the property
         this._udpSocketPortIndex = 2000;
     }
 
@@ -35,10 +39,10 @@ class Router extends dm {
         }
 
         // PulseAudio items detection
-        if (this._updatePAlist('sources', this._sources)) this.sources = JSON.stringify(this._sources);
-        if (this._updatePAlist('sinks', this._sinks)) this.sinks = JSON.stringify(this._sinks);
-        setInterval(() => { if (this._updatePAlist('sources', this._sources)) this.sources = JSON.stringify(this._sources) }, 1000);
-        setInterval(() => { if (this._updatePAlist('sinks', this._sinks)) this.sinks = JSON.stringify(this._sinks) }, 1000);
+        if (this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources);
+        if (this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks);
+        setInterval(() => { if (this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources) }, 1000);
+        setInterval(() => { if (this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks) }, 1000);
 
         // Start/stop submodules
         this.on('run', run => {

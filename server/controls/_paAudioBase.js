@@ -8,8 +8,9 @@ const { spawn } = require('child_process');
 class _paAudioBase extends dm {
     constructor() {
         super();
+        this.displayName = "";  // Display name
         this.soloGroup = "";
-        this.mute = true;
+        this.active = false;    // false: mute; true: unmuted / active
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;  // display order on client interface
@@ -26,14 +27,16 @@ class _paAudioBase extends dm {
         this.sampleRate = 44100;// Audio sample rate
         this.ready = false;     // Ready indication to be set by implementing class when internal processes are running and the module is ready for linking to other modules.
         this._run = false;      // Run implemented manually with getter and setter to prevent setting values through Set()
+        this.volume = 100;      // Requested volume in %
+        this.maxVolume = 150;   // Maximum permissible volume
     }
 
     Init() {
         // Mute all other modules (with the same parent) in the solo group
-        this.on('mute', mute => {
-            if (!mute && this.soloGroup) {
+        this.on('active', active => {
+            if (active && this.soloGroup) {
                 Object.values(this._parent.controls).filter(c => c.soloGroup == this.soloGroup).forEach(m => {
-                    if (m.name != this.name && !m.mute) m.mute = true;
+                    if (m.name != this.name && m.active) m.active = false;
                 });
             }
         }, { immediate: true });

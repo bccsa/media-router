@@ -293,103 +293,103 @@
 /*-------------------------*/
 
 /* Audio Device css */
-.audioDevice-main-card {
+.paAudioBase-main-card {
     @apply z-10 m-1 select-none w-[20.4rem] bg-[#1E293B] rounded-t-xl rounded-b-lg text-white border-solid border border-b-[#75C4EB];
 }
 
-.audioDevice-summary-container {
+.paAudioBase-summary-container {
     @apply list-none flex items-center cursor-pointer first-letter:focus-visible:outline-none focus-visible:ring focus-visible:ring-pink-500 rounded group-open:rounded-b-none group-open:z-10 relative;
 }
 
-.audioDevice-card-heading {
+.paAudioBase-card-heading {
     @apply flex justify-between rounded-t-lg cursor-move items-center pt-1 mb-1 px-4 w-full h-7;
 }
 
-.audioDevice-card-body {
+.paAudioBase-card-body {
     @apply px-4 pt-1 w-full h-[3.75rem];
 }
 
-.audioDevice-btn-mute {
+.paAudioBase-btn-mute {
     @apply h-11 w-11 inline-block leading-tight uppercase rounded hover:bg-green-600 hover:shadow-lg focus:bg-green-600 focus:shadow-lg focus:outline-none ml-2 mt-1 focus:ring-0 transition duration-150 ease-in-out;
 }
 
-.audioDevice-label {
+.paAudioBase-label {
     @apply text-[15px] tracking-wider form-check-label inline-block text-white mr-2;
 }
 
-.audioDevice-toggle {
+.paAudioBase-toggle {
     @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-gray-300 focus:outline-none cursor-pointer shadow-sm;
 }
 
-.audioDevice-btn-settings {
+.paAudioBase-btn-settings {
     @apply bg-settings_wt bg-center bg-cover bg-no-repeat inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548] duration-200 ease-in-out w-6 h-6 border-2 border-transparent p-1;
 }
 
-.audioDevice-line {
+.paAudioBase-line {
     @apply w-full h-[0.01rem] bg-[#75C4EB];
 }
 
-.audioDevice-more-info-container {
+.paAudioBase-more-info-container {
     @apply w-full h-auto m-4 pr-[2rem] text-[14.75px];
 }
 
-.audioDevice-slider {
+.paAudioBase-slider {
     @apply ml-4 mr-4 mt-2 w-4/6 bg-[#293548] text-[#75C4EB];
 }
 
-.audioDevice-text-area {
+.paAudioBase-text-area {
     @apply max-h-40 min-h-[2rem] mr-4 form-control block w-full text-sm font-normal text-white bg-[#293548] border border-solid border-gray-300 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 focus:outline-none px-2 py-1;
 }
 
-.audioDevice-select {
+.paAudioBase-select {
     @apply form-select h-[1.625rem] w-full text-sm font-normal text-white bg-[#293548] border border-solid border-gray-300 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
 
-.audioDevice-pos-decimal-input {
+.paAudioBase-pos-decimal-input {
     @apply w-full text-sm font-normal text-white bg-[#293548] border border-solid border-gray-300 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5 h-[1.625rem];
 }
 
-.audioDevice-pos-number-input {
+.paAudioBase-pos-number-input {
     @apply w-full h-6 text-sm font-normal text-white bg-[#293548] border border-solid border-gray-300 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
 
-.audioDevice-btn-duplicate {
+.paAudioBase-btn-duplicate {
     @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 inline-block rounded-full transition hover:shadow-lg duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
-.audioDevice-btn-delete {
+.paAudioBase-btn-delete {
     @apply bg-delete_bl bg-center bg-cover bg-no-repeat m-2 inline-block rounded-full transition hover:shadow-lg duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
 }
 
-.audioDevice-modal {
+.paAudioBase-modal {
     @apply fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto;
 }
 
-.audioDevice-modal-dialog {
+.paAudioBase-modal-dialog {
     @apply relative w-auto pointer-events-none;
 }
 
-.audioDevice-modal-content {
+.paAudioBase-modal-content {
     @apply min-w-[30rem] modal-content border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
 }
 
-.audioDevice-modal-header {
+.paAudioBase-modal-header {
     @apply modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md;
 }
 
-.audioDevice-modal-heading {
+.paAudioBase-modal-heading {
     @apply ml-2 text-xl font-medium leading-normal text-gray-800;
 }
 
-.audioDevice-modal-btn-close {
+.paAudioBase-modal-btn-close {
     @apply btn-close box-content w-4 h-4 p-1 text-black border-none rounded-full opacity-50 focus:shadow-none transition hover:shadow-lg duration-200 ease-in-out focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline bg-center bg-cover bg-no-repeat m-2 inline-block border-2 border-transparent;
 }
 
-.audioDevice-modal-body {
+.paAudioBase-modal-body {
     @apply modal-body relative p-4;
 }
 
-.audioDevice-modal-footer {
+.paAudioBase-modal-footer {
     @apply modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md;
 }
 

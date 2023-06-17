@@ -9,6 +9,8 @@ class Router extends ui {
         this.password = "";
         this.displayName = "New Router";
         this.online = false;
+        this.sources = [];          // Array with PulseAudio sources
+        this.sinks = [];            // Array with PulseAudio sinks
     }
 
     get html() {
@@ -31,7 +33,7 @@ class Router extends ui {
 
                                 <!--    ROUTER NAME    -->
                                 <div class="ml-4">
-                                    <span id="@{_name}" class="font-medium text-2xl" title="Router Name">${this.displayName}</span>
+                                    <span id="@{_name}" class="font-medium text-2xl" title="Router Name">@{displayName}</span>
                                 </div>
                             </div>
 
@@ -58,7 +60,7 @@ class Router extends ui {
                                     <label for="@{_switchOnOff}" class="router-label">Off</label>
                                     <div class="form-check form-switch">
                                         <input id="@{_switchOnOff}" class="router-toggle" type="checkbox"
-                                        role="switch" title="Switch Router on or off">
+                                        role="switch" title="Switch Router on or off" checked="@{run}">
                                         <label for="@{_switchOnOff}" class="router-label">On</label>
                                     </div>
                                 </div>
@@ -124,7 +126,7 @@ class Router extends ui {
                             <div class="mr-4 w-full">
                             
                                 <input id="@{_displayName}" class="router-text-area" type="text" maxlength="30"
-                                placeholder="Your display name" title="Router display name" value="${this.displayName}"/>
+                                placeholder="Your display name" title="Router display name" value="@{displayName}"/>
 
                             </div>
                         </div>
@@ -135,7 +137,7 @@ class Router extends ui {
                             <div class="mr-4 w-full">
                             
                                 <textarea id="@{_description}" class="router-text-area" rows="2"
-                                placeholder="Your description" title="Router description">${this.description}</textarea>
+                                placeholder="Your description" title="Router description">@{description}</textarea>
 
                             </div>
                         </div>
@@ -146,14 +148,14 @@ class Router extends ui {
                             <div class="mr-4 w-full">
                                 
                                 <input id="@{_autoStartDelay}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
-                                title="Set the delay in milliseconds" name="maxVolume" step="1" value="${this.autoStartDelay}"/>
+                                title="Set the delay in milliseconds" name="maxVolume" step="1" value="@{autoStartDelay}"/>
 
                             </div>
                         </div>
 
                         <!--    AUTO START CHECKBOX      --> 
                         <div class="router-container">
-                            <input id="@{_autoStart}" class="router-checkbox" type="checkbox"  value="${this.autoStart}"  title="Enable or disable the auto start"/>  
+                            <input id="@{_autoStart}" class="router-checkbox" type="checkbox" checked="@{autoStart}" title="Enable or disable the auto start"/>  
                             <label for="@{_autoStart}" class="ml-2">Auto Start</label>  
                         </div>
 
@@ -162,7 +164,7 @@ class Router extends ui {
                         <div class="router-container">
                             <div class="mr-4 w-full">
                                 <input id="@{_password}" class="router-text-area"
-                                placeholder="Your password" title="Enter a password" value="${this.password}"/>
+                                placeholder="Your password" title="Enter a password" value="@{password}"/>
                             </div>
                         </div>
 
@@ -245,15 +247,7 @@ class Router extends ui {
     Init() {        
         // Set initial values
         this._toggleSettingContainer();
-        this._switchOnOff.checked = this.run;
-        this._autoStart.checked = this.autoStart;
         this._checkOnline();
-
-        // Event subscriptions 
-        this._switchOnOff.addEventListener("click", () => {
-            this.run = !this.run;
-            this.NotifyProperty("run");
-        });
 
         this._btnSettings.addEventListener('click', (e) => {
             this._toggleSettingContainer();
@@ -261,34 +255,6 @@ class Router extends ui {
 
         this._btnExit.addEventListener('click', (e) => {
             this._toggleSettingContainer();
-        });
-
-        this._description.addEventListener('change', (e) => {
-            this.description = this._description.value;
-            this.NotifyProperty("description");
-        });
-
-        this._displayName.addEventListener('change', (e) => {
-            this.displayName = this._displayName.value;
-            this._name.innerHTML  = this._displayName.value;
-            this.NotifyProperty("displayName");
-        })
-
-        this._autoStartDelay.addEventListener('change', (e) => {
-            this.autoStartDelay = Number.parseInt(this._autoStartDelay.value);
-            this.NotifyProperty("autoStartDelay");
-        });
-
-        this._autoStart.addEventListener('change', (e) => {
-            this.autoStart = !this.autoStart;
-            this.NotifyProperty("autoStart");
-        });
-
-    
-
-        this._password.addEventListener('change', (e) => {
-            this.password = this._password.value;
-            this.NotifyProperty("password");
         });
 
         this._btnDeleteRouter.addEventListener('click', (e) => {
@@ -344,31 +310,6 @@ class Router extends ui {
         // Handle property changes
         this.on('online', online => {
             this._checkOnline();
-        });
-
-        this.on('run', run => {
-            this._switchOnOff.checked = run;
-        });
-
-        this.on('description', description => {
-            this._description.value = description;
-        });
-
-        this.on('displayName', displayName => {
-            this._displayName.value = displayName;
-            this._name.innerHTML = displayName;
-        })
-
-        this.on('autoStartDelay', autoStartDelay => {
-            this._autoStartDelay.value = autoStartDelay;
-        });
-
-        this.on('autoStart', autoStart => {
-            this._autoStart.checked = autoStart;
-        });
-
-        this.on('password', password => {
-            this._password.value = password;
         });
     }
 

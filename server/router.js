@@ -11,10 +11,9 @@
 const fs = require('fs');
 const express = require('express');
 const path = require('path');
-const _device = require("./device_modules/_device");
+let { dmTopLevelContainer } = require('./modular-dm');
 const process = require('process')
-const io  = require('socket.io-client');
-const { config } = require('process');
+const io = require('socket.io-client');
 
 // Set path to runtime directory
 process.chdir(__dirname);
@@ -23,84 +22,72 @@ process.chdir(__dirname);
 // Global variables
 // -------------------------------------
 
-var controls = new _device(); // Top level control for devices
-/**
- * Manager socket.io connection
- */
-var manager_io;
+var controls = new dmTopLevelContainer('../controls');
+controls.on('router', router => {
+    /**
+     * Manager socket.io connection
+     */
+    var manager_io;
 
-// -------------------------------------
-// Startup logic
-// -------------------------------------
+    // -------------------------------------
+    // Startup logic
+    // -------------------------------------
 
-manager_connect('http://localhost:3000');
+    manager_connect('http://localhost:3000');
 
-// Get config file path from passed argument
-// if (process.argv.length > 2) {
-//     // Load config file from disk
-//     loadConfig(process.argv[2]);
-// } else {
-//     loadConfig('config.json');
-// }
+    // Get config file path from passed argument
+    // if (process.argv.length > 2) {
+    //     // Load config file from disk
+    //     loadConfig(process.argv[2]);
+    // } else {
+    //     loadConfig('config.json');
+    // }
 
-// -------------------------------------
-// Manager socket.io connection
-// -------------------------------------
-var firstCon = true;
-/**
- * Connect to the manager's socket.io server
- * @param {string} url 
- */
-function manager_connect(url) {
-    // Clear existing connection
-    if (manager_io) {
-        manager_io.disconnect();
-        firstCon = true;
+    // -------------------------------------
+    // Manager socket.io connection
+    // -------------------------------------
+    var firstCon = true;
+    /**
+     * Connect to the manager's socket.io server
+     * @param {string} url 
+     */
+    function manager_connect(url) {
+        // Clear existing connection
+        if (manager_io) {
+            manager_io.disconnect();
+            firstCon = true;
 
-        // To do: Stop running router
+            // To do: Stop running router
+        }
+
+        manager_io = io(url, { auth: { username: 'testRouter1', password: 'testPass' } });
+
+        manager_io.on('connect', () => {
+            console.log('Connected to manager.')
+            // Send PulseAudio sources and sinks to manager
+            router.NotifyProperty('sources');
+            router.NotifyProperty('sinks');
+        });
+
+        manager_io.on('connect_error', err => {
+            console.log('Unable to connect to manager: ' + err.message);
+        });
+
+        // set data from manager to router controls
+        manager_io.on('data', data => {
+            router.Set(data);
+        });
     }
 
-    manager_io = io(url,{auth: {username: 'testRouter1', password: 'testPass'}});
 
-    manager_io.on('connect', () => {
-        console.log('Connected to manager.')
-    });
-
-    manager_io.on('connect_error', err => {
-        console.log('Unable to connect to manager: ' + err.message);
-    });
-
-    // set data from manager to router controls
-    manager_io.on('data', data => {
-        if (!firstCon) {
-            config_cleanup(data);
-        }
-        firstCon = false;
-        controls.SetConfig(data);
-    });
-}
-
-/**
- * Clean configuration received from the manager to prevent changes to a running router
- * @param {*} config 
- */
-function config_cleanup(config) {
-    Object.keys(config).forEach(key => {
-        if (key == 'deviceType') {
-            delete config[key];
-        } else if (typeof config[key] === "object" && config[key] !== null) {
-            // clean child objects
-            config_cleanup(config[key]);
+    // forward data from router controls to manager
+    router.on('data', data => {
+        if (manager_io) {
+            manager_io.emit('data', data);
         }
     });
-}
-
-// forward data from router controls to manager
-controls.on('data', data => {
-    if (manager_io) {
-        manager_io.emit('data', data);
-    }
-})
+});
+controls.Set({ router: { controlType: 'Router' } });
 
 // -------------------------------------
 // Client WebApp Express webserver
@@ -159,25 +146,25 @@ clientApp.use(express.static('client'));
 // Client WebApp Socket.IO
 // -------------------------------------
 
-const clientIO = require('socket.io')(clientHttp);
+// const clientIO = require('socket.io')(clientHttp);
 
-clientIO.on('connection', socket => {
-    // Send initial (full) state
-    socket.emit('data', controls.GetConfig({client: true, includeRun: true}));
+// clientIO.on('connection', socket => {
+//     // Send initial (full) state
+//     socket.emit('data', controls.Get({client: true, includeRun: true}));
 
-    socket.on('data', data => {
-        // Send data to router
-        controls.SetConfig(data);
+//     socket.on('data', data => {
+//         // Send data to router
+//         controls.Set(data);
 
-        // Send data to other clients
-        socket.broadcast.emit('data', data);
-    });
-});
+//         // Send data to other clients
+//         socket.broadcast.emit('data', data);
+//     });
+// });
 
-// Forward data from router to clients
-controls.on('data', data => {
-    clientIO.emit('data', data);
-});
+// // Forward data from router to clients
+// controls.on('data', data => {
+//     clientIO.emit('data', data);
+// });
 
 
 // -------------------------------------
@@ -185,9 +172,9 @@ controls.on('data', data => {
 // -------------------------------------
 
 // Event log
-controls.on('log', message => {
-    eventLog(message);
-});
+// controls.on('log', message => {
+//     eventLog(message);
+// });
 
 // -------------------------------------
 // Configuration management
@@ -200,7 +187,7 @@ controls.on('log', message => {
 //             // Load from default path
 //             path = 'config.json'
 //         }
-        
+
 //         eventLog(`Loading configuration from ${path}`);
 
 //         var raw = fs.readFileSync(path);
@@ -208,7 +195,7 @@ controls.on('log', message => {
 //         // Parse JSON file
 //         let config = JSON.parse(raw);
 
-//         controls.SetConfig(config);
+//         controls.Set(config);
 //     }
 //     catch (err) {
 //         eventLog(`Unable to load configuration from file (${path}): ${err.message}`);
@@ -256,20 +243,15 @@ process.on('SIGTERM', cleanup);
 
 var _exit = false;
 function cleanup() {
+    router.run = false;
     if (!_exit) {
-        // Stop devicelist on exit
-        controls._stop();
+        router.run = false;
 
-        // // Delete socket files created for audio mixer
-        // let regex = /[.]sock$/;
-        // fs.readdirSync('./')
-        //     .filter(f => regex.test(f))
-        //     .map(f => fs.unlinkSync(f));
-
-        _exit = true;
-        process.exit();
+        setTimeout(() => {
+            _exit = true;
+            process.exit();
+        }, 500);
     }
-    
 }
 
 // // Delete socket files created by fluent-ffmpeg-multistream
