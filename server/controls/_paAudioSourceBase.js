@@ -7,8 +7,13 @@ class _paAudioSourceBase extends _paAudioBase {
     constructor() {
         super();
         this.source = "";   // PulseAudio source name
-        this.destinations = []; // Destination module names array
+        this.destinations = []; // Destination control names array
         this._destinations = {};
+
+        // Event handler for destination remove event.
+        this._dstRemoveHandler = function (dst) {
+            this._removeDestination(dst._controlName);
+        }.bind(this);
     }
 
     Init() {
@@ -17,94 +22,69 @@ class _paAudioSourceBase extends _paAudioBase {
         this.on('source', source => {
             // monitor is used for VU meter. For PulseAudio sources, the monitor source is the same as the actual source.
             this.monitor = source;
-
-            // Restart if running
-            if (this.run) {
-                this.run = false;
-                setTimeout(() => {
-                    if (this._parent.run) {
-                        this.run = true;
-                    }
-                }, 500);
-            }
         }, { immediate: true });
 
-        // Set running status on child controls (AudioLoopBack controls)
-        let init;
-        this.on('ready', ready => {
-            if (ready && !init) {
-                this.on('run', run => {
-
-                    // Add / remove loopback controls
-                    if (run) {
-                        // remove destinations
-                        Object.keys(this._destinations).forEach(dst => {
-                            if (!this.destinations.find(t => t == dst)) {
-                                this._removeDestination(dst);
-                            }
-                        });
-
-                        // add destinations
-                        this.destinations.forEach(dst => {
-                            if (!this._destinations[dst]) {
-                                this._addDestination(dst);
-                            }
-                        });
+        // Add / remove loopback controls on first run. Doing this immediately at startup does 
+        // not work as the destination control(s) may not have been created yet.
+        let destConf = function () {
+            this.on('destinations', destinations => {
+                // remove destinations
+                Object.keys(this._destinations).forEach(dst => {
+                    if (!destinations.find(t => t == dst)) {
+                        this._removeDestination(dst);
                     }
+                });
+    
+                // add destinations
+                destinations.forEach(dst => {
+                    if (!this._destinations[dst]) {
+                        this._addDestination(dst);
+                    }
+                });
+            }, { immediate: true });
+        }.bind(this);
+        
+        if (this.run) {
+            destConf();
+        } else {
+            this.once('run', () => {
+                destConf();
+            });
+        }
 
-                    // Start / stop loopback controls
-                    // ToDo: move logic to AudioLoopback to be able to self determine if source and destinations are ready before starting the loopback.
-                    Object.values(this._controls).forEach(control => {
-                        if (control.run != undefined) {
-                            control.run = false;
-                        }
-                    });
+        // Start/stop child loopback controls
+        this.on('run', run => {
+            Object.values(this._controls).forEach(c => {
+                c.run = run;
+            });
+        });
 
-
-                }, { immediate: true });
-                init = true;
-            }
-
-            if (!ready) {
-                this.run = false;
-            }
+        // Remove all destinations if this control is removed
+        this.on('remove', () => {
+            this.destinations = [];
         });
     }
 
     _addDestination(dstName) {
         let dest = this._parent[dstName];
 
-        if (this.ready && dest) {
-            // Function to link source with destination with PulseAudio Loopback module
-            function link(parent) {
-                // Set control running status after creation
-                parent.once(parent._controlName + '_loopback_' + dstName, control => {
-                    control.run = parent.run;
-                });
+        if (dest) {
+            // Create loopback child control to link this control's PulseAudio source to the destination controls PulseAudio sink
+            this.Set({
+                [this._controlName + '_loopback_' + dstName]: {
+                    controlType: 'AudioLoopback',
+                    srcControl: this._controlName,
+                    dstControl: dest._controlName,
+                    run: this.run,
+                }
+            });
 
-                // Create loopback child control to link this control's PulseAudio source to the destination controls PulseAudio sink
-                parent.Set({
-                    [parent._controlName + '_loopback_' + dstName]: {
-                        controlType: 'AudioLoopback',
-                        channels: parent.channels,
-                        source: parent.source,
-                        sink: dest.sink,
-                        hideData: true,
-                    }
-                });
+            this._destinations[dstName] = true;
 
-                parent._destinations[dstName] = true;
-            }
-
-            if (dest.ready) {
-                // Link immediately if the destination is ready
-                link(this);
-            } else {
-                // Else wait for the destination to become ready before linking
-                dest.once('ready', ready => {
-                    link(this);
-                });
-            }
+            // Subscribe to destination control remove event to automatically clear source control's destination
+            dest.once('remove', this._dstRemoveHandler, { caller: this });
+        } else {
+            console.log(`${this._controlName}: Unable to add loopback - destination control "${dstName}" not found.`)
         }
     }
 
@@ -121,6 +101,15 @@ class _paAudioSourceBase extends _paAudioBase {
         }
 
         delete this._destinations[dstName];
+
+        // Update destinations property
+        this.destinations = Object.keys(this._destinations);
+
+        // Unsubscribe from destination remove event
+        let dest = this._parent[dstName];
+        if (dest) {
+            dest.off('remove', this._dstRemoveHandler);
+        }
     }
 
 }

@@ -9,9 +9,11 @@ const { spawn } = require('child_process');
 class _paPipeSourceBase extends _paAudioSourceBase {
     constructor() {
         super();
-        this._paModuleID;   // PulseAudio module instance ID
+        this._paModuleID;           // PulseAudio module instance ID
         this._drain;
-        this._pipename;     // 'named pipe' file path. This can be used by implementing classes to pipe data into the PulseAudio pipe-source
+        this._pipename;             // 'named pipe' file path. This can be used by implementing classes to pipe data into the PulseAudio pipe-source
+        this.pipe_ready = false;    // Flag used to indicate that FIFO named pipe is ready
+        this.SetAccess('pipe_ready', { Get: 'none', Set: 'none' });
     }
 
     Init() {
@@ -26,16 +28,27 @@ class _paPipeSourceBase extends _paAudioSourceBase {
             }
         });
 
+        // listen for pipe creation
+        this._parent.on('sources', sources => {
+            if (sources.find(t => t.name == this._controlName)) {
+                this.pipe_ready = true;
+            } else {
+                this.pipe_ready = false;
+            }
+        });
 
         // Start the drain when the pipe-source is created
-        this.on('pipe-source-create', () => {
-            this._startDrain();
-        })
+        this.on('pipe_ready', (ready) => {
+            if (ready) {
+                this._startDrain();
+            }
+        });
     }
 
     // Create a PulseAudio Pipe Source module
     _startPipeSource() {
         this._pipename = `/tmp/${this._controlName}_pipe`;
+
         let cmd = `pactl load-module module-pipe-source source_name=${this._controlName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} file=${this._pipename}`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
@@ -48,7 +61,6 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
                 this.source = this._controlName;
                 this.monitor = this._controlName; // Monitor source is the same as source for PulseAudio sources.
-                this.emit('pipe-source-create');
             }
         }).catch(err => {
             console.log(err.message);
@@ -83,7 +95,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
                 // Handle stderr
                 this._drain.stderr.on('data', data => {
-                    console.log(data.toString());
+                    console.log(`${this._controlName}: pipe-source drain eror: ${data.toString()}`)
                 });
 
                 // Handle stdout
@@ -93,7 +105,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
                 // Handle process exit event
                 this._drain.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName}: opus decoder (ffmpeg) stopped (${code})`) }
+                    if (code != null) { console.log(`${this._controlName}: pipe-source drain stopped (${code})`) }
                     this._stopDrain();
                 });
 

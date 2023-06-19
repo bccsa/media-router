@@ -1,5 +1,7 @@
+const { promiseHooks } = require('v8');
 let { dm } = require('../modular-dm');
 const util = require('util');
+const { urlToHttpOptions } = require('url');
 const exec = util.promisify(require('child_process').exec);
 
 /**
@@ -30,28 +32,40 @@ class Router extends dm {
 
         // reset run without triggering event
         this._properties.run = false;
+
+        // Start with AutoStart when settings are received from manager.
+        this.once('autoStart', autoStart => {
+            // Auto start
+            if (autoStart) {
+                setTimeout(() => {
+                    this.run = true;
+                }, this.autoStartDelay);
+            }
+        });
         
-        // Auto start
-        if (this.autoStart) {
-            setTimeout(() => {
-                this.run = true;
-            }, this.autoStartDelay);
-        }
 
         // PulseAudio items detection
-        if (this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources);
-        if (this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks);
-        setInterval(() => { if (this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources) }, 1000);
-        setInterval(() => { if (this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks) }, 1000);
+        this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
+        this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
+        setInterval(async () => {
+            this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
+            this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
+        }, 1000);
+        // if (this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources);
+        // if (this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks);
+        // setInterval(async () => { if (await this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources) }, 1000);
+        // setInterval(async () => { if (await this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks) }, 1000);
 
         // Start/stop submodules
-        this.on('run', run => {
-            Object.values(this._controls).forEach(control => {
-                if (control.run != undefined) {
-                    control.run = run;
-                }
-            });
-        });
+        // this.on('run', run => {
+        //     Object.values(this._controls).forEach(control => {
+        //         if (control.run != undefined) {
+        //             control.run = run;
+        //         }
+        //     });
+        // });
+
+
     }
 
     /**
@@ -121,71 +135,74 @@ class Router extends dm {
      * Update a list of PulseAudio items
      * @param {string} type - Valid types are modules, sinks, sources, sink-inputs, source-outputs, clients, samples, cards
      * @param {object} dst - Destination object to be updated with sources and destinations
-     * @returns {boolean} - Returns true if the destination object (dst) has been updated
+     * @returns {boolean} - Returns a promise resolving to true if the destination object (dst) has been updated
      */
     async _updatePAlist(type, dst) {
-        try {
-            let data = await this._getPA(type);
-            let active = {};
-            let updated = false;
+        return new Promise((resolve, reject) => {
+            try {
+                this._getPA(type).then(data => {
+                    let active = {};
+                    let updated = false;
 
-            // Add new items to dst
-            Object.values(data).forEach(item => {
-                if (item.Name) {
-                    // Mark item as active
-                    active[item.Name] = true;
+                    // Add new items to dst
+                    Object.values(data).forEach(item => {
+                        if (item.Name) {
+                            // Mark item as active
+                            active[item.Name] = true;
 
-                    // Add to dst if not existing
-                    if (!dst[item.Name]) {
-                        let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
-                        if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
+                            // Add to dst if not existing
+                            if (!dst[item.Name]) {
+                                let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
+                                if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
 
-                        let bitDepth = item['Sample Specification'].match(/[sf]\d{1,2}[a-z]{0,2}/gi);
-                        if (bitDepth[0]) bitDepth = parseInt(bitDepth[0].match(/[0-9][0-9]*/gi));
+                                let bitDepth = item['Sample Specification'].match(/[sf]\d{1,2}[a-z]{0,2}/gi);
+                                if (bitDepth[0]) bitDepth = parseInt(bitDepth[0].match(/[0-9][0-9]*/gi));
 
-                        let sampleRate = item['Sample Specification'].match(/[1-9]\d*Hz/gi);
-                        if (sampleRate[0]) sampleRate = parseInt(sampleRate[0].match(/[0-9][0-9]*/gi));
+                                let sampleRate = item['Sample Specification'].match(/[1-9]\d*Hz/gi);
+                                if (sampleRate[0]) sampleRate = parseInt(sampleRate[0].match(/[0-9][0-9]*/gi));
 
-                        // description
-                        let description = item.Description;
-                        let descIteration = 0;
-                        while (Object.values(dst).find(t => t.description == description) != undefined) {
-                            descIteration++;
-                            description = `${item.Description} (${descIteration})`;
+                                // description
+                                let description = item.Description;
+                                let descIteration = 0;
+                                while (Object.values(dst).find(t => t.description == description) != undefined) {
+                                    descIteration++;
+                                    description = `${item.Description} (${descIteration})`;
+                                }
+
+                                if (item.Description && typeof ch === 'number' && ch > 0) {
+                                    dst[item.Name] = {
+                                        name: item.Name,
+                                        description: description,
+                                        channels: ch,
+                                        bitDepth: bitDepth,
+                                        sampleRate: sampleRate,
+                                        monitorsource: item['Monitor Source'],
+                                        channelmap: item['Channel Map'].split(','),
+                                    };
+                                }
+
+                                updated = true;
+                                console.log(`PulseAudio ${type} detected: ${item.Name}`);
+                            }
                         }
+                    });
 
-                        if (item.Description && typeof ch === 'number' && ch > 0) {
-                            dst[item.Name] = {
-                                name: item.Name,
-                                description: description,
-                                channels: ch,
-                                bitDepth: bitDepth,
-                                sampleRate: sampleRate,
-                                monitorsource: item['Monitor Source'],
-                                channelmap: item['Channel Map'].split(','),
-                            };
+                    // Remove old items from dst
+                    Object.keys(dst).forEach(itemName => {
+                        if (!active[itemName]) {
+                            delete dst[itemName];
+                            updated = true;
+                            console.log(`PulseAudio ${type} removed: ${itemName}`);
                         }
+                    });
 
-                        updated = true;
-                        console.log(`PulseAudio ${type} detected: ${item.Name}`);
-                    }
-                }
-            });
-
-            // Remove old items from dst
-            Object.keys(dst).forEach(itemName => {
-                if (!active[itemName]) {
-                    delete dst[itemName];
-                    updated = true;
-                    console.log(`PulseAudio ${type} removed: ${itemName}`);
-                }
-            });
-
-            return updated;
-        } catch (err) {
-            console.log(err.message);
-            return false;
-        }
+                    resolve(updated);
+                });
+            } catch (err) {
+                console.log(err.message);
+                resolve(false);
+            }
+        });
     }
 
     /**

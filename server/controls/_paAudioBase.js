@@ -3,7 +3,8 @@ let { dm } = require('../modular-dm');
 const { spawn } = require('child_process');
 
 /**
- * Base class for PulseAudio sources and sinks
+ * Base class for PulseAudio sources and sinks.
+ * Implementing classes should be self-sufficient and should be able to start/stop without relying on other classes' ready or running status'.
  */
 class _paAudioBase extends dm {
     constructor() {
@@ -16,19 +17,23 @@ class _paAudioBase extends dm {
         this.displayOrder = 0;  // display order on client interface
         this.clientControl = "client_AudioInputDevice";
         this.monitor = "";      // PulseAudio monitor source
+        this.SetAccess('monitor', { Set: 'none' });
         this._vuProc;           // external process for VU meter
         this._vu = [];          // internal vu array
         this._vuInterval;       // VU indication interval timer
         this._vuResetPeak = false;
         this.vuInterval = 100;  // VU meter indication interval in milliseconds
         this.vu = [];           // VU indication per channel (0 - 100%)
+        this.SetAccess('vu', { Set: 'none' });
         this.channels = 1;      // Audio channels
         this.bitDepth = 16;     // Audio bit depth
         this.sampleRate = 44100;// Audio sample rate
-        this.ready = false;     // Ready indication to be set by implementing class when internal processes are running and the module is ready for linking to other modules.
-        this._run = false;      // Run implemented manually with getter and setter to prevent setting values through Set()
+        this.ready = false;     // Ready indication to be set by implementing class when internal processes are running and the module is ready for linking to other modules. This should include e.g. PulseAudio modules, so the implementing control should check if the PulseAudio module exists before setting 'ready' to true.
+        this.SetAccess('ready', { Get: 'none', Set: 'none' });
         this.volume = 100;      // Requested volume in %
         this.maxVolume = 150;   // Maximum permissible volume
+        this.run = false        
+        this.SetAccess('run', { Get: 'none', Set: 'none' });
     }
 
     Init() {
@@ -68,25 +73,17 @@ class _paAudioBase extends dm {
                 this.vu = [...this._vu]; // create a shallow copy of the internal VU array
             }
         }, { immediate: true });
-    }
 
-    /**
-     * Get the running status
-     */
-    get run() {
-        return this._run;
-    }
+        // Stop control on removal
+        this.on('remove', () => {
+            this.ready = false;
+            this.run = false;
+        });
 
-    /**
-     * Set the running status, and trigger the 'run' event if the running status has changed
-     */
-    set run(val) {
-        if (typeof val == 'boolean') {
-            if (val != this._run) {
-                this._run = val;
-                this.emit('run', val);
-            }
-        }
+        // Subscribe to parent (router) run events
+        this._parent.on('run', run => {
+            this.run = run;
+        }, { immediate: true, caller: this });
     }
 
     _startVU() {

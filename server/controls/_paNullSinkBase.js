@@ -32,6 +32,15 @@ class _paNullSinkBase extends _paAudioBase {
                 this._stopNullSink();
             }
         });
+
+        // listen for null sink creation
+        this._parent.on('sinks', sinks => {
+            if (sinks.find(t => t.name == this._controlName)) {
+                this.ready = true;
+            } else {
+                this.ready = false;
+            }
+        });
     }
 
     // Create a PulseAudio loopback-module linking the source to the sink
@@ -46,7 +55,6 @@ class _paNullSinkBase extends _paAudioBase {
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
                 console.log(`${this._controlName}: Created null-sink; ID: ${this._paModuleID}`);
-                this.ready = true;
             }
         }).catch(err => {
             console.log(err.message);
@@ -55,8 +63,6 @@ class _paNullSinkBase extends _paAudioBase {
 
     // Remove PulseAudio module
     _stopNullSink() {
-        this.ready = false;
-
         if (this._paModuleID) {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
