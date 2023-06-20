@@ -17,13 +17,13 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.srtHost = 'srt.invalid';
         this.srtPort = 1234;
         this.srtMode = 'caller';
-        this.srtLatency = 10;
+        this.srtLatency = 1;
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
         this.ffmpegPulseLatency = 50;
-        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
+        // this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
         this._ffmpegParser = new ffmpeg_stderr_parser();
@@ -81,7 +81,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
                 -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize}`;
+                -f mpegts srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
 
                 // let args = `parec --device ${this.source} --fix-format --fix-channels --fix-rate --latency-msec 1 --format s${this.bitDepth}le --raw | \
                 // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 -fflags nobuffer -flags low_delay \
@@ -161,7 +161,7 @@ class SrtOpusOutput extends _paNullSinkBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `-chunk 188 -s 1000 -pf json udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&rcvbuf=${this.udpBufferSize} srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
+                let args = `-s 1000 -pf json srt://127.0.0.1:${this._udpSocketPort}?latency=1&mode=listener srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stdout

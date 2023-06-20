@@ -105,7 +105,7 @@ class _paAudioBase extends dm {
         if (this.monitor && !this._vuProc) {
             let args = `--device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --raw`; // --rate 100 does not keep peak values, so not useful for VU applications
             this._vuProc = spawn('parec', args.split(' '));
-
+            console.log(this._controlName + ': Starting VU')
             this._vuProc.stdout.on('data', buffer => {
                 // Set VU array to channel count
                 if (this._vu.length < this.channels) {

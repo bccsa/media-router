@@ -10,12 +10,12 @@ class SrtOpusInput extends _paPipeSourceBase {
         this.srtHost = 'srt.invalid';
         this.srtPort = 1234;
         this.srtMode = 'caller';
-        this.srtLatency = 10;
+        this.srtLatency = 1;
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
-        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
+        // this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.srtStats = '';         // SRT statistics in JSON string format
         this.SetAccess('srtStats', { Set: 'none' });
     }
@@ -53,7 +53,7 @@ class SrtOpusInput extends _paPipeSourceBase {
                 // Connecting with a UDP socket seems to be the best solution. Piping directly to srt-live-transmit gave very unstable / choppy audio.
                 let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f mpegts -c:a libopus -ac ${this.channels} \
-                -i udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize} \
+                -i srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener \
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 -f s${this.bitDepth}le ${this._pipename}`;
 
@@ -123,7 +123,7 @@ class SrtOpusInput extends _paPipeSourceBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&sndbuf=${this.udpBufferSize}`;
+                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&latency=1&mode=caller`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stderr
