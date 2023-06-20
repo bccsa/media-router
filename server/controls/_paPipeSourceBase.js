@@ -90,7 +90,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
     _startDrain() {
         if (!this._drain) {
             try {
-                let args = `--device=${this._controlName} --rate=${this.sampleRate} --channels=${this.channels} --format=s${this.bitDepth}le --latency=1 --raw /dev/null`;
+                let args = `--device=${this._controlName} --fix-rate --fix-channels --fix-format --latency 100 --raw /dev/null`;
                 this._drain = spawn('parec', args.replace(/\s+/g, ' ').split(" "));
 
                 // Handle stderr

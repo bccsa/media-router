@@ -15,7 +15,7 @@ class SrtOpusInput extends _paPipeSourceBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
-        this.udpBufferSize = 4096;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
+        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.srtStats = '';         // SRT statistics in JSON string format
         this.SetAccess('srtStats', { Set: 'none' });
     }

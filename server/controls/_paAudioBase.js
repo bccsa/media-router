@@ -32,8 +32,10 @@ class _paAudioBase extends dm {
         this.SetAccess('ready', { Get: 'none', Set: 'none' });
         this.volume = 100;      // Requested volume in %
         this.maxVolume = 150;   // Maximum permissible volume
-        this.run = false        
+        this.run = false        // Run command to be set by external code to request the control to start.
         this.SetAccess('run', { Get: 'none', Set: 'none' });
+        this.runVU = false;     // VU meter run command - this should not be set from external code
+        this.SetAccess('runVU', { Get: 'none', Set: 'none' });
     }
 
     Init() {
@@ -47,7 +49,7 @@ class _paAudioBase extends dm {
         }, { immediate: true });
 
         // Start / stop the VU meter
-        this.on('run', run => {
+        this.on('runVU', run => {
             if (run) {
                 this._startVU();
                 this._vuInterval = setInterval(() => {
@@ -72,6 +74,14 @@ class _paAudioBase extends dm {
                 }
                 this.vu = [...this._vu]; // create a shallow copy of the internal VU array
             }
+        });
+
+        this.on('run', run => {
+            this.runVU = run && this.ready;
+        }, { immediate: true });
+
+        this.on('ready', ready => {
+            this.runVU = this.run && ready;
         }, { immediate: true });
 
         // Stop control on removal
@@ -88,7 +98,7 @@ class _paAudioBase extends dm {
 
     _startVU() {
         if (this.monitor && !this._vuProc) {
-            let args = `--device ${this.monitor} --format s16le`; // --rate 100 does not keep peak values, so not useful for VU applications
+            let args = `--device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100`; // --rate 100 does not keep peak values, so not useful for VU applications
             this._vuProc = spawn('parec', args.split(' '));
 
             this._vuProc.stdout.on('data', buffer => {
@@ -111,7 +121,7 @@ class _paAudioBase extends dm {
             });
 
             this._vuProc.stderr.on('data', data => {
-
+                console.error(data.toString());
             });
 
             this._vuProc.on('close', code => {
@@ -132,6 +142,7 @@ class _paAudioBase extends dm {
             } catch (err) {
 
             }
+            this._vuProc = undefined;
         }
     }
 }

@@ -21,7 +21,7 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
         this.ffmpegPulseLatency = 50;
-        this.udpBufferSize = 4096;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
+        this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
         this._ffmpegParser = new ffmpeg_stderr_parser();
