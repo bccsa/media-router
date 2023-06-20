@@ -69,7 +69,11 @@ class AudioLoopback extends dm {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startLoopback() {
         if (this._src && this._src.source && this._dst && this._dst.sink) {
-            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=1 channels=${this._src.channels}`;
+            let sampleRate = Math.min(this._src.sampleRate, this._dst.sampleRate);
+            let bitDepth = Math.min(this._src.bitDepth, this._dst.bitDepth);
+            let channels = Math.min(this._src.channels, this._dst.channels);
+
+            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=1 channels=${channels} rate=${sampleRate} format=s${bitDepth}le`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.error(`${this._controlName}: ${data.stderr.toString()}`);

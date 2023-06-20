@@ -23,6 +23,10 @@ class AudioInput extends _paAudioSourceBase {
                     this.sampleRate = this._parent._sources[source].sampleRate;
                     this.bitDepth = this._parent._sources[source].bitDepth;
                     this.ready = true;
+                    // Manually notify changes
+                    this.NotifyProperty('channels', this.channels);
+                    this.NotifyProperty('sampleRate', this.sampleRate);
+                    this.NotifyProperty('bitDepth', this.bitDepth);
                 }
             }, 500);
         }, { immediate: true });

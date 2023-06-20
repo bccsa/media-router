@@ -128,7 +128,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
         if (this._drain) {
             try {
                 this._drain.kill('SIGTERM');
-                // this._drain.kill('SIGKILL');
+                this._drain.kill('SIGKILL');
             } catch {
 
             } finally {

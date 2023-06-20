@@ -12,7 +12,7 @@ class _paAudioBase extends ui {
         this.description = "";
         this.volume = 100;
         this.channels = 1;
-        this.sampleRate = 48000;
+        this.sampleRate = 44100;
         this.bitDepth = 16;
         this.maxVolume = 150;
         this.soloGroup = "";
