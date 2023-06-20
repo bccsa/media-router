@@ -9,6 +9,8 @@ class SrtOpusOutput extends _paNullSinkBase {
 
         this.fec = true;            // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
+        this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
+        this.bitrate = 64000;       // Opus encoding target bitrate
         this._ffmpeg;
         this._srt;
         this._pipe;                 // named pipe output stream produced by the PulseAudio pipe-sink
@@ -75,16 +77,26 @@ class SrtOpusOutput extends _paNullSinkBase {
                 // Connecting with a UDP socket seems to be the best solution. Piping directly to srt-live-transmit gave very unstable / choppy audio.
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 -fflags nobuffer -flags low_delay \
-                -f pulse -channels ${this.channels} -sample_rate ${this.sampleRate} -fragment_size ${fragSize} -i ${this.source} \
+                -f pulse -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -fragment_size ${fragSize} -i ${this.source} \
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
-                -c:a libopus -sample_rate 48000 -b:a 64000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} \
+                -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
                 -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize}`;
 
+                // let args = `parec --device ${this.source} --fix-format --fix-channels --fix-rate --latency-msec 1 --format s${this.bitDepth}le --raw | \
+                // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 -fflags nobuffer -flags low_delay \
+                // -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -i - \
+                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -c:a libopus -sample_rate 48000 -ac ${this.channels} \
+                // -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} -b:a ${this.bitrate} \
+                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
+                // -f mpegts udp://127.0.0.1:${this._udpSocketPort}?pkt_size=188&buffer_size=${this.udpBufferSize}`;
+
                 this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
+                // this._ffmpeg = spawn(args, { shell: 'bash' });
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
+                    // console.error(data.toString);
                     this._ffmpegParser.Set(data.toString());
                 });
 

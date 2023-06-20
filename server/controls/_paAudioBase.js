@@ -24,6 +24,7 @@ class _paAudioBase extends dm {
         this._vuResetPeak = false;
         this.vuInterval = 100;  // VU meter indication interval in milliseconds
         this.vu = [];           // VU indication per channel (0 - 100%)
+        this.enableVU = false;  // true: Enable VU calculation
         this.SetAccess('vu', { Set: 'none' });
         this.channels = 1;      // Audio channels
         this.bitDepth = 16;     // Audio bit depth
@@ -76,12 +77,16 @@ class _paAudioBase extends dm {
             }
         });
 
-        this.on('run', run => {
-            this.runVU = run && this.ready;
+        this.on('run', () => {
+            this.runVU = this.run && this.ready && this.enableVU;
         }, { immediate: true });
 
-        this.on('ready', ready => {
-            this.runVU = this.run && ready;
+        this.on('ready', () => {
+            this.runVU = this.run && this.ready && this.enableVU;
+        }, { immediate: true });
+
+        this.on('enableVU', () => {
+            this.runVU = this.run && this.ready && this.enableVU;
         }, { immediate: true });
 
         // Stop control on removal
@@ -98,7 +103,7 @@ class _paAudioBase extends dm {
 
     _startVU() {
         if (this.monitor && !this._vuProc) {
-            let args = `--device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100`; // --rate 100 does not keep peak values, so not useful for VU applications
+            let args = `--device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --raw`; // --rate 100 does not keep peak values, so not useful for VU applications
             this._vuProc = spawn('parec', args.split(' '));
 
             this._vuProc.stdout.on('data', buffer => {
