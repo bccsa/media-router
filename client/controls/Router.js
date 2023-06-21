@@ -11,6 +11,8 @@ class Router extends ui {
         this.online = false;
         this.sources = [];          // Array with PulseAudio sources
         this.sinks = [];            // Array with PulseAudio sinks
+        this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
+
     }
 
     get html() {
@@ -148,7 +150,7 @@ class Router extends ui {
                             <div class="mr-4 w-full">
                                 
                                 <input id="@{_autoStartDelay}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
-                                title="Set the delay in milliseconds" name="maxVolume" step="1" value="@{autoStartDelay}"/>
+                                title="Set the delay in milliseconds" step="1" value="@{autoStartDelay}"/>
 
                             </div>
                         </div>
@@ -168,6 +170,16 @@ class Router extends ui {
                             </div>
                         </div>
 
+                        <!--    AUTO START DELAY      -->
+                        <label for="@{_paLatency}" class="router-label-settings">PulseAudio modules latency:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_paLatency}" class="router-number-range" type="number" min="1" oninput="validity.valid||(value='')"
+                                title="Latency setting for PulseAudio modules. Lower latency results in higher CPU usage." step="1" value="@{paLatency}"/>
+
+                            </div>
+                        </div>
                     </div>
                 </div>  
             </details> 

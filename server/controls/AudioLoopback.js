@@ -21,17 +21,13 @@ class AudioLoopback extends dm {
         this._dstReady = false;
         this._dstRun = false;
         this.ready = false;
+        this._router;
     }
 
     Init() {
-        let router = this._parent._parent;
-        this._src = router[this.srcControl];
-        this._dst = router[this.dstControl];
-
-        // let srcRdyEventHandler = function (ready) { this._srcReady = ready; this._setReady(); }.bind(this);
-        // let srcRunEventHandler = function (run) { this._srcRun = run; this._setReady(); }.bind(this);
-        // let dstRdyEventHandler = function (ready) { this._dstReady = ready; this._setReady(); }.bind(this);
-        // let dstRunEventHandler = function (run) { this._dstRun = run; this._setReady(); }.bind(this);
+        this._router = this._parent._parent;
+        this._src = this._router[this.srcControl];
+        this._dst = this._router[this.dstControl];
 
         if (this._src && this._dst) {
             // Subscribe to source and destination events
@@ -41,14 +37,6 @@ class AudioLoopback extends dm {
             this._src.on('run', run => { o._srcRun = run; o._setReady(); }, { immediate: true, caller: this });
             this._dst.on('ready', ready => { o._dstReady = ready; o._setReady(); }, { immediate: true, caller: this });
             this._dst.on('run', run => { o._dstRun = run; o._setReady(); }, { immediate: true, caller: this });
-
-            // Unsubscribe from events on control removal;
-            // this.on('remove', (c) => {
-            //     c._src.off('ready', srcRdyEventHandler);
-            //     c._src.off('run', srcRunEventHandler);
-            //     c._dst.off('ready', dstRdyEventHandler);
-            //     c._dst.off('run', dstRunEventHandler);
-            // });
         } else {
             console.log(`${this._controlName}: Invalid source or destination.`);
         }
@@ -73,7 +61,7 @@ class AudioLoopback extends dm {
             let bitDepth = Math.min(this._src.bitDepth, this._dst.bitDepth);
             let channels = Math.min(this._src.channels, this._dst.channels);
 
-            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=1 channels=${channels} rate=${sampleRate} format=s${bitDepth}le`;
+            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=${this._router.paLatency} channels=${channels} rate=${sampleRate} format=s${bitDepth}le`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.error(`${this._controlName}: ${data.stderr.toString()}`);

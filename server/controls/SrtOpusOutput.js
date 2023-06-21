@@ -77,11 +77,20 @@ class SrtOpusOutput extends _paNullSinkBase {
                 // Connecting with a UDP socket seems to be the best solution. Piping directly to srt-live-transmit gave very unstable / choppy audio.
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 -fflags nobuffer -flags low_delay \
-                -f pulse -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -fragment_size ${fragSize} -i ${this.source} \
+                -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -fragment_size ${fragSize} -f pulse -i ${this.source} \
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
                 -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
                 -f mpegts srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
+
+                // let args = `pacat --record --device ${this.source} --format s${this.bitDepth}le --channels ${this.channels} --rate ${this.sampleRate} --latency-msec 1 --format s${this.bitDepth}le --raw | \
+                // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
+                // -fflags nobuffer -flags low_delay \
+                // -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -fragment_size ${fragSize} -f s${this.bitDepth}le -i - \
+                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
+                // -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
+                // -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
+                // -f mpegts srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
 
                 // let args = `parec --device ${this.source} --fix-format --fix-channels --fix-rate --latency-msec 1 --format s${this.bitDepth}le --raw | \
                 // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 -fflags nobuffer -flags low_delay \

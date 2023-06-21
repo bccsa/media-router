@@ -20,11 +20,12 @@ class Router extends dm {
         this.password = "";
         this._sources = {};
         this._sinks = {};
-        this.sources = [];                        // json sources list for front-end
+        this.sources = [];                          // json sources list for front-end
         this.SetAccess('sources', { Set: 'none' }); // Disable Set() access to prevent frontend changing the property
-        this.sinks = [];                           // json sinks list for front-end
+        this.sinks = [];                            // json sinks list for front-end
         this.SetAccess('sinks', { Set: 'none' });   // Disable Set() access to prevent frontend changing the property
         this._udpSocketPortIndex = 2000;
+        this.paLatency = 50;                        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
     }
 
     Init() {
