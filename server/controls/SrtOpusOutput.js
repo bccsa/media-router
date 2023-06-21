@@ -76,7 +76,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=48000 \
                 -c:a libopus -b:a ${this.bitrate * 1000} -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                -f mpegts srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
+                -f mpegts -omit_video_pes_length 0 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
 
                 // let args = `pacat --record --device ${this.source} --format s${this.bitDepth}le --channels ${this.channels} --rate ${this.sampleRate} --latency-msec 1 --format s${this.bitDepth}le --raw | \
                 // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
