@@ -1,7 +1,7 @@
-const _paPipeSourceBase = require('./_paPipeSourceBase');
+const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
 
-class SrtOpusInput extends _paPipeSourceBase {
+class SrtOpusInput extends _paNullSinkBase {
     constructor() {
         super();
 
@@ -15,7 +15,6 @@ class SrtOpusInput extends _paPipeSourceBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
-        // this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.srtStats = '';         // SRT statistics in JSON string format
         this.SetAccess('srtStats', { Set: 'none' });
     }
@@ -50,13 +49,15 @@ class SrtOpusInput extends _paPipeSourceBase {
 
                 // Opus sample rate is always 48000. Input is therefore assumed to be 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
-                // Connecting with a UDP socket seems to be the best solution. Piping directly to srt-live-transmit gave very unstable / choppy audio.
-                let args = `-y -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f mpegts -c:a libopus -ac ${this.channels} \
                 -i srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener \
-                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} -c:a pcm_s${this.bitDepth}le -sample_rate ${this.sampleRate} -ac ${this.channels} \
-                -f s${this.bitDepth}le ${this._pipename}`;
+                -c:a pcm_s${this.bitDepth}le \
+                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} \
+                -sample_rate ${this.sampleRate} -ac ${this.channels} \
+                -buffer_duration ${this._parent.paLatency} -f pulse ${this.sink}`;
 
+                
                 this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
 
                 // Handle stderr

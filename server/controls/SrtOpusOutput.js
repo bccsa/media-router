@@ -10,7 +10,7 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.fec = true;            // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
-        this.bitrate = 64000;       // Opus encoding target bitrate
+        this.bitrate = 64;       // Opus encoding target bitrate in kbps
         this._ffmpeg;
         this._srt;
         this._pipe;                 // named pipe output stream produced by the PulseAudio pipe-sink
@@ -22,8 +22,6 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
-        this.ffmpegPulseLatency = 50;
-        // this.udpBufferSize = 2048;  // Buffer size of 2048 needed for stable stream to srt-live-transmit
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
         this._ffmpegParser = new ffmpeg_stderr_parser();
@@ -70,16 +68,13 @@ class SrtOpusOutput extends _paNullSinkBase {
                 let _fec = 0;
                 if (this.fec) _fec = 1;
 
-                let fragSize = this.ffmpegPulseLatency / 1000 * this.sampleRate * this.bitDepth / 8 * this.channels;
-
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
-                // Connecting with a UDP socket seems to be the best solution. Piping directly to srt-live-transmit gave very unstable / choppy audio.
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 -fflags nobuffer -flags low_delay \
-                -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -fragment_size ${fragSize} -f pulse -i ${this.source} \
-                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB \
-                -c:a libopus -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
+                -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -f pulse -i ${this.source} \
+                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=48000 \
+                -c:a libopus -b:a ${this.bitrate * 1000} -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
                 -f mpegts srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
 
