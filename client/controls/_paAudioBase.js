@@ -7,7 +7,6 @@ class _paAudioBase extends ui {
     constructor() {
         super();
         this._styles.push('_paAudioBase.css');
-        this.level = 0; //  change to vu[]
         this.active = true;
         this.description = "";
         this.volume = 100;
@@ -27,6 +26,8 @@ class _paAudioBase extends ui {
         this.showInTopBar = false;
         this.formatHideRW = false;   // true = Disable Read Write audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
         this.formatHideRO = true;  // true = Disable Read Only audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
+        this.vuData = [];           // VU meter data
+        this.enableVU = false;      // true = enable VU meter
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
     }
 
@@ -363,11 +364,12 @@ class _paAudioBase extends ui {
         });
 
         // Handle property changes
-        this.on('level', level => {
-            if (this.vu) {
+        this.on('vu', vu => {
+            this.on('vuData', level => {
                 this.vu.level = level;
-            }
+            });
         });
+        
 
         //-------------- Dragging Device --------------------
 

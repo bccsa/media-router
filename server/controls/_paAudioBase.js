@@ -1,6 +1,7 @@
 const { clearInterval } = require('timers');
 let { dm } = require('../modular-dm');
 const { spawn } = require('child_process');
+const { timeStamp } = require('console');
 
 /**
  * Base class for PulseAudio sources and sinks.
@@ -20,12 +21,12 @@ class _paAudioBase extends dm {
         this.SetAccess('monitor', { Set: 'none' });
         this._vuProc;           // external process for VU meter
         this._vu = [];          // internal vu array
+        this._vuPrev = [];      // Previous vu values array
         this._vuInterval;       // VU indication interval timer
         this._vuResetPeak = false;
         this.vuInterval = 100;  // VU meter indication interval in milliseconds
-        this.vu = [];           // VU indication per channel (0 - 100%)
+        this.SetAccess('vuData', { Set: 'none' });
         this.enableVU = true;   // true: Enable VU calculation
-        this.SetAccess('vu', { Set: 'none' });
         this.channels = 1;      // Audio channels
         this.bitDepth = 16;     // Audio bit depth
         this.sampleRate = 44100;// Audio sample rate
@@ -54,16 +55,29 @@ class _paAudioBase extends dm {
             if (run) {
                 this._startVU();
                 this._vuInterval = setInterval(() => {
-                    // convert to %
                     let vu = [...this._vu];
-                    for (let i = 0; i < vu.length; i++) {
-                        vu[i] = Math.round(vu[i] / 32768 * 100);
-                    }
-                    // Only notify if the contents has changed
-                    if (this.vu.toString() != vu.toString()) {
-                        this.vu = vu;
+
+                    let notify = false;
+                    if (this._vuPrev.length != vu.length) {
+                        notify = true;
                     }
 
+                    for (let i = 0; i < vu.length; i++) {
+                        // convert to %
+                        vu[i] = Math.round(vu[i] / 32768 * 100);
+
+                        // Check if value changed
+                        if (!notify) {
+                            notify = (vu[i] !== this._vuPrev[i]);
+                        }
+                    }
+
+                    if (notify) {
+                        this._notify({ vuData: vu });   // Notifies with through _topLevelParent.on('data', data => {});
+
+                    }
+                    
+                    this._vuPrev =  [...vu]; // create a shallow copy of the internal VU array
                     this._vuResetPeak = true;
                 }, this.vuInterval);
             } else {
@@ -73,7 +87,9 @@ class _paAudioBase extends dm {
                 for (let i = 0; i < this._vu.length; i++) {
                     this._vu[i] = 0;
                 }
-                this.vu = [...this._vu]; // create a shallow copy of the internal VU array
+
+                this._notify({ vuData: this._vu });
+                this._vuPrev =  [...this._vu]; // create a shallow copy of the internal VU array
             }
         });
 
