@@ -527,7 +527,7 @@ class _paAudioBase extends ui {
 
             if (!this._parent[this.name + "_vu"]) {
                 this._parent.on(this.name + "_vu", control => {
-                    this.on('level', _VuData);
+                    this.on('vuData', _VuData);
                 })
 
                 // Add VU meter to Router Top Bar
@@ -558,7 +558,7 @@ class _paAudioBase extends ui {
         } else {
             // Remove from parent control
             if (this._parent[this.name + "_vu"]) {
-                this.off('level', _VuData);
+                this.off('vuData', _VuData);
                 this._parent[this.name + "_vu"].SetData({ remove: true });
             }
         }
