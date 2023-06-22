@@ -119,16 +119,13 @@ class _paAudioBase extends dm {
 
     _startVU() {
         if (this.monitor && !this._vuProc) {
-            let args = `--device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // --rate 100 does not keep peak values, so not useful for VU applications
-            this._vuProc = spawn('parec', args.split(' '));
+            let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
+            this._vuProc = spawn('pacat', args.split(' '));
             console.log(this._controlName + ': Starting VU')
             this._vuProc.stdout.on('data', buffer => {
                 // Set VU array to channel count
-                if (this._vu.length < this.channels) {
-                    for (let i = 0; i < this.channels - this._vu.length; i++) {
-                        this._vu.push(0);
-                    }
-                }
+                this._vu = new Array(this.channels).fill(0);
+
                 if (this.channels > 0) {
                     // Store peak volumes
                     for (let i = 0; i < buffer.length - 1; i += 2) { // skip to next 16bit sample (2 * 8bit)

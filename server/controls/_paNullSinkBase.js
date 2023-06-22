@@ -1,11 +1,11 @@
-let _paAudioBase = require('./_paAudioBase');
+let _paAudioSourceBase = require('./_paAudioSourceBase');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 
 /**
  * PulseAudio Null Sink. This is used as a base class for virtual inputs and outputs.
  */
-class _paNullSinkBase extends _paAudioBase {
+class _paNullSinkBase extends _paAudioSourceBase {
     constructor() {
         super();
         this.source = "";   // PulseAudio module-null-sink source name (xxx.monitor)

@@ -49,20 +49,22 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 // Opus sample rate is always 48000. Input is therefore assumed to be 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
+                // See https://stackoverflow.com/questions/39497131/ffmpeg-pulseaudio-output-options-device for playing to a PulseAudio device (need to specify a stream name)
+                let args = `ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
                 -f mpegts -c:a libopus -ac ${this.channels} \
-                -i srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener \
+                -i "srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener" \
                 -c:a pcm_s${this.bitDepth}le \
-                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB -af aresample=${this.sampleRate} \
+                -af aresample=${this.sampleRate} \
                 -sample_rate ${this.sampleRate} -ac ${this.channels} \
-                -buffer_duration ${this._parent.paLatency} -f pulse ${this.sink}`;
+                -buffer_duration ${this._parent.paLatency} -f pulse -device ${this.sink} "${this._controlName}"`;
+                // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB filter removed - if it should be added again, use a filter complex (only last -af filter is used by ffmpeg)
 
-                
-                this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
+                // this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
+                this._ffmpeg = spawn(args, { shell: 'bash'});
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    // console.log(data.toString())
+                    // console.error(data.toString())
                 });
 
                 // Handle stdout

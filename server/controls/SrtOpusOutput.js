@@ -1,7 +1,6 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
 const { ffmpeg_stderr_parser } = require('../modules/ffmpeg_stderr_parser');
-const { read } = require('fs');
 
 class SrtOpusOutput extends _paNullSinkBase {
     constructor() {
@@ -10,10 +9,9 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.fec = true;            // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
-        this.bitrate = 64;       // Opus encoding target bitrate in kbps
+        this.bitrate = 64;          // Opus encoding target bitrate in kbps
         this._ffmpeg;
         this._srt;
-        this._pipe;                 // named pipe output stream produced by the PulseAudio pipe-sink
         this.srtHost = 'srt.invalid';
         this.srtPort = 1234;
         this.srtMode = 'caller';
@@ -45,10 +43,7 @@ class SrtOpusOutput extends _paNullSinkBase {
 
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
-            if (run) {
-
-            }
-            else {
+            if (!run) {
                 this._stop_srt();
                 this._stop_ffmpeg();
             }
