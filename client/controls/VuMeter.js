@@ -291,10 +291,10 @@ class VuMeter extends ui {
 
     _setLevelHorizontal(levelArr) {
         for (let ch = 0; ch < levelArr.length; ch++) {
-            let level = levelArr[ch];
+            let p = levelArr[ch]; // level in dB
 
             // Logarithmic level in 50 steps
-            let p = Math.round(20 * Math.log10(level) * 50) / 50;
+            // let p = Math.round(20 * Math.log10(level) * 50) / 50;
 
             let paintTop = this._height / levelArr.length * ch;
             let paintHeight = this._height / levelArr.length;
@@ -327,7 +327,7 @@ class VuMeter extends ui {
             // Clear
             if (total < this._prev[ch].total) {
                 this._ctx.clearRect(this._prev[ch].top3 + 2, paintTop, top3 - this._prev[ch].top3, paintHeight);
-                if (level == 0) {
+                if (p <= -60) {
                     this._ctx.clearRect(this._prev[ch].top3, paintTop, top3 - this._prev[ch].top3, paintHeight);
                 }
             }

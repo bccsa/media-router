@@ -63,15 +63,17 @@ class _paAudioBase extends dm {
                     }
 
                     for (let i = 0; i < vu.length; i++) {
-                        // vu meter indication as factor of 1
-                        vu[i] = vu[i] / 128;
-                        if (vu[i] < this._vuPrev[i] - 5/128) {
-                            // Rate limit graph decline
-                            vu[i] = this._vuPrev[i] - 5/128
-                        } else if (vu[i]< 0.01) {
-                            // Trim noise
-                            vu[i] = 0;
-                        }
+                        // volume in fraction of 1
+                        // vu[i] = Math.round(vu[i] / 32768 * 100) / 100;
+
+                        // volume in dB
+                        vu[i] = Math.round(20 * Math.log10(vu[i] / 32768));
+
+                        // Rate limit graph decline
+                        if (vu[i] < this._vuPrev[i] - 5) vu[i] = this._vuPrev[i] - 5;
+
+                        // Clamp at -60 db
+                        if (vu[i] < -60) vu[i] = -60;
 
                         // Check if value changed
                         if (!notify) {
@@ -81,7 +83,6 @@ class _paAudioBase extends dm {
 
                     if (notify) {
                         this._notify({ vuData: vu });   // Notifies with through _topLevelParent.on('data', data => {});
-
                     }
                     
                     this._vuPrev =  [...vu]; // create a shallow copy of the internal VU array
@@ -92,7 +93,7 @@ class _paAudioBase extends dm {
                 clearInterval(this._vuInterval);
                 // Clear vu meter indication
                 for (let i = 0; i < this._vu.length; i++) {
-                    this._vu[i] = 0;
+                    this._vu[i] = -60;
                 }
 
                 this._notify({ vuData: this._vu });
@@ -126,7 +127,7 @@ class _paAudioBase extends dm {
 
     _startVU() {
         if (this.monitor && !this._vuProc) {
-            let args = `--record --device ${this.monitor} --format u8 --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
+            let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
             this._vuProc = spawn('pacat', args.split(' '));
             console.log(this._controlName + ': Starting VU')
             this._vuProc.stdout.on('data', buffer => {
@@ -135,9 +136,9 @@ class _paAudioBase extends dm {
 
                 if (this.channels > 0) {
                     // Store peak volumes
-                    for (let i = 0; i < buffer.length - 1; i++) { // skip to next 16bit sample (2 * 8bit)
-                        let v = Math.abs(buffer[i] - 128);
-                        let channel = i % this.channels;
+                    for (let i = 0; i < buffer.length - 1; i += 2) { // skip to next 16bit sample (2 * 8bit)
+                        let v = Math.abs(buffer.readInt16LE(i));
+                        let channel = i / 2 % this.channels;
 
                         if (this._vu[channel] < v || this._vuResetPeak) this._vu[channel] = v;
                     }
