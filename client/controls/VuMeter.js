@@ -291,7 +291,7 @@ class VuMeter extends ui {
 
     _setLevelHorizontal(levelArr) {
         for (let ch = 0; ch < levelArr.length; ch++) {
-            let level = levelArr[ch] / 100; // convert from % to unit
+            let level = levelArr[ch];
 
             // Logarithmic level in 50 steps
             let p = Math.round(20 * Math.log10(level) * 50) / 50;

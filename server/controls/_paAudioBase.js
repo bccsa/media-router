@@ -63,8 +63,15 @@ class _paAudioBase extends dm {
                     }
 
                     for (let i = 0; i < vu.length; i++) {
-                        // convert to %
-                        vu[i] = Math.round(vu[i] / 32768 * 100);
+                        // vu meter indication as factor of 1
+                        vu[i] = vu[i] / 128;
+                        if (vu[i] < this._vuPrev[i] - 5/128) {
+                            // Rate limit graph decline
+                            vu[i] = this._vuPrev[i] - 5/128
+                        } else if (vu[i]< 0.01) {
+                            // Trim noise
+                            vu[i] = 0;
+                        }
 
                         // Check if value changed
                         if (!notify) {
@@ -119,7 +126,7 @@ class _paAudioBase extends dm {
 
     _startVU() {
         if (this.monitor && !this._vuProc) {
-            let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
+            let args = `--record --device ${this.monitor} --format u8 --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
             this._vuProc = spawn('pacat', args.split(' '));
             console.log(this._controlName + ': Starting VU')
             this._vuProc.stdout.on('data', buffer => {
@@ -128,9 +135,9 @@ class _paAudioBase extends dm {
 
                 if (this.channels > 0) {
                     // Store peak volumes
-                    for (let i = 0; i < buffer.length - 1; i += 2) { // skip to next 16bit sample (2 * 8bit)
-                        let v = Math.abs(buffer.readInt16LE(i));
-                        let channel = i / 2 % this.channels;
+                    for (let i = 0; i < buffer.length - 1; i++) { // skip to next 16bit sample (2 * 8bit)
+                        let v = Math.abs(buffer[i] - 128);
+                        let channel = i % this.channels;
 
                         if (this._vu[channel] < v || this._vuResetPeak) this._vu[channel] = v;
                     }
