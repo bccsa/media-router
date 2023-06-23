@@ -126,7 +126,7 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 console.log(`${this._controlName}: Starting SRT...`);
 
-                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&latency=1&mode=caller`;
+                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&latency=1&mode=caller&sndbuf=16384`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stderr
