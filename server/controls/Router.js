@@ -1,7 +1,5 @@
-const { promiseHooks } = require('v8');
 let { dm } = require('../modular-dm');
 const util = require('util');
-const { urlToHttpOptions } = require('url');
 const exec = util.promisify(require('child_process').exec);
 
 /**
@@ -14,6 +12,7 @@ class Router extends dm {
     constructor(path) {
         super(path);
         this.run = false;
+        this.displayName = '';
         this.autoStart = false;
         this.autoStartDelay = 500,
         this.DisplayName = "";                      // Used as router username

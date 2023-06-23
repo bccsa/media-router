@@ -44,8 +44,8 @@ class _paAudioBase extends dm {
         // Mute all other modules (with the same parent) in the solo group
         this.on('active', active => {
             if (active && this.soloGroup) {
-                Object.values(this._parent.controls).filter(c => c.soloGroup == this.soloGroup).forEach(m => {
-                    if (m.name != this.name && m.active) m.active = false;
+                Object.values(this._parent._controls).filter(c => c.soloGroup == this.soloGroup).forEach(m => {
+                    if (m._controlName != this._controlName && m.active) m.active = false;
                 });
             }
         }, { immediate: true });

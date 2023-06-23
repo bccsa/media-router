@@ -18,67 +18,65 @@ const io = require('socket.io-client');
 // Set path to runtime directory
 process.chdir(__dirname);
 
+// Get config file path from passed argument
+// if (process.argv.length > 2) {
+//     // Load config file from disk
+//     loadConfig(process.argv[2]);
+// } else {
+//     loadConfig('config.json');
+// }
+
+
 // -------------------------------------
 // Global variables
 // -------------------------------------
+/**
+ * Manager socket.io connection
+ */
+var manager_io;
+// -------------------------------------
+// Manager socket.io connection
+// -------------------------------------
 
-var controls = new dmTopLevelContainer('../controls');
-controls.on('router', router => {
-    /**
-     * Manager socket.io connection
-     */
-    var manager_io;
+/**
+ * Connect to the manager's socket.io server
+ * @param {string} url 
+ */
+function manager_connect(url) {
+    // Clear existing connection
+    if (manager_io) {
+        manager_io.disconnect();
 
-    // -------------------------------------
-    // Startup logic
-    // -------------------------------------
-
-    manager_connect('http://localhost:3000');
-
-    // Get config file path from passed argument
-    // if (process.argv.length > 2) {
-    //     // Load config file from disk
-    //     loadConfig(process.argv[2]);
-    // } else {
-    //     loadConfig('config.json');
-    // }
-
-    // -------------------------------------
-    // Manager socket.io connection
-    // -------------------------------------
-    var firstCon = true;
-    /**
-     * Connect to the manager's socket.io server
-     * @param {string} url 
-     */
-    function manager_connect(url) {
-        // Clear existing connection
-        if (manager_io) {
-            manager_io.disconnect();
-            firstCon = true;
-
-            // To do: Stop running router
-        }
-
-        manager_io = io(url, { auth: { username: 'testRouter1', password: 'testPass' } });
-
-        manager_io.on('connect', () => {
-            console.log('Connected to manager.')
-            // Send PulseAudio sources and sinks to manager
-            router.NotifyProperty('sources');
-            router.NotifyProperty('sinks');
-        });
-
-        manager_io.on('connect_error', err => {
-            console.log('Unable to connect to manager: ' + err.message);
-        });
-
-        // set data from manager to router controls
-        manager_io.on('data', data => {
-            router.Set(data);
-        });
+        // To do: Stop running router
     }
 
+    manager_io = io(url, { auth: { username: 'testRouter1', password: 'testPass' } });
+
+    manager_io.on('connect', () => {
+        console.log('Connected to manager.')
+        // Send PulseAudio sources and sinks to manager
+        controls.router.NotifyProperty('sources');
+        controls.router.NotifyProperty('sinks');
+    });
+
+    manager_io.on('connect_error', err => {
+        console.log('Unable to connect to manager: ' + err.message);
+    });
+
+    // set data from manager to router controls
+    manager_io.on('data', data => {
+        controls.router.Set(data);
+        clientIO.emit('data', data);
+    });
+}
+
+// -------------------------------------
+// Startup logic
+// -------------------------------------
+var controls = new dmTopLevelContainer('../controls');
+controls.Set({ router: { controlType: 'Router' } });
+controls.on('router', router => {
+    manager_connect('http://localhost:3000');
 
     // forward data from router controls to manager
     router.on('data', data => {
@@ -86,8 +84,7 @@ controls.on('router', router => {
             manager_io.emit('data', data);
         }
     });
-});
-controls.Set({ router: { controlType: 'Router' } });
+}, { immediate: true });
 
 // -------------------------------------
 // Client WebApp Express webserver
@@ -97,6 +94,14 @@ const clientApp = express();
 const clientHttp = require('http').createServer(clientApp);
 
 try {
+    // Serve the default file
+    clientApp.get('/', (req, res) => {
+        res.sendFile(path.join(__dirname, '/../local-client/index.html'));
+    });
+
+    // Serve all the files
+    clientApp.use(express.static(path.join(__dirname, '/../local-client')));
+
     clientHttp.listen(8081, () => {
         eventLog('Client WebApp running on *:8081');
     });
@@ -105,9 +110,43 @@ catch (err) {
     eventLog(`Unable to start Client WebApp: ${err.message}`);
 }
 
+// -------------------------------------
+// Client WebApp Socket.IO
+// -------------------------------------
+
+const clientIO = require('socket.io')(clientHttp);
+
+clientIO.on('connection', socket => {
+    // Send initial (full) state
+    socket.emit('data', controls.router.Get({ sparse: false }));
+
+    socket.on('data', data => {
+        // Send data to router
+        if (controls.router) {
+            controls.router.Set(data);
+        }
+
+        // Send data to other clients
+        socket.broadcast.emit('data', data);
+
+        // Send data to manager
+        if (manager_io) {
+            manager_io.emit('data', data);
+        }
+    });
+});
+
+controls.on('router', router => {
+    // Forward data from router to local clients
+    router.on('data', data => {
+        clientIO.emit('data', data);
+    });
+}, { immediate: true });
+
+
 // Serve html files
 // clientApp.use("/", express.static(path.join(__dirname, "/html")));
-clientApp.use(express.static('client'));
+// clientApp.use(express.static('local-client'));
 
 // Serve DeviceList generated html (default page);
 // let deviceListHtml = deviceList.GetHtml();
@@ -142,29 +181,7 @@ clientApp.use(express.static('client'));
 // });
 
 
-// -------------------------------------
-// Client WebApp Socket.IO
-// -------------------------------------
 
-// const clientIO = require('socket.io')(clientHttp);
-
-// clientIO.on('connection', socket => {
-//     // Send initial (full) state
-//     socket.emit('data', controls.Get({client: true, includeRun: true}));
-
-//     socket.on('data', data => {
-//         // Send data to router
-//         controls.Set(data);
-
-//         // Send data to other clients
-//         socket.broadcast.emit('data', data);
-//     });
-// });
-
-// // Forward data from router to clients
-// controls.on('data', data => {
-//     clientIO.emit('data', data);
-// });
 
 
 // -------------------------------------

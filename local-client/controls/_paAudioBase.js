@@ -1,14 +1,14 @@
-class client_AudioInputDevice extends ui {
+class _paAudioBase extends ui {
     constructor() {
         super();
-        this._styles.push('client_AudioInputDevice.css');
-
-        this.mute = true;
+        this._styles.push('_paAudioBase.css');
+        this.displayName = '';
+        this.active = false;
         this.volume = 1;
         this.maxVolume = 1.5;
         this.showVolumeControl = true;
         this.showMuteControl = true;
-        this.level = 0;
+        this.vuData = 0;
         this.peak = 0;
         this._sliderTop = 0;
         this._sliderBottom = 0;
@@ -23,43 +23,40 @@ class client_AudioInputDevice extends ui {
 
     get html() {
         return `
-        <!-- ${this.name} -->
-
-        <div class="AudioInputDevice_background">
+        <div class="paAudioBase_background">
             <table>
-                <tr><td class="AudioInputDevice_label">
-                    <div><span>${this.name}</span></div>
+                <tr><td class="paAudioBase_label">
+                    <div><span>@{displayName}</span></div>
                 </td></tr>
-                <tr><td class="AudioInputDevice_volume">
-                    <div id="${this._uuid}_volume_slit" class="AudioInputDevice_volume_slit">
+                <tr><td class="paAudioBase_volume">
+                    <div id="@{_volume_slit}" class="paAudioBase_volume_slit">
                     </div>
-                    <div id="${this._uuid}_volume_slider" class="AudioInputDevice_volume_slider"></div>
+                    <div id="@{_volume_slider}" class="paAudioBase_volume_slider"></div>
                 </td></tr>
-                <tr><td class="AudioInputDevice_control_button">
-                    <div id="${this._uuid}_control_button">
-                        <span id="${this._uuid}_control_button_text">OFF</span>
+                <tr><td class="paAudioBase_control_button">
+                    <div id="@{_control_button}">
+                        <span id="@{_control_button_text}">OFF</span>
                     </div>
                 </td></tr>
             </table>
         </div>`;
-
     }
 
     Init() {
-        this._control_button = document.getElementById(`${this._uuid}_control_button`);
-        this._control_button_text = document.getElementById(`${this._uuid}_control_button_text`);
-        this._volume_slit = document.getElementById(`${this._uuid}_volume_slit`);
-        this._volume_slider = document.getElementById(`${this._uuid}_volume_slider`);
+        // this._control_button = document.getElementById(`@{_control_button`);
+        // this._control_button_text = document.getElementById(`@{_control_button_text`);
+        // this._volume_slit = document.getElementById(`@{_volume_slit`);
+        // this._volume_slider = document.getElementById(`@{_volume_slider`);
 
         // Enable dragging for volume slider
         this._dragElement(this._volume_slider, this);
 
         // Event subscriptions
         this._control_button.addEventListener('click', (e) => {
-            this.mute = !this.mute;
+            this.active = !this.active;
 
-            this._setMute();
-            this.NotifyProperty("mute");
+            this._setActive();
+            this.NotifyProperty("active");
         });
 
         // recalculate volume slider range on window resize
@@ -78,39 +75,38 @@ class client_AudioInputDevice extends ui {
         });
 
         // Handle property changes
-        this.on('mute', () => {
-            this._setMute();
-        });
+        this.on('active', () => {
+            this._setActive();
+        }, { immediate: true });
 
         this.on('volume', () => {
             this._setVolume();
         });
 
-        this.on('level', level => {
+        this.on('vuData', level => {
             if (this.vu) {
                 this.vu.level = level;
             }
         });
-
-        // Set initial state
-        this._setMute();
 
         // Workaround: calculate initial slider range after css is applied
         setTimeout(() => {
             this._calcSliderRange();
             this._setVolume();
         }, 100);
-        
+
     }
 
-    _setMute() {
-        if (this.mute) {
+    _setActive() {
+        if (!this.active) {
+            // mute
             this._control_button.style.borderColor = "rgb(6, 154, 46)";
             this._control_button.style.backgroundColor = "rgb(34, 75, 18)";
             this._control_button.style.boxShadow = "0 0 0 0";
             this._control_button_text.textContent = "OFF";
         }
         else {
+            // unmute
             this._control_button.style.borderColor = "rgb(12, 255, 77)";
             this._control_button.style.backgroundColor = "rgb(6, 154, 46)";
             this._control_button.style.boxShadow = "0 0 10px 5px rgb(6, 154, 46)";
