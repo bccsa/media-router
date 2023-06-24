@@ -237,8 +237,8 @@ class VuMeter extends ui {
             // Logarithmic level in 50 steps
             // let p = Math.round(20 * Math.log10(level) * 50) / 50;
 
-            let paintLeft = this._width / levelArr.length * ch + 1;
-            let paintWidth = this._width / levelArr.length - 2;
+            let paintLeft = this._width / levelArr.length * ch;
+            let paintWidth = this._width / levelArr.length + 1;
 
             let bar1 = Math.min(Math.max((p + 60), 0), 60 - 20) * this._height / 60;  // Start showing from -60dB. Max width at -20dB (40dB width)
             let bar2 = Math.min(Math.max((p + 20), 0), 20 - 9) * this._height / 60;   // Start showing from -20dB. Max width at -9dB (11dB width)
@@ -265,12 +265,10 @@ class VuMeter extends ui {
             let total = bar1 + bar2 + bar3;
 
             // Clear
-            if (total < this._prev[ch].total) {
-                if (p <= -60) {
-                    // this._ctx.clearRect(this._prev[ch].top3, paintLeft, top3 - this._prev[ch].top3, paintWidth);
-                } else {
-                    this._ctx.clearRect(paintLeft, this._prev[ch].top3 -1, paintWidth + 1, top3 - this._prev[ch].top3, paintWidth);
-                }
+            if (p <= -60) {
+                this._ctx.clearRect(paintLeft, 0, this._height, paintWidth);
+            } else if (total < this._prev[ch].total) {
+                this._ctx.clearRect(paintLeft, this._prev[ch].top3 -1, paintWidth + 1, top3 - this._prev[ch].top3, paintWidth);
             }
             // Draw
             else if (total > this._prev[ch].total) {
