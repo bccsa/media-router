@@ -1,7 +1,8 @@
 const { clearInterval } = require('timers');
 let { dm } = require('../modular-dm');
 const { spawn } = require('child_process');
-const { timeStamp } = require('console');
+const util = require('util');
+const exec = util.promisify(require('child_process').exec);
 
 /**
  * Base class for PulseAudio sources and sinks.
@@ -12,7 +13,7 @@ class _paAudioBase extends dm {
         super();
         this.displayName = "";  // Display name
         this.soloGroup = "";
-        this.active = false;    // false: mute; true: unmuted / active
+        this.mute = false;
         this.showVolumeControl = true;
         this.showMuteControl = true;
         this.displayOrder = 0;  // display order on client interface
@@ -38,14 +39,15 @@ class _paAudioBase extends dm {
         this.SetAccess('run', { Get: 'none', Set: 'none' });
         this.runVU = false;     // VU meter run command - this should not be set from external code
         this.SetAccess('runVU', { Get: 'none', Set: 'none' });
+        this._setVolTimer;      // Timer for rate limiting _setVolume actions
     }
 
     Init() {
         // Mute all other modules (with the same parent) in the solo group
-        this.on('active', active => {
-            if (active && this.soloGroup) {
+        this.on('mute', mute => {
+            if (!mute && this.soloGroup) {
                 Object.values(this._parent._controls).filter(c => c.soloGroup == this.soloGroup).forEach(m => {
-                    if (m._controlName != this._controlName && m.active) m.active = false;
+                    if (m._controlName != this._controlName && !m.mute) m.mute = true;
                 });
             }
         }, { immediate: true });
@@ -84,8 +86,8 @@ class _paAudioBase extends dm {
                     if (notify) {
                         this._notify({ vuData: vu });   // Notifies with through _topLevelParent.on('data', data => {});
                     }
-                    
-                    this._vuPrev =  [...vu]; // create a shallow copy of the internal VU array
+
+                    this._vuPrev = [...vu]; // create a shallow copy of the internal VU array
                     this._vuResetPeak = true;
                 }, this.vuInterval);
             } else {
@@ -97,7 +99,7 @@ class _paAudioBase extends dm {
                 }
 
                 this._notify({ vuData: this._vu });
-                this._vuPrev =  [...this._vu]; // create a shallow copy of the internal VU array
+                this._vuPrev = [...this._vu]; // create a shallow copy of the internal VU array
             }
         });
 
@@ -105,8 +107,19 @@ class _paAudioBase extends dm {
             this.runVU = this.run && this.ready && this.enableVU;
         }, { immediate: true });
 
-        this.on('ready', () => {
+        let _volEventHandler = this._setVolume.bind(this);
+        let _muteEventHandler = this._setMute.bind(this);
+
+        this.on('ready', ready => {
             this.runVU = this.run && this.ready && this.enableVU;
+
+            if (ready) {
+                this.on('volume', _volEventHandler, { immediate: true });
+                this.on('mute', _muteEventHandler, { immediate: true });
+            } else {
+                this.off('volume', _volEventHandler);
+                this.off('mute', _muteEventHandler);
+            }
         }, { immediate: true });
 
         this.on('enableVU', () => {
@@ -119,8 +132,8 @@ class _paAudioBase extends dm {
             this.run = false;
         });
 
-        // Subscribe to parent (router) run events
-        this._parent.on('run', run => {
+        // Subscribe to parent (router) run command
+        this._parent.on('runCmd', run => {
             this.run = run;
         }, { immediate: true, caller: this });
     }
@@ -169,6 +182,67 @@ class _paAudioBase extends dm {
 
             }
             this._vuProc = undefined;
+        }
+    }
+
+    /**
+     * Set source or sink mute
+     * @param {boolean} mute - true = mute; false = unmute
+     */
+    _setMute(mute) {
+        let m;
+        if (mute) {
+            m = '1';
+        } else {
+            m = '0';
+        }
+
+        let type;
+        if (this.source) {
+            type = 'source';
+        } else if (this.sink) {
+            type = 'sink';
+        }
+
+        let cmd = `pactl set-${type}-mute ${this[type]} ${m}`;
+        exec(cmd, { silent: true }).then(data => {
+            if (data.stderr) {
+                console.error(`${this._controlName}: ${data.stderr.toString()}`);
+            }
+        }).catch(err => {
+            console.error(`${this._controlName}: ${err.message}`);
+        });
+    }
+
+    /**
+     * Set source or sink volume
+     */
+    _setVolume() {
+        if (!this._setVolTimer) {
+            let type;
+            if (this.source) {
+                type = 'source';
+            } else if (this.sink) {
+                type = 'sink';
+            }
+
+            let cmd = `pactl set-${type}-volume ${this[type]} ${this.volume}%`;
+            exec(cmd, { silent: true }).then(data => {
+                if (data.stderr) {
+                    console.error(`${this._controlName}: ${data.stderr.toString()}`);
+                }
+            }).catch(err => {
+                console.error(`${this._controlName}: ${err.message}`);
+            });
+
+            let prevVol = this.volume;
+
+            this._setVolTimer = setTimeout(() => {
+                delete this._setVolTimer;
+                if (this.volume != prevVol) {
+                    this._setVolume();
+                }
+            }, 5);
         }
     }
 }

@@ -7,7 +7,7 @@ class _paAudioBase extends ui {
     constructor() {
         super();
         this._styles.push('_paAudioBase.css');
-        this.active = true;
+        this.mute = false;
         this.description = "";
         this.volume = 100;
         this.channels = 1;
@@ -243,10 +243,10 @@ class _paAudioBase extends ui {
                     
                     <!--    ACTIVE TOGGLE     -->
                     <div class="flex">
-                        <label for="@{_btnActive}" class="paAudioBase-label">Off</label>
+                        <label for="@{_btnActive}" class="paAudioBase-label">On</label>
                         <div class="form-check form-switch">
-                            <input id="@{_btnActive}" class="paAudioBase-toggle" type="checkbox" role="switch" title="Switch Active on or off" checked="@{active}">
-                            <label for="@{_btnActive}" class="paAudioBase-label">On</label>
+                            <input id="@{_btnActive}" class="paAudioBase-toggle" type="checkbox" role="switch" checked="@{mute}">
+                            <label for="@{_btnActive}" class="paAudioBase-label">Mute</label>
                         </div>
                     </div>
 
@@ -369,7 +369,6 @@ class _paAudioBase extends ui {
                 this.vu.level = level;
             });
         });
-        
 
         //-------------- Dragging Device --------------------
 

@@ -130,6 +130,8 @@ router_io.on('connection', socket => {
         // Forward data to manager client UI
         manager_io.emit('data', { [socket.data.routerID]: data });
 
+        confManager.append({ [socket.data.routerID]: data });
+
         // To do: add online status to be emitted to manager UI
     });
 

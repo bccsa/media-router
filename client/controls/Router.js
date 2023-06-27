@@ -3,8 +3,8 @@ class Router extends ui {
         super();
         this.deviceType = "Router";
         this.description = "";
-        this.autoStart = false;
-        this.autoStartDelay = 500;  // milliseconds
+        // this.autoStart = false;
+        // this.autoStartDelay = 500;  // milliseconds
         this.run = false;
         this.password = "";
         this.displayName = "New Router";
@@ -142,23 +142,6 @@ class Router extends ui {
                                 placeholder="Your description" title="Router description">@{description}</textarea>
 
                             </div>
-                        </div>
-
-                        <!--    AUTO START DELAY      -->
-                        <label for="@{_autoStartDelay}" class="router-label-settings">Auto Start Delay: </label>
-                        <div class="router-container">
-                            <div class="mr-4 w-full">
-                                
-                                <input id="@{_autoStartDelay}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
-                                title="Set the delay in milliseconds" step="1" value="@{autoStartDelay}"/>
-
-                            </div>
-                        </div>
-
-                        <!--    AUTO START CHECKBOX      --> 
-                        <div class="router-container">
-                            <input id="@{_autoStart}" class="router-checkbox" type="checkbox" checked="@{autoStart}" title="Enable or disable the auto start"/>  
-                            <label for="@{_autoStart}" class="ml-2">Auto Start</label>  
                         </div>
 
                         <!--    PASSWORD      -->

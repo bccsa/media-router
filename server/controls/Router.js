@@ -11,10 +11,12 @@ class Router extends dm {
      */
     constructor(path) {
         super(path);
-        this.run = false;
+        this.run = false;                           // External run command
+        this.runCmd = false;                        // Internal run command
+        this.SetAccess('runCmd', { Set: 'none', Get: 'none' });
         this.displayName = '';
-        this.autoStart = false;
-        this.autoStartDelay = 500,
+        // this.autoStart = false;
+        // this.autoStartDelay = 500,
         this.DisplayName = "";                      // Used as router username
         this.password = "";
         this._sources = {};
@@ -30,19 +32,33 @@ class Router extends dm {
     Init() {
         super.Init();
 
-        // reset run without triggering event
-        this._properties.run = false;
+        // Startup delay
+        let startupDelay = true;
+        setTimeout(() => {
+            startupDelay = false;
+            this.runCmd = this.run;
+        }, 1000);
 
-        // Start with AutoStart when settings are received from manager.
-        this.once('autoStart', autoStart => {
-            // Auto start
-            if (autoStart) {
-                setTimeout(() => {
-                    this.run = true;
-                }, this.autoStartDelay);
+        // Relay external run command to child controls
+        this.on('run', run => {
+            if (!startupDelay) {
+                this.runCmd = run;
             }
         });
-        
+
+        // reset run without triggering event
+        // this._properties.run = false;
+
+        // // Start with AutoStart when settings are received from manager.
+        // this.once('autoStart', autoStart => {
+        //     // Auto start
+        //     if (autoStart) {
+        //         setTimeout(() => {
+        //             this.run = true;
+        //         }, this.autoStartDelay);
+        //     }
+        // });
+
 
         // PulseAudio items detection
         this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
@@ -178,6 +194,7 @@ class Router extends dm {
                                         sampleRate: sampleRate,
                                         monitorsource: item['Monitor Source'],
                                         channelmap: item['Channel Map'].split(','),
+                                        // mute: item.Mute,
                                     };
                                 }
 

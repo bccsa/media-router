@@ -3,7 +3,7 @@ class _paAudioBase extends ui {
         super();
         this._styles.push('_paAudioBase.css');
         this.displayName = '';
-        this.active = false;
+        this.mute = false;
         this.volume = 1;
         this.maxVolume = 1.5;
         this.showVolumeControl = true;
@@ -53,10 +53,10 @@ class _paAudioBase extends ui {
 
         // Event subscriptions
         this._control_button.addEventListener('click', (e) => {
-            this.active = !this.active;
+            this.mute = !this.mute;
 
-            this._setActive();
-            this.NotifyProperty("active");
+            this._setMute();
+            this.NotifyProperty("mute");
         });
 
         // recalculate volume slider range on window resize
@@ -75,8 +75,8 @@ class _paAudioBase extends ui {
         });
 
         // Handle property changes
-        this.on('active', () => {
-            this._setActive();
+        this.on('mute', () => {
+            this._setMute();
         }, { immediate: true });
 
         this.on('volume', () => {
@@ -97,8 +97,8 @@ class _paAudioBase extends ui {
 
     }
 
-    _setActive() {
-        if (!this.active) {
+    _setMute() {
+        if (this.mute) {
             // mute
             this._control_button.style.borderColor = "rgb(6, 154, 46)";
             this._control_button.style.backgroundColor = "rgb(34, 75, 18)";
