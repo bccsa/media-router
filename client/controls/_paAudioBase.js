@@ -515,19 +515,14 @@ class _paAudioBase extends ui {
      * @param {*} show 
      */
     _showInTopBar(show) {
-
-        let a = this;
-
-        function _VuData(data) {
-            a._parent[a.name + "_vu"].level = data;
-        }
-
         if (show) {
 
             if (!this._parent[this.name + "_vu"]) {
                 this._parent.on(this.name + "_vu", control => {
-                    this.on('vuData', _VuData);
-                })
+                    this.on('vuData', vuData => {
+                        control.level = vuData;
+                    }, { caller: control });
+                });
 
                 // Add VU meter to Router Top Bar
                 this._parent.SetData({
@@ -557,7 +552,6 @@ class _paAudioBase extends ui {
         } else {
             // Remove from parent control
             if (this._parent[this.name + "_vu"]) {
-                this.off('vuData', _VuData);
                 this._parent[this.name + "_vu"].SetData({ remove: true });
             }
         }
