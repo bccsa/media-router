@@ -29,7 +29,7 @@ class SrtOpusInput extends _paNullSinkBase {
         this.on('ready', ready => {
             if (ready) {
                 this._start_ffmpeg();
-                this._start_srt();
+                // this._start_srt();
             }
         });
 
@@ -37,7 +37,7 @@ class SrtOpusInput extends _paNullSinkBase {
         this.on('run', run => {
             if (!run) {
                 this._stop_ffmpeg();
-                this._stop_srt();
+                // this._stop_srt();
             }
         });
     }
@@ -47,17 +47,34 @@ class SrtOpusInput extends _paNullSinkBase {
             try {
                 console.log(`${this._controlName}: Starting opus decoder (ffmpeg)`);
 
+                let crypto = '';
+                if (this.srtPassphrase) {
+                    crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
+                }
+
+                let latency = '';
+                if (this.srtMode == 'caller') {
+                    latency = '&latency=' + this.srtLatency
+                }
+
+                let streamID = '';
+                if (this.srtStreamID) {
+                    streamID = '&streamid=' + this.srtStreamID;
+                }
+
                 // Opus sample rate is always 48000. Input is therefore assumed to be 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 // See https://stackoverflow.com/questions/39497131/ffmpeg-pulseaudio-output-options-device for playing to a PulseAudio device (need to specify a stream name)
-                let args = `ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay \
-                -f mpegts -c:a libopus -ac ${this.channels} \
-                -i "srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener" \
+                let args = `ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -use_wallclock_as_timestamps 1 -rtbufsize 64 -max_delay 1000 \
+                -f mpegts -c:a libopus -ac ${this.channels} -flush_packets 1\
+                -i "srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" \
                 -c:a pcm_s${this.bitDepth}le \
                 -af aresample=${this.sampleRate} \
                 -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 -buffer_duration ${this._parent.paLatency} -f pulse -device ${this.sink} "${this._controlName}"`;
                 // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB filter removed - if it should be added again, use a filter complex (only last -af filter is used by ffmpeg)
+                // Connection to srt-live-transmit:
+                // -i "srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener" \
 
                 // this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
                 this._ffmpeg = spawn(args, { shell: 'bash'});

@@ -37,7 +37,7 @@ class Router extends dm {
         setTimeout(() => {
             startupDelay = false;
             this.runCmd = this.run;
-        }, 1000);
+        }, 2000);
 
         // Relay external run command to child controls
         this.on('run', run => {
