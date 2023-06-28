@@ -84,7 +84,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 -fflags nobuffer -flags low_delay -use_wallclock_as_timestamps 1 -rtbufsize 64 -max_delay 1000 \
                 -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -f pulse -i ${this.source} \
                 -af asetpts=NB_CONSUMED_SAMPLES/SR/TB,aresample=48000 \
-                -c:a libopus -b:a ${this.bitrate * 1000} -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
+                -c:a libopus -b:a ${this.bitrate * 1000} -application lowdelay -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \ 
                 -f mpegts  -flush_packets 1 -omit_video_pes_length 0 srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
 
