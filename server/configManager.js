@@ -38,7 +38,7 @@ class configManager {
         catch (err) {
             // Return the default configuration file if available
             if (this.defaultConfig) {
-                return new config(this.defaultConfig)._load();
+                return new configManager(this.defaultConfig)._load();
             } else {
                 console.log(`Unable to load configuration from file (${this.path}): ${err.message}`);
                 return {};

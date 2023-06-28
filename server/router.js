@@ -8,41 +8,40 @@
 // External libraries
 // -------------------------------------
 
-const fs = require('fs');
 const express = require('express');
 const path = require('path');
 let { dmTopLevelContainer } = require('./modular-dm');
 const process = require('process')
 const io = require('socket.io-client');
+const { configManager } = require('./configManager');
 
 // Set path to runtime directory
 process.chdir(__dirname);
 
+// -------------------------------------
+// Configuration management
+// -------------------------------------
+let localConf;
 // Get config file path from passed argument
-// if (process.argv.length > 2) {
-//     // Load config file from disk
-//     loadConfig(process.argv[2]);
-// } else {
-//     loadConfig('config.json');
-// }
+if (process.argv.length > 2) {
+    // Load config file from disk
+    localConf = new configManager(process.argv[2], 'defaultRouterConf.json');
+} else {
+    localConf = new configManager('localConf.json', 'defaultRouterConf.json');
+}
 
 
-// -------------------------------------
-// Global variables
-// -------------------------------------
-/**
- * Manager socket.io connection
- */
-var manager_io;
+
 // -------------------------------------
 // Manager socket.io connection
 // -------------------------------------
+var manager_io;
 
 /**
  * Connect to the manager's socket.io server
  * @param {string} url 
  */
-function manager_connect(url) {
+function manager_connect(url, username, password) {
     // Clear existing connection
     if (manager_io) {
         manager_io.disconnect();
@@ -50,7 +49,7 @@ function manager_connect(url) {
         // To do: Stop running router
     }
 
-    manager_io = io(url, { auth: { username: 'testRouter1', password: 'testPass' } });
+    manager_io = io(url, { auth: { username: username, password: password } });
 
     manager_io.on('connect', () => {
         console.log('Connected to manager.')
@@ -76,14 +75,17 @@ function manager_connect(url) {
 var controls = new dmTopLevelContainer('../controls');
 controls.Set({ router: { controlType: 'Router' } });
 controls.on('router', router => {
-    manager_connect('http://localhost:3000');
+    let c = Object.values(localConf.config).find(t => t.selected);
+    if (c) {
+        manager_connect(c.managerUrl, c.username, c.password);
 
-    // forward data from router controls to manager
-    router.on('data', data => {
-        if (manager_io) {
-            manager_io.emit('data', data);
-        }
-    });
+        // forward data from router controls to manager
+        router.on('data', data => {
+            if (manager_io) {
+                manager_io.emit('data', data);
+            }
+        });
+    }
 }, { immediate: true });
 
 // -------------------------------------
