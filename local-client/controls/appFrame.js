@@ -4,6 +4,7 @@ class appFrame extends ui {
         this.displayName = '';
         this.run = false;
         this._styles.push('appFrame.css');
+        this.orderBy = 'displayOrder';
     }
 
     get html() {

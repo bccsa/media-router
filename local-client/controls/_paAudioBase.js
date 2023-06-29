@@ -19,6 +19,7 @@ class _paAudioBase extends ui {
         this._muteTimerActive = false;
         this._volumeTimerActive = false;
         this._sliderActive = false;
+        this.displayOrder = 0;
     }
 
     get html() {
