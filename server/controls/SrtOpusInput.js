@@ -69,7 +69,7 @@ class SrtOpusInput extends _paNullSinkBase {
                 -f mpegts -c:a libopus -ac ${this.channels} -flush_packets 1\
                 -i "srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" \
                 -c:a pcm_s${this.bitDepth}le \
-                -af aresample=${this.sampleRate} \
+                -af aresample=${this.sampleRate},aresample=async=1 \
                 -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 -buffer_duration ${this._parent.paLatency} -f pulse -device ${this.sink} "${this._controlName}"`;
                 // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB filter removed - if it should be added again, use a filter complex (only last -af filter is used by ffmpeg)
