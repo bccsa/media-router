@@ -1,6 +1,7 @@
 class appFrame extends ui {
     constructor() {
         super();
+        this.orderBy = 'displayOrder';
     }
 
     get html() {
@@ -103,6 +104,7 @@ class appFrame extends ui {
     Init() {
 
         // Set initial values
+        let f = this;
         this._incorrectPassAlert.style.display = "none";
         this._disconnectAlert.style.display = "none";
         this._btnAddRouter.disabled = true;
@@ -167,35 +169,72 @@ class appFrame extends ui {
                  */
                 set: function (sortable) {
                     var currentOrder = sortable.toArray();
+
                     localStorage.setItem(this._controlsDiv, JSON.stringify(currentOrder))
-                }
+
+                    var controlElements = sortable.el.children;
+
+                    //
+                    Object.values(controls.appFrame._controls)
+                    var controlId
+                    const router = [];
+              
+                    // Update the displayOrder property for each control
+                    for (var i = 0; i < controlElements.length; i++) {
+                      controlId = controlElements[i].id;
+                      
+                      
+
+                       router[i] = Object.values(controls.appFrame._controls).find(R => R._uuid == controlId.toString());
+                       
+                      
+                       console.log(i + " " + controlId.toString() + " " + " " + router[i].name + " " + router[i].displayOrder);
+                    }
+
+                    f.updateOrder(router);
+                },
+
+                
+                
             }
+            
         });
 
-        // Load the list order when the mouse is over the controls div
-        this._controlsDiv.addEventListener('mouseover', (e) => {
-            Sortable.create(this._controlsDiv, {
-                handle: '.router-btn-handel',
-                animation: 350,
-                chosenClass: "sortable-chosen",
-                dragClass: "sortable-drag",
-                group: {
-                    name: 'my-sortable-group'
-                },
+        // // Load the list order when the mouse is over the controls div
+        // this._controlsDiv.addEventListener('mouseover', (e) => {
+        //     Sortable.create(this._controlsDiv, {
+        //         handle: '.router-btn-handel',
+        //         animation: 350,
+        //         chosenClass: "sortable-chosen",
+        //         dragClass: "sortable-drag",
+        //         group: {
+        //             name: 'my-sortable-group'
+        //         },
                 
-                store: {
-                    /**
-                     * Get the order of elements. Called once during initialization.
-                     * @param   {Sortable}  sortable
-                     * @returns {Array}
-                     */
-                    get: function (sortable) {
-                        var savedOrder = JSON.parse(localStorage.getItem(this._controlsDiv));
-                        return (savedOrder);
-                    }
-                }
-            });
-        }, {once : true});
+        //         store: {
+        //             /**
+        //              * Get the order of elements. Called once during initialization.
+        //              * @param   {Sortable}  sortable
+        //              * @returns {Array}
+        //              */
+        //             get: function (sortable) {
+        //                 var savedOrder = JSON.parse(localStorage.getItem(this._controlsDiv));
+        //                 return (savedOrder);
+        //             }
+        //         }
+        //     });
+        // }, {once : true});
+    }
+
+    updateOrder(router) {
+        // Update the displayOrder property for each control
+        for (var i = 0; i < router.length; i++) {
+           
+             router[i].displayOrder = i;
+             router[i].NotifyProperty("displayOrder");
+             console.log(i + " " + router[i].name + " " + router[i].displayOrder);
+             
+          }
     }
 
     logIn() {
