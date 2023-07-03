@@ -1,0 +1,9 @@
+{
+    "default": {
+        "controlType": "managerPanel",
+        "managerUrl": "http://localhost:3000",
+        "username": "testRouter1",
+        "password": "testPass",
+        "selected": true
+    }
+}
