@@ -25,11 +25,12 @@ test.Set({
         opusIn1: {
             controlType: 'OpusInput',
             channels: 2,
-            run: true,
             srtHost: '10.9.1.165',
             srtPort: 1234,
             srtMode: 'caller',
             srtLatency: 10,
+            udpBufferSize: 2048,
+            run: true,
         },
 
         // opusIn1: {
@@ -38,8 +39,8 @@ test.Set({
 
         loopback1: {
             controlType: 'AudioLoopback',
-            source: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.analog-stereo',
-            sink: 'opusOut1',
+            source: 'opusIn1',
+            sink: 'alsa_output.platform-fef00700.hdmi.hdmi-stereo',
             channels: 2,
         },
 

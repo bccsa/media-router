@@ -12,7 +12,7 @@ class Router extends ui {
         this.sources = [];          // Array with PulseAudio sources
         this.sinks = [];            // Array with PulseAudio sinks
         this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
-
+        this.displayOrder = -1;
     }
 
     get html() {

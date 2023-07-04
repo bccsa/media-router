@@ -241,14 +241,13 @@ class _paAudioBase extends ui {
 
                 <div class="flex justify-between items-center">
                     
-                    <!--    ACTIVE TOGGLE     -->
-                    <div class="flex">
-                        <label for="@{_btnActive}" class="paAudioBase-label">On</label>
-                        <div class="form-check form-switch">
-                            <input id="@{_btnActive}" class="paAudioBase-toggle" type="checkbox" role="switch" checked="@{mute}">
-                            <label for="@{_btnActive}" class="paAudioBase-label">Mute</label>
-                        </div>
-                    </div>
+                    <!--    ACTIVE TOGGLE  -->
+                    <label class="relative inline-flex items-center mr-5 cursor-pointer">
+                    <span class="paAudioBase-label">Mute</span>
+                    <input id="@{_btnActive}" class="sr-only peer" type="checkbox" checked="@{mute}">
+                    <div class="w-9 h-5 bg-green-600 rounded-full peer peer-focus:ring-2 dark:bg-gray-700 peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[62.35px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-red-500"></div>
+                    <span class="paAudioBase-label ml-2">On</span>
+                    </label>
 
                     <!--    SETTINGS BUTTON     -->
                     <button id="@{_btnSettings}" class="paAudioBase-btn-settings" type="button" 
