@@ -80,6 +80,7 @@ class SrtOpusOutput extends _paNullSinkBase {
 
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
+                // See https://superuser.com/questions/1162140/how-to-account-for-tempo-difference-with-ffmpeg-realtime-stream-encoding for solving audio latency drift
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 -fflags nobuffer -flags low_delay -use_wallclock_as_timestamps 1 -rtbufsize 64 -max_delay 1000 \
                 -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -f pulse -i ${this.source} \
