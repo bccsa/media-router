@@ -127,6 +127,8 @@ class appFrame extends ui {
             this.on(name, control => {
                 // send newly created router's data to manager
                 this._notify({[name]: control.GetData()});
+
+                f.updateOrder();
             });
 
         });
@@ -168,34 +170,11 @@ class appFrame extends ui {
                  * @param {Sortable}  sortable
                  */
                 set: function (sortable) {
-                    var currentOrder = sortable.toArray();
-
-                    localStorage.setItem(this._controlsDiv, JSON.stringify(currentOrder))
-
-                    var controlElements = sortable.el.children;
-
-                    //
-                    Object.values(controls.appFrame._controls)
-                    var controlId
-                    const router = [];
-              
-                    // Update the displayOrder property for each control
-                    for (var i = 0; i < controlElements.length; i++) {
-                      controlId = controlElements[i].id;
-                      
-                      
-
-                       router[i] = Object.values(controls.appFrame._controls).find(R => R._uuid == controlId.toString());
-                       
-                      
-                       console.log(i + " " + controlId.toString() + " " + " " + router[i].name + " " + router[i].displayOrder);
-                    }
-
-                    f.updateOrder(router);
+                    
+                    // Update the displayOrder property for each Router
+                    f.updateOrder();
                 },
 
-                
-                
             }
             
         });
@@ -226,14 +205,40 @@ class appFrame extends ui {
         // }, {once : true});
     }
 
-    updateOrder(router) {
+    updateOrder() {
+        var sortable = Sortable.create(this._controlsDiv, {
+            handle: '.router-btn-handel',
+            animation: 350,
+            chosenClass: "sortable-chosen",
+            dragClass: "sortable-drag",
+            group: {
+                name: 'my-sortable-group'
+            }
+        });
+
+        // Get the ordered list of children elements
+        var controlElements = sortable.el.children;
+
+        // Create a list of all the routers
+        Object.values(controls.appFrame._controls)
+
+        var controlId
+        const router = [];
+  
+        // Get the ordered list of all the routers
+        for (var i = 0; i < controlElements.length; i++) {
+          controlId = controlElements[i].id;
+          
+           router[i] = Object.values(controls.appFrame._controls).find(R => R._uuid == controlId.toString());
+           
+        }
+
         // Update the displayOrder property for each control
         for (var i = 0; i < router.length; i++) {
-           
              router[i].displayOrder = i;
+
+             //  !!  Update modular UI so that it automatically notify properties   !!
              router[i].NotifyProperty("displayOrder");
-             console.log(i + " " + router[i].name + " " + router[i].displayOrder);
-             
           }
     }
 

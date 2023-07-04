@@ -311,7 +311,7 @@ class _paAudioBase extends ui {
                     buttons: ["Cancel", "Yes"],
                     title: `Delete ${a.displayName}?`,
                     text: 'Are you sure you want to delete the device?',
-                    img: 'bg-delete_bl',
+                    img: 'paAudioBase-modal-img-delete',
                     callback: function (data) {
                         if (data == 'Yes') {
                             a._notify({ remove: true });

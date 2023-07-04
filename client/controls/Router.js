@@ -31,10 +31,11 @@ class Router extends ui {
                             <div class="router-flex-justify-end min-w-[12rem]">
 
                                 <!--    LIST HANDEL  -->
-                                <div class="router-btn-handel" title="Drag and drop"></div>
+                                <div  class="router-btn-handel" title="Drag and drop"></div>
+                    
 
                                 <!--    ROUTER NAME    -->
-                                <div class="ml-4">
+                                <div class="ml-1">
                                     <span id="@{_name}" class="font-medium text-2xl" title="Router Name">@{displayName}</span>
                                 </div>
                             </div>
@@ -82,16 +83,19 @@ class Router extends ui {
                 <!--    MORE INFO CONTAINER       -->
                 <div id="@{_moreInfo}" class="router-content">
 
+
+                    <!--    CHILD DEVICE    -->
+                    <div id="@{_controlsDiv}" class="router-devices-div z-10 relative">
+
                     <!--    ADD BUTTON    -->
                     <button class="router-btn-add" type="button" data-bs-toggle="modal"
                     data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
 
-                    <!--    CHILD DEVICE    -->
-                    <div id="@{_controlsDiv}" class="router-devices-div z-10 relative"></div>
+                    </div>
 
                     
                     <!--    SETTINGS BUTTON       -->
-                    <div class="justify-between mt-1 z-0">
+                    <div class="justify-between z-0">
                         <button id="@{_btnSettings}" class="router-btn-settings"
                         type="button" title="Open Router Settings"> </button>
                     </div>

@@ -11,7 +11,7 @@
 }
 
 .appFrame-btn-add {
-    @apply bg-center bg-cover bg-plus_circle_wt bg-no-repeat inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548] duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+    @apply icon-[mdi-light--plus-circle] text-white hover:text-blue-500 text-2xl text-[32px];
 }
 
 .appFrame-heading {
@@ -19,7 +19,7 @@
 }
 
 .appFrame-btn-log-out {
-    @apply bg-center bg-cover bg-account bg-no-repeat inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548] duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+    @apply icon-[mdi-light--account] text-white hover:text-blue-500 text-2xl text-[32px];
 }
 
 .appFrame-disconnect-alert-container {
@@ -27,7 +27,7 @@
 }
 
 .appFrame-disconnect-alert-icon {
-    @apply bg-alert w-8 h-8 mr-2 bg-center bg-cover bg-no-repeat;
+    @apply icon-[mdi-light--alert] text-yellow-700 text-2xl text-[32px] ml-2;
 }
 
 .appFrame-disconnect-alert-text {
@@ -51,7 +51,7 @@
 }
 
 .appFrame-modal-img {
-    @apply bg-logout inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+    @apply icon-[mdi-light--logout] text-black text-2xl text-[32px] m-2;
 }
 
 .appFrame-modal-heading {
@@ -59,7 +59,7 @@
 }
 
 .appFrame-modal-btn-close {
-    @apply btn-close box-content w-4 h-4 p-1 text-black border-none rounded-full opacity-50 focus:shadow-none transition hover:shadow-lg duration-200 ease-in-out focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline bg-center bg-cover bg-no-repeat m-2 inline-block border-2 border-transparent;
+    @apply icon-[mdi-light--plus] text-black hover:text-red-500 text-2xl text-[32px] rotate-45 m-2;
 }
 
 .appFrame-modal-body {
@@ -83,11 +83,11 @@
 }
 
 .appFrame-login-alert-container {
-    @apply flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full min-w-[17rem];
+    @apply flex justify-between bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full min-w-[17rem];
 }
 
 .appFrame-login-alert-icon {
-    @apply bg-alert w-8 h-8 mr-2 bg-center bg-cover bg-no-repeat;
+    @apply icon-[mdi-light--alert] text-yellow-700 text-2xl text-[32px] ml-2;
 }
 
 .appFrame-login-alert-text {
@@ -174,7 +174,7 @@
 }
 
 .router-content {
-    @apply flex flex-row justify-between w-full h-full;
+    @apply flex justify-between w-full h-full;
 }
 
 .router-devices-div {
@@ -182,7 +182,7 @@
 }
 
 .router-btn-settings {
-    @apply bg-settings_bl bg-center bg-cover bg-no-repeat inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none;
+    @apply icon-[mdi-light--settings] text-black hover:text-blue-500 text-2xl text-[32px] mt-1;
 
 }
 
@@ -195,7 +195,7 @@
 }
 
 .router-btn-exit {
-    @apply bg-xmark bg-no-repeat bg-cover bg-center inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition duration-150 ease-in-out w-8 h-8;
+    @apply icon-[mdi-light--plus] text-black hover:text-red-500 text-2xl text-[32px] rotate-45;
 }
 
 .router-text-area {
@@ -203,19 +203,15 @@
 }
 
 .router-btn-add {
-    @apply bg-center bg-cover bg-plus_circle_bl bg-no-repeat mt-1 inline-block rounded-full transition duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1 hover:shadow-lg hover:outline-none;
+    @apply icon-[mdi-light--plus-circle] text-black hover:text-blue-500 text-2xl text-[32px] -mt-1;
 }
 
 .router-btn-duplicate {
-    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 inline-block rounded-full transition hover:shadow-lg duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+    @apply icon-[mdi-light--content-duplicate] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
 }
 
 .router-label-settings {
     @apply ml-4 w-full h-auto;
-}
-
-.router-btn-signal {
-    @apply bg-center bg-cover bg-signal_gr bg-no-repeat inline-block w-7 h-7 p-1;
 }
 
 .router-container {
@@ -231,7 +227,7 @@
 }
 
 .router-btn-delete {
-    @apply bg-delete_bl m-2 bg-no-repeat bg-cover bg-center inline-block rounded-full text-white leading-normal uppercase hover:shadow-lg hover:outline-none hover:ring-0 transition duration-150 ease-in-out w-8 h-8;
+    @apply icon-[mdi-light--delete] text-black hover:text-red-500 text-2xl text-[32px] m-2;
 }
 
 .router-select {
@@ -239,7 +235,7 @@
 }
 
 .router-btn-handel {
-    @apply bg-dots-six-vertical-bold cursor-grabbing bg-center bg-cover bg-no-repeat inline-block w-6 h-6 p-1;
+    @apply icon-[ph--dots-six-vertical-bold] text-black hover:text-blue-500 text-2xl text-[26px] cursor-grabbing p-1;
 }
 
 .router-modal {
@@ -259,11 +255,11 @@
 }
 
 .router-modal-img-add {
-    @apply bg-plus_circle_bl inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+    @apply icon-[mdi-light--plus-circle] text-blue-500 text-2xl text-[32px] m-2;
 }
 
 .router-modal-img-rm {
-    @apply bg-delete_bl inline modal-header h-[1.875rem] w-[1.875rem] bg-cover bg-center bg-no-repeat;
+    @apply icon-[mdi-light--delete] text-red-500 text-2xl text-[32px] m-2;
 }
 
 .router-modal-heading {
@@ -271,7 +267,7 @@
 }
 
 .router-modal-btn-close {
-    @apply btn-close box-content w-4 h-4 p-1 text-black border-none rounded-full opacity-50 focus:shadow-none transition hover:shadow-lg duration-200 ease-in-out focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline bg-center bg-cover bg-no-repeat m-2 inline-block border-2 border-transparent;
+    @apply icon-[mdi-light--plus] text-black hover:text-red-500 text-2xl text-[32px] rotate-45 m-2;
 }
 
 .router-modal-body {
@@ -322,7 +318,7 @@
 }
 
 .paAudioBase-btn-settings {
-    @apply bg-settings_wt bg-center bg-cover bg-no-repeat inline-block rounded-full transition hover:shadow-sm hover:shadow-[#75C4EB] hover:ring-0 hover:bg-[#293548] duration-200 ease-in-out w-6 h-6 border-2 border-transparent p-1;
+    @apply icon-[mdi-light--settings] text-white hover:text-blue-500 text-base text-[24px];
 }
 
 .paAudioBase-line {
@@ -354,11 +350,11 @@
 }
 
 .paAudioBase-btn-duplicate {
-    @apply bg-content_duplicate_bl bg-center bg-cover bg-no-repeat m-2 inline-block rounded-full transition hover:shadow-lg duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+    @apply icon-[mdi-light--content-duplicate] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
 }
 
 .paAudioBase-btn-delete {
-    @apply bg-delete_bl bg-center bg-cover bg-no-repeat m-2 inline-block rounded-full transition hover:shadow-lg duration-200 ease-in-out w-8 h-8 border-2 border-transparent p-1;
+    @apply icon-[mdi-light--delete] text-black hover:text-red-500 text-2xl text-[32px] m-2;
 }
 
 .paAudioBase-modal {
@@ -381,8 +377,12 @@
     @apply ml-2 text-xl font-medium leading-normal text-gray-800;
 }
 
+.paAudioBase-modal-img-delete {
+    @apply icon-[mdi-light--delete] text-red-500 text-2xl text-[32px] m-2;
+}
+
 .paAudioBase-modal-btn-close {
-    @apply btn-close box-content w-4 h-4 p-1 text-black border-none rounded-full opacity-50 focus:shadow-none transition hover:shadow-lg duration-200 ease-in-out focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline bg-center bg-cover bg-no-repeat m-2 inline-block border-2 border-transparent;
+    @apply icon-[mdi-light--plus] text-black hover:text-red-500 text-2xl text-[32px] rotate-45 m-2;
 }
 
 .paAudioBase-modal-body {
@@ -428,7 +428,7 @@
 }
 
 .message-modal-btn-close {
-    @apply btn-close box-content w-4 h-4 p-1 text-black border-none opacity-50 focus:shadow-none transition hover:shadow-lg duration-200 ease-in-out rounded-full focus:outline-none focus:opacity-100 hover:text-black hover:opacity-75 hover:no-underline bg-center bg-cover bg-no-repeat m-2 inline-block border-2 border-transparent;
+    @apply icon-[mdi-light--plus] text-black hover:text-red-500 text-2xl text-[32px] rotate-45 m-2;
 }
 
 .message-modal-body {
