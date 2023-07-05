@@ -17,9 +17,11 @@ class appFrame extends ui {
 
             <!--    LOG OUT BUTTON    -->
             <button id="@{_btnUser}" class="appFrame-btn-log-out" type="button" title="Log in or out"
-            data-bs-toggle="modal" data-bs-target="#@{_modalLogOut}"></button>
+            data-bs-toggle="modal"  data-bs-target="#@{_modalLogOut}"></button>
 
         </div> </nav>
+
+        
 
         <!--    DISCONNECT ALERT MESSAGE     -->
         <div id="@{_disconnectAlert}" class="appFrame-disconnect-alert-container">
@@ -28,14 +30,14 @@ class appFrame extends ui {
         </div>
       
         <!--    MODAL LOG OUT   -->
-        <div id="@{_modalLogOut}" class="appFrame-modal-log-out modal fade" tabindex="-1" aria-hidden="true">
+        <div id="@{_modalLogOut}" class="appFrame-modal-log-out modal fade z-[1050] bg-[#00000050]" tabindex="-1" aria-hidden="true">
             <div class="modal-dialog modal-sm appFrame-modal-dialog">
                 <div class="appFrame-modal-content">
 
                     <div class="appFrame-modal-header">
                         <div class="appFrame-modal-img"></div>
                         <h5 class="appFrame-modal-heading" > Log out</h5>
-                        <button class="appFrame-modal-btn-close" type="button"
+                        <button id="@{_btnCloseModal}" class="appFrame-modal-btn-close" type="button"
                         data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
 
@@ -50,6 +52,8 @@ class appFrame extends ui {
                 </div>
             </div>
         </div>
+
+        
 
     
         <!--    LOG IN FORM      -->
@@ -109,6 +113,46 @@ class appFrame extends ui {
         this._disconnectAlert.style.display = "none";
         this._btnAddRouter.disabled = true;
         this._btnUser.disabled = true;
+
+        // Modal Functions
+        
+        this._btnUser.addEventListener('click', (e) => {
+            f._modalLogOut.style.opacity = 0;
+            f._modalLogOut.style.display = "flex";
+            (function fade() {
+                let val = parseFloat(f._modalLogOut.style.opacity);
+                if (!((val += 0.2) > 1)) {
+                    f._modalLogOut.style.opacity = val;
+                    requestAnimationFrame(fade);
+                }
+            })();
+        });
+            
+
+        this._modalLogOut.addEventListener('click', (e) => {
+            f._modalLogOut.style.opacity = 1;
+            (function fade() {
+                if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
+                    f._modalLogOut.style.display = "none";
+                } else {
+                    requestAnimationFrame(fade);
+                }
+            })();
+        });
+
+        this._btnCloseModal.addEventListener('click', (e) => {
+            f._modalLogOut.style.opacity = 1;
+            (function fade() {
+                if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
+                    f._modalLogOut.style.display = "none";
+                } else {
+                    requestAnimationFrame(fade);
+                }
+            })();
+        });
+
+        
+               
 
         // Event subscriptions
         this._btnAddRouter.addEventListener('click', (e) => {
@@ -238,7 +282,7 @@ class appFrame extends ui {
              router[i].displayOrder = i;
 
              //  !!  Update modular UI so that it automatically notify properties   !!
-             router[i].NotifyProperty("displayOrder");
+             //router[i].NotifyProperty("displayOrder");
           }
     }
 
@@ -254,5 +298,28 @@ class appFrame extends ui {
         Object.keys(this._controls).forEach(control => {
             this.RemoveChild(control);
         });
+    }
+
+    fadeOut(el) {
+        el.style.opacity = 1;
+        (function fade() {
+            if ((el.style.opacity -= 0.1) < 0) {
+                el.style.display = "none";
+            } else {
+                requestAnimationFrame(fade);
+            }
+        })();
+    }
+
+    fadeIn(el, display) {
+        el.style.opacity = 0;
+        el.style.display = display || "flex";
+        (function fade() {
+            let val = parseFloat(el.style.opacity);
+            if (!((val += 0.2) > 1)) {
+                el.style.opacity = val;
+                requestAnimationFrame(fade);
+            }
+        })();
     }
 }

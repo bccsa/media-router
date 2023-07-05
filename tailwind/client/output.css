@@ -2955,10 +2955,6 @@ video {
   z-index: 999;
 }
 
-.z-\[1055\] {
-  z-index: 1055;
-}
-
 .col-span-2 {
   grid-column: span 2 / span 2;
 }
