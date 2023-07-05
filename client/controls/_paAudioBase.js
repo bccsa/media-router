@@ -286,7 +286,6 @@ class _paAudioBase extends ui {
 
             if (this.maxVolume <= this.volume) {
                 this.volume = Number.parseFloat(this._volume_slider.value);
-                this.NotifyProperty("volume");
             }
         });
 
@@ -447,9 +446,6 @@ class _paAudioBase extends ui {
                 a._draggable.style.top = position.newTop + "px";
                 a.left = (position.newLeft);
                 a.top = (position.newTop);
-
-                this.NotifyProperty("left");
-                this.NotifyProperty("top");
 
                 a.emit('posChanged', a.calcConnectors());
             }

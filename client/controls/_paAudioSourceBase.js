@@ -118,7 +118,6 @@ class _paAudioSourceBase extends _paAudioBase {
                                 if (index == -1) {
                                     this.destinations.push(dstControl.name);
                                     this[line].Show();
-                                    this.NotifyProperty('destinations');
                                 }
 
                             } else {
@@ -126,7 +125,6 @@ class _paAudioSourceBase extends _paAudioBase {
                                 if (index != -1) {
                                     this.destinations.splice(index, 1);
                                     this[line].Hide();
-                                    this.NotifyProperty('destinations');
                                 }
                             }
                         });
