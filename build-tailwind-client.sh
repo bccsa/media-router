@@ -1,4 +1,3 @@
 # Build tailwind css
-
-cd client
-npx tailwindcss -i ./input.css -o ./output.css -w
+cd tailwind
+npx tailwindcss -i ./client-input.css -o ./client/output.css -w

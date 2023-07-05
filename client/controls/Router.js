@@ -57,6 +57,17 @@ class Router extends ui {
                                 <span class="w-2 h-2 mr-1 bg-red-500 rounded-full"></span>
                                 Offline
                                 </span>
+
+                                <!--    TOGGLE ON/OFF     
+                                <div class="mr-4 flex text-[15px]" title="Switch Router on or off">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <span class="router-label">Off</span>
+                                            <input id="@{_switchOnOff}" class="sr-only peer" type="checkbox" role="switch" checked="@{run}">
+                                            <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-blue-500"></div>
+                                        <span class="router-label -mr-2 ml-2">On</span>
+                                    </label>
+                                </div>
+                                -->
                                 
                                 <!--    TOGGLE ON/OFF     -->
                                 <div class="mr-4 flex text-[15px]">

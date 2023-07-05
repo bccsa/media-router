@@ -3,10 +3,10 @@ const { addDynamicIconSelectors } = require('@iconify/tailwind');
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ['./**/*.{html,js}', './node_modules/tw-elements/dist/js/**/*.js', "../client/**/*.{html,js}"],
+  content: ['./**/*.{html,js}', './node_modules/tw-elements/dist/js/**/*.js', "../client/**/*.{html,js}", "../local-client/**/*.{html,js}", "../local-profileman/**/*.{html,js}"],
   plugins: [
     // Iconify plugin
-    require('tw-elements/dist/plugin'),
+    // require('tw-elements/dist/plugin'),
     addDynamicIconSelectors()
   ],
 

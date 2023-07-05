@@ -24,7 +24,8 @@ class messageBox extends ui {
 
         <head>
             <style>
-                
+            
+
                 /* Styling modal */
                 .modal:before {
                     
