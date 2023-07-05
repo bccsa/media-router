@@ -42,7 +42,6 @@ class checkBox extends ui {
         // Event subscriptions
         this._check.addEventListener('click', value => {
             this.value = !this.value;
-            this.NotifyProperty('value');
         })
 
     }

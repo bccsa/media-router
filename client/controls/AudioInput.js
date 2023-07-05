@@ -47,7 +47,6 @@ class AudioInput extends _paAudioSourceBase {
             } else {
                 if (this._source.selectedIndex >= 0) {
                     this.source = this._source.options[this._source.selectedIndex].value;
-                    this.NotifyProperty('source');
                 }
             }
         }, { immediate: true });

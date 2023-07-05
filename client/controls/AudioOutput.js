@@ -45,7 +45,6 @@ class AudioOutput extends _paAudioSinkBase {
             } else {
                 if (this._sink.selectedIndex >= 0) {
                     this.sink = this._sink.options[this._sink.selectedIndex].value;
-                    this.NotifyProperty('sink');
                 }
             }
         }, { immediate: true });
