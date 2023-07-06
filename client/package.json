@@ -2,6 +2,6 @@
   "devDependencies": {},
   "dependencies": {
     "sortablejs": "^1.15.0",
-    "tw-elements": "^1.0.0-beta2"
+    "tw-elements": "^1.0.0-alpha13"
   }
 }

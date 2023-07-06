@@ -18,7 +18,7 @@ class messageBox extends ui {
         this.buttons.forEach(btn => {
             btns += btnHtml.replaceAll('&name&', btn);
         })
-        
+
 
         return `
 
@@ -63,11 +63,13 @@ class messageBox extends ui {
                         opacity: 1;
                     }
                 }
+
+                
             </style>
         </head>
 
         <!--    MESSAGE BOX MODAL    -->
-        <div id="@{_modalMessageBox}" class="message-modal z-[1050] bg-[#00000050] modal" tabindex="-1" aria-hidden="false">
+        <div id="@{_modalMessageBox}" class="message-modal transition duration-500 ease-in-out z-[1050] bg-[#00000050] modal" tabindex="-1" aria-hidden="false">
             <div class="message-modal-dialog modal-dialog">
                 <div class="message-modal-content modal-content">
 
@@ -103,19 +105,33 @@ class messageBox extends ui {
             } else {
                 console.log('Callback for messageBox not defined or not a function.')
             }
-            
+
             // Destroy the control
+            
             m.SetData({remove: true});
         }
 
         this._modalMessageBox.addEventListener('click', (e) => {
+
+            // let id = null;
+            // let pos = 0;
+            // clearInterval(id);
+            // id = setInterval(frame, 5);
+            // function frame() {
+            //     if (pos == -1000) {
+            //         clearInterval(id);
+            //     } else {
+            //         pos--;
+            //         m._modalMessageBox.style.top = pos + "px";
+            //     }
+            // }
             // Destroy the control
             m.SetData({remove: true});
         })
 
         this._btnClose.addEventListener('click', (e) => {
             // Destroy the control
-            m.SetData({remove: true});
+            m.SetData({ remove: true });
         })
 
     }

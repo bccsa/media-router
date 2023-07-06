@@ -30,7 +30,7 @@ class appFrame extends ui {
         </div>
       
         <!--    MODAL LOG OUT   -->
-        <div id="@{_modalLogOut}" class="appFrame-modal-log-out modal fade z-[1050] bg-[#00000050]" tabindex="-1" aria-hidden="true">
+        <div id="@{_modalLogOut}" class="appFrame-modal-log-out modal fade" tabindex="-1" aria-hidden="true">
             <div class="modal-dialog modal-sm appFrame-modal-dialog">
                 <div class="appFrame-modal-content">
 
@@ -116,40 +116,66 @@ class appFrame extends ui {
 
         // Modal Functions
         
-        this._btnUser.addEventListener('click', (e) => {
-            f._modalLogOut.style.opacity = 0;
-            f._modalLogOut.style.display = "flex";
-            (function fade() {
-                let val = parseFloat(f._modalLogOut.style.opacity);
-                if (!((val += 0.2) > 1)) {
-                    f._modalLogOut.style.opacity = val;
-                    requestAnimationFrame(fade);
-                }
-            })();
-        });
+        // this._btnUser.addEventListener('click', (e) => {
+        //     f._modalLogOut.style.opacity = 0;
+        //     f._modalLogOut.style.display = "flex";
+        //     (function fade() {
+        //         let val = parseFloat(f._modalLogOut.style.opacity);
+        //         if (!((val += 0.2) > 1)) {
+        //             f._modalLogOut.style.opacity = val;
+        //             requestAnimationFrame(fade);
+        //         }
+        //     })();
+        // });
+
+        
+        // Delete Device
+        // this._btnUser.addEventListener('click', (e) => {
+        //     // Show message box
+        //     this.emit('messageBox',
+        //         {
+        //             buttons: ["Cancel", "Yes"],
+        //             title: `Log out`,
+        //             text: 'Are you sure you want to log-out?',
+        //             img: 'appFrame-modal-img',
+        //             callback: function (data) {
+        //                 if (data == 'Yes') {
+        //                     f.clearControls();
+        //                     f._btnAddRouter.disabled = true;
+        //                     f._btnUser.disabled = true;
+        //                     f._formLogIn.style.display = "flex";
+        //                     f._controlsDiv.style.display = "none";
+        //                     f._incorrectPassAlert.style.display = "none";
+        //                     f._userName.value = "";
+        //                     f._userPassword.value = "";
+        //                     f._userName.focus();
+        //                 }
+        //             }
+        //         }, 'top');
+        // });
             
 
-        this._modalLogOut.addEventListener('click', (e) => {
-            f._modalLogOut.style.opacity = 1;
-            (function fade() {
-                if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
-                    f._modalLogOut.style.display = "none";
-                } else {
-                    requestAnimationFrame(fade);
-                }
-            })();
-        });
+        // this._modalLogOut.addEventListener('click', (e) => {
+        //     f._modalLogOut.style.opacity = 1;
+        //     (function fade() {
+        //         if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
+        //             f._modalLogOut.style.display = "none";
+        //         } else {
+        //             requestAnimationFrame(fade);
+        //         }
+        //     })();
+        // });
 
-        this._btnCloseModal.addEventListener('click', (e) => {
-            f._modalLogOut.style.opacity = 1;
-            (function fade() {
-                if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
-                    f._modalLogOut.style.display = "none";
-                } else {
-                    requestAnimationFrame(fade);
-                }
-            })();
-        });
+        // this._btnCloseModal.addEventListener('click', (e) => {
+        //     f._modalLogOut.style.opacity = 1;
+        //     (function fade() {
+        //         if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
+        //             f._modalLogOut.style.display = "none";
+        //         } else {
+        //             requestAnimationFrame(fade);
+        //         }
+        //     })();
+        // });
 
         
                

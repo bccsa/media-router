@@ -8,7 +8,7 @@ If you get a error with jiti, install the lastest version
 ```
 npm install jiti@latest
 ```
-Installed through tailwind npm install tw-elements. See https://tailwind-elements.com/docs/standard/getting-started/quick-start/ for documentation.
+Installed through tailwind npm install tw-elements. See https://tailwind-elements.com/docs/standard/getting-started/quick-start/ for documentation. (1.0.0-alpha13)
 
 
 ## Icons
