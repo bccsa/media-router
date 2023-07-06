@@ -14,8 +14,9 @@ class _paAudioBase extends dm {
         this.displayName = "";  // Display name
         this.soloGroup = "";
         this.mute = false;
-        this.showVolumeControl = true;
-        this.showMuteControl = true;
+        this.showVolumeControl = true;  // Show volume slider on local client
+        this.showMuteControl = true;    // Show mute button on local client
+        this.showControl = true;        // show control on local client
         this.displayOrder = 0;  // display order on client interface
         this.clientControl = "client_AudioInputDevice";
         this.monitor = "";      // PulseAudio monitor source

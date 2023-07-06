@@ -6,8 +6,9 @@ class _paAudioBase extends ui {
         this.mute = false;
         this.volume = 1;
         this.maxVolume = 1.5;
-        this.showVolumeControl = true;
-        this.showMuteControl = true;
+        this.showVolumeControl = true;  // Show volume slider on local client
+        this.showMuteControl = true;    // Show mute button on local client
+        this.showControl = true;        // show control on local client
         this.vuData = 0;
         this.peak = 0;
         this._sliderTop = 0;

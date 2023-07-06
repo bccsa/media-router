@@ -26,7 +26,6 @@ class appFrame extends ui {
 
     Init() {
         // Event subscriptions
-
         this._control_container.addEventListener("click", () => {
             this.run = !this.run;
             this.NotifyProperty('run');
@@ -42,5 +41,8 @@ class appFrame extends ui {
                 this._control.style.backgroundColor = "rgb(34, 75, 18)";
             }
         }, { immediate: true });
+
+        // Only show controls where the showControl property is set
+        this.filter(c => c.showControl);
     }
 }

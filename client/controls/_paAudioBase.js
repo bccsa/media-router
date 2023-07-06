@@ -15,8 +15,9 @@ class _paAudioBase extends ui {
         this.bitDepth = 16;
         this.maxVolume = 150;
         this.soloGroup = "";
-        this.showVolumeControl = true;
-        this.showMuteControl = true;
+        this.showVolumeControl = true;  // Show volume slider on local client
+        this.showMuteControl = true;    // Show mute button on local client
+        this.showControl = true;        // show control on local client
         this.displayName = "New " + this.controlType;
         this.displayOrder = 0;
         this.left = 50;
@@ -27,7 +28,7 @@ class _paAudioBase extends ui {
         this.formatHideRW = false;   // true = Disable Read Write audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
         this.formatHideRO = true;  // true = Disable Read Only audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
         this.vuData = [];           // VU meter data
-        this.enableVU = false;      // true = enable VU meter
+        this.enableVU = true;      // true = enable VU meter
         // z-60 fixed hidden w-full h-full outline-none modal fade overflow-scroll
     }
 
@@ -173,16 +174,22 @@ class _paAudioBase extends ui {
                         
                         <div class="w-full mb-1 flex ">
 
+                            <!--    SHOW CONTROL CHECKBOX      --> 
+                            <div class="w-1/2 mr-2 mb-2 flex">
+                                <input id="@{_showControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showControl}"/>  
+                                <label for="@{_showControl}" class="" title="Indicates that the front end should show the control">Show on local client</label> 
+                            </div>
+
                             <!--    SHOW VOLUME CONTROL CHECKBOX      --> 
                             <div class="w-1/2 mr-2 mb-2 flex">
                                 <input id="@{_showVolumeControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showVolumeControl}"/>  
-                                <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Show client volume control</label> 
+                                <label for="@{_showVolumeControl}" class="" title="Indicates that the front end should show the volume control">Enable local client volume</label> 
                             </div>
 
                             <!--    SHOW MUTE CONTROL CHECKBOX      --> 
                             <div class="w-1/2 mb-2 ml-2 flex">
                                 <input id="@{_showMuteControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{showMuteControl}"/>  
-                                <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Show client mute control</label>  
+                                <label for="@{_showMuteControl}" class="" title="Indicates that the front end should show the mute control">Enable local client volume</label>  
                             </div>
 
                         </div>
