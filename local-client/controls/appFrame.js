@@ -42,7 +42,7 @@ class appFrame extends ui {
             }
         }, { immediate: true });
 
-        // Only show controls where the showControl property is set
-        this.filter(c => c.showControl);
+        // Only show controls where the showControl property is set (monitor the child controls property for live filtering on value changes)
+        this.filter(c => c.showControl, { monitor: ['showControl'] });
     }
 }
