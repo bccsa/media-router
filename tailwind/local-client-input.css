@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+
+/* Index */
+
+.index_body {
+    @apply h-full m-0 p-0 overflow-hidden select-none font-sans bg-[#1e293b];
+}
+
+/* AppFrame */
+
+.appFrame_header {
+    @apply h-[50px] absolute top-0 left-0 right-0 bg-[#0f172a] border-[#6B7280] border-b-[outset] border-b flex items-center pl-4 pr-4;
+}
+
+.appFrame_header_text {
+    @apply text-white font-sans text-xl mr-auto;
+}
+
+.appFrame_control_text {
+    @apply text-white font-sans text-xs;
+}
+
+.appFrame_control_container {
+    @apply flex items-center h-full ml-[5px] mr-[5px];
+}
+
+.appFrame_control {
+    @apply block h-4 w-[50px] bg-[#224b12] rounded-[10px] border-[inset] border border-[#8a8a8a] transition-all ease-in-out;
+}
+
+.appFrame_control_slider {
+    @apply h-[14px] w-[14px] bg-[#c0c0c0] border-[outset] border border-[#dcdcdc] rounded-[10px] transition-all ease-in-out;
+}
+
+.appFrame_contents {
+    @apply absolute top-[51px] bottom-0 inset-x-0 text-left flex overflow-x-auto;
+}
+
+/* paAudioBase */
+
+.paAudioBase_background {
+    @apply bg-[#334155] block text-center h-full min-h-[80px] border-x-[outset] border-[#6b7280] border-x;
+}
+
+.paAudioBase_background_table {
+    @apply w-full h-full border-collapse text-center;
+}
+
+.paAudioBase_label {
+    @apply h-8 text-white p-3;
+}
+
+.paAudioBase_label_div {
+    @apply border-[#6b7280] border-[inset] border-2 rounded-[10px] flex items-center;
+}
+
+.paAudioBase_label_span {
+    @apply w-full py-[2px] px-1;
+}
+
+.paAudioBase_volume {
+    @apply text-center relative flex justify-center h-full p-2;
+}
+ 
+
+/* ._paAudioBase_volume_slit {
+    @apply h-full w-4 border block shadow-[white] mx-auto my-1 rounded-[25px] border-[rgba(117,196,235,0.58)];
+    background: linear-gradient(
+      to top,
+      hsla(120, 100%, 25%, 0.2) 66.6666%,
+      rgba(255, 166, 0, 0.2) 66.6666% 85%,
+      rgba(255, 0, 0, 0.2) 85%
+    );
+    border-style: inset;
+  } */
+
+
+/* . {
+    @apply ;
+} */
+
+@tailwind utilities;

@@ -26,20 +26,25 @@ class _paAudioBase extends ui {
     get html() {
         return `
         <div class="paAudioBase_background">
-            <table>
+            <table class="paAudioBase_background_table">
+
                 <tr><td class="paAudioBase_label">
-                    <div><span>@{displayName}</span></div>
+                    <div class="paAudioBase_label_div"><span class="paAudioBase_label_span">@{displayName}</span></div>
                 </td></tr>
+
                 <tr><td class="paAudioBase_volume">
                     <div id="@{_volume_slit}" class="paAudioBase_volume_slit">
                     </div>
                     <div id="@{_volume_slider}" class="paAudioBase_volume_slider"></div>
                 </td></tr>
+                
+
                 <tr><td class="paAudioBase_control_button">
                     <div id="@{_control_button}">
                         <span id="@{_control_button_text}">OFF</span>
                     </div>
                 </td></tr>
+
             </table>
         </div>`;
     }

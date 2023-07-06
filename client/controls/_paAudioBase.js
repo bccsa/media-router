@@ -411,7 +411,7 @@ class _paAudioBase extends ui {
         function setDevicePosition() {
 
             // check container bounds
-            let dropZoneLeft = a._parent._controlsDiv.offsetLeft - 60;
+            let dropZoneLeft = a._parent._controlsDiv.offsetLeft;
             let dropZoneTop = a._parent._controlsDiv.offsetTop - 10;
             let dropZoneWidth = a._parent._controlsDiv.getBoundingClientRect().width - 304;
             let dropZoneHeight = a._parent._controlsDiv.getBoundingClientRect().height - 76;
@@ -563,7 +563,7 @@ class _paAudioBase extends ui {
     _checkCollision(newLeft, newTop, direction = "") {
         let collision = true;
 
-        let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
+        let dropZoneLeft = this._parent._controlsDiv.offsetLeft;
         let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
         let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
         let dropZoneHeight = this._parent._controlsDiv.offsetHeight - 40;
