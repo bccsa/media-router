@@ -22,7 +22,7 @@ Modules:
 The client web control interface is available on port 8081.
 
 ## Compatibility
-This project has been tested on Raspberry Pi OS Buster
+This project has been tested on Raspberry Pi OS Bullseye
 
 ## Development environment
 * Clone the project to your Raspberry Pi.
