@@ -31,7 +31,7 @@ class VuMeter extends ui {
         return `
         <!-- ${this.name} -->
         <div id="@{_div}" style="display: block;" title="@{title}">
-            <canvas id="@{_canvas}" class="paAudioBase_volume_slit_canvas" style="border-radius: ${this.borderRadius}; "></canvas>    
+            <canvas id="@{_canvas}" style="border-radius: ${this.borderRadius}; "></canvas>    
         </div>`
     }
 
@@ -222,7 +222,7 @@ class VuMeter extends ui {
         this._width = r.width;
         this._height = r.height;
         this._ctx.canvas.width = this._width;
-        this._ctx.canvas.height = this._height;
+        this._ctx.canvas.height = this._height - 0.1;
         this._canvas.style.left = this._div.offsetLeft + "px";
         this._canvas.style.top = this._div.offsetTop + "px";
 

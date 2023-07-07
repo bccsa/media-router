@@ -675,7 +675,7 @@ video {
   text-align: center;
 }
 
-.paAudioBase_background_table {
+.paAudioBase_background table {
   height: 100%;
   width: 100%;
   border-collapse: collapse;
@@ -689,7 +689,7 @@ video {
   color: rgb(255 255 255 / var(--tw-text-opacity));
 }
 
-.paAudioBase_label_div {
+.paAudioBase_label div {
   display: flex;
   align-items: center;
   border-radius: 10px;
@@ -699,7 +699,7 @@ video {
   border-color: inset;
 }
 
-.paAudioBase_label_span {
+.paAudioBase_label span {
   width: 100%;
   padding-top: 2px;
   padding-bottom: 2px;
@@ -724,8 +724,74 @@ video {
       rgba(255, 166, 0, 0.2) 66.6666% 85%,
       rgba(255, 0, 0, 0.2) 85%
     );
-    border-style: inset;
-  } */
+  }  */
+
+.paAudioBase_volume_slit {
+  display: block;
+  height: 100%;
+  width: 15px;
+  border-radius: 10px;
+  border-width: 1px;
+  --tw-border-opacity: 1;
+  border-color: rgb(255 255 255 / var(--tw-border-opacity));
+  --tw-shadow-color: white;
+  --tw-shadow: var(--tw-shadow-colored);
+  background: linear-gradient(to top,
+            hsla(120, 100%, 25%, 0.2) 66.6666%,
+            rgba(255, 166, 0, 0.2) 66.6666% 85%,
+            rgba(255, 0, 0, 0.2) 85%);
+  margin: 0 auto;
+  border-style: inset;
+}
+
+.paAudioBase_volume_slider {
+  position: absolute;
+  top: 200px;
+  left: 0px;
+  right: 0px;
+  z-index: 10;
+  margin: auto;
+  margin-left: auto;
+  margin-right: auto;
+  height: 50px;
+  width: 50px;
+  border-radius: 30px;
+  border-width: 2px;
+  border-color: outset;
+  --tw-border-opacity: 1;
+  border-color: rgb(220 220 220 / var(--tw-border-opacity));
+  --tw-bg-opacity: 1;
+  background-color: rgb(161 161 170 / var(--tw-bg-opacity));
+}
+
+.paAudioBase_volume_slit div {
+  height: 100%;
+  width: 100%;
+}
+
+.paAudioBase_control_button {
+  height: 71px;
+  padding: 1rem;
+}
+
+.paAudioBase_control_button div {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  border-radius: 10px;
+  border-width: 2px;
+  --tw-border-opacity: 1;
+  border-color: rgb(6 154 46 / var(--tw-border-opacity));
+  border-color: outset;
+  --tw-bg-opacity: 1;
+  background-color: rgb(34 75 18 / var(--tw-bg-opacity));
+  --tw-text-opacity: 1;
+  color: rgb(0 0 0 / var(--tw-text-opacity));
+}
+
+.paAudioBase_control_button span {
+  width: 100%;
+}
 
 /* . {
     @apply ;

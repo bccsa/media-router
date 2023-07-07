@@ -43,7 +43,7 @@
     @apply bg-[#334155] block text-center h-full min-h-[80px] border-x-[outset] border-[#6b7280] border-x;
 }
 
-.paAudioBase_background_table {
+.paAudioBase_background table {
     @apply w-full h-full border-collapse text-center;
 }
 
@@ -51,18 +51,18 @@
     @apply h-8 text-white p-3;
 }
 
-.paAudioBase_label_div {
+.paAudioBase_label div {
     @apply border-[#6b7280] border-[inset] border-2 rounded-[10px] flex items-center;
 }
 
-.paAudioBase_label_span {
+.paAudioBase_label span {
     @apply w-full py-[2px] px-1;
 }
 
 .paAudioBase_volume {
     @apply text-center relative flex justify-center h-full p-2;
 }
- 
+
 
 /* ._paAudioBase_volume_slit {
     @apply h-full w-4 border block shadow-[white] mx-auto my-1 rounded-[25px] border-[rgba(117,196,235,0.58)];
@@ -72,8 +72,38 @@
       rgba(255, 166, 0, 0.2) 66.6666% 85%,
       rgba(255, 0, 0, 0.2) 85%
     );
-    border-style: inset;
-  } */
+  }  */
+
+ .paAudioBase_volume_slit {
+    @apply h-full w-[15px] border block shadow-[white] rounded-[10px] border-white;
+    background: linear-gradient(to top,
+            hsla(120, 100%, 25%, 0.2) 66.6666%,
+            rgba(255, 166, 0, 0.2) 66.6666% 85%,
+            rgba(255, 0, 0, 0.2) 85%);
+     margin: 0 auto; 
+    border-style: inset; 
+}
+
+.paAudioBase_volume_slider {
+    @apply absolute top-[200px] left-0 right-0 ml-auto mr-auto w-[50px] h-[50px] bg-[#a1a1aa] rounded-[30px] z-10 m-auto border-[outset] border-2 border-[#dcdcdc];
+}
+
+.paAudioBase_volume_slit div {
+    @apply h-full w-full;
+}
+
+.paAudioBase_control_button{
+    @apply h-[71px] p-4;
+}
+
+.paAudioBase_control_button div {
+    @apply h-full flex items-center bg-[#224b12] text-black rounded-[10px] border-[#069a2e] border-2 border-[outset];
+}
+
+.paAudioBase_control_button span {
+    @apply w-full;
+}
+
 
 
 /* . {

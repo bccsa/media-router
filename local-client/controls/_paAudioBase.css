@@ -1,85 +1,63 @@
-/* .paAudioBase_background {
-    background-color: #334155;
+.paAudioBase_background {
+    background-color: rgb(51,65,85);
     display: block;
     text-align: center;
     height: 100%;
     min-width: 80px;
     border-left: outset;
     border-right: outset;
-    border-color: #6b7280;
+    border-color: rgb(107,114,128);
     border-left-width: 1px;
     border-right-width: 1px;
-} */
+}
 
-/* .paAudioBase_background table {
+.paAudioBase_background table {
     width: 100%;
     height: 100%;
     border-collapse: collapse;
     text-align: center;
-} */
+}
 
-/* .paAudioBase_background td {
+.paAudioBase_background td {
     padding: 10px;
-} */
+}
 
-/* .paAudioBase_label {
+.paAudioBase_label {
     height: 30px;
     color: white;
-} */
+}
 
-/* .paAudioBase_label div {
-    border-color: #6b7280;
+.paAudioBase_label div {
+    border-color: rgb(107,114,128);
     border-style: inset;
     border-width: 2px;
     border-radius: 10px;
     display: flex;
     align-items: center;
-} */
+}
 
-/* .paAudioBase_label span {
+.paAudioBase_label span {
     width: 100%;
-} */
+}
 
-/* .paAudioBase_volume {
+.paAudioBase_volume {
     text-align: center;
     position: relative;
-} */
+}
 
 .paAudioBase_volume_slit {
-    
-
-    background: linear-gradient(
-        to top,
-        hsla(120, 100%, 25%, 0.200) 66.6666%,
-        rgba(255, 166, 0, 0.200) 66.6666% 85%,
-        rgba(255, 0, 0, 0.200) 85%);
-
-        height: 100%;
-        width: 15px;
-        /* margin: 0 auto; */
-        border-style: inset;
-        border-width: 1px;
-        border-color: rgb(255, 255, 255);
-        border-radius: 10px;
-        display: block;
-        box-shadow: white;
-
-        
-        /* justify-content: flex-end; */
-        /* flex-direction: column; */
-
-        
-        /* background-color: rgb(20 20 20);
-        width: 15px;
-        height: 100%;
-        border-radius: 10px;
-        margin: 0 auto;
-        border-style: inset;
-        border-width: 2px;
-        border-color: rgb(107,114,128);
-        display: block; */
-} 
-
+    background-color: rgb(20 20 20);
+    width: 15px;
+    height: 100%;
+    border-radius: 10px;
+    margin: 0 auto;
+    border-style: inset;
+    border-width: 2px;
+    border-color: rgb(107,114,128);
+    display: block;
+    /* justify-content: flex-end; */
+    /* flex-direction: column; */
+}
 
 .paAudioBase_volume_slit div {
     width: 100%;

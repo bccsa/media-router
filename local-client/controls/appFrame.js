@@ -3,7 +3,7 @@ class appFrame extends ui {
         super();
         this.displayName = '';
         this.run = false;
-        this._styles.push('appFrame.css');
+        // this._styles.push('appFrame.css');
         this.orderBy = 'displayOrder';
     }
 

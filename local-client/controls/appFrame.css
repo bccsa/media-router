@@ -1,6 +1,6 @@
 /* General */
 
-/* * {
+* {
     margin: 0;
     padding: 0;
 }
@@ -18,76 +18,76 @@ html {
 
 body {
     font-family: Arial, Helvetica, sans-serif;
-    background-color: #1e293b;
+    background-color: rgb(30,41,59);
     height: 100%;
     margin: 0;
     padding: 0;
     overflow: hidden;
-} */
+}
 
 /* Header */
-/* .appFrame_header {
+.appFrame_header {
     height: 50px;
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    background-color: #0f172a;
-    border-color: #797979;
+    background-color: rgb(15,23,42);
+    border-color: rgb(121 121 121);
     border-bottom-style: outset;
     border-bottom-width: 2px;
     display: flex;
     align-items: center;
     padding-left: 15px;
     padding-right: 15px;
-} */
+}
 
-/* .appFrame_header_text {
+.appFrame_header_text {
     color: white;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 20px;
     margin-right: auto;
-} */
+}
 
-/* .appFrame_control_container {
+.appFrame_control_container {
     display: flex;
     align-items: center;
     height: 100%;
     margin-left: 5px;
     margin-right: 5px;
-} */
+}
 
-/* .appFrame_control {
+.appFrame_control {
     display: block;
     height: 15px;
     width: 50px;
-    background-color: #224b12;
-    /* background-color: rgb(6, 154, 46); 
+    background-color: rgb(34, 75, 18);
+    /* background-color: rgb(6, 154, 46); */
     border-radius: 10px;
     border-style: inset;
     border-width: 2px;
-    border-color: #8a8a8a;
-} */
+    border-color: rgb(138, 138, 138);
+}
 
-/* .appFrame_control_text {
+.appFrame_control_text {
     color: white;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 10px;
-} */
+}
 
-/* .appFrame_control_slider {
+.appFrame_control_slider {
     float: left;
     height: 13px;
     width: 13px;
-    background-color: #c0c0c0;
+    background-color: silver;
     border-style: outset;
     border-width: 1px;
-    border-color: #dcdcdc;
+    border-color: rgb(220, 220, 220);
     border-radius: 10px;
-} */
+}
 
 /* Contents */
-/* .appFrame_contents {
+.appFrame_contents {
     position: absolute;
     top: 52px;
     bottom: 0px;
@@ -96,4 +96,4 @@ body {
     text-align: left;
     display: flex;
     overflow-x: auto;
-} */
+}
