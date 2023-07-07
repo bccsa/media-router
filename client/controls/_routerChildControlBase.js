@@ -13,8 +13,8 @@ class _routerChildControlBase extends ui {
         this.displayOrder = 0;          // Sort order on local client
         this.left = 50;
         this.top = 50;
-        this.width = 326.4;
-        this.height = 93.6;
+        this.width = 0;
+        this.height = 0;
         this._left = this.left;  // Internal left position tracking
         this._top = this.top;    // Internal top position tracking
     }
@@ -33,7 +33,7 @@ class _routerChildControlBase extends ui {
                 </div>
         
                 <!--    SETTINGS BUTTON     -->
-                <button class="paAudioBase-btn-settings" type="button" title="Settings"
+                <button id="@{_btnSettings}" class="paAudioBase-btn-settings" type="button" title="Settings"
                     data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
         
             </div>
@@ -128,11 +128,16 @@ class _routerChildControlBase extends ui {
         let position = this._checkCollision(this.left, this.top, "down");
         this._draggable.style.left = position.newLeft + "px";
         this._draggable.style.top = position.newTop + "px";
-        this.left = (position.newLeft);
-        this.top = (position.newTop);
+        this.left = position.newLeft;
+        this.top = position.newTop;
+        this._left = this.left;
+        this._top = this.top;
 
-        this._draggable.style.offsetHeight = this.height;
-        this._draggable.style.offsetWidth = this.width;
+        this.height = this._draggable.offsetHeight;
+         this.width = this._draggable.offsetWidth;
+
+        // this._draggable.style.offsetHeight = this.height;
+        // this._draggable.style.offsetWidth = this.width;
 
         let control = this;
 
@@ -193,13 +198,17 @@ class _routerChildControlBase extends ui {
         // Mouse down on heading, start to move the control position
         this._heading.addEventListener("mousedown", event => {
 
-            newTop = event.clientY - control._heading.getBoundingClientRect().top;
-            newLeft = event.clientX - control._heading.getBoundingClientRect().left;
-            offsetH = newTop;
-            offsetW = newLeft;
+            if(event.target !== this._btnSettings)
+            {
+                newTop = event.clientY - control._heading.getBoundingClientRect().top + 4.8;
+                newLeft = event.clientX - control._heading.getBoundingClientRect().left + 4.8;
+                offsetH = newTop;
+                offsetW = newLeft;
 
             this._draggable.style.zIndex = "100";
             isMoving = true;
+            }
+
         })
 
 
@@ -323,7 +332,7 @@ class _routerChildControlBase extends ui {
 
         let dropZoneLeft = this._parent._controlsDiv.offsetLeft;
         let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
-        let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
+        let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 22;
         let dropZoneHeight = this._parent._controlsDiv.offsetHeight - 40;
 
         while (collision) {
@@ -365,7 +374,7 @@ class _routerChildControlBase extends ui {
                         } else if (direction == "right") {
                             newLeft = childLeft + childWidth + 2;
                         } else if (direction == "up") {
-                            newTop = childTop - childHeight - 2;
+                            newTop = childTop - this.height - 2;
                         } else if (direction == "down") {
                             newTop = childTop + childHeight + 2;
                         }

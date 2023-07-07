@@ -114,72 +114,6 @@ class appFrame extends ui {
         this._btnAddRouter.disabled = true;
         this._btnUser.disabled = true;
 
-        // Modal Functions
-        
-        // this._btnUser.addEventListener('click', (e) => {
-        //     f._modalLogOut.style.opacity = 0;
-        //     f._modalLogOut.style.display = "flex";
-        //     (function fade() {
-        //         let val = parseFloat(f._modalLogOut.style.opacity);
-        //         if (!((val += 0.2) > 1)) {
-        //             f._modalLogOut.style.opacity = val;
-        //             requestAnimationFrame(fade);
-        //         }
-        //     })();
-        // });
-
-        
-        // Delete Device
-        // this._btnUser.addEventListener('click', (e) => {
-        //     // Show message box
-        //     this.emit('messageBox',
-        //         {
-        //             buttons: ["Cancel", "Yes"],
-        //             title: `Log out`,
-        //             text: 'Are you sure you want to log-out?',
-        //             img: 'appFrame-modal-img',
-        //             callback: function (data) {
-        //                 if (data == 'Yes') {
-        //                     f.clearControls();
-        //                     f._btnAddRouter.disabled = true;
-        //                     f._btnUser.disabled = true;
-        //                     f._formLogIn.style.display = "flex";
-        //                     f._controlsDiv.style.display = "none";
-        //                     f._incorrectPassAlert.style.display = "none";
-        //                     f._userName.value = "";
-        //                     f._userPassword.value = "";
-        //                     f._userName.focus();
-        //                 }
-        //             }
-        //         }, 'top');
-        // });
-            
-
-        // this._modalLogOut.addEventListener('click', (e) => {
-        //     f._modalLogOut.style.opacity = 1;
-        //     (function fade() {
-        //         if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
-        //             f._modalLogOut.style.display = "none";
-        //         } else {
-        //             requestAnimationFrame(fade);
-        //         }
-        //     })();
-        // });
-
-        // this._btnCloseModal.addEventListener('click', (e) => {
-        //     f._modalLogOut.style.opacity = 1;
-        //     (function fade() {
-        //         if ((f._modalLogOut.style.opacity -= 0.1) < 0) {
-        //             f._modalLogOut.style.display = "none";
-        //         } else {
-        //             requestAnimationFrame(fade);
-        //         }
-        //     })();
-        // });
-
-        
-               
-
         // Event subscriptions
         this._btnAddRouter.addEventListener('click', (e) => {
             // Get unique random name
@@ -249,32 +183,10 @@ class appFrame extends ui {
             
         });
 
-        // // Load the list order when the mouse is over the controls div
-        // this._controlsDiv.addEventListener('mouseover', (e) => {
-        //     Sortable.create(this._controlsDiv, {
-        //         handle: '.router-btn-handel',
-        //         animation: 350,
-        //         chosenClass: "sortable-chosen",
-        //         dragClass: "sortable-drag",
-        //         group: {
-        //             name: 'my-sortable-group'
-        //         },
-                
-        //         store: {
-        //             /**
-        //              * Get the order of elements. Called once during initialization.
-        //              * @param   {Sortable}  sortable
-        //              * @returns {Array}
-        //              */
-        //             get: function (sortable) {
-        //                 var savedOrder = JSON.parse(localStorage.getItem(this._controlsDiv));
-        //                 return (savedOrder);
-        //             }
-        //         }
-        //     });
-        // }, {once : true});
+        
     }
 
+    // Update the displayOrder property for each control using Sortable js
     updateOrder() {
         var sortable = Sortable.create(this._controlsDiv, {
             handle: '.router-btn-handel',
@@ -306,9 +218,6 @@ class appFrame extends ui {
         // Update the displayOrder property for each control
         for (var i = 0; i < router.length; i++) {
              router[i].displayOrder = i;
-
-             //  !!  Update modular UI so that it automatically notify properties   !!
-             //router[i].NotifyProperty("displayOrder");
           }
     }
 

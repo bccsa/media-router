@@ -133,7 +133,7 @@ class _paAudioBase extends ui {
 
     // Calculate volume from slider position
     _calcVolume() {
-        this.volume = this.maxVolume * (this._sliderRange - this._volume_slider.offsetTop + this._volume_slit.offsetTop) / this._sliderRange;
+        this.volume =  this.maxVolume * (this._sliderRange - this._volume_slider.offsetTop + this._volume_slit.offsetTop) / this._sliderRange;
     }
 
     // Enable dragging of slider

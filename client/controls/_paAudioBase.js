@@ -6,7 +6,7 @@
 class _paAudioBase extends _routerChildControlBase {
     constructor() {
         super();
-        this._styles.push('_paAudioBase.css');
+        // this._styles.push('_paAudioBase.css');
         this.mute = false;
         this.volume = 100;
         this.channels = 1;
@@ -144,10 +144,14 @@ class _paAudioBase extends _routerChildControlBase {
                 <option value="140"></option>
                 <option value="150"></option>
             </datalist>
-            <div class="w-1/6">
-                <label for="@{_volume_slider}" class="ml-2">@{volume}</label>
+            <div class="w-[3/24] max-w-[40px] truncate text-clip">
+                <label for="@{_volume_slider}" class="max-w-[40px] truncate text-clip">@{volume}</label>
+            </div>
+
+            <div class="w-[1/24] ">
                 <label for="@{_volume_slider}" class="ml-1">%</label>
             </div>
+
         </div>
         
         

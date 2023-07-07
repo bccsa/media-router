@@ -318,7 +318,7 @@
 }
 
 .paAudioBase-card-body {
-    @apply px-4 pt-1 w-full h-[3.75rem];
+    @apply px-4 py-2 w-auto h-auto;
 }
 
 .paAudioBase-btn-mute {
@@ -416,6 +416,35 @@
 .paAudioBase-modal-footer {
     @apply modal-footer flex flex-shrink-0 flex-wrap items-center justify-end p-4 border-t border-gray-200 rounded-b-md;
 }
+
+/* VU METER */
+
+._paAudioBase_volume_slit {
+    @apply w-[292px] h-[16px] border block shadow-[white] rounded-[25px] border-[#75c4eb94] my-1;
+    background: linear-gradient(to right,
+            hsla(120, 100%, 25%, 0.2) 66.6666%,
+            rgba(255, 166, 0, 0.2) 66.6666% 85%,
+            rgba(255, 0, 0, 0.2) 85%);
+    border-style: inset; 
+}
+
+._paAudioBase_volume_slit div {
+    @apply w-full h-full;
+  }
+
+  /* .container-div {
+    @apply bg-[#c3c3c3] w-[200px] h-[1000px] pt-2.5 pb-0 px-2.5;
+  }
+
+  .child-div {
+    @apply block w-full h-full fixed bg-[black] opacity-30 left-0 top-0;
+  }
+
+  .div-box {
+    @apply block w-[100px] h-[100px] relative -translate-x-2/4 -translate-y-2/4 bg-[rgb(2,255,15)] left-2/4 top-2/4;
+    -webkit-transform: translate(-50%, -50%);
+  } */
+
 
 /*-------------------------*/
 
