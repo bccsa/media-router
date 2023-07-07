@@ -48,8 +48,8 @@ class Router extends ui {
 
 
                                 <!--    ONLINE/OFFLINE -->
-                                <span id="@{_online}" class="hidden items-center bg-green-100 text-green-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-green-900 dark:text-green-300">
-                                <span class="w-2 h-2 mr-1 bg-green-500 rounded-full"></span>
+                                <span id="@{_online}" class="hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-green-900 dark:text-green-300">
+                                <span class="w-2 h-2 mr-1 bg-white rounded-full"></span>
                                 Online
                                 </span>
 
