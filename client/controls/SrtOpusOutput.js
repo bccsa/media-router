@@ -28,7 +28,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
 
         <div class="w-full mb-1 flex ">
 
-            <!--    Enable opus Forward Error Correction      --> 
+            <!--    Enable OPUS Forward Error Correction      --> 
             <div class="w-2/3 mr-2 mb-2 flex">
                 <input id="@{_showFec}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{fec}"/>  
                 <label for="@{_showFec}" class="" title="Enable opus Forward Error Correction">Enable opus Forward Error Correction</label> 

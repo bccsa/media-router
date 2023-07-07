@@ -1,7 +1,7 @@
 class _paAudioBase extends ui {
     constructor() {
         super();
-        this._styles.push('_paAudioBase.css');
+        // this._styles.push('_paAudioBase.css');
         this.displayName = '';
         this.mute = false;
         this.volume = 1;
@@ -27,19 +27,23 @@ class _paAudioBase extends ui {
         return `
         <div class="paAudioBase_background">
             <table>
+
                 <tr><td class="paAudioBase_label">
                     <div><span>@{displayName}</span></div>
                 </td></tr>
+
                 <tr><td class="paAudioBase_volume">
                     <div id="@{_volume_slit}" class="paAudioBase_volume_slit">
                     </div>
                     <div id="@{_volume_slider}" class="paAudioBase_volume_slider"></div>
                 </td></tr>
+
                 <tr><td class="paAudioBase_control_button">
                     <div id="@{_control_button}">
                         <span id="@{_control_button_text}">OFF</span>
                     </div>
                 </td></tr>
+
             </table>
         </div>`;
     }

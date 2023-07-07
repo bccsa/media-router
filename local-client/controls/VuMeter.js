@@ -20,7 +20,7 @@ class VuMeter extends ui {
         this.borderStyle = "none";
         this.borderWidth = 0;
         this.borderColor = "none";
-        this.borderRadius = "0px";
+        this.borderRadius = "10px";
         this.boxShadow = "none";
         this.transform = "none";
 
@@ -222,7 +222,7 @@ class VuMeter extends ui {
         this._width = r.width;
         this._height = r.height;
         this._ctx.canvas.width = this._width;
-        this._ctx.canvas.height = this._height - 4;
+        this._ctx.canvas.height = this._height - 0.1;
         this._canvas.style.left = this._div.offsetLeft + "px";
         this._canvas.style.top = this._div.offsetTop + "px";
 

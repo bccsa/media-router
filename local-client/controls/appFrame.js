@@ -3,7 +3,7 @@ class appFrame extends ui {
         super();
         this.displayName = '';
         this.run = false;
-        this._styles.push('appFrame.css');
+        // this._styles.push('appFrame.css');
         this.orderBy = 'displayOrder';
     }
 
@@ -33,16 +33,18 @@ class appFrame extends ui {
 
         this.on('run', run => {
             if (run) {
-                this._control_slider.style.float = "right";
+                this._control_slider.style.transform = "translateX(34px)";
+                // this._control_slider.style.float = "left";
                 this._control.style.backgroundColor = "rgb(6, 154, 46)";
             }
             else {
-                this._control_slider.style.float = "left";
+                this._control_slider.style.transform = "translateX(0%)";
+                // this._control_slider.style.float = "right";
                 this._control.style.backgroundColor = "rgb(34, 75, 18)";
             }
         }, { immediate: true });
 
-        // Only show controls where the showControl property is set (monitor the child controls property for live filtering on value changes)
-        this.filter(c => c.showControl, { monitor: ['showControl'] });
+        // Only show controls where the showControl property is set
+        this.filter(c => c.showControl);
     }
 }
