@@ -20,7 +20,8 @@ class AudioInput extends _paAudioSourceBase {
  
     Init() {
         super.Init();
-        
+        this.setHeaderColor('#012F74');
+
         // Populate input values
         this._parent.on('sources', sources => {
             // add new options

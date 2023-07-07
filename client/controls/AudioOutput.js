@@ -18,6 +18,7 @@ class AudioOutput extends _paAudioSinkBase {
 
     Init() {
         super.Init();
+        this.setHeaderColor('#007F6A');
 
         // Populate input values
         this._parent.on('sinks', sinks => {

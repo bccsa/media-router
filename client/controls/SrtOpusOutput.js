@@ -175,5 +175,6 @@ class SrtOpusOutput extends _paAudioSinkBase {
 
     Init() {
         super.Init();
+        this.setHeaderColor('#00C3A3');
     }
 }

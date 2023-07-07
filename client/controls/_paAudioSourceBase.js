@@ -8,12 +8,10 @@ class _paAudioSourceBase extends _paAudioBase {
 
     get html() {
         return super.html.replace('%additionalHtml%', `
-
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
-
         <div class="w-full items-center justify-items-center justify-center">
-            <div class="text-center align-top font-semibold text-base">Hardware Settings</div>
+            <div class="text-center align-top font-semibold text-base">Routing</div>
         </div>
 
         <!-- Destinations  -->
@@ -26,7 +24,6 @@ class _paAudioSourceBase extends _paAudioBase {
 
         <!-- Additional controls  --> 
         %additionalHtml%
-
         `);
     }
 
@@ -107,7 +104,7 @@ class _paAudioSourceBase extends _paAudioBase {
                 // Create new checkbox
                 if (!existing) {
                     // Create new checkBox control if the checkbox is not already existing
-                    this.one(check, control => {
+                    this.once(check, control => {
                         // send newly created audio device's data to manager
                         control.on('check', value => {
 
@@ -135,8 +132,8 @@ class _paAudioSourceBase extends _paAudioBase {
 
                     });
 
-                    let sourceCon = this.calcConnectors();
-                    let dstCon = dstControl.calcConnectors();
+                    let sourceCon = this.calcConnectors(this.top, this.left);
+                    let dstCon = dstControl.calcConnectors(dstControl.top, dstControl.left);
 
                     this.SetData({
                         [check]:
@@ -150,12 +147,11 @@ class _paAudioSourceBase extends _paAudioBase {
                     });
 
 
-                    this.one(line, lineControl => {
+                    this.once(line, lineControl => {
                         this.on('posChanged', sourceCon => {
                             lineControl.top = sourceCon.rightConnector.top;
                             lineControl.left = sourceCon.rightConnector.left;
-
-                        })
+                        });
                         dstControl.on('posChanged', dstCon => {
                             lineControl.bottom = dstCon.leftConnector.top;
                             lineControl.right = dstCon.leftConnector.left;
@@ -168,12 +164,8 @@ class _paAudioSourceBase extends _paAudioBase {
                         }
 
                         // Set initial visibility based on checkbox checked status
-                        if (this[check].value) {
-                            lineControl.Show();
-                        } else {
-                            lineControl.Hide();
-                        }
-                    })
+                        lineControl.visible = this[check].value;
+                    });
 
                     this.SetData({
                         [line]: {
@@ -182,7 +174,6 @@ class _paAudioSourceBase extends _paAudioBase {
                             left: sourceCon.rightConnector.left,
                             bottom: dstCon.leftConnector.top,
                             right: dstCon.leftConnector.left,
-                            // color: dstControl._heading.style.backgroundColor,
                             parentElement: "_externalControls",
                             hideData: true
                         }
@@ -190,11 +181,9 @@ class _paAudioSourceBase extends _paAudioBase {
 
                 } else {
                     // Subscribe to control remove event to remove destination checkbox controls
-                    dstControl.one('remove', control => {
+                    dstControl.once('remove', control => {
                         this.SetData({ [check]: { remove: true } });
-                        // this._notify({ [check]: { remove: true } });
                         this.SetData({ [line]: { remove: true } });
-                        // this._notify({ [line]: { remove: true } });
                     });
                 }
             }

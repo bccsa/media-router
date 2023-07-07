@@ -104,5 +104,6 @@ class SrtOpusInput extends _paAudioSourceBase {
 
     Init() {
         super.Init();
+        this.setHeaderColor('#0D6EFD');
     }
 }

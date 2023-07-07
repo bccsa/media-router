@@ -220,7 +220,7 @@ class _routerChildControlBase extends ui {
         function setPosition() {
 
             // check container bounds
-            let dropZoneLeft = control._parent._controlsDiv.offsetLeft - 60;
+            let dropZoneLeft = control._parent._controlsDiv.offsetLeft;
             let dropZoneTop = control._parent._controlsDiv.offsetTop - 10;
             let dropZoneWidth = control._parent._controlsDiv.getBoundingClientRect().width - 304;
             let dropZoneHeight = control._parent._controlsDiv.getBoundingClientRect().height - 76;
@@ -321,7 +321,7 @@ class _routerChildControlBase extends ui {
     _checkCollision(newLeft, newTop, direction = "") {
         let collision = true;
 
-        let dropZoneLeft = this._parent._controlsDiv.offsetLeft - 60;
+        let dropZoneLeft = this._parent._controlsDiv.offsetLeft;
         let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
         let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 50;
         let dropZoneHeight = this._parent._controlsDiv.offsetHeight - 40;
