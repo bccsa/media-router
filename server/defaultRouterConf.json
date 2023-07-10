@@ -1,6 +1,7 @@
 {
     "default": {
         "controlType": "managerPanel",
+        "displayName": "Local manager",
         "managerUrl": "http://localhost:3000",
         "username": "testRouter1",
         "password": "testPass",
