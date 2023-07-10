@@ -34,7 +34,7 @@ class _paAudioBase extends _routerChildControlBase {
                 <span class="paAudioBase-label">Mute</span>
                 <input id="@{_btnActive}" class="sr-only peer" type="checkbox" checked="@{mute}">
                 <div
-                    class="w-9 h-5 bg-green-600 rounded-full peer peer-focus:ring-2 dark:bg-gray-700 peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[62.35px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-red-500">
+                    class="self-center w-9 h-4 bg-green-600 rounded-full peer peer-focus:ring-2 dark:bg-gray-700 peer-checked:after:-translate-x-[20px] peer-checked:after:border-white after:content-[''] after:absolute after:left-[64.35px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-red-500">
                 </div>
                 <span class="paAudioBase-label ml-2">On</span>
             </label>

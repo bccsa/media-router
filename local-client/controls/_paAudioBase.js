@@ -72,7 +72,7 @@ class _paAudioBase extends ui {
         });
 
         // Add VU meter
-        this.SetData({
+        this.Set({
             vu: {
                 controlType: "VuMeter",
                 hideData: true,

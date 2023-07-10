@@ -13,6 +13,8 @@ class Router extends ui {
         this.sinks = [];            // Array with PulseAudio sinks
         this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
         this.displayOrder = 100;
+        this.height = 500;
+        this.width = 500;
     }
 
     get html() {
@@ -135,7 +137,7 @@ class Router extends ui {
                             </div>
                         </div>
 
-                        <hr class="w-full h-[0.0625rem] bg-gray-500 mb-2"> 
+                        <hr class="w-full h-[1px] bg-gray-500 mb-2"> 
 
                         <!--    DISPLAY NAME      -->
                         <label for="@{_displayName}" class="router-label-settings">Display Name: </label>
@@ -178,6 +180,33 @@ class Router extends ui {
 
                             </div>
                         </div>
+
+                        <hr class="w-full h-[1px] bg-gray-500 mt-1 mb-2"> 
+
+                        <!--    Height      -->
+                        <label for="@{_height}" class="router-label-settings">Router page height:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_height}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                title="Page height in px" step="1" value="@{height}"/>
+
+                            </div>
+                        </div>
+                        
+
+                        <!--    Width      -->
+                        <label for="@{_width}" class="router-label-settings">Router page width:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_width}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                title="Page width in px" step="1" value="@{width}"/>
+
+                            </div>
+                        </div>
+
+
                     </div>
                 </div>  
             </details> 
@@ -255,10 +284,33 @@ class Router extends ui {
 
     }
 
-    Init() {        
+    Init() {
         // Set initial values
         this._toggleSettingContainer();
         this._checkOnline();
+
+        // Workaround: set page height and width after css is applied
+        setTimeout(() => {
+            this._controlsDiv.style.height = this.height + "px";
+           // this._controlsDiv.style.width = this.width + "px";
+        }, 100);
+
+        // this.on('width', width => {
+        //     if (typeof width == 'number') {
+        //         this._controlsDiv.style.width = width + "px";
+        //     } else {
+        //         this._controlsDiv.style.width = width;
+        //     }
+        // });
+
+        this.on('height', height => {
+            if (typeof height == 'number') {
+                this._controlsDiv.style.height = height + "px";
+            } else {
+                this._controlsDiv.style.height = height;
+            }
+        });
+
 
         this._btnSettings.addEventListener('click', (e) => {
             this._toggleSettingContainer();
@@ -269,34 +321,34 @@ class Router extends ui {
         });
 
         this._btnDeleteRouter.addEventListener('click', (e) => {
-            this._notify({remove: true});
-            this.SetData({remove: true});
+            this._notify({ remove: true });
+            this.SetData({ remove: true });
         });
 
         this._btnAddDevice.addEventListener('click', (e) => {
             // Get unique random name
-            let type = this._deviceType.value ;
+            let type = this._deviceType.value;
             function randomName() {
                 return type + "_" + Math.round(Math.random() * 10000);
             }
-            
+
             let name = randomName();
             while (this[name]) {
                 name = randomName();
             }
 
             // Create new audio device
-            this.SetData({[name]: {controlType: this._deviceType.value}});
+            this.SetData({ [name]: { controlType: this._deviceType.value } });
             this.on(name, control => {
                 // send newly created audio device's data to manager
-                this._notify({[name]: control.GetData()});
+                this._notify({ [name]: control.GetData() });
             });
         });
 
         this._btnDuplicate.addEventListener('click', (e) => {
             // Get unique random name
             function randomName() {
-                return  "router_" + Math.round(Math.random() * 10000);
+                return "router_" + Math.round(Math.random() * 10000);
             }
 
             let name = randomName();
@@ -324,18 +376,17 @@ class Router extends ui {
         });
     }
 
-    _checkOnline(){
+    _checkOnline() {
 
-        if(this.online)
-        {
+        if (this.online) {
             this._online.style.display = "inline-flex";
             this._offline.style.display = "none";
         }
-        else{
+        else {
             this._online.style.display = "none";
             this._offline.style.display = "inline-flex";
         }
-        
+
     }
 
     _toggleSettingContainer() {

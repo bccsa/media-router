@@ -7,19 +7,19 @@ class appFrame extends ui {
     get html() {
         return `
         <!--    NAV BAR   -->
-        <nav class="appFrame-top-bar"> <div class="appFrame-top-flex-div">
+        <div class="appFrame-top-bar"> <div class="appFrame-top-flex-div">
 
             <!--    ADD BUTTON    -->
             <button id="@{_btnAddRouter}" class="appFrame-btn-add" type="button" title="Add a new Router"></button>
 
             <!--    HEADING   -->
-            <div class="container-fluid"> <a class="appFrame-heading" href="#">Media Router Manager</a></div>
+            <div class="container-fluid"> <a class="appFrame-heading">Media Router Manager</a></div>
 
             <!--    LOG OUT BUTTON    -->
             <button id="@{_btnUser}" class="appFrame-btn-log-out" type="button" title="Log in or out"
             data-bs-toggle="modal"  data-bs-target="#@{_modalLogOut}"></button>
 
-        </div> </nav>
+        </div> </div>
 
         
 

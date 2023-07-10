@@ -691,7 +691,13 @@ video {
 
 .paAudioBase_label div {
   display: flex;
+  max-width: 300px;
   align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  white-space: normal;
+  word-break: break-all;
   border-radius: 10px;
   border-width: 2px;
   --tw-border-opacity: 1;
@@ -729,6 +735,7 @@ video {
 .paAudioBase_volume_slit {
   display: block;
   height: 100%;
+  min-height: 92px;
   width: 15px;
   border-radius: 10px;
   border-width: 1px;
@@ -777,6 +784,8 @@ video {
 .paAudioBase_control_button div {
   display: flex;
   height: 100%;
+  min-height: 40px;
+  min-width: 40px;
   align-items: center;
   border-radius: 10px;
   border-width: 2px;

@@ -5139,15 +5139,21 @@ textarea.form-control.is-invalid {
 /*App Frame CSS*/
 
 .appFrame-top-bar {
-  display: flex;
+  position: sticky;
+  top: 0px;
+  left: 0px;
+  right: 0px;
+  z-index: 50;
   height: 3rem;
   width: 100%;
   min-width: 23rem;
-  justify-content: space-between;
+  align-items: center;
   --tw-bg-opacity: 1;
   background-color: rgb(17 24 39 / var(--tw-bg-opacity));
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
   --tw-text-opacity: 1;
   color: rgb(229 231 235 / var(--tw-text-opacity));
   --tw-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
@@ -5157,7 +5163,9 @@ textarea.form-control.is-invalid {
 
 .appFrame-top-flex-div {
   display: flex;
+  height: 100%;
   width: 100%;
+  align-items: center;
   justify-content: space-between;
   padding-left: 1.5rem;
   padding-right: 1.5rem;
@@ -5188,8 +5196,10 @@ textarea.form-control.is-invalid {
 }
 
 .appFrame-heading {
-  margin-bottom: 1rem;
   display: inline-block;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
   font-size: 1.5rem;
   line-height: 2rem;
   --tw-text-opacity: 1;
@@ -6806,7 +6816,6 @@ textarea.appFrame-input-password.is-invalid {
 }
 
 .router-devices-div {
-  height: 80rem;
   min-height: 10rem;
   width: 100%;
   min-width: 3rem;
@@ -7934,14 +7943,14 @@ textarea.router-text-area.is-invalid {
   align-items: center;
 }
 
-/*-------------------------*/
+/*--------------------------*/
 
 /* Audio Device css */
 
 .paAudioBase-main-card {
   z-index: 10;
   margin: 0.25rem;
-  width: 20.4rem;
+  width: 250px;
   -webkit-user-select: none;
      -moz-user-select: none;
           user-select: none;
@@ -9176,7 +9185,7 @@ textarea.paAudioBase-text-area.is-invalid {
   margin-bottom: 0.25rem;
   display: block;
   height: 16px;
-  width: 292px;
+  width: 15/16;
   border-radius: 25px;
   border-width: 1px;
   border-color: #75c4eb94;
@@ -10012,12 +10021,12 @@ textarea.paAudioBase-text-area.is-invalid {
   height: 1.25rem;
 }
 
-.h-\[0\.0625rem\] {
-  height: 0.0625rem;
-}
-
 .h-\[0\.125rem\] {
   height: 0.125rem;
+}
+
+.h-\[1px\] {
+  height: 1px;
 }
 
 .h-\[calc\(100\%-theme\(\"spacing\.1\"\)\)\] {
@@ -10034,18 +10043,6 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .h-full {
   height: 100%;
-}
-
-.max-h-\[290px\] {
-  max-height: 290px;
-}
-
-.max-h-\[250px\] {
-  max-height: 250px;
-}
-
-.max-h-\[239px\] {
-  max-height: 239px;
 }
 
 .max-h-\[236px\] {
@@ -10108,12 +10105,16 @@ textarea.paAudioBase-text-area.is-invalid {
   width: 100%;
 }
 
-.w-3\/4 {
-  width: 75%;
-}
-
 .min-w-\[12rem\] {
   min-width: 12rem;
+}
+
+.max-w-\[190px\] {
+  max-width: 190px;
+}
+
+.max-w-\[352px\] {
+  max-width: 352px;
 }
 
 .max-w-\[40px\] {
@@ -11984,6 +11985,16 @@ textarea.paAudioBase-text-area.is-invalid {
   top: 3px;
 }
 
+.after\:left-\[44\.35px\]::after {
+  content: var(--tw-content);
+  left: 44.35px;
+}
+
+.after\:left-\[64\.35px\]::after {
+  content: var(--tw-content);
+  left: 64.35px;
+}
+
 .after\:h-4::after {
   content: var(--tw-content);
   height: 1rem;
@@ -12113,6 +12124,18 @@ textarea.paAudioBase-text-area.is-invalid {
 .peer:checked ~ .peer-checked\:after\:translate-x-full::after {
   content: var(--tw-content);
   --tw-translate-x: 100%;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+}
+
+.peer:checked ~ .peer-checked\:after\:-translate-x-\[36px\]::after {
+  content: var(--tw-content);
+  --tw-translate-x: -36px;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+}
+
+.peer:checked ~ .peer-checked\:after\:-translate-x-\[20px\]::after {
+  content: var(--tw-content);
+  --tw-translate-x: -20px;
   transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
 }
 

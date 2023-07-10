@@ -52,7 +52,7 @@
 }
 
 .paAudioBase_label div {
-    @apply border-[#6b7280] border-[inset] border-2 rounded-[10px] flex items-center;
+    @apply border-[#6b7280] border-[inset] border-2 rounded-[10px] flex items-center whitespace-normal max-w-[300px] break-all truncate;
 }
 
 .paAudioBase_label span {
@@ -62,6 +62,8 @@
 .paAudioBase_volume {
     @apply text-center relative flex justify-center h-full p-2;
 }
+
+
 
 
 /* ._paAudioBase_volume_slit {
@@ -75,7 +77,7 @@
   }  */
 
  .paAudioBase_volume_slit {
-    @apply h-full w-[15px] border block shadow-[white] rounded-[10px] border-white;
+    @apply h-full min-h-[92px] w-[15px] border block shadow-[white] rounded-[10px] border-white;
     background: linear-gradient(to top,
             hsla(120, 100%, 25%, 0.2) 66.6666%,
             rgba(255, 166, 0, 0.2) 66.6666% 85%,
@@ -97,7 +99,7 @@
 }
 
 .paAudioBase_control_button div {
-    @apply h-full flex items-center bg-[#224b12] text-black rounded-[10px] border-[#069a2e] border-2 border-[outset];
+    @apply h-full min-h-[40px] min-w-[40px] flex items-center bg-[#224b12] text-black rounded-[10px] border-[#069a2e] border-2 border-[outset];
 }
 
 .paAudioBase_control_button span {

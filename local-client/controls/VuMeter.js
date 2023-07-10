@@ -8,22 +8,9 @@ class VuMeter extends ui {
         this.level = [];    // Array with percentage values per channel
         this._height = 0;
         this._width = 0;
+        this._adjustSize = false;
         this._prev = {};    // Previous values object
-        this.height = "100%";
-        this.width = "100%";
-        this.background = "none";
-        this.margin = 0;
-        this.marginTop = 0;
-        this.marginBottom = 0;
-        this.marginLeft = 0;
-        this.marginRight = 0;
-        this.borderStyle = "none";
-        this.borderWidth = 0;
-        this.borderColor = "none";
         this.borderRadius = "10px";
-        this.boxShadow = "none";
-        this.transform = "none";
-
         this.title = "Vu Meter";
     }
 
@@ -39,72 +26,13 @@ class VuMeter extends ui {
         this._canvas.style.position = 'sticky';
         this._ctx = this._canvas.getContext("2d");
 
-        if (typeof this.height == 'number') {
-            this._div.style.height = this.height + "px";
-        } else {
-            this._div.style.height = this.height;
-        }
-
-        if (typeof this.width == 'number') {
-            this._div.style.width = this.width + "px";
-        } else {
-            this._div.style.width = this.width;
-        }
-
-        this._div.style.background = this.background;
-
-        if (typeof this.margin == 'number') {
-            this._div.style.margin = this.margin + "px";
-        } else {
-            this._div.style.margin = this.margin;
-        }
-
-        if (typeof this.marginTop == 'number') {
-            this._div.style.marginTop = this.marginTop + "px";
-        } else {
-            this._div.style.marginTop = this.marginTop;
-        }
-
-        if (typeof this.marginBottom == 'number') {
-            this._div.style.marginBottom = this.marginBottom + "px";
-        } else {
-            this._div.style.marginBottom = this.marginBottom;
-        }
-
-        if (typeof this.marginRight == 'number') {
-            this._div.style.marginRight = this.marginRight + "px";
-        } else {
-            this._div.style.marginRight = this.marginRight;
-        }
-
-        if (typeof this.marginLeft == 'number') {
-            this._div.style.marginLeft = this.marginLeft + "px";
-        } else {
-            this._div.style.marginLeft = this.marginLeft;
-        }
-
-        this._div.style.borderStyle = this.borderStyle;
-
-        if (typeof this.borderWidth == 'number') {
-            this._div.style.borderWidth = this.borderWidth + "px";
-        } else {
-            this._div.style.borderWidth = this.borderWidth;
-        }
-
-        this._div.style.borderColor = this.borderColor;
-
         if (typeof this.borderRadius == 'number') {
             this._div.style.borderRadius = this.borderRadius + "px";
         } else {
             this._div.style.borderRadius = this.borderRadius;
         }
 
-        this._div.style.boxShadow = this.boxShadow;
-        // this._div.style.transform = this.transform;
-
         this._div.title = this.title;
-
-
 
         // Handle property changes
         this.on('level', level => {
@@ -112,82 +40,6 @@ class VuMeter extends ui {
         });
 
         this._setSize();
-
-        this.on('width', width => {
-            if (typeof width == 'number') {
-                this._div.style.width = width + "px";
-            } else {
-                this._div.style.width = width;
-            }
-        });
-
-        this.on('height', height => {
-            if (typeof height == 'number') {
-                this._div.style.height = height + "px";
-            } else {
-                this._div.style.height = height;
-            }
-        });
-
-        this.on('background', background => {
-            this._div.style.background = background;
-        });
-
-        this.on('margin', margin => {
-            if (typeof margin == 'number') {
-                this._div.style.margin = margin + "px";
-            } else {
-                this._div.style.margin = margin;
-            }
-        });
-
-        this.on('marginTop', marginTop => {
-            if (typeof marginTop == 'number') {
-                this._div.style.marginTop = marginTop + "px";
-            } else {
-                this._div.style.marginTop = marginTop;
-            }
-        });
-
-        this.on('marginBottom', marginBottom => {
-            if (typeof marginBottom == 'number') {
-                this._div.style.marginBottom = marginBottom + "px";
-            } else {
-                this._div.style.marginBottom = marginBottom;
-            }
-        });
-
-        this.on('marginRight', marginRight => {
-            if (typeof marginRight == 'number') {
-                this._div.style.marginRight = marginRight + "px";
-            } else {
-                this._div.style.marginRight = marginRight;
-            }
-        });
-
-        this.on('marginLeft', marginLeft => {
-            if (typeof marginLeft == 'number') {
-                this._div.style.marginLeft = marginLeft + "px";
-            } else {
-                this._div.style.marginLeft = marginLeft;
-            }
-        });
-
-        this.on('borderStyle', borderStyle => {
-            this._div.style.borderStyle = borderStyle;
-        });
-
-        this.on('borderWidth', borderWidth => {
-            if (typeof borderWidth == 'number') {
-                this._div.style.borderWidth = borderWidth + "px";
-            } else {
-                this._div.style.borderWidth = borderWidth;
-            }
-        });
-
-        this.on('borderColor', borderColor => {
-            this._div.style.borderColor = borderColor;
-        });
 
         this.on('borderRadius', borderRadius => {
             if (typeof borderRadius == 'number') {
@@ -198,16 +50,6 @@ class VuMeter extends ui {
                 this._canvas.style.borderRadius = borderRadius;
             }
         });
-
-
-        this.on('boxShadow', boxShadow => {
-            this._div.style.boxShadow = boxShadow;
-        });
-
-        this.on('transform', transform => {
-            this._div.style.transform = transform;
-        });
-
 
         // Listen for div size changes
         const divResizeObserver = new ResizeObserver(() => {
@@ -221,16 +63,31 @@ class VuMeter extends ui {
 
         this._width = r.width;
         this._height = r.height;
-        this._ctx.canvas.width = this._width;
-        this._ctx.canvas.height = this._height - 0.1;
-        this._canvas.style.left = this._div.offsetLeft + "px";
-        this._canvas.style.top = this._div.offsetTop + "px";
+        
+        if (this._height >= 100) {
+            this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
 
-        // reset level to ensure canvas is repainted
-        this.level = 0;
+            this._canvas.style.left = this._div.offsetLeft + "px";
+            this._canvas.style.top = this._div.offsetTop + "px";
+            this._ctx.canvas.width = this._width;
+            this._ctx.canvas.height = this._height - 16;
+
+            // reset level to ensure canvas is repainted
+            this.level = 0;
+            this._adjustSize = false;
+
+            // Rest slider button position accordingly
+            this._parent._calcSliderRange();
+            this._parent._setVolume();
+        }
     }
 
     _setLevel(levelArr) {
+        if (!this._adjustSize) {
+            this._ctx.canvas.height += 16;
+            this._adjustSize = true
+        }
+
         for (let ch = 0; ch < levelArr.length; ch++) {
             let p = levelArr[ch]; // level in dB
 
@@ -268,7 +125,7 @@ class VuMeter extends ui {
             if (p <= -60) {
                 this._ctx.clearRect(paintLeft, 0, this._height, paintWidth);
             } else if (total < this._prev[ch].total) {
-                this._ctx.clearRect(paintLeft, this._prev[ch].top3 -1, paintWidth + 1, top3 - this._prev[ch].top3, paintWidth);
+                this._ctx.clearRect(paintLeft, this._prev[ch].top3 - 1, paintWidth + 1, top3 - this._prev[ch].top3, paintWidth);
             }
             // Draw
             else if (total > this._prev[ch].total) {

@@ -29,7 +29,7 @@ class _routerChildControlBase extends ui {
         
                 <!--    NAME     -->
                 <div class="col-span-2">
-                    <div class="font-medium text-lg" title="@{description}">@{displayName}</div>
+                    <div class="font-medium text-lg truncate max-w-[190px]" title="@{description}">@{displayName}</div>
                 </div>
         
                 <!--    SETTINGS BUTTON     -->
@@ -38,7 +38,7 @@ class _routerChildControlBase extends ui {
         
             </div>
         
-            <div class="paAudioBase-card-body">
+            <div id="@{_cardBody}" class="paAudioBase-card-body">
                 <!-- CARD HTML added by extended controls  -->
                 %cardHtml%
             </div>
@@ -61,7 +61,7 @@ class _routerChildControlBase extends ui {
                                 title="Delete device"></button>
         
                         </div>
-                        <h5 class="paAudioBase-modal-heading">@{displayName}</h5>
+                        <h5 class="paAudioBase-modal-heading truncate max-w-[352px] break-words">@{displayName}</h5>
                         <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
                             aria-label="Close"></button>
                     </div>
@@ -136,10 +136,17 @@ class _routerChildControlBase extends ui {
         this.height = this._draggable.offsetHeight;
          this.width = this._draggable.offsetWidth;
 
-        // this._draggable.style.offsetHeight = this.height;
-        // this._draggable.style.offsetWidth = this.width;
+        // this._draggable.offsetHeight = this.height;
+        // this._draggable.offsetWidth = this.width;
 
         let control = this;
+
+        // recalculate card body on resize
+        const divResizeObserver = new ResizeObserver(() => {
+            this.height = this._draggable.offsetHeight;
+            this.width = this._draggable.offsetWidth;
+        });
+        divResizeObserver.observe(this._cardBody);
 
         // Delete control
         this._btnDelete.addEventListener('click', (e) => {
@@ -231,8 +238,8 @@ class _routerChildControlBase extends ui {
             // check container bounds
             let dropZoneLeft = control._parent._controlsDiv.offsetLeft;
             let dropZoneTop = control._parent._controlsDiv.offsetTop - 10;
-            let dropZoneWidth = control._parent._controlsDiv.getBoundingClientRect().width - 304;
-            let dropZoneHeight = control._parent._controlsDiv.getBoundingClientRect().height - 76;
+            let dropZoneWidth = control._parent._controlsDiv.getBoundingClientRect().width - control.width + 22;
+            let dropZoneHeight = control._parent._controlsDiv.getBoundingClientRect().height - control.height - 10;
 
             // verify and adapt newLeft and newTop positions
             if (newLeft < dropZoneLeft) { newLeft = dropZoneLeft }
