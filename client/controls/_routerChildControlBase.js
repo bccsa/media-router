@@ -62,6 +62,7 @@ class _routerChildControlBase extends ui {
         
                         </div>
                         <h5 class="paAudioBase-modal-heading truncate max-w-[352px] break-words">@{displayName}</h5>
+                        <span>${this.controlType}</span>
                         <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
                             aria-label="Close"></button>
                     </div>
