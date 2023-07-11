@@ -45,6 +45,6 @@ class appFrame extends ui {
         }, { immediate: true });
 
         // Only show controls where the showControl property is set
-        this.filter(c => c.showControl);
+        this.filter(c => c.showControl, { monitor: ['showControl']});
     }
 }
