@@ -146,6 +146,64 @@ controls.on('router', router => {
 }, { immediate: true });
 
 
+// -------------------------------------
+// Profileman WebApp Express webserver
+// -------------------------------------
+
+const profilemanApp = express();
+const profilemanHttp = require('http').createServer(profilemanApp);
+
+try {
+    // Serve the default file
+    profilemanApp.get('/', (req, res) => {
+        res.sendFile(path.join(__dirname, '/../local-profileman/index.html'));
+    });
+
+    // Serve all the files
+    profilemanApp.use(express.static(path.join(__dirname, '/../local-profileman')));
+
+    profilemanHttp.listen(8082, () => {
+        eventLog('Profileman WebApp running on *:8082');
+    });
+}
+catch (err) {
+    eventLog(`Unable to start Profileman WebApp: ${err.message}`);
+}
+
+// -------------------------------------
+// Profileman WebApp Socket.IO
+// -------------------------------------
+
+const profilemanIO = require('socket.io')(profilemanHttp);
+
+profilemanIO.on('connection', socket => {
+    // Send initial (full) state
+    // socket.emit('data', controls.router.Get({ sparse: false }));
+
+    // socket.on('data', data => {
+    //     // Send data to router
+    //     if (controls.router) {
+    //         controls.router.Set(data);
+    //     }
+
+    //     // Send data to other Profileman
+    //     socket.broadcast.emit('data', data);
+
+    //     // Send data to manager
+    //     if (manager_io) {
+    //         manager_io.emit('data', data);
+    //     }
+    // });
+});
+
+// controls.on('router', router => {
+//     // Forward data from router to local profilemans
+//     router.on('data', data => {
+//         profilemanIO.emit('data', data);
+//     });
+// }, { immediate: true });
+
+
 // Serve html files
 // clientApp.use("/", express.static(path.join(__dirname, "/html")));
 // clientApp.use(express.static('local-client'));

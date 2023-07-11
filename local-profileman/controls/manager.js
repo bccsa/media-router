@@ -4,12 +4,14 @@
  * Additional control card HTML content should be added through super.html.replace('%cardHtml%','Your additional HTML');
  * Also run super.Init() in the overridden Init() function.
  */
-class _routerChildControlBase extends ui {
+class manager extends ui {
     constructor() {
         super();
-        this.description = "";
+        this.managerURL = "http://localhost:3000";
         this.displayName = "New " + this.controlType;
-        this.showControl = true;        // show control on local client
+        this.username = "manager";
+        this.password = "manager";
+        this.selected = true;        // show control on local client
         this.displayOrder = 0;          // Sort order on local client
         this.left = 50;
         this.top = 50;
@@ -17,6 +19,17 @@ class _routerChildControlBase extends ui {
         this.height = 0;
         this._left = this.left;  // Internal left position tracking
         this._top = this.top;    // Internal top position tracking
+
+        // {
+        //     "default": {
+        //         "controlType": "managerPanel",
+        //         "displayName": "Local manager",
+        //         "managerUrl": "http://localhost:3000",
+        //         "username": "testRouter1",
+        //         "password": "testPass",
+        //         "selected": true
+        //     }
+        // }
     }
 
     get html() {
@@ -33,14 +46,62 @@ class _routerChildControlBase extends ui {
                 </div>
         
                 <!--    SETTINGS BUTTON     -->
-                <button id="@{_btnSettings}" class="paAudioBase-btn-settings" type="button" title="Settings"
-                    data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
+                <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" title="Delete"
+                    "></button>
+
+
+                    
         
             </div>
         
             <div id="@{_cardBody}" class="paAudioBase-card-body">
                 <!-- CARD HTML added by extended controls  -->
-                %cardHtml%
+                    <!--    DISPLAY NAME      -->
+                    <div class="w-full mb-1 mr-4">
+                        <div class="mr-4 w-full">
+                            <label for="@{_displayName}" class="mb-2">Display Name: </label>
+                            <input id="@{_displayName}" class="paAudioBase-text-area" type="text" maxlength="60"
+                                placeholder="Your display name" title="Device display name" value="@{displayName}" />
+                        </div>
+                    </div>
+    
+                    <!--    MANAGER URL      -->
+                    <div class="w-full mb-1 mr-4">
+                        <div class="mr-4 w-full">
+                            <label for="@{_managerURL}" class="mb-2">Manager URL: </label>
+                            <input id="@{_managerURL}" class="paAudioBase-text-area" type="text"
+                                placeholder="Manager URL" title="Enter a manager URL" value="@{managerURL}" />
+                        </div>
+                    </div>
+
+                    
+                    <!--    USERNAME      -->
+                    <div class="w-full mb-1 mr-4">
+                        <div class="mr-4 w-full">
+                            <label for="@{_username}" class="mb-2">Username: </label>
+                            <input id="@{_username}" class="paAudioBase-text-area" type="text"
+                                placeholder="Your username" title="Enter a username" value="@{username}" />
+                        </div>
+                    </div>
+
+                    <!--    PASSWORD      -->
+                    <div class="w-full mb-1 mr-4">
+                        <div class="mr-4 w-full">
+                            <label for="@{_password}" class="mb-2">Password: </label>
+                            <input id="@{_password}" class="paAudioBase-text-area" type="text" 
+                                placeholder="Your password" title="Enter a password" value="@{password}" />
+                        </div>
+                    </div>
+
+                    
+
+                    <!--    Selected      -->
+                            <div class="w-full mr-2 mb-2 flex">
+                                <input id="@{_selected}" class="mr-2 mt-1 h-4 w-4" type="radio" name="selected"
+                                    checked="@{selected}" />
+                                <label for="@{_selected}" class=""
+                                    title="">Selected</label>
+                            </div>
             </div>
         </div>
 
@@ -134,7 +195,7 @@ class _routerChildControlBase extends ui {
         this._top = this.top;
 
         this.height = this._draggable.offsetHeight;
-         this.width = this._draggable.offsetWidth;
+        this.width = this._draggable.offsetWidth;
 
         // this._draggable.offsetHeight = this.height;
         // this._draggable.offsetWidth = this.width;
@@ -205,15 +266,14 @@ class _routerChildControlBase extends ui {
         // Mouse down on heading, start to move the control position
         this._heading.addEventListener("mousedown", event => {
 
-            if(event.target !== this._btnSettings)
-            {
+            if (event.target !== this._btnSettings) {
                 newTop = event.clientY - control._heading.getBoundingClientRect().top + 4.8;
                 newLeft = event.clientX - control._heading.getBoundingClientRect().left + 4.8;
                 offsetH = newTop;
                 offsetW = newLeft;
 
-            this._draggable.style.zIndex = "100";
-            isMoving = true;
+                this._draggable.style.zIndex = "100";
+                isMoving = true;
             }
 
         })
@@ -237,9 +297,9 @@ class _routerChildControlBase extends ui {
 
             // check container bounds
             let dropZoneLeft = control._parent._controlsDiv.offsetLeft;
-            let dropZoneTop = control._parent._controlsDiv.offsetTop - 10;
-            let dropZoneWidth = control._parent._controlsDiv.getBoundingClientRect().width - control.width + 22;
-            let dropZoneHeight = control._parent._controlsDiv.getBoundingClientRect().height - control.height - 10;
+            let dropZoneTop = control._parent._controlsDiv.offsetTop - 20;
+            let dropZoneWidth = control._parent._controlsDiv.getBoundingClientRect().width - control.width + 40;
+            let dropZoneHeight = control._parent._controlsDiv.getBoundingClientRect().height - control.height + 40;
 
             // verify and adapt newLeft and newTop positions
             if (newLeft < dropZoneLeft) { newLeft = dropZoneLeft }
@@ -338,9 +398,9 @@ class _routerChildControlBase extends ui {
         let collision = true;
 
         let dropZoneLeft = this._parent._controlsDiv.offsetLeft;
-        let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
-        let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 22;
-        let dropZoneHeight = this._parent._controlsDiv.offsetHeight - 40;
+        let dropZoneTop = this._parent._controlsDiv.offsetTop - 20;
+        let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 40;
+        let dropZoneHeight = this._parent._controlsDiv.offsetHeight + 40;
 
         while (collision) {
             collision = false;

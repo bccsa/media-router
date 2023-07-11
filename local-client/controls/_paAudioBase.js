@@ -39,7 +39,7 @@ class _paAudioBase extends ui {
                 </td></tr>
 
                 <tr><td class="paAudioBase_control_button">
-                    <div id="@{_control_button}">
+                    <div id="@{_control_button}" title="Mute button">
                         <span id="@{_control_button_text}">OFF</span>
                     </div>
                 </td></tr>
@@ -53,6 +53,10 @@ class _paAudioBase extends ui {
         // this._control_button_text = document.getElementById(`@{_control_button_text`);
         // this._volume_slit = document.getElementById(`@{_volume_slit`);
         // this._volume_slider = document.getElementById(`@{_volume_slider`);
+
+        // Set show mute control
+        this._showMuteControl();
+        this._showSliderControl();
 
         // Enable dragging for volume slider
         this._dragElement(this._volume_slider, this);
@@ -95,6 +99,14 @@ class _paAudioBase extends ui {
             }
         });
 
+        this.on('showVolumeControl', () => {
+            this._showSliderControl();
+        });
+
+        this.on('showMuteControl', () => {
+            this._showMuteControl();
+        });
+
         // Workaround: calculate initial slider range after css is applied
         setTimeout(() => {
             this._calcSliderRange();
@@ -104,19 +116,37 @@ class _paAudioBase extends ui {
     }
 
     _setMute() {
-        if (this.mute) {
-            // mute
-            this._control_button.style.borderColor = "rgb(6, 154, 46)";
-            this._control_button.style.backgroundColor = "rgb(34, 75, 18)";
-            this._control_button.style.boxShadow = "0 0 0 0";
-            this._control_button_text.textContent = "OFF";
+            if (this.mute) {
+                // mute
+                this._control_button.style.borderColor = "rgb(6, 154, 46)";
+                this._control_button.style.backgroundColor = "rgb(34, 75, 18)";
+                this._control_button.style.boxShadow = "0 0 0 0";
+                this._control_button_text.textContent = "OFF";
+            }
+            else {
+                // unmute
+                this._control_button.style.borderColor = "rgb(12, 255, 77)";
+                this._control_button.style.backgroundColor = "rgb(6, 154, 46)";
+                this._control_button.style.boxShadow = "0 0 10px 5px rgb(6, 154, 46)";
+                this._control_button_text.textContent = "ON";
+            }
+    }
+
+    _showMuteControl() {
+        if (this.showMuteControl) {
+            this._control_button.style.visibility = "visible";
         }
         else {
-            // unmute
-            this._control_button.style.borderColor = "rgb(12, 255, 77)";
-            this._control_button.style.backgroundColor = "rgb(6, 154, 46)";
-            this._control_button.style.boxShadow = "0 0 10px 5px rgb(6, 154, 46)";
-            this._control_button_text.textContent = "ON";
+            this._control_button.style.visibility = "hidden";
+        }
+    }
+
+    _showSliderControl() {
+        if (this.showVolumeControl) {
+            this._volume_slider.style.visibility = "visible";
+        }
+        else {
+            this._volume_slider.style.visibility = "hidden";
         }
     }
 
@@ -133,7 +163,7 @@ class _paAudioBase extends ui {
 
     // Calculate volume from slider position
     _calcVolume() {
-        this.volume =  this.maxVolume * (this._sliderRange - this._volume_slider.offsetTop + this._volume_slit.offsetTop) / this._sliderRange;
+        this.volume = this.maxVolume * (this._sliderRange - this._volume_slider.offsetTop + this._volume_slit.offsetTop) / this._sliderRange;
     }
 
     // Enable dragging of slider

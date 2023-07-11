@@ -134,8 +134,8 @@
     @apply w-full px-6 py-2.5 bg-blue-600 text-white font-medium text-xs leading-tight uppercase rounded shadow-md hover:bg-blue-700 hover:shadow-lg focus:bg-blue-700 focus:shadow-lg focus:outline-none focus:ring-0 active:bg-blue-800 active:shadow-lg transition duration-150 ease-in-out;
 }
 
-.appFrame-controls-div {
-    @apply pb-4 pt-2 h-auto w-auto hidden;
+.appFrame_contents {
+    @apply absolute top-[51px] bottom-0 inset-x-0 text-left flex overflow-x-auto;
 }
 
 /*-------------------------*/
@@ -314,7 +314,7 @@
 }
 
 .paAudioBase-card-heading {
-    @apply flex justify-between rounded-t-lg cursor-move items-center pt-1 mb-1 px-4 w-full h-7;
+    @apply flex justify-between rounded-t-lg cursor-move items-center text-center pt-1 mb-1 px-4 w-full h-8 text-black bg-[#E2A412];
 }
 
 .paAudioBase-card-body {
@@ -353,7 +353,7 @@
 
 /* form-control */
 .paAudioBase-text-area {
-    @apply form-control max-h-40 min-h-[2rem] mr-4 block w-full text-sm font-normal text-white bg-[#293548] border border-solid border-gray-300 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 focus:outline-none px-2 py-1;
+    @apply form-control max-h-40 min-h-[2rem] mr-4 block w-full text-sm font-normal text-[#293548] bg-white border border-solid border-gray-300 rounded transition ease-in-out  focus:border-blue-600 focus:outline-none px-2;
 }
 
 /* form-select */
@@ -374,7 +374,7 @@
 }
 
 .paAudioBase-btn-delete {
-    @apply icon-[mdi-light--delete] text-black hover:text-red-500 text-2xl text-[32px] m-2;
+    @apply icon-[mdi-light--delete] text-black hover:text-[#AA0E0E] text-base text-[24px] m-2;
 }
 
 .paAudioBase-modal {
@@ -503,10 +503,10 @@
 
 /*-------------------------*/
 
-/* .modal {
+.modal {
     z-index:9999;
     background-color:#0000004d;
-} */
+}
 
 /* .modal {
     position:absolute;
@@ -522,7 +522,7 @@
     z-index:10000;
 } */
 
-/* .modal-backdrop {
+.modal-backdrop {
     position:relative;
     top:0;
     left:0;
@@ -530,7 +530,7 @@
     width:100vw;
     height:100vh;
     background-color:#000000;
-} */
+}
 
 /* .modal-body {
     max-height:calc(100vh - 210px);

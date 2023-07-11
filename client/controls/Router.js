@@ -14,7 +14,7 @@ class Router extends ui {
         this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
         this.displayOrder = 100;
         this.height = 500;
-        this.width = 500;
+        // this.width = 500;
     }
 
     get html() {
@@ -189,22 +189,24 @@ class Router extends ui {
                             <div class="mr-4 w-full">
                                 
                                 <input id="@{_height}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
-                                title="Page height in px" step="1" value="@{height}"/>
+                                title="Page height in px (Min: 450)" step="1" value="@{height}"/>
 
                             </div>
                         </div>
                         
 
-                        <!--    Width      -->
-                        <label for="@{_width}" class="router-label-settings">Router page width:</label>
+                        <!--    Width   (Incomplete)   
+                        <label for="_width" class="router-label-settings">Router page width:</label>
                         <div class="router-container">
                             <div class="mr-4 w-full">
                                 
-                                <input id="@{_width}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
-                                title="Page width in px" step="1" value="@{width}"/>
+                                <input id="_width" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                title="Page width in px" step="1" value="width"/>
 
                             </div>
                         </div>
+
+                        -->
 
 
                     </div>
@@ -310,6 +312,14 @@ class Router extends ui {
                 this._controlsDiv.style.height = height;
             }
         });
+
+        this._height.addEventListener('change', (e) => {
+            if (this._height.value <= 450)
+                {
+                    this._height.value = 450;
+                    this.height = 450;
+                }
+        })
 
 
         this._btnSettings.addEventListener('click', (e) => {
