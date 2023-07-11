@@ -2,7 +2,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
     constructor() {
         super();
         // Encoder Settings
-        this.fec = true;            // Enable opus Forward Error Correction
+        this.fec = false;            // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
