@@ -11,7 +11,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
         this.source = "";   // PulseAudio module-null-sink source name (xxx.monitor)
         this.sink = "";     // PulseAudio module-null-sink sink name
         this.channels = 1;
-        this.bitdepth = 16;
+        this.bitDepth = 16;
         this.sampleRate = 44100;
         this.description = 'test description';
         this._paModuleID;   // PulseAudio module instance ID
@@ -45,7 +45,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startNullSink() {
         // let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this.latency_msec},device.description='${this.description}'"`;
-        let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
+        let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
                 console.log(data.stderr.toString());

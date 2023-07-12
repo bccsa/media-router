@@ -60,8 +60,10 @@ class AudioLoopback extends dm {
             let sampleRate = Math.min(this._src.sampleRate, this._dst.sampleRate);
             let bitDepth = Math.min(this._src.bitDepth, this._dst.bitDepth);
             let channels = Math.min(this._src.channels, this._dst.channels);
-
-            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=${this._router.paLatency} channels=${channels} rate=${sampleRate} format=s${bitDepth}le`;
+            let channelMap = '';
+            if (channels == 1) channelMap = 'channel_map=mono'
+            
+            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=${this._router.paLatency} channels=${channels} rate=${sampleRate} format=s${bitDepth}le source_dont_move=true sink_dont_move=true ${channelMap}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.error(`${this._controlName}: ${data.stderr.toString()}`);

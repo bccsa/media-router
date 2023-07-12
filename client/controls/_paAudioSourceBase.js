@@ -1,7 +1,6 @@
 class _paAudioSourceBase extends _paAudioBase {
     constructor() {
         super();
-        this.source = "";   // PulseAudio source name
         this.destinations = [];
         this._destinations_prev = [];
     }
