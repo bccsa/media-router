@@ -20,10 +20,8 @@ class appFrame extends ui {
 
         </div> </div>
 
-        
         <!--    Manager     -->
         <div id="@{_controlsDiv}" class="appFrame_contents"></div>
-
 
         `;
     }
@@ -37,33 +35,21 @@ class appFrame extends ui {
         this._btnAddManager.addEventListener('click', (e) => {
             // Get unique random name
             function randomName() {
-                return "manager_" + Math.round(Math.random() * 10000);
+                return "managerPanel_" + Math.round(Math.random() * 10000);
             }
-            
+
             let name = randomName();
             while (this[name]) {
                 name = randomName();
             }
 
             // Create new manager
-            this.SetData({[name]: {controlType: "manager"}});
+            this.SetData({ [name]: { controlType: "managerPanel" } });
             this.on(name, control => {
                 // send newly created manager's data to manager
-                this._notify({[name]: control.GetData()});
+                this._notify({ [name]: control.GetData() });
             });
 
-            console.log("Added maanger");
-
-        });
-
-
-    }
-
-    clearControls() {
-        Object.keys(this._controls).forEach(control => {
-            this.RemoveChild(control);
         });
     }
-
-    
 }
