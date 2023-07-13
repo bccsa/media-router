@@ -7,7 +7,7 @@
 class managerPanel extends ui {
     constructor() {
         super();
-        this.managerURL = "http://localhost:3000";
+        this.managerUrl = "http://localhost:3000";
         this.username = "New manager";
         this.password = "manager";
         this.selected = false;        // show control on local client
@@ -68,9 +68,9 @@ class managerPanel extends ui {
                     <!--    MANAGER URL      -->
                     <div class="w-full mb-1 mr-4 mt-4">
                         <div class="mr-4 w-full">
-                            <label for="@{_managerURL}" class="mb-2">Manager URL: </label>
-                            <input id="@{_managerURL}" class="managerPanel-text-area" type="text"
-                                placeholder="Manager URL" title="Enter a manager URL" value="@{managerURL}" />
+                            <label for="@{_managerUrl}" class="mb-2">Manager URL: </label>
+                            <input id="@{_managerUrl}" class="managerPanel-text-area" type="text"
+                                placeholder="Manager URL" title="Enter a manager URL" value="@{managerUrl}" />
                         </div>
                     </div>
 
@@ -93,11 +93,8 @@ class managerPanel extends ui {
         
         // Handle property changes
         this.on('selected', selected => {
-            console.log(this.name + " " + this.selected);
             if (selected)
             {
-
-                // this._mainCard.style.borderColor = rgb(107, 114, 128);
                 this._mainCard.style.border = "medium solid #DB5461";
                 this._heading.style.backgroundColor = "#DB5461";
 
@@ -109,11 +106,10 @@ class managerPanel extends ui {
             }
             else
             {
-                // this._mainCard.style.borderColor = "#6b7280";
                 this._mainCard.style.border = "thin outset #6b7280";
                 this._heading.style.backgroundColor = "#6b7280";
             }
-        });
+        }, { immediate: true });
 
         // Delete control
         this._btnDelete.addEventListener('click', (e) => {

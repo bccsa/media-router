@@ -9,7 +9,7 @@ class AudioInput extends _paAudioSourceBase {
         return super.html.replace('%additionalHtml%', `
         <div class="w-full mb-1 flex">
             <!-- Source  -->
-            <div class="w-1/2 mr-3">
+            <div class="w-full mb-2">
                 <label for="@{_source}" class="form-label inline-block mb-2">Source:</label>
                 <select id="@{_source}" class="paAudioBase-select" type="text" title="PulseAudio source" value="@{source}"></select>
             </div>

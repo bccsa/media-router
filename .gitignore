@@ -112,6 +112,7 @@ sdp/
 
 # Config files in router folder
 server/config.json
+server/profileConf.json
 
 # Include package.json
 !/package.json

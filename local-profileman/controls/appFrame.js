@@ -20,6 +20,12 @@ class appFrame extends ui {
 
         </div> </div>
 
+        <!--    DISCONNECT ALERT MESSAGE     -->
+        <div id="@{_disconnectAlert}" class="appFrame-disconnect-alert-container">
+            <div class="appFrame-disconnect-alert-icon"></div>
+            <div class="appFrame-disconnect-alert-text">You have lost connection!</div>
+        </div>
+
         <!--    Manager     -->
         <div id="@{_controlsDiv}" class="appFrame_contents"></div>
 
@@ -30,6 +36,8 @@ class appFrame extends ui {
 
         // Set initial values
         let f = this;
+        
+        this._disconnectAlert.style.display = "none";
 
         // Event subscriptions
         this._btnAddManager.addEventListener('click', (e) => {
@@ -44,7 +52,7 @@ class appFrame extends ui {
             }
 
             // Create new manager
-            this.SetData({ [name]: { controlType: "managerPanel" } });
+            this.Set({ [name]: { controlType: "managerPanel" } });
             this.on(name, control => {
                 // send newly created manager's data to manager
                 this._notify({ [name]: control.GetData() });
@@ -52,4 +60,11 @@ class appFrame extends ui {
 
         });
     }
+
+    clearControls() {
+        Object.keys(this._controls).forEach(control => {
+            this.RemoveChild(control);
+        });
+    }
+
 }

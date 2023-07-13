@@ -97,7 +97,7 @@ console.log('Listening for router connections on http://*:3000');
 
 // Add authentication middleware
 router_io.use((socket, next) => {
-    if (socket.handshake.auth.username == 'testRouter1' && socket.handshake.auth.password == 'testPass') {
+    if ((socket.handshake.auth.username == 'testRouter1' || socket.handshake.auth.username == 'testRouter2') && socket.handshake.auth.password == 'testPass') {
         next();
     } else {
         next(new Error('Invalid username or password'));

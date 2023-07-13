@@ -23,7 +23,7 @@ class _routerChildControlBase extends ui {
         return `
         <!-- ${this.name} -->
         <!--    MAIN CARD CONTAINER     -->
-        <div id="@{_draggable}" class="paAudioBase-main-card absolute">
+        <div id="@{_draggable}" class="paAudioBase-main-card absolute transform scale-100 origin-top-left">
             <!--    TOP HEADING CONTAINER    -->
             <div id="@{_heading}" class="paAudioBase-card-heading overflow-hidden">
         
@@ -47,24 +47,35 @@ class _routerChildControlBase extends ui {
         <!--    MODAL DEVICE    -->
         <div id="@{_modalDeviceDetails}" class="paAudioBase-modal modal fade select-none" tabindex="-1" aria-hidden="true">
             <div class="modal-dialog paAudioBase-modal-dialog">
+
                 <div class="paAudioBase-modal-content">
         
                     <div class="paAudioBase-modal-header">
-                        <div class="mr-4 flex justify-start">
+                        <div class="flex flex-shrink-0 items-center justify-between">
+                            <span class="appFrame-control-name">${this.controlType}</span>
+                            <button class="paAudioBase-modal-btn-close m-0" type="button" data-bs-dismiss="modal"
+                            aria-label="Close"></button>
+                        </div>
+                    
+
+                        <div class="mr-4 flex justify-start items-center">
         
                             <!--    DUPLICATE    -->
-                            <button id="@{_btnDuplicate}" class="paAudioBase-btn-duplicate" type="button"
+                            <button id="@{_btnDuplicate}" class="paAudioBase-btn-duplicate ml-0" type="button"
                                 data-bs-dismiss="modal" title="Duplicate device"></button>
         
                             <!--    DELETE   -->
                             <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" data-bs-dismiss="modal"
                                 title="Delete device"></button>
+
+                            
+
+                            <h5 class="paAudioBase-modal-heading truncate max-w-[352px] break-words">@{displayName}</h5>
         
                         </div>
-                        <h5 class="paAudioBase-modal-heading truncate max-w-[352px] break-words">@{displayName}</h5>
-                        <span>${this.controlType}</span>
-                        <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
-                            aria-label="Close"></button>
+
+                        
+
                     </div>
         
                     <div class="paAudioBase-modal-body">
@@ -79,17 +90,17 @@ class _routerChildControlBase extends ui {
                         </div>
         
                         <!--    DESCRIPTION TEXT AREA     -->
-                        <div class="w-full mb-1 mr-4">
+                        <div class="w-full mb-2 mr-4">
                             <label for="@{_description}" class="mb-2">Description:</label>
                             <textarea id="@{_description}" class="paAudioBase-text-area" rows="1" cols="3"
                                 title="Device description" placeholder="Your description" value="@{description}"></textarea>
                         </div>
         
                         <!--    GENERAL SETTINGS     -->
-                        <div class="w-full mb-1 flex ">
+                        <div class="w-full mb-3 flex ">
         
                             <!--    SHOW CONTROL CHECKBOX      -->
-                            <div class="w-1/2 mr-2 mb-2 flex">
+                            <div class="w-1/2 mr-3 flex">
                                 <input id="@{_showControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox"
                                     checked="@{showControl}" />
                                 <label for="@{_showControl}" class=""
@@ -97,9 +108,9 @@ class _routerChildControlBase extends ui {
                             </div>
         
                             <!--    DISPLAY ORDER      -->
-                            <div class="w-1/4 mr-3">
-                                <label for="@{_displayOrder}" class="mb-2">Display Order:</label>
-                                <input id="@{_displayOrder}" class="paAudioBase-pos-number-input" type="number" min="0"
+                            <div class="w-1/2  flex">
+                                <label for="@{_displayOrder}" class="w-1/2 mr-3">Display Order:</label>
+                                <input id="@{_displayOrder}" class="paAudioBase-pos-number-input w-1/2" type="number" min="0"
                                     oninput="validity.valid||(value='')" title="Display order in the client WebApp."
                                     name="displayOrder" step="1" value="@{displayOrder}">
                             </div>
@@ -134,8 +145,8 @@ class _routerChildControlBase extends ui {
         this._left = this.left;
         this._top = this.top;
 
-        this.height = this._draggable.offsetHeight;
-         this.width = this._draggable.offsetWidth;
+        this.height = this._draggable.getBoundingClientRect().height;
+        this.width = this._draggable.getBoundingClientRect().width;
 
         // this._draggable.offsetHeight = this.height;
         // this._draggable.offsetWidth = this.width;
@@ -144,8 +155,8 @@ class _routerChildControlBase extends ui {
 
         // recalculate card body on resize
         const divResizeObserver = new ResizeObserver(() => {
-            this.height = this._draggable.offsetHeight;
-            this.width = this._draggable.offsetWidth;
+            this.height = this._draggable.getBoundingClientRect().height;
+            this.width = this._draggable.getBoundingClientRect().width;
         });
         divResizeObserver.observe(this._cardBody);
 
@@ -239,8 +250,8 @@ class _routerChildControlBase extends ui {
             // check container bounds
             let dropZoneLeft = control._parent._controlsDiv.offsetLeft;
             let dropZoneTop = control._parent._controlsDiv.offsetTop - 10;
-            let dropZoneWidth = control._parent._controlsDiv.getBoundingClientRect().width - control.width + 22;
-            let dropZoneHeight = control._parent._controlsDiv.getBoundingClientRect().height - control.height - 10;
+            let dropZoneWidth = control._parent._controlsDiv.scrollWidth - control.width + 22;
+            let dropZoneHeight = control._parent._controlsDiv.scrollHeight - control.height - 10;
 
             // verify and adapt newLeft and newTop positions
             if (newLeft < dropZoneLeft) { newLeft = dropZoneLeft }
@@ -268,7 +279,7 @@ class _routerChildControlBase extends ui {
 
                 let position;
                 // Check if the Device is at the upper or lower bound and adjust accordingly
-                if (this._top > (control._parent._controlsDiv.getBoundingClientRect().height - 90)) {
+                if (this._top > (control._parent._controlsDiv.scrollHeight - 90)) {
                     position = control._checkCollision(this._left, this._top, "up");
                 }
                 else {
@@ -287,8 +298,6 @@ class _routerChildControlBase extends ui {
 
             isMoving = false;
         });
-
-
 
         this.on('left', left => {
             this._draggable.style.left = left + "px";
@@ -312,6 +321,21 @@ class _routerChildControlBase extends ui {
         this.on('remove', () => {
             this._modalDeviceDetails.remove();
         });
+
+        //----------------------Scale-----------------------------//
+        this._parent.on('scale', scale => {
+            this._setScale();
+        }, { immediate: true, caller: this });
+        //----------------------Scale-----------------------------//
+    }
+
+    _setScale(){    
+        if (this._draggable) {
+            this._draggable.style.transform = "scale(" + this._parent.scale + "," + this._parent.scale + ")";  // Apply the scale transformation to the control element
+            this.height = this._draggable.getBoundingClientRect().height;
+            this.width = this._draggable.getBoundingClientRect().width;   
+            this.emit('posChanged', this.calcConnectors(this.top, this.left));
+        }
     }
 
     /**
@@ -320,8 +344,8 @@ class _routerChildControlBase extends ui {
      */
     calcConnectors(top, left) {
         return {
-            leftConnector: { top: (top + (this._draggable.clientHeight / 2) + 4), left: left + 5 },
-            rightConnector: { top: (top + (this._draggable.clientHeight / 2) + 4), left: (left + (this._draggable.clientWidth) + 5) }
+            leftConnector: { top: (top + (this._draggable.getBoundingClientRect().height / 2) + 4), left: left + 5 },
+            rightConnector: { top: (top + (this._draggable.getBoundingClientRect().height / 2) + 4), left: (left + (this._draggable.getBoundingClientRect().width) + 5) }
         };
     }
 
@@ -340,8 +364,8 @@ class _routerChildControlBase extends ui {
 
         let dropZoneLeft = this._parent._controlsDiv.offsetLeft;
         let dropZoneTop = this._parent._controlsDiv.offsetTop - 10;
-        let dropZoneWidth = this._parent._controlsDiv.offsetWidth + 22;
-        let dropZoneHeight = this._parent._controlsDiv.offsetHeight - 40;
+        let dropZoneWidth = this._parent._controlsDiv.scrollWidth + 22;
+        let dropZoneHeight = this._parent._controlsDiv.scrollHeight - 40;
 
         while (collision) {
             collision = false;

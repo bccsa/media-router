@@ -11,6 +11,17 @@ controls.Set({
 controls.on('appFrame', appFrame => {
     // Connect to the Socket.io server when the appFrame is loaded
     socket = io();
+
+    socket.on('connect', () => {
+        appFrame._disconnectAlert.style.display = "none";
+        appFrame._btnAddManager.disabled = false;
+    });
+
+    socket.on('disconnect', () => {
+        appFrame.clearControls();
+        appFrame._disconnectAlert.style.display = "flex";
+        appFrame._btnAddManager.disabled = true;
+    });
     
     // Receive data from router
     socket.on('data', data => {

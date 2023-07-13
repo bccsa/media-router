@@ -26,6 +26,18 @@
     @apply  absolute top-[51px] flex flex-wrap;
 }
 
+.appFrame-disconnect-alert-container {
+    @apply flex items-center bg-yellow-100 rounded-lg py-5 px-6 mb-3 w-full min-w-[17rem];
+}
+
+.appFrame-disconnect-alert-icon {
+    @apply icon-[mdi-light--alert] text-yellow-700 text-2xl text-[32px] ml-2;
+}
+
+.appFrame-disconnect-alert-text {
+    @apply text-base text-yellow-700;
+}
+
 /*-------------------------*/
 
 

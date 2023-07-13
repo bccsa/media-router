@@ -21,13 +21,13 @@ process.chdir(__dirname);
 // -------------------------------------
 // Configuration management
 // -------------------------------------
-let localConf;
+let profileConf;
 // Get config file path from passed argument
 if (process.argv.length > 2) {
     // Load config file from disk
-    localConf = new configManager(process.argv[2], 'defaultRouterConf.json');
+    profileConf = new configManager(process.argv[2], 'defaultRouterConf.json');
 } else {
-    localConf = new configManager('localConf.json', 'defaultRouterConf.json');
+    profileConf = new configManager('profileConf.json', 'defaultRouterConf.json');
 }
 
 
@@ -75,7 +75,24 @@ function manager_connect(url, username, password) {
 var controls = new dmTopLevelContainer('../controls');
 controls.Set({ router: { controlType: 'Router' } });
 controls.on('router', router => {
-    let c = Object.values(localConf.config).find(t => t.selected);
+    startRouter(router);
+}, { immediate: true });
+
+
+/**
+ * Connect to the selected manager and start the router instance
+ * @param {*} router 
+ */
+function startRouter(router) {
+    // Stop router and remove existing controls
+    router.run = false;
+    router.removeAllListeners();
+
+    Object.values(router._controls).forEach(control => {
+        control.Set({remove: true});
+    });
+
+    let c = Object.values(profileConf.config).find(t => t.selected);
     if (c) {
         manager_connect(c.managerUrl, c.username, c.password);
 
@@ -86,7 +103,7 @@ controls.on('router', router => {
             }
         });
     }
-}, { immediate: true });
+}
 
 // -------------------------------------
 // Client WebApp Express webserver
@@ -177,23 +194,19 @@ catch (err) {
 const profilemanIO = require('socket.io')(profilemanHttp);
 
 profilemanIO.on('connection', socket => {
+    socket.emit('data', profileConf.config);
     // Send initial (full) state
     // socket.emit('data', controls.router.Get({ sparse: false }));
 
-    // socket.on('data', data => {
-    //     // Send data to router
-    //     if (controls.router) {
-    //         controls.router.Set(data);
-    //     }
+    socket.on('data', data => {
+        profileConf.append(data);
+        profileConf.save();
 
-    //     // Send data to other Profileman
-    //     socket.broadcast.emit('data', data);
-
-    //     // Send data to manager
-    //     if (manager_io) {
-    //         manager_io.emit('data', data);
-    //     }
-    // });
+        let select = Object.entries(data).filter(p => p[1].selected);
+        if (select) {
+            startRouter(controls.router);
+        }
+    });
 });
 
 // controls.on('router', router => {

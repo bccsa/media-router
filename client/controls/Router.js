@@ -14,7 +14,8 @@ class Router extends ui {
         this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
         this.displayOrder = 100;
         this.height = 500;
-        // this.width = 500;
+        this.width = 500;
+        this.scale = 1;
     }
 
     get html() {
@@ -96,21 +97,23 @@ class Router extends ui {
                 <!--    MORE INFO CONTAINER       -->
                 <div id="@{_moreInfo}" class="router-content">
 
-
-                    <!--    CHILD DEVICE    -->
-                    <div id="@{_controlsDiv}" class="router-devices-div z-10 relative">
-
-                    <!--    ADD BUTTON    -->
-                    <button class="router-btn-add" type="button" data-bs-toggle="modal"
-                    data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
-
+                    <div class="h-8 w-8 z-50 top-11 left-1 absolute rounded-full bg-white bg-opacity-50 pl-[0.5px] pb-[1.5px]"
+                        <!--    ADD BUTTON    -->
+                        <button class="router-btn-add " type="button" data-bs-toggle="modal"
+                        data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
                     </div>
 
-                    
-                    <!--    SETTINGS BUTTON       -->
-                    <div class="justify-between z-0">
-                        <button id="@{_btnSettings}" class="router-btn-settings"
-                        type="button" title="Open Router Settings"> </button>
+                    <div class="overflow-scroll block w-full h-full max-h-[750px]">
+                        <!--    CHILD DEVICE    -->
+                        <div id="@{_controlsDiv}" class="router-devices-div z-10 block relative"> </div>
+                    </div>
+
+                    <div class="h-8 w-8 z-50 top-11 right-5 absolute rounded-full bg-white bg-opacity-50"
+                        <!--    SETTINGS BUTTON       -->
+                        <div class="justify-between">
+                            <button id="@{_btnSettings}" class="router-btn-settings"
+                            type="button" title="Open Router Settings"> </button>
+                        </div>
                     </div>
 
                     <div id="@{_settingsContainer}" class="router-settingsContainer z-50"  >
@@ -195,18 +198,29 @@ class Router extends ui {
                         </div>
                         
 
-                        <!--    Width   (Incomplete)   
-                        <label for="_width" class="router-label-settings">Router page width:</label>
+                        <!--    Width    -->  
+                        <label for="@{_width}" class="router-label-settings">Router page width:</label>
                         <div class="router-container">
                             <div class="mr-4 w-full">
                                 
-                                <input id="_width" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
-                                title="Page width in px" step="1" value="width"/>
+                                <input id="@{_width}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                title="Page width in px" step="1" value="@{width}"/>
 
                             </div>
                         </div>
 
-                        -->
+                        <!--    Scale    -->  
+                        <label for="@{_scale}" class="router-label-settings">Router control's scale:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_scale}" class="router-number-range" type="number" step="0.05" min="0.1" max=2 oninput="validity.valid||(value='1')"
+                                title="Page width in px" step="1" value="@{scale}"/>
+
+                            </div>
+                        </div>
+
+                        
 
 
                     </div>
@@ -294,16 +308,32 @@ class Router extends ui {
         // Workaround: set page height and width after css is applied
         setTimeout(() => {
             this._controlsDiv.style.height = this.height + "px";
-           // this._controlsDiv.style.width = this.width + "px";
+            this._controlsDiv.style.width = this.width + "px";
         }, 100);
 
-        // this.on('width', width => {
-        //     if (typeof width == 'number') {
-        //         this._controlsDiv.style.width = width + "px";
-        //     } else {
-        //         this._controlsDiv.style.width = width;
-        //     }
-        // });
+        this._height.addEventListener('change', (e) => {
+            if (this._height.value <= 450) {
+                this._height.value = 450;
+                this.height = 450;
+            }
+        })
+
+        this._width.addEventListener('change', (e) => {
+            if (this._width.value <= 450) {
+                this._width.value = 450;
+                this.width = 450;
+            }
+        })
+
+        this.on('width', width => {
+            // this._controlsDiv.style.maxWidth = (this._routerCard.offsetWidth - 320) + "px";
+            if (typeof width == 'number') {
+                this._controlsDiv.style.width = width + "px";
+            } else {
+                this._controlsDiv.style.width = width;
+            }
+        });
+
 
         this.on('height', height => {
             if (typeof height == 'number') {
@@ -312,15 +342,6 @@ class Router extends ui {
                 this._controlsDiv.style.height = height;
             }
         });
-
-        this._height.addEventListener('change', (e) => {
-            if (this._height.value <= 450)
-                {
-                    this._height.value = 450;
-                    this.height = 450;
-                }
-        })
-
 
         this._btnSettings.addEventListener('click', (e) => {
             this._toggleSettingContainer();
@@ -384,6 +405,46 @@ class Router extends ui {
         this.on('online', online => {
             this._checkOnline();
         });
+
+        //----------------------Scaling-----------------------------//
+        let isAltKeyPressed = false; // Flag to track Alt key press
+
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Alt') {
+                isAltKeyPressed = true;
+                this._controlsDiv.style.cursor = 'zoom-in'; // Show zoom-in cursor when Alt key is pressed
+            }
+        });
+
+        document.addEventListener('keyup', (event) => {
+            if (event.key === 'Alt') {
+                isAltKeyPressed = false;
+                this._controlsDiv.style.cursor = 'auto'; // Reset cursor when Alt key is released
+            }
+        });
+
+        this._controlsDiv.addEventListener('mousedown', (event) => {
+            if (isAltKeyPressed) {
+                if (event.button === 0) {
+                    // Left click to increase scale
+                    this.scale += 0.05;
+                    // Ensure scale doesn't go above 2
+                    this.scale = Math.min(this.scale, 2);
+                } else if (event.button === 2) {
+                    // Right click to decrease scale
+                    this.scale -= 0.05;
+                    // Ensure scale doesn't go below 0.1
+                    this.scale = Math.max(this.scale, 0.1);
+                }
+            }
+        });
+
+        this._controlsDiv.addEventListener('contextmenu', (event) => {
+            if (isAltKeyPressed) {
+                event.preventDefault(); // Prevent the default right-click context menu when Alt key is pressed
+            }
+        });
+        //----------------------Scaling-----------------------------//
     }
 
     _checkOnline() {
@@ -401,8 +462,8 @@ class Router extends ui {
 
     _toggleSettingContainer() {
         if (this._settingsContainer.style.display === "none") {
-            this._settingsContainer.style.display = "block";
             this._btnSettings.style.display = "none";
+            this._settingsContainer.style.display = "block";
 
         } else {
             this._settingsContainer.style.display = "none";

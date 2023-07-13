@@ -40,9 +40,9 @@ class SrtOpusOutput extends _paAudioSinkBase {
 
         </div>
 
-        <div class="w-full mb-2 flex ">
+        <div class="w-full mb-4 flex ">
             <!-- FEC PacketLoss --> 
-            <div class="w-1/2 mr-4 flex flex-col">
+            <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_fecPacketLoss}" class="form-label inline-block mb-2 mr-2">FEC packet loss:</label>
                 <input type="number" min="0" max="100" oninput="validity.valid||(value='')" id="@{_fecPacketLoss}" 
                     title="Opus FEC packet loss percentage (preset value)" step="1" class="srtOpusInput-pos-number-input"
@@ -51,7 +51,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
             </div>
 
             <!-- Compression  --> 
-            <div class="w-1/2 flex flex-col">
+            <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_compression}" class="form-label inline-block mb-2 mr-2">Compression level:</label>
                 <input type="number" min="0" max="10" oninput="validity.valid||(value='')" id="@{_compression}" 
                     title="Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality." step="1" class="srtOpusInput-pos-number-input"
@@ -59,11 +59,9 @@ class SrtOpusOutput extends _paAudioSinkBase {
                 >
             </div>
 
-        </div>
-
-        <div class="w-full mb-2 flex ">
+        
             <!-- Bitrate -->
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div class="w-1/3 flex flex-col">
                 <label for="@{_bitrate}" class="form-label inline-block mb-2">Bitrate:</label>
                 <select id="@{_bitrate}" title="Opus encoding target bitrate in kbps" value="@{bitrate}" 
                 class="paAudioBase-select" type="text">
@@ -88,9 +86,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
                 </select>
             </div>
 
-            <div class="w-1/3 mr-4 "></div>
 
-            <div class="w-1/3"></div>
         </div>
 
 

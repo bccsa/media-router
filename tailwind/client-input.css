@@ -52,6 +52,10 @@
     @apply modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md;
 }
 
+.appFrame-control-name {
+    @apply py-0.5 px-0.5 text-xs font-bold;
+}
+
 .appFrame-modal-img {
     @apply icon-[mdi-light--logout] text-black text-2xl text-[32px] m-2;
 }
@@ -192,7 +196,7 @@
 }
 
 .router-btn-settings {
-    @apply icon-[mdi-light--settings] text-black hover:text-blue-500 text-2xl text-[32px] mt-1;
+    @apply icon-[mdi-light--settings] text-black hover:text-blue-500 text-2xl text-[32px];
 
 }
 
@@ -214,7 +218,7 @@
 }
 
 .router-btn-add {
-    @apply icon-[mdi-light--plus-circle] text-black hover:text-blue-500 text-2xl text-[32px] -mt-1;
+    @apply icon-[mdi-light--plus-circle] text-black hover:text-blue-500 text-2xl text-[32px];
 }
 
 .router-btn-duplicate {
@@ -392,7 +396,7 @@
 
 /* modal-header */
 .paAudioBase-modal-header {
-    @apply modal-header flex flex-shrink-0 items-center justify-between p-4 border-b border-gray-200 rounded-t-md;
+    @apply modal-header items-center justify-between px-4 pt-2 border-b border-gray-200 rounded-t-md;
 }
 
 .paAudioBase-modal-heading {
