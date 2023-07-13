@@ -13,8 +13,13 @@ class AudioOutput extends _paAudioSinkBase {
         <div class="w-full mb-2 mr-4">
             <label for="@{_sink}" class="form-label inline-block mb-2">Sink:</label>
             <select id="@{_sink}" class="paAudioBase-select" type="text" title="PulseAudio sink" value="@{master}"></select>
-            <label for="@{_channelMap}" title="Enter channel map as a comma-separated list of channel numbers">Channel map:</label>
-            <input id="@{_channelMap}" type="text" value="@{channelMap}" placeholder="Channel map (e.g. 1,2)"/>
+        </div>
+
+        <!--    Channel Map      -->
+        <div class="w-full mb-1 mr-4">
+            <label for="@{_channelMap}" class="mb-2">Channel map: </label>
+            <input id="@{_channelMap}" class="paAudioBase-text-area" type="text" maxlength="60"
+            placeholder="Channel map (e.g. 1,2)" title="Enter channel map as a comma-separated list of channel numbers" value="@{channelMap}" />
         </div>
         `);
     }

@@ -51,12 +51,12 @@ class Router extends ui {
 
 
                                 <!--    ONLINE/OFFLINE -->
-                                <span id="@{_online}" class="hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-green-900 dark:text-green-300">
+                                <span id="@{_online}" class="hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
                                 <span class="w-2 h-2 mr-1 bg-white rounded-full"></span>
                                 Online
                                 </span>
 
-                                <span id="@{_offline}" class="inline-flex items-center bg-red-100 text-red-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full dark:bg-red-900 dark:text-red-300">
+                                <span id="@{_offline}" class="inline-flex items-center bg-red-100 text-red-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
                                 <span class="w-2 h-2 mr-1 bg-red-500 rounded-full"></span>
                                 Offline
                                 </span>
@@ -66,7 +66,7 @@ class Router extends ui {
                                     <label class="relative inline-flex items-center cursor-pointer">
                                         <span class="router-label">Off</span>
                                             <input id="@{_switchOnOff}" class="sr-only peer" type="checkbox" role="switch" checked="@{run}">
-                                            <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-gray-600 peer-checked:bg-blue-500"></div>
+                                            <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
                                         <span class="router-label -mr-2 ml-2">On</span>
                                     </label>
                                 </div>
@@ -103,9 +103,9 @@ class Router extends ui {
                         data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
                     </div>
 
-                    <div class="overflow-scroll block w-full h-full max-h-[750px]">
+                    <div id="@{_scrollDiv}" class="overflow-scroll block w-full h-full max-h-[750px]">
                         <!--    CHILD DEVICE    -->
-                        <div id="@{_controlsDiv}" class="router-devices-div z-10 block relative"> </div>
+                        <div id="@{_controlsDiv}" class="router-devices-div z-10 block relative transform scale-100 origin-top-left"> </div>
                     </div>
 
                     <div class="h-8 w-8 z-50 top-11 right-5 absolute rounded-full bg-white bg-opacity-50"
@@ -407,27 +407,40 @@ class Router extends ui {
         });
 
         //----------------------Scaling-----------------------------//
+        this.on('scale', scale => {
+            this._setScale();
+            // let position = this._checkCollision(this.left, this.top);
+            // this._draggable.style.left = position.newLeft + "px";
+            // this._draggable.style.top = position.newTop + "px";
+            // this.left = position.newLeft;
+            // this.top = position.newTop;
+            // this._left = this.left;
+            // this._top = this.top;
+
+        }, { immediate: true });
+
         let isAltKeyPressed = false; // Flag to track Alt key press
 
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Alt') {
                 isAltKeyPressed = true;
-                this._controlsDiv.style.cursor = 'zoom-in'; // Show zoom-in cursor when Alt key is pressed
+                this._scrollDiv.style.cursor = 'zoom-in'; // Show zoom-in cursor when Alt key is pressed
             }
         });
 
         document.addEventListener('keyup', (event) => {
             if (event.key === 'Alt') {
                 isAltKeyPressed = false;
-                this._controlsDiv.style.cursor = 'auto'; // Reset cursor when Alt key is released
+                this._scrollDiv.style.cursor = 'auto'; // Reset cursor when Alt key is released
             }
         });
 
-        this._controlsDiv.addEventListener('mousedown', (event) => {
+        this._scrollDiv.addEventListener('mousedown', (event) => {
             if (isAltKeyPressed) {
                 if (event.button === 0) {
                     // Left click to increase scale
                     this.scale += 0.05;
+                    // this.scale = Number.parseFloat(this.scale).toFixed(2);
                     // Ensure scale doesn't go above 2
                     this.scale = Math.min(this.scale, 2);
                 } else if (event.button === 2) {
@@ -436,16 +449,40 @@ class Router extends ui {
                     // Ensure scale doesn't go below 0.1
                     this.scale = Math.max(this.scale, 0.1);
                 }
+
+                // Round the scale value to two decimal places
+                this.scale = parseFloat(this.scale.toFixed(2));
+                this._setScale();
             }
         });
 
-        this._controlsDiv.addEventListener('contextmenu', (event) => {
+        this._scrollDiv.addEventListener('contextmenu', (event) => {
             if (isAltKeyPressed) {
                 event.preventDefault(); // Prevent the default right-click context menu when Alt key is pressed
             }
         });
         //----------------------Scaling-----------------------------//
     }
+
+    _setScale() {
+        if (this._controlsDiv) {
+            this._controlsDiv.style.transform = "scale(" + this.scale + "," + this.scale + ")";  // Apply the scale transformation to the control element
+            if (this.scale <= 1) {
+                this._controlsDiv.style.height = (this.height / this.scale) + "px";
+                this._controlsDiv.style.width = (this.width / this.scale) + "px";
+            }
+            else {
+                this._controlsDiv.style.height = (this.height * this.scale) + "px";
+                this._controlsDiv.style.width = (this.width * this.scale) + "px";
+            }
+
+
+            // this.height = this._draggable.getBoundingClientRect().height;
+            // this.width = this._draggable.getBoundingClientRect().width;   
+            // this.emit('posChanged', this.calcConnectors(this.top, this.left));
+        }
+    }
+
 
     _checkOnline() {
 

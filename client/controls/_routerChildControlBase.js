@@ -23,7 +23,7 @@ class _routerChildControlBase extends ui {
         return `
         <!-- ${this.name} -->
         <!--    MAIN CARD CONTAINER     -->
-        <div id="@{_draggable}" class="paAudioBase-main-card absolute transform scale-100 origin-top-left">
+        <div id="@{_draggable}" class="paAudioBase-main-card absolute">
             <!--    TOP HEADING CONTAINER    -->
             <div id="@{_heading}" class="paAudioBase-card-heading overflow-hidden">
         
@@ -217,27 +217,29 @@ class _routerChildControlBase extends ui {
         // Mouse down on heading, start to move the control position
         this._heading.addEventListener("mousedown", event => {
 
-            if(event.target !== this._btnSettings)
-            {
-                newTop = event.clientY - control._heading.getBoundingClientRect().top + 4.8;
-                newLeft = event.clientX - control._heading.getBoundingClientRect().left + 4.8;
+            if (event.target !== this._btnSettings) {
+                newTop = event.clientY - control._heading.getBoundingClientRect().top + 4.8; // this._parent.scale;
+                newLeft = event.clientX - control._heading.getBoundingClientRect().left + 4.8; // this._parent.scale;
                 offsetH = newTop;
                 offsetW = newLeft;
 
-            this._draggable.style.zIndex = "100";
-            isMoving = true;
+                this._draggable.style.zIndex = "100";
+                isMoving = true;
             }
 
         })
 
 
         // Mouse move on the container
-        this._parent._controlsDiv.addEventListener("mousemove", event => {
+        this._parent._scrollDiv.addEventListener("mousemove", event => {
 
-            newTop = event.clientY - control._parent._controlsDiv.getBoundingClientRect().top;
-            newLeft = event.clientX - control._parent._controlsDiv.getBoundingClientRect().left;
+            newTop = event.clientY - control._parent._controlsDiv.getBoundingClientRect().top;/// this._parent.scale;
+            newLeft = event.clientX - control._parent._controlsDiv.getBoundingClientRect().left;/// this._parent.scale;
             newTop -= offsetH;
             newLeft -= offsetW;
+
+            newTop /= this._parent.scale;
+            newLeft /= this._parent.scale;
 
             if (isMoving) {
                 setPosition();
@@ -325,16 +327,28 @@ class _routerChildControlBase extends ui {
         //----------------------Scale-----------------------------//
         this._parent.on('scale', scale => {
             this._setScale();
+            // let position = this._checkCollision(this.left, this.top);
+            // this._draggable.style.left = position.newLeft + "px";
+            // this._draggable.style.top = position.newTop + "px";
+            // this.left = position.newLeft;
+            // this.top = position.newTop;
+            // this._left = this.left;
+            // this._top = this.top;
+
         }, { immediate: true, caller: this });
         //----------------------Scale-----------------------------//
     }
 
-    _setScale(){    
+    _setScale() {
         if (this._draggable) {
-            this._draggable.style.transform = "scale(" + this._parent.scale + "," + this._parent.scale + ")";  // Apply the scale transformation to the control element
+
             this.height = this._draggable.getBoundingClientRect().height;
-            this.width = this._draggable.getBoundingClientRect().width;   
-            this.emit('posChanged', this.calcConnectors(this.top, this.left));
+            this.width = this._draggable.getBoundingClientRect().width;
+
+            
+
+            console.log(this.height + " <> " + this.width + " ^ " + this.top + " < " + this.left  );
+
         }
     }
 

@@ -318,7 +318,7 @@
 }
 
 .paAudioBase-card-heading {
-    @apply flex justify-between rounded-t-lg cursor-move items-center pt-1 mb-1 px-4 w-full h-7;
+    @apply flex justify-between rounded-t-lg cursor-move items-center pt-1 mb-1 px-4 w-full h-8;
 }
 
 .paAudioBase-card-body {
@@ -339,8 +339,8 @@
     @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-red-600 focus:outline-none cursor-pointer shadow-sm;
 }
 
-.paAudioBase-btn-settings {
-    @apply icon-[mdi-light--settings] text-white hover:text-blue-500 text-base text-[24px];
+.paAudioBase-btn-settings {                                                                     
+    @apply icon-[mdi-light--settings] text-white hover:text-[#6fb2f5] text-base text-[24px]; 
 }
 
 .paAudioBase-line {
