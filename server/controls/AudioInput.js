@@ -19,7 +19,7 @@ class AudioInput extends _paAudioSourceBase {
     Init() {
         super.Init();
 
-        this.source = `${this._controlName}`;
+        this.source = this._controlName;
         this.monitor = this.source;
 
         this.on('run', run => {
@@ -73,14 +73,14 @@ class AudioInput extends _paAudioSourceBase {
                 }
             });
 
-            if (channelCount > 0) {
-                let dstMap = [];
-                for (let i = 0; i < channelCount; i++) {
-                    // This is not working. Need to map channels from font_left, front_right onwards?
-                    dstMap.push('aux' + i); // use aux numbers (available numbers = 0 to 15 according to PulseAudio documentation)
-                }
+            // Reduce channel count if larger than master channel count
+            if (channelCount > this._srcChannels) {
+                channelCount = this._srcChannels;
+                channelMap.splice(channelCount);
+            }
 
-                this._channelMap = `master_channel_map=${masterMap.join(',')} channel_map=${dstMap.join(',')}`
+            if (channelCount > 0) {
+                this._channelMap = `master_channel_map=${masterMap.join(',')} channel_map=${this._srcChannelMap.slice(0, channelCount).join(',')}`
                 this.channels = channelCount;
                 this.channelMap = channelMap.join(',');
             } else {

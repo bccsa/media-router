@@ -41,6 +41,8 @@ class _paAudioBase extends dm {
         this.runVU = false;     // VU meter run command - this should not be set from external code
         this.SetAccess('runVU', { Get: 'none', Set: 'none' });
         this._setVolTimer;      // Timer for rate limiting _setVolume actions
+        this.enableVolControl = false;
+        this.SetAccess('enableVolControl', { Set: 'none', Get: 'none'});
     }
 
     Init() {
@@ -104,28 +106,55 @@ class _paAudioBase extends dm {
             }
         });
 
-        this.on('run', () => {
+        this.on('run', run => {
             this.runVU = this.run && this.ready && this.enableVU;
+            this.enableVolControl = this.run && this.ready;
+
+            // let _volEventHandler;
+            // let _muteEventHandler;
+            // if (run) {
+            //     _volEventHandler = this.on('volume', volume => {
+            //         this._setVolume(volume);
+            //     }, { immediate: true });
+
+            //     _muteEventHandler = this.on('mute', mute => {
+            //         this._setMute(mute)
+            //     }, { immediate: true });
+            // } else if (_volEventHandler && _muteEventHandler) {
+            //     this.off('volume', _volEventHandler);
+            //     this.off('mute', _muteEventHandler);
+            // }
         }, { immediate: true });
 
-        let _volEventHandler = this._setVolume.bind(this);
-        let _muteEventHandler = this._setMute.bind(this);
+        // let _volEventHandler = this._setVolume.bind(this);
+        // let _muteEventHandler = this._setMute.bind(this);
 
         this.on('ready', ready => {
             this.runVU = this.run && this.ready && this.enableVU;
-
-            if (ready) {
-                this.on('volume', _volEventHandler, { immediate: true });
-                this.on('mute', _muteEventHandler, { immediate: true });
-            } else {
-                this.off('volume', _volEventHandler);
-                this.off('mute', _muteEventHandler);
-            }
+            this.enableVolControl = this.run && this.ready;
         }, { immediate: true });
 
         this.on('enableVU', () => {
             this.runVU = this.run && this.ready && this.enableVU;
         }, { immediate: true });
+
+        // Start volume and mute event handlers
+        this.on('enableVolControl', enable => {
+            let _volEventHandler;
+            let _muteEventHandler;
+            if (enable) {
+                _volEventHandler = this.on('volume', volume => {
+                    this._setVolume(volume);
+                }, { immediate: true });
+
+                _muteEventHandler = this.on('mute', mute => {
+                    this._setMute(mute)
+                }, { immediate: true });
+            } else if (_volEventHandler && _muteEventHandler) {
+                this.off('volume', _volEventHandler);
+                this.off('mute', _muteEventHandler);
+            }
+        });
 
         // Stop control on removal
         this.on('remove', () => {
@@ -218,7 +247,7 @@ class _paAudioBase extends dm {
     /**
      * Set source or sink volume
      */
-    _setVolume() {
+    _setVolume(volume) {
         if (!this._setVolTimer) {
             let type;
             if (this.source) {
@@ -227,7 +256,7 @@ class _paAudioBase extends dm {
                 type = 'sink';
             }
 
-            let cmd = `pactl set-${type}-volume ${this[type]} ${this.volume}%`;
+            let cmd = `pactl set-${type}-volume ${this[type]} ${volume}%`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.error(`${this._controlName}: ${data.stderr.toString()}`);
@@ -236,12 +265,12 @@ class _paAudioBase extends dm {
                 console.error(`${this._controlName}: ${err.message}`);
             });
 
-            let prevVol = this.volume;
+            let prevVol = volume;
 
             this._setVolTimer = setTimeout(() => {
                 delete this._setVolTimer;
-                if (this.volume != prevVol) {
-                    this._setVolume();
+                if (volume != prevVol) {
+                    this._setVolume(volume);
                 }
             }, 5);
         }

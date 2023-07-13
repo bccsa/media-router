@@ -3,6 +3,8 @@ class AudioOutput extends _paAudioSinkBase {
         super();
         this.formatHideRW = true;   // true = Disable Read Write audio format controls
         this.formatHideRO = false;  // true = Disable Read Only audio format controls
+        this.master = '';           // Master sink used by the PulseAudio module-remap-sink module.
+        this.channelMap = '1,2';
     }
 
     get html() {
@@ -10,7 +12,9 @@ class AudioOutput extends _paAudioSinkBase {
         <!-- Sink  -->
         <div class="w-full mb-2 mr-4">
             <label for="@{_sink}" class="form-label inline-block mb-2">Sink:</label>
-            <select id="@{_sink}" class="paAudioBase-select" type="text" title="PulseAudio sink" value="@{sink}"></select>
+            <select id="@{_sink}" class="paAudioBase-select" type="text" title="PulseAudio sink" value="@{master}"></select>
+            <label for="@{_channelMap}" title="Enter channel map as a comma-separated list of channel numbers">Channel map:</label>
+            <input id="@{_channelMap}" type="text" value="@{channelMap}" placeholder="Channel map (e.g. 1,2)"/>
         </div>
         `);
     }
@@ -40,12 +44,12 @@ class AudioOutput extends _paAudioSinkBase {
             });
 
             // Set index / sink
-            let o = [...this._sink.options].find(t => t.value == this.sink);
+            let o = [...this._sink.options].find(t => t.value == this.master);
             if (o) {
                 this._sink.selectedIndex = o.index;
             } else {
                 if (this._sink.selectedIndex >= 0) {
-                    this.sink = this._sink.options[this._sink.selectedIndex].value;
+                    this.master = this._sink.options[this._sink.selectedIndex].value;
                 }
             }
         }, { immediate: true });
