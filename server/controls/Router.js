@@ -15,8 +15,6 @@ class Router extends dm {
         this.runCmd = false;                        // Internal run command
         this.SetAccess('runCmd', { Set: 'none', Get: 'none' });
         this.displayName = '';
-        // this.autoStart = false;
-        // this.autoStartDelay = 500,
         this.DisplayName = "";                      // Used as router username
         this.password = "";
         this._sources = {};
@@ -31,14 +29,8 @@ class Router extends dm {
 
     Init() {
         super.Init();
-
-        // Startup delay
         let startupDelay = true;
-        setTimeout(() => {
-            startupDelay = false;
-            this.runCmd = this.run;
-        }, 2000);
-
+        
         // Relay external run command to child controls
         this.on('run', run => {
             if (!startupDelay) {
@@ -46,19 +38,29 @@ class Router extends dm {
             }
         });
 
-        // reset run without triggering event
-        // this._properties.run = false;
+        // Unload all loopback, nullsink, remap-source and remap-sink modules
+        this._getPA('').then(m => {
+            Object.values(m)
+                .filter(t => t.Driver && (t.Driver.search('module-loopback') >= 0 || t.Driver.search('module-remap') >= 0 || t.Driver.search('module-null-sink') >= 0) && t['Owner Module'] && t.Name)
+                .forEach(paModule => {
+                    let cmd = `pactl unload-module ${paModule['Owner Module']}`;
+                    exec(cmd, { silent: true }).then(data => {
+                        if (data.stderr) {
+                            console.log(data.stderr.toString());
+                        } else {
+                            console.log(`${this._controlName}: Removed ${paModule.Name}`);
+                        }
+                    }).catch(err => {
+                        console.log(err.message);
+                    });
+                });
 
-        // // Start with AutoStart when settings are received from manager.
-        // this.once('autoStart', autoStart => {
-        //     // Auto start
-        //     if (autoStart) {
-        //         setTimeout(() => {
-        //             this.run = true;
-        //         }, this.autoStartDelay);
-        //     }
-        // });
-
+            // Startup delay after unloading modules
+            setTimeout(() => {
+                startupDelay = false;
+                this.runCmd = this.run;
+            }, 2000);
+        });
 
         // PulseAudio items detection
         this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
@@ -67,21 +69,6 @@ class Router extends dm {
             this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
             this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
         }, 1000);
-        // if (this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources);
-        // if (this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks);
-        // setInterval(async () => { if (await this._updatePAlist('sources', this._sources)) this.sources = Object.values(this._sources) }, 1000);
-        // setInterval(async () => { if (await this._updatePAlist('sinks', this._sinks)) this.sinks = Object.values(this._sinks) }, 1000);
-
-        // Start/stop submodules
-        // this.on('run', run => {
-        //     Object.values(this._controls).forEach(control => {
-        //         if (control.run != undefined) {
-        //             control.run = run;
-        //         }
-        //     });
-        // });
-
-
     }
 
     /**

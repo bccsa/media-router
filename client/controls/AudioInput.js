@@ -3,6 +3,8 @@ class AudioInput extends _paAudioSourceBase {
         super();
         this.formatHideRW = true;   // true = Disable Read Write audio format controls
         this.formatHideRO = false;  // true = Disable Read Only audio format controls
+        this.master = '';           // Master source used by the PulseAudio module-remap-source module.
+        this.channelMap = '1,2';
     }
 
     get html() {
@@ -11,7 +13,9 @@ class AudioInput extends _paAudioSourceBase {
             <!-- Source  -->
             <div class="w-full mb-2">
                 <label for="@{_source}" class="form-label inline-block mb-2">Source:</label>
-                <select id="@{_source}" class="paAudioBase-select" type="text" title="PulseAudio source" value="@{source}"></select>
+                <select id="@{_source}" class="paAudioBase-select" type="text" title="PulseAudio source" value="@{master}"></select>
+                <label for="@{_channelMap}" title="Enter channel map as a comma-separated list of channel numbers">Channel map:</label>
+                <input id="@{_channelMap}" type="text" value="@{channelMap}" placeholder="Channel map (e.g. 1,2)"/>
             </div>
         </div>
         `);
@@ -42,12 +46,12 @@ class AudioInput extends _paAudioSourceBase {
             });
 
             // Set index / source
-            let o = [...this._source.options].find(t => t.value == this.source);
+            let o = [...this._source.options].find(t => t.value == this.master);
             if (o) {
                 this._source.selectedIndex = o.index;
             } else {
                 if (this._source.selectedIndex >= 0) {
-                    this.source = this._source.options[this._source.selectedIndex].value;
+                    this.master = this._source.options[this._source.selectedIndex].value;
                 }
             }
         }, { immediate: true });
