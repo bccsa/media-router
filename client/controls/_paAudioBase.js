@@ -26,8 +26,8 @@ class _paAudioBase extends _routerChildControlBase {
     get html() {
         return super.html
 
-        // Add card HTML
-        .replace('%cardHtml%', `
+            // Add card HTML
+            .replace('%cardHtml%', `
         <div class="flex justify-between items-center">
             <!--    ACTIVE TOGGLE  -->
             <label class="relative inline-flex items-center mr-5 cursor-pointer">
@@ -44,8 +44,8 @@ class _paAudioBase extends _routerChildControlBase {
         <div id="@{_volume_slit}" class="_paAudioBase_volume_slit" title="Audio Indicator"></div>
         `)
 
-        // Add modal HTML
-        .replace('%modalHtml%', `
+            // Add modal HTML
+            .replace('%modalHtml%', `
         <div class="w-full flex">
 
             <!--    CHANNELS      -->
@@ -199,6 +199,24 @@ class _paAudioBase extends _routerChildControlBase {
             }
         });
 
+        // Handle property changes
+        this.on('vu', vu => {
+            this.on('vuData', level => {
+                vu.level = level;
+            });
+
+            //----------------------Scale-----------------------------//
+            this._parent.on('scale', scale => {
+
+                vu.scale = scale;
+
+            }, { immediate: true, caller: this });
+            //----------------------Scale-----------------------------//
+
+        });
+
+
+
         // Add VU meter
         this.SetData({
             vu: {
@@ -207,15 +225,11 @@ class _paAudioBase extends _routerChildControlBase {
                 parentElement: `_volume_slit`,
                 orientation: "horizontal",
                 borderRadius: "25px",
+                scale: this._parent.scale,
             }
         });
 
-        // Handle property changes
-        this.on('vu', vu => {
-            this.on('vuData', level => {
-                vu.level = level;
-            });
-        });
+
 
         this.on('remove', remove => {
             // Remove from parent control
@@ -223,7 +237,9 @@ class _paAudioBase extends _routerChildControlBase {
                 this._parent[this.name + "_vu"].SetData({ remove: true });
             }
         });
+
     }
+
 
     /**
      * Create or remove a VU meter in the parent top bar

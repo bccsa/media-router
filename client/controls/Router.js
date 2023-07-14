@@ -13,8 +13,8 @@ class Router extends ui {
         this.sinks = [];            // Array with PulseAudio sinks
         this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
         this.displayOrder = 100;
-        this.height = 500;
-        this.width = 500;
+        this.height = 700;
+        this.width = 1500;
         this.scale = 1;
     }
 
@@ -413,49 +413,78 @@ class Router extends ui {
             this._setScale();
         }, { immediate: true });
 
-        let isAltKeyPressed = false; // Flag to track Alt key press
+        // let isAltKeyPressed = false; // Flag to track Alt key press
 
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Alt') {
-                isAltKeyPressed = true;
-                this._scrollDiv.style.cursor = 'zoom-in'; // Show zoom-in cursor when Alt key is pressed
-            }
-        });
+        // document.addEventListener('keydown', (event) => {
+        //     if (event.key === 'Alt') {
+        //         isAltKeyPressed = true;
+        //         this._scrollDiv.style.cursor = 'zoom-in'; // Show zoom-in cursor when Alt key is pressed
+        //     }
+        // });
 
-        document.addEventListener('keyup', (event) => {
-            if (event.key === 'Alt') {
-                isAltKeyPressed = false;
-                this._scrollDiv.style.cursor = 'auto'; // Reset cursor when Alt key is released
-            }
-        });
+        // document.addEventListener('keyup', (event) => {
+        //     if (event.key === 'Alt' || (event.ctrlKey && event.altKey))  {
+        //         isAltKeyPressed = false;
+        //         this._scrollDiv.style.cursor = 'auto'; // Reset cursor when Alt key is released
+        //     }
+        // });
 
-        this._scrollDiv.addEventListener('mousedown', (event) => {
-            if (isAltKeyPressed) {
-                this._scrollDiv.style.cursor = 'zoom-in';
-                if (event.button === 0) {
-                    // Left click to increase scale
-                    this.scale += 0.05;
-                    // this.scale = Number.parseFloat(this.scale).toFixed(2);
-                    // Ensure scale doesn't go above 2
-                    this.scale = Math.min(this.scale, 2);
-                } else if (event.button === 2) {
-                    // Right click to decrease scale
-                    this.scale -= 0.05;
-                    // Ensure scale doesn't go below 0.1
-                    this.scale = Math.max(this.scale, 0.1);
-                }
+        // document.addEventListener('keydown', (event) => {
+        //     if (event.key === '+' || event.key === '=') {
+        //         if (isAltKeyPressed) {
+        //             this._scrollDiv.style.cursor = 'zoom-in';
+                    
+        //             this.scale += 0.05;
+        //             // Ensure scale doesn't go above 2
+        //             this.scale = Math.min(this.scale, 2);
 
-                // Round the scale value to two decimal places
-                this.scale = parseFloat(this.scale.toFixed(2));
-                this._setScale();
-            }
-        });
+        //             // Round the scale value to two decimal places
+        //             this.scale = parseFloat(this.scale.toFixed(2));
+        //             this._setScale();
+        //         }
+        //     }
 
-        this._scrollDiv.addEventListener('contextmenu', (event) => {
-            if (isAltKeyPressed) {
-                event.preventDefault(); // Prevent the default right-click context menu when Alt key is pressed
-            }
-        });
+        //     if (event.key === '-') {
+        //         if (isAltKeyPressed) {
+                    
+        //             this.scale -= 0.05;
+        //             // Ensure scale doesn't go below 0.1
+        //             this.scale = Math.max(this.scale, 0.1);
+
+        //             // Round the scale value to two decimal places
+        //             this.scale = parseFloat(this.scale.toFixed(2));
+        //             this._setScale();
+        //         }
+        //     }
+        // });
+
+        // this._scrollDiv.addEventListener('mousedown', (event) => {
+        //     if (isAltKeyPressed) {
+        //         this._scrollDiv.style.cursor = 'zoom-in';
+        //         if (event.button === 0) {
+        //             // Left click to increase scale
+        //             this.scale += 0.05;
+        //             // this.scale = Number.parseFloat(this.scale).toFixed(2);
+        //             // Ensure scale doesn't go above 2
+        //             this.scale = Math.min(this.scale, 2);
+        //         } else if (event.button === 2) {
+        //             // Right click to decrease scale
+        //             this.scale -= 0.05;
+        //             // Ensure scale doesn't go below 0.1
+        //             this.scale = Math.max(this.scale, 0.1);
+        //         }
+
+        //         // Round the scale value to two decimal places
+        //         this.scale = parseFloat(this.scale.toFixed(2));
+        //         this._setScale();
+        //     }
+        // });
+
+        // this._scrollDiv.addEventListener('contextmenu', (event) => {
+        //     if (isAltKeyPressed) {
+        //         event.preventDefault(); // Prevent the default right-click context menu when Alt key is pressed
+        //     }
+        // });
         //----------------------Scaling-----------------------------//
     }
 
@@ -463,9 +492,11 @@ class Router extends ui {
         if (this._controlsDiv) {
             this._controlsDiv.style.transform = "scale(" + this.scale + "," + this.scale + ")";  // Apply the scale transformation to the control element
 
-
             this._controlsDiv.style.height = (this.height / this.scale) + "px";
             this._controlsDiv.style.width = (this.width / this.scale) + "px";
+
+            // this._scrollDiv.scrollTop = this._scrollDiv.scrollTop * this.scale;
+            // this._scrollDiv.scrollLeft = this._scrollDivscrollLeft * this.scale;
 
 
         }

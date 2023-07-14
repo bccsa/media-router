@@ -25,6 +25,7 @@ class VuMeter extends ui {
         this.borderRadius = "25px";
         this.boxShadow = "none";
         this.transform = "none";
+        this.scale = 1;
 
         this.title = "Vu Meter";
     }
@@ -120,7 +121,10 @@ class VuMeter extends ui {
             });
         }
 
-        this._setSize();
+        this.on('scale', scale => {
+            this._setSize(scale);
+        },{immediate: true})
+        
 
         this.on('width', width => {
             if (typeof width == 'number') {
@@ -220,16 +224,17 @@ class VuMeter extends ui {
 
         // Listen for div size changes
         const divResizeObserver = new ResizeObserver(() => {
-            this._setSize();
+            this._setSize(this.scale);
         });
         divResizeObserver.observe(this._div);
     }
 
-    _setSize() {
+    
+    _setSize(scale) {
         let r = this._div.getBoundingClientRect();
 
-        this._width = r.width;
-        this._height = r.height;
+        this._width = r.width / scale;
+        this._height = r.height / scale;
         this._ctx.canvas.width = this._width;
         this._ctx.canvas.height = this._height;
         this._canvas.style.left = this._div.offsetLeft + "px";
