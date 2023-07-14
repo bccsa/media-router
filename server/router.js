@@ -219,13 +219,10 @@ catch (err) {
 const profilemanIO = require('socket.io')(profilemanHttp);
 profilemanIO.on('connection', socket => {
     socket.emit('data', profileConf.config);
-    // Send initial (full) state
-    // socket.emit('data', controls.router.Get({ sparse: false }));
 
     socket.on('data', data => {
         profileConf.append(data);
         profileConf.save();
-        console.log(data);
 
         // Reload router if needed
         loadRouter();
