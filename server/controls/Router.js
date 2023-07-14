@@ -65,10 +65,16 @@ class Router extends dm {
         // PulseAudio items detection
         this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
         this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
-        setInterval(async () => {
+        let scanTimer = setInterval(async () => {
             this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
             this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
         }, 1000);
+
+        // Stop all child controls when the Router control is removed
+        this.on('remove', () => {
+            this.runCmd = false;
+            clearInterval(scanTimer);
+        });
     }
 
     /**

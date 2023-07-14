@@ -30,8 +30,14 @@ if (process.argv.length > 2) {
     profileConf = new configManager('profileConf.json', 'defaultRouterConf.json');
 }
 
-
-
+function setProfileDetails(property, value) {
+    // Listen for connection details updates, and update the local profile manager
+    let p = Object.values(profileConf.config).find(p => p.selected);
+    if (p) {
+        p[property] = value;
+        profileConf.save();
+    }
+}
 // -------------------------------------
 // Manager socket.io connection
 // -------------------------------------
@@ -45,8 +51,6 @@ function manager_connect(url, username, password) {
     // Clear existing connection
     if (manager_io) {
         manager_io.disconnect();
-
-        // To do: Stop running router
     }
 
     manager_io = io(url, { auth: { username: username, password: password } });
@@ -73,37 +77,58 @@ function manager_connect(url, username, password) {
 // Startup logic
 // -------------------------------------
 var controls = new dmTopLevelContainer('../controls');
-controls.Set({ router: { controlType: 'Router' } });
-controls.on('router', router => {
-    startRouter(router);
-}, { immediate: true });
 
+let cString; // previous connection details
 
 /**
- * Connect to the selected manager and start the router instance
- * @param {*} router 
+ * Create / re-create a new Router instance
  */
-function startRouter(router) {
-    // Stop router and remove existing controls
-    router.run = false;
-    router.removeAllListeners();
+function loadRouter() {
+    let s = Object.values(profileConf.config).filter(t => t.selected);
+    
+    // Ignore if more than one profile is selected
+    if (s.length == 1) {
+        let p = s[0];
+        if (p && p.url + p.username + p.password != cString) {
+            cString = p.url + p.username + p.password;
+    
+            // Remove the current router configuration
+            if (controls.router) {
+                controls.router.Set({ remove: true });
+            }
+    
+            // Create a new router
+            controls.Set({ router: { controlType: 'Router' } });
+        }
+    }    
+}
 
-    Object.values(router._controls).forEach(control => {
-        control.Set({remove: true});
-    });
-
+controls.on('router', router => {
+    // Load the selected profile from the local profile manager
     let c = Object.values(profileConf.config).find(t => t.selected);
     if (c) {
         manager_connect(c.managerUrl, c.username, c.password);
-
-        // forward data from router controls to manager
-        router.on('data', data => {
-            if (manager_io) {
-                manager_io.emit('data', data);
-            }
-        });
     }
-}
+
+    // forward data from router controls to manager
+    router.on('data', data => {
+        if (manager_io) {
+            manager_io.emit('data', data);
+        }
+    });
+
+    // Update profile details if changed on manager
+    router.on('displayName', displayName => {
+        setProfileDetails('username', displayName);
+        loadRouter();
+    });
+    router.on('password', password => {
+        setProfileDetails('password', password);
+        loadRouter();
+    });
+}, { immediate: true });
+
+loadRouter();
 
 // -------------------------------------
 // Client WebApp Express webserver
@@ -192,7 +217,6 @@ catch (err) {
 // -------------------------------------
 
 const profilemanIO = require('socket.io')(profilemanHttp);
-
 profilemanIO.on('connection', socket => {
     socket.emit('data', profileConf.config);
     // Send initial (full) state
@@ -201,123 +225,21 @@ profilemanIO.on('connection', socket => {
     socket.on('data', data => {
         profileConf.append(data);
         profileConf.save();
+        console.log(data);
 
-        let select = Object.entries(data).filter(p => p[1].selected);
-        if (select) {
-            startRouter(controls.router);
-        }
+        // Reload router if needed
+        loadRouter();
     });
 });
 
-// controls.on('router', router => {
-//     // Forward data from router to local profilemans
-//     router.on('data', data => {
-//         profilemanIO.emit('data', data);
-//     });
-// }, { immediate: true });
-
-
-// Serve html files
-// clientApp.use("/", express.static(path.join(__dirname, "/html")));
-// clientApp.use(express.static('local-client'));
-
-// Serve DeviceList generated html (default page);
-// let deviceListHtml = deviceList.GetHtml();
-// clientApp.get('/', (req, res) => {
-//     res.send(deviceListHtml);
-// });
-
-
 // -------------------------------------
-// Manager WebApp Express webserver
-// -------------------------------------
-
-// const managerApp = express();
-// const managerHttp = require('http').createServer(managerApp);
-
-// try {
-//     managerHttp.listen(8082, () => {
-//         eventLog('Manager WebApp running on *:8082');
-//     });
-// }
-// catch (err) {
-//     eventLog(`Unable to start Manager WebApp: ${err.message}`);
-// }
-
-// // Serve html files
-// managerApp.use(express.static('client'));
-
-// Serve DeviceList generated html (default page);
-// deviceListHtml = deviceList.GetHtml();
-// clientApp.get('/', (req, res) => {
-//     res.send(deviceListHtml);
-// });
-
-
-
-
-
-// -------------------------------------
-// Event subscription
+// Event logging
 // -------------------------------------
 
 // Event log
 // controls.on('log', message => {
 //     eventLog(message);
 // });
-
-// -------------------------------------
-// Configuration management
-// -------------------------------------
-
-// Load settings from file
-// function loadConfig(path) {
-//     try {
-//         if (!path) {
-//             // Load from default path
-//             path = 'config.json'
-//         }
-
-//         eventLog(`Loading configuration from ${path}`);
-
-//         var raw = fs.readFileSync(path);
-
-//         // Parse JSON file
-//         let config = JSON.parse(raw);
-
-//         controls.Set(config);
-//     }
-//     catch (err) {
-//         eventLog(`Unable to load configuration from file (${path}): ${err.message}`);
-//     }
-// }
-
-// -------------------------------------
-// Client controller
-// -------------------------------------
-// let schema = [
-//     {
-//         deviceType: "DeviceList",
-//         clientType: "client_DeviceList",
-//         managerType: ""
-//     },
-//     {
-//         deviceType: "AudioInput",
-//         clientType: "client_AudioInputDevice",
-//         managerType: ""
-//     },
-//     {
-//         deviceType: "SrtOpusInput",
-//         clientType: "client_AudioInputDevice",
-//         managerType: ""
-//     },
-// ];
-
-
-
-// -------------------------------------
-// Event logging
-// -------------------------------------
 
 function eventLog(message) {
     console.log(message);
@@ -333,21 +255,11 @@ process.on('SIGTERM', cleanup);
 
 var _exit = false;
 function cleanup() {
-    router.run = false;
+    router.runCmd = false;
     if (!_exit) {
-        router.run = false;
-
         setTimeout(() => {
             _exit = true;
             process.exit();
         }, 500);
     }
 }
-
-// // Delete socket files created by fluent-ffmpeg-multistream
-// deviceList.on('stop', () => {
-//     let regex = /[.]sock$/;
-//     fs.readdirSync('./')
-//         .filter(f => regex.test(f))
-//         .map(f => fs.unlinkSync(f));
-// });
