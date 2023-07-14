@@ -326,20 +326,22 @@ class Router extends ui {
         })
 
         this.on('width', width => {
-            // this._controlsDiv.style.maxWidth = (this._routerCard.offsetWidth - 320) + "px";
-            if (typeof width == 'number') {
-                this._controlsDiv.style.width = width + "px";
-            } else {
-                this._controlsDiv.style.width = width;
+            if (this.scale <= 1) {
+                this._controlsDiv.style.width = (this.width / this.scale) + "px";
+            }
+            else {
+                this._controlsDiv.style.width = (this.width * this.scale) + "px";
             }
         });
 
 
         this.on('height', height => {
-            if (typeof height == 'number') {
-                this._controlsDiv.style.height = height + "px";
-            } else {
-                this._controlsDiv.style.height = height;
+
+            if (this.scale <= 1) {
+                this._controlsDiv.style.height = (this.height / this.scale) + "px";
+            }
+            else {
+                this._controlsDiv.style.height = (this.height * this.scale) + "px";
             }
         });
 
@@ -409,14 +411,6 @@ class Router extends ui {
         //----------------------Scaling-----------------------------//
         this.on('scale', scale => {
             this._setScale();
-            // let position = this._checkCollision(this.left, this.top);
-            // this._draggable.style.left = position.newLeft + "px";
-            // this._draggable.style.top = position.newTop + "px";
-            // this.left = position.newLeft;
-            // this.top = position.newTop;
-            // this._left = this.left;
-            // this._top = this.top;
-
         }, { immediate: true });
 
         let isAltKeyPressed = false; // Flag to track Alt key press
@@ -437,6 +431,7 @@ class Router extends ui {
 
         this._scrollDiv.addEventListener('mousedown', (event) => {
             if (isAltKeyPressed) {
+                this._scrollDiv.style.cursor = 'zoom-in';
                 if (event.button === 0) {
                     // Left click to increase scale
                     this.scale += 0.05;
@@ -467,19 +462,12 @@ class Router extends ui {
     _setScale() {
         if (this._controlsDiv) {
             this._controlsDiv.style.transform = "scale(" + this.scale + "," + this.scale + ")";  // Apply the scale transformation to the control element
-            if (this.scale <= 1) {
-                this._controlsDiv.style.height = (this.height / this.scale) + "px";
-                this._controlsDiv.style.width = (this.width / this.scale) + "px";
-            }
-            else {
-                this._controlsDiv.style.height = (this.height * this.scale) + "px";
-                this._controlsDiv.style.width = (this.width * this.scale) + "px";
-            }
 
 
-            // this.height = this._draggable.getBoundingClientRect().height;
-            // this.width = this._draggable.getBoundingClientRect().width;   
-            // this.emit('posChanged', this.calcConnectors(this.top, this.left));
+            this._controlsDiv.style.height = (this.height / this.scale) + "px";
+            this._controlsDiv.style.width = (this.width / this.scale) + "px";
+
+
         }
     }
 

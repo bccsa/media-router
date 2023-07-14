@@ -216,6 +216,13 @@ class _paAudioBase extends _routerChildControlBase {
                 vu.level = level;
             });
         });
+
+        this.on('remove', remove => {
+            // Remove from parent control
+            if (this._parent[this.name + "_vu"]) {
+                this._parent[this.name + "_vu"].SetData({ remove: true });
+            }
+        });
     }
 
     /**

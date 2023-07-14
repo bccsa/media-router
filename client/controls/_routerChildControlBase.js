@@ -145,8 +145,8 @@ class _routerChildControlBase extends ui {
         this._left = this.left;
         this._top = this.top;
 
-        this.height = this._draggable.getBoundingClientRect().height;
-        this.width = this._draggable.getBoundingClientRect().width;
+        // this.height = this._draggable.getBoundingClientRect().height;
+        // this.width = this._draggable.getBoundingClientRect().width;
 
         // this._draggable.offsetHeight = this.height;
         // this._draggable.offsetWidth = this.width;
@@ -155,8 +155,8 @@ class _routerChildControlBase extends ui {
 
         // recalculate card body on resize
         const divResizeObserver = new ResizeObserver(() => {
-            this.height = this._draggable.getBoundingClientRect().height;
-            this.width = this._draggable.getBoundingClientRect().width;
+            this.height = this._draggable.getBoundingClientRect().height / this._parent.scale;
+            this.width = this._draggable.getBoundingClientRect().width / this._parent.scale;
         });
         divResizeObserver.observe(this._cardBody);
 
@@ -327,14 +327,6 @@ class _routerChildControlBase extends ui {
         //----------------------Scale-----------------------------//
         this._parent.on('scale', scale => {
             this._setScale();
-            // let position = this._checkCollision(this.left, this.top);
-            // this._draggable.style.left = position.newLeft + "px";
-            // this._draggable.style.top = position.newTop + "px";
-            // this.left = position.newLeft;
-            // this.top = position.newTop;
-            // this._left = this.left;
-            // this._top = this.top;
-
         }, { immediate: true, caller: this });
         //----------------------Scale-----------------------------//
     }
@@ -342,12 +334,13 @@ class _routerChildControlBase extends ui {
     _setScale() {
         if (this._draggable) {
 
-            this.height = this._draggable.getBoundingClientRect().height;
-            this.width = this._draggable.getBoundingClientRect().width;
+            this.height = this._draggable.getBoundingClientRect().height / this._parent.scale;
+            this.width = this._draggable.getBoundingClientRect().width / this._parent.scale;
 
-            
+           
+            this.calcConnectors(this.top, this.left);
 
-            console.log(this.height + " <> " + this.width + " ^ " + this.top + " < " + this.left  );
+            // console.log(this.height + " <> " + this.width + " ^ " + this.top + " < " + this.left  );
 
         }
     }
@@ -358,8 +351,8 @@ class _routerChildControlBase extends ui {
      */
     calcConnectors(top, left) {
         return {
-            leftConnector: { top: (top + (this._draggable.getBoundingClientRect().height / 2) + 4), left: left + 5 },
-            rightConnector: { top: (top + (this._draggable.getBoundingClientRect().height / 2) + 4), left: (left + (this._draggable.getBoundingClientRect().width) + 5) }
+            leftConnector: { top: (top + (this.height / 2) + 4), left: left + 5 },
+            rightConnector: { top: (top + (this.height / 2) + 4), left: (left + (this.width) + 5) }
         };
     }
 
