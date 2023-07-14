@@ -77,8 +77,8 @@ class managerPanel extends ui {
 
                     <!--    Selected      -->
                             <div class="w-full mr-2 mt-4 flex">
-                                <input id="@{_selected}" class="mr-2 mt-1 h-4 w-4" type="radio" name="selected"
-                                    checked="@{selected}" value="${this.name}" />
+                                <input id="@{_selected}" class="mr-2 mt-1 h-4 w-4" type="radio" name=""
+                                    checked="@{selected}"/>
                                 <label for="@{_selected}" class=""
                                     title="">Selected</label>
                             </div>
@@ -97,6 +97,8 @@ class managerPanel extends ui {
             {
                 this._mainCard.style.border = "medium solid #DB5461";
                 this._heading.style.backgroundColor = "#DB5461";
+                
+                // console.log(this.username + " " + this.selected);
 
                 // Radio buttons do not trigger on de-selection as per normal browser operation.
                 // We therefore need to manually reset the selected status on all other controls.
@@ -108,6 +110,8 @@ class managerPanel extends ui {
             {
                 this._mainCard.style.border = "thin outset #6b7280";
                 this._heading.style.backgroundColor = "#6b7280";
+                
+                // console.log(this.username + " " + this.selected);
             }
         }, { immediate: true });
 
