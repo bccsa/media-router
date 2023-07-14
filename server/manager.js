@@ -22,6 +22,11 @@ var router_sockets = {};
 // load configuration file passed by argument. If not passed, confManager will try to load from config.json, or return a default configuration as the last resort.
 var confManager = new configManager(process.argv[2]);
 
+// Clear initial online status
+Object.values(confManager.config).forEach(router => {
+    router.online = false;
+});
+
 // -------------------------------------
 // Manager web-app
 // -------------------------------------
@@ -121,9 +126,12 @@ router_io.on('connection', socket => {
     // Map router id's to sockets
     router_sockets[routerConf.name] = socket;
 
-
     // Send full router configuration to the router on connection
     socket.emit('data', confManager.config[socket.data.routerID]);
+
+    // Set online status
+    routerConf.online = true;
+    manager_io.emit('data', { [socket.data.routerID]: { online: true } });
 
     // Data received from router
     socket.on('data', data => {
@@ -131,14 +139,14 @@ router_io.on('connection', socket => {
         manager_io.emit('data', { [socket.data.routerID]: data });
 
         confManager.append({ [socket.data.routerID]: data });
-
-        // To do: add online status to be emitted to manager UI
     });
 
     socket.on('disconnect', data => {
         // Remove socket from routers sockets list
         delete router_sockets[socket.data.routerID];
 
-        // To do: emit offline status to manager UI
+        // Set offline status
+        routerConf.online = false;
+        manager_io.emit('data', { [socket.data.routerID]: { online: false } });
     });
 });
