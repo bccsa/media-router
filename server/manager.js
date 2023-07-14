@@ -97,7 +97,7 @@ console.log('Listening for router connections on http://*:3000');
 
 // Add authentication middleware
 router_io.use((socket, next) => {
-    if ((socket.handshake.auth.username == 'testRouter1' || socket.handshake.auth.username == 'testRouter2') && socket.handshake.auth.password == 'testPass') {
+    if (Object.values(confManager.config).find(r => r.displayName == socket.handshake.auth.username && r.password == socket.handshake.auth.password)) {
         next();
     } else {
         next(new Error('Invalid username or password'));
@@ -111,7 +111,7 @@ router_io.on('connection', socket => {
 
     // Get router ID
     // Identify router by router name - add this to the socket's data object (socket.data.routerID)
-    let routerConf = Object.values(confManager.config).find(v => v.displayName == routerName);
+    let routerConf = Object.values(confManager.config).find(v => v.displayName == routerName && v.password == socket.handshake.auth.password);
     if (routerConf && routerConf.name) {
         socket.data.routerID = routerConf.name;
     } else {
