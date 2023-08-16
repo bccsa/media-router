@@ -252,9 +252,10 @@ process.on('SIGTERM', cleanup);
 
 var _exit = false;
 function cleanup() {
-    if(router) {
-        router.runCmd = false;
+    if (controls && controls.router) {
+        controls.router.runCmd = false;
     }
+    
     if (!_exit) {
         setTimeout(() => {
             _exit = true;
