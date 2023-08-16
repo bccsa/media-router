@@ -160,27 +160,27 @@ catch (err) {
 
 const clientIO = require('socket.io')(clientHttp);
 
-clientIO.on('connection', socket => {
-    // Send initial (full) state
-    socket.emit('data', controls.router.Get({ sparse: false }));
-
-    socket.on('data', data => {
-        // Send data to router
-        if (controls.router) {
-            controls.router.Set(data);
-        }
-
-        // Send data to other clients
-        socket.broadcast.emit('data', data);
-
-        // Send data to manager
-        if (manager_io) {
-            manager_io.emit('data', data);
-        }
-    });
-});
-
 controls.on('router', router => {
+    clientIO.on('connection', socket => {
+        // Send initial (full) state
+        socket.emit('data', controls.router.Get({ sparse: false }));
+    
+        socket.on('data', data => {
+            // Send data to router
+            if (controls.router) {
+                controls.router.Set(data);
+            }
+    
+            // Send data to other clients
+            socket.broadcast.emit('data', data);
+    
+            // Send data to manager
+            if (manager_io) {
+                manager_io.emit('data', data);
+            }
+        });
+    });
+    
     // Forward data from router to local clients
     router.on('data', data => {
         clientIO.emit('data', data);
@@ -252,7 +252,9 @@ process.on('SIGTERM', cleanup);
 
 var _exit = false;
 function cleanup() {
-    router.runCmd = false;
+    if(router) {
+        router.runCmd = false;
+    }
     if (!_exit) {
         setTimeout(() => {
             _exit = true;
