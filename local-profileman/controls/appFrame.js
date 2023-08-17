@@ -15,6 +15,9 @@ class appFrame extends ui {
             <!--    HEADING   -->
             <div class="container-fluid"> <a class="appFrame-heading">Profile Manager</a></div>
 
+            <!--    LOG OUT BUTTON    -->
+            <button id="@{_btnUser}" class="appFrame-btn-log-out" type="button" title=""></button>
+
         </div>
 
         <!--    DISCONNECT ALERT MESSAGE     -->
