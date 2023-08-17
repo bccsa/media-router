@@ -20,7 +20,13 @@ var router_sockets = {};
 // -------------------------------------
 
 // load configuration file passed by argument. If not passed, confManager will try to load from config.json, or return a default configuration as the last resort.
-var confManager = new configManager(process.argv[2]);
+var confManager;
+if (process.argv.length > 2) {
+    // Load config file from disk
+    confManager = new configManager(process.argv[2], 'defaultManagerConf.json');
+} else {
+    confManager = new configManager('profileConf.json', 'defaultManagerConf.json');
+}
 
 // Clear initial online status
 Object.values(confManager.config).forEach(router => {

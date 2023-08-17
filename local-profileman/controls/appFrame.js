@@ -10,15 +10,12 @@ class appFrame extends ui {
         <div class="appFrame-top-bar"> <div class="appFrame-top-flex-div">
 
             <!--    ADD BUTTON    -->
-            <button id="@{_btnAddManager}" class="appFrame-btn-add" type="button" title="Add a new Manager"></button>
+            <button id="@{_btnAddManager}" class="appFrame-btn-add" type="button" title="Add a new manager profile"></button>
 
             <!--    HEADING   -->
-            <div class="container-fluid"> <a class="appFrame-heading">Set Manager</a></div>
+            <div class="container-fluid"> <a class="appFrame-heading">Profile Manager</a></div>
 
-            <!--    LOG OUT BUTTON    -->
-            <button id="@{_btnUser}" class="appFrame-btn-log-out" type="button" title=""></button>
-
-        </div> </div>
+        </div>
 
         <!--    DISCONNECT ALERT MESSAGE     -->
         <div id="@{_disconnectAlert}" class="appFrame-disconnect-alert-container">
@@ -26,9 +23,10 @@ class appFrame extends ui {
             <div class="appFrame-disconnect-alert-text">You have lost connection!</div>
         </div>
 
-        <!--    Manager     -->
-        <div id="@{_controlsDiv}" class="appFrame_contents"></div>
-
+        <!--    Profiles     -->
+        <div id="@{_controlsDiv}" class="appFrame_contents">
+        
+        </div>
         `;
     }
 

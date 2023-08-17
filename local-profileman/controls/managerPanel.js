@@ -1,29 +1,12 @@
-/**
- * This class should only be used as a super class for router child controls.
- * Additional modal HTML content should be added through super.html.replace('%modalHtml%','Your additional HTML');
- * Additional control card HTML content should be added through super.html.replace('%cardHtml%','Your additional HTML');
- * Also run super.Init() in the overridden Init() function.
- */
 class managerPanel extends ui {
     constructor() {
         super();
         this.managerUrl = "http://localhost:3000";
         this.username = "New manager";
-        this.password = "manager";
+        this.password = "";
         this.selected = false;        // show control on local client
         this.rbSelect = "";
         this.displayOrder = 0;          // Sort order on local client
-
-        // {
-        //     "default": {
-        //         "controlType": "managerPanel",
-        //         "displayName": "Local manager",
-        //         "managerUrl": "http://localhost:3000",
-        //         "username": "testRouter1",
-        //         "password": "testPass",
-        //         "selected": true
-        //     }
-        // }
     }
 
     get html() {

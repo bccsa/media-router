@@ -25,9 +25,9 @@ let profileConf;
 // Get config file path from passed argument
 if (process.argv.length > 2) {
     // Load config file from disk
-    profileConf = new configManager(process.argv[2], 'defaultRouterConf.json');
+    profileConf = new configManager(process.argv[2], 'defaultProfileConf.json');
 } else {
-    profileConf = new configManager('profileConf.json', 'defaultRouterConf.json');
+    profileConf = new configManager('profileConf.json', 'defaultProfileConf.json');
 }
 
 function setProfileDetails(property, value) {
