@@ -164,7 +164,7 @@ class Router extends dm {
                                 let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
                                 if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
 
-                                let bitDepth = item['Sample Specification'].match(/[sf]\d{1,2}[a-z]{0,2}/gi);
+                                let bitDepth = item['Sample Specification'].match(/(float|[sf])\d{1,2}[a-z]{0,2}/gi);
                                 if (bitDepth[0]) bitDepth = parseInt(bitDepth[0].match(/[0-9][0-9]*/gi));
 
                                 let sampleRate = item['Sample Specification'].match(/[1-9]\d*Hz/gi);
