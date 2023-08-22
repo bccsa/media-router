@@ -1,5 +1,6 @@
 {
     "router_defaultConf": {
+        "name": "router_defaultConf",
         "controlType": "Router",
         "displayName": "MyRouter",
         "password": "MyPassword",
@@ -7,11 +8,14 @@
             "controlType": "AudioInput",
             "destinations": [
                 "AudioOutput_defaultConf"
-            ]
+            ],
+            "left": 58,
+            "top": 54
         },
         "AudioOutput_defaultConf": {
             "controlType": "AudioOutput",
-            "parentElement": "_controlsDiv"
+            "top": 156,
+            "left": 934
         }
     }
 }
