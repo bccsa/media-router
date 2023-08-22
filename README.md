@@ -39,8 +39,9 @@ The media-router process by default points to the locally installed manager but 
 A local operator web-interface is available on http://localhost:8081. This interface can be used for local control of volume controls, etc.
 
 ## Development environment
+* Ensure that your user on the development environment has sudo access (some versions of Debian ships without sudo, and you may need to configure it manually).
 * Clone the project to your development environment.
-* Open /etc/apt/sources.list and uncomment the ```deb-src``` line to enable the Debian source repository (Raspberry Pi OS).
+* Open /etc/apt/sources.list and uncomment the ```deb-src``` line to enable the Debian source repository *(Raspberry Pi OS only - needed to build PulseAudio V16)*.
 * Navigate to the ```media-router``` directory
 * Install dependencies ```./install-dependencies.sh```
 * Run router.js and manager.js from Visual Studio Code's Run and Debug menu.
