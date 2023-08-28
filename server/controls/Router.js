@@ -48,7 +48,7 @@ class Router extends dm {
                         if (data.stderr) {
                             console.log(data.stderr.toString());
                         } else {
-                            console.log(`${this._controlName}: Removed ${paModule.Name}`);
+                            console.log(`${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
                         }
                     }).catch(err => {
                         console.log(err.message);

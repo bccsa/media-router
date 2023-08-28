@@ -57,7 +57,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
-                console.log(`${this._controlName}: Created pipe-source; ID: ${this._paModuleID}`);
+                console.log(`${this._controlName} (${this.displayName}): Created pipe-source; ID: ${this._paModuleID}`);
 
                 this.source = this._controlName;
                 this.monitor = this._controlName; // Monitor source is the same as source for PulseAudio sources.
@@ -76,7 +76,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName}: Removed pipe-source`);
+                    console.log(`${this._controlName} (${this.displayName}): Removed pipe-source`);
                 }
 
                 this._paModuleID = undefined;
@@ -95,7 +95,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
                 // Handle stderr
                 this._drain.stderr.on('data', data => {
-                    console.log(`${this._controlName}: pipe-source drain eror: ${data.toString()}`)
+                    console.log(`${this._controlName} (${this.displayName}): pipe-source drain eror: ${data.toString()}`)
                 });
 
                 // Handle stdout
@@ -105,20 +105,20 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
                 // Handle process exit event
                 this._drain.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName}: pipe-source drain stopped (${code})`) }
+                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): pipe-source drain stopped (${code})`) }
                     this._stopDrain();
                 });
 
                 // Handle process error events
                 this._drain.on('error', code => {
-                    console.log(`${this._controlName}: pipe-source drain error #${code}`);
+                    console.log(`${this._controlName} (${this.displayName}): pipe-source drain error #${code}`);
                 });
 
                 // notify that pipe-source is ready. This can be used by implementing classes to start their processes feeding data to the 'named pipe'
                 this.ready = true;
             }
             catch (err) {
-                console.log(`${this._controlName}: pipe-source drain error ${err.message}`);
+                console.log(`${this._controlName} (${this.displayName}): pipe-source drain error ${err.message}`);
                 this._stopDrain();
             }
         }

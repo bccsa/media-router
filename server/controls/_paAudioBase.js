@@ -237,10 +237,10 @@ class _paAudioBase extends dm {
         let cmd = `pactl set-${type}-mute ${this[type]} ${m}`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
-                console.error(`${this._controlName}: ${data.stderr.toString()}`);
+                console.error(`${this._controlName} (${this.displayName}): ${data.stderr.toString()}`);
             }
         }).catch(err => {
-            console.error(`${this._controlName}: ${err.message}`);
+            console.error(`${this._controlName} (${this.displayName}): ${err.message}`);
         });
     }
 
@@ -259,10 +259,10 @@ class _paAudioBase extends dm {
             let cmd = `pactl set-${type}-volume ${this[type]} ${volume}%`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.error(`${this._controlName}: ${data.stderr.toString()}`);
+                    console.error(`${this._controlName} (${this.displayName}): ${data.stderr.toString()}`);
                 }
             }).catch(err => {
-                console.error(`${this._controlName}: ${err.message}`);
+                console.error(`${this._controlName} (${this.displayName}): ${err.message}`);
             });
 
             let prevVol = volume;

@@ -53,7 +53,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
 
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
-                console.log(`${this._controlName}: Created null-sink; ID: ${this._paModuleID}`);
+                console.log(`${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paModuleID}`);
             }
         }).catch(err => {
             console.log(err.message);
@@ -68,7 +68,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName}: Removed null-sink`);
+                    console.log(`${this._controlName} (${this.displayName}): Removed null-sink`);
                 }
 
                 this._paModuleID = undefined;

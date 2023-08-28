@@ -108,13 +108,13 @@ class AudioInput extends _paAudioSourceBase {
 
                 if (data.stdout.length) {
                     this._paModuleID = data.stdout.toString().trim();
-                    console.log(`${this._controlName}: Created remap-source; ID: ${this._paModuleID}`);
+                    console.log(`${this._controlName} (${this.displayName}): Created remap-source; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
                 console.log(err.message);
             });
         } else {
-            console.log(`${this._controlName}: Unable to create remap-source: Invalid channel map`);
+            console.log(`${this._controlName} (${this.displayName}): Unable to create remap-source: Invalid channel map`);
         }
 
     }
@@ -127,7 +127,7 @@ class AudioInput extends _paAudioSourceBase {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName}: Removed remap-source`);
+                    console.log(`${this._controlName} (${this.displayName}): Removed remap-source`);
                 }
 
                 this._paModuleID = undefined;

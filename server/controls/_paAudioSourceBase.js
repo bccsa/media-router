@@ -84,7 +84,7 @@ class _paAudioSourceBase extends _paAudioBase {
             // Subscribe to destination control remove event to automatically clear source control's destination
             dest.once('remove', this._dstRemoveHandler, { caller: this });
         } else {
-            console.log(`${this._controlName}: Unable to add loopback - destination control "${dstName}" not found.`)
+            console.log(`${this._controlName} (${this.displayName}): Unable to add loopback - destination control "${dstName}" not found.`)
         }
     }
 

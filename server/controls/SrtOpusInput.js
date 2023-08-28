@@ -28,16 +28,16 @@ class SrtOpusInput extends _paNullSinkBase {
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('ready', ready => {
             if (ready) {
+                this._start_srt();
                 this._start_ffmpeg();
-                // this._start_srt();
             }
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
+                this._stop_srt();
                 this._stop_ffmpeg();
-                // this._stop_srt();
             }
         });
     }
@@ -45,7 +45,7 @@ class SrtOpusInput extends _paNullSinkBase {
     _start_ffmpeg() {
         if (!this._ffmpeg) {
             try {
-                console.log(`${this._controlName}: Starting opus decoder (ffmpeg)`);
+                console.log(`${this._controlName} (${this.displayName}): Starting opus decoder (ffmpeg)`);
 
                 let crypto = '';
                 if (this.srtPassphrase) {
@@ -66,23 +66,26 @@ class SrtOpusInput extends _paNullSinkBase {
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 // See https://stackoverflow.com/questions/39497131/ffmpeg-pulseaudio-output-options-device for playing to a PulseAudio device (need to specify a stream name)
                 // See https://superuser.com/questions/1162140/how-to-account-for-tempo-difference-with-ffmpeg-realtime-stream-encoding for solving audio latency drift
-                let args = `ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -use_wallclock_as_timestamps 1 -rtbufsize 64 -max_delay 1000 \
-                -f mpegts -c:a libopus -ac ${this.channels} -flush_packets 1\
-                -i "srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" \
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -rtbufsize 64 -max_delay 1000 -thread_queue_size 0 \
+                -f mpegts -c:a libopus -ac ${this.channels} -flush_packets 1 \
+                -i srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller \
                 -c:a pcm_s${this.bitDepth}le \
-                -af aresample=${this.sampleRate},aresample=async=1 \
+                -af asetpts=N/SR/TB,aresample=${this.sampleRate},aresample=async=1 \
                 -sample_rate ${this.sampleRate} -ac ${this.channels} \
                 -buffer_duration ${this._parent.paLatency} -f pulse -device ${this.sink} "${this._controlName}"`;
                 // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB filter removed - if it should be added again, use a filter complex (only last -af filter is used by ffmpeg)
+                
+                // Direct SRT connection:
+                // srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188
                 // Connection to srt-live-transmit:
-                // -i "srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener" \
+                // srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=listener
 
-                // this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
-                this._ffmpeg = spawn(args, { shell: 'bash'});
+                this._ffmpeg = spawn('ffmpeg', args.replace(/\s+/g, ' ').split(" "));
+                // this._ffmpeg = spawn(args, { shell: 'bash'});
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    // console.error(data.toString())
+                    // console.error(data.toString());
                 });
 
                 // Handle stdout
@@ -92,17 +95,17 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName}: opus decoder (ffmpeg) stopped (${code})`) }
+                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): opus decoder (ffmpeg) stopped (${code})`) }
                     this._stop_ffmpeg();
                 });
 
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
-                    console.log(`${this._controlName}: opus decoder (ffmpeg) error #${code}`);
+                    console.log(`${this._controlName} (${this.displayName}): opus decoder (ffmpeg) error #${code}`);
                 });
             }
             catch (err) {
-                console.log(`${this._controlName}: opus decoder (ffmpeg) error ${err.message}`);
+                console.log(`${this._controlName} (${this.displayName}): opus decoder (ffmpeg) error ${err.message}`);
                 this._stop_ffmpeg();
             }
         }
@@ -111,6 +114,7 @@ class SrtOpusInput extends _paNullSinkBase {
     _stop_ffmpeg() {
         if (this._ffmpeg) {
             try {
+                this._ffmpeg.stdin.pause();
                 this._ffmpeg.kill('SIGTERM');
                 // ffmpeg stops on SIGTERM, but does not exit.
                 // Send SIGKILL to quit process
@@ -142,9 +146,9 @@ class SrtOpusInput extends _paNullSinkBase {
                     streamID = '&streamid=' + this.srtStreamID;
                 }
 
-                console.log(`${this._controlName}: Starting SRT...`);
+                console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
 
-                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&latency=1&mode=caller&sndbuf=16384`;
+                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&mode=listener&latency=1`;
                 this._srt = spawn('srt-live-transmit', args.split(' '));
 
                 // Handle stderr
@@ -152,14 +156,14 @@ class SrtOpusInput extends _paNullSinkBase {
                     console.error(data.toString().trim());
                 });
 
-                // Handle stderr
+                // Handle stdout
                 this._srt.stdout.on('data', data => {
                     this.srtStats = data.toString();
                 });
 
                 // Handle process exit event
                 this._srt.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName}: SRT stopped (${code})`) }
+                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
                 });
 
                 // Handle process error events
@@ -176,10 +180,12 @@ class SrtOpusInput extends _paNullSinkBase {
 
     _stop_srt() {
         if (this._srt) {
-            console.log(`${this._controlName}: Stopping SRT...`);
+            console.log(`${this._controlName} (${this.displayName}): Stopping SRT...`);
 
             try {
+                this._srt.stdin.pause();
                 this._srt.kill('SIGTERM');
+                this._srt.kill('SIGKILL');
             } catch { }
         }
         this._srt = undefined;
