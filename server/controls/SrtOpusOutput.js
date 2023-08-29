@@ -81,10 +81,6 @@ class SrtOpusOutput extends _paNullSinkBase {
                     streamID = '&streamid=' + this.srtStreamID;
                 }
 
-                if (this.srtMode == 'listener') {
-                    this.srtHost = "0.0.0.0"
-                }
-
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 // See https://superuser.com/questions/1162140/how-to-account-for-tempo-difference-with-ffmpeg-realtime-stream-encoding for solving audio latency drift
@@ -101,7 +97,7 @@ class SrtOpusOutput extends _paNullSinkBase {
 
                 // connection to srt-live-transmit
                 // srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&sndbuf=16384
-                
+
                 // let args = `pacat --record --device ${this.source} --format s${this.bitDepth}le --channels ${this.channels} --rate ${this.sampleRate} --latency-msec 1 --format s${this.bitDepth}le --raw | \
                 // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 // -fflags nobuffer -flags low_delay \
@@ -177,37 +173,41 @@ class SrtOpusOutput extends _paNullSinkBase {
                     if (this.srtPassphrase) {
                         crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
                     }
-    
+
                     let latency = '';
                     if (this.srtMode == 'caller') {
                         latency = '&latency=' + this.srtLatency
                     }
-    
+
                     let streamID = '';
                     if (this.srtStreamID) {
                         streamID = '&streamid=' + this.srtStreamID;
                     }
-    
+
+                    if (this.srtMode == 'listener') {
+                        this.srtHost = "0.0.0.0"
+                    }
+
                     console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
-    
+
                     let args = `-s 1000 -pf json srt://127.0.0.1:${this._udpSocketPort}?mode=listener&latency=1 srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
                     this._srt = spawn('srt-live-transmit', args.split(' '));
-    
+
                     // Handle stdout
                     this._srt.stdout.on('data', data => {
                         this.srtStats = data.toString();
                     });
-    
+
                     // Handle stderr
                     this._srt.stderr.on('data', data => {
                         console.error(`${this._paModuleName} (${this.displayName}): SRT - ` + data.toString().trim());
                     });
-    
+
                     // Handle process exit event
                     this._srt.on('close', code => {
                         if (code != null) { console.log(`${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
                     });
-    
+
                     // Resolve if process spawned succesfully (spawn event only available in nodejs v14.17 / V15.1 or newer)
                     // this._srt.on('spawn', () => {
                     //     resolve();

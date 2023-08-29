@@ -148,6 +148,10 @@ class SrtOpusInput extends _paNullSinkBase {
                         streamID = '&streamid=' + this.srtStreamID;
                     }
     
+                    if (this.srtMode == 'listener') {
+                        this.srtHost = "0.0.0.0"
+                    }
+                    
                     console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
     
                     let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://0.0.0.0:${this._udpSocketPort}?pkt_size=188&mode=listener&latency=1`;
