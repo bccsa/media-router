@@ -28,8 +28,9 @@ class SrtOpusInput extends _paNullSinkBase {
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('ready', ready => {
             if (ready) {
-                this._start_srt();
-                this._start_ffmpeg();
+                this._start_srt().then(() => {
+                    this._start_ffmpeg();
+                });
             }
         });
 
@@ -128,54 +129,69 @@ class SrtOpusInput extends _paNullSinkBase {
     }
 
     _start_srt() {
-        if (!this._srt) {
-            try {
-                // SRT external process
-                let crypto = '';
-                if (this.srtPassphrase) {
-                    crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
+        return new Promise((resolve, reject) => {
+            if (!this._srt) {
+                try {
+                    // SRT external process
+                    let crypto = '';
+                    if (this.srtPassphrase) {
+                        crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
+                    }
+    
+                    let latency = '';
+                    if (this.srtMode == 'caller') {
+                        latency = '&latency=' + this.srtLatency
+                    }
+    
+                    let streamID = '';
+                    if (this.srtStreamID) {
+                        streamID = '&streamid=' + this.srtStreamID;
+                    }
+    
+                    console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
+    
+                    let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://0.0.0.0:${this._udpSocketPort}?pkt_size=188&mode=listener&latency=1`;
+                    this._srt = spawn('srt-live-transmit', args.split(' '));
+    
+                    // Handle stderr
+                    this._srt.stderr.on('data', data => {
+                        console.error(`${this._controlName} (${this.displayName}): SRT - ` + data.toString().trim());
+                    });
+    
+                    // Handle stdout
+                    this._srt.stdout.on('data', data => {
+                        this.srtStats = data.toString();
+                    });
+    
+                    // Handle process exit event
+                    this._srt.on('close', code => {
+                        if (code != null) { console.log(`${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
+                    });
+    
+                    // Handle process error events
+                    this._srt.on('error', code => {
+                        console.log(`Error "${code}"`);
+                        reject();
+                    });
+
+                    // Resolve if process spawned succesfully (spawn event only available in nodejs v14.17 / V15.1 or newer)
+                    // this._srt.on('spawn', () => {
+                    //     resolve();
+                    // });
+                    // Resolve after 500ms
+                    setTimeout(() => {
+                        resolve();
+                    }, 500);
                 }
-
-                let latency = '';
-                if (this.srtMode == 'caller') {
-                    latency = '&latency=' + this.srtLatency
+                catch (err) {
+                    console.log(`${err.message}`);
+                    this._stop_srt();
+                    reject();
                 }
-
-                let streamID = '';
-                if (this.srtStreamID) {
-                    streamID = '&streamid=' + this.srtStreamID;
-                }
-
-                console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
-
-                let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&mode=listener&latency=1`;
-                this._srt = spawn('srt-live-transmit', args.split(' '));
-
-                // Handle stderr
-                this._srt.stderr.on('data', data => {
-                    console.error(data.toString().trim());
-                });
-
-                // Handle stdout
-                this._srt.stdout.on('data', data => {
-                    this.srtStats = data.toString();
-                });
-
-                // Handle process exit event
-                this._srt.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
-                });
-
-                // Handle process error events
-                this._srt.on('error', code => {
-                    console.log(`Error "${code}"`);
-                });
+            } else {
+                resolve();
             }
-            catch (err) {
-                console.log(`${err.message}`);
-                this._stop_srt();
-            }
-        }
+        });
     }
 
     _stop_srt() {

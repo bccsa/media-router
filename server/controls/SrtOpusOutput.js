@@ -194,7 +194,7 @@ class SrtOpusOutput extends _paNullSinkBase {
     
                     // Handle stderr
                     this._srt.stderr.on('data', data => {
-                        console.error(data.toString().trim());
+                        console.error(`${this._controlName} (${this.displayName}): SRT - ` + data.toString().trim());
                     });
     
                     // Handle process exit event
@@ -220,7 +220,10 @@ class SrtOpusOutput extends _paNullSinkBase {
                 catch (err) {
                     console.log(`${err.message}`);
                     this._stop_srt();
+                    reject();
                 }
+            } else {
+                resolve();
             }
         });
     }
