@@ -25,12 +25,13 @@ class Router extends dm {
         this.SetAccess('sinks', { Set: 'none' });   // Disable Set() access to prevent frontend changing the property
         this._udpSocketPortIndex = 2000;
         this.paLatency = 50;                        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
+        this._paServerType = '';                     // PulseAudio server type (PipeWire or PulseAudio)
     }
 
     Init() {
         super.Init();
         let startupDelay = true;
-        
+
         // Relay external run command to child controls
         this.on('run', run => {
             if (!startupDelay) {
@@ -38,35 +39,50 @@ class Router extends dm {
             }
         });
 
-        // Unload all loopback, nullsink, remap-source and remap-sink modules
-        this._getPA('').then(m => {
-            Object.values(m)
-                .filter(t => t.loopback_name && t.loopback_name.indexOf('MR_PA_') >= 0 || 
-                    t.source_name && t.source_name.indexOf('MR_PA_') >= 0 || 
-                    t.sink_name && t.sink_name.indexOf('MR_PA_') >= 0 || 
-                    t.Name && t.Name.indexOf('MR_PA_') >= 0)
-                // .filter(t => t.Driver && (t.Driver.search('module-loopback') >= 0 || t.Driver.search('module-remap') >= 0 || t.Driver.search('module-null-sink') >= 0) && t['Owner Module'] && t.Name)
-                .forEach(paModule => {
-                    let cmd = `pactl unload-module ${paModule['Owner Module']}`;
-                    exec(cmd, { silent: true }).then(data => {
-                        if (data.stderr) {
-                            console.log(data.stderr.toString());
-                        } else {
-                            console.log(`${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
-                        }
-                    }).catch(err => {
-                        console.log(err.message);
-                    });
-                });
+        // Get the PulseAudio server type
+        this._getPAserver()
+            .then(serverType => {
+                this._paServerType = serverType;
+                return this._getPA('');
+            }).then(m => {
+                // Unload all loopback, nullsink, remap-source and remap-sink modules
+                let modules;
+                if (this._paServerType == 'PipeWire') {
+                    // PipeWire does not keep the PulseAudio driver name (just shows PipeWire), so we need to filter on the name prefix.
+                    modules = Object.values(m).filter(t => t.loopback_name && t.loopback_name.indexOf('MR_PA_') >= 0 ||
+                        t.source_name && t.source_name.indexOf('MR_PA_') >= 0 ||
+                        t.sink_name && t.sink_name.indexOf('MR_PA_') >= 0 ||
+                        t.Name && t.Name.indexOf('MR_PA_') >= 0
+                    );
+                } else {
+                    // PulseAudio does not allow storing names on all modules (e.g. module-loopback), so we need to filter on all module types than the Media Router is dynamically adding.
+                    modules = Object.values(m).filter(t => t.Driver && (t.Driver.search('module-loopback') >= 0 ||
+                        t.Driver.search('module-remap') >= 0 ||
+                        t.Driver.search('module-null-sink') >= 0) && t['Owner Module'] && t.Name
+                    );
+                }
 
-            // Startup delay after unloading modules
-            setTimeout(() => {
-                startupDelay = false;
-                this.runCmd = this.run;
-            }, 2000);
-        }).catch(err => {
-            console.error(err.toString());
-        });
+                modules.forEach(paModule => {
+                        let cmd = `pactl unload-module ${paModule['Owner Module']}`;
+                        exec(cmd, { silent: true }).then(data => {
+                            if (data.stderr) {
+                                console.log(data.stderr.toString());
+                            } else {
+                                console.log(`${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
+                            }
+                        }).catch(err => {
+                            console.log(err.message);
+                        });
+                    });
+
+                // Startup delay after unloading modules
+                setTimeout(() => {
+                    startupDelay = false;
+                    this.runCmd = this.run;
+                }, 2000);
+            }).catch(err => {
+                console.error(err.toString());
+            });
 
         // PulseAudio items detection
         this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
@@ -214,13 +230,31 @@ class Router extends dm {
 
                     resolve(updated);
                 }).catch(err => {
-                    console.log(err.message);
+                    console.error(err.message);
                     resolve(false);
                 });
             } catch (err) {
-                console.log(err.message);
+                console.error(err.message);
                 resolve(false);
             }
+        });
+    }
+
+    /**
+     * Get the PulseAudio server type
+     * @returns Promise with the PulseAudio server type (PipeWire or PulseAudio)
+     */
+    _getPAserver() {
+        return new Promise((resolve, reject) => {
+            exec('pactl info').then(result => {
+                if (result.stdout.indexOf('PipeWire') >= 0) {
+                    resolve('PipeWire');
+                } else {
+                    resolve('PulseAudio');
+                }
+            }).catch(err => {
+                reject('Unable to determine the PulseAudio server type: ' + err.toString());
+            });
         });
     }
 
