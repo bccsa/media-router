@@ -60,6 +60,8 @@ class Router extends dm {
                 startupDelay = false;
                 this.runCmd = this.run;
             }, 2000);
+        }).catch(err => {
+            console.error(err.toString());
         });
 
         // PulseAudio items detection
@@ -207,6 +209,9 @@ class Router extends dm {
                     });
 
                     resolve(updated);
+                }).catch(err => {
+                    console.log(err.message);
+                    resolve(false);
                 });
             } catch (err) {
                 console.log(err.message);
