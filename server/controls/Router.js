@@ -41,7 +41,11 @@ class Router extends dm {
         // Unload all loopback, nullsink, remap-source and remap-sink modules
         this._getPA('').then(m => {
             Object.values(m)
-                .filter(t => t.Driver && (t.Driver.search('module-loopback') >= 0 || t.Driver.search('module-remap') >= 0 || t.Driver.search('module-null-sink') >= 0) && t['Owner Module'] && t.Name)
+                .filter(t => t.loopback_name && t.loopback_name.indexOf('MR_PA_') >= 0 || 
+                    t.source_name && t.source_name.indexOf('MR_PA_') >= 0 || 
+                    t.sink_name && t.sink_name.indexOf('MR_PA_') >= 0 || 
+                    t.Name && t.Name.indexOf('MR_PA_') >= 0)
+                // .filter(t => t.Driver && (t.Driver.search('module-loopback') >= 0 || t.Driver.search('module-remap') >= 0 || t.Driver.search('module-null-sink') >= 0) && t['Owner Module'] && t.Name)
                 .forEach(paModule => {
                     let cmd = `pactl unload-module ${paModule['Owner Module']}`;
                     exec(cmd, { silent: true }).then(data => {

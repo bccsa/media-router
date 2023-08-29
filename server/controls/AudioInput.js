@@ -19,7 +19,7 @@ class AudioInput extends _paAudioSourceBase {
     Init() {
         super.Init();
 
-        this.source = this._controlName;
+        this.source = this._paModuleName;
         this.monitor = this.source;
 
         this.on('run', run => {
@@ -32,7 +32,7 @@ class AudioInput extends _paAudioSourceBase {
 
         this._parent.on('sources', sources => {
             // listen for map-source module creation
-            if (sources.find(t => t.name == this._controlName)) {
+            if (sources.find(t => t.name == this._paModuleName)) {
                 this.ready = true;
             } else {
                 this.ready = false;
@@ -100,7 +100,7 @@ class AudioInput extends _paAudioSourceBase {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startRemapSource() {
         if (this.channels > 0) {
-            let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._controlName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no`;
+            let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.log(data.stderr.toString());

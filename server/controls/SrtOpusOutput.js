@@ -5,7 +5,6 @@ const { ffmpeg_stderr_parser } = require('../modules/ffmpeg_stderr_parser');
 class SrtOpusOutput extends _paNullSinkBase {
     constructor() {
         super();
-
         this.fec = false;           // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
@@ -61,8 +60,11 @@ class SrtOpusOutput extends _paNullSinkBase {
             try {
                 console.log(`${this._controlName} (${this.displayName}): Starting opus encoder (ffmpeg)`);
 
-                let _fec = 0;
-                if (this.fec) _fec = 1;
+                let _fecString = "";
+                if (this.fec) {
+                    _fec = 1;
+                    _fecString = ` -fec 1 -packet_loss ${this.fecPacketLoss}`;
+                }
 
                 let crypto = '';
                 if (this.srtPassphrase) {
@@ -86,7 +88,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 -fflags nobuffer -flags low_delay -rtbufsize 64 -max_delay 1000 \
                 -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -f pulse -i ${this.source} \
                 -af asetpts=N/SR/TB,aresample=48000,aresample=async=1 \
-                -c:a libopus -b:a ${this.bitrate * 1000} -application lowdelay -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
+                -c:a libopus -b:a ${this.bitrate * 1000} -application lowdelay -sample_rate 48000 -ac ${this.channels}${_fecString} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
                 -f mpegts  -flush_packets 1 -omit_video_pes_length 0 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller`;
 
@@ -135,11 +137,11 @@ class SrtOpusOutput extends _paNullSinkBase {
 
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
-                    console.error(`${this._controlName} (${this.displayName}): opus encoder (ffmpeg) error #${code}`);
+                    console.error(`${this._paModuleName} (${this.displayName}): opus encoder (ffmpeg) error #${code}`);
                 });
             }
             catch (err) {
-                console.error(`${this._controlName} (${this.displayName}): opus encoder (ffmpeg) error ${err.message}`);
+                console.error(`${this._paModuleName} (${this.displayName}): opus encoder (ffmpeg) error ${err.message}`);
                 this._stop_ffmpeg();
             }
         }
@@ -194,7 +196,7 @@ class SrtOpusOutput extends _paNullSinkBase {
     
                     // Handle stderr
                     this._srt.stderr.on('data', data => {
-                        console.error(`${this._controlName} (${this.displayName}): SRT - ` + data.toString().trim());
+                        console.error(`${this._paModuleName} (${this.displayName}): SRT - ` + data.toString().trim());
                     });
     
                     // Handle process exit event

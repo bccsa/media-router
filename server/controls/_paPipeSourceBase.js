@@ -30,7 +30,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
         // listen for pipe creation
         this._parent.on('sources', sources => {
-            if (sources.find(t => t.name == this._controlName)) {
+            if (sources.find(t => t.name == this._paModuleName)) {
                 this.pipe_ready = true;
             } else {
                 this.pipe_ready = false;
@@ -47,9 +47,9 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
     // Create a PulseAudio Pipe Source module
     _startPipeSource() {
-        this._pipename = `/tmp/${this._controlName}_pipe`;
+        this._pipename = `/tmp/${this._paModuleName}_pipe`;
 
-        let cmd = `pactl load-module module-pipe-source source_name=${this._controlName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} file=${this._pipename}`;
+        let cmd = `pactl load-module module-pipe-source source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} file=${this._pipename}`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
                 console.log(data.stderr.toString());
@@ -59,8 +59,8 @@ class _paPipeSourceBase extends _paAudioSourceBase {
                 this._paModuleID = data.stdout.toString().trim();
                 console.log(`${this._controlName} (${this.displayName}): Created pipe-source; ID: ${this._paModuleID}`);
 
-                this.source = this._controlName;
-                this.monitor = this._controlName; // Monitor source is the same as source for PulseAudio sources.
+                this.source = this._paModuleName;
+                this.monitor = this._paModuleName; // Monitor source is the same as source for PulseAudio sources.
             }
         }).catch(err => {
             console.log(err.message);
@@ -90,7 +90,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
     _startDrain() {
         if (!this._drain) {
             try {
-                let args = `--device=${this._controlName} --fix-rate --fix-channels --fix-format --latency 100 --raw --volume 65536 /dev/null`;
+                let args = `--device=${this._paModuleName} --fix-rate --fix-channels --fix-format --latency 100 --raw --volume 65536 /dev/null`;
                 this._drain = spawn('parec', args.replace(/\s+/g, ' ').split(" "));
 
                 // Handle stderr

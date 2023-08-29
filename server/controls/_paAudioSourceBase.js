@@ -71,7 +71,7 @@ class _paAudioSourceBase extends _paAudioBase {
         if (dest) {
             // Create loopback child control to link this control's PulseAudio source to the destination controls PulseAudio sink
             this.Set({
-                [this._controlName + '_loopback_' + dstName]: {
+                [this._paModuleName + '_loopback_' + dstName]: {
                     controlType: 'AudioLoopback',
                     srcControl: this._controlName,
                     dstControl: dest._controlName,
@@ -89,7 +89,7 @@ class _paAudioSourceBase extends _paAudioBase {
     }
 
     _removeDestination(dstName) {
-        let loopbackName = this._controlName + '_loopback_' + dstName;
+        let loopbackName = this._paModuleName + '_loopback_' + dstName;
         let loopback = this[loopbackName];
         if (loopback) {
             loopback.run = false;

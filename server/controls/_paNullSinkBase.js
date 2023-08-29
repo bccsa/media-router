@@ -20,8 +20,8 @@ class _paNullSinkBase extends _paAudioSourceBase {
     Init() {
         super.Init();
 
-        this.source = `${this._controlName}.monitor`;
-        this.sink = this._controlName;
+        this.source = `${this._paModuleName}.monitor`;
+        this.sink = this._paModuleName;
         this.monitor = this.source;
 
         this.on('run', run => {
@@ -34,7 +34,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
 
         // listen for null sink creation
         this._parent.on('sinks', sinks => {
-            if (sinks.find(t => t.name == this._controlName)) {
+            if (sinks.find(t => t.name == this._paModuleName)) {
                 this.ready = true;
             } else {
                 this.ready = false;
@@ -44,8 +44,8 @@ class _paNullSinkBase extends _paAudioSourceBase {
 
     // Create a PulseAudio loopback-module linking the source to the sink
     _startNullSink() {
-        // let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this.latency_msec},device.description='${this.description}'"`;
-        let cmd = `pactl load-module module-null-sink sink_name=${this._controlName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
+        // let cmd = `pactl load-module module-null-sink sink_name=${this._paModuleName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this.latency_msec},device.description='${this.description}'"`;
+        let cmd = `pactl load-module module-null-sink sink_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
                 console.log(data.stderr.toString());

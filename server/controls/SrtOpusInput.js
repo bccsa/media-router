@@ -73,7 +73,7 @@ class SrtOpusInput extends _paNullSinkBase {
                 -c:a pcm_s${this.bitDepth}le \
                 -af asetpts=N/SR/TB,aresample=${this.sampleRate},aresample=async=1 \
                 -sample_rate ${this.sampleRate} -ac ${this.channels} \
-                -buffer_duration ${this._parent.paLatency} -f pulse -device ${this.sink} "${this._controlName}"`;
+                -buffer_duration ${this._parent.paLatency} -f pulse -device ${this.sink} "${this._paModuleName}"`;
                 // -af asetpts=NB_CONSUMED_SAMPLES/SR/TB filter removed - if it should be added again, use a filter complex (only last -af filter is used by ffmpeg)
                 
                 // Direct SRT connection:
@@ -155,7 +155,7 @@ class SrtOpusInput extends _paNullSinkBase {
     
                     // Handle stderr
                     this._srt.stderr.on('data', data => {
-                        console.error(`${this._controlName} (${this.displayName}): SRT - ` + data.toString().trim());
+                        console.error(`${this._paModuleName} (${this.displayName}): SRT - ` + data.toString().trim());
                     });
     
                     // Handle stdout

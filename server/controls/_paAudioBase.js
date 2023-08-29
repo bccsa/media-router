@@ -12,6 +12,7 @@ class _paAudioBase extends dm {
     constructor() {
         super();
         this.displayName = "";  // Display name
+        this._paModuleName = ""; // Unique name used for dynamically created PulseAudio modules
         this.soloGroup = "";
         this.mute = false;
         this.showVolumeControl = true;  // Show volume slider on local client
@@ -46,6 +47,9 @@ class _paAudioBase extends dm {
     }
 
     Init() {
+        // Set PulseAudio Module name
+        this._paModuleName = 'MR_PA_' + this._controlName;
+        
         // Mute all other modules (with the same parent) in the solo group
         this.on('mute', mute => {
             if (!mute && this.soloGroup) {
@@ -172,7 +176,7 @@ class _paAudioBase extends dm {
         if (this.monitor && !this._vuProc) {
             let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
             this._vuProc = spawn('pacat', args.split(' '));
-            console.log(this._controlName + ': Starting VU')
+            console.log(`${this._controlName} (${this.displayName}): Starting VU`)
             this._vuProc.stdout.on('data', buffer => {
                 // Set VU array to channel count
                 this._vu = new Array(this.channels).fill(0);
@@ -237,10 +241,10 @@ class _paAudioBase extends dm {
         let cmd = `pactl set-${type}-mute ${this[type]} ${m}`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
-                console.error(`${this._controlName} (${this.displayName}): ${data.stderr.toString()}`);
+                console.error(`${this._paModuleName} (${this.displayName}): ${data.stderr.toString()}`);
             }
         }).catch(err => {
-            console.error(`${this._controlName} (${this.displayName}): ${err.message}`);
+            console.error(`${this._paModuleName} (${this.displayName}): ${err.message}`);
         });
     }
 
@@ -259,10 +263,10 @@ class _paAudioBase extends dm {
             let cmd = `pactl set-${type}-volume ${this[type]} ${volume}%`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.error(`${this._controlName} (${this.displayName}): ${data.stderr.toString()}`);
+                    console.error(`${this._paModuleName} (${this.displayName}): ${data.stderr.toString()}`);
                 }
             }).catch(err => {
-                console.error(`${this._controlName} (${this.displayName}): ${err.message}`);
+                console.error(`${this._paModuleName} (${this.displayName}): ${err.message}`);
             });
 
             let prevVol = volume;
