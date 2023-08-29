@@ -81,6 +81,10 @@ class SrtOpusOutput extends _paNullSinkBase {
                     streamID = '&streamid=' + this.srtStreamID;
                 }
 
+                if (this.srtMode == 'listener') {
+                    this.srtHost = "0.0.0.0"
+                }
+
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 // See https://superuser.com/questions/1162140/how-to-account-for-tempo-difference-with-ffmpeg-realtime-stream-encoding for solving audio latency drift
