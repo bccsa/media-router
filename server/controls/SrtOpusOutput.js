@@ -90,7 +90,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 -af asetpts=N/SR/TB,aresample=48000,aresample=async=1 \
                 -c:a libopus -b:a ${this.bitrate * 1000} -application lowdelay -sample_rate 48000 -ac ${this.channels}${_fecString} -compression_level ${this.compression} \
                 -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
-                -f mpegts  -flush_packets 1 -omit_video_pes_length 0 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&send_buffer_size=1024`;
+                -f mpegts  -flush_packets 1 -omit_video_pes_length 0 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&send_buffer_size=188`;
 
                 // Direct srt connection
                 // srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188

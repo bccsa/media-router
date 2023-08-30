@@ -69,7 +69,7 @@ class SrtOpusInput extends _paNullSinkBase {
                 // See https://superuser.com/questions/1162140/how-to-account-for-tempo-difference-with-ffmpeg-realtime-stream-encoding for solving audio latency drift
                 let args = `-hide_banner -probesize 32 -analyzeduration 0 -fflags nobuffer -flags low_delay -rtbufsize 64 -max_delay 1000 -thread_queue_size 0 \
                 -f mpegts -c:a libopus -ac ${this.channels} -flush_packets 1 \
-                -i srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&recv_buffer_size=1024 \
+                -i srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&recv_buffer_size=188 \
                 -c:a pcm_s${this.bitDepth}le \
                 -af asetpts=N/SR/TB,aresample=${this.sampleRate},aresample=async=1 \
                 -sample_rate ${this.sampleRate} -ac ${this.channels} \
