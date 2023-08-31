@@ -19,7 +19,7 @@ class AudioOutput extends _paAudioSinkBase {
     Init() {
         super.Init();
 
-        this.sink = this._controlName;
+        this.sink = this._paModuleName;
         this.monitor = this.sink + '.monitor';
 
         this.on('run', run => {
@@ -32,7 +32,7 @@ class AudioOutput extends _paAudioSinkBase {
 
         this._parent.on('sinks', sinks => {
             // listen for map-sink module creation
-            if (sinks.find(t => t.name == this._controlName)) {
+            if (sinks.find(t => t.name == this._paModuleName)) {
                 this.ready = true;
             } else {
                 this.ready = false;
@@ -100,7 +100,7 @@ class AudioOutput extends _paAudioSinkBase {
     // Create a PulseAudio loopback-module linking the sink to the sink
     _startRemapSink() {
         if (this.channels > 0) {
-            let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._controlName} channels=${this.channels} ${this._channelMap} remix=no`;
+            let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._paModuleName} channels=${this.channels} ${this._channelMap} remix=no`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
@@ -108,13 +108,13 @@ class AudioOutput extends _paAudioSinkBase {
 
                 if (data.stdout.length) {
                     this._paModuleID = data.stdout.toString().trim();
-                    console.log(`${this._controlName}: Created remap-sink; ID: ${this._paModuleID}`);
+                    console.log(`${this._controlName} (${this.displayName}): Created remap-sink; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
                 console.log(err.message);
             });
         } else {
-            console.log(`${this._controlName}: Unable to create remap-sink: Invalid channel map`);
+            console.log(`${this._controlName} (${this.displayName}): Unable to create remap-sink: Invalid channel map`);
         }
 
     }
@@ -127,7 +127,7 @@ class AudioOutput extends _paAudioSinkBase {
                 if (data.stderr) {
                     console.log(data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName}: Removed remap-sink`);
+                    console.log(`${this._controlName} (${this.displayName}): Removed remap-sink`);
                 }
 
                 this._paModuleID = undefined;

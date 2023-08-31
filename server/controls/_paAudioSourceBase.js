@@ -71,7 +71,7 @@ class _paAudioSourceBase extends _paAudioBase {
         if (dest) {
             // Create loopback child control to link this control's PulseAudio source to the destination controls PulseAudio sink
             this.Set({
-                [this._controlName + '_loopback_' + dstName]: {
+                [this._paModuleName + '_loopback_' + dstName]: {
                     controlType: 'AudioLoopback',
                     srcControl: this._controlName,
                     dstControl: dest._controlName,
@@ -84,12 +84,12 @@ class _paAudioSourceBase extends _paAudioBase {
             // Subscribe to destination control remove event to automatically clear source control's destination
             dest.once('remove', this._dstRemoveHandler, { caller: this });
         } else {
-            console.log(`${this._controlName}: Unable to add loopback - destination control "${dstName}" not found.`)
+            console.log(`${this._controlName} (${this.displayName}): Unable to add loopback - destination control "${dstName}" not found.`)
         }
     }
 
     _removeDestination(dstName) {
-        let loopbackName = this._controlName + '_loopback_' + dstName;
+        let loopbackName = this._paModuleName + '_loopback_' + dstName;
         let loopback = this[loopbackName];
         if (loopback) {
             loopback.run = false;

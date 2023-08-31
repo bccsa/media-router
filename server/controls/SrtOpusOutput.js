@@ -5,7 +5,6 @@ const { ffmpeg_stderr_parser } = require('../modules/ffmpeg_stderr_parser');
 class SrtOpusOutput extends _paNullSinkBase {
     constructor() {
         super();
-
         this.fec = false;           // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
@@ -36,16 +35,17 @@ class SrtOpusOutput extends _paNullSinkBase {
         // Start external processes when the underlying null-sink is ready (from extended class)
         this.on('ready', ready => {
             if (ready) {
-                // this._start_srt();
-                this._start_ffmpeg();
+                this._start_srt().then(() => {
+                    this._start_ffmpeg();
+                });
             }
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
-                // this._stop_srt();
                 this._stop_ffmpeg();
+                this._stop_srt();
             }
         });
 
@@ -58,10 +58,13 @@ class SrtOpusOutput extends _paNullSinkBase {
     _start_ffmpeg() {
         if (!this._ffmpeg) {
             try {
-                console.log(`${this._controlName}: Starting opus encoder (ffmpeg)`);
+                console.log(`${this._controlName} (${this.displayName}): Starting opus encoder (ffmpeg)`);
 
-                let _fec = 0;
-                if (this.fec) _fec = 1;
+                let _fecString = "";
+                if (this.fec) {
+                    _fec = 1;
+                    _fecString = ` -fec 1 -packet_loss ${this.fecPacketLoss}`;
+                }
 
                 let crypto = '';
                 if (this.srtPassphrase) {
@@ -81,17 +84,20 @@ class SrtOpusOutput extends _paNullSinkBase {
                 // Opus sample rate is always 48000. Input sample rate is therefore converted to 48000
                 // See https://stackoverflow.com/questions/71708414/ffmpeg-queue-input-backward-in-time for timebase correction info (audio filter)
                 // See https://superuser.com/questions/1162140/how-to-account-for-tempo-difference-with-ffmpeg-realtime-stream-encoding for solving audio latency drift
-                let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
-                -fflags nobuffer -flags low_delay -use_wallclock_as_timestamps 1 -rtbufsize 64 -max_delay 1000 \
+                let args = `-hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 -thread_queue_size 0 \
+                -fflags nobuffer -flags low_delay -rtbufsize 64 -max_delay 1000 \
                 -channels ${this.channels} -sample_rate ${this.sampleRate} -c:a pcm_s${this.bitDepth}le -f pulse -i ${this.source} \
-                -af asetpts=NB_CONSUMED_SAMPLES/SR/TB,aresample=48000,aresample=async=1 \
-                -c:a libopus -b:a ${this.bitrate * 1000} -application lowdelay -sample_rate 48000 -ac ${this.channels} -packet_loss ${this.fecPacketLoss} -fec ${_fec} -compression_level ${this.compression} \
-                -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \ 
-                -f mpegts  -flush_packets 1 -omit_video_pes_length 0 srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
+                -af asetpts=N/SR/TB,aresample=48000,aresample=async=1 \
+                -c:a libopus -b:a ${this.bitrate * 1000} -application lowdelay -sample_rate 48000 -ac ${this.channels}${_fecString} -compression_level ${this.compression} \
+                -muxdelay 0 -flush_packets 1 -output_ts_offset 0 -chunk_duration 100 -packetsize 188 -avioflags direct \
+                -f mpegts  -flush_packets 1 -omit_video_pes_length 0 srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&send_buffer_size=188`;
+
+                // Direct srt connection
+                // srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188
 
                 // connection to srt-live-transmit
-                //  srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&sndbuf=16384`;
-                
+                // srt://127.0.0.1:${this._udpSocketPort}?pkt_size=188&transtype=live&latency=1&mode=caller&sndbuf=16384
+
                 // let args = `pacat --record --device ${this.source} --format s${this.bitDepth}le --channels ${this.channels} --rate ${this.sampleRate} --latency-msec 1 --format s${this.bitDepth}le --raw | \
                 // ffmpeg -hide_banner -probesize 32 -analyzeduration 0 -flush_packets 1 \
                 // -fflags nobuffer -flags low_delay \
@@ -114,7 +120,7 @@ class SrtOpusOutput extends _paNullSinkBase {
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    // console.error(data.toString);
+                    // console.error(data.toString());
                     this._ffmpegParser.Set(data.toString());
                 });
 
@@ -125,17 +131,17 @@ class SrtOpusOutput extends _paNullSinkBase {
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName}: opus encoder (ffmpeg) stopped (${code})`) }
+                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): opus encoder (ffmpeg) stopped (${code})`) }
                     this._stop_ffmpeg();
                 });
 
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
-                    console.error(`${this._controlName}: opus encoder (ffmpeg) error #${code}`);
+                    console.error(`${this._paModuleName} (${this.displayName}): opus encoder (ffmpeg) error #${code}`);
                 });
             }
             catch (err) {
-                console.error(`${this._controlName}: opus encoder (ffmpeg) error ${err.message}`);
+                console.error(`${this._paModuleName} (${this.displayName}): opus encoder (ffmpeg) error ${err.message}`);
                 this._stop_ffmpeg();
             }
         }
@@ -143,14 +149,15 @@ class SrtOpusOutput extends _paNullSinkBase {
 
     _stop_ffmpeg() {
         if (this._ffmpeg) {
-            console.log(`${this._controlName}: Removing opus encoder`);
+            console.log(`${this._controlName} (${this.displayName}): Removing opus encoder`);
             try {
+                this._ffmpeg.stdin.pause();
                 this._ffmpeg.kill('SIGTERM');
                 // ffmpeg stops on SIGTERM, but does not exit.
                 // Send SIGKILL to quit process
                 this._ffmpeg.kill('SIGKILL');
             } catch {
-
+                console.log('failed to stop ffmpeg')
             } finally {
                 this._ffmpeg = undefined;
             }
@@ -158,62 +165,83 @@ class SrtOpusOutput extends _paNullSinkBase {
     }
 
     _start_srt() {
-        if (!this._srt) {
-            try {
-                // SRT external process
-                let crypto = '';
-                if (this.srtPassphrase) {
-                    crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
+        return new Promise((resolve, reject) => {
+            if (!this._srt) {
+                try {
+                    // SRT external process
+                    let crypto = '';
+                    if (this.srtPassphrase) {
+                        crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
+                    }
+
+                    let latency = '';
+                    if (this.srtMode == 'caller') {
+                        latency = '&latency=' + this.srtLatency
+                    }
+
+                    let streamID = '';
+                    if (this.srtStreamID) {
+                        streamID = '&streamid=' + this.srtStreamID;
+                    }
+
+                    if (this.srtMode == 'listener') {
+                        this.srtHost = "0.0.0.0"
+                    }
+
+                    console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
+
+                    let args = `-s 1000 -pf json srt://127.0.0.1:${this._udpSocketPort}?mode=listener&latency=1 srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
+                    this._srt = spawn('srt-live-transmit', args.split(' '));
+
+                    // Handle stdout
+                    this._srt.stdout.on('data', data => {
+                        this.srtStats = data.toString();
+                    });
+
+                    // Handle stderr
+                    this._srt.stderr.on('data', data => {
+                        console.error(`${this._paModuleName} (${this.displayName}): SRT - ` + data.toString().trim());
+                    });
+
+                    // Handle process exit event
+                    this._srt.on('close', code => {
+                        if (code != null) { console.log(`${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
+                    });
+
+                    // Resolve if process spawned succesfully (spawn event only available in nodejs v14.17 / V15.1 or newer)
+                    // this._srt.on('spawn', () => {
+                    //     resolve();
+                    // });
+                    // Resolve after 500ms
+                    setTimeout(() => {
+                        resolve();
+                    }, 500);
+
+                    // Handle process error events
+                    this._srt.on('error', code => {
+                        console.log(`${this._controlName} (${this.displayName}): SRT error "${code}"`);
+                        reject();
+                    });
                 }
-
-                let latency = '';
-                if (this.srtMode == 'caller') {
-                    latency = '&latency=' + this.srtLatency
+                catch (err) {
+                    console.log(`${err.message}`);
+                    this._stop_srt();
+                    reject();
                 }
-
-                let streamID = '';
-                if (this.srtStreamID) {
-                    streamID = '&streamid=' + this.srtStreamID;
-                }
-
-                console.log(`${this._controlName}: Starting SRT...`);
-
-                let args = `-s 1000 -pf json srt://127.0.0.1:${this._udpSocketPort}?latency=1&mode=listener srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188`;
-                this._srt = spawn('srt-live-transmit', args.split(' '));
-
-                // Handle stdout
-                this._srt.stdout.on('data', data => {
-                    this.srtStats = data.toString();
-                });
-
-                // Handle stderr
-                this._srt.stderr.on('data', data => {
-                    console.error(data.toString().trim());
-                });
-
-                // Handle process exit event
-                this._srt.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName}: SRT stopped (${code})`) }
-                });
-
-                // Handle process error events
-                this._srt.on('error', code => {
-                    console.log(`${this._controlName}: SRT error "${code}"`);
-                });
+            } else {
+                resolve();
             }
-            catch (err) {
-                console.log(`${err.message}`);
-                this._stop_srt();
-            }
-        }
+        });
     }
 
     _stop_srt() {
         if (this._srt) {
-            console.log(`${this._controlName}: Stopping SRT...`);
+            console.log(`${this._controlName} (${this.displayName}): Stopping SRT...`);
 
             try {
+                this._srt.stdin.pause();
                 this._srt.kill('SIGTERM');
+                this._srt.kill('SIGKILL');
             } catch { }
         }
         this._srt = undefined;

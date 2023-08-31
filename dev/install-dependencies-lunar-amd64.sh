@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Installation script to install development dependencies & tools on Debian 12 (bookworm) amd64 (64bit)
+# Installation script to install development dependencies & tools on Ubuntu 23.04 (lunar) amd64 (64bit)
 
 sudo apt-get -y update
 sudo apt-get -y install nodejs npm

@@ -62,8 +62,12 @@ class AudioLoopback extends dm {
             let channels = Math.min(this._src.channels, this._dst.channels);
             let channelMap = '';
             if (channels == 1) channelMap = 'channel_map=mono'
-            
-            let cmd = `pactl load-module module-loopback source=${this._src.source} sink=${this._dst.sink} latency_msec=${this._router.paLatency} channels=${channels} rate=${sampleRate} format=s${bitDepth}le source_dont_move=true sink_dont_move=true ${channelMap}`;
+
+            // Only PipeWire supports setting the loopback_name (needed for filtering dynamically created PulseAudio modules on systems using PipeWire).
+            let _loopbackName = "";
+            if (this._parent._paServerType == 'PipeWire') _loopbackName = `loopback_name=${this._paModuleName}`;
+
+            let cmd = `pactl load-module module-loopback ${_loopbackName} source=${this._src.source} sink=${this._dst.sink} latency_msec=${this._router.paLatency} channels=${channels} rate=${sampleRate} format=s${bitDepth}le source_dont_move=true sink_dont_move=true ${channelMap}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.error(`${this._controlName}: ${data.stderr.toString()}`);

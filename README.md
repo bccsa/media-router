@@ -16,7 +16,9 @@ The following processes are part of the media-router project
 Important: As the media-router makes use of PulseAudio for audio processing, router.js must be run in a user scope (logged in user) and not as a system service.
 
 ## Compatibility
-This project has been tested on Raspberry Pi OS Bullseye (armhf / 32bit).
+This project has been tested on:
+* Raspberry Pi OS Bullseye (armhf / 32bit)
+* Ubuntu Desktop 22.04 LTS (amd64 / 64bit)
 
 ## Modules
 * AudioInput: Capture audio from hardware and output to a PCM stream.
@@ -41,7 +43,7 @@ A local operator web-interface is available on http://localhost:8081. This inter
 ## Development environment
 * Ensure that your user on the development environment has sudo access (some versions of Debian ships without sudo, and you may need to configure it manually).
 * Clone the project to your development environment.
-* Open /etc/apt/sources.list and uncomment the ```deb-src``` line to enable the Debian source repository *(Raspberry Pi OS only - needed to build PulseAudio V16)*.
+* Open /etc/apt/sources.list and uncomment the ```deb-src``` line to enable the Debian source repository *(needed to build PulseAudio V16)*.
 * Navigate to the ```media-router``` directory
 * Install dependencies ```./install-dependencies.sh```
 * Run router.js and manager.js from Visual Studio Code's Run and Debug menu.

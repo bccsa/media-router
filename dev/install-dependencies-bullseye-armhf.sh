@@ -11,6 +11,7 @@ sudo apt-get -y install git
 # Dependencies needed to build PulseAudio 16.1
 sudo apt-get -y build-dep pulseaudio
 sudo apt-get -y install meson
+sudo apt-get -y install doxygen
 
 git submodule update --init
 
