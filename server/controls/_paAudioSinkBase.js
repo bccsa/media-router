@@ -20,7 +20,7 @@ class _paAudioSinkBase extends _paAudioBase {
             if (this.run) {
                 this.run = false;
                 setTimeout(() => {
-                    if (this._parent.run) {
+                    if (this._parent.runCmd) {
                         this.run = true;
                     }
                 }, 500);
