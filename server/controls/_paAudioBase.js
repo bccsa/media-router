@@ -113,25 +113,7 @@ class _paAudioBase extends dm {
         this.on('run', run => {
             this.runVU = this.run && this.ready && this.enableVU;
             this.enableVolControl = this.run && this.ready;
-
-            // let _volEventHandler;
-            // let _muteEventHandler;
-            // if (run) {
-            //     _volEventHandler = this.on('volume', volume => {
-            //         this._setVolume(volume);
-            //     }, { immediate: true });
-
-            //     _muteEventHandler = this.on('mute', mute => {
-            //         this._setMute(mute)
-            //     }, { immediate: true });
-            // } else if (_volEventHandler && _muteEventHandler) {
-            //     this.off('volume', _volEventHandler);
-            //     this.off('mute', _muteEventHandler);
-            // }
         }, { immediate: true });
-
-        // let _volEventHandler = this._setVolume.bind(this);
-        // let _muteEventHandler = this._setMute.bind(this);
 
         this.on('ready', ready => {
             this.runVU = this.run && this.ready && this.enableVU;
