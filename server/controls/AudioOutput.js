@@ -80,7 +80,7 @@ class AudioOutput extends _paAudioSinkBase {
             }
 
             if (channelCount > 0) {
-                this._channelMap = `master_channel_map=${this._snkChannelMap.slice(0, channelCount).join(',')} channel_map=${masterMap.join(',')}`
+                this._channelMap = `channel_map=${this._snkChannelMap.slice(0, channelCount).join(',')} master_channel_map=${masterMap.join(',')}`
                 this.channels = channelCount;
                 this.channelMap = channelMap.join(',');
             } else {
