@@ -100,7 +100,7 @@ class AudioInput extends _paAudioSourceBase {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startRemapSource() {
         if (this.channels > 0) {
-            let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no`;
+            let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.log(data.stderr.toString());

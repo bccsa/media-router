@@ -100,7 +100,7 @@ class AudioOutput extends _paAudioSinkBase {
     // Create a PulseAudio loopback-module linking the sink to the sink
     _startRemapSink() {
         if (this.channels > 0) {
-            let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._paModuleName} channels=${this.channels} ${this._channelMap} remix=no`;
+            let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._paModuleName} channels=${this.channels} ${this._channelMap} remix=no sink_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     console.log(data.stderr.toString());

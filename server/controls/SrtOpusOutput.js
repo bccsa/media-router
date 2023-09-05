@@ -10,6 +10,7 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
         this._ffmpeg;
+        this._gst;
         this._srt;
         this.srtHost = 'srt.invalid';
         this.srtPort = 1234;
@@ -35,17 +36,17 @@ class SrtOpusOutput extends _paNullSinkBase {
         // Start external processes when the underlying null-sink is ready (from extended class)
         this.on('ready', ready => {
             if (ready) {
-                this._start_srt().then(() => {
-                    this._start_ffmpeg();
-                });
+                // this._start_srt().then(() => {
+                    this._start_gst();
+                // });
             }
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
-                this._stop_ffmpeg();
-                this._stop_srt();
+                this._stop_gst();
+                // this._stop_srt();
             }
         });
 
@@ -53,6 +54,75 @@ class SrtOpusOutput extends _paNullSinkBase {
         this._ffmpegParser.on('bitrate', bitrate => {
             this.outBitrate = bitrate;
         })
+    }
+
+    _start_gst() {
+        if (!this._gst) {
+            try {
+                console.log(`${this._controlName} (${this.displayName}): Starting opus encoder (gstreamer)`);
+
+                let crypto = '';
+                if (this.srtPassphrase) {
+                    crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
+                }
+
+                let latency = '';
+                if (this.srtMode == 'caller') {
+                    latency = '&latency=' + this.srtLatency
+                }
+
+                let streamID = '';
+                if (this.srtStreamID) {
+                    streamID = '&streamid=' + this.srtStreamID;
+                }
+
+                // let args = `pulsesrc device="${this.source}" ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} max-payload-size=188 audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188"`;
+                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}"`;
+
+                this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
+
+                // Handle stderr
+                this._gst.stderr.on('data', data => {
+                    console.error(data.toString());
+                });
+
+                // Handle stdout
+                this._gst.stdout.on('data', data => {
+                    console.log(data.toString());
+                });
+
+                // Handle process exit event
+                this._gst.on('close', code => {
+                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): opus encoder (gstreamer) stopped (${code})`) }
+                    this._stop_gst();
+                });
+
+                // Handle process error events
+                this._gst.on('error', code => {
+                    console.error(`${this._controlName} (${this.displayName}): opus encoder (gstreamer) error #${code}`);
+                });
+            }
+            catch (err) {
+                console.error(`${this._controlName} (${this.displayName}): opus encoder (gstreamer) error ${err.message}`);
+                this._stop_gst();
+            }
+        }
+    }
+
+    _stop_gst() {
+        if (this._gst) {
+            try {
+                this._gst.stdin.pause();
+                this._gst.kill('SIGTERM');
+                // ffmpeg stops on SIGTERM, but does not exit.
+                // Send SIGKILL to quit process
+                this._gst.kill('SIGKILL');
+            } catch {
+
+            } finally {
+                this._gst = undefined;
+            }
+        }
     }
 
     _start_ffmpeg() {
