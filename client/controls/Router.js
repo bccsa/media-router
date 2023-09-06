@@ -392,6 +392,10 @@ class Router extends ui {
             // Create new router
             let dup = this.GetData();
             delete dup.name;
+            delete dup.online;
+            delete dup.run;
+            dup.name = name;        // Manually set name. This is used by the manager service as a unique router socket identification.
+
             dup.displayName += " (copy)"
 
             this._parent.SetData({ [name]: dup });
