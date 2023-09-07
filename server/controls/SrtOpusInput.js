@@ -83,6 +83,13 @@ class SrtOpusInput extends _paNullSinkBase {
                 this._gst.on('close', code => {
                     if (code != null) { console.log(`${this._controlName} (${this.displayName}): opus decoder (gstreamer) stopped (${code})`) }
                     this._stop_gst();
+
+                    // Auto restart if run command is still active
+                    setTimeout(() => {
+                        if (this.run & !this._gst) {
+                            this._start_gst();
+                        }
+                    }, 1000);
                 });
 
                 // Handle process error events
