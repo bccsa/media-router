@@ -43,11 +43,18 @@ function setProfileDetails(property, value) {
 // -------------------------------------
 var manager_io;
 
+let reconnectTimer;
 /**
  * Connect to the manager's socket.io server
  * @param {string} url 
  */
 function manager_connect(url, username, password) {
+    // Cancel reconnect timer if existing before (re)connecting.
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+    }
+
     // Clear existing connection
     if (manager_io) {
         manager_io.disconnect();
@@ -64,6 +71,10 @@ function manager_connect(url, username, password) {
 
     manager_io.on('connect_error', err => {
         console.log('Unable to connect to manager: ' + err.message);
+        // Retry login after 10 seconds
+        reconnectTimer = setTimeout(() => {
+            manager_connect(url, username, password);
+        }, 10000);
     });
 
     // set data from manager to router controls
