@@ -44,6 +44,7 @@ class _paAudioBase extends dm {
         this._setVolTimer;      // Timer for rate limiting _setVolume actions
         this.enableVolControl = false;
         this.SetAccess('enableVolControl', { Set: 'none', Get: 'none'});
+        this.reload = false;    // Reload configuration command. Stops and starts the control to apply changes.
     }
 
     Init() {
@@ -152,6 +153,19 @@ class _paAudioBase extends dm {
         this._parent.on('runCmd', run => {
             this.run = run;
         }, { immediate: true, caller: this });
+
+        // Restart control on reload command
+        this.on('reload', reload => {
+            if (reload) {
+                if (this._parent.runCmd) {
+                    this.run = false;
+                    setTimeout(() => {
+                        this.run = this._parent.runCmd;
+                    }, 1000);
+                }
+            }
+            this.reload = false;
+        });
     }
 
     _startVU() {

@@ -18,3 +18,7 @@ cd ..
 cd client
 npm install
 cd ..
+
+cd tailwind
+npm install
+cd ..
