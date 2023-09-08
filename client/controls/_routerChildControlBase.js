@@ -17,6 +17,7 @@ class _routerChildControlBase extends ui {
         this.height = 0;
         this._left = this.left;  // Internal left position tracking
         this._top = this.top;    // Internal top position tracking
+        this.reload = false;     // Reload configuration command. Stops and starts the control to apply changes.
     }
 
     get html() {
@@ -53,29 +54,24 @@ class _routerChildControlBase extends ui {
                     <div class="paAudioBase-modal-header">
                         <div class="flex flex-shrink-0 items-center justify-between">
                             <span class="appFrame-control-name">${this.controlType}</span>
-                            <button class="paAudioBase-modal-btn-close m-0" type="button" data-bs-dismiss="modal"
-                            aria-label="Close"></button>
-                        </div>
-                    
+                            <div class="flex flex-row">
+                                <!--    DUPLICATE    -->
+                                <button id="@{_btnReload}" class="paAudioBase-btn-reload" type="button"
+                                    title="Reload configuration. This will live-restart the component if the router is running."></button>
 
-                        <div class="mr-4 flex justify-start items-center">
-        
-                            <!--    DUPLICATE    -->
-                            <button id="@{_btnDuplicate}" class="paAudioBase-btn-duplicate ml-0" type="button"
-                                data-bs-dismiss="modal" title="Duplicate device"></button>
-        
-                            <!--    DELETE   -->
-                            <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" data-bs-dismiss="modal"
-                                title="Delete device"></button>
+                                <!--    DUPLICATE    -->
+                                <button id="@{_btnDuplicate}" class="paAudioBase-btn-duplicate" type="button"
+                                    data-bs-dismiss="modal" title="Duplicate device"></button>
+            
+                                <!--    DELETE   -->
+                                <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" data-bs-dismiss="modal"
+                                    title="Delete device"></button>
 
-                            
-
-                            <h5 class="paAudioBase-modal-heading truncate max-w-[352px] break-words">@{displayName}</h5>
-        
-                        </div>
-
-                        
-
+                                <!--    CLOSE    -->
+                                <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
+                                aria-label="Close" title="Close"></button>
+                            </div>
+                        </div>        
                     </div>
         
                     <div class="paAudioBase-modal-body">
@@ -206,6 +202,12 @@ class _routerChildControlBase extends ui {
 
             // send newly created audio device's data to manager
             this._parent._notify({ [name]: dup });
+        });
+
+        // Reload control
+        this._btnReload.addEventListener('click', (e) => {
+            this.reload = false; // reset state if stuck to true
+            this.reload = true; // Toggle to true. Client router will reset reload prop to false.
         });
 
         //-------------- Dragging --------------------
