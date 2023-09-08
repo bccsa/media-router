@@ -120,3 +120,6 @@ server/managerConf.json
 
 # Exclude MAC OS files
 .DS_Store
+
+# Exclued login details 
+userpass
