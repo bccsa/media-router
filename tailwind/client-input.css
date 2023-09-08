@@ -53,7 +53,7 @@
 }
 
 .appFrame-control-name {
-    @apply py-0.5 px-0.5 text-xs font-bold;
+    @apply py-0.5 px-0.5 text-base font-bold;
 }
 
 .appFrame-modal-img {
@@ -373,6 +373,10 @@
     @apply w-full h-6 text-sm font-normal text-white bg-[#293548] border border-solid border-gray-300 rounded transition ease-in-out focus:bg-[#2B3749] focus:border-blue-600 pl-1.5;
 }
 
+.paAudioBase-btn-reload {
+    @apply icon-[mdi-light--refresh] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
+}
+
 .paAudioBase-btn-duplicate {
     @apply icon-[mdi-light--content-duplicate] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
 }
@@ -408,7 +412,7 @@
 }
 
 .paAudioBase-modal-btn-close {
-    @apply icon-[mdi-light--plus] text-black hover:text-red-500 text-2xl text-[32px] rotate-45 m-2;
+    @apply icon-[mdi-light--fullscreen-exit] text-black hover:text-blue-500 text-2xl text-[32px] ml-2 mt-2 mb-2;
 }
 
 /* modal-body */
