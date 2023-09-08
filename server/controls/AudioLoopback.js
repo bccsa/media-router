@@ -38,7 +38,7 @@ class AudioLoopback extends dm {
             this._dst.on('ready', ready => { o._dstReady = ready; o._setReady(); }, { immediate: true, caller: this });
             this._dst.on('run', run => { o._dstRun = run; o._setReady(); }, { immediate: true, caller: this });
         } else {
-            console.log(`${this._controlName}: Invalid source or destination.`);
+            this._router._log('ERROR', `${this._controlName}: Invalid source or destination.`);
         }
 
         this.on('ready', ready => {
@@ -70,18 +70,18 @@ class AudioLoopback extends dm {
             let cmd = `pactl load-module module-loopback ${_loopbackName} source=${this._src.source} sink=${this._dst.sink} latency_msec=${this._router.paLatency} channels=${channels} rate=${sampleRate} format=s${bitDepth}le source_dont_move=true sink_dont_move=true ${channelMap}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.error(`${this._controlName}: ${data.stderr.toString()}`);
+                    this._router._log('ERROR', `${this._controlName}: ${data.stderr.toString()}`);
                 }
 
                 if (data.stdout.length) {
                     this._paModuleID = data.stdout.toString().trim();
-                    console.log(`${this._controlName}: Connected ${this._src.source} to ${this._dst.sink}; ID: ${this._paModuleID}`);
+                    this._router._log('INFO', `${this._controlName}: Connected ${this._src.source} to ${this._dst.sink}; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
-                console.error(`${this._controlName}: ${err.message}`);
+                this._router._log('FATAL', `${this._controlName}: ${err.message}`);
             });
         } else {
-            console.log(`${this._controlName}: Unable to connect source to sink: Invalid source or sink`)
+            this._router._log('ERROR', `${this._controlName}: Unable to connect source to sink: Invalid source or sink`)
         }
     }
 
@@ -91,14 +91,14 @@ class AudioLoopback extends dm {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.error(`${this._controlName}: ${data.stderr.toString()}`);
+                    this._router._log('ERROR', `${this._controlName}: ${data.stderr.toString()}`);
                 } else {
-                    console.log(`${this._controlName}: Disconnected ${this._src.source} from ${this._dst.sink}`);
+                    this._router._log('INFO', `${this._controlName}: Disconnected ${this._src.source} from ${this._dst.sink}`);
                 }
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                console.error(`${this._controlName}: ${err.message}`);
+                this._router._log('FATAL', `${this._controlName}: ${err.message}`);
             });
         }
     }

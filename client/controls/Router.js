@@ -16,6 +16,10 @@ class Router extends ui {
         this.height = 700;
         this.width = 1500;
         this.scale = 1;
+        this.log = [];              // controls output logs
+        this.logINFO = false;       // log level enabled/ disabled 
+        this.logERROR = false;      // log level enabled/ disabled 
+        this.logFATAL = true;       // log level enabled/ disabled 
     }
 
     get html() {
@@ -219,12 +223,21 @@ class Router extends ui {
 
                             </div>
                         </div>
+                    </div> 
+                </div> 
 
-                        
+                <!--   console window   -->
+                <div class="flex justify-center m-2">
+                    <button class="mr-2" id="@{_console}">Console</button>
+                    <input checked id="@{_logFATAL}" type="checkbox" value="FATAL" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label class="mr-2" for="@{_logFATAL}">Fatal</label>
+                    <input checked id="@{_logERROR}" type="checkbox" value="ERROR" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label class="mr-2" for="@{_logERROR}">Error</label>
+                    <input checked id="@{_logINFO}" type="checkbox" value="INFO" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label class="mr-2" for="@{_logINFO}">Info</label>
+                </div>
+                <pre id="@{_log}" class="text-sm h-60 overflow-auto p-2 bg-slate-800 text-slate-50 col-span-4 snap-y"></pre>
 
-
-                    </div>
-                </div>  
             </details> 
         </div>
 
@@ -490,6 +503,37 @@ class Router extends ui {
         //     }
         // });
         //----------------------Scaling-----------------------------//
+        
+        // -----------------
+        // logging 
+        // -----------------
+        this._log.style.display = "none";
+        this._logINFO.checked = this.logINFO;
+        this._logERROR.checked = this.logERROR;
+        this._logFATAL.checked = this.logFATAL;
+
+        this.on('logINFO', val => { this._logINFO.checked = val });
+        this.on('logERROR', val => { this._logERROR.checked = val });
+        this.on('logFATAL', val => { this._logFATAL.checked = val });
+
+        this._logINFO.addEventListener("click", e => { this.logINFO = this._logINFO.checked });
+        this._logERROR.addEventListener("click", e => { this.logERROR = this._logERROR.checked });
+        this._logFATAL.addEventListener("click", e => { this.logFATAL = this._logFATAL.checked });
+
+        this.on('log', msg => {
+            this._log.innerHTML += msg[1] + "\n";
+            if ((this._log.clientHeight + this._log.scrollTop) >= this._log.scrollHeight - 20)
+                this._log.scrollTop = this._log.scrollHeight;
+        })
+
+        this._console.addEventListener('click', e => {
+            if (this._log.style.display == "none")
+                this._log.style.display = "block";
+            else 
+                this._log.style.display = "none"; 
+
+            this._log.scrollTop = this._log.scrollHeight;
+        })
     }
 
     _setScale() {

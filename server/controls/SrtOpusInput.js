@@ -47,7 +47,7 @@ class SrtOpusInput extends _paNullSinkBase {
     _start_gst() {
         if (!this._gst) {
             try {
-                console.log(`${this._controlName} (${this.displayName}): Starting opus decoder (gstreamer)`);
+                this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus decoder (gstreamer)`);
 
                 let crypto = '';
                 if (this.srtPassphrase) {
@@ -71,17 +71,17 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 // Handle stderr
                 this._gst.stderr.on('data', data => {
-                    console.error(data.toString());
+                    this._parent._log('ERROR', data.toString());
                 });
 
                 // Handle stdout
                 this._gst.stdout.on('data', data => {
-                    console.log(data.toString());
+                    this._parent._log('INFO', data.toString());
                 });
 
                 // Handle process exit event
                 this._gst.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): opus decoder (gstreamer) stopped (${code})`) }
+                    if (code != null) { this._parent._log('INFO', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) stopped (${code})`) }
                     this._stop_gst();
 
                     // Auto restart if run command is still active
@@ -94,11 +94,11 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 // Handle process error events
                 this._gst.on('error', code => {
-                    console.error(`${this._controlName} (${this.displayName}): opus decoder (gstreamer) error #${code}`);
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error #${code}`);
                 });
             }
             catch (err) {
-                console.error(`${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
+                cthis._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
                 this._stop_gst();
             }
         }
@@ -123,7 +123,7 @@ class SrtOpusInput extends _paNullSinkBase {
     _start_ffmpeg() {
         if (!this._ffmpeg) {
             try {
-                console.log(`${this._controlName} (${this.displayName}): Starting opus decoder (ffmpeg)`);
+                this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus decoder (ffmpeg)`);
 
                 let crypto = '';
                 if (this.srtPassphrase) {
@@ -163,27 +163,27 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 // Handle stderr
                 this._ffmpeg.stderr.on('data', data => {
-                    // console.error(data.toString());
+                    // this._parent._log('ERROR', data.toString());
                 });
 
                 // Handle stdout
                 this._ffmpeg.stdout.on('data', data => {
-                    console.log(data.toString());
+                    this._parent._log('INFO', data.toString());
                 });
 
                 // Handle process exit event
                 this._ffmpeg.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): opus decoder (ffmpeg) stopped (${code})`) }
+                    if (code != null) { this._parent._log('INFO', `${this._controlName} (${this.displayName}): opus decoder (ffmpeg) stopped (${code})`) }
                     this._stop_ffmpeg();
                 });
 
                 // Handle process error events
                 this._ffmpeg.on('error', code => {
-                    console.log(`${this._controlName} (${this.displayName}): opus decoder (ffmpeg) error #${code}`);
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus decoder (ffmpeg) error #${code}`);
                 });
             }
             catch (err) {
-                console.log(`${this._controlName} (${this.displayName}): opus decoder (ffmpeg) error ${err.message}`);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (ffmpeg) error ${err.message}`);
                 this._stop_ffmpeg();
             }
         }
@@ -229,14 +229,14 @@ class SrtOpusInput extends _paNullSinkBase {
                         this.srtHost = "0.0.0.0"
                     }
 
-                    console.log(`${this._controlName} (${this.displayName}): Starting SRT...`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting SRT...`);
 
                     let args = `-chunk 188 -s 1000 -pf json srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188 srt://0.0.0.0:${this._udpSocketPort}?pkt_size=188&mode=listener&latency=1`;
                     this._srt = spawn('srt-live-transmit', args.split(' '));
 
                     // Handle stderr
                     this._srt.stderr.on('data', data => {
-                        console.error(`${this._paModuleName} (${this.displayName}): SRT - ` + data.toString().trim());
+                        this._parent._log('ERROR', `${this._paModuleName} (${this.displayName}): SRT - ` + data.toString().trim());
                     });
 
                     // Handle stdout
@@ -246,12 +246,12 @@ class SrtOpusInput extends _paNullSinkBase {
 
                     // Handle process exit event
                     this._srt.on('close', code => {
-                        if (code != null) { console.log(`${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
+                        if (code != null) { this._parent._log('INFO', `${this._controlName} (${this.displayName}): SRT stopped (${code})`) }
                     });
 
                     // Handle process error events
                     this._srt.on('error', code => {
-                        console.log(`Error "${code}"`);
+                        this._parent._log('ERROR', `Error "${code}"`);
                         reject();
                     });
 
@@ -265,7 +265,7 @@ class SrtOpusInput extends _paNullSinkBase {
                     }, 500);
                 }
                 catch (err) {
-                    console.log(`${err.message}`);
+                    this._parent._log('FATAL', `${err.message}`);
                     this._stop_srt();
                     reject();
                 }
@@ -277,7 +277,7 @@ class SrtOpusInput extends _paNullSinkBase {
 
     _stop_srt() {
         if (this._srt) {
-            console.log(`${this._controlName} (${this.displayName}): Stopping SRT...`);
+            this._parent._log('INFO', `${this._controlName} (${this.displayName}): Stopping SRT...`);
 
             try {
                 this._srt.stdin.pause();

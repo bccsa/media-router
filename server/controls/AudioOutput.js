@@ -103,18 +103,18 @@ class AudioOutput extends _paAudioSinkBase {
             let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._paModuleName} channels=${this.channels} ${this._channelMap} remix=no sink_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    this._parent._log('ERROR', data.stderr.toString());
                 }
 
                 if (data.stdout.length) {
                     this._paModuleID = data.stdout.toString().trim();
-                    console.log(`${this._controlName} (${this.displayName}): Created remap-sink; ID: ${this._paModuleID}`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created remap-sink; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
-                console.log(err.message);
+                this._parent._log('FATAL', err.message);
             });
         } else {
-            console.log(`${this._controlName} (${this.displayName}): Unable to create remap-sink: Invalid channel map`);
+            this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to create remap-sink: Invalid channel map`);
         }
 
     }
@@ -125,14 +125,14 @@ class AudioOutput extends _paAudioSinkBase {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    this._parent._log('ERROR', data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName} (${this.displayName}): Removed remap-sink`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Removed remap-sink`);
                 }
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                console.log(err.message);
+                this._parent._log('FATAL', err.message);
             });
         }
     }

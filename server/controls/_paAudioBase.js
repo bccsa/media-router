@@ -158,7 +158,7 @@ class _paAudioBase extends dm {
         if (this.monitor && !this._vuProc) {
             let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
             this._vuProc = spawn('pacat', args.split(' '));
-            console.log(`${this._controlName} (${this.displayName}): Starting VU`)
+            this._parent._log("INFO", `${this._controlName} (${this.displayName}): Starting VU`);
             this._vuProc.stdout.on('data', buffer => {
                 // Set VU array to channel count
                 this._vu = new Array(this.channels).fill(0);
@@ -176,7 +176,7 @@ class _paAudioBase extends dm {
             });
 
             this._vuProc.stderr.on('data', data => {
-                console.error(data.toString());
+                this._parent._log('ERROR', data.toString());
             });
 
             this._vuProc.on('close', code => {
@@ -223,10 +223,10 @@ class _paAudioBase extends dm {
         let cmd = `pactl set-${type}-mute ${this[type]} ${m}`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
-                console.error(`${this._paModuleName} (${this.displayName}): ${data.stderr.toString()}`);
+                this._parent._log('ERROR', `${this._paModuleName} (${this.displayName}): ${data.stderr.toString()}`);
             }
         }).catch(err => {
-            console.error(`${this._paModuleName} (${this.displayName}): ${err.message}`);
+            this._parent._log('FATAL', `${this._paModuleName} (${this.displayName}): ${err.message}`);
         });
     }
 
@@ -245,10 +245,10 @@ class _paAudioBase extends dm {
             let cmd = `pactl set-${type}-volume ${this[type]} ${volume}%`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.error(`${this._paModuleName} (${this.displayName}): ${data.stderr.toString()}`);
+                    this._parent._log('ERROR', `${this._paModuleName} (${this.displayName}): ${data.stderr.toString()}`);
                 }
             }).catch(err => {
-                console.error(`${this._paModuleName} (${this.displayName}): ${err.message}`);
+                this._parent._log('FATAL', `${this._paModuleName} (${this.displayName}): ${err.message}`);
             });
 
             let prevVol = volume;
