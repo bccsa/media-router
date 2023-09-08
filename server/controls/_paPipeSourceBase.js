@@ -52,18 +52,18 @@ class _paPipeSourceBase extends _paAudioSourceBase {
         let cmd = `pactl load-module module-pipe-source source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} file=${this._pipename}`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
-                console.log(data.stderr.toString());
+                this._parent._log('ERROR', data.stderr.toString());
             }
 
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
-                console.log(`${this._controlName} (${this.displayName}): Created pipe-source; ID: ${this._paModuleID}`);
+                this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created pipe-source; ID: ${this._paModuleID}`);
 
                 this.source = this._paModuleName;
                 this.monitor = this._paModuleName; // Monitor source is the same as source for PulseAudio sources.
             }
         }).catch(err => {
-            console.log(err.message);
+            this._parent._log('FATAL', err.message);
         });
     }
 
@@ -74,14 +74,14 @@ class _paPipeSourceBase extends _paAudioSourceBase {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    this._parent._log('ERROR', data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName} (${this.displayName}): Removed pipe-source`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Removed pipe-source`);
                 }
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                console.log(err.message);
+                this._parent._log('FATAL', err.message);
             });
         }
     }
@@ -95,30 +95,30 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
                 // Handle stderr
                 this._drain.stderr.on('data', data => {
-                    console.log(`${this._controlName} (${this.displayName}): pipe-source drain eror: ${data.toString()}`)
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): pipe-source drain eror: ${data.toString()}`)
                 });
 
                 // Handle stdout
                 this._drain.stdout.on('data', data => {
-                    console.log(data.toString());
+                    this._parent._log('INFO', data.toString());
                 });
 
                 // Handle process exit event
                 this._drain.on('close', code => {
-                    if (code != null) { console.log(`${this._controlName} (${this.displayName}): pipe-source drain stopped (${code})`) }
+                    if (code != null) { this._parent._log('INFO', `${this._controlName} (${this.displayName}): pipe-source drain stopped (${code})`) }
                     this._stopDrain();
                 });
 
                 // Handle process error events
                 this._drain.on('error', code => {
-                    console.log(`${this._controlName} (${this.displayName}): pipe-source drain error #${code}`);
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): pipe-source drain error #${code}`);
                 });
 
                 // notify that pipe-source is ready. This can be used by implementing classes to start their processes feeding data to the 'named pipe'
                 this.ready = true;
             }
             catch (err) {
-                console.log(`${this._controlName} (${this.displayName}): pipe-source drain error ${err.message}`);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): pipe-source drain error ${err.message}`);
                 this._stopDrain();
             }
         }

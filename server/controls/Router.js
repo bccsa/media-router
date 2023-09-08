@@ -25,7 +25,11 @@ class Router extends dm {
         this.SetAccess('sinks', { Set: 'none' });   // Disable Set() access to prevent frontend changing the property
         this._udpSocketPortIndex = 2000;
         this.paLatency = 50;                        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
-        this._paServerType = '';                     // PulseAudio server type (PipeWire or PulseAudio)
+        this._paServerType = '';                    // PulseAudio server type (PipeWire or PulseAudio)
+        this.log = [];                              // controls output logs
+        this.logINFO = false;                       // log level enabled/ disabled 
+        this.logERROR = false;                      // log level enabled/ disabled 
+        this.logFATAL = true;                       // log level enabled/ disabled 
     }
 
     Init() {
@@ -66,12 +70,12 @@ class Router extends dm {
                         let cmd = `pactl unload-module ${paModule['Owner Module']}`;
                         exec(cmd, { silent: true }).then(data => {
                             if (data.stderr) {
-                                console.log(data.stderr.toString());
+                                this._log('ERROR', data.stderr.toString());
                             } else {
-                                console.log(`${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
+                                this._log('FATAL', `${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
                             }
                         }).catch(err => {
-                            console.log(err.message);
+                            this._log('FATAL', err.message);
                         });
                     });
 
@@ -81,7 +85,7 @@ class Router extends dm {
                     this.runCmd = this.run;
                 }, 2000);
             }).catch(err => {
-                console.error(err.toString());
+                this._log('FATAL', err.toString());
             });
 
         // PulseAudio items detection
@@ -214,7 +218,7 @@ class Router extends dm {
                                 }
 
                                 updated = true;
-                                console.log(`PulseAudio ${type} detected: ${item.Name}`);
+                                this._log('INFO', `PulseAudio ${type} detected: ${item.Name}`);
                             }
                         }
                     });
@@ -224,17 +228,17 @@ class Router extends dm {
                         if (!active[itemName]) {
                             delete dst[itemName];
                             updated = true;
-                            console.log(`PulseAudio ${type} removed: ${itemName}`);
+                            this._log('INFO', `PulseAudio ${type} removed: ${itemName}`);
                         }
                     });
 
                     resolve(updated);
                 }).catch(err => {
-                    console.error(err.message);
+                    this._log('FATAL', err.message);
                     resolve(false);
                 });
             } catch (err) {
-                console.error(err.message);
+                this._log('FATAL', err.message);
                 resolve(false);
             }
         });
@@ -264,6 +268,19 @@ class Router extends dm {
     GetUdpSocketPort() {
         this._udpSocketPortIndex++;
         return this._udpSocketPortIndex;
+    }
+
+    /**
+     * Controls logger 
+     * @param {String} level - log level
+     * @param {*} message - log message 
+     */
+    _log(level, message) {
+        let date = new Date().toLocaleString('en-ZA');
+        let msg = [level, `${date} | ${level}: \t${message}`];
+        console.log(msg[1]);
+        if (this[`log${msg[0]}`]) 
+            this.log = msg;
     }
 }
 

@@ -103,18 +103,18 @@ class AudioInput extends _paAudioSourceBase {
             let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    this._parent._log('ERROR', data.stderr.toString());
                 }
 
                 if (data.stdout.length) {
                     this._paModuleID = data.stdout.toString().trim();
-                    console.log(`${this._controlName} (${this.displayName}): Created remap-source; ID: ${this._paModuleID}`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created remap-source; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
-                console.log(err.message);
+                this._parent._log('FATAL', err.message);
             });
         } else {
-            console.log(`${this._controlName} (${this.displayName}): Unable to create remap-source: Invalid channel map`);
+            this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to create remap-source: Invalid channel map`);
         }
 
     }
@@ -125,14 +125,14 @@ class AudioInput extends _paAudioSourceBase {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    this._parent._log('ERROR', data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName} (${this.displayName}): Removed remap-source`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Removed remap-source`);
                 }
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                console.log(err.message);
+                this._parent._log('FATAL', err.message);
             });
         }
     }

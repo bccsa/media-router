@@ -48,15 +48,15 @@ class _paNullSinkBase extends _paAudioSourceBase {
         let cmd = `pactl load-module module-null-sink sink_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
         exec(cmd, { silent: true }).then(data => {
             if (data.stderr) {
-                console.log(data.stderr.toString());
+                this._parent._log('ERROR', data.stderr.toString());
             }
 
             if (data.stdout.length) {
                 this._paModuleID = data.stdout.toString().trim();
-                console.log(`${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paModuleID}`);
+                this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paModuleID}`);
             }
         }).catch(err => {
-            console.log(err.message);
+            this._parent._log('FATAL', err.message);
         });
     }
 
@@ -66,14 +66,14 @@ class _paNullSinkBase extends _paAudioSourceBase {
             let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
-                    console.log(data.stderr.toString());
+                    this._parent._log('ERROR', data.stderr.toString());
                 } else {
-                    console.log(`${this._controlName} (${this.displayName}): Removed null-sink`);
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Removed null-sink`);
                 }
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                console.log(err.message);
+                this._parent._log('FATAL', err.message);
             });
         }
     }
