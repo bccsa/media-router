@@ -17,10 +17,73 @@ class appFrame extends ui {
 
             <!--    LOG OUT BUTTON    -->
             <button id="@{_btnUser}" class="appFrame-btn-log-out" type="button" title="Log in or out"
-            data-bs-toggle="modal"  data-bs-target="#@{_modalLogOut}"></button>
+            data-bs-toggle="modal"  data-bs-target="#@{_modalProfile}"></button>
 
         </div> </div>
 
+        <!--    MODAL Profile   -->
+        <div id="@{_modalProfile}" class="appFrame-modal-log-out modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm appFrame-modal-dialog">
+                <div class="appFrame-modal-content">
+
+                    <div class="appFrame-modal-header">
+                        <h5 class="appFrame-modal-heading" > Profile manager</h5>
+                        <button id="@{_btnCloseModal}" class="appFrame-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="appFrame-modal-footer grid grid-cols-2 gap-4 items-stretch">
+                        <button class="appFrame-modal-btn-log-out"
+                        data-bs-toggle="modal"  data-bs-target="#@{_modalPassword}"> Change Password</button>
+
+                        <button class="appFrame-modal-btn-log-out"
+                        data-bs-toggle="modal"  data-bs-target="#@{_modalLogOut}"> Log out</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!--    MODAL Password   -->
+        <div id="@{_modalPassword}" class="appFrame-modal-log-out modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm appFrame-modal-dialog">
+                <div class="appFrame-modal-content">
+
+                    <div class="appFrame-modal-header">
+                        <h5 class="appFrame-modal-heading" > Change Password </h5>
+                        <button id="@{_btnCloseModal}" class="appFrame-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="appFrame-modal-footer grid grid-cols-1 gap-4 items-stretch">
+                        <!--    CURRENT PASSWORD  -->
+                        <div class="form-group">
+                            <label for="@{_txtCurrnetPass}" class="appFrame-label">Current Password</label>
+                            <input id="@{_txtCurrnetPass}" type="password" class="appFrame-input-password"
+                            placeholder="Current Password" value="">
+                            <label id="@{_errCurrentPass}" for="@{_txtCurrnetPass}" class="appFrame-label text-orange-900"></label>
+                        </div>
+
+                        <!--    PASSWORD INPUT 1  -->
+                        <div class="form-group">
+                            <label for="@{_txtPass1}" class="appFrame-label">Enter Password</label>
+                            <input id="@{_txtPass1}" type="password" class="appFrame-input-password"
+                            placeholder="Enter Password" value="">
+                            <label id="@{_errPass1}" for="@{_txtPass1}" class="appFrame-label text-orange-900"></label>
+                        </div>
+
+                        <!--    PASSWORD INPUT 2  -->
+                        <div class="form-group">
+                            <label for="@{_txtPass2}" class="appFrame-label">Retype Password</label>
+                            <input id="@{_txtPass2}" type="password" class="appFrame-input-password"
+                            placeholder="Retype Password" value="">
+                            <label id="@{_errPass2}" for="@{_txtPass2}" class="appFrame-label text-orange-900"></label>
+                        </div>
+
+                        <button id="@{_btcChangePass}" class="appFrame-modal-btn-log-out"> Change Password</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         
 
         <!--    DISCONNECT ALERT MESSAGE     -->
@@ -47,7 +110,7 @@ class appFrame extends ui {
 
                     <div class="appFrame-modal-footer">
                         <button id="@{_logOutButton}" class="appFrame-modal-btn-log-out"
-                        type="button" data-bs-dismiss="modal"> Log out</button>
+                        type="button" data-bs-dismiss="modal"> Yes</button>
                     </div>
                 </div>
             </div>
@@ -63,7 +126,7 @@ class appFrame extends ui {
                 <!--    ALERT MESSAGE INCORRECT DETAILS     -->
                 <div id="@{_incorrectPassAlert}" class="appFrame-login-alert-container">
                     <div class="appFrame-login-alert-icon"></div>
-                    <div class="appFrame-login-alert-text">Incorrect email or password!</div>
+                    <div class="appFrame-login-alert-text">Incorrect username or password!</div>
                 </div>
 
                 <div>
@@ -71,14 +134,14 @@ class appFrame extends ui {
                     <div class="form-group mb-6">
                         <label for="@{_userName}" class="appFrame-label">Username</label>
                         <input id="@{_userName}" class="appFrame-input-username" type="email"   
-                        title="Enter your Username" placeholder="Enter Username" value="testUser1">
+                        title="Enter your Username" placeholder="Enter Username" value="admin" disabled readonly>
                     </div>
 
                     <!--    PASSWORD INPUT  -->
                     <div class="form-group mb-6">
                         <label for="@{_userPassword}" class="appFrame-label">Password</label>
                         <input id="@{_userPassword}" type="password" class="appFrame-input-password"
-                        placeholder="Password" title="Enter your password" value="testPass">
+                        placeholder="Password" title="Enter your password" value="">
                     </div>
                     
                     <div class="appFrame-login-flex-div">
@@ -107,6 +170,36 @@ class appFrame extends ui {
 
     Init() {
 
+        // --------------------------
+        // change password 
+        // --------------------------
+        // event listeners 
+        this._txtPass2.addEventListener("input", e => {
+            if (this._txtPass1.value == this._txtPass2.value)
+                this._errPass2.innerHTML = "";
+            else 
+                this._errPass2.innerHTML = "Password's does not match";
+        })
+
+        this._btcChangePass.addEventListener("click", e => {
+            if (this._txtPass1.value == this._txtPass2.value) {
+                let data = {currentPass: this._txtCurrnetPass.value, newPass: this._txtPass1.value}
+                this.emit('change_password', data, 'top');
+            }
+        })
+
+        this.on('new_password', data => {
+            if (data) {
+                console.log("Password updated")
+                this._errCurrentPass.innerHTML = "Password updated successfully";
+            }
+            else 
+                this._errCurrentPass.innerHTML = "Current password is invalid";
+        })
+
+        // --------------------------
+        // Other
+        // --------------------------
         // Set initial values
         let f = this;
         this._incorrectPassAlert.style.display = "none";
@@ -144,9 +237,13 @@ class appFrame extends ui {
             this._formLogIn.style.display = "flex";
             this._controlsDiv.style.display = "none";
             this._incorrectPassAlert.style.display = "none";
-            this._userName.value = "";
             this._userPassword.value = "";
             this._userName.focus();
+            // clear localStorage
+            localStorage.removeItem("username");
+            localStorage.removeItem("password");
+            // disconnect socket
+            this.emit('disconnect', true, 'top');
         });
 
         this._userRemember.addEventListener('click', (e) => {

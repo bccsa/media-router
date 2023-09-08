@@ -1326,6 +1326,10 @@ textarea.form-control.is-invalid {
   box-shadow: none;
 }
 
+.btn.\!active {
+  box-shadow: none !important;
+}
+
 .btn-check:checked + .btn:focus {
   box-shadow: none;
 }
@@ -1340,6 +1344,10 @@ textarea.form-control.is-invalid {
 
 .btn.active:focus {
   box-shadow: none;
+}
+
+.btn.\!active:focus {
+  box-shadow: none !important;
 }
 
 .fade {
@@ -1377,6 +1385,13 @@ textarea.form-control.is-invalid {
   background-color: #0d6efd;
 }
 
+.dropdown-item.\!active {
+  color: rgb(31, 41, 55) !important;
+  -webkit-text-decoration: none !important;
+  text-decoration: none !important;
+  background-color: #0d6efd !important;
+}
+
 .dropdown-item:active {
   color: rgb(31, 41, 55);
   -webkit-text-decoration: none;
@@ -1397,6 +1412,11 @@ textarea.form-control.is-invalid {
 .dropdown-menu-dark .dropdown-item.active {
   color: #fff;
   background-color: #0d6efd;
+}
+
+.dropdown-menu-dark .dropdown-item.\!active {
+  color: #fff !important;
+  background-color: #0d6efd !important;
 }
 
 .dropdown-menu-dark .dropdown-item:active {
@@ -1435,6 +1455,11 @@ textarea.form-control.is-invalid {
   border-color: rgb(37, 99, 235);
 }
 
+.nav-tabs .nav-link.\!active {
+  color: rgb(37, 99, 235) !important;
+  border-color: rgb(37, 99, 235) !important;
+}
+
 .nav-tabs .nav-item.show .nav-link {
   color: rgb(37, 99, 235);
   border-color: rgb(37, 99, 235);
@@ -1456,6 +1481,12 @@ textarea.form-control.is-invalid {
   background: rgb(37, 99, 235);
   color: #fff;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.nav-pills .nav-link.\!active {
+  background: rgb(37, 99, 235) !important;
+  color: #fff !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
 }
 
 .nav-pills .show > .nav-link {
@@ -1482,6 +1513,12 @@ textarea.form-control.is-invalid {
   border-left: 0.125rem solid #1266f1;
 }
 
+.nav-pills.menu-sidebar .nav-link.\!active {
+  color: #1266f1 !important;
+  font-weight: 600 !important;
+  border-left: 0.125rem solid #1266f1 !important;
+}
+
 .nav-justified > .nav-link {
   -ms-flex-basis: 0;
   flex-basis: 0;
@@ -1498,6 +1535,10 @@ textarea.form-control.is-invalid {
 
 .tab-content > .active {
   display: block;
+}
+
+.tab-content > .\!active {
+  display: block !important;
 }
 
 .navbar-text {
@@ -1597,6 +1638,10 @@ textarea.form-control.is-invalid {
   color: rgba(0, 0, 0, 0.9);
 }
 
+.navbar-light .navbar-nav .nav-link.\!active {
+  color: rgba(0, 0, 0, 0.9) !important;
+}
+
 .navbar-light .navbar-text {
   color: rgba(0, 0, 0, 0.55);
 }
@@ -1623,6 +1668,10 @@ textarea.form-control.is-invalid {
 
 .navbar-dark .navbar-nav .nav-link.active {
   color: #fff;
+}
+
+.navbar-dark .navbar-nav .nav-link.\!active {
+  color: #fff !important;
 }
 
 .navbar-dark .navbar-text {
@@ -2200,6 +2249,10 @@ textarea.form-control.is-invalid {
   display: block;
 }
 
+.carousel-item.\!active {
+  display: block !important;
+}
+
 .carousel-item-next {
   display: block;
 }
@@ -2212,12 +2265,20 @@ textarea.form-control.is-invalid {
   transform: translateX(100%);
 }
 
+.\!active.carousel-item-end {
+  transform: translateX(100%) !important;
+}
+
 .active.carousel-item-end {
   transform: translateX(100%);
 }
 
 .carousel-item-prev:not(.carousel-item-end) {
   transform: translateX(-100%);
+}
+
+.\!active.carousel-item-start {
+  transform: translateX(-100%) !important;
 }
 
 .active.carousel-item-start {
@@ -2233,6 +2294,11 @@ textarea.form-control.is-invalid {
 .carousel-fade .carousel-item.active {
   z-index: 1;
   opacity: 1;
+}
+
+.carousel-fade .carousel-item.\!active {
+  z-index: 1 !important;
+  opacity: 1 !important;
 }
 
 .carousel-fade .carousel-item-next.carousel-item-start {
@@ -2251,10 +2317,22 @@ textarea.form-control.is-invalid {
   transition: opacity 0s 0.6s;
 }
 
+.carousel-fade .\!active.carousel-item-start {
+  z-index: 0 !important;
+  opacity: 0 !important;
+  transition: opacity 0s 0.6s !important;
+}
+
 .carousel-fade .active.carousel-item-end {
   z-index: 0;
   opacity: 0;
   transition: opacity 0s 0.6s;
+}
+
+.carousel-fade .\!active.carousel-item-end {
+  z-index: 0 !important;
+  opacity: 0 !important;
+  transition: opacity 0s 0.6s !important;
 }
 
 .carousel-control-prev {
@@ -2340,6 +2418,10 @@ textarea.form-control.is-invalid {
 
 .carousel-indicators .active {
   opacity: 1;
+}
+
+.carousel-indicators .\!active {
+  opacity: 1 !important;
 }
 
 .carousel-caption {
@@ -2798,6 +2880,11 @@ textarea.form-control.is-invalid {
 .ripple-wave.active {
   transform: scale(1);
   opacity: 0;
+}
+
+.ripple-wave.\!active {
+  transform: scale(1) !important;
+  opacity: 0 !important;
 }
 
 .btn .ripple-wave {
@@ -3318,6 +3405,10 @@ textarea.form-control.is-invalid {
   opacity: 1;
 }
 
+.timepicker-current.\!active {
+  opacity: 1 !important;
+}
+
 .timepicker-current-wrapper {
   direction: ltr;
 }
@@ -3330,6 +3421,10 @@ textarea.form-control.is-invalid {
 
 .timepicker-mode-wrapper.active {
   opacity: 1;
+}
+
+.timepicker-mode-wrapper.\!active {
+  opacity: 1 !important;
 }
 
 .timepicker-clock-wrapper {
@@ -3414,16 +3509,34 @@ textarea.form-control.is-invalid {
   font-weight: 400;
 }
 
+.timepicker-time-tips-minutes.\!active {
+  color: #fff !important;
+  background-color: #2979ff !important;
+  font-weight: 400 !important;
+}
+
 .timepicker-time-tips-inner.active {
   color: #fff;
   background-color: #2979ff;
   font-weight: 400;
 }
 
+.timepicker-time-tips-inner.\!active {
+  color: #fff !important;
+  background-color: #2979ff !important;
+  font-weight: 400 !important;
+}
+
 .timepicker-time-tips-hours.active {
   color: #fff;
   background-color: #2979ff;
   font-weight: 400;
+}
+
+.timepicker-time-tips-hours.\!active {
+  color: #fff !important;
+  background-color: #2979ff !important;
+  font-weight: 400 !important;
 }
 
 .timepicker-time-tips-minutes:focus {
@@ -3550,6 +3663,10 @@ textarea.form-control.is-invalid {
   color: #fff;
 }
 
+.timepicker-time-tips.\!active {
+  color: #fff !important;
+}
+
 .timepicker-circle {
   top: -21px;
   left: -15px;
@@ -3612,14 +3729,29 @@ textarea.form-control.is-invalid {
   opacity: 1;
 }
 
+.timepicker-hour-mode.\!active {
+  color: #fff !important;
+  opacity: 1 !important;
+}
+
 .timepicker-hour.active {
   color: #fff;
   opacity: 1;
 }
 
+.timepicker-hour.\!active {
+  color: #fff !important;
+  opacity: 1 !important;
+}
+
 .timepicker-minute.active {
   color: #fff;
   opacity: 1;
+}
+
+.timepicker-minute.\!active {
+  color: #fff !important;
+  opacity: 1 !important;
 }
 
 .timepicker-hour-mode-current-inline {
@@ -3685,12 +3817,20 @@ textarea.form-control.is-invalid {
   opacity: 1;
 }
 
+.timepicker-icon-up.\!active {
+  opacity: 1 !important;
+}
+
 .timepicker-icon-up:hover {
   opacity: 1;
 }
 
 .timepicker-icon-down.active {
   opacity: 1;
+}
+
+.timepicker-icon-down.\!active {
+  opacity: 1 !important;
 }
 
 .timepicker-icon-down:hover {
@@ -4139,6 +4279,36 @@ textarea.form-control.is-invalid {
 
   .spinner-grow {
     animation-duration: 1.5s;
+  }
+
+   {
+    transition: none !important;
+  }
+
+  .carousel-fade .\!active.carousel-item-start {
+    transition: none !important;
+  }
+
+  .carousel-fade .\!active.carousel-item-end {
+    transition: none !important;
+  }
+
+   {
+    animation-duration: 1.5s !important;
+    transition: none !important;
+  }
+
+  .carousel-fade .\!active.carousel-item-start {
+    transition: none !important;
+  }
+
+  .carousel-fade .\!active.carousel-item-end {
+    transition: none !important;
+  }
+
+   {
+    transition: none !important;
+    animation-duration: 1.5s !important;
   }
 }
 
@@ -9763,6 +9933,10 @@ textarea.paAudioBase-text-area.is-invalid {
   position: absolute;
 }
 
+.\!relative {
+  position: relative !important;
+}
+
 .relative {
   position: relative;
 }
@@ -9949,6 +10123,10 @@ textarea.paAudioBase-text-area.is-invalid {
   -webkit-line-clamp: none;
 }
 
+.\!block {
+  display: block !important;
+}
+
 .block {
   display: block;
 }
@@ -10041,6 +10219,10 @@ textarea.paAudioBase-text-area.is-invalid {
   height: 0px;
 }
 
+.h-1 {
+  height: 0.25rem;
+}
+
 .h-2 {
   height: 0.5rem;
 }
@@ -10091,6 +10273,10 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .w-0 {
   width: 0px;
+}
+
+.w-1 {
+  width: 0.25rem;
 }
 
 .w-1\/2 {
@@ -10219,10 +10405,6 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .origin-top-left {
   transform-origin: top left;
-}
-
-.origin-center {
-  transform-origin: center;
 }
 
 .scale-100 {
@@ -10523,6 +10705,14 @@ textarea.paAudioBase-text-area.is-invalid {
   grid-auto-flow: column dense;
 }
 
+.grid-cols-1 {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.grid-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .flex-row {
   flex-direction: row;
 }
@@ -10705,6 +10895,10 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .justify-items-stretch {
   justify-items: stretch;
+}
+
+.gap-4 {
+  gap: 1rem;
 }
 
 .space-x-2 > :not([hidden]) ~ :not([hidden]) {
@@ -11237,11 +11431,6 @@ textarea.paAudioBase-text-area.is-invalid {
   background-color: rgb(255 255 255 / var(--tw-bg-opacity));
 }
 
-.bg-\[\#334155\] {
-  --tw-bg-opacity: 1;
-  background-color: rgb(51 65 85 / var(--tw-bg-opacity));
-}
-
 .bg-opacity-50 {
   --tw-bg-opacity: 0.5;
 }
@@ -11378,6 +11567,14 @@ textarea.paAudioBase-text-area.is-invalid {
 .object-scale-down {
   -o-object-fit: scale-down;
      object-fit: scale-down;
+}
+
+.p-1 {
+  padding: 0.25rem;
+}
+
+.p-2 {
+  padding: 0.5rem;
 }
 
 .px-1 {
@@ -11643,6 +11840,11 @@ textarea.paAudioBase-text-area.is-invalid {
 .text-blue-500 {
   --tw-text-opacity: 1;
   color: rgb(59 130 246 / var(--tw-text-opacity));
+}
+
+.text-orange-900 {
+  --tw-text-opacity: 1;
+  color: rgb(124 45 18 / var(--tw-text-opacity));
 }
 
 .text-red-800 {
@@ -12008,6 +12210,10 @@ textarea.paAudioBase-text-area.is-invalid {
   content: 'hello';
 }
 
+.file\:slow.animation::file-selector-button {
+  animation-duration: 2s;
+}
+
 @media (min-width: 640px) {
   .sm\:container {
     width: 100%;
@@ -12217,26 +12423,6 @@ textarea.paAudioBase-text-area.is-invalid {
   .dark\:bg-gray-700 {
     --tw-bg-opacity: 1;
     background-color: rgb(55 65 81 / var(--tw-bg-opacity));
-  }
-
-  .dark\:bg-green-900 {
-    --tw-bg-opacity: 1;
-    background-color: rgb(20 83 45 / var(--tw-bg-opacity));
-  }
-
-  .dark\:bg-red-900 {
-    --tw-bg-opacity: 1;
-    background-color: rgb(127 29 29 / var(--tw-bg-opacity));
-  }
-
-  .dark\:text-green-300 {
-    --tw-text-opacity: 1;
-    color: rgb(134 239 172 / var(--tw-text-opacity));
-  }
-
-  .dark\:text-red-300 {
-    --tw-text-opacity: 1;
-    color: rgb(252 165 165 / var(--tw-text-opacity));
   }
 }
 

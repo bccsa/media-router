@@ -1,4 +1,5 @@
 const { configManager } = require('./configManager');
+const { userManager } = require('./userManager');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -27,6 +28,18 @@ if (process.argv.length > 2) {
 } else {
     confManager = new configManager('managerConf.json', 'defaultManagerConf.json');
 }
+
+// Clear initial online status
+Object.values(confManager.config).forEach(router => {
+    router.online = false;
+});
+
+// -------------------------------------
+// User management
+// -------------------------------------
+
+// load userManager
+var userMan = new userManager();
 
 // Clear initial online status
 Object.values(confManager.config).forEach(router => {
@@ -65,7 +78,7 @@ const manager_io = new Server(manager_http);
 
 // Add authentication middleware
 manager_io.use((manager_socket, next) => {
-    if (manager_socket.handshake.auth.username == 'testUser1' && manager_socket.handshake.auth.password == 'testPass') {
+    if (userMan.authUser(manager_socket.handshake.auth.username, manager_socket.handshake.auth.password)) {
         next();
     } else {
         next(new Error('Invalid username or password'));
@@ -96,6 +109,16 @@ manager_io.on('connection', manager_socket => {
             }
         });
     });
+
+    // listen on password change requsets
+    manager_socket.on('change_password', data => {
+        if (userMan.authUser(manager_socket.handshake.auth.username, data.currentPass)) {
+            userMan.updateUser(manager_socket.handshake.auth.username, data.newPass)
+            manager_socket.emit('new_password', true)
+        } else {
+            manager_socket.emit('new_password', false)
+        }
+    })
 });
 
 // -------------------------------------
