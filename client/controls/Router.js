@@ -19,7 +19,9 @@ class Router extends ui {
         this.log = [];              // controls output logs
         this.logINFO = false;       // log level enabled/ disabled 
         this.logERROR = false;      // log level enabled/ disabled 
-        this.logFATAL = true;       // log level enabled/ disabled 
+        this.logFATAL = true;       // log level enabled/ disabled
+        this.resetCmd = false;      // Reset router process
+        this.restartCmd = false;    // Restart router device
     }
 
     get html() {

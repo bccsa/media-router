@@ -30,6 +30,8 @@ class Router extends dm {
         this.logINFO = false;                       // log level enabled/ disabled 
         this.logERROR = false;                      // log level enabled/ disabled 
         this.logFATAL = true;                       // log level enabled/ disabled 
+        this.restartCmd = false;                    // Router restart command. Router process needs passwordless sudo access to the followng command: "sudo reboot now"
+        this.resetCmd = false;                      // Router process reset command. Kills the router.js process. Process should be restarted externally (e.g. via systemd service)
     }
 
     Init() {
@@ -67,17 +69,17 @@ class Router extends dm {
                 }
 
                 modules.forEach(paModule => {
-                        let cmd = `pactl unload-module ${paModule['Owner Module']}`;
-                        exec(cmd, { silent: true }).then(data => {
-                            if (data.stderr) {
-                                this._log('ERROR', data.stderr.toString());
-                            } else {
-                                this._log('FATAL', `${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
-                            }
-                        }).catch(err => {
-                            this._log('FATAL', err.message);
-                        });
+                    let cmd = `pactl unload-module ${paModule['Owner Module']}`;
+                    exec(cmd, { silent: true }).then(data => {
+                        if (data.stderr) {
+                            this._log('ERROR', data.stderr.toString());
+                        } else {
+                            this._log('FATAL', `${this._controlName} (${this.displayName}): Removed ${paModule.Name}`);
+                        }
+                    }).catch(err => {
+                        this._log('FATAL', err.message);
                     });
+                });
 
                 // Startup delay after unloading modules
                 setTimeout(() => {
@@ -100,6 +102,31 @@ class Router extends dm {
         this.on('remove', () => {
             this.runCmd = false;
             clearInterval(scanTimer);
+        });
+
+        // Reset command from manager
+        this.on('resetCmd', reset => {
+            if (reset) {
+                this.reset = false;
+                this._log('INFO', 'Reset command received. Resetting router process...');
+                setTimeout(() => {
+                    this._log('ERROR', 'Reset command timeout. Killing router process...');
+                    process.kill('SIGKILL');
+                }, 5000);
+
+                process.exit();
+            }
+        });
+
+        // Restart command from manager
+        this.on('restartCmd', restart => {
+            if (restart) {
+                restart = false;
+                this._log('INFO', 'Reset command received. Resetting router process...');
+                exec('sudo reboot now').catch(err => {
+                    this._log('ERROR', 'Unable to reboot router: ' + err.message);
+                });
+            }
         });
     }
 
@@ -279,7 +306,7 @@ class Router extends dm {
         let date = new Date().toLocaleString('en-ZA');
         let msg = [level, `${date} | ${level}: \t${message}`];
         console.log(msg[1]);
-        if (this[`log${msg[0]}`]) 
+        if (this[`log${msg[0]}`])
             this.log = msg;
     }
 }

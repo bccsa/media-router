@@ -23,6 +23,10 @@ cd client
 npm install
 cd ..
 
+cd tailwind
+npm install
+cd ..
+
 # Build and Install PulseAudio 16.1 (version included on Raspberry Pi OS - V14 - does not include latency control on null-sink modules)
 # References:
 # https://www.freedesktop.org/wiki/Software/PulseAudio/Download/
