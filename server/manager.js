@@ -155,6 +155,10 @@ router_io.on('connection', socket => {
     // Map router id's to sockets
     router_sockets[routerConf.name] = socket;
 
+    // Clear reset and restart commands. These commands may become "sticky" and cause the router to reset / restart directly after connection.
+    delete confManager.config[socket.data.routerID].resetCmd;
+    delete confManager.config[socket.data.routerID].restartCmd;
+
     // Send full router configuration to the router on connection
     socket.emit('data', confManager.config[socket.data.routerID]);
 

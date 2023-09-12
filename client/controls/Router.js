@@ -19,7 +19,9 @@ class Router extends ui {
         this.log = [];              // controls output logs
         this.logINFO = false;       // log level enabled/ disabled 
         this.logERROR = false;      // log level enabled/ disabled 
-        this.logFATAL = true;       // log level enabled/ disabled 
+        this.logFATAL = true;       // log level enabled/ disabled
+        this.resetCmd = false;      // Reset router process
+        this.restartCmd = false;    // Restart router device
     }
 
     get html() {
@@ -135,6 +137,13 @@ class Router extends ui {
                                 <button class="router-btn-delete" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalDelete}" title="Remove Router"></button>
                                 
+                                <!--    RESET ROUTER     -->
+                                <button id="@{_btnReset}" class="router-btn-reset" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalReset}" title="Reset Router"></button>
+
+                                <!--    RESTART ROUTER     -->
+                                <button id="@{_btnRestart}" class="router-btn-restart" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalRestart}" title="Restart Router"></button>
                             </div>
 
                             <!--    EXIT BUTTON   -->
@@ -309,6 +318,62 @@ class Router extends ui {
                 </div>
             </div>
         </div>
+
+        <!--    MODAL RESET ROUTER -->
+        <div id="@{_modalReset}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-reset"></div>
+                        <h5 class="router-modal-heading"> Reset Router</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                    Are you sure you want to reset the Router?
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal"> Cancel</button>
+                        
+                        <button id="@{_btnDeleteRouter}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal"> Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!--    MODAL RESTART ROUTER -->
+        <div id="@{_modalRestart}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-restart"></div>
+                        <h5 class="router-modal-heading"> Restart Router</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                    Are you sure you want to restart the Router?
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal"> Cancel</button>
+                        
+                        <button id="@{_btnDeleteRouter}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal"> Restart</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         `;
 
     }
@@ -316,7 +381,6 @@ class Router extends ui {
     Init() {
         // Set initial values
         this._toggleSettingContainer();
-        this._checkOnline();
 
         // Workaround: set page height and width after css is applied
         setTimeout(() => {
@@ -423,12 +487,33 @@ class Router extends ui {
         // Handle property changes
         this.on('online', online => {
             this._checkOnline();
-        });
+
+            if (online) {
+                this._btnReset.style.display = '';
+                this._btnRestart.style.display = '';
+            } else {
+                this._btnReset.style.display = 'none';
+                this._btnRestart.style.display = 'none';
+            }
+        }, { immediate: true });
 
         //----------------------Scaling-----------------------------//
         this.on('scale', scale => {
             this._setScale();
         }, { immediate: true });
+
+        // Toggle reset command
+        this._btnReset.addEventListener('click', e => {
+            this.resetCmd = false;
+            this.resetCmd = true;
+        });
+
+        // Toggle restart command
+        this._btnRestart.addEventListener('click', e => {
+            this.restartCmd = false;
+            this.restartCmd = true;
+        });
+
 
         // let isAltKeyPressed = false; // Flag to track Alt key press
 

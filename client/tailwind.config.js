@@ -1,1 +1,1 @@
-// This file is here, so that the intellisence for tailwind can work.
+// This file is here, so that the intellisense for tailwind can work.
