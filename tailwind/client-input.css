@@ -288,6 +288,14 @@
     @apply icon-[mdi-light--delete] text-red-500 text-2xl text-[32px] m-2;
 }
 
+.router-modal-img-reset {
+    @apply icon-[mdi-light--refresh] text-red-500 text-2xl text-[32px] m-2;
+}
+
+.router-modal-img-restart {
+    @apply icon-[mdi-light--power] text-red-500 text-2xl text-[32px] m-2;
+}
+
 .router-modal-heading {
     @apply ml-2 text-xl font-medium leading-normal text-gray-800;
 }
