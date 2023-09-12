@@ -57,9 +57,9 @@ class AudioLoopback extends dm {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startLoopback() {
         if (this._src && this._src.source && this._dst && this._dst.sink) {
-            let sampleRate = Math.min(this._src.sampleRate, this._dst.sampleRate);
-            let bitDepth = Math.min(this._src.bitDepth, this._dst.bitDepth);
-            let channels = Math.min(this._src.channels, this._dst.channels);
+            let sampleRate = this._dst.sampleRate;
+            let bitDepth = this._dst.bitDepth;
+            let channels = this._dst.channels;
             let channelMap = '';
             if (channels == 1) channelMap = 'channel_map=mono'
 
