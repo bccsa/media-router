@@ -77,7 +77,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 }
 
                 // let args = `pulsesrc device="${this.source}" ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} max-payload-size=188 audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188"`;
-                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}"`;
+                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}"`;
 
                 this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
 
