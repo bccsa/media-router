@@ -502,6 +502,19 @@ class Router extends ui {
             this._setScale();
         }, { immediate: true });
 
+        // Toggle reset command
+        this._btnReset.addEventListener('click', e => {
+            this.resetCmd = false;
+            this.resetCmd = true;
+        });
+
+        // Toggle restart command
+        this._btnRestart.addEventListener('click', e => {
+            this.restartCmd = false;
+            this.restartCmd = true;
+        });
+
+
         // let isAltKeyPressed = false; // Flag to track Alt key press
 
         // document.addEventListener('keydown', (event) => {
