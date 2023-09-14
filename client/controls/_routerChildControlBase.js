@@ -18,6 +18,7 @@ class _routerChildControlBase extends ui {
         this._left = this.left;  // Internal left position tracking
         this._top = this.top;    // Internal top position tracking
         this.reload = false;     // Reload configuration command. Stops and starts the control to apply changes.
+        this.Help_md = ""        // Help info
     }
 
     get html() {
@@ -47,7 +48,7 @@ class _routerChildControlBase extends ui {
 
         <!--    MODAL DEVICE    -->
         <div id="@{_modalDeviceDetails}" class="paAudioBase-modal modal fade select-none" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog paAudioBase-modal-dialog">
+            <div id="@{_modalDevice}" class="modal-dialog paAudioBase-modal-dialog">
 
                 <div class="paAudioBase-modal-content">
         
@@ -55,7 +56,7 @@ class _routerChildControlBase extends ui {
                         <div class="flex flex-shrink-0 items-center justify-between">
                             <span class="appFrame-control-name">${this.controlType}</span>
                             <div class="flex flex-row">
-                                <!--    DUPLICATE    -->
+                                <!--    RELOAD    -->
                                 <button id="@{_btnReload}" class="paAudioBase-btn-reload" type="button"
                                     title="Reload configuration. This will live-restart the component if the router is running."></button>
 
@@ -66,6 +67,10 @@ class _routerChildControlBase extends ui {
                                 <!--    DELETE   -->
                                 <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" data-bs-dismiss="modal"
                                     title="Delete device"></button>
+
+                                <!--    HELP MODAL     -->
+                                <button id="@{_btnHelp}" class="router-btn-help" type="button"
+                                    title="Help"></button>
 
                                 <!--    CLOSE    -->
                                 <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
@@ -121,6 +126,29 @@ class _routerChildControlBase extends ui {
                     </div>
         
                     <div class="paAudioBase-modal-footer"></div>
+                </div>
+            </div>
+
+            <!--    MODAL Help -->
+            <div id="@{_modalHelp}" class="modal-dialog paAudioBase-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-help"></div>
+                        <h5 class="router-modal-heading">Help</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                        <div id="@{_modalHelp_md}" class="prose">
+                        </div>
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button id="@{_btnHelpDismiss}" class="router-modal-btn mr-2" type="button"> Close</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -331,6 +359,58 @@ class _routerChildControlBase extends ui {
             this._setScale();
         }, { immediate: true, caller: this });
         //----------------------Scale-----------------------------//
+
+        //----------------------Help Modal-----------------------------//
+        this.Help_md = "";
+        this._modalHelp.style.display = 'none';
+        this._btnHelp.addEventListener('click', e => {
+            this._toggleHelp();
+        })
+        this._btnHelpDismiss.addEventListener('click', e => {
+            this._toggleHelp();
+        })
+        this._btnSettings.addEventListener('click', e => {
+            this._modalDevice.style.display = "block"
+            this._modalHelp.style.display = "none"
+        })
+        this.on('Help_md', e => {
+            let converter = new showdown.Converter();
+            let html = converter.makeHtml(this.Help_md);
+            this._modalHelp_md.innerHTML = html; 
+        })
+        //----------------------Help Modal-----------------------------//
+
+    }
+
+    /**
+     * Toggle help section
+     */
+    _toggleHelp() {
+        if (this._modalHelp.style.display == "none") {
+            this._modalHelp.style.display = "block"
+            this._modalDevice.style.display = "none"
+        }
+        else {
+            this._modalDevice.style.display = "block"
+            this._modalHelp.style.display = "none"
+        }
+    }
+
+    /**
+     * Load help md file into help section
+     * @param {String} _path - path to file 
+     */
+    _loadHelpMD(_path) {
+        let _this = this
+        fetch(_path)
+        .then(function(response) {
+            if (!response.ok) { throw new Error('Network response was not ok') }
+            return response.text();
+        })
+        .then(function(fileContent) {
+            _this.Help_md += fileContent + "\n";
+        })
+        .catch(function(error) { console.error('There was a problem fetching the file:', error) });
     }
 
     _setScale() {

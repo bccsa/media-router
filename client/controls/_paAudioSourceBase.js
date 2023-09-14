@@ -89,6 +89,11 @@ class _paAudioSourceBase extends _paAudioBase {
                 }
             } catch { }
         });
+
+        //----------------------Help Modal-----------------------------//
+        // Load help from MD
+        this._loadHelpMD('controls/_paAudioSourceBase.md');
+        //----------------------Help Modal-----------------------------//
     }
 
     //Add destination if new _paAudioSinkBase control is added to the parent

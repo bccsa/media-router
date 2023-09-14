@@ -105,5 +105,10 @@ class SrtOpusInput extends _paAudioSourceBase {
     Init() {
         super.Init();
         this.setHeaderColor('#0D6EFD');
+
+        //----------------------Help Modal-----------------------------//
+        // Load help from MD
+        this._loadHelpMD('controls/SrtOpusInput.md');
+        //----------------------Help Modal-----------------------------//
     }
 }

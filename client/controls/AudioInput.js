@@ -61,5 +61,10 @@ class AudioInput extends _paAudioSourceBase {
                 }
             }
         }, { immediate: true });
+
+        //----------------------Help Modal-----------------------------//
+        // Load help from MD
+        this._loadHelpMD('controls/AudioInput.md');
+        //----------------------Help Modal-----------------------------//
     }
 }
