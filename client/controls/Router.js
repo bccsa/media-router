@@ -619,9 +619,7 @@ class Router extends ui {
         // });
         //----------------------Scaling-----------------------------//
         
-        // -----------------
-        // logging 
-        // -----------------
+        //----------------------Logging-----------------------------//
         this._log.style.display = "none";
         this._logINFO.checked = this.logINFO;
         this._logERROR.checked = this.logERROR;
@@ -636,9 +634,14 @@ class Router extends ui {
         this._logFATAL.addEventListener("click", e => { this.logFATAL = this._logFATAL.checked });
 
         this.on('log', msg => {
-            this._log.innerHTML += msg[1] + "\n";
+            let isScrolled = true;
             if ((this._log.clientHeight + this._log.scrollTop) >= this._log.scrollHeight - 20)
-                this._log.scrollTop = this._log.scrollHeight;
+                isScrolled = false;
+            
+            this._log.innerHTML += msg[1] + "\n";
+
+            if (!isScrolled)
+                this._log.scrollTop = this._log.scrollHeight; 
         })
 
         this._console.addEventListener('click', e => {
@@ -649,6 +652,7 @@ class Router extends ui {
 
             this._log.scrollTop = this._log.scrollHeight;
         })
+        //----------------------Logging-----------------------------//
 
         //----------------------Help Modal-----------------------------//
         
