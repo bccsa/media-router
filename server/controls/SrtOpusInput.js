@@ -1,5 +1,6 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
+const kill = require('tree-kill');
 
 class SrtOpusInput extends _paNullSinkBase {
     constructor() {
@@ -32,6 +33,8 @@ class SrtOpusInput extends _paNullSinkBase {
                 // this._start_srt().then(() => {
                     this._start_gst();
                 // });
+            } else {
+                this._stop_gst();
             }
         });
 
@@ -65,18 +68,23 @@ class SrtOpusInput extends _paNullSinkBase {
                 }
 
                 // let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! pulsesink device="${this.sink}"`;
-                let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
+                let args = `gst-launch-1.0 srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}" ! \
+                application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! \
+                queue leaky="upstream" ! fdsink fd=1 | \
+                pacat --playback --device="${this.sink}" --rate=${this.sampleRate} --format=s${this.bitDepth}le \
+                --channels=${this.channels} --latency-msec=${this._parent.paLatency} --raw`;
 
-                this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
+                // this._gst = spawn('bash', ('< "' + args.replace(/\s+/g, ' ') + '"').split(' '));
+                this._gst = spawn(args, { shell: "sh" });
 
                 // Handle stderr
                 this._gst.stderr.on('data', data => {
-                    this._parent._log('ERROR', data.toString());
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data.toString()}`);
                 });
 
                 // Handle stdout
                 this._gst.stdout.on('data', data => {
-                    this._parent._log('INFO', data.toString());
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data.toString()}`);
                 });
 
                 // Handle process exit event
@@ -95,10 +103,11 @@ class SrtOpusInput extends _paNullSinkBase {
                 // Handle process error events
                 this._gst.on('error', code => {
                     this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error #${code}`);
+                    this._stop_gst();
                 });
             }
             catch (err) {
-                cthis._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
                 this._stop_gst();
             }
         }
@@ -107,13 +116,15 @@ class SrtOpusInput extends _paNullSinkBase {
     _stop_gst() {
         if (this._gst) {
             try {
-                this._gst.stdin.pause();
-                this._gst.kill('SIGTERM');
+                // this._gst.stdin.pause();
+                // this._gst.kill('SIGTERM');
                 // ffmpeg stops on SIGTERM, but does not exit.
                 // Send SIGKILL to quit process
-                this._gst.kill('SIGKILL');
-            } catch {
-
+                // this._gst.kill('SIGKILL');
+                // kill(this._gst.pid, 'SIGTERM');
+                kill(this._gst.pid, 'SIGKILL');
+            } catch (err) {
+                console.log('kill failed' + err.message);
             } finally {
                 this._gst = undefined;
             }

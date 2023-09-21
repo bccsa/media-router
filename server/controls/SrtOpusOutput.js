@@ -1,6 +1,7 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
 const { ffmpeg_stderr_parser } = require('../modules/ffmpeg_stderr_parser');
+const kill = require('tree-kill');
 
 class SrtOpusOutput extends _paNullSinkBase {
     constructor() {
@@ -39,6 +40,8 @@ class SrtOpusOutput extends _paNullSinkBase {
                 // this._start_srt().then(() => {
                     this._start_gst();
                 // });
+            } else {
+                this._stop_gst();
             }
         });
 
@@ -77,18 +80,22 @@ class SrtOpusOutput extends _paNullSinkBase {
                 }
 
                 // let args = `pulsesrc device="${this.source}" ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} max-payload-size=188 audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188"`;
-                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}"`;
+                let args = `pacat --record --device="${this.source}" --rate=${this.sampleRate} --format=s${this.bitDepth}le --channels=${this.channels} --latency-msec=${this._parent.paLatency} --raw | \
+                gst-launch-1.0 fdsrc ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},layout=interleaved ! \
+                audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! \
+                rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}"`;
 
-                this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
+                this._gst = spawn(args, { shell: "sh" });
+                // this._gst = spawn('bash', ('< "' + args.replace(/\s+/g, ' ') + '"').split(' '));
 
                 // Handle stderr
                 this._gst.stderr.on('data', data => {
-                    this._parent._log('ERROR', data.toString());
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data.toString()}`);
                 });
 
                 // Handle stdout
                 this._gst.stdout.on('data', data => {
-                    this._parent._log('INFO', data.toString());
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data.toString()}`);
                 });
 
                 // Handle process exit event
@@ -107,6 +114,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 // Handle process error events
                 this._gst.on('error', code => {
                     this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus encoder (gstreamer) error #${code}`);
+                    this._stop_gst();
                 });
             }
             catch (err) {
@@ -119,13 +127,15 @@ class SrtOpusOutput extends _paNullSinkBase {
     _stop_gst() {
         if (this._gst) {
             try {
-                this._gst.stdin.pause();
-                this._gst.kill('SIGTERM');
+                // this._gst.stdin.pause();
+                // this._gst.kill('SIGTERM');
                 // ffmpeg stops on SIGTERM, but does not exit.
                 // Send SIGKILL to quit process
-                this._gst.kill('SIGKILL');
+                // this._gst.kill('SIGKILL');
+                // kill(this._gst.pid, 'SIGTERM');
+                kill(this._gst.pid, 'SIGKILL');
             } catch {
-
+                console.log('kill failed');
             } finally {
                 this._gst = undefined;
             }
