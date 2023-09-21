@@ -304,7 +304,7 @@ class Router extends dm {
      */
     _log(level, message) {
         let date = new Date().toLocaleString('en-ZA');
-        let msg = [level, `${date} | ${level}: \t${message}`];
+        let msg = [level, `${date} | ${level}: \t${message.trim()}`];
         console.log(msg[1]);
         if (this[`log${msg[0]}`])
             this.log = msg;
