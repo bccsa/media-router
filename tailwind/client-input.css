@@ -410,16 +410,20 @@
 }
 
 .paAudioBase-modal {
-    @apply fixed top-0 left-0 hidden w-full h-full outline-none overflow-x-hidden overflow-y-auto;
+    @apply fixed top-0 left-0 hidden w-screen h-full outline-none overflow-x-hidden overflow-y-auto;
 }
 
 .paAudioBase-modal-dialog {
-    @apply relative w-auto pointer-events-none;
+    @apply relative w-screen pointer-events-none;
 }
 
 /* modal-content */
 .paAudioBase-modal-content {
-    @apply modal-content min-w-[30rem] border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
+    @apply modal-content min-w-[30rem] max-w-[35rem] border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current mr-6;
+}
+
+.paAudioBase-modal-help {
+    @apply min-w-[40rem] border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
 }
 
 /* modal-header */
@@ -441,7 +445,7 @@
 
 /* modal-body */
 .paAudioBase-modal-body {
-    @apply modal-body relative p-4;
+    @apply modal-body relative p-4 scroll-smooth overflow-x-hidden overflow-y-auto max-h-[85vh];
 }
 
 /* modal-footer */
