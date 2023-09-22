@@ -253,6 +253,10 @@
     @apply icon-[mdi-light--power] text-black hover:text-red-500 text-2xl text-[32px] m-2;
 }
 
+.router-btn-help {
+    @apply icon-[mdi-light--information] text-black hover:text-red-500 text-2xl text-[32px] m-2;
+}
+
 /* form-select */
 .router-select {
     @apply form-select appearance-none block w-full px-3 py-1.5 text-base font-normal text-gray-700 bg-white bg-clip-padding bg-no-repeat border border-solid border-gray-300 rounded transition ease-in-out m-0 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none;
@@ -294,6 +298,10 @@
 
 .router-modal-img-restart {
     @apply icon-[mdi-light--power] text-red-500 text-2xl text-[32px] m-2;
+}
+
+.router-modal-img-help {
+    @apply icon-[mdi-light--information] text-black text-2xl text-[32px] m-2;
 }
 
 .router-modal-heading {

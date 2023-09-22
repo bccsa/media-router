@@ -144,6 +144,10 @@ class Router extends ui {
                                 <!--    RESTART ROUTER     -->
                                 <button id="@{_btnRestart}" class="router-btn-restart" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalRestart}" title="Restart Router"></button>
+
+                                <!--    HELP MODAL     -->
+                                <button id="@{_btnHelp}" class="router-btn-help" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalHelp}" title="Help"></button>
                             </div>
 
                             <!--    EXIT BUTTON   -->
@@ -374,6 +378,32 @@ class Router extends ui {
                 </div>
             </div>
         </div>
+
+        <!--    MODAL Help -->
+        <div id="@{_modalHelp}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-help"></div>
+                        <h5 class="router-modal-heading">Help</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                        <div id="@{_modalHelp_md}" class="prose">
+                        </div>
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal"> Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         `;
 
     }
@@ -589,9 +619,7 @@ class Router extends ui {
         // });
         //----------------------Scaling-----------------------------//
         
-        // -----------------
-        // logging 
-        // -----------------
+        //----------------------Logging-----------------------------//
         this._log.style.display = "none";
         this._logINFO.checked = this.logINFO;
         this._logERROR.checked = this.logERROR;
@@ -606,9 +634,14 @@ class Router extends ui {
         this._logFATAL.addEventListener("click", e => { this.logFATAL = this._logFATAL.checked });
 
         this.on('log', msg => {
-            this._log.innerHTML += msg[1] + "\n";
+            let isScrolled = true;
             if ((this._log.clientHeight + this._log.scrollTop) >= this._log.scrollHeight - 20)
-                this._log.scrollTop = this._log.scrollHeight;
+                isScrolled = false;
+            
+            this._log.innerHTML += msg[1] + "\n";
+
+            if (!isScrolled)
+                this._log.scrollTop = this._log.scrollHeight; 
         })
 
         this._console.addEventListener('click', e => {
@@ -619,6 +652,25 @@ class Router extends ui {
 
             this._log.scrollTop = this._log.scrollHeight;
         })
+        //----------------------Logging-----------------------------//
+
+        //----------------------Help Modal-----------------------------//
+        
+        // Load help from MD
+        let _this = this
+        fetch('controls/Router.md')
+        .then(function(response) {
+            if (!response.ok) { throw new Error('Network response was not ok') }
+            return response.text();
+        })
+        .then(function(fileContent) {
+            let converter = new showdown.Converter();
+            let html = converter.makeHtml(fileContent);
+            _this._modalHelp_md.innerHTML = html; 
+        })
+        .catch(function(error) { console.error('There was a problem fetching the file:', error) });
+
+        //----------------------Help Modal-----------------------------//
     }
 
     _setScale() {

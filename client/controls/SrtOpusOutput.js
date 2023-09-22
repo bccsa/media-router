@@ -172,5 +172,10 @@ class SrtOpusOutput extends _paAudioSinkBase {
     Init() {
         super.Init();
         this.setHeaderColor('#00C3A3');
+
+        //----------------------Help Modal-----------------------------//
+        // Load help from MD
+        this._loadHelpMD('controls/SrtOpusOutput.md');
+        //----------------------Help Modal-----------------------------//
     }
 }

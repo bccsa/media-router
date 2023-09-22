@@ -8,6 +8,7 @@ module.exports = {
   plugins: [
     // tw-elements plugin
     require("../client/node_modules/tw-elements/dist/plugin.js"),
+    require('@tailwindcss/typography'),
     // Iconify plugin
     addDynamicIconSelectors()
   ],

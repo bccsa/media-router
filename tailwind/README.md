@@ -17,3 +17,8 @@ Icons from iconify material icon set (Material Design Light by Pictogrammers) - 
 Icons from iconify material icon set (Phosphor by Phosphor Icons) - icon versions https://icon-sets.iconify.design/ph/
 
 Installed through tailwind npm package @iconify-json/material-symbols. See https://docs.iconify.design/usage/css/tailwind/ for documentation.
+
+## Tailwind Typegraphy
+*Used for Markdown*
+
+Link to docs: https://tailwindcss.com/docs/typography-plugin

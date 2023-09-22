@@ -18,9 +18,9 @@ class _paAudioBase extends _routerChildControlBase {
         this.showMuteControl = true;    // Show mute button on local client
         this.showInTopBar = false;
         this.formatHideRW = false;   // true = Disable Read Write audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
-        this.formatHideRO = true;  // true = Disable Read Only audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
+        this.formatHideRO = true;   // true = Disable Read Only audio format controls. This can be used by implementing classes to enable / disable the audio format controls.
         this.vuData = [];           // VU meter data
-        this.enableVU = true;      // true = enable VU meter
+        this.enableVU = true;       // true = enable VU meter
     }
 
     get html() {
@@ -238,8 +238,12 @@ class _paAudioBase extends _routerChildControlBase {
             }
         });
 
-    }
+        //----------------------Help Modal-----------------------------//
+        // Load help from MD
+        this._loadHelpMD('controls/_paAudioBase.md');
+        //----------------------Help Modal-----------------------------//
 
+    }
 
     /**
      * Create or remove a VU meter in the parent top bar

@@ -15,5 +15,10 @@ class Separator extends _routerChildControlBase {
     Init() {
         super.Init();
         this.setHeaderColor('#475569');
+        
+        //----------------------Help Modal-----------------------------//
+        // Load help from MD
+        this._loadHelpMD('controls/Separator.md');
+        //----------------------Help Modal-----------------------------//
     }
 }
