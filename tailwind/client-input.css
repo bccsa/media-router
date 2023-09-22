@@ -445,7 +445,7 @@
 
 /* modal-body */
 .paAudioBase-modal-body {
-    @apply modal-body relative p-4 scroll-smooth overflow-x-hidden overflow-y-auto max-h-[85vh] h-full;
+    @apply modal-body relative p-4 scroll-smooth overflow-x-hidden overflow-y-auto max-h-[80vh] h-full;
 }
 
 /* modal-footer */
