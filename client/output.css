@@ -6569,7 +6569,7 @@ textarea.router-text-area.is-invalid {
 
 .router-btn-help:hover {
   --tw-text-opacity: 1;
-  color: rgb(239 68 68 / var(--tw-text-opacity));
+  color: rgb(59 130 246 / var(--tw-text-opacity));
 }
 
 /* form-select */
@@ -8500,6 +8500,7 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .paAudioBase-modal-body {
   position: relative;
+  height: 100%;
   max-height: 85vh;
   overflow-y: auto;
   overflow-x: hidden;
@@ -9525,15 +9526,6 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .w-full {
   width: 100%;
-}
-
-.w-max {
-  width: -moz-max-content;
-  width: max-content;
-}
-
-.w-screen {
-  width: 100vw;
 }
 
 .min-w-\[12rem\] {

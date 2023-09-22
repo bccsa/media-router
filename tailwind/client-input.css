@@ -254,7 +254,7 @@
 }
 
 .router-btn-help {
-    @apply icon-[mdi-light--information] text-black hover:text-red-500 text-2xl text-[32px] m-2;
+    @apply icon-[mdi-light--information] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
 }
 
 /* form-select */
@@ -445,7 +445,7 @@
 
 /* modal-body */
 .paAudioBase-modal-body {
-    @apply modal-body relative p-4 scroll-smooth overflow-x-hidden overflow-y-auto max-h-[85vh];
+    @apply modal-body relative p-4 scroll-smooth overflow-x-hidden overflow-y-auto max-h-[85vh] h-full;
 }
 
 /* modal-footer */

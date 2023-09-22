@@ -381,7 +381,7 @@ class Router extends ui {
 
         <!--    MODAL Help -->
         <div id="@{_modalHelp}" class="paAudioBase-modal modal fade" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog paAudioBase-modal-dialog">
+            <div class="modal-dialog modal-xl paAudioBase-modal-dialog">
                 <div class="modal-dialog paAudioBase-modal-help">
                     <div class="router-modal-content">
 
