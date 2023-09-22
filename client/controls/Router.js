@@ -380,26 +380,31 @@ class Router extends ui {
         </div>
 
         <!--    MODAL Help -->
-        <div id="@{_modalHelp}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog modal-sm router-modal-dialog">
-                <div class="router-modal-content">
+        <div id="@{_modalHelp}" class="paAudioBase-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-xl paAudioBase-modal-dialog">
+                <div class="modal-dialog paAudioBase-modal-help">
+                    <div class="router-modal-content">
 
-                    <div class="router-modal-header">
-                        <div class="router-modal-img-help"></div>
-                        <h5 class="router-modal-heading">Help</h5>
-                        <button class="router-modal-btn-close" type="button"
-                        data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-
-                    <div class="router-modal-body">
-                        <div id="@{_modalHelp_md}" class="prose">
+                        <div class="paAudioBase-modal-header">
+                            <div class="flex flex-shrink-0 items-center justify-between">
+                                <span class="appFrame-control-name">Help</span>
+                                <div class="flex flex-row">
+                                    <!--    CLOSE    -->
+                                    <button class="router-modal-btn-close" type="button"
+                                    data-bs-dismiss="modal" aria-label="Close"></button>
+                                </div>
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="router-modal-footer">
-                        
-                        <button class="router-modal-btn mr-2" type="button"  
-                        data-bs-dismiss="modal"> Close</button>
+                        <div class="paAudioBase-modal-body">
+                            <div id="@{_modalHelp_md}" class="prose">
+                            </div>
+                        </div>
+
+                        <div class="paAudioBase-modal-footer">
+                            <button class="router-modal-btn mr-2" type="button"  
+                            data-bs-dismiss="modal"> Close</button>
+                        </div>
                     </div>
                 </div>
             </div>

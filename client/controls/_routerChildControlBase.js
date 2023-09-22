@@ -48,109 +48,116 @@ class _routerChildControlBase extends ui {
 
         <!--    MODAL DEVICE    -->
         <div id="@{_modalDeviceDetails}" class="paAudioBase-modal modal fade select-none" tabindex="-1" aria-hidden="true">
-            <div id="@{_modalDevice}" class="modal-dialog paAudioBase-modal-dialog">
+            <div id="@{_modalDevice}" class="modal-dialog modal-xl paAudioBase-modal-dialog">
+                <div class="flex justify-center w-full">
 
-                <div class="paAudioBase-modal-content">
-        
-                    <div class="paAudioBase-modal-header">
-                        <div class="flex flex-shrink-0 items-center justify-between">
-                            <span class="appFrame-control-name">${this.controlType}</span>
-                            <div class="flex flex-row">
-                                <!--    RELOAD    -->
-                                <button id="@{_btnReload}" class="paAudioBase-btn-reload" type="button"
-                                    title="Reload configuration. This will live-restart the component if the router is running."></button>
-
-                                <!--    DUPLICATE    -->
-                                <button id="@{_btnDuplicate}" class="paAudioBase-btn-duplicate" type="button"
-                                    data-bs-dismiss="modal" title="Duplicate device"></button>
+                    <!--  Settings section  -->
+                    <div class="paAudioBase-modal-content">
             
-                                <!--    DELETE   -->
-                                <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" data-bs-dismiss="modal"
-                                    title="Delete device"></button>
+                        <div class="paAudioBase-modal-header">
+                            <div class="flex flex-shrink-0 items-center justify-between">
+                                <span class="appFrame-control-name">${this.controlType}</span>
+                                <div class="flex flex-row">
+                                    <!--    RELOAD    -->
+                                    <button id="@{_btnReload}" class="paAudioBase-btn-reload" type="button"
+                                        title="Reload configuration. This will live-restart the component if the router is running."></button>
 
-                                <!--    HELP MODAL     -->
-                                <button id="@{_btnHelp}" class="router-btn-help" type="button"
-                                    title="Help"></button>
+                                    <!--    DUPLICATE    -->
+                                    <button id="@{_btnDuplicate}" class="paAudioBase-btn-duplicate" type="button"
+                                        data-bs-dismiss="modal" title="Duplicate device"></button>
+                
+                                    <!--    DELETE   -->
+                                    <button id="@{_btnDelete}" class="paAudioBase-btn-delete" type="button" data-bs-dismiss="modal"
+                                        title="Delete device"></button>
 
-                                <!--    CLOSE    -->
-                                <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
-                                aria-label="Close" title="Close"></button>
+                                    <!--    HELP MODAL     -->
+                                    <button id="@{_btnHelp}" class="router-btn-help" type="button"
+                                        title="Help"></button>
+
+                                    <!--    CLOSE    -->
+                                    <button class="paAudioBase-modal-btn-close" type="button" data-bs-dismiss="modal"
+                                    aria-label="Close" title="Close"></button>
+                                </div>
+                            </div>        
+                        </div>
+            
+                        <div class="paAudioBase-modal-body">
+            
+                            <!--    DISPLAY NAME      -->
+                            <div class="w-full mb-1 mr-4">
+                                <div class="mr-4 w-full">
+                                    <label for="@{_displayName}" class="mb-2">Display Name: </label>
+                                    <input id="@{_displayName}" class="paAudioBase-text-area" type="text" maxlength="60"
+                                        placeholder="Your display name" title="Device display name" value="@{displayName}" />
+                                </div>
                             </div>
-                        </div>        
+            
+                            <!--    DESCRIPTION TEXT AREA     -->
+                            <div class="w-full mb-2 mr-4">
+                                <label for="@{_description}" class="mb-2">Description:</label>
+                                <textarea id="@{_description}" class="paAudioBase-text-area" rows="1" cols="3"
+                                    title="Device description" placeholder="Your description" value="@{description}"></textarea>
+                            </div>
+            
+                            <!--    GENERAL SETTINGS     -->
+                            <div class="w-full mb-3 flex ">
+            
+                                <!--    SHOW CONTROL CHECKBOX      -->
+                                <div class="w-1/2 mr-3 flex">
+                                    <input id="@{_showControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox"
+                                        checked="@{showControl}" />
+                                    <label for="@{_showControl}" class=""
+                                        title="Indicates that the front end should show the control">Show on local client</label>
+                                </div>
+            
+                                <!--    DISPLAY ORDER      -->
+                                <div class="w-1/2  flex">
+                                    <label for="@{_displayOrder}" class="w-1/2 mr-3">Display Order:</label>
+                                    <input id="@{_displayOrder}" class="paAudioBase-pos-number-input w-1/2" type="number" min="0"
+                                        oninput="validity.valid||(value='')" title="Display order in the client WebApp."
+                                        name="displayOrder" step="1" value="@{displayOrder}">
+                                </div>
+            
+                                <!-- <div class="w-1/4 mr-3"></div>
+                                <div class="w-1/4 mr-3"></div>
+                                <div class="w-1/4"></div> -->
+                            </div>
+            
+                            <!-- MODAL HTML added by extended controls  -->
+                            %modalHtml%
+                        </div>
+            
+                        <div class="paAudioBase-modal-footer h-10"></div>
+
                     </div>
-        
-                    <div class="paAudioBase-modal-body">
-        
-                        <!--    DISPLAY NAME      -->
-                        <div class="w-full mb-1 mr-4">
-                            <div class="mr-4 w-full">
-                                <label for="@{_displayName}" class="mb-2">Display Name: </label>
-                                <input id="@{_displayName}" class="paAudioBase-text-area" type="text" maxlength="60"
-                                    placeholder="Your display name" title="Device display name" value="@{displayName}" />
+
+                    <!--  Help section  -->
+                    <div id="@{_modalHelp}" class="paAudioBase-modal-help">
+
+                        <div class="paAudioBase-modal-header">
+                            <div class="flex flex-shrink-0 items-center justify-between">
+                                <span class="appFrame-control-name">Help</span>
+                                <div class="flex flex-row">
+                                    <!--    CLOSE    -->
+                                    <button id="@{_btnHelpDismiss}" class="router-modal-btn-close" type="button"aria-label="Close"></button>
+                                </div>
                             </div>
                         </div>
-        
-                        <!--    DESCRIPTION TEXT AREA     -->
-                        <div class="w-full mb-2 mr-4">
-                            <label for="@{_description}" class="mb-2">Description:</label>
-                            <textarea id="@{_description}" class="paAudioBase-text-area" rows="1" cols="3"
-                                title="Device description" placeholder="Your description" value="@{description}"></textarea>
-                        </div>
-        
-                        <!--    GENERAL SETTINGS     -->
-                        <div class="w-full mb-3 flex ">
-        
-                            <!--    SHOW CONTROL CHECKBOX      -->
-                            <div class="w-1/2 mr-3 flex">
-                                <input id="@{_showControl}" class="mr-2 mt-1 h-4 w-4" type="checkbox"
-                                    checked="@{showControl}" />
-                                <label for="@{_showControl}" class=""
-                                    title="Indicates that the front end should show the control">Show on local client</label>
+
+                        <div class="paAudioBase-modal-body">
+                            <div id="@{_modalHelp_md}" class="prose">
                             </div>
-        
-                            <!--    DISPLAY ORDER      -->
-                            <div class="w-1/2  flex">
-                                <label for="@{_displayOrder}" class="w-1/2 mr-3">Display Order:</label>
-                                <input id="@{_displayOrder}" class="paAudioBase-pos-number-input w-1/2" type="number" min="0"
-                                    oninput="validity.valid||(value='')" title="Display order in the client WebApp."
-                                    name="displayOrder" step="1" value="@{displayOrder}">
-                            </div>
-        
-                            <!-- <div class="w-1/4 mr-3"></div>
-                            <div class="w-1/4 mr-3"></div>
-                            <div class="w-1/4"></div> -->
                         </div>
-        
-                        <!-- MODAL HTML added by extended controls  -->
-                        %modalHtml%
+
+                        <div class="paAudioBase-modal-footer h-10">
+                            
+                        </div>
                     </div>
-        
-                    <div class="paAudioBase-modal-footer"></div>
+                    
                 </div>
+
             </div>
 
-            <!--    MODAL Help -->
-            <div id="@{_modalHelp}" class="modal-dialog paAudioBase-modal-dialog">
-                <div class="router-modal-content">
-
-                    <div class="router-modal-header">
-                        <div class="router-modal-img-help"></div>
-                        <h5 class="router-modal-heading">Help</h5>
-                        <button class="router-modal-btn-close" type="button"
-                        data-bs-dismiss="modal" aria-label="Close"></button>
-                    </div>
-
-                    <div class="router-modal-body">
-                        <div id="@{_modalHelp_md}" class="prose">
-                        </div>
-                    </div>
-
-                    <div class="router-modal-footer">
-                        
-                        <button id="@{_btnHelpDismiss}" class="router-modal-btn mr-2" type="button"> Close</button>
-                    </div>
-                </div>
-            </div>
         </div>
         
         <div id="@{_externalControls}">
@@ -362,7 +369,7 @@ class _routerChildControlBase extends ui {
 
         //----------------------Help Modal-----------------------------//
         this.Help_md = "";
-        this._modalHelp.style.display = 'none';
+        this._modalHelp.style.display = 'none';   
         this._btnHelp.addEventListener('click', e => {
             this._toggleHelp();
         })
@@ -370,7 +377,6 @@ class _routerChildControlBase extends ui {
             this._toggleHelp();
         })
         this._btnSettings.addEventListener('click', e => {
-            this._modalDevice.style.display = "block"
             this._modalHelp.style.display = "none"
         })
         this.on('Help_md', e => {
@@ -388,10 +394,8 @@ class _routerChildControlBase extends ui {
     _toggleHelp() {
         if (this._modalHelp.style.display == "none") {
             this._modalHelp.style.display = "block"
-            this._modalDevice.style.display = "none"
         }
         else {
-            this._modalDevice.style.display = "block"
             this._modalHelp.style.display = "none"
         }
     }
