@@ -8,7 +8,7 @@ The media-router makes use of the following Linux audio and video processes / ap
 
 The media-router can be used to build flexible distributed media routing applications like remote audio translation systems, video feeds for broadcast, education, etc.
 
-# Processes
+## Processes
 The following processes are part of the media-router project
 * server/router.js - process running on the client devices, responsible for all media processing. router.js receives its configuration upon connection to manager.js.
 * server/manager.js - process responsible for storing and distributing client configurations.
@@ -50,3 +50,23 @@ A local operator web-interface is available on http://localhost:8081. This inter
 
 ### Building Tailwind CSS
 Tailwind CSS is installed in the ```tailwind``` directory. Scripts for building tailwind is available from this directory. The output CSS files are placed in the respective project directories.
+
+## Performance tuning
+### Setting the UDP Buffer limit
+Linux is by default configured with a quite small max UDP buffer size. This should be increased on systems with many SRT or other UDP based connections.
+
+Change the max UDP buffer size to e.g. 25 megabytes:
+```shell
+sudo sysctl -w net.core.rmem_max=26214400
+sudo sysctl -w net.core.wmem_max=26214400
+```
+
+To make the change permanent, add the following lines to ```/etc/sysctl.conf```:
+```shell
+net.core.rmem_max=26214400
+net.core.wmem_max=26214400
+```
+
+References:
+https://access.redhat.com/documentation/en-us/jboss_enterprise_application_platform/5/html/administration_and_configuration_guide/jgroups-perf-udpbuffer
+https://www.systutorials.com/how-to-enlarge-linux-udp-buffer-size/
