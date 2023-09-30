@@ -111,7 +111,7 @@ class AudioOutput extends _paAudioSinkBase {
                     this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created remap-sink; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
-                this._parent._log('FATAL', err.message);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
             });
         } else {
             this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to create remap-sink: Invalid channel map`);
@@ -132,7 +132,7 @@ class AudioOutput extends _paAudioSinkBase {
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                this._parent._log('FATAL', err.message);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
             });
         }
     }
