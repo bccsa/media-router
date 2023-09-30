@@ -43,9 +43,13 @@ class AudioLoopback extends dm {
 
         this.on('ready', ready => {
             if (ready) {
-                this._startLoopback();
+                this._parent._parent.PaCmdQueue(() => {
+                    this._startLoopback();
+                });
             } else {
-                this._stopLoopback();
+                this._parent._parent.PaCmdQueue(() => {
+                    this._stopLoopback();
+                });
             }
         }, { immediate: true });
     }
