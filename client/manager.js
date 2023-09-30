@@ -88,7 +88,7 @@ function socket_comms() {
             // remove all event listeners
             socket.off('data', socket_data);
             socket.off('new_password', socket_new_password);
-            socket.off('connect', socket_connect);
+            // socket.off('connect', socket_connect);
             controls.off('data', controls_data);
             controls.off('change_password', controls_change_password);
             controls.off('messageBox', controls_messageBox);
