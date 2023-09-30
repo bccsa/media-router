@@ -57,10 +57,10 @@ class SrtOpusInput extends _paNullSinkBase {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
                 }
 
-                let latency = '';
-                if (this.srtMode == 'caller') {
-                    latency = '&latency=' + this.srtLatency
-                }
+                // let latency = '';
+                // if (this.srtMode == 'caller') {
+                //     latency = '&latency=' + this.srtLatency
+                // }
 
                 let streamID = '';
                 if (this.srtStreamID) {
@@ -68,7 +68,7 @@ class SrtOpusInput extends _paNullSinkBase {
                 }
 
                 // let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! pulsesink device="${this.sink}"`;
-                let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
+                let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
 
                 this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
 
