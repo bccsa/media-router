@@ -8,6 +8,9 @@ The media-router makes use of the following Linux audio and video processes / ap
 
 The media-router can be used to build flexible distributed media routing applications like remote audio translation systems, video feeds for broadcast, education, etc.
 
+## Prerequisites
+* MediaMTX (https://github.com/bluenviron/mediamtx)
+
 ## Processes
 The following processes are part of the media-router project
 * server/router.js - process running on the client devices, responsible for all media processing. router.js receives its configuration upon connection to manager.js.

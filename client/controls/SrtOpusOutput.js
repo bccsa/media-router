@@ -14,7 +14,8 @@ class SrtOpusOutput extends _paAudioSinkBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this.srtLatency = 10;
-        this.srtStreamID = ''
+        this.srtStreamID = '';
+        this.srtCallUrl = '';       // url caller is published uner the mediaMTX server
     }
 
     get html() {
@@ -97,7 +98,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
         </div>
     
         <!-- SRT host  -->
-        <div class="w-full mb-2">
+        <div id="@{_divSrtHost}" class="w-full mb-2">
             <label for="@{_srtHost}" class="form-label inline-block mb-2">Host:</label>
                 <input id="@{_srtHost}" class="paAudioBase-text-area" type="text"
                 title="SRT host name / ip address" placeholder="Your srt Host" value="@{srtHost}"/>
@@ -105,7 +106,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
 
         <div class="w-full mb-2 flex ">
             <!-- SRT port  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div id="@{_divSrtPort}" class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_srtPort}" class="form-label inline-block mb-2 mr-2">Port:</label>
                 <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtPort}" 
                     title="SRT port" name="SRT port" step="1" class="srtOpusInput-pos-number-input"
@@ -114,7 +115,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
             </div>
 
             <!-- SRT Latency  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div id="@{_divSrtLatency}" class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_srtLatency}" class="form-label inline-block mb-2 mr-2">Latency:</label>
                 <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtLatency}" 
                     title="SRT latency in milliseconds" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
@@ -140,7 +141,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
             </div>
 
             <!-- SRT PbKeyLen  -->    
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div id="@{_divPbKeyLen}" class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_srtPbKeyLen}" class="form-label inline-block mb-2">Pb Key Length:</label>
                 <select id="@{_srtPbKeyLen}" title="SRT encryption key length (16, 32)" value="@{srtPbKeyLen}" 
                 name="SRT PbKeyLen" class="paAudioBase-select" type="text">
@@ -155,7 +156,7 @@ class SrtOpusOutput extends _paAudioSinkBase {
 
         <!-- SRT Passphrase  -->
         <div class="w-full mb-2">
-            <label for="@{_srtPassphrase}" class="form-label inline-block mb-2">Passphrase:</label>
+            <label for="@{_srtPassphrase}" class="form-label inline-block mb-2">Passphrase (Need to be more that 10 chars):</label>
                 <input id="@{_srtPassphrase}" class="paAudioBase-text-area" type="text" title="SRT encryption passphrase"
                 placeholder="Your srt Passphrase" value="@{srtPassphrase}"/>
         </div>
@@ -166,12 +167,36 @@ class SrtOpusOutput extends _paAudioSinkBase {
                 <input id="@{_srtStreamID}" class="paAudioBase-text-area" type="text" title="SRT Stream ID"
                 placeholder="Your srt StreamID" value="@{srtStreamID}"/>
         </div>
+
+        <!-- SRT Output Stream URL  -->
+        <div id="@{_divSrtCallUrl}" class="w-full mb-2">
+            <label for="@{_srtCallUrl}" class="form-label inline-block mb-2">Output URL:</label>
+                <input id="@{_srtCallUrl}" class="paAudioBase-text-area" type="text" title="Use this url to listen to this output"
+                placeholder="SRT output url" value="@{srtCallUrl}" disabled>
+        </div>
         `);
     }
 
     Init() {
         super.Init();
         this.setHeaderColor('#00C3A3');
+
+        this.on('srtMode', srtMode => {
+            // hide/ show controls based on mode 
+            if (srtMode == 'listener') {
+                this._divSrtPort.style.display = "none";
+                this._divSrtHost.style.display = "none";
+                this._divSrtLatency.style.display = "none";
+                this._divPbKeyLen.style.display = "none";
+                this._divSrtCallUrl.style.display = "block";
+            } else {
+                this._divSrtPort.style.display = "block";
+                this._divSrtHost.style.display = "block";
+                this._divSrtLatency.style.display = "block";
+                this._divPbKeyLen.style.display = "block";
+                this._divSrtCallUrl.style.display = "none";
+            }
+        }, {immediate: true})
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
