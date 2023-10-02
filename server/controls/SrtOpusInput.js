@@ -30,7 +30,7 @@ class SrtOpusInput extends _paNullSinkBase {
         this.on('ready', ready => {
             if (ready) {
                 // this._start_srt().then(() => {
-                    this._start_gst();
+                this._start_gst();
                 // });
             }
         });
@@ -47,6 +47,9 @@ class SrtOpusInput extends _paNullSinkBase {
     _start_gst() {
         if (!this._gst) {
             try {
+                // Request a PulseAudio connection
+                this._parent.PaReqConnection();
+
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus decoder (gstreamer)`);
 
                 let crypto = '';
@@ -54,10 +57,10 @@ class SrtOpusInput extends _paNullSinkBase {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
                 }
 
-                let latency = '';
-                if (this.srtMode == 'caller') {
-                    latency = '&latency=' + this.srtLatency
-                }
+                // let latency = '';
+                // if (this.srtMode == 'caller') {
+                //     latency = '&latency=' + this.srtLatency
+                // }
 
                 let streamID = '';
                 if (this.srtStreamID) {
@@ -65,7 +68,7 @@ class SrtOpusInput extends _paNullSinkBase {
                 }
 
                 // let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! pulsesink device="${this.sink}"`;
-                let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
+                let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
 
                 this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
 
@@ -89,16 +92,17 @@ class SrtOpusInput extends _paNullSinkBase {
                         if (this.run & !this._gst) {
                             this._start_gst();
                         }
-                    }, 1000);
+                    }, 5000);
                 });
 
                 // Handle process error events
                 this._gst.on('error', code => {
                     this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error #${code}`);
+                    this._stop_gst();
                 });
             }
             catch (err) {
-                cthis._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
                 this._stop_gst();
             }
         }
@@ -107,6 +111,9 @@ class SrtOpusInput extends _paNullSinkBase {
     _stop_gst() {
         if (this._gst) {
             try {
+                // Release a PulseAudio connection
+                this._parent.PaRemConnection();
+
                 this._gst.stdin.pause();
                 this._gst.kill('SIGTERM');
                 // ffmpeg stops on SIGTERM, but does not exit.
@@ -265,7 +272,7 @@ class SrtOpusInput extends _paNullSinkBase {
                     }, 500);
                 }
                 catch (err) {
-                    this._parent._log('FATAL', `${err.message}`);
+                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
                     this._stop_srt();
                     reject();
                 }

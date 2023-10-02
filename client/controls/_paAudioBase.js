@@ -10,7 +10,7 @@ class _paAudioBase extends _routerChildControlBase {
         this.mute = false;
         this.volume = 100;
         this.channels = 1;
-        this.sampleRate = 44100;
+        this.sampleRate = 48000;
         this.bitDepth = 16;
         this.maxVolume = 150;
         this.soloGroup = "";
@@ -26,8 +26,8 @@ class _paAudioBase extends _routerChildControlBase {
     get html() {
         return super.html
 
-            // Add card HTML
-            .replace('%cardHtml%', `
+        // Add card HTML
+        .replace('%cardHtml%', `
         <div class="flex justify-between items-center">
             <!--    ACTIVE TOGGLE  -->
             <label class="relative inline-flex items-center mr-5 cursor-pointer">
@@ -44,8 +44,8 @@ class _paAudioBase extends _routerChildControlBase {
         <div id="@{_volume_slit}" class="_paAudioBase_volume_slit" title="Audio Indicator"></div>
         `)
 
-            // Add modal HTML
-            .replace('%modalHtml%', `
+        // Add modal HTML
+        .replace('%modalHtml%', `
         <div class="w-full flex">
 
             <!--    CHANNELS      -->
@@ -169,6 +169,13 @@ class _paAudioBase extends _routerChildControlBase {
                 <label for="@{_showMuteControl}" class=""
                     title="Indicates that the front end should show the mute control">Enable local client mute</label>
             </div>
+
+            <!--    ENABLE VU METER CONTROL CHECKBOX      -->
+            <div class="w-1/2 mb-2 ml-2 flex">
+                <input id="@{_enableVU}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{enableVU}" />
+                <label for="@{_enableVU}" class=""
+                    title="Enable or disable the VU meter">Enable VU meter</label>
+            </div>
         </div>
         
         <!--    SOLO GROUP    -->
@@ -215,7 +222,14 @@ class _paAudioBase extends _routerChildControlBase {
 
         });
 
-
+        // Show / hide VU meter
+        this.on('enableVU', enableVU => {
+            if (enableVU) {
+                this._volume_slit.style.display = '';
+            } else {
+                this._volume_slit.style.display = 'none';
+            }
+        }, { immediate: true });
 
         // Add VU meter
         this.SetData({

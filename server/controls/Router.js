@@ -32,6 +32,9 @@ class Router extends dm {
         this.logFATAL = true;                       // log level enabled/ disabled 
         this.restartCmd = false;                    // Router restart command. Router process needs passwordless sudo access to the followng command: "sudo reboot now"
         this.resetCmd = false;                      // Router process reset command. Kills the router.js process. Process should be restarted externally (e.g. via systemd service)
+        this._paQueue = [];                         // PulseAudio command rate limiter callback queue
+        this._paQueueTimer = undefined;             // Rate limiter timer
+        this._paConnectionCount = 0                 // PulseAudio connection counter
     }
 
     Init() {
@@ -94,8 +97,12 @@ class Router extends dm {
         this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
         this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
         let scanTimer = setInterval(async () => {
-            this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
-            this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
+            this.PaCmdQueue(() => {
+                this._updatePAlist('sources', this._sources).then(updated => { if (updated) this.sources = Object.values(this._sources) });
+            });
+            this.PaCmdQueue(() => {
+                this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
+            });            
         }, 1000);
 
         // Stop all child controls when the Router control is removed
@@ -308,6 +315,67 @@ class Router extends dm {
         console.log(msg[1]);
         if (this[`log${msg[0]}`])
             this.log = msg;
+    }
+
+    /**
+     * Rate Limiter for PulseAudio commands. Should be used by all commands interacting with the PulseAudio sound server to prevent overloading the server.
+     * @param {*} callback 
+     * @returns - Promise resolving when the callback has been run or rejecting if the callback fails
+     */
+    PaCmdQueue(callback) {
+        return new Promise((resolve, reject) => {
+            // Add callback to queue
+            this._paQueue.push({ callback: callback, resolve: resolve, reject: reject });
+
+            // Start the rate limiter timer if not running
+            if (!this._paQueueTimer || this._paQueueTimer._destroyed) {
+                this._paCmdQueueNext();
+            }
+        });
+    }
+
+    /**
+     * Execute the next callback from the pulseaudio command rate limiter queue
+     */
+    _paCmdQueueNext() {
+        if (this._paQueue.length > 0) {
+            let c = this._paQueue.shift();
+            try {
+                // Execute callback from queue
+                c.callback();
+                c.resolve();
+            } catch (err) {
+                c.reject(err);
+            } finally {
+                this._paQueueTimer = setTimeout(() => {
+                    this._paCmdQueueNext();
+                }, 100);
+            }
+        }
+    }
+
+    /**
+     * Request a new PulseAudio connection. Throws an exception of the requested connection exceeds the maximum connection count
+     */
+    PaReqConnection() {
+        if (this._paConnectionCount >= 50) {
+            throw new Error('Unable to create new PulseAudio connection: Maximum configured connection count of 50 reached.');
+        } else {
+            this._paConnectionCount++;
+            console.log('PaConnections:' + this._paConnectionCount);
+        }
+    }
+
+    /**
+     * Decreases the PulseAudio connection count.
+     */
+    PaRemConnection() {
+        if (this._paConnectionCount > 0) {
+            this._paConnectionCount--;
+            console.log('PaConnections:' + this._paConnectionCount);
+        } else {
+            this._paConnectionCount = 0;
+        }
     }
 }
 

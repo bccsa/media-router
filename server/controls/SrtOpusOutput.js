@@ -37,7 +37,7 @@ class SrtOpusOutput extends _paNullSinkBase {
         this.on('ready', ready => {
             if (ready) {
                 // this._start_srt().then(() => {
-                    this._start_gst();
+                this._start_gst();
                 // });
             }
         });
@@ -59,6 +59,9 @@ class SrtOpusOutput extends _paNullSinkBase {
     _start_gst() {
         if (!this._gst) {
             try {
+                // Request a PulseAudio connection
+                this._parent.PaReqConnection();
+
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus encoder (gstreamer)`);
 
                 let crypto = '';
@@ -66,10 +69,10 @@ class SrtOpusOutput extends _paNullSinkBase {
                     crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}`;
                 }
 
-                let latency = '';
-                if (this.srtMode == 'caller') {
-                    latency = '&latency=' + this.srtLatency
-                }
+                // let latency = '';
+                // if (this.srtMode == 'caller') {
+                //     latency = '&latency=' + this.srtLatency
+                // }
 
                 let streamID = '';
                 if (this.srtStreamID) {
@@ -77,7 +80,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 }
 
                 // let args = `pulsesrc device="${this.source}" ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} max-payload-size=188 audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188"`;
-                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}"`;
+                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}"`;
 
                 this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
 
@@ -101,12 +104,13 @@ class SrtOpusOutput extends _paNullSinkBase {
                         if (this.run & !this._gst) {
                             this._start_gst();
                         }
-                    }, 1000);
+                    }, 5000);
                 });
 
                 // Handle process error events
                 this._gst.on('error', code => {
                     this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus encoder (gstreamer) error #${code}`);
+                    this._stop_gst();
                 });
             }
             catch (err) {
@@ -119,13 +123,16 @@ class SrtOpusOutput extends _paNullSinkBase {
     _stop_gst() {
         if (this._gst) {
             try {
+                // Release a PulseAudio connection
+                this._parent.PaRemConnection();
+
                 this._gst.stdin.pause();
                 this._gst.kill('SIGTERM');
                 // ffmpeg stops on SIGTERM, but does not exit.
                 // Send SIGKILL to quit process
                 this._gst.kill('SIGKILL');
-            } catch {
-
+            } catch (err) {
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus encoder (gstreamer) error ${err.message}`);
             } finally {
                 this._gst = undefined;
             }
@@ -301,7 +308,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                     });
                 }
                 catch (err) {
-                    this._parent._log('FATAL', `${err.message}`);
+                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
                     this._stop_srt();
                     reject();
                 }

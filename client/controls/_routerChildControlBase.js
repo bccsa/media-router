@@ -412,7 +412,7 @@ class _routerChildControlBase extends ui {
             return response.text();
         })
         .then(function(fileContent) {
-            _this.Help_md += fileContent + "\n";
+            _this.Help_md += `${fileContent}\n`;
         })
         .catch(function(error) { console.error('There was a problem fetching the file:', error) });
     }

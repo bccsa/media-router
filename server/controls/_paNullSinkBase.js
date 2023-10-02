@@ -26,9 +26,13 @@ class _paNullSinkBase extends _paAudioSourceBase {
 
         this.on('run', run => {
             if (run) {
-                this._startNullSink();
+                this._parent.PaCmdQueue(() => {
+                    this._startNullSink();
+                });
             } else {
-                this._stopNullSink();
+                this._parent.PaCmdQueue(() => {
+                    this._stopNullSink();
+                });
             }
         });
 
@@ -56,7 +60,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paModuleID}`);
             }
         }).catch(err => {
-            this._parent._log('FATAL', err.message);
+            this._parent._log('FATAL', `${this._controlName} (${this.displayName}) - Unable to start null-sink: ` + err.message);
         });
     }
 
@@ -73,7 +77,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
 
                 this._paModuleID = undefined;
             }).catch(err => {
-                this._parent._log('FATAL', err.message);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}):` + err.message);
             });
         }
     }
