@@ -181,22 +181,22 @@ class SrtOpusOutput extends _paAudioSinkBase {
         super.Init();
         this.setHeaderColor('#00C3A3');
 
-        this.on('srtMode', srtMode => {
-            // hide/ show controls based on mode 
-            if (srtMode == 'listener') {
-                this._divSrtPort.style.display = "none";
-                this._divSrtHost.style.display = "none";
-                this._divSrtLatency.style.display = "none";
-                this._divPbKeyLen.style.display = "none";
-                this._divSrtCallUrl.style.display = "block";
-            } else {
-                this._divSrtPort.style.display = "block";
-                this._divSrtHost.style.display = "block";
-                this._divSrtLatency.style.display = "block";
-                this._divPbKeyLen.style.display = "block";
-                this._divSrtCallUrl.style.display = "none";
-            }
-        }, {immediate: true})
+        // this.on('srtMode', srtMode => {
+        //     // hide/ show controls based on mode 
+        //     if (srtMode == 'listener') {
+        //         this._divSrtPort.style.display = "none";
+        //         this._divSrtHost.style.display = "none";
+        //         this._divSrtLatency.style.display = "none";
+        //         this._divPbKeyLen.style.display = "none";
+        //         this._divSrtCallUrl.style.display = "block";
+        //     } else {
+        //         this._divSrtPort.style.display = "block";
+        //         this._divSrtHost.style.display = "block";
+        //         this._divSrtLatency.style.display = "block";
+        //         this._divPbKeyLen.style.display = "block";
+        //         this._divSrtCallUrl.style.display = "none";
+        //     }
+        // }, {immediate: true})
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
