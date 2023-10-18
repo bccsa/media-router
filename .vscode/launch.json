@@ -21,6 +21,26 @@
                 "<node_internals>/**"
             ],
             "program": "${workspaceFolder}/server/manager.js"
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "test.js",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "program": "${workspaceFolder}/server/gst_modules/test.js"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Test Gstreamer c++",
+            "cwd": "${workspaceFolder}/server/gst_modules",
+            "preLaunchTask": "npm: build:gst:dev",
+            "program": "/usr/bin/node",
+            "args": [
+               "./test.js"
+            ]
         }
     ]
 }

@@ -4,16 +4,19 @@
   "description": "Remote audio translation for live events",
   "main": "router.js",
   "dependencies": {
+    "bindings": "^1.5.0",
     "cookie-parser": "^1.4.6",
     "express": "^4.17.1",
     "express-session": "^1.17.2",
+    "node-addon-api": "^7.0.0",
     "readable-stream-clone": "^0.0.7",
     "socket.io": "^4.6.2",
     "socket.io-client": "^4.5.4",
     "tw-elements": "^1.0.0-alpha13"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "install": "node-gyp rebuild"
   },
   "repository": {
     "type": "git",
@@ -27,5 +30,6 @@
   "homepage": "https://github.com/bccsa/audio-translation#readme",
   "devDependencies": {
     "tailwindcss": "^3.2.4"
-  }
+  },
+  "keywords": []
 }

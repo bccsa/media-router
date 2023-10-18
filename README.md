@@ -70,3 +70,6 @@ net.core.wmem_max=26214400
 References:
 https://access.redhat.com/documentation/en-us/jboss_enterprise_application_platform/5/html/administration_and_configuration_guide/jgroups-perf-udpbuffer
 https://www.systutorials.com/how-to-enlarge-linux-udp-buffer-size/
+
+## Gstreamer c++ library debug
+See: [gst_modules](./server/gst_modules/README.md)
