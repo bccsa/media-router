@@ -277,6 +277,7 @@ class Router extends ui {
                             <option value="AudioOutput">Audio Output</option>
                             <option value="SrtOpusInput">Opus over SRT Input</option>
                             <option value="SrtOpusOutput">Opus over SRT Output</option>
+                            <option value="SrtVideoInput">Video over SRT Input</option>
                             <option value="Separator">Separator</option>
                             </select>
                         </div>

@@ -1,0 +1,18 @@
+{
+  "name": "root",
+  "version": "1.0.0",
+  "description": "## Links * Initial Tutorial: https://dev.to/ethand91/gstreamer-tutorial-part-1-as-a-node-native-addon-25j8",
+  "main": "index.js",
+  "scripts": {
+    "start:gst": "cd server/gst_modules/ && node test.js",
+    "build:gst:dev": "cd server/gst_modules/ && node-gyp -j 16 build --debug",
+    "build:gst": "cd server/gst_modules/ && node-gyp -j 16 build",
+    "rebuild:gst:dev": "cd server/gst_modules/ && node-gyp -j 16 rebuild --debug",
+    "rebuild:gst": "cd server/gst_modules/ && node-gyp -j 16 rebuild",
+    "clean:gst": "cd server/gst_modules/ && node-gyp clean"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "gypfile": true
+}

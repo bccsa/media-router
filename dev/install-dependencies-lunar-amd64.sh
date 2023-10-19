@@ -22,3 +22,8 @@ cd ..
 cd tailwind
 npm install
 cd ..
+
+# Gstreamer node-addon-api 
+cd server/gst_modules
+npm i
+cd ../..

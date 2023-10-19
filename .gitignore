@@ -123,3 +123,6 @@ server/managerConf.json
 
 # Exclued login details 
 userpass
+
+# Exclude gstreamer notes
+doc/gstreamer notes
