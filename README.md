@@ -73,4 +73,4 @@ https://access.redhat.com/documentation/en-us/jboss_enterprise_application_platf
 https://www.systutorials.com/how-to-enlarge-linux-udp-buffer-size/
 
 ## Gstreamer c++ library debug
-See: [gst_modules](./server/gst_modules/README.md)
+See: [gst_modules](./server/gst_modules/SrtVideoPlayer/README.md)

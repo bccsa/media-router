@@ -150,10 +150,10 @@ static GstPad* create_tee_pad (GstElement *src_elm, GstElement *sink_elm, GstEle
  * Destroy gtk window (see: for intersepting event: https://stackoverflow.com/questions/34387757/how-do-i-intercept-a-gtk-window-close-button-click)
 */
 gboolean destroyWindow(GtkWidget *widget, gpointer data) {
-    gtk_widget_hide(_window);
+    gtk_widget_hide(_window); // Need to hide window instead of destroy, otherwise gtk_main_quit will fail sometimes https://stackoverflow.com/questions/30521811/gtk-main-blocking-others-threads-how-to-solve
     killing = true;
     gtk_main_quit();
-    return TRUE;
+    return TRUE; // Return true inorder for gtk not to continue to destroy the window https://stackoverflow.com/questions/34387757/how-do-i-intercept-a-gtk-window-close-button-click
 }
 
 /**
