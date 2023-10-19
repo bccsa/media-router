@@ -19,7 +19,7 @@
 ## DEBUG c++ addons 
 
 ### Prerequisites
-* *Need to cd into server/gst_module*
+* *Need to cd into server/gst_module/SrtVideoInput*
 #### Build dependencies
 * node-gyp ```sudo npm -g install node-gyp```
 * node-addon-api ```npm install node-addon-api```
@@ -33,6 +33,7 @@
 
 ##### Configure build
 * run ```sudo node-gst configure```
+* run ```npm i```
 
 #### Runtime dependencies
 * node-addon-api ```npm install node-addon-api```
