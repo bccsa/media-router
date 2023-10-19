@@ -1,14 +1,14 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
-const { _SrtVideoInput } = require('bindings')('../gst_modules/build/Release/gstreamer.node');
+const { _SrtVideoPlayer } = require('bindings')('../gst_modules/SrtVideoPlayer/build/Release/gstreamer.node');
 
-class SrtVideoInput extends _paNullSinkBase {
+class SrtVideoPlayer extends _paNullSinkBase {
     constructor() {
         super();
 
         this._ffmpeg;
         this._gst;
         this._srt;
-        this.srtHost = 'srt.invalid';
+        this.srtHost = 'srt';
         this.srtPort = 1234;
         this.srtMode = 'caller';
         this.srtLatency = 1;
@@ -31,16 +31,13 @@ class SrtVideoInput extends _paNullSinkBase {
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('ready', ready => {
             if (ready) {
-                // this._start_srt().then(() => {
                 this._start_gst();
-                // });
             }
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
-                // this._stop_srt();
                 this._stop_gst();
             }
         });
@@ -60,7 +57,7 @@ class SrtVideoInput extends _paNullSinkBase {
                 let streamID = '';
                 if (this.srtStreamID) { streamID = '&streamid=' + this.srtStreamID };
  
-                this._gst = new _SrtVideoInput(
+                this._gst = new _SrtVideoPlayer(
                     `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}`,
                     this.sink,
                     this._parent.paLatency,
@@ -90,4 +87,4 @@ class SrtVideoInput extends _paNullSinkBase {
     }
 }
 
-module.exports = SrtVideoInput;
+module.exports = SrtVideoPlayer;

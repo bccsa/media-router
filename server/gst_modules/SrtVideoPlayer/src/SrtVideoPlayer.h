@@ -329,11 +329,11 @@ void th_Start() {
 // ====================================
 // Init 
 // ====================================
-class _SrtVideoInput : public Napi::ObjectWrap<_SrtVideoInput> {
+class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
     public:
         static Napi::Object Init(Napi::Env env, Napi::Object exports);
         gboolean _w = false;
-        _SrtVideoInput(const Napi::CallbackInfo &info);
+        _SrtVideoPlayer(const Napi::CallbackInfo &info);
 
     private:
         // Gstreamer Functions
@@ -351,16 +351,16 @@ class _SrtVideoInput : public Napi::ObjectWrap<_SrtVideoInput> {
 /**
  * Link Class to NAPI 
 */
-Napi::Object _SrtVideoInput::Init(Napi::Env env, Napi::Object exports) {
+Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
     // This method is used to hook the accessor and method callbacks
-    Napi::Function func = DefineClass(env, "_SrtVideoInput", {
-        InstanceMethod("Start", &_SrtVideoInput::Start),
-        InstanceMethod("Stop", &_SrtVideoInput::Stop),
-        InstanceMethod("SetUri", &_SrtVideoInput::SetUri),
-        InstanceMethod("SetSink", &_SrtVideoInput::SetSink),
-        InstanceMethod("SetPALatency", &_SrtVideoInput::SetPALatency),
-        InstanceMethod("SetDisplay", &_SrtVideoInput::SetDisplay),
-        InstanceMethod("SetFullscreen", &_SrtVideoInput::SetFullscreen)
+    Napi::Function func = DefineClass(env, "_SrtVideoPlayer", {
+        InstanceMethod("Start", &_SrtVideoPlayer::Start),
+        InstanceMethod("Stop", &_SrtVideoPlayer::Stop),
+        InstanceMethod("SetUri", &_SrtVideoPlayer::SetUri),
+        InstanceMethod("SetSink", &_SrtVideoPlayer::SetSink),
+        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency),
+        InstanceMethod("SetDisplay", &_SrtVideoPlayer::SetDisplay),
+        InstanceMethod("SetFullscreen", &_SrtVideoPlayer::SetFullscreen)
     });
 
     // Create a peristent reference to the class constructor. This will allow
@@ -371,7 +371,7 @@ Napi::Object _SrtVideoInput::Init(Napi::Env env, Napi::Object exports) {
     // to this destructor to reset the reference when the environment is no longer
     // available.
     constructor.SuppressDestruct();
-    exports.Set("_SrtVideoInput", func);
+    exports.Set("_SrtVideoPlayer", func);
     return exports;
 }
 
@@ -385,7 +385,7 @@ Napi::Object _SrtVideoInput::Init(Napi::Env env, Napi::Object exports) {
  * [4] - _display - Output dispaly - default: 0
  * [5] - _fullScreen - full screen mode - default: false
 */
-_SrtVideoInput::_SrtVideoInput(const Napi::CallbackInfo &info) : Napi::ObjectWrap<_SrtVideoInput>(info) {
+_SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectWrap<_SrtVideoPlayer>(info) {
     int len = info.Length();
 
     if (len >= 1 && info[0].IsString() ) { _uri = info[0].As<Napi::String>().Utf8Value(); } else { std::cout << "_uri not supplied or invalid type\n"; };
@@ -395,13 +395,13 @@ _SrtVideoInput::_SrtVideoInput(const Napi::CallbackInfo &info) : Napi::ObjectWra
     if (len >= 5 && info[4].IsBoolean() ) { _fullScreen = info[4].As<Napi::Boolean>(); } else { std::cout << "_fullScreen not supplied or invalid type\n"; };
 }
 
-Napi::FunctionReference _SrtVideoInput::constructor;
+Napi::FunctionReference _SrtVideoPlayer::constructor;
 
 // ====================================
-// _SrtVideoInput Class 
+// _SrtVideoPlayer Class 
 // ====================================
 
-Napi::Value _SrtVideoInput::Start(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::Start(const Napi::CallbackInfo &info){
 
     if (info.Length() < 1) {
         std::cout << "Callback function required";
@@ -431,7 +431,7 @@ Napi::Value _SrtVideoInput::Start(const Napi::CallbackInfo &info){
     }
 }
 
-Napi::Value _SrtVideoInput::Stop(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::Stop(const Napi::CallbackInfo &info){
     // Kill window
     if (killing) {
         _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process is busy being stoped, Please try again later."); });
@@ -453,7 +453,7 @@ Napi::Value _SrtVideoInput::Stop(const Napi::CallbackInfo &info){
 /**
  * [0] - _uri - Srt url - default: null
 */
-Napi::Value _SrtVideoInput::SetUri(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::SetUri(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsString() ) { _uri = info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "_uri not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
@@ -461,7 +461,7 @@ Napi::Value _SrtVideoInput::SetUri(const Napi::CallbackInfo &info){
 /**
  * [0] - _pulseSink - Pulse audio sink - default: null
 */
-Napi::Value _SrtVideoInput::SetSink(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::SetSink(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsString() ) { _pulseSink = info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "_pulseSink not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
@@ -469,7 +469,7 @@ Napi::Value _SrtVideoInput::SetSink(const Napi::CallbackInfo &info){
 /**
  * [0] - _paLatency - Palse audio latency (ms) - default: 50
 */
-Napi::Value _SrtVideoInput::SetPALatency(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::SetPALatency(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsNumber() ) { _paLatency = info[0].As<Napi::Number>(); } else { return Napi::String::New(info.Env(), "_paLatency not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
@@ -477,7 +477,7 @@ Napi::Value _SrtVideoInput::SetPALatency(const Napi::CallbackInfo &info){
 /**
  * [0] - _display - Output dispaly - default: 0
 */
-Napi::Value _SrtVideoInput::SetDisplay(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::SetDisplay(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsString() ) { _display = ":" + info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "_display not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
@@ -485,7 +485,7 @@ Napi::Value _SrtVideoInput::SetDisplay(const Napi::CallbackInfo &info){
 /**
  * [0] - _fullScreen - full screen mode - default: false
 */
-Napi::Value _SrtVideoInput::SetFullscreen(const Napi::CallbackInfo &info){
+Napi::Value _SrtVideoPlayer::SetFullscreen(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsBoolean() ) { _fullScreen = info[0].As<Napi::Boolean>(); } else { return Napi::String::New(info.Env(), "_fullScreen not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);

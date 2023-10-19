@@ -26,6 +26,7 @@ This project has been tested on:
 * SrtOpusInput: Receives an SRT Opus encoded audio stream
 * SrtOpusOutput: Publishes an audio stream as Opus encoded SRT. 
 * Spacer: Visual spacer for web control interface.
+* SrtVideoPlayer: Video Player for a srt video stream
 
 Planned modules:
 * Video encoding & decoding

@@ -25,8 +25,7 @@
 * bindings ```npm install bindings```
 * run ```sudo node-gst configure```
 * libgtk-3-dev ```sudo apt install libgtk-3-dev``` (Adding to bindings.gyp: https://github.com/kusti8/proton-native/issues/16 | https://askubuntu.com/questions/397432/fatal-error-gtk-gtk-h-no-such-file-or-directory-using-make)
-* vscode: https://github.com/vadimcn/vscode-lldb
-* X11: https://medium.com/@codingInformer/solved-package-x11-was-not-found-in-the-pkg-config-search-path-fa14f76de72b
+* vscode: https://github.com/vadimcn/vscode-lldb (Used for debugging C++)
 * ```sudo apt install libpango1.0-dev```
 * ```sudo apt install libharfbuzz-dev```
 * ```sudo apt install libcairo2-dev```
