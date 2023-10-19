@@ -34,6 +34,7 @@ typedef struct _CustomData {
 } CustomData;
 
 // Variables
+std::string _name = "SrtVideoPlayer";
 std::string _uri = "null";
 std::string _pulseSink = "null";
 int _paLatency = 50;
@@ -197,7 +198,7 @@ void th_Start() {
     g_signal_connect(_window, "delete-event", G_CALLBACK(destroyWindow), NULL);
     g_signal_connect(_window, "button-press-event", G_CALLBACK(doubleClick), NULL);
     gtk_window_set_default_size (GTK_WINDOW (_window), 640, 360);
-    gtk_window_set_title (GTK_WINDOW (_window), "Video Over SRT Input");
+    gtk_window_set_title (GTK_WINDOW (_window), _name.c_str());
     // full screen window 
     if(_fullScreen) {
         gtk_window_fullscreen(GTK_WINDOW(_window));
@@ -346,6 +347,7 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         Napi::Value SetPALatency(const Napi::CallbackInfo &info);
         Napi::Value SetDisplay(const Napi::CallbackInfo &info);
         Napi::Value SetFullscreen(const Napi::CallbackInfo &info);
+        Napi::Value SetName(const Napi::CallbackInfo &info);
 };
 
 /**
@@ -360,7 +362,8 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
         InstanceMethod("SetSink", &_SrtVideoPlayer::SetSink),
         InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency),
         InstanceMethod("SetDisplay", &_SrtVideoPlayer::SetDisplay),
-        InstanceMethod("SetFullscreen", &_SrtVideoPlayer::SetFullscreen)
+        InstanceMethod("SetFullscreen", &_SrtVideoPlayer::SetFullscreen),
+        InstanceMethod("SetName", &_SrtVideoPlayer::SetFullscreen)
     });
 
     // Create a peristent reference to the class constructor. This will allow
@@ -384,6 +387,7 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
  * [3] - _paLatency - Palse audio latency (ms) - default: 50
  * [4] - _display - Output dispaly - default: 0
  * [5] - _fullScreen - full screen mode - default: false
+ * [6] - _name - Player Name - default: SrtVideoPlayer
 */
 _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectWrap<_SrtVideoPlayer>(info) {
     int len = info.Length();
@@ -393,6 +397,7 @@ _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectW
     if (len >= 3 && info[2].IsNumber() ) { _paLatency = info[2].As<Napi::Number>(); } else { std::cout << "_paLatency not supplied or invalid type\n"; };
     if (len >= 4 && info[3].IsString() ) { _display = ":" + info[3].As<Napi::String>().Utf8Value(); } else { std::cout << "_display not supplied or invalid type\n"; };
     if (len >= 5 && info[4].IsBoolean() ) { _fullScreen = info[4].As<Napi::Boolean>(); } else { std::cout << "_fullScreen not supplied or invalid type\n"; };
+    if (len >= 6 && info[5].IsString() ) { _name = info[5].As<Napi::String>().Utf8Value(); } else { std::cout << "Player name not supplied or invalid type\n"; };
 }
 
 Napi::FunctionReference _SrtVideoPlayer::constructor;
@@ -488,5 +493,13 @@ Napi::Value _SrtVideoPlayer::SetDisplay(const Napi::CallbackInfo &info){
 Napi::Value _SrtVideoPlayer::SetFullscreen(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsBoolean() ) { _fullScreen = info[0].As<Napi::Boolean>(); } else { return Napi::String::New(info.Env(), "_fullScreen not supplied or invalid type\n"); };
+    return Napi::Number::New(info.Env(), 0);
+}
+/**
+ * [0] - _name - Player Name - default: SrtVideoPlayer
+*/
+Napi::Value _SrtVideoPlayer::SetName(const Napi::CallbackInfo &info){
+    int len = info.Length();
+    if (len >= 1 && info[0].IsString() ) { _name = info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "Player name not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
 }

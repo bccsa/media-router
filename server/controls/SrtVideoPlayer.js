@@ -63,7 +63,7 @@ class SrtVideoPlayer extends _paNullSinkBase {
                     this._parent.paLatency,
                     this.display,
                     this.fullscreen,
-                    this.emitter
+                    this.displayName
                 );
 
                 // Start srt video
