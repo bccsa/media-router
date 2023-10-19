@@ -1,4 +1,4 @@
-# [SrtVideoInput.js](./SrtVideoInput.js)
+# [SrtVideoPlayer.js](./SrtVideoPlayer.js)
 
 ## Title 2
 

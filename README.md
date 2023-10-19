@@ -26,6 +26,7 @@ This project has been tested on:
 * SrtOpusInput: Receives an SRT Opus encoded audio stream
 * SrtOpusOutput: Publishes an audio stream as Opus encoded SRT. 
 * Spacer: Visual spacer for web control interface.
+* SrtVideoPlayer: Video Player for a srt video stream
 
 Planned modules:
 * Video encoding & decoding
@@ -72,4 +73,4 @@ https://access.redhat.com/documentation/en-us/jboss_enterprise_application_platf
 https://www.systutorials.com/how-to-enlarge-linux-udp-buffer-size/
 
 ## Gstreamer c++ library debug
-See: [gst_modules](./server/gst_modules/README.md)
+See: [gst_modules](./server/gst_modules/SrtVideoPlayer/README.md)

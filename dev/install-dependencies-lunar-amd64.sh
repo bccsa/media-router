@@ -24,6 +24,6 @@ npm install
 cd ..
 
 # Gstreamer node-addon-api 
-cd server/gst_modules
+cd server/gst_modules/SrtVideoPlayer
 npm i
 cd ../..

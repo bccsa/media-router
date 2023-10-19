@@ -1,4 +1,4 @@
-class SrtVideoInput extends _paAudioSourceBase {
+class SrtVideoPlayer extends _paAudioSourceBase {
     constructor() {
         super();
         this.srtHost = 'srt.invalid';
@@ -136,7 +136,7 @@ class SrtVideoInput extends _paAudioSourceBase {
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
-        this._loadHelpMD('controls/SrtVideoInput.md');
+        this._loadHelpMD('controls/SrtVideoPlayer.md');
         //----------------------Help Modal-----------------------------//
     }
 }
