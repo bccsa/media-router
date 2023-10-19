@@ -29,13 +29,13 @@
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            "program": "${workspaceFolder}/server/gst_modules/test.js"
+            "program": "${workspaceFolder}/server/gst_modules/SrtVideoPlayer/test.js"
         },
         {
             "type": "lldb",
             "request": "launch",
             "name": "Test Gstreamer c++",
-            "cwd": "${workspaceFolder}/server/gst_modules",
+            "cwd": "${workspaceFolder}/server/gst_modules/SrtVideoPlayer",
             "preLaunchTask": "npm: build:gst:dev",
             "program": "/usr/bin/node",
             "args": [
