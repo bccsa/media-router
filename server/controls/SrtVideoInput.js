@@ -1,6 +1,5 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { _SrtVideoInput } = require('bindings')('../gst_modules/build/Release/gstreamer.node');
-const { EventEmitter } = require("events");
 
 class SrtVideoInput extends _paNullSinkBase {
     constructor() {
@@ -45,15 +44,6 @@ class SrtVideoInput extends _paNullSinkBase {
                 this._stop_gst();
             }
         });
-
-        // ====================
-        // Gstreamer events
-        // ====================
-        this.emitter = new EventEmitter();
-
-        this.emitter.on("Start", (res) => {
-            console.log(res);
-        })
     }
 
     _start_gst() {
@@ -80,7 +70,9 @@ class SrtVideoInput extends _paNullSinkBase {
                 );
 
                 // Start srt video
-                this._gst.Start();
+                this._gst.Start((level, message) => {
+                    this._parent._log(level, `${this._controlName} (${this.displayName}): ${message}`);
+                });
 
             }
             catch (err) {

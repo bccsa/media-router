@@ -110,16 +110,16 @@ class SrtVideoInput extends _paAudioSourceBase {
 
         <div class="w-full mb-2 flex ">
             <!-- Output display  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_srtDispaly}" class="form-label inline-block mb-2 mr-2">Display:</label>
-                <input id="@{_srtDispaly}" class="paAudioBase-text-area" type="text" 
-                title="Output display e.g. (0.0)" value="@{display}"/>
-            </div>
-
             <!-- Fullscreen  --> 
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_fullscreen}" class="" title="Enable or disable the VU meter">Fullscreen</label>
                 <input id="@{_fullscreen}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{fullscreen}" />
+            </div>
+
+            <div class="w-1/3 mr-4 flex flex-col">
+                <label for="@{_srtDispaly}" class="form-label inline-block mb-2 mr-2">Display:</label>
+                <input id="@{_srtDispaly}" class="paAudioBase-text-area" type="text" 
+                title="Output display e.g. (0.0)" value="@{display}" hidden="true" disabled/>
             </div>
 
             <!-- Placeholder  --> 

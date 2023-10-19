@@ -39,12 +39,28 @@ std::string _pulseSink = "null";
 int _paLatency = 50;
 std::string _display = "null";
 gboolean _fullScreen = false;
+GstElement *pipeline;
+// gdk window
+gulong embed_xid;
 // Global window 
 GtkWidget *_window;
+GdkWindow *video_window_xwindow;
+GtkWidget *video_window;
+// Event emitter 
+Napi::ThreadSafeFunction _emit;
+// Process varialbes 
+gboolean running = false;   // Gstreamer running state
+gboolean killing = false;   // Gstreamer killing state
 
 // ====================================
 // Helper functions 
 // ====================================
+/**
+ * Event Emiter
+*/
+void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level, std::string message) {
+    emitFn.Call({ Napi::String::New(env, level), Napi::String::New(env, message) });
+}
 
 /**
  * Callback messages from bus
@@ -55,21 +71,26 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 
     switch (GST_MESSAGE_TYPE (message)) {
         case GST_MESSAGE_ERROR:{
-        GError *err;
-        gchar *debug;
+            GError *err;
+            gchar *debug;
 
-        gst_message_parse_error (message, &err, &debug);
-        g_print ("Error: %s\n", err->message);
-        g_error_free (err);
-        g_free (debug);
+            gst_message_parse_error (message, &err, &debug);
+            g_print ("Error: %s\n", err->message);
+            g_error_free (err);
+            g_free (debug);
 
-        break;
+            // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
+            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", g_strdup(err->message)); });
+
+            break;
         }
         case GST_MESSAGE_EOS:
-        /* end-of-stream */
+            /* end-of-stream */
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
         break;
         default:
-        /* unhandled message */
+            /* unhandled message */
+            // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Unxepected error"); });
         break;
     }
 
@@ -125,10 +146,13 @@ static GstPad* create_tee_pad (GstElement *src_elm, GstElement *sink_elm, GstEle
 // ====================================
 
 /**
- * Destroy gtk window
+ * Destroy gtk window (see: for intersepting event: https://stackoverflow.com/questions/34387757/how-do-i-intercept-a-gtk-window-close-button-click)
 */
-static void destroyWindow(GtkWidget *widget, gpointer data) {
+gboolean destroyWindow(GtkWidget *widget, gpointer data) {
+    gtk_widget_hide(_window);
+    killing = true;
     gtk_main_quit();
+    return TRUE;
 }
 
 /**
@@ -155,29 +179,24 @@ static gboolean doubleClick(GtkWidget *widget, GdkEventButton *event, gpointer u
  * Start Gstreamer in a seperate thread
 */
 void th_Start() {
+    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
     /* Varaibles */
     CustomData gl;
     // Gstreamer
     GstPad *tee_audio_pad, *tee_video_pad;
-    GstElement *pipeline;
     GstBus *bus;
-    // gdk window
-    GdkWindow *video_window_xwindow;
-    GtkWidget *video_window;
-    gulong embed_xid;
     g_setenv("DISPLAY", _display.c_str(), TRUE);
 
     /* Initialize GStreamer */
     gst_init (NULL, NULL);
-    gtk_init (NULL, NULL);
-    /* ------------------------------ prepare the ui -------------------------------- */
+    gtk_init_check (NULL, NULL);
+
+    /* ------------------------------ prepare the ui -------------------------------- */ // (https://zetcode.com/gui/gtk2/firstprograms/)
     // Winodw needs to be created in the before the pipline, otherwise on a busy device it will fail 
     _window = gtk_window_new (GTK_WINDOW_TOPLEVEL); 
-    
     g_signal_connect(_window, "delete-event", G_CALLBACK(destroyWindow), NULL);
-    g_signal_connect(_window, "destroy", G_CALLBACK(destroyWindow), NULL);
-    gtk_window_set_default_size (GTK_WINDOW (_window), 640, 360);
     g_signal_connect(_window, "button-press-event", G_CALLBACK(doubleClick), NULL);
+    gtk_window_set_default_size (GTK_WINDOW (_window), 640, 360);
     gtk_window_set_title (GTK_WINDOW (_window), "Video Over SRT Input");
     // full screen window 
     if(_fullScreen) {
@@ -186,13 +205,10 @@ void th_Start() {
         gtk_window_unfullscreen(GTK_WINDOW(_window));
     }
 
-    video_window = gtk_drawing_area_new ();
-    gtk_container_add (GTK_CONTAINER (_window), video_window);
+    gtk_widget_show(_window);
 
-    gtk_widget_show_all (_window);
-
-    video_window_xwindow = gtk_widget_get_window (video_window);
-    embed_xid = GDK_WINDOW_XID (video_window_xwindow);
+    video_window_xwindow = gtk_widget_get_window (_window);
+    embed_xid = GDK_WINDOW_XID (video_window_xwindow);    
     /* ------------------------------ prepare the ui -------------------------------- */
 
     /* ------------------------------ Prep pipline -------------------------------- */
@@ -291,16 +307,23 @@ void th_Start() {
 
     gtk_main ();
 
+    /* ------------------------------- Post cleanup -------------------------------- */
+    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
+
     gst_element_set_state(pipeline, GST_STATE_NULL);
+    gst_object_unref (pipeline);
+
     /* Release the request pads from the Tee, and unref them */
     gst_element_release_request_pad (gl.tee, tee_audio_pad);
     gst_element_release_request_pad (gl.tee, tee_video_pad);
     gst_object_unref (tee_audio_pad);
     gst_object_unref (tee_video_pad);
 
-    /* Free resources */
-    gst_object_unref (pipeline);
-    g_object_unref (video_window_xwindow);
+    running = false;
+    killing = false;
+
+    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
+    /* ------------------------------- Post cleanup -------------------------------- */
 }
 
 // ====================================
@@ -309,6 +332,7 @@ void th_Start() {
 class _SrtVideoInput : public Napi::ObjectWrap<_SrtVideoInput> {
     public:
         static Napi::Object Init(Napi::Env env, Napi::Object exports);
+        gboolean _w = false;
         _SrtVideoInput(const Napi::CallbackInfo &info);
 
     private:
@@ -379,17 +403,48 @@ Napi::FunctionReference _SrtVideoInput::constructor;
 
 Napi::Value _SrtVideoInput::Start(const Napi::CallbackInfo &info){
 
-    std::thread t1(th_Start);
-    t1.detach();
+    if (info.Length() < 1) {
+        std::cout << "Callback function required";
+        return Napi::String::New(info.Env(), "Callback function required");
+    } else {
+        // Thread safe emitter (https://github.com/nodejs/node-addon-api/blob/main/doc/threadsafe_function.md | https://chat.openai.com/share/229b5d00-3033-4f4f-9848-ed5e93c9498e)
+        _emit = Napi::ThreadSafeFunction::New(
+            info.Env(),
+            info[0].As<Napi::Function>(),  // JavaScript function called asynchronously
+            "emitter",              // Name
+            0,                      // Unlimited queue
+            1                       // Only one thread will use this initially
+        );
 
-    return Napi::String::New(info.Env(), "Pipline started");
+        if (running) {
+            std::cout << "Process still running, Please try again later.";
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process still running, Please try again later."); });
+            return Napi::String::New(info.Env(), "Process still running, Please try again later.");
+        } else {
+            running = true;
+
+            std::thread t1(th_Start);
+            t1.detach();
+
+            return Napi::String::New(info.Env(), "Pipline started");
+        }
+    }
 }
 
 Napi::Value _SrtVideoInput::Stop(const Napi::CallbackInfo &info){
     // Kill window
-    gtk_widget_destroy(_window);
-
-    return Napi::String::New(info.Env(), "Pipline stopped");
+    if (killing) {
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process is busy being stoped, Please try again later."); });
+        return Napi::String::New(info.Env(), "Process is busy being stoped, Please try again later.");
+    } else if (!running) {
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process is not running, Please try again later."); });
+        return Napi::String::New(info.Env(), "Process is not running, Please try again later.");
+    } else {
+        gtk_widget_hide(_window);
+        killing = true;
+        gtk_main_quit();
+        return Napi::String::New(info.Env(), "Pipline stopped");
+    }
 }
 
 // --------

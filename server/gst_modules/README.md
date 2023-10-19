@@ -39,4 +39,4 @@
 
 ### Build for production
 * *Need to cd into server/gst_module*
-* ```npm eund build:gst```
+* ```npm run build:gst```
