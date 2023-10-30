@@ -52,6 +52,8 @@ Napi::ThreadSafeFunction _emit;
 // Process varialbes 
 gboolean running = false;   // Gstreamer running state
 gboolean killing = false;   // Gstreamer killing state
+// Function prototyp's (used for calling functions before it is declared see: https://stackoverflow.com/questions/21487894/can-we-call-functions-before-defining-it)
+void th_Start(void);
 
 // ====================================
 // Helper functions 
@@ -68,31 +70,37 @@ void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level,
 */
 static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer data)
 {
-    // g_print ("Got %s message\n", GST_MESSAGE_TYPE_NAME (message));
-
     switch (GST_MESSAGE_TYPE (message)) {
         case GST_MESSAGE_ERROR:{
+            std::string errorMessage;
             GError *err;
             gchar *debug;
-
             gst_message_parse_error (message, &err, &debug);
             g_print ("Error: %s\n", err->message);
+        
+            // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
+            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", g_strdup(err->message)); });
+
             g_error_free (err);
             g_free (debug);
 
-            // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", g_strdup(err->message)); });
+            // restarting pipeline
+            gtk_widget_hide(_window); 
+            killing = true;
+            gtk_main_quit();
+            th_Start();
+            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Restarting pipeline due to a fatal error"); });
 
             break;
         }
         case GST_MESSAGE_EOS:
             /* end-of-stream */
             _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
-        break;
+            gtk_main_quit();
+            th_Start();
+            break;
         default:
-            /* unhandled message */
-            // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Unxepected error"); });
-        break;
+            break;
     }
 
     /* we want to be notified again the next time there is a message
@@ -259,7 +267,7 @@ void th_Start() {
     // video
     g_object_set (gl.v_demuxer, "latency", 1, NULL);
     g_object_set (gl.decoder, "capture-io-mode", 4, NULL);
-    g_object_set (gl.videosink, "display", _display.c_str(), NULL);     // Set ouput display                                   
+    g_object_set (gl.videosink, "display", _display.c_str(), NULL);     // Set ouput display                     
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (pipeline), gl.source, gl.tee,                                        // src

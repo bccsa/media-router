@@ -32,7 +32,7 @@
 * ```sudo apt install libatk1.0-dev```
 
 ##### Configure build
-* run ```sudo node-gst configure```
+* run ```node-gyp configure```
 * run ```npm i```
 
 #### Runtime dependencies
