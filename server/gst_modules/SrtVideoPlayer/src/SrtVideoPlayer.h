@@ -260,6 +260,7 @@ void th_Start() {
     // src
     g_object_set (gl.source, "uri", _uri.c_str(), NULL);
     g_object_set (gl.source, "wait-for-connection", false, NULL);
+    g_object_set (gl.source, "keep-listening", true, NULL);
     // audio
     g_object_set (gl.a_demuxer, "latency", 1, NULL);
     g_object_set (gl.audiosink, "device", _pulseSink.c_str(), NULL);
@@ -267,7 +268,13 @@ void th_Start() {
     // video
     g_object_set (gl.v_demuxer, "latency", 1, NULL);
     g_object_set (gl.decoder, "capture-io-mode", 4, NULL);
-    g_object_set (gl.videosink, "display", _display.c_str(), NULL);     // Set ouput display                     
+    g_object_set (gl.videosink, "display", _display.c_str(), NULL);     // Set ouput display      
+    // queue's
+    g_object_set (gl.audio_queue, "leaky", 2, NULL);
+    g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
+    g_object_set (gl.video_queue, "leaky", 2, NULL);     // Set ouput display   
+    // g_object_set (gl.decode_queue, "leaky", 2, NULL); // causes heavy frame dropping when enabled 
+    g_object_set (gl.v_convert_queue, "leaky", 2, NULL);             
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (pipeline), gl.source, gl.tee,                                        // src
