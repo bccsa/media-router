@@ -52,11 +52,12 @@ class AudioOutput extends _paAudioSinkBase {
             let o = [...this._sink.options].find(t => t.value == this.master);
             if (o) {
                 this._sink.selectedIndex = o.index;
-            } else {
-                if (this._sink.selectedIndex >= 0) {
-                    this.master = this._sink.options[this._sink.selectedIndex].value;
-                }
             }
+            // } else {
+            //     if (this._sink.selectedIndex >= 0) {
+            //         this.master = this._sink.options[this._sink.selectedIndex].value;
+            //     }
+            // }
         }, { immediate: true });
 
         //----------------------Help Modal-----------------------------//

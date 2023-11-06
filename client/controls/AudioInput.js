@@ -55,11 +55,12 @@ class AudioInput extends _paAudioSourceBase {
             let o = [...this._source.options].find(t => t.value == this.master);
             if (o) {
                 this._source.selectedIndex = o.index;
-            } else {
-                if (this._source.selectedIndex >= 0) {
-                    this.master = this._source.options[this._source.selectedIndex].value;
-                }
             }
+            // } else {
+            //     if (this._source.selectedIndex >= 0) {
+            //         this.master = this._source.options[this._source.selectedIndex].value;
+            //     }
+            // }
         }, { immediate: true });
 
         //----------------------Help Modal-----------------------------//
