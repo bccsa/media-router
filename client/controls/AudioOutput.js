@@ -4,6 +4,7 @@ class AudioOutput extends _paAudioSinkBase {
         this.formatHideRW = true;   // true = Disable Read Write audio format controls
         this.formatHideRO = false;  // true = Disable Read Only audio format controls
         this.master = '';           // Master sink used by the PulseAudio module-remap-sink module.
+        this.master_descr = '';     // Description of master sink
         this.channelMap = '1,2';
     }
 
@@ -30,39 +31,60 @@ class AudioOutput extends _paAudioSinkBase {
         this.setHeaderColor('#007F6A');
 
         // Populate input values
-        this._parent.on('sinks', sinks => {
-            // add new options
-            sinks.forEach(sink => {
-                if (![...this._sink.options].find(t => t.value == sink.name)) {
-                    let o = document.createElement('option');
-                    o.value = sink.name;
-                    o.text = sink.description;
-                    this._sink.options.add(o);
-                }
-            });
+        this._parent.on('sinks', sinks => { this.updateSinks(sinks) }, { immediate: true });
 
-            // remove invalid options
-            [...this._sink.options].forEach(option => {
-                if (!sinks.find(t => t.name == option.value)) {
-                    this._sink.options.remove(option.index);
-                }
-            });
-
-            // Set index / sink
-            let o = [...this._sink.options].find(t => t.value == this.master);
-            if (o) {
-                this._sink.selectedIndex = o.index;
+        this.on("master", m => {
+            let _s = this._parent.sinks.find(t => t.name == m);
+            if (_s) {
+                this.master_descr = _s.description; // save desicription of master, to be used to rename master when master is disconnected
             }
-            // } else {
-            //     if (this._sink.selectedIndex >= 0) {
-            //         this.master = this._sink.options[this._sink.selectedIndex].value;
-            //     }
-            // }
-        }, { immediate: true });
+            // update list of sinks when master is changed (to remove disconnected sinks)
+            this.updateSinks(this._parent.sinks);
+        }, { immediate: true })
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
         this._loadHelpMD('controls/AudioOutput.md');
         //----------------------Help Modal-----------------------------//
+    }
+
+    /**
+     * Update list of sinks
+     */
+    updateSinks(sinks) {
+        // add new options
+        sinks.forEach(sink => {
+            let _s = [...this._sink.options].find(t => t.value == sink.name);
+            if (!_s) {
+                let o = document.createElement('option');
+                o.value = sink.name;
+                o.text = sink.description;
+                this._sink.options.add(o);
+            } else if (_s.value == this.master) { // renmae master's description, master is connected again
+                _s.text = sink.description;
+            }
+        });
+
+        // remove invalid options
+        [...this._sink.options].forEach(option => {
+            let _s = sinks.find(t => t.name == option.value)
+            if (!_s && option.value != this.master) {       // Remove removed input's && input is not the master input (this is done to avoid input's changing when the device is not connected)
+                this._sink.options.remove(option.index);
+            } else if (!_s) {                               // If master is removed, change name to disconnected
+                option.text = this.master_descr + " (disconnected)";
+            }
+        });
+
+        // Set index / sink
+        let o = [...this._sink.options].find(t => t.value == this.master);
+        if (o) {
+            this._sink.selectedIndex = o.index;
+        } else {
+            // add master to the list, if it is not in the list 
+            let o = document.createElement('option');
+            o.value = this.master;
+            o.text = this.master_descr + " (disconnected)";
+            this._sink.options.add(o);
+        }               
     }
 }
