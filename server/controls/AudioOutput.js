@@ -23,10 +23,24 @@ class AudioOutput extends _paAudioSinkBase {
         this.monitor = this.sink + '.monitor';
 
         this.on('run', run => {
+
+            let eventHandler = function (sinks) {
+                if (sinks.find(t => t.name == this.master)) {
+                    this._map();
+                    this._startRemapSink();
+                    // this._parent.off('sinks', eventHandler);
+                } else {
+                    this._stopRemapSink();
+                }
+            }.bind(this);
+
             if (run) {
-                this._startRemapSink();
+                // Wait for master sink to be available before starting the remap sink
+                this._parent.on('sinks', eventHandler, { immediate: true });
             } else {
-                this._stopRemapSink();
+                // this._parent.off('sinks', s);
+                // this._stopRemapsink();
+                this._parent.off('sinks', eventHandler);
             }
         });
 
@@ -99,7 +113,7 @@ class AudioOutput extends _paAudioSinkBase {
 
     // Create a PulseAudio loopback-module linking the sink to the sink
     _startRemapSink() {
-        if (this.channels > 0) {
+        if (!this._paModuleID && this.channels > 0) {
             let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._paModuleName} channels=${this.channels} ${this._channelMap} remix=no sink_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
@@ -112,9 +126,11 @@ class AudioOutput extends _paAudioSinkBase {
                 }
             }).catch(err => {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
+                this._paModuleID = undefined;
             });
         } else {
             this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to create remap-sink: Invalid channel map`);
+            this._paModuleID = undefined;
         }
 
     }
@@ -133,6 +149,7 @@ class AudioOutput extends _paAudioSinkBase {
                 this._paModuleID = undefined;
             }).catch(err => {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
+                this._paModuleID = undefined;
             });
         }
     }

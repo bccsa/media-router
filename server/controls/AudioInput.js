@@ -23,10 +23,24 @@ class AudioInput extends _paAudioSourceBase {
         this.monitor = this.source;
 
         this.on('run', run => {
+
+            let eventHandler = function (sources) {
+                if (sources.find(t => t.name == this.master)) {
+                    this._map();
+                    this._startRemapSource();
+                    // this._parent.off('sources', eventHandler);
+                } else {
+                    this._stopRemapSource();
+                }
+            }.bind(this);
+
             if (run) {
-                this._startRemapSource();
+                // Wait for master source to be available before starting the remap source
+                this._parent.on('sources', eventHandler, { immediate: true });
             } else {
-                this._stopRemapSource();
+                // this._parent.off('sources', s);
+                // this._stopRemapSource();
+                this._parent.off('sources', eventHandler);
             }
         });
 
@@ -99,7 +113,7 @@ class AudioInput extends _paAudioSourceBase {
 
     // Create a PulseAudio loopback-module linking the source to the sink
     _startRemapSource() {
-        if (this.channels > 0) {
+        if (!this._paModuleID && this.channels > 0) {
             let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
@@ -112,9 +126,11 @@ class AudioInput extends _paAudioSourceBase {
                 }
             }).catch(err => {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
+                this._paModuleID = undefined;
             });
         } else {
             this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to create remap-source: Invalid channel map`);
+            this._paModuleID = undefined;
         }
 
     }
@@ -133,6 +149,7 @@ class AudioInput extends _paAudioSourceBase {
                 this._paModuleID = undefined;
             }).catch(err => {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
+                this._paModuleID = undefined;
             });
         }
     }
