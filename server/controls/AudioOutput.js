@@ -26,9 +26,10 @@ class AudioOutput extends _paAudioSinkBase {
 
             let eventHandler = function (sinks) {
                 if (sinks.find(t => t.name == this.master)) {
-                    this._map();
-                    this._startRemapSink();
-                    // this._parent.off('sinks', eventHandler);
+                    if (!this._paModuleID) {
+                        this._map();
+                        this._startRemapSink();
+                    }
                 } else {
                     this._stopRemapSink();
                 }
@@ -113,7 +114,7 @@ class AudioOutput extends _paAudioSinkBase {
 
     // Create a PulseAudio loopback-module linking the sink to the sink
     _startRemapSink() {
-        if (!this._paModuleID && this.channels > 0) {
+        if (this.channels > 0) {
             let cmd = `pactl load-module module-remap-sink master=${this.master} sink_name=${this._paModuleName} channels=${this.channels} ${this._channelMap} remix=no sink_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
