@@ -26,9 +26,10 @@ class AudioInput extends _paAudioSourceBase {
 
             let eventHandler = function (sources) {
                 if (sources.find(t => t.name == this.master)) {
-                    this._map();
-                    this._startRemapSource();
-                    // this._parent.off('sources', eventHandler);
+                    if (!this._paModuleID) {
+                        this._map();
+                        this._startRemapSource();
+                    }
                 } else {
                     this._stopRemapSource();
                 }
@@ -113,7 +114,7 @@ class AudioInput extends _paAudioSourceBase {
 
     // Create a PulseAudio loopback-module linking the source to the sink
     _startRemapSource() {
-        if (!this._paModuleID && this.channels > 0) {
+        if (this.channels > 0) {
             let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
