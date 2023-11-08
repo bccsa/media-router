@@ -68,7 +68,8 @@ class SrtOpusInput extends _paNullSinkBase {
                 }
 
                 // let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! pulsesink device="${this.sink}"`;
-                let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
+                let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! tsdemux latency=1 ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" max-size-bytes=0 ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
+                // let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
 
                 this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
 
