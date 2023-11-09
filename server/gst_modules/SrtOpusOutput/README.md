@@ -24,12 +24,7 @@
 * node-gyp ```sudo npm -g install node-gyp```
 * node-addon-api ```npm install node-addon-api```
 * bindings ```npm install bindings```
-* libgtk-3-dev ```sudo apt install libgtk-3-dev``` (Adding to bindings.gyp: https://github.com/kusti8/proton-native/issues/16 | https://askubuntu.com/questions/397432/fatal-error-gtk-gtk-h-no-such-file-or-directory-using-make)
-* ```sudo apt install libpango1.0-dev```
-* ```sudo apt install libharfbuzz-dev```
-* ```sudo apt install libcairo2-dev```
-* ```sudo apt install libgdk-pixbuf2.0-dev```
-* ```sudo apt install libatk1.0-dev```
+* gstreamer
 
 ##### Configure build
 * run ```node-gyp configure```
@@ -38,12 +33,7 @@
 #### Runtime dependencies
 * node-addon-api ```npm install node-addon-api```
 * bindings ```npm install bindings```
-* libgtk-3-dev ```sudo apt install libgtk-3-dev``` (Adding to bindings.gyp: https://github.com/kusti8/proton-native/issues/16 | https://askubuntu.com/questions/397432/fatal-error-gtk-gtk-h-no-such-file-or-directory-using-make)
-* ```sudo apt install libpango1.0-dev```
-* ```sudo apt install libharfbuzz-dev```
-* ```sudo apt install libcairo2-dev```
-* ```sudo apt install libgdk-pixbuf2.0-dev```
-* ```sudo apt install libatk1.0-dev```
+* gstreamer 
 
 #### Dev dependencies
 * vscode: https://github.com/vadimcn/vscode-lldb (Used for debugging C++)
@@ -62,38 +52,48 @@
 // ------------------
 // Initialization
 // ------------------
-const { _SrtVideoPlayer } = require('bindings')('build/Release/gstreamer.node');
+const { _SrtOpusOutput } = require('bindings')('build/Release/gstreamer.node');
 
-const example = new _SrtVideoPlayer(
-    "srt://srt.invalid:1234",                               // SRT Url
-    "alsa_output.platform-bcm2835_audio.analog-stereo",     // Pulse audio sink 
-    50,                                                     // Pulse audio latency (ms)
-    "0",                                                    // Output display    
-    false,                                                  // Fullscreen (true/false)
-    "Test player name"                                      // Player window name
+ * [0] - _device - Pulse audio device - default: null
+ * [1] - _paLatency - Palse audio latency (ms) - default: 50
+ * [2] - _sampleRate - Sample rate - default: 48000
+ * [3] - _bitDepth - default: 16
+ * [4] - _channels - Channel amount - default: 2
+ * [5] - _bitrate - stream bitrate - default: 64000
+ * [6] - _uri - Srt url - default: null
+const example = new _SrtOpusOutput(
+    "alsa_output.platform-bcm2835_audio.analog-stereo",         //  * [0] - _device - Pulse audio device - default: null
+    50,                                                         //  * [1] - _paLatency - Palse audio latency (ms) - default: 50
+    48000,                                                      //  * [2] - _sampleRate - Sample rate - default: 48000
+    16,                                                         //  * [3] - _bitDepth - default: 16
+    2,                                                          //  * [4] - _channels - Channel amount - default: 2
+    64000,                                                      //  * [5] - _bitrate - stream bitrate - default: 64000
+    "srt://srt.invalid:1234?latency=10&mode=caller"             //  * [6] - _uri - Srt url - default: null
 )
 
 // ------------------
 // Setters
 // ------------------
-// Set srt url
-example.SetUri("srt://srt.invalid:1233");
-// Set pulse sink
-example.SetSink("sink");
+// Set pipline pulse source
+example._device("source");
 // Set pulse latency
-example.SetPALatency(50);
-// Set output display
-example.SetDisplay("0");
-// Set fullscreen (true/ false) 
-example.SetFullscreen(false);
-// Set player window name 
-example.SetName("New name");
+example._paLatency(50);
+// Set sample rate
+example._sampleRate(48000);
+// Set bit depth
+example._bitDepth(16);
+// Set channle count
+example._channels(1);
+// Set bitrate
+example._bitrate(64000);
+// Set srt url
+example._uri("srt://srt.invalid:1233?mode=listener");
 
 // ------------------
 // Control functions
 // ------------------
 /**
- * Start SRT Player
+ * Start SRT pipline
  * Callback: 
  * level: Serverity level
  * message: Message
@@ -103,7 +103,7 @@ example.Start((level, message) => {
 })
 
 /**
- * Stop SRT Player
+ * Stop SRT pipline
 */
 example.Stop();
 ```
