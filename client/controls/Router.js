@@ -138,7 +138,7 @@ class Router extends ui {
                                 data-bs-target="#@{_modalDelete}" title="Remove Router"></button>
                                 
                                 <!--    RESET ROUTER     -->
-                                <button id="@{_btnReset}" class="router-btn-reset" type="button" data-bs-toggle="modal"
+                                <button class="router-btn-reset" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalReset}" title="Reset Router"></button>
 
                                 <!--    RESTART ROUTER     -->
@@ -343,10 +343,10 @@ class Router extends ui {
                     <div class="router-modal-footer">
                         
                         <button class="router-modal-btn mr-2" type="button"  
-                        data-bs-dismiss="modal"> Cancel</button>
+                        data-bs-dismiss="modal">Cancel</button>
                         
-                        <button id="@{_btnDeleteRouter}" class="router-modal-btn"
-                        type="button" data-bs-dismiss="modal"> Reset</button>
+                        <button id="@{_btnReset}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal">Reset</button>
                     </div>
                 </div>
             </div>
