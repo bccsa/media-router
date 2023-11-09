@@ -54,13 +54,6 @@
 // ------------------
 const { _SrtOpusOutput } = require('bindings')('build/Release/gstreamer.node');
 
- * [0] - _device - Pulse audio device - default: null
- * [1] - _paLatency - Palse audio latency (ms) - default: 50
- * [2] - _sampleRate - Sample rate - default: 48000
- * [3] - _bitDepth - default: 16
- * [4] - _channels - Channel amount - default: 2
- * [5] - _bitrate - stream bitrate - default: 64000
- * [6] - _uri - Srt url - default: null
 const example = new _SrtOpusOutput(
     "alsa_output.platform-bcm2835_audio.analog-stereo",         //  * [0] - _device - Pulse audio device - default: null
     50,                                                         //  * [1] - _paLatency - Palse audio latency (ms) - default: 50
