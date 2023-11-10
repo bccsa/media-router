@@ -142,7 +142,7 @@ class Router extends ui {
                                 data-bs-target="#@{_modalReset}" title="Reset Router"></button>
 
                                 <!--    RESTART ROUTER     -->
-                                <button id="@{_btnRestart}" class="router-btn-restart" type="button" data-bs-toggle="modal"
+                                <button class="router-btn-restart" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalRestart}" title="Restart Router"></button>
 
                                 <!--    HELP MODAL     -->
@@ -371,10 +371,10 @@ class Router extends ui {
                     <div class="router-modal-footer">
                         
                         <button class="router-modal-btn mr-2" type="button"  
-                        data-bs-dismiss="modal"> Cancel</button>
+                        data-bs-dismiss="modal">Cancel</button>
                         
-                        <button id="@{_btnDeleteRouter}" class="router-modal-btn"
-                        type="button" data-bs-dismiss="modal"> Restart</button>
+                        <button id="@{_btnRestart}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal">Restart</button>
                     </div>
                 </div>
             </div>
@@ -404,7 +404,7 @@ class Router extends ui {
 
                         <div class="paAudioBase-modal-footer">
                             <button class="router-modal-btn mr-2" type="button"  
-                            data-bs-dismiss="modal"> Close</button>
+                            data-bs-dismiss="modal">Close</button>
                         </div>
                     </div>
                 </div>
