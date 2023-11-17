@@ -7,6 +7,7 @@ class SrtOpusOutput extends _paNullSinkBase {
         super();
         this.fec = false;           // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
+        this.dtx = false;           // Opus DTX mode (lower bandwidth during silence, but slightly lower audio quality). Recommended for speech and not for music feeds.
         this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
         this._ffmpeg;
@@ -80,9 +81,23 @@ class SrtOpusOutput extends _paNullSinkBase {
                 }
 
                 // let args = `pulsesrc device="${this.source}" ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} max-payload-size=188 audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188"`;
-                let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}"`;
-
-                this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
+                // let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ` +
+                // `! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ` +
+                // `! audioconvert ! audioresample ! queue leaky="upstream" ` +
+                // `! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" complexity=${this.compression} inband-fec=${this.fec}  ` +
+                // `packet-loss-percentage=${this.fecPacketLoss} bitrate-type="constrained-vbr" dtx=${this.dtx} max-payload-size=114 ` +    // max payload size = 114 according to Cisco recommendation https://www.cisco.com/c/en/us/support/docs/unified-communications/unified-communications-manager-callmanager/200591-OPUS-Codec-Overview.pdf
+                // `! rtpopuspay ! srtsink wait-for-connection=false sync=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}"`;
+                
+                let args = `parec --device=${this.source} --channels=${this.channels} --latency-msec=${this._parent.paLatency} --rate=${this.sampleRate} --format=S${this.bitDepth}LE --channels=${this.channels} ` +
+                `| gst-launch-1.0 fdsrc ! rawaudioparse num-channels=${this.channels} pcm-format=s${this.bitDepth}le sample-rate=${this.sampleRate} ` +
+                `! audioconvert ! audioresample ! queue leaky="upstream" ` +
+                `! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" complexity=${this.compression} inband-fec=${this.fec} ` +
+                `packet-loss-percentage=${this.fecPacketLoss} bitrate-type="constrained-vbr" dtx=${this.dtx} ` + //max-payload-size=114 ` +    // max payload size = 114 according to Cisco recommendation https://www.cisco.com/c/en/us/support/docs/unified-communications/unified-communications-manager-callmanager/200591-OPUS-Codec-Overview.pdf
+                `! rtpopuspay ! srtsink wait-for-connection=false sync=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}"`;
+                
+                
+                // this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
+                this._gst = spawn(args, { shell: true } );
 
                 // Handle stderr
                 this._gst.stderr.on('data', data => {
