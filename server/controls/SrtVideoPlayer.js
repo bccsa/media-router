@@ -7,7 +7,6 @@ class SrtVideoPlayer extends _paNullSinkBase {
 
         this._ffmpeg;
         this._gst;
-        this._srt;
         this.srtHost = 'srt';
         this.srtPort = 1234;
         this.srtMode = 'caller';
