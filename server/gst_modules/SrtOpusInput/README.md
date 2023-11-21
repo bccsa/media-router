@@ -52,35 +52,23 @@
 // ------------------
 // Initialization
 // ------------------
-const { _SrtOpusOutput } = require('bindings')('build/Release/gstreamer.node');
+const { _SrtOpusInput } = require('bindings')('build/Release/gstreamer.node');
 
-const example = new _SrtOpusOutput(
-    "alsa_output.platform-bcm2835_audio.analog-stereo",         //  * [0] - _device - Pulse audio device - default: null
-    50,                                                         //  * [1] - _paLatency - Palse audio latency (ms) - default: 50
-    48000,                                                      //  * [2] - _sampleRate - Sample rate - default: 48000
-    16,                                                         //  * [3] - _bitDepth - default: 16
-    2,                                                          //  * [4] - _channels - Channel amount - default: 2
-    64000,                                                      //  * [5] - _bitrate - stream bitrate - default: 64000
-    "srt://srt.invalid:1234?latency=10&mode=caller"             //  * [6] - _uri - Srt url - default: null
+const example = new _SrtOpusInput(
+    "srt://localhost:1234?mode=caller&latency=1",       // [0] - _uri - Srt url - default: null
+    50,                                                 // [1] - _paLatency - Palse audio latency (ms) - default: 50
+    "alsa_output.platform-bcm2835_audio.analog-stereo"  // [2] - _sink - Pulse audio device - default: null
 )
 
 // ------------------
 // Setters
 // ------------------
-// Set pipline pulse source
-example._device("source");
-// Set pulse latency
-example._paLatency(50);
-// Set sample rate
-example._sampleRate(48000);
-// Set bit depth
-example._bitDepth(16);
-// Set channle count
-example._channels(1);
-// Set bitrate
-example._bitrate(64000);
 // Set srt url
 example._uri("srt://srt.invalid:1233?mode=listener");
+// Set pulse latency
+example._paLatency(50);
+// Set pipline pulse sink
+example._device("sink");
 
 // ------------------
 // Control functions

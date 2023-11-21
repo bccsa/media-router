@@ -19,9 +19,6 @@ class SrtOpusOutput extends _paNullSinkBase {
         this._udpSocketPort = 0;
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
-        // this._ffmpegParser = new ffmpeg_stderr_parser();
-        this.srtStats = '';         // SRT statistics in JSON string format
-        this.SetAccess('srtStats', { Set: 'none' });
     }
 
     Init() {
@@ -43,11 +40,6 @@ class SrtOpusOutput extends _paNullSinkBase {
                 this._stop_gst();
             }
         });
-
-        // Get opus encoder output bitrate from ffmpeg stderr parser
-        // this._ffmpegParser.on('bitrate', bitrate => {
-        //     this.outBitrate = bitrate;
-        // })
     }
 
     _start_gst() {
@@ -78,41 +70,6 @@ class SrtOpusOutput extends _paNullSinkBase {
                 this._gst.Start((level, message) => {
                     this._parent._log(level, `${this._controlName} (${this.displayName}): ${message}`);
                 });
-
-                // // let args = `pulsesrc device="${this.source}" ! audioconvert ! audioresample ! opusenc bitrate=${this.bitrate * 1000} max-payload-size=188 audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188"`;
-                // let args = `pulsesrc device="${this.source}" buffer-time=10000 ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" max-size-bytes=0 ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! mpegtsmux alignment=7 latency=1 ! srtsink wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&pkt_size=188&latency=${this.srtLatency}${streamID}${crypto}"`;
-                // // let args = `pulsesrc device="${this.source}" latency-time=${this._parent.paLatency * 1000} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audioresample ! queue leaky="upstream" ! opusenc bitrate=${this.bitrate * 1000} audio-type="restricted-lowdelay" ! rtpopuspay ! srtsink wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}"`;
-
-                // this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
-
-                // // Handle stderr
-                // this._gst.stderr.on('data', data => {
-                //     this._parent._log('ERROR', data.toString());
-                // });
-
-                // // Handle stdout
-                // this._gst.stdout.on('data', data => {
-                //     this._parent._log('INFO', data.toString());
-                // });
-
-                // // Handle process exit event
-                // this._gst.on('close', code => {
-                //     if (code != null) { this._parent._log('INFO', `${this._controlName} (${this.displayName}): opus encoder (gstreamer) stopped (${code})`) }
-                //     this._stop_gst();
-
-                //     // Auto restart if run command is still active
-                //     setTimeout(() => {
-                //         if (this.run & !this._gst) {
-                //             this._start_gst();
-                //         }
-                //     }, 5000);
-                // });
-
-                // // Handle process error events
-                // this._gst.on('error', code => {
-                //     this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus encoder (gstreamer) error #${code}`);
-                //     this._stop_gst();
-                // });
             }
             catch (err) {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus encoder (gstreamer) error ${err.message}`);
