@@ -16,8 +16,6 @@ class SrtOpusInput extends _paNullSinkBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
-        this.srtStats = '';         // SRT statistics in JSON string format
-        this.SetAccess('srtStats', { Set: 'none' });
     }
 
     Init() {
@@ -65,41 +63,6 @@ class SrtOpusInput extends _paNullSinkBase {
                 this._gst.Start((level, message) => {
                     this._parent._log(level, `${this._controlName} (${this.displayName}): ${message}`);
                 });
-
-                // // let args = `srtsrc uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}${latency}${streamID}${crypto}&payloadsize=188" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! pulsesink device="${this.sink}"`;
-                // let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! tsdemux latency=1 ignore-pcr=true ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" max-size-bytes=0 ! pulsesink device="${this.sink}" buffer-time=10000`;
-                // // let args = `srtsrc wait-for-connection=false uri="srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}" ! application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96 ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! queue leaky="upstream" ! pulsesink device="${this.sink}" latency-time=${this._parent.paLatency * 1000}`;
-
-                // this._gst = spawn('gst-launch-1.0', args.replace(/\s+/g, ' ').split(" "));
-
-                // // Handle stderr
-                // this._gst.stderr.on('data', data => {
-                //     this._parent._log('ERROR', data.toString());
-                // });
-
-                // // Handle stdout
-                // this._gst.stdout.on('data', data => {
-                //     this._parent._log('INFO', data.toString());
-                // });
-
-                // // Handle process exit event
-                // this._gst.on('close', code => {
-                //     if (code != null) { this._parent._log('INFO', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) stopped (${code})`) }
-                //     this._stop_gst();
-
-                //     // Auto restart if run command is still active
-                //     setTimeout(() => {
-                //         if (this.run & !this._gst) {
-                //             this._start_gst();
-                //         }
-                //     }, 5000);
-                // });
-
-                // // Handle process error events
-                // this._gst.on('error', code => {
-                //     this._parent._log('ERROR', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error #${code}`);
-                //     this._stop_gst();
-                // });
             }
             catch (err) {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
