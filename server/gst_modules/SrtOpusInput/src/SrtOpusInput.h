@@ -9,7 +9,9 @@ typedef struct _CustomData {
     GstElement *srtsrc;
     GstElement *tsparse;
     GstElement *tsdemux;
+    GstElement *opusparse;
     GstElement *opusdec;
+    GstElement *rawaudioparse;
     GstElement *audioconvert;
     GstElement *audioresample;
     GstElement *queue;
@@ -56,6 +58,7 @@ class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
         void th_Start();
         // Variables
         std::string _sink = "null";
+        int _paLatency = 50;
         std::string _uri = "null";
         // Process varialbes 
         GMainLoop *loop;
@@ -68,6 +71,7 @@ class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
         Napi::Value Stop(const Napi::CallbackInfo &info);
         // Setters
         Napi::Value SetUri(const Napi::CallbackInfo &info);
+        Napi::Value SetPALatency(const Napi::CallbackInfo &info);
         Napi::Value SetSink(const Napi::CallbackInfo &info);
 };
 
@@ -80,6 +84,7 @@ Napi::Object _SrtOpusInput::Init(Napi::Env env, Napi::Object exports) {
         InstanceMethod("Start", &_SrtOpusInput::Start),
         InstanceMethod("Stop", &_SrtOpusInput::Stop),
         InstanceMethod("SetUri", &_SrtOpusInput::SetUri),
+        InstanceMethod("SetPALatency", &_SrtOpusInput::SetPALatency),
         InstanceMethod("SetSink", &_SrtOpusInput::SetSink),
     });
 
@@ -100,13 +105,15 @@ Napi::Object _SrtOpusInput::Init(Napi::Env env, Napi::Object exports) {
 // ====================================
 /**
  * [0] - _uri - Srt url - default: null
- * [1] - _sink - Pulse audio device - default: null
+ * [1] - _paLatency - Palse audio latency (ms) - default: 50
+ * [2] - _sink - Pulse audio device - default: null
 */
 _SrtOpusInput::_SrtOpusInput(const Napi::CallbackInfo &info) : Napi::ObjectWrap<_SrtOpusInput>(info) {
     int len = info.Length();
 
     if (len >= 1 && info[0].IsString() ) { this->_uri = info[0].As<Napi::String>().Utf8Value(); } else { std::cout <<  Napi::String::New(info.Env(), "_uri not supplied or invalid type\n"); };
-    if (len >= 2 && info[1].IsString() ) { this->_sink = info[1].As<Napi::String>().Utf8Value(); } else { std::cout <<  Napi::String::New(info.Env(), "_sink not supplied or invalid type\n"); }
+    if (len >= 2 && info[1].IsNumber() ) { this->_paLatency = info[1].As<Napi::Number>(); } else { std::cout <<  Napi::String::New(info.Env(), "_paLatency not supplied or invalid type\n"); };
+    if (len >= 3 && info[2].IsString() ) { this->_sink = info[2].As<Napi::String>().Utf8Value(); } else { std::cout <<  Napi::String::New(info.Env(), "_sink not supplied or invalid type\n"); }
 }
 
 Napi::FunctionReference _SrtOpusInput::constructor;
@@ -152,6 +159,14 @@ Napi::Value _SrtOpusInput::Stop(const Napi::CallbackInfo &info){
 Napi::Value _SrtOpusInput::SetUri(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsString() ) { this->_uri = info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "_uri not supplied or invalid type\n"); };
+    return Napi::Number::New(info.Env(), 0);
+}
+/**
+ * [0] - _paLatency - Palse audio latency (ms) - default: 50
+*/
+Napi::Value _SrtOpusInput::SetPALatency(const Napi::CallbackInfo &info){
+    int len = info.Length();
+    if (len >= 1 && info[0].IsNumber() ) { this->_paLatency = info[0].As<Napi::Number>(); } else { return Napi::String::New(info.Env(), "_paLatency not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
 }
 /**
@@ -232,7 +247,9 @@ void _SrtOpusInput::th_Start() {
     gl.srtsrc = gst_element_factory_make ("srtsrc", "srtsrc");
     gl.tsparse = gst_element_factory_make ("tsparse", "tsparse");
     gl.tsdemux = gst_element_factory_make ("tsdemux", "tsdemux");
+    gl.opusparse = gst_element_factory_make ("opusparse", "opusparse");
     gl.opusdec = gst_element_factory_make ("opusdec", "opusdec");
+    gl.rawaudioparse = gst_element_factory_make ("rawaudioparse", "rawaudioparse");
     gl.audioconvert = gst_element_factory_make ("audioconvert", "audioconvert");
     gl.audioresample = gst_element_factory_make ("audioresample", "audioresample");
     gl.queue = gst_element_factory_make ("queue", "queue");
@@ -242,7 +259,7 @@ void _SrtOpusInput::th_Start() {
     pipeline = gst_pipeline_new ("pipeline");
 
     if (!pipeline || !gl.srtsrc || !gl.tsparse || !gl.tsdemux ||
-        !gl.opusdec || !gl.audioconvert || !gl.audioresample || !gl.queue || !gl.pulsesink) { 
+        !gl.opusparse || !gl.opusdec || !gl.rawaudioparse || !gl.audioconvert || !gl.audioresample || !gl.queue || !gl.pulsesink) { 
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -252,10 +269,11 @@ void _SrtOpusInput::th_Start() {
     g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
-    g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);     
-    g_object_set (gl.pulsesink, "sync", false, NULL); 
+    g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);    
+    g_object_set (gl.rawaudioparse, "use-sink-caps", true, NULL);  
+    g_object_set (gl.pulsesink, "sync", true, NULL); 
     g_object_set (gl.pulsesink, "device", this->_sink.c_str(), NULL);   
-    g_object_set (gl.pulsesink, "buffer-time", (guint64)20000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.pulsesink, "buffer-time", (guint64)this->_paLatency * 1000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.pulsesink, "max-lateness", (guint64)1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // queue's
     g_object_set (gl.queue, "leaky", 2, NULL);   
@@ -263,20 +281,20 @@ void _SrtOpusInput::th_Start() {
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (pipeline), gl.srtsrc, gl.tsparse, gl.tsdemux,
-        gl.opusdec, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL);
+        gl.opusparse, gl.opusdec, gl.rawaudioparse, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL);
 
     // /* Linking */
     if (// src
         gst_element_link_many (gl.srtsrc, gl.tsparse, gl.tsdemux, NULL) != TRUE ||
         // sink
-        gst_element_link_many (gl.opusdec, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL) != TRUE) 
+        gst_element_link_many (gl.opusparse, gl.opusdec, gl.rawaudioparse, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL) != TRUE) 
     {
         g_printerr ("Elements could not be linked.\n");
         gst_object_unref (pipeline); 
     }
 
     /* add pad */
-    g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.opusdec);
+    g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.opusparse);
 
     /* ------------------------------ Prep pipline -------------------------------- */
 

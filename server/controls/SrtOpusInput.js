@@ -57,6 +57,7 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 this._gst = new _SrtOpusInput(
                     `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&payloadsize=188&latency=${this.srtLatency}${streamID}${crypto}`,
+                    this._parent.paLatency,
                     this.sink
                 );
 
