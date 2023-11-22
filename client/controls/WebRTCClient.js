@@ -54,11 +54,11 @@ class WebRTCClient extends _routerChildControlBase {
         //----------------------Help Modal-----------------------------//
 
         this._addPlayer.addEventListener('click', e => {
-            let name = `player_${}`;
+            let name = `player_${this._generateUuid()}`;
 
             this.once(name, data => {
                 // send newly created router's data to manager
-                this._notify({ [name]: data});
+                this._notify({ [name]: data.Get()});
             })
             
             this.Set({
