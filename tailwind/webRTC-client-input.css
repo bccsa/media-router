@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+
+
+/* . {
+    @apply ;
+} */
+
+@tailwind utilities;
+
