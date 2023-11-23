@@ -3,17 +3,18 @@ class WebRTCPlayer extends ui {
         super();
         this.url = '';
         this.playerName = '';
+        this.img = '';
     }
 
     get html() {
         return `
-        <div class="border-t border-gray-600 rounded-b-md mx-[-1rem] my-2"></div> 
+        <div class="border-t border-gray-600 rounded-b-md"></div> 
 
         <!-- Player Name -->
         <div class="w-full mb-2">
             <div class="flex">
-                <label for="@{_playerName}" class="form-label inline-block mb-2 w-2/3">Player Name:</label>
-                <button id="@{_btnDelete}" class="paAudioBase-btn-delete w-1/3" type="button" data-bs-dismiss="modal"
+                <label for="@{_playerName}" class="form-label inline-block self-end grow">Player Name:</label>
+                <button id="@{_btnDelete}" class="h-6 w-6 paAudioBase-btn-delete self-center" type="button" data-bs-dismiss="modal"
                 title="Delete device"></button>
             </div>
 
@@ -23,9 +24,16 @@ class WebRTCPlayer extends ui {
 
         <!-- WebRTC host -->
         <div class="w-full mb-2">
-            <label for="@{_url}" class="form-label inline-block mb-2">WebRTC Host:</label>
+            <label for="@{_url}" class="form-label inline-block">WebRTC Host:</label>
                 <input id="@{_url}" class="paAudioBase-text-area" type="text"
                 title="WebRTC host name / ip address" placeholder="Your WebTRC Host" value="@{url}"/>
+        </div>
+
+        <!-- WebRTC Player image -->
+        <div class="w-full mb-2">
+            <label for="@{_img}" class="form-label inline-block">WebRTC Player icon:</label>
+                <input id="@{_img}" class="paAudioBase-text-area" type="text"
+                title="WebRTC Player icon" placeholder="Your WebTRC Player icon link" value="@{img}"/>
         </div>
         `
     }

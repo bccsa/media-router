@@ -3,6 +3,7 @@ class WebRTCPlayer extends ui {
         super();
         this.playerName = 'name';
         this.url = "";
+        this.img = "";
         this.pc = null;
         this.restartTimeout = null;
         this.sessionUrl = '';
@@ -13,15 +14,48 @@ class WebRTCPlayer extends ui {
         return `
         <!-- ${this.name} -->
         <!--    MAIN CARD CONTAINER     -->
-        <div id="@{_mainCard}" class="border-4 m-2 p-2 w-min border-black rounded-md">
-            <p class="text-2xl text-white mb-2">@{playerName}</p>
-            <audio id="@{audio}" controls></audio>
+        <div id="@{_mainCard}" class="flex border-4 m-2 ml-4 mr-4 p-2 w-ful rounded-lg bg-stone-300">
+            <img id="@{_img}" src="@{img}" class=" flex-nonew-12 h-8 m-2 self-center rounded-lg overflow-hidden">
+            <p class="grow text-2xl text-[#334155] self-center">@{playerName}</p>
+            <audio id="@{_audio}" class="flex flex-col self-center"></audio>
+            <img id="@{_play}" src="img/play.svg" class="flex-none w-8 h-8 m-2 self-center">
+            <img id="@{_pause}" src="img/stop.svg" class="flex-none w-8 h-8 m-2 self-center hidden">
         </div>        
         `;
     }
 
     Init() {
+        this._play.style.display = "block";
+        this._pause.style.display = "none";
         this.start();
+
+        if (!this.img) {
+            this._img.style.display = "none"
+        }
+
+        // Event listeners 
+        this._mainCard.addEventListener('click', e => {
+            if (this._play.style.display == "block") {
+                this.play();
+            } else {
+                this.pause();
+            }
+        })
+    }
+
+    play() {
+        this._parent.pause();
+        this._play.style.display = "none";
+        this._pause.style.display = "block";
+
+        this._audio.play();
+    }
+
+    pause() {
+        this._play.style.display = "block";
+        this._pause.style.display = "none";
+
+        this._audio.pause();
     }
 
     start() {
@@ -51,7 +85,7 @@ class WebRTCPlayer extends ui {
 
         this.pc.ontrack = (evt) => {
             console.log("new track:", evt.track.kind);
-            this.audio.srcObject = evt.streams[0];
+            this._audio.srcObject = evt.streams[0];
         };
 
         this.pc.createOffer()
@@ -77,7 +111,7 @@ class WebRTCPlayer extends ui {
                 if (res.status !== 201) {
                     throw new Error('bad status code');
                 }
-                this.sessionUrl = new URL(res.headers.get('location'), this.url).toString();
+                this.sessionUrl = `${this.url}/${res.headers.get('location')}`;
                 return res.text();
             })
             .then((sdp) => this.onRemoteAnswer(new RTCSessionDescription({
@@ -131,7 +165,7 @@ class WebRTCPlayer extends ui {
     }
 
     sendLocalCandidates(candidates) {
-        fetch(this.sessionUrl + window.location.search, {
+        fetch(this.sessionUrl, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/trickle-ice-sdpfrag',

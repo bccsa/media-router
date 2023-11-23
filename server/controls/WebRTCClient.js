@@ -12,7 +12,7 @@ class WebRTCClient extends dm {
     constructor() {
         super();
         this.url = 'http://localhost:8889/test';
-        this.playerName = 'name';
+        this.title = 'name';
         this.displayName = 'WebRTCClient';
         this.appPort = 2000;
         this.reload = false;
@@ -39,6 +39,12 @@ class WebRTCClient extends dm {
                 this._stop_webApp();
             }
         }, { immediate: true });
+
+        // this._parent.on(this._controlName, data => {
+        //     if (this._io) {
+        //         this._io.emit('data', data.Get());
+        //     }
+        // })
 
     }
 
@@ -70,11 +76,12 @@ class WebRTCClient extends dm {
             this._io = new Server(this._http);
 
             this._io.on('connect', socket => {
-                socket.emit('data', this._controls.Get())
+                socket.emit('data', this.Get());
             })
         }
     }
 
+    // close web APP and close socket
     _stop_webApp() {
         if (this._app) {
             this._parent._log('INFO', `${this._controlName} (${this.displayName}) - Closing WebRTC WebApp running on http://*: ${this.appPort}`); 
