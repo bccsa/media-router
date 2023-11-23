@@ -34,9 +34,31 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Test Gstreamer c++",
+            "name": "Test Gstreamer c++ (SrtVideoPlayer)",
             "cwd": "${workspaceFolder}/server/gst_modules/SrtVideoPlayer",
             "preLaunchTask": "npm: build:gst:dev",
+            "program": "/usr/bin/node",
+            "args": [
+               "./test.js"
+            ]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Test Gstreamer c++ (SrtOpusOutput)",
+            "cwd": "${workspaceFolder}/server/gst_modules/SrtOpusOutput",
+            "preLaunchTask": "npm: build:gst-opusOut:dev",
+            "program": "/usr/bin/node",
+            "args": [
+               "./test.js"
+            ]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Test Gstreamer c++ (SrtOpusInput)",
+            "cwd": "${workspaceFolder}/server/gst_modules/SrtOpusInput",
+            "preLaunchTask": "npm: build:gst-opusIn:dev",
             "program": "/usr/bin/node",
             "args": [
                "./test.js"
