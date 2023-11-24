@@ -46,6 +46,7 @@ class _SrtOpusOutput : public Napi::ObjectWrap<_SrtOpusOutput> {
         std::string _uri = "null";
         // Process varialbes 
         GMainLoop *loop;
+        GstElement *pipeline;
         // Event emitter 
         Napi::ThreadSafeFunction _emit; 
 
@@ -234,21 +235,15 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             g_error_free (err);
             g_free (debug);
 
-            // obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Restarting pipeline due to a fatal error"); });
-            //restarting on FATAL error
-            // g_main_loop_quit(obj->loop);
-            // sleep( 10 ); 
-            // obj->th_Start();
-
             break;
         }
         case GST_MESSAGE_EOS:
             /* end-of-stream */
-            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
+            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 10 seconds"); });
             //restarting on FATAL error
-            // g_main_loop_quit(obj->loop);
-            // sleep( 10 ); 
-            // obj->th_Start();
+            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+            sleep( 10 ); 
+            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
         default:
             break;
@@ -270,7 +265,6 @@ void _SrtOpusOutput::th_Start() {
     // Gstreamer
     GstBus *bus;
     GstPad *srcpad;
-    GstElement *pipeline;
 
     /* Initialize GStreamer */
     gst_init (NULL, NULL);
@@ -288,9 +282,9 @@ void _SrtOpusOutput::th_Start() {
     gl.srtsink = gst_element_factory_make ("srtsink", "srtsink");
 
     /* Create the empty pipeline */
-    pipeline = gst_pipeline_new ("pipeline");
+    this->pipeline = gst_pipeline_new ("pipeline");
 
-    if (!pipeline || !gl.source || !gl.audioconvert ||
+    if (!this->pipeline || !gl.source || !gl.audioconvert ||
         !gl.audioresample || !gl.a_convert_queue || !gl.opusenc || !gl.mpegtsmux || !gl.srtsink) { 
         g_printerr ("Not all elements could be created.\n");
     }
@@ -305,7 +299,7 @@ void _SrtOpusOutput::th_Start() {
     g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
     g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
     // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
-    g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
+    g_object_set (gl.srtsink, "wait-for-connection", true, NULL);  
     g_object_set (gl.srtsink, "sync", false, NULL);  
     g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
     // queue's
@@ -313,14 +307,14 @@ void _SrtOpusOutput::th_Start() {
     g_object_set (gl.a_convert_queue, "max-size-time", (guint64)1000000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (pipeline), gl.source, gl.audioconvert,
+    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.audioconvert,
         gl.audioresample, gl.a_convert_queue, gl.opusenc, gl.mpegtsmux, gl.srtsink, NULL);
 
     // /* Linking */
     if (// src
         gst_element_link_many (gl.source, gl.audioconvert, gl.audioresample, gl.a_convert_queue, gl.opusenc, gl.mpegtsmux, gl.srtsink, NULL) != TRUE) {
         g_printerr ("Elements could not be linked.\n");
-        gst_object_unref (pipeline); 
+        gst_object_unref (this->pipeline); 
     }
 
     /* Link caps */
@@ -336,10 +330,10 @@ void _SrtOpusOutput::th_Start() {
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* Start playing the pipeline */
-    gst_element_set_state (pipeline, GST_STATE_PLAYING);
+    gst_element_set_state (this->pipeline, GST_STATE_PLAYING);
 
     /* Wait until error or EOS */
-    bus = gst_element_get_bus (pipeline);
+    bus = gst_element_get_bus (this->pipeline);
 
     gst_bus_add_watch (bus, my_bus_callback, this);
     gst_object_unref (bus);
@@ -349,8 +343,8 @@ void _SrtOpusOutput::th_Start() {
     /* ------------------------------- Post cleanup -------------------------------- */
     this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
 
-    gst_element_set_state(pipeline, GST_STATE_NULL);
-    gst_object_unref (pipeline);
+    gst_element_set_state(this->pipeline, GST_STATE_NULL);
+    gst_object_unref (this->pipeline);
     gst_object_unref (this->loop);
 
     this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
