@@ -65,19 +65,25 @@ class WebRTCClient extends dm {
             
                 // Serve all the files
                 this._app.use(express.static(path.join(__dirname, '/../../webRTC-client')));
-            
+
+                // -------------------------------------
+                // Socket.io communication with WebRTC WebApp
+                // -------------------------------------
+                this._io = new Server(this._http);
+
+                this._io.on('connect', socket => {
+                    socket.emit('data', this.Get());
+                })
+
+                this._http.once('error', err => {
+                    if (err.code == "EADDRINUSE") {
+                        this._parent._log('FATAL', `${this._controlName} (${this.displayName}) - Unable to start WebRTC WebApp: ${err.message}`);
+                        this._stop_webApp();
+                    }
+                })
             } catch (err) {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}) - Unable to start WebRTC WebApp: ${err.message}`);
             } 
-
-            // -------------------------------------
-            // Socket.io communication with WebRTC WebApp
-            // -------------------------------------
-            this._io = new Server(this._http);
-
-            this._io.on('connect', socket => {
-                socket.emit('data', this.Get());
-            })
         }
     }
 
