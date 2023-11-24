@@ -299,7 +299,8 @@ void _SrtOpusOutput::th_Start() {
     g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
     g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
     // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
-    g_object_set (gl.srtsink, "wait-for-connection", true, NULL);  
+    g_object_set (gl.srtsink, "async", false, NULL);
+    g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
     g_object_set (gl.srtsink, "sync", false, NULL);  
     g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
     // queue's
