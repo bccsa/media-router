@@ -60,7 +60,7 @@ const example = new _SrtOpusOutput(
     48000,                                                      //  * [2] - _sampleRate - Sample rate - default: 48000
     16,                                                         //  * [3] - _bitDepth - default: 16
     2,                                                          //  * [4] - _channels - Channel amount - default: 2
-    64000,                                                      //  * [5] - _bitrate - stream bitrate - default: 64000
+    128,                                                      //  * [5] - _bitrate - stream bitrate - default: 64000
     "srt://srt.invalid:1234?latency=10&mode=caller"             //  * [6] - _uri - Srt url - default: null
 )
 
