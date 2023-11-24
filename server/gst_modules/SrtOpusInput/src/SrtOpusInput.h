@@ -1,6 +1,7 @@
 #include <napi.h>
 #include <thread>
 #include <gst/gst.h>
+#include <unistd.h>
 #include <iostream>
 
 /* Structure to contain all our information, so we can pass it to callbacks */
@@ -202,9 +203,10 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             g_error_free (err);
             g_free (debug);
 
-            obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Restarting pipeline due to a fatal error"); });
+            obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Restarting pipeline due to a fatal error (After 5 secodes)"); });
             //restarting on FATAL error
             g_main_loop_quit(obj->loop);
+            sleep( 5 ); 
             obj->th_Start();
 
             break;
@@ -214,6 +216,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
             //restarting on EOS
             g_main_loop_quit(obj->loop);
+            sleep( 5 ); 
             obj->th_Start();
             break;
         default:
