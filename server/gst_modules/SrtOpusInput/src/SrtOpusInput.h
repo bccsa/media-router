@@ -42,7 +42,6 @@ static void on_pad_added (GstElement *element, GstPad *pad, gpointer data)
     
     /* We can now link this pad with the sink pad */
     g_print ("Dynamic pad created\n");
-    
     sinkpad = gst_element_get_static_pad (gl_item, "sink");
     gst_pad_link (pad, sinkpad);
     gst_object_unref (sinkpad);
@@ -263,7 +262,7 @@ void _SrtOpusInput::th_Start() {
     /* Configure elements */
     // src
     g_object_set (gl.srtsrc, "uri", this->_uri.c_str(), NULL);
-    g_object_set (gl.srtsrc, "wait-for-connection", true, NULL);
+    g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
     g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);    
