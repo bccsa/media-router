@@ -1,0 +1,21 @@
+{
+  "default": {
+    "controlType": "managerPanel",
+    "managerUrl": "http://10.9.1.43:3000",
+    "username": "ZA-SCC-TR-FRA01",
+    "password": "MyPassword",
+    "selected": true
+  },
+  "managerPanel_4432": {
+    "name": "managerPanel_4432",
+    "controlType": "managerPanel",
+    "parentElement": "_controlsDiv",
+    "visible": true,
+    "visibleDisplayCss": "inherit",
+    "hiddenDisplayCss": "none",
+    "orderAsc": true,
+    "managerUrl": "http://localhost:3000",
+    "username": "New manager",
+    "selected": false
+  }
+}
