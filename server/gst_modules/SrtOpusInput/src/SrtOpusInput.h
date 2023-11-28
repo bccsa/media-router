@@ -265,15 +265,14 @@ void _SrtOpusInput::th_Start() {
     g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
-    g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);    
-    // g_object_set (gl.rawaudioparse, "use-sink-caps", true, NULL);  
+    g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);     
     g_object_set (gl.pulsesink, "sync", false, NULL); 
     g_object_set (gl.pulsesink, "device", this->_sink.c_str(), NULL);   
     g_object_set (gl.pulsesink, "buffer-time", (guint64)this->_paLatency * 1000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.pulsesink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // queue's
     g_object_set (gl.queue, "leaky", 2, NULL);   
-    g_object_set (gl.queue, "max-size-time", (guint64)10000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.queue, "max-size-time", (guint64)1000000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.srtsrc, gl.tsparse, gl.tsdemux,
