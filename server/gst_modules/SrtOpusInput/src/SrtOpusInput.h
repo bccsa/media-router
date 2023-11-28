@@ -205,14 +205,15 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 
             break;
         }
-        case GST_MESSAGE_EOS:
+        case GST_MESSAGE_EOS:{
             /* end-of-stream */
             obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
-            //restarting on EOS
+            // //restarting on EOS
             gst_element_set_state(obj->pipeline, GST_STATE_NULL);
             sleep( 5 ); 
             gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
+        }
         default:
             break;
     }
@@ -272,7 +273,7 @@ void _SrtOpusInput::th_Start() {
     g_object_set (gl.pulsesink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // queue's
     g_object_set (gl.queue, "leaky", 2, NULL);   
-    // g_object_set (gl.queue, "max-size-time", (guint64)1000000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.queue, "max-size-time", (guint64)10000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.srtsrc, gl.tsparse, gl.tsdemux,
