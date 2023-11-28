@@ -241,9 +241,9 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             /* end-of-stream */
             obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 10 seconds"); });
             //restarting on FATAL error
-            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-            sleep( 10 ); 
-            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+            // gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+            // sleep( 10 ); 
+            // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
         default:
             break;
