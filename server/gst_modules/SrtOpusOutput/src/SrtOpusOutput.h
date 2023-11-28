@@ -305,7 +305,7 @@ void _SrtOpusOutput::th_Start() {
     g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
     // queue's
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
-    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    // g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.audioconvert,
