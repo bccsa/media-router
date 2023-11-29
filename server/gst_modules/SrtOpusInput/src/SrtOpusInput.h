@@ -214,12 +214,6 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
         }
-        case GST_MESSAGE_STREAM_STATUS:{
-            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-            sleep( 2 ); 
-            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
-            break;
-        }
         default:
             break;
     }
