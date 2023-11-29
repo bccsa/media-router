@@ -214,6 +214,12 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
         }
+        case GST_MESSAGE_STREAM_STATUS:{
+            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+            sleep( 2 ); 
+            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+            break;
+        }
         default:
             break;
     }
@@ -263,7 +269,7 @@ void _SrtOpusInput::th_Start() {
     /* Configure elements */
     // src
     g_object_set (gl.srtsrc, "uri", this->_uri.c_str(), NULL);
-    g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
+    g_object_set (gl.srtsrc, "wait-for-connection", true, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
     g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);     
