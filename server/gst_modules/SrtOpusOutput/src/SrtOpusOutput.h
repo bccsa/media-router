@@ -239,10 +239,10 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
         }
         case GST_MESSAGE_EOS:{
             /* end-of-stream */
-            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 10 seconds"); });
+            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 2 seconds"); });
             //restarting on FATAL error
             gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-            sleep( 10 ); 
+            sleep( 2 ); 
             gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
         }
@@ -300,7 +300,7 @@ void _SrtOpusOutput::th_Start() {
     g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
     g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
     // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
-    g_object_set (gl.srtsink, "async", false, NULL);
+    g_object_set (gl.srtsink, "poll-timeout", 1000, NULL);
     g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
     g_object_set (gl.srtsink, "sync", false, NULL);  
     g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
