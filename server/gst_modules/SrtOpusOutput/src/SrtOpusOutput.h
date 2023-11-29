@@ -221,33 +221,38 @@ Napi::Value _SrtOpusOutput::SetUri(const Napi::CallbackInfo &info){
 static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer data)
 {
     _SrtOpusOutput *obj = (_SrtOpusOutput *) data;
-    switch (GST_MESSAGE_TYPE (message)) {
-        case GST_MESSAGE_ERROR:{
-            std::string errorMessage;
-            GError *err;
-            gchar *debug;
-            gst_message_parse_error (message, &err, &debug);
-            g_print ("Error: %s\n", err->message);
-        
-            // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-            obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", g_strdup(err->message)); });
 
-            g_error_free (err);
-            g_free (debug);
+    try {
+        switch (GST_MESSAGE_TYPE (message)) {
+            case GST_MESSAGE_ERROR:{
+                std::string errorMessage;
+                GError *err;
+                gchar *debug;
+                gst_message_parse_error (message, &err, &debug);
+                g_print ("Error: %s\n", err->message);
+            
+                // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
+                obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", g_strdup(err->message)); });
 
-            break;
+                g_error_free (err);
+                g_free (debug);
+
+                break;
+            }
+            case GST_MESSAGE_EOS:{
+                /* end-of-stream */
+                obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 1 seconds"); });
+                //restarting on FATAL error
+                gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                sleep( 1 ); 
+                gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                break;
+            }
+            default:
+                break;
         }
-        case GST_MESSAGE_EOS:{
-            /* end-of-stream */
-            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 2 seconds"); });
-            //restarting on FATAL error
-            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-            sleep( 2 ); 
-            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
-            break;
-        }
-        default:
-            break;
+    } catch (std::logic_error& e) {
+        std::cout << "logic_error thrown" << std::endl;
     }
     /* we want to be notified again the next time there is a message
     * on the bus, so returning TRUE (FALSE means we want to stop watching
@@ -260,95 +265,99 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
  * Start Gstreamer in a seperate thread
 */
 void _SrtOpusOutput::th_Start() {
-    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
-    /* Varaibles */
-    CustomData gl;
-    // Gstreamer
-    GstBus *bus;
-    GstPad *srcpad;
+    try {
+        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
+        /* Varaibles */
+        CustomData gl;
+        // Gstreamer
+        GstBus *bus;
+        GstPad *srcpad;
 
-    /* Initialize GStreamer */
-    gst_init (NULL, NULL);
-    this->loop = g_main_loop_new (NULL, FALSE);
+        /* Initialize GStreamer */
+        gst_init (NULL, NULL);
+        this->loop = g_main_loop_new (NULL, FALSE);
 
-    /* ------------------------------ Prep pipline -------------------------------- */
+        /* ------------------------------ Prep pipline -------------------------------- */
 
-    /* Create the elements */
-    gl.source = gst_element_factory_make ("pulsesrc", "source");
-    gl.audioresample = gst_element_factory_make ("audioresample", "audioresample");
-    gl.audioconvert = gst_element_factory_make ("audioconvert", "audioconvert");
-    gl.a_convert_queue = gst_element_factory_make ("queue", "a_convert_queue");
-    gl.opusenc = gst_element_factory_make ("opusenc", "opusenc");
-    gl.mpegtsmux = gst_element_factory_make ("mpegtsmux", "mpegtsmux");
-    gl.srtsink = gst_element_factory_make ("srtsink", "srtsink");
+        /* Create the elements */
+        gl.source = gst_element_factory_make ("pulsesrc", "source");
+        gl.audioresample = gst_element_factory_make ("audioresample", "audioresample");
+        gl.audioconvert = gst_element_factory_make ("audioconvert", "audioconvert");
+        gl.a_convert_queue = gst_element_factory_make ("queue", "a_convert_queue");
+        gl.opusenc = gst_element_factory_make ("opusenc", "opusenc");
+        gl.mpegtsmux = gst_element_factory_make ("mpegtsmux", "mpegtsmux");
+        gl.srtsink = gst_element_factory_make ("srtsink", "srtsink");
 
-    /* Create the empty pipeline */
-    this->pipeline = gst_pipeline_new ("pipeline");
+        /* Create the empty pipeline */
+        this->pipeline = gst_pipeline_new ("pipeline");
 
-    if (!this->pipeline || !gl.source || !gl.audioconvert ||
-        !gl.audioresample || !gl.a_convert_queue || !gl.opusenc || !gl.mpegtsmux || !gl.srtsink) { 
-        g_printerr ("Not all elements could be created.\n");
+        if (!this->pipeline || !gl.source || !gl.audioconvert ||
+            !gl.audioresample || !gl.a_convert_queue || !gl.opusenc || !gl.mpegtsmux || !gl.srtsink) { 
+            g_printerr ("Not all elements could be created.\n");
+        }
+
+        /* Configure elements */
+        // src
+        g_object_set (gl.source, "device", this->_device.c_str(), NULL);
+        g_object_set (gl.source, "buffer-time", (guint64)this->_paLatency * 1000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+        // g_object_set (gl.source, "latency-time", this->_paLatency * 1000, NULL);
+        g_object_set (gl.opusenc, "bitrate", this->_bitrate * 1000, NULL);   
+        g_object_set (gl.opusenc, "audio-type", 2051, NULL);    
+        g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
+        g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
+        // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
+        g_object_set (gl.srtsink, "poll-timeout", 1000, NULL);
+        g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
+        g_object_set (gl.srtsink, "sync", false, NULL);  
+        g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
+        // queue's
+        g_object_set (gl.a_convert_queue, "leaky", 1, NULL);
+        g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+
+        /* Link all elements that can be automatically linked because they have "Always" pads */
+        gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.audioconvert,
+            gl.audioresample, gl.a_convert_queue, gl.opusenc, gl.mpegtsmux, gl.srtsink, NULL);
+
+        // /* Linking */
+        if (// src
+            gst_element_link_many (gl.source, gl.audioconvert, gl.audioresample, gl.a_convert_queue, gl.opusenc, gl.mpegtsmux, gl.srtsink, NULL) != TRUE) {
+            g_printerr ("Elements could not be linked.\n");
+            gst_object_unref (this->pipeline); 
+        }
+
+        /* Link caps */
+        gl.caps = gst_caps_new_simple("audio/x-raw",
+            "format", G_TYPE_STRING, this->_bitDepth.c_str(),
+            "rate", G_TYPE_INT, this->_sampleRate,
+            "channels", G_TYPE_INT, this->_channels,
+            NULL);
+        srcpad = gst_element_get_static_pad(gl.source, "src");
+        gst_pad_set_caps(srcpad, gl.caps);
+        gst_caps_unref(gl.caps);
+
+        /* ------------------------------ Prep pipline -------------------------------- */
+
+        /* Start playing the pipeline */
+        gst_element_set_state (this->pipeline, GST_STATE_PLAYING);
+
+        /* Wait until error or EOS */
+        bus = gst_element_get_bus (this->pipeline);
+
+        gst_bus_add_watch (bus, my_bus_callback, this);
+        gst_object_unref (bus);
+
+        g_main_loop_run (this->loop);
+
+        /* ------------------------------- Post cleanup -------------------------------- */
+        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
+
+        gst_element_set_state(this->pipeline, GST_STATE_NULL);
+        gst_object_unref (this->pipeline);
+        gst_object_unref (this->loop);
+
+        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
+        /* ------------------------------- Post cleanup -------------------------------- */
+    } catch (std::logic_error& e) {
+        std::cout << "logic_error thrown" << std::endl;
     }
-
-    /* Configure elements */
-    // src
-    g_object_set (gl.source, "device", this->_device.c_str(), NULL);
-    g_object_set (gl.source, "buffer-time", (guint64)this->_paLatency * 1000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-    // g_object_set (gl.source, "latency-time", this->_paLatency * 1000, NULL);
-    g_object_set (gl.opusenc, "bitrate", this->_bitrate * 1000, NULL);   
-    g_object_set (gl.opusenc, "audio-type", 2051, NULL);    
-    g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
-    g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
-    // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
-    g_object_set (gl.srtsink, "poll-timeout", 1000, NULL);
-    g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
-    g_object_set (gl.srtsink, "sync", false, NULL);  
-    g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
-    // queue's
-    g_object_set (gl.a_convert_queue, "leaky", 1, NULL);
-    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-
-    /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.audioconvert,
-        gl.audioresample, gl.a_convert_queue, gl.opusenc, gl.mpegtsmux, gl.srtsink, NULL);
-
-    // /* Linking */
-    if (// src
-        gst_element_link_many (gl.source, gl.audioconvert, gl.audioresample, gl.a_convert_queue, gl.opusenc, gl.mpegtsmux, gl.srtsink, NULL) != TRUE) {
-        g_printerr ("Elements could not be linked.\n");
-        gst_object_unref (this->pipeline); 
-    }
-
-    /* Link caps */
-    gl.caps = gst_caps_new_simple("audio/x-raw",
-        "format", G_TYPE_STRING, this->_bitDepth.c_str(),
-        "rate", G_TYPE_INT, this->_sampleRate,
-        "channels", G_TYPE_INT, this->_channels,
-        NULL);
-    srcpad = gst_element_get_static_pad(gl.source, "src");
-    gst_pad_set_caps(srcpad, gl.caps);
-    gst_caps_unref(gl.caps);
-
-    /* ------------------------------ Prep pipline -------------------------------- */
-
-    /* Start playing the pipeline */
-    gst_element_set_state (this->pipeline, GST_STATE_PLAYING);
-
-    /* Wait until error or EOS */
-    bus = gst_element_get_bus (this->pipeline);
-
-    gst_bus_add_watch (bus, my_bus_callback, this);
-    gst_object_unref (bus);
-
-    g_main_loop_run (this->loop);
-
-    /* ------------------------------- Post cleanup -------------------------------- */
-    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
-
-    gst_element_set_state(this->pipeline, GST_STATE_NULL);
-    gst_object_unref (this->pipeline);
-    gst_object_unref (this->loop);
-
-    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
-    /* ------------------------------- Post cleanup -------------------------------- */
 }
