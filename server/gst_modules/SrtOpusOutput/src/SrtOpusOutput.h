@@ -24,8 +24,12 @@ typedef struct _CustomData {
  * Event Emiter
 */
 void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level, std::string message) {
-    emitFn.Call({ Napi::String::New(env, level), Napi::String::New(env, message) });
-}
+    try {
+        emitFn.Call({ Napi::String::New(env, level), Napi::String::New(env, message) });
+    } catch (std::logic_error& e) {
+        std::cout << "logic_error thrown" << std::endl;
+    }
+} 
 
 // ====================================
 // Init 
@@ -36,6 +40,7 @@ class _SrtOpusOutput : public Napi::ObjectWrap<_SrtOpusOutput> {
         _SrtOpusOutput(const Napi::CallbackInfo &info);
         // Gstreamer functions
         void th_Start();
+        void reload_srt();
         // Variables
         std::string _device = "null";
         int _paLatency = 50;
@@ -44,6 +49,7 @@ class _SrtOpusOutput : public Napi::ObjectWrap<_SrtOpusOutput> {
         int _channels = 2;
         int _bitrate = 64000;
         std::string _uri = "null";
+        CustomData gl;
         // Process varialbes 
         GMainLoop *loop;
         GstElement *pipeline;
@@ -220,39 +226,44 @@ Napi::Value _SrtOpusOutput::SetUri(const Napi::CallbackInfo &info){
 */
 static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer data)
 {
-    _SrtOpusOutput *obj = (_SrtOpusOutput *) data;
+    // test class and class type before entering to avoid function crashing due to invalid class
+    _SrtOpusOutput *obj = static_cast<_SrtOpusOutput *>(data);
+    if (data != nullptr && obj) {
+        try {
+            switch (GST_MESSAGE_TYPE (message)) {
+                case GST_MESSAGE_ERROR:{
+                    std::string errorMessage;
+                    GError *err;
+                    gchar *debug;
+                    gst_message_parse_error (message, &err, &debug);
+                    g_print ("Error: %s\n", err->message);
+                
+                    // 
+                    // obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", g_strdup(err->message)); });
+                    
+                    g_error_free (err);
+                    g_free (debug);
 
-    try {
-        switch (GST_MESSAGE_TYPE (message)) {
-            case GST_MESSAGE_ERROR:{
-                std::string errorMessage;
-                GError *err;
-                gchar *debug;
-                gst_message_parse_error (message, &err, &debug);
-                g_print ("Error: %s\n", err->message);
-            
-                // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-                obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", g_strdup(err->message)); });
-
-                g_error_free (err);
-                g_free (debug);
-
-                break;
+                    break;
+                }
+                case GST_MESSAGE_EOS:{
+                    /* end-of-stream */
+                    obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 3 seconds"); });
+                    
+                    //restarting on FATAL error
+                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                    // sleep( 1 );
+                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    break;
+                }
+                default:
+                    break;
             }
-            case GST_MESSAGE_EOS:{
-                /* end-of-stream */
-                obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 1 seconds"); });
-                //restarting on FATAL error
-                gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                sleep( 1 ); 
-                gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
-                break;
-            }
-            default:
-                break;
+        } catch (std::logic_error& e) {
+            std::cout << "logic_error thrown" << std::endl;
         }
-    } catch (std::logic_error& e) {
-        std::cout << "logic_error thrown" << std::endl;
+    } else {
+        std::cout << "Invalid class reference " << std::endl;
     }
     /* we want to be notified again the next time there is a message
     * on the bus, so returning TRUE (FALSE means we want to stop watching
@@ -268,7 +279,6 @@ void _SrtOpusOutput::th_Start() {
     try {
         this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
         /* Varaibles */
-        CustomData gl;
         // Gstreamer
         GstBus *bus;
         GstPad *srcpad;
@@ -277,7 +287,7 @@ void _SrtOpusOutput::th_Start() {
         gst_init (NULL, NULL);
         this->loop = g_main_loop_new (NULL, FALSE);
 
-        /* ------------------------------ Prep pipline -------------------------------- */
+        /* ------------------------------ Prep pipeline -------------------------------- */
 
         /* Create the elements */
         gl.source = gst_element_factory_make ("pulsesrc", "source");
@@ -306,7 +316,7 @@ void _SrtOpusOutput::th_Start() {
         g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
         g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
         // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
-        g_object_set (gl.srtsink, "poll-timeout", 1000, NULL);
+        g_object_set (gl.srtsink, "audo-reconnect", true, NULL);
         g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
         g_object_set (gl.srtsink, "sync", false, NULL);  
         g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
@@ -335,15 +345,16 @@ void _SrtOpusOutput::th_Start() {
         gst_pad_set_caps(srcpad, gl.caps);
         gst_caps_unref(gl.caps);
 
-        /* ------------------------------ Prep pipline -------------------------------- */
+        /* ------------------------------ Prep pipeline -------------------------------- */
 
         /* Start playing the pipeline */
         gst_element_set_state (this->pipeline, GST_STATE_PLAYING);
 
         /* Wait until error or EOS */
         bus = gst_element_get_bus (this->pipeline);
-
-        gst_bus_add_watch (bus, my_bus_callback, this);
+        gst_bus_add_signal_watch(bus);
+        g_signal_connect(bus, "message", G_CALLBACK(my_bus_callback), this);
+        // gst_bus_add_watch (bus, my_bus_callback, this);
         gst_object_unref (bus);
 
         g_main_loop_run (this->loop);
@@ -353,7 +364,7 @@ void _SrtOpusOutput::th_Start() {
 
         gst_element_set_state(this->pipeline, GST_STATE_NULL);
         gst_object_unref (this->pipeline);
-        gst_object_unref (this->loop);
+        g_main_loop_unref (this->loop);
 
         this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
         /* ------------------------------- Post cleanup -------------------------------- */
