@@ -31,17 +31,17 @@ cd ..
 cd server/gst_modules/SrtVideoPlayer
 sudo node-gst configure
 npm i
-cd ../..
+cd ../../..
 
 cd server/gst_modules/SrtOpusOutput
 sudo node-gst configure
 npm i
-cd ../..
+cd ../../..
 
 cd server/gst_modules/SrtOpusInput
 sudo node-gst configure
 npm i
-cd ../..
+cd ../../..
 
 # Build and Install PulseAudio 16.1 (version included on Raspberry Pi OS - V14 - does not include latency control on null-sink modules)
 # References:

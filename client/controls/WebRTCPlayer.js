@@ -24,9 +24,9 @@ class WebRTCPlayer extends ui {
 
         <!-- WebRTC host -->
         <div class="w-full mb-2">
-            <label for="@{_url}" class="form-label inline-block">WebRTC Host:</label>
+            <label for="@{_url}" class="form-label inline-block">WebRTC WHEP URL:</label>
                 <input id="@{_url}" class="paAudioBase-text-area" type="text"
-                title="WebRTC host name / ip address" placeholder="Your WebTRC Host" value="@{url}"/>
+                title="WebRTC WHEP URL" placeholder="Your WebTRC UrL" value="@{url}"/>
         </div>
 
         <!-- WebRTC Player image -->
