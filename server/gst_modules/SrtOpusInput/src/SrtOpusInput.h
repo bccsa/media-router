@@ -1,6 +1,7 @@
 #include <napi.h>
 #include <thread>
 #include <gst/gst.h>
+#include <chrono>
 #include <unistd.h>
 #include <iostream>
 
@@ -8,11 +9,11 @@
 typedef struct _CustomData {
     // src
     GstElement *srtsrc;
+    GstElement *queue2;
     GstElement *tsparse;
     GstElement *tsdemux;
     GstElement *opusparse;
     GstElement *opusdec;
-    GstElement *rawaudioparse;
     GstElement *audioconvert;
     GstElement *audioresample;
     GstElement *queue;
@@ -30,24 +31,6 @@ void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level,
 }
 
 // ====================================
-// Pad linking
-// ====================================
-/**
- * Link pads sink
-*/
-static void on_pad_added (GstElement *element, GstPad *pad, gpointer data)
-{
-    GstPad *sinkpad;
-    GstElement *gl_item = (GstElement *) data;
-    
-    /* We can now link this pad with the sink pad */
-    g_print ("Dynamic pad created\n");
-    sinkpad = gst_element_get_static_pad (gl_item, "sink");
-    gst_pad_link (pad, sinkpad);
-    gst_object_unref (sinkpad);
-}
-
-// ====================================
 // Init 
 // ====================================
 class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
@@ -60,9 +43,11 @@ class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
         std::string _sink = "null";
         int _paLatency = 50;
         std::string _uri = "null";
+        std::time_t running = 0;
         // Process varialbes 
         GMainLoop *loop;
         GstElement *pipeline;
+        CustomData gl;
         // Event emitter 
         Napi::ThreadSafeFunction _emit;
     private:
@@ -148,7 +133,6 @@ Napi::Value _SrtOpusInput::Stop(const Napi::CallbackInfo &info){
     // Stop pipeline
     g_main_loop_quit(this->loop);
     return Napi::String::New(info.Env(), "Pipline stopped");
-    
 }
 
 // --------
@@ -225,12 +209,47 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 }
 
 /**
+ * Link pads sink
+*/
+static void on_pad_added (GstElement *element, GstPad *pad, gpointer data)
+{
+    GstPad *sinkpad;
+    GstElement *gl_item = (GstElement *) data;
+    gst_element_set_state (gl_item, GST_STATE_PLAYING);
+    
+    /* We can now link this pad with the sink pad */
+    g_print ("Dynamic pad created\n");
+    sinkpad = gst_element_get_static_pad (gl_item, "sink");
+    gst_pad_link (pad, sinkpad);
+    gst_object_unref (sinkpad);
+}
+
+/**
+ * Callback for caller added 
+*/
+static void queue_running (GstElement *element, GstPad *pad, gpointer data)
+{
+    _SrtOpusInput *obj = (_SrtOpusInput *) data;
+    obj->running = std::time(nullptr);
+    std::cout << std::asctime(std::localtime(&obj->running));
+    // gst_element_set_state (obj->gl.pulsesink, GST_STATE_PLAYING);
+}
+
+
+// /**
+//  * Callback for caller added 
+// */
+// static void queue_underrun (GstElement *element, GstPad *pad, gpointer data)
+// {
+//     _SrtOpusInput *obj = (_SrtOpusInput *) data;
+//     obj->running = false;
+// }
+
+/**
  * Start Gstreamer in a seperate thread
 */
 void _SrtOpusInput::th_Start() {
     this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
-    /* Varaibles */
-    CustomData gl;
     // Gstreamer
     GstBus *bus;
 
@@ -241,12 +260,12 @@ void _SrtOpusInput::th_Start() {
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* Create the elements */
-    gl.srtsrc = gst_element_factory_make ("srtsrc", "srtsrc");
+    gl.srtsrc = gst_element_factory_make ("srtserversrc", "srtsrc");
+    gl.queue2 = gst_element_factory_make ("queue", "queue2");
     gl.tsparse = gst_element_factory_make ("tsparse", "tsparse");
     gl.tsdemux = gst_element_factory_make ("tsdemux", "tsdemux");
     gl.opusparse = gst_element_factory_make ("opusparse", "opusparse");
     gl.opusdec = gst_element_factory_make ("opusdec", "opusdec");
-    gl.rawaudioparse = gst_element_factory_make ("rawaudioparse", "rawaudioparse");
     gl.audioconvert = gst_element_factory_make ("audioconvert", "audioconvert");
     gl.audioresample = gst_element_factory_make ("audioresample", "audioresample");
     gl.queue = gst_element_factory_make ("queue", "queue");
@@ -255,8 +274,8 @@ void _SrtOpusInput::th_Start() {
     /* Create the empty pipeline */
     this->pipeline = gst_pipeline_new ("pipeline");
 
-    if (!this->pipeline || !gl.srtsrc || !gl.tsparse || !gl.tsdemux ||
-        !gl.opusparse || !gl.opusdec || !gl.rawaudioparse || !gl.audioconvert || !gl.audioresample || !gl.queue || !gl.pulsesink) { 
+    if (!this->pipeline || !gl.srtsrc || !gl.queue2 || !gl.tsparse || !gl.tsdemux ||
+        !gl.opusparse || !gl.opusdec  || !gl.audioconvert || !gl.audioresample || !gl.queue || !gl.pulsesink) { 
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -276,12 +295,12 @@ void _SrtOpusInput::th_Start() {
     g_object_set (gl.queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (this->pipeline), gl.srtsrc, gl.tsparse, gl.tsdemux,
+    gst_bin_add_many (GST_BIN (this->pipeline), gl.srtsrc, gl.queue2, gl.tsparse, gl.tsdemux,
         gl.opusparse, gl.opusdec, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL);
 
     // /* Linking */
     if (// src
-        gst_element_link_many (gl.srtsrc, gl.tsparse, gl.tsdemux, NULL) != TRUE ||
+        gst_element_link_many (gl.srtsrc, gl.queue2, gl.tsparse, gl.tsdemux, NULL) != TRUE ||
         // sink
         gst_element_link_many (gl.opusparse, gl.opusdec, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL) != TRUE) 
     {
@@ -291,10 +310,12 @@ void _SrtOpusInput::th_Start() {
 
     /* add pad */
     g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.opusparse);
+    g_signal_connect (gl.queue2, "running", G_CALLBACK(queue_running), this);
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* Start playing the pipeline */
+    gst_element_set_state (gl.pulsesink, GST_STATE_NULL);
     gst_element_set_state (this->pipeline, GST_STATE_PLAYING);
 
     /* Wait until error or EOS */

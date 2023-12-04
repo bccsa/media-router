@@ -238,7 +238,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     gst_message_parse_error (message, &err, &debug);
                     g_print ("Error: %s\n", err->message);
                 
-                    // 
+                    // temp disable due to logic_error thrown by this 
                     // obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", g_strdup(err->message)); });
                     
                     g_error_free (err);
@@ -296,7 +296,7 @@ void _SrtOpusOutput::th_Start() {
         gl.a_convert_queue = gst_element_factory_make ("queue", "a_convert_queue");
         gl.opusenc = gst_element_factory_make ("opusenc", "opusenc");
         gl.mpegtsmux = gst_element_factory_make ("mpegtsmux", "mpegtsmux");
-        gl.srtsink = gst_element_factory_make ("srtsink", "srtsink");
+        gl.srtsink = gst_element_factory_make ("srtserversink", "srtsink");
 
         /* Create the empty pipeline */
         this->pipeline = gst_pipeline_new ("pipeline");
