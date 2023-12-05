@@ -60,7 +60,7 @@ class SrtOpusOutput extends _paNullSinkBase {
                 let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&pkt_size=188&latency=${this.srtLatency}${streamID}${crypto}`;
 
                 this._gst = spawn('node', [
-                    'child_processes/SrtOpusOutput_child.js', 
+                    './child_processes/SrtOpusOutput_child.js', 
                     this.source, 
                     this._parent.paLatency, 
                     this.sampleRate, 
