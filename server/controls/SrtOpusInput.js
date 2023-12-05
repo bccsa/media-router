@@ -1,5 +1,6 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
+const path = require('path');
 
 class SrtOpusInput extends _paNullSinkBase {
     constructor() {
@@ -54,7 +55,7 @@ class SrtOpusInput extends _paNullSinkBase {
 
                 let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&payloadsize=188&latency=${this.srtLatency}${streamID}${crypto}`;
 
-                this._gst = spawn('node', ['./child_processes/SrtOpusInput_child.js', _uri, this._parent.paLatency, this.sink]);
+                this._gst = spawn('node', [`${path.dirname(process.argv[1])}/child_processes/SrtOpusInput_child.js`, _uri, this._parent.paLatency, this.sink]);
 
                 this._gst.stdout.on('data', (data) => {
                     _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
