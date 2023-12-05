@@ -1,7 +1,7 @@
 #include <napi.h>
 #include <thread>
 #include <gst/gst.h>
-#include <chrono>
+#include <unistd.h>
 #include <iostream>
 
 /* Structure to contain all our information, so we can pass it to callbacks */
