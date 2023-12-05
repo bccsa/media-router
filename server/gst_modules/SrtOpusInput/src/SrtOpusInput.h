@@ -2,7 +2,6 @@
 #include <thread>
 #include <gst/gst.h>
 #include <chrono>
-#include <unistd.h>
 #include <iostream>
 
 /* Structure to contain all our information, so we can pass it to callbacks */
@@ -26,8 +25,8 @@ typedef struct _CustomData {
 /**
  * Event Emiter
 */
-void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level, std::string message) {
-    emitFn.Call({ Napi::String::New(env, level), Napi::String::New(env, message) });
+void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string message) {
+    emitFn.Call({ Napi::String::New(env, message) });
 }
 
 // ====================================
@@ -43,7 +42,6 @@ class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
         std::string _sink = "null";
         int _paLatency = 50;
         std::string _uri = "null";
-        std::time_t running = 0;
         // Process varialbes 
         GMainLoop *loop;
         GstElement *pipeline;
@@ -182,7 +180,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             g_print ("Error: %s\n", err->message);
         
             // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-            obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", g_strdup(err->message)); });
+            obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
 
             g_error_free (err);
             g_free (debug);
@@ -191,7 +189,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
         }
         case GST_MESSAGE_EOS:{
             /* end-of-stream */
-            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
+            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS"); });
             // //restarting on EOS
             gst_element_set_state(obj->pipeline, GST_STATE_NULL);
             sleep( 5 ); 
@@ -225,31 +223,10 @@ static void on_pad_added (GstElement *element, GstPad *pad, gpointer data)
 }
 
 /**
- * Callback for caller added 
-*/
-static void queue_running (GstElement *element, GstPad *pad, gpointer data)
-{
-    _SrtOpusInput *obj = (_SrtOpusInput *) data;
-    obj->running = std::time(nullptr);
-    std::cout << std::asctime(std::localtime(&obj->running));
-    // gst_element_set_state (obj->gl.pulsesink, GST_STATE_PLAYING);
-}
-
-
-// /**
-//  * Callback for caller added 
-// */
-// static void queue_underrun (GstElement *element, GstPad *pad, gpointer data)
-// {
-//     _SrtOpusInput *obj = (_SrtOpusInput *) data;
-//     obj->running = false;
-// }
-
-/**
  * Start Gstreamer in a seperate thread
 */
 void _SrtOpusInput::th_Start() {
-    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
+    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline started"); });
     // Gstreamer
     GstBus *bus;
 
@@ -310,7 +287,6 @@ void _SrtOpusInput::th_Start() {
 
     /* add pad */
     g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.opusparse);
-    g_signal_connect (gl.queue2, "running", G_CALLBACK(queue_running), this);
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
@@ -327,12 +303,12 @@ void _SrtOpusInput::th_Start() {
     g_main_loop_run (this->loop);
 
     /* ------------------------------- Post cleanup -------------------------------- */
-    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
+    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline stopped"); });
 
     gst_element_set_state(this->pipeline, GST_STATE_NULL);
     gst_object_unref (this->pipeline);
     gst_object_unref (this->loop);
 
-    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
+    this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Resource cleanup complete"); });
     /* ------------------------------- Post cleanup -------------------------------- */
 }

@@ -1,5 +1,5 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
-const { _SrtVideoPlayer } = require('bindings')('../gst_modules/SrtVideoPlayer/build/Release/gstreamer.node');
+const { spawn } = require('child_process');
 
 class SrtVideoPlayer extends _paNullSinkBase {
     constructor() {
@@ -45,6 +45,7 @@ class SrtVideoPlayer extends _paNullSinkBase {
     _start_gst() {
         if (!this._gst) {
             try {
+                let _this = this;
                 // Request a PulseAudio connection
                 this._parent.PaReqConnection();
 
@@ -55,19 +56,29 @@ class SrtVideoPlayer extends _paNullSinkBase {
 
                 let streamID = '';
                 if (this.srtStreamID) { streamID = '&streamid=' + this.srtStreamID };
- 
-                this._gst = new _SrtVideoPlayer(
-                    `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}`,
+
+                let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}`;
+
+                this._gst = spawn('node', [
+                    'child_processes/SrtVideoPlayer_child.js',
+                    _uri,
                     this.sink,
                     this._parent.paLatency,
                     this.display,
                     this.fullscreen,
                     this.displayName
-                );
+                ]);
 
-                // Start srt video
-                this._gst.Start((level, message) => {
-                    this._parent._log(level, `${this._controlName} (${this.displayName}): ${message}`);
+                this._gst.stdout.on('data', (data) => {
+                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
+                });
+                
+                this._gst.stderr.on('data', (data) => {
+                    _this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data}`);
+                });
+                
+                this._gst.stdin.on('data', (data) => {
+                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
                 });
 
             }
@@ -80,7 +91,8 @@ class SrtVideoPlayer extends _paNullSinkBase {
 
     _stop_gst() {
         if (this._gst) {
-            this._gst.Stop();
+            this._gst.stdin.pause();
+            this._gst.kill();
             this._gst = undefined;
         }
     }

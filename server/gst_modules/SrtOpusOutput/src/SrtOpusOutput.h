@@ -23,9 +23,9 @@ typedef struct _CustomData {
 /**
  * Event Emiter
 */
-void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level, std::string message) {
+void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string message) {
     try {
-        emitFn.Call({ Napi::String::New(env, level), Napi::String::New(env, message) });
+        emitFn.Call({ Napi::String::New(env, message) });
     } catch (std::logic_error& e) {
         std::cout << "logic_error thrown" << std::endl;
     }
@@ -239,7 +239,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     g_print ("Error: %s\n", err->message);
                 
                     // temp disable due to logic_error thrown by this 
-                    // obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", g_strdup(err->message)); });
+                    // obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
                     
                     g_error_free (err);
                     g_free (debug);
@@ -248,7 +248,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                 }
                 case GST_MESSAGE_EOS:{
                     /* end-of-stream */
-                    obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS | Reloading pipline in 3 seconds"); });
+                    obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS | Reloading pipline in 3 seconds"); });
                     
                     //restarting on FATAL error
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
@@ -277,7 +277,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 */
 void _SrtOpusOutput::th_Start() {
     try {
-        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
+        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline started"); });
         /* Varaibles */
         // Gstreamer
         GstBus *bus;
@@ -310,13 +310,10 @@ void _SrtOpusOutput::th_Start() {
         // src
         g_object_set (gl.source, "device", this->_device.c_str(), NULL);
         g_object_set (gl.source, "buffer-time", (guint64)this->_paLatency * 1000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-        // g_object_set (gl.source, "latency-time", this->_paLatency * 1000, NULL);
-        g_object_set (gl.opusenc, "bitrate", this->_bitrate * 1000, NULL);   
+        g_object_set (gl.opusenc, "bitrate", (guint64)this->_bitrate, NULL);   
         g_object_set (gl.opusenc, "audio-type", 2051, NULL);    
         g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
         g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
-        // g_object_set (gl.mpegtsmux, "name", "mux", NULL);   
-        g_object_set (gl.srtsink, "audo-reconnect", true, NULL);
         g_object_set (gl.srtsink, "wait-for-connection", false, NULL);  
         g_object_set (gl.srtsink, "sync", false, NULL);  
         g_object_set (gl.srtsink, "uri", this->_uri.c_str(), NULL);   
@@ -360,13 +357,13 @@ void _SrtOpusOutput::th_Start() {
         g_main_loop_run (this->loop);
 
         /* ------------------------------- Post cleanup -------------------------------- */
-        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
+        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline stopped"); });
 
         gst_element_set_state(this->pipeline, GST_STATE_NULL);
         gst_object_unref (this->pipeline);
         g_main_loop_unref (this->loop);
 
-        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
+        this->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Resource cleanup complete"); });
         /* ------------------------------- Post cleanup -------------------------------- */
     } catch (std::logic_error& e) {
         std::cout << "logic_error thrown" << std::endl;
