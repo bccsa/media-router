@@ -60,7 +60,7 @@ class SrtVideoPlayer extends _paNullSinkBase {
                 let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}`;
 
                 this._gst = spawn('node', [
-                    'child_processes/SrtVideoPlayer_child.js',
+                    './child_processes/SrtVideoPlayer_child.js',
                     _uri,
                     this.sink,
                     this._parent.paLatency,
