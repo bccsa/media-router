@@ -1,5 +1,6 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
 const { spawn } = require('child_process');
+const path = require('path');
 
 class SrtVideoPlayer extends _paNullSinkBase {
     constructor() {
