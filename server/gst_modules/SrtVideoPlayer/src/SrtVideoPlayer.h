@@ -61,8 +61,8 @@ void th_Start(void);
 /**
  * Event Emiter
 */
-void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string level, std::string message) {
-    emitFn.Call({ Napi::String::New(env, level), Napi::String::New(env, message) });
+void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string message) {
+    emitFn.Call({ Napi::String::New(env, message) });
 }
 
 /**
@@ -79,7 +79,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             g_print ("Error: %s\n", err->message);
         
             // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", g_strdup(err->message)); });
+            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
 
             g_error_free (err);
             g_free (debug);
@@ -89,13 +89,13 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             killing = true;
             gtk_main_quit();
             th_Start();
-            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "FATAL", "Restarting pipeline due to a fatal error"); });
+            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Restarting pipeline due to a fatal error"); });
 
             break;
         }
         case GST_MESSAGE_EOS:
             /* end-of-stream */
-            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "EOS"); });
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS"); });
             gtk_main_quit();
             th_Start();
             break;
@@ -188,7 +188,7 @@ static gboolean doubleClick(GtkWidget *widget, GdkEventButton *event, gpointer u
  * Start Gstreamer in a seperate thread
 */
 void th_Start() {
-    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline started"); });
+    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline started"); });
     /* Varaibles */
     CustomData gl;
     // Gstreamer
@@ -324,7 +324,7 @@ void th_Start() {
     gtk_main ();
 
     /* ------------------------------- Post cleanup -------------------------------- */
-    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Pipeline stopped"); });
+    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline stopped"); });
 
     gst_element_set_state(pipeline, GST_STATE_NULL);
     gst_object_unref (pipeline);
@@ -338,7 +338,7 @@ void th_Start() {
     running = false;
     killing = false;
 
-    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "INFO", "Resource cleanup complete"); });
+    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Resource cleanup complete"); });
     /* ------------------------------- Post cleanup -------------------------------- */
 }
 
@@ -438,7 +438,7 @@ Napi::Value _SrtVideoPlayer::Start(const Napi::CallbackInfo &info){
 
         if (running) {
             std::cout << "Process still running, Please try again later.";
-            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process still running, Please try again later."); });
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Process still running, Please try again later."); });
             return Napi::String::New(info.Env(), "Process still running, Please try again later.");
         } else {
             running = true;
@@ -454,10 +454,10 @@ Napi::Value _SrtVideoPlayer::Start(const Napi::CallbackInfo &info){
 Napi::Value _SrtVideoPlayer::Stop(const Napi::CallbackInfo &info){
     // Kill window
     if (killing) {
-        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process is busy being stoped, Please try again later."); });
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Process is busy being stoped, Please try again later."); });
         return Napi::String::New(info.Env(), "Process is busy being stoped, Please try again later.");
     } else if (!running) {
-        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR", "Process is not running, Please try again later."); });
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Process is not running, Please try again later."); });
         return Napi::String::New(info.Env(), "Process is not running, Please try again later.");
     } else {
         gtk_widget_hide(_window);

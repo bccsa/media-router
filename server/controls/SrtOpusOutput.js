@@ -1,5 +1,5 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
-const { _SrtOpusOutput } = require('bindings')('../gst_modules/SrtOpusOutput/build/Release/gstreamer.node');
+const { spawn } = require('child_process');
 
 class SrtOpusOutput extends _paNullSinkBase {
     constructor() {
@@ -45,6 +45,7 @@ class SrtOpusOutput extends _paNullSinkBase {
     _start_gst() {
         if (!this._gst) {
             try {
+                let _this = this;
                 // Request a PulseAudio connection
                 this._parent.PaReqConnection();
 
@@ -56,19 +57,29 @@ class SrtOpusOutput extends _paNullSinkBase {
                 let streamID = '';
                 if (this.srtStreamID) { streamID = '&streamid=' + this.srtStreamID };
 
-                this._gst = new _SrtOpusOutput(
-                    this.source,
-                    this._parent.paLatency,
-                    this.sampleRate,
-                    this.bitDepth,
-                    this.channels,
-                    this.bitrate,
-                    `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&pkt_size=188&latency=${this.srtLatency}${streamID}${crypto}`
-                );
+                let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&pkt_size=188&latency=${this.srtLatency}${streamID}${crypto}`;
 
-                // Start 
-                this._gst.Start((level, message) => {
-                    this._parent._log(level, `${this._controlName} (${this.displayName}): ${message}`);
+                this._gst = spawn('node', [
+                    'child_processes/SrtOpusOutput_child.js', 
+                    this.source, 
+                    this._parent.paLatency, 
+                    this.sampleRate, 
+                    this.bitDepth, 
+                    this.channels, 
+                    this.bitrate,
+                    _uri
+                ]);
+
+                this._gst.stdout.on('data', (data) => {
+                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
+                });
+                
+                this._gst.stderr.on('data', (data) => {
+                    _this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data}`);
+                });
+                
+                this._gst.stdin.on('data', (data) => {
+                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
                 });
             }
             catch (err) {
@@ -80,7 +91,8 @@ class SrtOpusOutput extends _paNullSinkBase {
 
     _stop_gst() {
         if (this._gst) {
-            this._gst.Stop();
+            this._gst.stdin.pause();
+            this._gst.kill();
             this._gst = undefined;
         }
     }
