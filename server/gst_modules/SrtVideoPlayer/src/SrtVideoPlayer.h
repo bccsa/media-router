@@ -56,7 +56,7 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         std::string _pulseSink = "null";
         int _paLatency = 50;
         std::string _display = "null";
-        gboolean _fullScreen = false;
+        bool _fullScreen = false;
         GstElement *pipeline;
         // Process varialbes 
         gboolean running = false;   // Gstreamer running state
@@ -261,6 +261,13 @@ void _SrtVideoPlayer::th_Start() {
     g_signal_connect(this->_window, "button-press-event", G_CALLBACK(doubleClick), this);
     gtk_window_set_default_size (GTK_WINDOW (this->_window), 640, 360);
     gtk_window_set_title (GTK_WINDOW (this->_window), this->_name.c_str());
+    // set window background color
+    GdkColor color;
+    color.red = 0x00C0;
+    color.green = 0x00DE;
+    color.blue = 0x00ED;
+    gtk_widget_modify_bg(this->_window, GTK_STATE_NORMAL, &color);
+
     // full screen window 
     if(this->_fullScreen) {
         gtk_window_fullscreen(GTK_WINDOW(this->_window));

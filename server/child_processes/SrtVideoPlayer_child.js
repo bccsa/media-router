@@ -7,7 +7,7 @@ const _display = process.argv[5];
 const _fullscreen = process.argv[6];
 const _displayName = process.argv[7];
 
-const p = new _SrtVideoPlayer(_uri, _sink, _paLatency, _display, _fullscreen, _displayName);
+const p = new _SrtVideoPlayer(_uri, _sink, parseFloat(_paLatency), _display, _fullscreen == 'true', _displayName);
 
 setTimeout(() => {
     p.Start((message) => {
