@@ -28,11 +28,13 @@ class WebRTCPlayer extends ui {
         super();
         this.playerName = 'name';
         this.url = "";
-        this.img = "";
+        this.flag = "gb";
         this.pc = null; // Peer connection
         this.restartTimeout = null;
         this.sessionUrl = '';
         this.queuedCandidates = [];
+        this._playState = "";
+        this.message = "";
     }
 
     get html() {
@@ -40,8 +42,9 @@ class WebRTCPlayer extends ui {
         <!-- ${this.name} -->
         <!--    MAIN CARD CONTAINER     -->
         <div id="@{_mainCard}" class="flex border-4 mb-2 p-2 rounded-lg bg-stone-300">
-            <img id="@{_img}" src="@{img}" class=" flex-none w-12 h-8 m-2 self-center rounded-lg overflow-hidden">
+            <span class="fi fi-${this.flag} flex-none w-12 h-8 m-2 self-center rounded-lg overflow-hidden"></span>
             <p class="grow text-2xl text-[#334155] self-center">@{playerName}</p>
+            <p class="grow text-2xl text-[#334155] self-center">@{message}</p>
             <audio id="@{_audio}" class="flex flex-col self-center"></audio>
             <img id="@{_play}" src="img/play.svg" class="flex-none w-8 h-8 m-2 self-center">
             <img id="@{_pause}" src="img/stop.svg" class="flex-none w-8 h-8 m-2 self-center hidden">
@@ -60,9 +63,9 @@ class WebRTCPlayer extends ui {
 
         this._mainCard.style.cursor = "pointer"
 
-        if (!this.img) {
-            this._img.style.display = "none"
-        }
+        // if (!this.img) {
+        //     this._img.style.display = "none"
+        // }
 
         // Event listeners 
         this._mainCard.addEventListener('click', e => {
@@ -88,6 +91,8 @@ class WebRTCPlayer extends ui {
     play() {
         this._play.style.display = "none";
         this._pause.style.display = "block";
+        this._playState = "playing";
+        console.log(`Playstate: ${this._playState}`);
         this._silence.play();
         this._audio.play();
 
@@ -99,6 +104,8 @@ class WebRTCPlayer extends ui {
     pause() {
         this._play.style.display = "block";
         this._pause.style.display = "none";
+        this._playState = "paused";
+        console.log(`Playstate: ${this._playState}`);
         this._audio.pause();
         this._silence.pause();
         navigator.mediaSession.playbackState = "paused";
@@ -127,7 +134,8 @@ class WebRTCPlayer extends ui {
         this.pc.addTransceiver("audio", { direction });
 
         this.pc.onicecandidate = (evt) => this.onLocalCandidate(evt);
-        this.pc.oniceconnectionstatechange = () => this.onConnectionState();
+        this.pc.oniceconnectionstatechange = () => this.onIceConnectionState();
+        this.pc.onconnectionstatechange = () => this.onConnectionState();
 
         this.pc.ontrack = (evt) => {
             console.log("new track:", evt.track.kind);
@@ -170,7 +178,7 @@ class WebRTCPlayer extends ui {
             });
     }
 
-    onConnectionState() {
+    onIceConnectionState() {
         if (this.restartTimeout !== null) {
             return;
         }
@@ -179,7 +187,26 @@ class WebRTCPlayer extends ui {
 
         switch (this.pc.iceConnectionState) {
             case "disconnected":
+                this.message = "disconnected..."
                 this.scheduleRestart();
+        }
+    }
+
+    onConnectionState() {
+        if (this.restartTimeout !== null) {
+            return;
+        }
+
+        console.log("connection state:", this.pc.connectionState);
+
+        switch (this.pc.connectionState) {
+            case "disconnected":
+                this.scheduleRestart();
+            case "connected":
+                if (this._playState == "restarting") {
+                    this.play();
+                }
+                this.message = "";
         }
     }
 
@@ -234,6 +261,9 @@ class WebRTCPlayer extends ui {
         if (this.restartTimeout !== null) {
             return;
         }
+
+        this._playState = "restarting";
+        console.log(`Playstate: ${this._playState}`);
 
         if (this.pc !== null) {
             this.pc.close();

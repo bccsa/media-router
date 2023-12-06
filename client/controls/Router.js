@@ -278,7 +278,7 @@ class Router extends ui {
                             <option value="SrtOpusInput">Opus over SRT Input</option>
                             <option value="SrtOpusOutput">Opus over SRT Output</option>
                             <option value="SrtVideoPlayer">Video over SRT Player</option>
-                            <option value="WebRTCClient">WebRTC Client</option>
+                            <option value="WebRTCClient">WebRTC Client WebApp</option>
                             <option value="Separator">Separator</option>
                             </select>
                         </div>
