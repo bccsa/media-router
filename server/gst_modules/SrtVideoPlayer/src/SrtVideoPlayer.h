@@ -311,9 +311,11 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.source, "wait-for-connection", false, NULL);
     g_object_set (gl.tsdemux, "latency", 1, NULL);
     g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);
-    // audio
-    g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);
-    g_object_set (gl.audiosink, "latency-time", this->_paLatency * 1000, NULL);
+    // audio 
+    g_object_set (gl.audiosink, "sync", false, NULL); 
+    g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);   
+    g_object_set (gl.audiosink, "buffer-time", (guint64)this->_paLatency * 1000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.audiosink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // video
     g_object_set (gl.decoder, "capture-io-mode", 4, NULL);
     g_object_set (gl.videosink, "display", this->_display.c_str(), NULL);     // Set ouput display      
@@ -321,7 +323,12 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.audio_queue, "leaky", 2, NULL);
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
     g_object_set (gl.video_queue, "leaky", 2, NULL);     // Set ouput display   
-    g_object_set (gl.v_convert_queue, "leaky", 2, NULL);             
+    g_object_set (gl.v_convert_queue, "leaky", 2, NULL);  
+    g_object_set (gl.audio_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.video_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.tsdemux,                                        // src
