@@ -8,7 +8,7 @@ const _channels = process.argv[6];
 const _bitrate = process.argv[7];
 const _uri = process.argv[8];
 
-const p = new _SrtOpusOutput(_source, _paLatency, _sampleRate, _bitDepth, _channels, _bitrate, _uri);
+const p = new _SrtOpusOutput(_source, parseFloat(_paLatency), _sampleRate, _bitDepth, _channels, parseFloat(_bitrate), _uri);
 
 setTimeout(() => {
     p.Start((message) => {
