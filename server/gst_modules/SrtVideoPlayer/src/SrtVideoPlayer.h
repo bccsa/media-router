@@ -363,6 +363,9 @@ void _SrtVideoPlayer::th_Start() {
 
     /* -------------------------------_Link the ui -------------------------------- */
     gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (gl.videosink), this->embed_xid);
+
+    GdkCursor* Cursor = gdk_cursor_new(GDK_BLANK_CURSOR);
+    gdk_window_set_cursor(gtk_widget_get_window((this->_window)),Cursor);
     
     /* ------------------------------- Link the ui -------------------------------- */
 
