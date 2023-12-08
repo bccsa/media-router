@@ -11,7 +11,7 @@ class WebRTCClient extends _routerChildControlBase {
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
         <div class="w-full items-center justify-items-center justify-center">
-            <div class="text-center align-top font-semibold text-base">WebRTC Player</div>
+            <div class="text-center align-top font-semibold text-base">WebRTC Client WebApp</div>
         </div>
 
         <!--    WebApp Title      -->
@@ -49,7 +49,7 @@ class WebRTCClient extends _routerChildControlBase {
 
         `).replace('%cardHtml%',`
         <div class="w-full items-center justify-items-center justify-center">
-            <div class="text-center align-top font-semibold text-base">WebRTC Player</div>
+            <div class="text-center align-top font-semibold text-base">WebRTC Client WebApp</div>
         `);
     }
 

@@ -1,20 +1,6 @@
 var socket;
 var controls = new uiTopLevelContainer('controls', 'controls');
 
-// Register service worker
-// window.addEventListener('load', () => {
-//     if ('serviceWorker' in navigator) {
-//         navigator.serviceWorker.register('/serviceworker.js')
-//             .then(registration => {
-//                 console.log('Service Worker registered with scope:', registration.scope);
-//             })
-//             .catch(error => {
-//                 console.error('Service Worker registration failed:', error);
-//             });
-//     }
-// })
-
-
 socket = io();
 
 socket.on('connect', () => {

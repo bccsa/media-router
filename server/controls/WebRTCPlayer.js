@@ -9,7 +9,7 @@ class WebRTCPlayer extends dm {
         super();
         this.url = 'http://localhost:8889/test';
         this.playerName = 'name';
-        this.img = "";
+        this.flag = "gb";
     }
 
     Init() {

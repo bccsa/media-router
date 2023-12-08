@@ -28,11 +28,14 @@ class WebRTCPlayer extends ui {
         super();
         this.playerName = 'name';
         this.url = "";
-        this.img = "";
-        this.pc = null; // Peer connection
-        this.restartTimeout = null;
-        this.sessionUrl = '';
-        this.queuedCandidates = [];
+        this.flag = "gb";
+        this.message = "";
+        this._pc = null; // Peer connection
+        this._restartTimeout = null;
+        this._sessionUrl = '';
+        this._queuedCandidates = [];
+        this._playState = "";
+        this._disconnectTimeout;
     }
 
     get html() {
@@ -40,8 +43,9 @@ class WebRTCPlayer extends ui {
         <!-- ${this.name} -->
         <!--    MAIN CARD CONTAINER     -->
         <div id="@{_mainCard}" class="flex border-4 mb-2 p-2 rounded-lg bg-stone-300">
-            <img id="@{_img}" src="@{img}" class=" flex-none w-12 h-8 m-2 self-center rounded-lg overflow-hidden">
+            <span class="fi fi-${this.flag} flex-none w-12 h-8 m-2 self-center rounded-lg overflow-hidden"></span>
             <p class="grow text-2xl text-[#334155] self-center">@{playerName}</p>
+            <p class="grow text-2xl text-[#334155] self-center">@{message}</p>
             <audio id="@{_audio}" class="flex flex-col self-center"></audio>
             <img id="@{_play}" src="img/play.svg" class="flex-none w-8 h-8 m-2 self-center">
             <img id="@{_pause}" src="img/stop.svg" class="flex-none w-8 h-8 m-2 self-center hidden">
@@ -59,10 +63,6 @@ class WebRTCPlayer extends ui {
         this.start();
 
         this._mainCard.style.cursor = "pointer"
-
-        if (!this.img) {
-            this._img.style.display = "none"
-        }
 
         // Event listeners 
         this._mainCard.addEventListener('click', e => {
@@ -82,12 +82,38 @@ class WebRTCPlayer extends ui {
                 });
                 this.pause();
             }
-        })
+        });
+
+        // Peer connection polling - to be tested
+        setInterval(() => {
+            if (this._restartTimeout !== null) {
+                return;
+            }
+
+            if (this._pc && this._pc.connectionState == "connected") {
+                // Reset timer if connected within 2 minutes
+                if (this._disconnectTimeout) {
+                    clearTimeout(this._disconnectTimeout);
+                }
+            } else {
+                console.log('restarting...');
+                this.scheduleRestart();
+
+                if (!this._disconnectTimeout) {
+                    // Wait for 2 minutes before pausing player
+                    this._disconnectTimeout = setTimeout(() => {
+                        this.pause();
+                    }, 30000); // change to 120000 (120s)
+                }
+            }
+        }, 1000);
     }
 
     play() {
         this._play.style.display = "none";
         this._pause.style.display = "block";
+        this._playState = "playing";
+        console.log(`Playstate: ${this._playState}`);
         this._silence.play();
         this._audio.play();
 
@@ -99,6 +125,8 @@ class WebRTCPlayer extends ui {
     pause() {
         this._play.style.display = "block";
         this._pause.style.display = "none";
+        this._playState = "paused";
+        console.log(`Playstate: ${this._playState}`);
         this._audio.pause();
         this._silence.pause();
         navigator.mediaSession.playbackState = "paused";
@@ -118,23 +146,24 @@ class WebRTCPlayer extends ui {
     }
 
     onIceServers(res) {
-        this.pc = new RTCPeerConnection({
+        this._pc = new RTCPeerConnection({
             iceServers: linkToIceServers(res.headers.get('Link')),
         });
 
         const direction = "sendrecv";
-        // this.pc.addTransceiver("video", { direction });
-        this.pc.addTransceiver("audio", { direction });
+        // this._pc.addTransceiver("video", { direction });
+        this._pc.addTransceiver("audio", { direction });
 
-        this.pc.onicecandidate = (evt) => this.onLocalCandidate(evt);
-        this.pc.oniceconnectionstatechange = () => this.onConnectionState();
+        this._pc.onicecandidate = (evt) => this.onLocalCandidate(evt);
+        this._pc.oniceconnectionstatechange = () => this.onIceConnectionState();
+        this._pc.onconnectionstatechange = () => this.onConnectionState();
 
-        this.pc.ontrack = (evt) => {
+        this._pc.ontrack = (evt) => {
             console.log("new track:", evt.track.kind);
             this._audio.srcObject = evt.streams[0];
         };
 
-        this.pc.createOffer()
+        this._pc.createOffer()
             .then((offer) => this.onLocalOffer(offer));
     }
 
@@ -142,7 +171,7 @@ class WebRTCPlayer extends ui {
         editOffer(offer);
 
         this.offerData = parseOffer(offer.sdp);
-        this.pc.setLocalDescription(offer);
+        this._pc.setLocalDescription(offer);
 
         console.log("sending offer");
 
@@ -157,7 +186,7 @@ class WebRTCPlayer extends ui {
                 if (res.status !== 201) {
                     throw new Error('bad status code');
                 }
-                this.sessionUrl = `${this.url}/${res.headers.get('location')}`;
+                this._sessionUrl = `${this.url}/${res.headers.get('location')}`;
                 return res.text();
             })
             .then((sdp) => this.onRemoteAnswer(new RTCSessionDescription({
@@ -170,40 +199,62 @@ class WebRTCPlayer extends ui {
             });
     }
 
-    onConnectionState() {
-        if (this.restartTimeout !== null) {
+    onIceConnectionState() {
+        if (this._restartTimeout !== null) {
             return;
         }
 
-        console.log("peer connection state:", this.pc.iceConnectionState);
+        console.log("peer connection state:", this._pc.iceConnectionState);
 
-        switch (this.pc.iceConnectionState) {
+        switch (this._pc.iceConnectionState) {
             case "disconnected":
+                this.message = "disconnected..."
                 this.scheduleRestart();
         }
     }
 
-    onRemoteAnswer(answer) {
-        if (this.restartTimeout !== null) {
+    onConnectionState() {
+        if (this._restartTimeout !== null) {
             return;
         }
 
-        this.pc.setRemoteDescription(answer);
+        console.log("connection state:", this._pc.connectionState);
 
-        if (this.queuedCandidates.length !== 0) {
-            this.sendLocalCandidates(this.queuedCandidates);
-            this.queuedCandidates = [];
+        switch (this._pc.connectionState) {
+            case "closed":
+            case "disconnected":
+                this.scheduleRestart();
+                break;
+            case "connected":
+                if (this._playState == "restarting") {
+                    this.play();
+                }
+                this.message = "";
+                break;
+        }
+    }
+
+    onRemoteAnswer(answer) {
+        if (this._restartTimeout !== null) {
+            return;
+        }
+
+        this._pc.setRemoteDescription(answer);
+
+        if (this._queuedCandidates.length !== 0) {
+            this.sendLocalCandidates(this._queuedCandidates);
+            this._queuedCandidates = [];
         }
     }
 
     onLocalCandidate(evt) {
-        if (this.restartTimeout !== null) {
+        if (this._restartTimeout !== null) {
             return;
         }
 
         if (evt.candidate !== null) {
-            if (this.sessionUrl === '') {
-                this.queuedCandidates.push(evt.candidate);
+            if (this._sessionUrl === '') {
+                this._queuedCandidates.push(evt.candidate);
             } else {
                 this.sendLocalCandidates([evt.candidate])
             }
@@ -211,7 +262,7 @@ class WebRTCPlayer extends ui {
     }
 
     sendLocalCandidates(candidates) {
-        fetch(this.sessionUrl, {
+        fetch(this._sessionUrl, {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/trickle-ice-sdpfrag',
@@ -231,22 +282,27 @@ class WebRTCPlayer extends ui {
     }
 
     scheduleRestart() {
-        if (this.restartTimeout !== null) {
+        if (this._restartTimeout !== null) {
             return;
         }
 
-        if (this.pc !== null) {
-            this.pc.close();
-            this.pc = null;
+        if (this._playState == "playing") {
+            this._playState = "restarting";
+            console.log(`Playstate: ${this._playState}`);
         }
 
-        this.restartTimeout = window.setTimeout(() => {
-            this.restartTimeout = null;
+        if (this._pc !== null) {
+            this._pc.close();
+            this._pc = null;
+        }
+
+        this._restartTimeout = window.setTimeout(() => {
+            this._restartTimeout = null;
             this.start();
         }, restartPause);
 
-        if (this.sessionUrl) {
-            fetch(this.sessionUrl, {
+        if (this._sessionUrl) {
+            fetch(this._sessionUrl, {
                 method: 'DELETE',
             })
                 .then((res) => {
@@ -258,8 +314,8 @@ class WebRTCPlayer extends ui {
                     console.log('delete session error: ' + err);
                 });
         }
-        this.sessionUrl = '';
+        this._sessionUrl = '';
 
-        this.queuedCandidates = [];
+        this._queuedCandidates = [];
     }
 }

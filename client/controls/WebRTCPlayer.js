@@ -3,7 +3,7 @@ class WebRTCPlayer extends ui {
         super();
         this.url = '';
         this.playerName = '';
-        this.img = '';
+        this.flag = 'gb';
     }
 
     get html() {
@@ -29,11 +29,11 @@ class WebRTCPlayer extends ui {
                 title="WebRTC WHEP URL" placeholder="Your WebTRC UrL" value="@{url}"/>
         </div>
 
-        <!-- WebRTC Player image -->
+        <!-- WebRTC Player flag -->
         <div class="w-full mb-2">
-            <label for="@{_img}" class="form-label inline-block">WebRTC Player icon:</label>
-                <input id="@{_img}" class="paAudioBase-text-area" type="text"
-                title="WebRTC Player icon" placeholder="Your WebTRC Player icon link" value="@{img}"/>
+            <label for="@{_flag}" class="form-label inline-block">Flag:</label>
+                <input id="@{_flag}" class="paAudioBase-text-area" type="text"
+                title="Two letter ISO3166 country code" value="@{flag}"/>
         </div>
         `
     }
