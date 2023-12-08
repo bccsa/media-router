@@ -25,7 +25,7 @@ typedef struct _CustomData {
     GstElement *decode_queue;
     GstElement *videoconvert;
     GstElement *v_convert_queue;
-    GstElement *videosink;
+    GstElement *xvimagesink;
 } CustomData;
 
 // Event emitter 
@@ -301,14 +301,14 @@ void _SrtVideoPlayer::th_Start() {
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
     gl.videoconvert = gst_element_factory_make ("videoconvert", "videoconvert");
     gl.v_convert_queue = gst_element_factory_make ("queue", "v_convert_queue");
-    gl.videosink = gst_element_factory_make ("xvimagesink", "videosink");
+    gl.xvimagesink = gst_element_factory_make ("xvimagesink", "xvimagesink");
 
     /* Create the empty pipeline */
     this->pipeline = gst_pipeline_new ("pipeline");
 
     if (!this->pipeline || !gl.source || !gl.tsdemux ||                                                                                                                                        // src
         !gl.audio_queue || !gl.aacparse || !gl.avdec_aac || !gl.audioconvert || !gl.a_convert_queue || !gl.audiosink ||                          // audio
-        !gl.video_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.videosink) {      // video
+        !gl.video_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.xvimagesink) {      // video
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -325,7 +325,10 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.audiosink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // video
     g_object_set (gl.decoder, "capture-io-mode", 4, NULL);
-    g_object_set (gl.videosink, "display", this->_display.c_str(), NULL);     // Set ouput display      
+    g_object_set (gl.xvimagesink, "display", this->_display.c_str(), NULL);     // Set ouput display    
+    g_object_set (gl.xvimagesink, "sync", true, NULL); 
+    g_object_set (gl.xvimagesink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+
     // queue's
     g_object_set (gl.audio_queue, "leaky", 2, NULL);
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
@@ -340,7 +343,7 @@ void _SrtVideoPlayer::th_Start() {
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.tsdemux,                                        // src
         gl.audio_queue, gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
-        gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.videosink,              // video
+        gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.xvimagesink,              // video
         NULL);
 
     /* Linking */
@@ -349,7 +352,7 @@ void _SrtVideoPlayer::th_Start() {
         // audio
         gst_element_link_many (gl.audio_queue, gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink, NULL) != TRUE ||
         // video
-        gst_element_link_many (gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.videosink, NULL) != TRUE 
+        gst_element_link_many (gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.xvimagesink, NULL) != TRUE 
         ) {
         g_printerr ("Elements could not be linked.\n");
         gst_object_unref (this->pipeline); 
@@ -362,7 +365,7 @@ void _SrtVideoPlayer::th_Start() {
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* -------------------------------_Link the ui -------------------------------- */
-    gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (gl.videosink), this->embed_xid);
+    gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (gl.xvimagesink), this->embed_xid);
 
     GdkCursor* Cursor = gdk_cursor_new(GDK_BLANK_CURSOR);
     gdk_window_set_cursor(gtk_widget_get_window((this->_window)),Cursor);
