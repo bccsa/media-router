@@ -68,6 +68,13 @@ class SrtOpusInput extends _paNullSinkBase {
                 this._gst.stdin.on('data', (data) => {
                     _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
                 });
+                
+                // Restart pipeline on exit
+                this._gst.on('exit', (data) => {
+                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 1s`);
+                    this._stop_gst();
+                    setTimeout(() => { if (this.ready && this.run) { this._start_gst() } }, 1000);
+                })
             }
             catch (err) {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
