@@ -310,7 +310,7 @@ void _SrtOpusOutput::th_Start() {
         // src
         g_object_set (gl.source, "device", this->_device.c_str(), NULL);
         g_object_set (gl.source, "buffer-time", (guint64)this->_paLatency * 1000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-        g_object_set (gl.opusenc, "bitrate", (guint64)this->_bitrate, NULL);   
+        g_object_set (gl.opusenc, "bitrate", (guint64)this->_bitrate * 1000, NULL);   
         g_object_set (gl.opusenc, "audio-type", 2051, NULL);    
         g_object_set (gl.opusenc, "bitrate-type", 2, NULL);  
         g_object_set (gl.mpegtsmux, "latency", (guint64)1, NULL);   
