@@ -14,8 +14,7 @@ class Router extends dm {
         this.run = false;                           // External run command
         this.runCmd = false;                        // Internal run command
         this.SetAccess('runCmd', { Set: 'none', Get: 'none' });
-        this.displayName = '';
-        this.DisplayName = "";                      // Used as router username
+        this.displayName = '';                      // Used as router username                 
         this.password = "";
         this._sources = {};
         this._sinks = {};
@@ -35,6 +34,8 @@ class Router extends dm {
         this._paQueue = [];                         // PulseAudio command rate limiter callback queue
         this._paQueueTimer = undefined;             // Rate limiter timer
         this._paConnectionCount = 0                 // PulseAudio connection counter
+        this.startupDelayTime = 3000;               // Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up.
+        this.startupState = true;                   // true = Auto (manager selected state); false = Start in stopped state.
     }
 
     Init() {
@@ -88,7 +89,7 @@ class Router extends dm {
                 setTimeout(() => {
                     startupDelay = false;
                     this.runCmd = this.run;
-                }, 2000);
+                }, this.startupDelayTime);
             }).catch(err => {
                 this._log('FATAL', err.toString());
             });
@@ -102,7 +103,7 @@ class Router extends dm {
             });
             this.PaCmdQueue(() => {
                 this._updatePAlist('sinks', this._sinks).then(updated => { if (updated) this.sinks = Object.values(this._sinks) });
-            });            
+            });
         }, 1000);
 
         // Stop all child controls when the Router control is removed
