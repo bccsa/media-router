@@ -44,6 +44,7 @@ function setProfileDetails(property, value) {
 var manager_io;
 
 let reconnectTimer;
+let firstConnect = true;
 /**
  * Connect to the manager's socket.io server
  * @param {string} url 
@@ -79,8 +80,16 @@ function manager_connect(url, username, password) {
 
     // set data from manager to router controls
     manager_io.on('data', data => {
+        // remove initial (first connect) data
+        if (firstConnect && !controls.router.startupState) {
+            delete data.run;
+            controls.router.NotifyProperty('run');  // Return stopped state to manager
+        }
+
         controls.router.Set(data);
         clientIO.emit('data', data);
+
+        firstConnect = false;
     });
 }
 
@@ -108,8 +117,24 @@ function loadRouter() {
                 controls.router.Set({ remove: true });
             }
     
+            // Validate startup delay time
+            let t;
+            if (p.startupDelayTime) {
+                t = p.startupDelayTime;
+            } else {
+                t = 2000;
+            }
+
+            // Validate startup state
+            let s;
+            if (p.startupState != undefined) {
+                s = p.startupState
+            } else {
+                s = true;
+            }
+
             // Create a new router
-            controls.Set({ router: { controlType: 'Router' } });
+            controls.Set({ router: { controlType: 'Router', startupDelayTime: t, startupState: s } });
         }
     }    
 }
@@ -136,6 +161,12 @@ controls.on('router', router => {
     router.on('password', password => {
         setProfileDetails('password', password);
         loadRouter();
+    });
+    router.on('startupDelayTime', startupDelayTime => {
+        setProfileDetails('startupDelayTime', startupDelayTime);
+    });
+    router.on('startupState', startupState => {
+        setProfileDetails('startupState', startupState);
     });
 }, { immediate: true });
 

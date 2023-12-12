@@ -3,8 +3,8 @@ class Router extends ui {
         super();
         this.deviceType = "Router";
         this.description = "";
-        // this.autoStart = false;
-        // this.autoStartDelay = 500;  // milliseconds
+        this.startupState = true;   // true = Auto (manager selected state); false = Start in stopped state.
+        this.startupDelayTime = 3000;  // milliseconds
         this.run = false;
         this.password = "";
         this.displayName = "New Router";
@@ -190,13 +190,36 @@ class Router extends ui {
                             </div>
                         </div>
 
-                        <!--    AUTO START DELAY      -->
+                        <!--    PULSEAUDIO LATENCY      -->
                         <label for="@{_paLatency}" class="router-label-settings">PulseAudio modules latency:</label>
                         <div class="router-container">
                             <div class="mr-4 w-full">
                                 
                                 <input id="@{_paLatency}" class="router-number-range" type="number" min="1" oninput="validity.valid||(value='')"
                                 title="Latency setting for PulseAudio modules. Lower latency results in higher CPU usage." step="1" value="@{paLatency}"/>
+
+                            </div>
+                        </div>
+
+                        <!--    STARTUP DELAY      -->
+                        <label for="@{_startupDelayTime}" class="router-label-settings">Startup delay:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_startupDelayTime}" class="router-number-range" type="number" min="1" oninput="validity.valid||(value='')"
+                                title="Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up." step="1" value="@{startupDelayTime}"/>
+
+                            </div>
+                        </div>
+
+                        <!--    STARTUP STATE      -->
+                        <label for="@{_startupState}" class="router-label-settings">Startup state:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                <select id="@{_startupState}" class="paAudioBase-select" title="Auto: manager selected state; Stopped = Start in stopped state" value="@{startupState}">
+                                    <option value=true>Auto</option>
+                                    <option value=false>Stopped</option>
+                                </select>
 
                             </div>
                         </div>
