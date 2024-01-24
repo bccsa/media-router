@@ -241,6 +241,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
                     obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR | Reloading pipline"); });
 
+                    // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
                     gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
@@ -253,7 +254,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     /* end-of-stream */
                     obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS | Reloading pipline"); });
                     
-                    //restarting on FATAL error
+                    // restarting on EOS
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
                     gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
                     break;
