@@ -178,9 +178,12 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             gchar *debug;
             gst_message_parse_error (message, &err, &debug);
             g_print ("Error: %s\n", err->message);
+
+            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR | Reloading pipline"); });
         
-            // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-            obj->_emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
+            // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
+            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
             g_error_free (err);
             g_free (debug);
@@ -189,10 +192,9 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
         }
         case GST_MESSAGE_EOS:{
             /* end-of-stream */
-            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS"); });
-            // //restarting on EOS
+            obj->_emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS | Reloading pipline"); });
+            // restarting on EOS
             gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-            sleep( 5 ); 
             gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
             break;
         }
@@ -259,7 +261,7 @@ void _SrtOpusInput::th_Start() {
     /* Configure elements */
     // src
     g_object_set (gl.srtsrc, "uri", this->_uri.c_str(), NULL);
-    g_object_set (gl.srtsrc, "wait-for-connection", true, NULL);
+    g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
     g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);     
