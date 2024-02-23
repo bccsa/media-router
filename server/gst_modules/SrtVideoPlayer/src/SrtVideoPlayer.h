@@ -190,20 +190,25 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
             g_free (debug);
 
             // restarting pipeline
-            gtk_widget_hide(obj->_window); 
-            obj->killing = true;
-            gtk_main_quit();
-            obj->th_Start();
+            // gtk_widget_hide(obj->_window); 
+            // obj->killing = true;
+            // gtk_main_quit();
+            // obj->th_Start();
+
+            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
             break;
         }
         case GST_MESSAGE_EOS: {
             /* end-of-stream */
             // restarting pipeline
-            gtk_widget_hide(obj->_window); 
-            obj->killing = true;
-            gtk_main_quit();
-            obj->th_Start();
+            // gtk_widget_hide(obj->_window); 
+            // obj->killing = true;
+            // gtk_main_quit();
+            // obj->th_Start();
+            gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+            gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
             _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS"); });
             break;
