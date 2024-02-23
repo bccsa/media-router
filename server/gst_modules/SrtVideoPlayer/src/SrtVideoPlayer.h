@@ -174,44 +174,48 @@ static gboolean doubleClick(GtkWidget *widget, GdkEventButton *event, gpointer d
 */
 static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer data)
 {
+    // test class and class type before entering to avoid function crashing due to invalid class
     _SrtVideoPlayer *obj = (_SrtVideoPlayer *) data;
-    switch (GST_MESSAGE_TYPE (message)) {
-        case GST_MESSAGE_ERROR:{
-            std::string errorMessage;
-            GError *err;
-            gchar *debug;
-            gst_message_parse_error (message, &err, &debug);
-            g_print ("Error: %s\n", err->message);
-        
-            // https://chat.openai.com/share/6654604b-6271-4b02-a84e-6d72fe9a5a25
-            _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
+    if (data != nullptr && obj) {
+        try {
+            switch (GST_MESSAGE_TYPE (message)) {
+                case GST_MESSAGE_ERROR:{
+                    std::string errorMessage;
+                    GError *err;
+                    gchar *debug;
+                    gst_message_parse_error (message, &err, &debug);
+                    g_print ("Error: %s\n", err->message);
+                    
+                    _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
+                    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR | Reloading pipline"); });
 
-            g_error_free (err);
-            g_free (debug);
+                    // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
+                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
-            // restarting pipeline
-            gtk_widget_hide(obj->_window); 
-            obj->killing = true;
-            gtk_main_quit();
-            obj->th_Start();
+                    g_error_free (err);
+                    g_free (debug);
 
-            break;
+                    break;
+                }
+                case GST_MESSAGE_EOS:{
+                    /* end-of-stream */
+                    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS | Reloading pipline"); });
+                    
+                    // restarting on EOS
+                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    break;
+                }
+                default:
+                    break;
+            }
+        } catch (std::logic_error& e) {
+            std::cout << "logic_error thrown" << std::endl;
         }
-        case GST_MESSAGE_EOS: {
-            /* end-of-stream */
-            // restarting pipeline
-            gtk_widget_hide(obj->_window); 
-            obj->killing = true;
-            gtk_main_quit();
-            obj->th_Start();
-
-            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS"); });
-            break;
-        }
-        default:
-            break;
+    } else {
+        std::cout << "Invalid class reference " << std::endl;
     }
-
     /* we want to be notified again the next time there is a message
     * on the bus, so returning TRUE (FALSE means we want to stop watching
     * for messages on the bus and our callback should not be called again)
@@ -367,7 +371,7 @@ void _SrtVideoPlayer::th_Start() {
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
-    /* -------------------------------_Link the ui -------------------------------- */
+    // /* -------------------------------_Link the ui -------------------------------- */
     gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (gl.xvimagesink), this->embed_xid);
 
     GdkCursor* Cursor = gdk_cursor_new(GDK_BLANK_CURSOR);
