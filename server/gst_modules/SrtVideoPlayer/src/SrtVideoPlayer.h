@@ -25,7 +25,7 @@ typedef struct _CustomData {
     GstElement *decode_queue;
     GstElement *videoconvert;
     GstElement *v_convert_queue;
-    GstElement *xvimagesink;
+    GstElement *kmssink;
 } CustomData;
 
 // Event emitter 
@@ -51,12 +51,9 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         _SrtVideoPlayer(const Napi::CallbackInfo &info);
         void th_Start();
         // Variables
-        std::string _name = "SrtVideoPlayer";
         std::string _uri = "null";
         std::string _pulseSink = "null";
         int _paLatency = 50;
-        std::string _display = "null";
-        bool _fullScreen = false;
         GstElement *pipeline;
         // Process varialbes 
         gboolean running = false;   // Gstreamer running state
@@ -71,9 +68,6 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         Napi::Value SetUri(const Napi::CallbackInfo &info);
         Napi::Value SetSink(const Napi::CallbackInfo &info);
         Napi::Value SetPALatency(const Napi::CallbackInfo &info);
-        Napi::Value SetDisplay(const Napi::CallbackInfo &info);
-        Napi::Value SetFullscreen(const Napi::CallbackInfo &info);
-        Napi::Value SetName(const Napi::CallbackInfo &info);
 };
 
 /**
@@ -86,10 +80,7 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
         InstanceMethod("Stop", &_SrtVideoPlayer::Stop),
         InstanceMethod("SetUri", &_SrtVideoPlayer::SetUri),
         InstanceMethod("SetSink", &_SrtVideoPlayer::SetSink),
-        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency),
-        InstanceMethod("SetDisplay", &_SrtVideoPlayer::SetDisplay),
-        InstanceMethod("SetFullscreen", &_SrtVideoPlayer::SetFullscreen),
-        InstanceMethod("SetName", &_SrtVideoPlayer::SetFullscreen)
+        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency)
     });
 
     // Create a peristent reference to the class constructor. This will allow
@@ -111,9 +102,6 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
  * [1] - _uri - Srt url - default: null
  * [2] - _pulseSink - Pulse audio sink - default: null
  * [3] - _paLatency - Palse audio latency (ms) - default: 50
- * [4] - _display - Output dispaly - default: 0
- * [5] - _fullScreen - full screen mode - default: false
- * [6] - _name - Player Name - default: SrtVideoPlayer
 */
 _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectWrap<_SrtVideoPlayer>(info) {
     int len = info.Length();
@@ -121,9 +109,6 @@ _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectW
     if (len >= 1 && info[0].IsString() ) { this->_uri = info[0].As<Napi::String>().Utf8Value(); } else { std::cout << "_uri not supplied or invalid type\n"; };
     if (len >= 2 && info[1].IsString() ) { this->_pulseSink = info[1].As<Napi::String>().Utf8Value(); } else { std::cout << "_pulseSink not supplied or invalid type\n"; };
     if (len >= 3 && info[2].IsNumber() ) { this->_paLatency = info[2].As<Napi::Number>(); } else { std::cout << "_paLatency not supplied or invalid type\n"; };
-    if (len >= 4 && info[3].IsString() ) { this->_display = ":" + info[3].As<Napi::String>().Utf8Value(); } else { std::cout << "_display not supplied or invalid type\n"; };
-    if (len >= 5 && info[4].IsBoolean() ) { this->_fullScreen = info[4].As<Napi::Boolean>(); } else { std::cout << "_fullScreen not supplied or invalid type\n"; };
-    if (len >= 6 && info[5].IsString() ) { this->_name = info[5].As<Napi::String>().Utf8Value(); } else { std::cout << "Player name not supplied or invalid type\n"; };
 }
 
 Napi::FunctionReference _SrtVideoPlayer::constructor;
@@ -218,7 +203,6 @@ void _SrtVideoPlayer::th_Start() {
     CustomData gl;
     // Gstreamer
     GstBus *bus;
-    g_setenv("DISPLAY", _display.c_str(), TRUE);
 
     /* Initialize GStreamer */
     gst_init (NULL, NULL);
@@ -244,14 +228,14 @@ void _SrtVideoPlayer::th_Start() {
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
     gl.videoconvert = gst_element_factory_make ("videoconvert", "videoconvert");
     gl.v_convert_queue = gst_element_factory_make ("queue", "v_convert_queue");
-    gl.xvimagesink = gst_element_factory_make ("kmssink", "kmssink");
+    gl.kmssink = gst_element_factory_make ("kmssink", "kmssink");
 
     /* Create the empty pipeline */
     this->pipeline = gst_pipeline_new ("pipeline");
 
     if (!this->pipeline || !gl.source || !gl.tsdemux ||                                                                                                                                        // src
         !gl.audio_queue || !gl.aacparse || !gl.avdec_aac || !gl.audioconvert || !gl.a_convert_queue || !gl.audiosink ||                          // audio
-        !gl.video_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.xvimagesink) {      // video
+        !gl.video_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.kmssink) {      // video
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -267,15 +251,14 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.audiosink, "buffer-time", (guint64)this->_paLatency * 1000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.audiosink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // video
-    g_object_set (gl.decoder, "capture-io-mode", 4, NULL);
-    // g_object_set (gl.xvimagesink, "display", this->_display.c_str(), NULL);     // Set ouput display    
-    g_object_set (gl.xvimagesink, "sync", true, NULL); 
-    g_object_set (gl.xvimagesink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.decoder, "capture-io-mode", 4, NULL);  
+    g_object_set (gl.kmssink, "sync", true, NULL); 
+    g_object_set (gl.kmssink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     // queue's
     g_object_set (gl.audio_queue, "leaky", 2, NULL);
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
-    g_object_set (gl.video_queue, "leaky", 2, NULL);     // Set ouput display   
+    g_object_set (gl.video_queue, "leaky", 2, NULL);  
     g_object_set (gl.v_convert_queue, "leaky", 2, NULL);  
     g_object_set (gl.audio_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
@@ -286,7 +269,7 @@ void _SrtVideoPlayer::th_Start() {
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.tsdemux,                                        // src
         gl.audio_queue, gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
-        gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.xvimagesink,              // video
+        gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.kmssink,              // video
         NULL);
 
     /* Linking */
@@ -295,7 +278,7 @@ void _SrtVideoPlayer::th_Start() {
         // audio
         gst_element_link_many (gl.audio_queue, gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink, NULL) != TRUE ||
         // video
-        gst_element_link_many (gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.xvimagesink, NULL) != TRUE 
+        gst_element_link_many (gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.kmssink, NULL) != TRUE 
         ) {
         g_printerr ("Elements could not be linked.\n");
         gst_object_unref (this->pipeline); 
@@ -408,29 +391,5 @@ Napi::Value _SrtVideoPlayer::SetSink(const Napi::CallbackInfo &info){
 Napi::Value _SrtVideoPlayer::SetPALatency(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsNumber() ) { this->_paLatency = info[0].As<Napi::Number>(); } else { return Napi::String::New(info.Env(), "_paLatency not supplied or invalid type\n"); };
-    return Napi::Number::New(info.Env(), 0);
-}
-/**
- * [0] - _display - Output dispaly - default: 0
-*/
-Napi::Value _SrtVideoPlayer::SetDisplay(const Napi::CallbackInfo &info){
-    int len = info.Length();
-    if (len >= 1 && info[0].IsString() ) { this->_display = ":" + info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "_display not supplied or invalid type\n"); };
-    return Napi::Number::New(info.Env(), 0);
-}
-/**
- * [0] - _fullScreen - full screen mode - default: false
-*/
-Napi::Value _SrtVideoPlayer::SetFullscreen(const Napi::CallbackInfo &info){
-    int len = info.Length();
-    if (len >= 1 && info[0].IsBoolean() ) { this->_fullScreen = info[0].As<Napi::Boolean>(); } else { return Napi::String::New(info.Env(), "_fullScreen not supplied or invalid type\n"); };
-    return Napi::Number::New(info.Env(), 0);
-}
-/**
- * [0] - _name - Player Name - default: SrtVideoPlayer
-*/
-Napi::Value _SrtVideoPlayer::SetName(const Napi::CallbackInfo &info){
-    int len = info.Length();
-    if (len >= 1 && info[0].IsString() ) { this->_name = info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "Player name not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
 }

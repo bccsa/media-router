@@ -68,9 +68,6 @@ const example = new _SrtVideoPlayer(
     "srt://srt.invalid:1234",                               // SRT Url
     "alsa_output.platform-bcm2835_audio.analog-stereo",     // Pulse audio sink 
     50,                                                     // Pulse audio latency (ms)
-    "0",                                                    // Output display    
-    false,                                                  // Fullscreen (true/false)
-    "Test player name"                                      // Player window name
 )
 
 // ------------------
@@ -82,12 +79,6 @@ example.SetUri("srt://srt.invalid:1233");
 example.SetSink("sink");
 // Set pulse latency
 example.SetPALatency(50);
-// Set output display
-example.SetDisplay("0");
-// Set fullscreen (true/ false) 
-example.SetFullscreen(false);
-// Set player window name 
-example.SetName("New name");
 
 // ------------------
 // Control functions

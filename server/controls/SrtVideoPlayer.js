@@ -64,10 +64,7 @@ class SrtVideoPlayer extends _paNullSinkBase {
                     `${path.dirname(process.argv[1])}/child_processes/SrtVideoPlayer_child.js`,
                     _uri,
                     this.sink,
-                    this._parent.paLatency,
-                    this.display,
-                    this.fullscreen,
-                    this.displayName
+                    this._parent.paLatency
                 ]);
 
                 this._gst.stdout.on('data', (data) => {
