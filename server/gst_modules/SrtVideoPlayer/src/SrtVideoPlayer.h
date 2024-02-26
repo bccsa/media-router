@@ -61,11 +61,6 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         // Process varialbes 
         gboolean running = false;   // Gstreamer running state
         gboolean killing = false;   // Gstreamer killing state
-        // gdk window
-        gulong embed_xid;
-        // Global window 
-        GtkWidget *_window;
-        GdkWindow *video_window_xwindow;
 
     private:
         // Gstreamer Functions
@@ -132,38 +127,6 @@ _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectW
 }
 
 Napi::FunctionReference _SrtVideoPlayer::constructor;
-
-// ====================================
-// Gtk Window Functions
-// ====================================
-
-/**
- * Destroy gtk window (see: for intersepting event: https://stackoverflow.com/questions/34387757/how-do-i-intercept-a-gtk-window-close-button-click)
-*/
-gboolean destroyWindow(GtkWidget *widget, gpointer data) {
-    _SrtVideoPlayer *obj = static_cast<_SrtVideoPlayer *>(data);
-    gtk_widget_hide(obj->_window); // Need to hide window instead of destroy, otherwise gtk_main_quit will fail sometimes https://stackoverflow.com/questions/30521811/gtk-main-blocking-others-threads-how-to-solve
-    obj->killing = true;
-    gtk_main_quit();
-    return TRUE; // Return true inorder for gtk not to continue to destroy the window https://stackoverflow.com/questions/34387757/how-do-i-intercept-a-gtk-window-close-button-click
-}
-
-/**
- * Double click event
-*/
-static gboolean doubleClick(GtkWidget *widget, GdkEventButton *event, gpointer data) {
-    _SrtVideoPlayer *obj = static_cast<_SrtVideoPlayer *>(data);
-    GdkWindowState state = gdk_window_get_state(gtk_widget_get_window(obj->_window));
-    // Check for a double-click
-    if (event->type == GDK_2BUTTON_PRESS && event->button == 1) {
-        if (state & GDK_WINDOW_STATE_FULLSCREEN) {
-            gtk_window_unfullscreen(GTK_WINDOW(obj->_window));
-        } else {
-            gtk_window_fullscreen(GTK_WINDOW(obj->_window));
-        }
-    }
-    return TRUE;
-}
 
 // ====================================
 // Gstreamer message bus
@@ -261,33 +224,6 @@ void _SrtVideoPlayer::th_Start() {
     gst_init (NULL, NULL);
     gtk_init_check (NULL, NULL);
 
-    /* ------------------------------ prepare the ui -------------------------------- */ // (https://zetcode.com/gui/gtk2/firstprograms/)
-    // Winodw needs to be created in the before the pipline, otherwise on a busy device it will fail 
-    this->_window = gtk_window_new (GTK_WINDOW_TOPLEVEL); 
-    g_signal_connect(this->_window, "delete-event", G_CALLBACK(destroyWindow), this);
-    g_signal_connect(this->_window, "button-press-event", G_CALLBACK(doubleClick), this);
-    gtk_window_set_default_size (GTK_WINDOW (this->_window), 640, 360);
-    gtk_window_set_title (GTK_WINDOW (this->_window), this->_name.c_str());
-    // set window background color
-    GdkColor color;
-    color.red = 0x00C0;
-    color.green = 0x00DE;
-    color.blue = 0x00ED;
-    gtk_widget_modify_bg(this->_window, GTK_STATE_NORMAL, &color);
-
-    // full screen window 
-    if(this->_fullScreen) {
-        gtk_window_fullscreen(GTK_WINDOW(this->_window));
-    } else {
-        gtk_window_unfullscreen(GTK_WINDOW(this->_window));
-    }
-
-    gtk_widget_show(this->_window);
-
-    this->video_window_xwindow = gtk_widget_get_window (this->_window);
-    this->embed_xid = GDK_WINDOW_XID (this->video_window_xwindow);    
-    /* ------------------------------ prepare the ui -------------------------------- */
-
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* Create the elements */
@@ -308,7 +244,7 @@ void _SrtVideoPlayer::th_Start() {
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
     gl.videoconvert = gst_element_factory_make ("videoconvert", "videoconvert");
     gl.v_convert_queue = gst_element_factory_make ("queue", "v_convert_queue");
-    gl.xvimagesink = gst_element_factory_make ("xvimagesink", "xvimagesink");
+    gl.xvimagesink = gst_element_factory_make ("kmssink", "kmssink");
 
     /* Create the empty pipeline */
     this->pipeline = gst_pipeline_new ("pipeline");
@@ -332,7 +268,7 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.audiosink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // video
     g_object_set (gl.decoder, "capture-io-mode", 4, NULL);
-    g_object_set (gl.xvimagesink, "display", this->_display.c_str(), NULL);     // Set ouput display    
+    // g_object_set (gl.xvimagesink, "display", this->_display.c_str(), NULL);     // Set ouput display    
     g_object_set (gl.xvimagesink, "sync", true, NULL); 
     g_object_set (gl.xvimagesink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
@@ -371,11 +307,6 @@ void _SrtVideoPlayer::th_Start() {
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
-    // /* -------------------------------_Link the ui -------------------------------- */
-    gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (gl.xvimagesink), this->embed_xid);
-
-    GdkCursor* Cursor = gdk_cursor_new(GDK_BLANK_CURSOR);
-    gdk_window_set_cursor(gtk_widget_get_window((this->_window)),Cursor);
     
     /* ------------------------------- Link the ui -------------------------------- */
 
@@ -446,7 +377,6 @@ Napi::Value _SrtVideoPlayer::Stop(const Napi::CallbackInfo &info){
         _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Process is not running, Please try again later."); });
         return Napi::String::New(info.Env(), "Process is not running, Please try again later.");
     } else {
-        gtk_widget_hide(this->_window);
         this->killing = true;
         gtk_main_quit();
         return Napi::String::New(info.Env(), "Pipline stopped");
