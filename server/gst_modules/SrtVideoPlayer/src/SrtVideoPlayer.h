@@ -12,14 +12,13 @@ typedef struct _CustomData {
     GstElement *source;
     GstElement *tsdemux;
     // audio
-    GstElement *audio_queue;
     GstElement *aacparse;
     GstElement *avdec_aac;
     GstElement *audioconvert;
     GstElement *a_convert_queue;
     GstElement *audiosink;
     // video
-    GstElement *video_queue;
+    GstElement *src_queue;
     GstElement *h264parser;
     GstElement *decoder;
     GstElement *decode_queue;
@@ -215,14 +214,13 @@ void _SrtVideoPlayer::th_Start() {
     gl.source = gst_element_factory_make ("srtsrc", "source");
     gl.tsdemux = gst_element_factory_make ("tsdemux", "tsdemux");
     // audio
-    gl.audio_queue = gst_element_factory_make ("queue", "audio_queue");
     gl.aacparse = gst_element_factory_make ("aacparse", "aacparse");
     gl.avdec_aac = gst_element_factory_make ("avdec_aac", "avdec_aac");
     gl.audioconvert = gst_element_factory_make ("audioconvert", "audioconvert");
     gl.a_convert_queue = gst_element_factory_make ("queue", "a_convert_queue");
     gl.audiosink = gst_element_factory_make ("pulsesink", "audiosink");
     // video
-    gl.video_queue = gst_element_factory_make ("queue", "video_queue");
+    gl.src_queue = gst_element_factory_make ("queue", "src_queue");
     gl.h264parser = gst_element_factory_make ("h264parse", "h264parser");
     gl.decoder = gst_element_factory_make ("v4l2h264dec", "decoder");
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
@@ -234,8 +232,8 @@ void _SrtVideoPlayer::th_Start() {
     this->pipeline = gst_pipeline_new ("pipeline");
 
     if (!this->pipeline || !gl.source || !gl.tsdemux ||                                                                                                                                        // src
-        !gl.audio_queue || !gl.aacparse || !gl.avdec_aac || !gl.audioconvert || !gl.a_convert_queue || !gl.audiosink ||                          // audio
-        !gl.video_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.kmssink) {      // video
+        !gl.aacparse || !gl.avdec_aac || !gl.audioconvert || !gl.a_convert_queue || !gl.audiosink ||                          // audio
+        !gl.src_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.kmssink) {      // video
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -244,49 +242,39 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.source, "uri", this->_uri.c_str(), NULL);
     g_object_set (gl.source, "wait-for-connection", false, NULL);
     g_object_set (gl.tsdemux, "latency", 1, NULL);
-    g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);
+    g_object_set (gl.tsdemux, "ignore-pcr", false, NULL);
     // audio 
-    g_object_set (gl.audiosink, "sync", false, NULL); 
     g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);   
-    g_object_set (gl.audiosink, "buffer-time", (guint64)this->_paLatency * 1000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-    g_object_set (gl.audiosink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-    // video
-    g_object_set (gl.decoder, "capture-io-mode", 4, NULL);  
-    g_object_set (gl.kmssink, "sync", true, NULL); 
-    g_object_set (gl.kmssink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-
     // queue's
-    g_object_set (gl.audio_queue, "leaky", 1, NULL);
-    g_object_set (gl.a_convert_queue, "leaky", 1, NULL);
-    g_object_set (gl.video_queue, "leaky", 1, NULL);  
-    g_object_set (gl.v_convert_queue, "leaky", 1, NULL);  
-    g_object_set (gl.audio_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-    g_object_set (gl.video_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
-    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.src_queue, "leaky", 2, NULL);  
+    g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
+    g_object_set (gl.v_convert_queue, "leaky", 2, NULL);  
+    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)10000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.src_queue, "max-size-time", (guint64)10000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.a_convert_queue, "max-size-time", (guint64)10000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.tsdemux,                                        // src
-        gl.audio_queue, gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
-        gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.kmssink,              // video
+    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                                        // src
+        gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
+        gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.kmssink,              // video
         NULL);
 
     /* Linking */
     if (// src
-        gst_element_link_many (gl.source, gl.tsdemux, NULL) != TRUE ||
+        gst_element_link_many (gl.source, gl.src_queue, gl.tsdemux, NULL) != TRUE ||
         // audio
-        gst_element_link_many (gl.audio_queue, gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink, NULL) != TRUE ||
+        gst_element_link_many (gl.aacparse, gl.avdec_aac, gl.a_convert_queue, gl.audioconvert, gl.audiosink, NULL) != TRUE ||
         // video
-        gst_element_link_many (gl.video_queue, gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.kmssink, NULL) != TRUE 
+        gst_element_link_many (gl.h264parser, gl.decoder, gl.v_convert_queue, gl.kmssink, NULL) != TRUE 
         ) {
         g_printerr ("Elements could not be linked.\n");
         gst_object_unref (this->pipeline); 
     }
 
     /* add pad */
-    g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.audio_queue);
-    g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.video_queue);
+    g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.aacparse);
+    g_signal_connect (gl.tsdemux, "pad-added", G_CALLBACK (on_pad_added), gl.h264parser);
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
