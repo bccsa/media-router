@@ -134,12 +134,12 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     gst_message_parse_error (message, &err, &debug);
                     g_print ("Error: %s\n", err->message);
                     
-                    _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
-                    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "ERROR | Reloading pipline"); });
+                    // _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
+                    // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Reloading pipline"); });
 
                     // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
-                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    // gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                    // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
                     g_error_free (err);
                     g_free (debug);
@@ -256,10 +256,10 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.kmssink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
 
     // queue's
-    g_object_set (gl.audio_queue, "leaky", 2, NULL);
-    g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
-    g_object_set (gl.video_queue, "leaky", 2, NULL);  
-    g_object_set (gl.v_convert_queue, "leaky", 2, NULL);  
+    g_object_set (gl.audio_queue, "leaky", 1, NULL);
+    g_object_set (gl.a_convert_queue, "leaky", 1, NULL);
+    g_object_set (gl.video_queue, "leaky", 1, NULL);  
+    g_object_set (gl.v_convert_queue, "leaky", 1, NULL);  
     g_object_set (gl.audio_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.a_convert_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.video_queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
