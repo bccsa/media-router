@@ -245,8 +245,7 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.tsdemux, "ignore-pcr", false, NULL);
     // audio 
     g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);   
-    // queue's
-    g_object_set (gl.src_queue, "leaky", 2, NULL);  
+    // queue's 
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL);
     g_object_set (gl.v_convert_queue, "leaky", 2, NULL);  
     g_object_set (gl.a_convert_queue, "max-size-time", (guint64)10000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
