@@ -24,12 +24,7 @@
 * node-gyp ```sudo npm -g install node-gyp```
 * node-addon-api ```npm install node-addon-api```
 * bindings ```npm install bindings```
-* libgtk-3-dev ```sudo apt install libgtk-3-dev``` (Adding to bindings.gyp: https://github.com/kusti8/proton-native/issues/16 | https://askubuntu.com/questions/397432/fatal-error-gtk-gtk-h-no-such-file-or-directory-using-make)
-* ```sudo apt install libpango1.0-dev```
-* ```sudo apt install libharfbuzz-dev```
-* ```sudo apt install libcairo2-dev```
-* ```sudo apt install libgdk-pixbuf2.0-dev```
-* ```sudo apt install libatk1.0-dev```
+* gstreamer
 
 ##### Configure build
 * run ```node-gyp configure```
@@ -38,12 +33,7 @@
 #### Runtime dependencies
 * node-addon-api ```npm install node-addon-api```
 * bindings ```npm install bindings```
-* libgtk-3-dev ```sudo apt install libgtk-3-dev``` (Adding to bindings.gyp: https://github.com/kusti8/proton-native/issues/16 | https://askubuntu.com/questions/397432/fatal-error-gtk-gtk-h-no-such-file-or-directory-using-make)
-* ```sudo apt install libpango1.0-dev```
-* ```sudo apt install libharfbuzz-dev```
-* ```sudo apt install libcairo2-dev```
-* ```sudo apt install libgdk-pixbuf2.0-dev```
-* ```sudo apt install libatk1.0-dev```
+* gstreamer 
 
 #### Dev dependencies
 * vscode: https://github.com/vadimcn/vscode-lldb (Used for debugging C++)
