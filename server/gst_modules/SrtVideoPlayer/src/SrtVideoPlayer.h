@@ -22,7 +22,6 @@ typedef struct _CustomData {
     GstElement *h264parser;
     GstElement *decoder;
     GstElement *decode_queue;
-    GstElement *videoconvert;
     GstElement *v_convert_queue;
     GstElement *kmssink;
 } CustomData;
@@ -224,7 +223,6 @@ void _SrtVideoPlayer::th_Start() {
     gl.h264parser = gst_element_factory_make ("h264parse", "h264parser");
     gl.decoder = gst_element_factory_make ("v4l2h264dec", "decoder");
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
-    gl.videoconvert = gst_element_factory_make ("videoconvert", "videoconvert");
     gl.v_convert_queue = gst_element_factory_make ("queue", "v_convert_queue");
     gl.kmssink = gst_element_factory_make ("kmssink", "kmssink");
 
@@ -233,7 +231,7 @@ void _SrtVideoPlayer::th_Start() {
 
     if (!this->pipeline || !gl.source || !gl.tsdemux ||                                                                                                                                        // src
         !gl.aacparse || !gl.avdec_aac || !gl.audioconvert || !gl.a_convert_queue || !gl.audiosink ||                          // audio
-        !gl.src_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.videoconvert || !gl.v_convert_queue || !gl.kmssink) {      // video
+        !gl.src_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.v_convert_queue || !gl.kmssink) {      // video
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -249,7 +247,7 @@ void _SrtVideoPlayer::th_Start() {
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                                        // src
         gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
-        gl.h264parser, gl.decoder, gl.decode_queue, gl.videoconvert, gl.v_convert_queue, gl.kmssink,              // video
+        gl.h264parser, gl.decoder, gl.decode_queue, gl.v_convert_queue, gl.kmssink,              // video
         NULL);
 
     /* Linking */
