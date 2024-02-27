@@ -1,6 +1,6 @@
 # [SrtVideoPlayer.js](./SrtVideoPlayer.js)
 
-***Important, video player only works on a headless OS (OS without a desktop environment)***
+***Important, video player only works on a desktopless environment (disable desktop in router settings)***
 
 ## Srt Settings 
 * Host - Srt hostname/ ip address (<b>Do not iclude srt://</b>)

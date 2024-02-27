@@ -22,6 +22,7 @@ class Router extends ui {
         this.logFATAL = true;       // log level enabled/ disabled
         this.resetCmd = false;      // Reset router process
         this.restartCmd = false;    // Restart router device
+        this.enableDesktop = true; // Enable/ disable dsktop environment
     }
 
     get html() {
@@ -258,6 +259,16 @@ class Router extends ui {
                                 title="Page width in px" step="1" value="@{scale}"/>
 
                             </div>
+                        </div>
+
+                        <!--    Enable/ Disable desktop environment    -->  
+                        <label for="@{_enableDesktop}" class="router-label-settings">Enable/ Disable desktop:</label>
+                        <div class="router-container">
+                            <label class="relative inline-flex items-center cursor-pointer">
+                            <span class="router-label">Off</span>
+                                <input id="@{_enableDesktop}" class="sr-only peer" type="checkbox" role="switch" checked="@{enableDesktop}">
+                                <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
+                            <span class="router-label -mr-2 ml-2">On</span>
                         </div>
                     </div> 
                 </div> 
