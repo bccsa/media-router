@@ -1,6 +1,7 @@
 # [SrtVideoPlayer.js](./SrtVideoPlayer.js)
 
 ***Important, video player only works on a desktopless environment (disable desktop in router settings)***
+<b>Restart required after desktop environment has been disabled</b>
 
 ## Srt Settings 
 * Host - Srt hostname/ ip address (<b>Do not iclude srt://</b>)
