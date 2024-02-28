@@ -141,13 +141,13 @@ class Router extends dm {
         // Enable/ Disable Desktop 
         this.on('enableDesktop', enable => {
             if (enable) {
-                this._log('INFO', 'Enabling desktop environment');
-                exec('sudo service lightdm start; sudo systemctl enable lightdm').catch(err => {
+                this._log('INFO', 'Enabling desktop environment, please restart');
+                exec('sudo systemctl enable lightdm; sudo rm /etc/systemd/system/default.target; sudo systemctl set-default graphical.target').catch(err => {
                     this._log('ERROR', 'Unable to enable desktop environment: ' + err.message);
                 });
             } else {
-                this._log('INFO', 'Disabling desktop environment');
-                exec('sudo service lightdm stop; sudo systemctl disable lightdm').catch(err => {
+                this._log('INFO', 'Disabling desktop environment, please restart');
+                exec('sudo systemctl disable lightdm').catch(err => {
                     this._log('ERROR', 'Unable to disable desktop environment: ' + err.message);
                 });
             }
