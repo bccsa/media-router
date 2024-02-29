@@ -133,11 +133,11 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     g_print ("Error: %s\n", err->message);
                     
                     // _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
-                    // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Reloading pipline"); });
+                    _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Reloading pipline"); });
 
                     // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
-                    // gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                    // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
 
                     g_error_free (err);
                     g_free (debug);
