@@ -243,6 +243,8 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.tsdemux, "ignore-pcr", false, NULL);
     // audio 
     g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);  
+    // video
+    g_object_set (gl.kmssink, "connector-id", 32, NULL);  
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                                        // src
