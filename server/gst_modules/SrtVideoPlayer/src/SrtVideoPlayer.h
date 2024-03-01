@@ -248,7 +248,7 @@ void _SrtVideoPlayer::th_Start() {
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                                        // src
-        gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
+        // gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
         gl.h264parser, gl.decoder, gl.decode_queue, gl.v_convert_queue, gl.kmssink,              // video
         NULL);
 
