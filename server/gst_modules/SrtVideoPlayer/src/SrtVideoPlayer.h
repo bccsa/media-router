@@ -247,7 +247,7 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.kmssink, "connector-id", 32, NULL); 
     // queue's
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL); 
-    g_object_set (gl.a_convert_queue, "max-size-time ", 1000000, NULL); 
+    g_object_set (gl.a_convert_queue, "max-size-time", 100000000, NULL); 
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
     gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                                        // src
