@@ -39,7 +39,9 @@ class _paNullSinkBase extends _paAudioSourceBase {
         // listen for null sink creation
         this._parent.on('sinks', sinks => {
             if (sinks.find(t => t.name == this._paModuleName)) {
-                this.ready = true;
+                setTimeout(() => {
+                    this.ready = true;
+                },100)
             } else {
                 this.ready = false;
             }
