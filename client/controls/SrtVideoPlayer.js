@@ -9,8 +9,6 @@ class SrtVideoPlayer extends _paAudioSourceBase {
         this.srtLatency = 10;
         this.srtMaxBw = 8000;       // not implemented in server yet
         this.srtStreamID = '';
-        this.display = '0';         // Output display for srt stream
-        this.fullscreen = true;     // Fullscreen output by default
     }
 
     get html() {
@@ -106,25 +104,6 @@ class SrtVideoPlayer extends _paAudioSourceBase {
 
         <div class="w-full items-center justify-items-center justify-center">
             <div class="text-center align-top font-semibold text-base">Screen Settings</div>
-        </div>
-
-        <div class="w-full mb-2 flex ">
-            <!-- Output display  --> 
-            <!-- Fullscreen  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_fullscreen}" class="" title="Enable or disable the VU meter">Fullscreen</label>
-                <input id="@{_fullscreen}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{fullscreen}" />
-            </div>
-
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_srtDispaly}" class="form-label inline-block mb-2 mr-2">Display:</label>
-                <input id="@{_srtDispaly}" class="paAudioBase-text-area" type="text" 
-                title="Output display e.g. (0.0)" value="@{display}" hidden="true" disabled/>
-            </div>
-
-            <!-- Placeholder  --> 
-            <div class="w-1/3 flex flex-col"></div>
-
         </div>
         `);
     }

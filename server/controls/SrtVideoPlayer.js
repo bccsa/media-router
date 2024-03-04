@@ -13,8 +13,6 @@ class SrtVideoPlayer extends _paNullSinkBase {
         this.srtMode = 'caller';
         this.srtLatency = 1;
         this.srtStreamID = '';
-        this.display = '0'; 
-        this.fullscreen = true;
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this._udpSocketPort = 0;
