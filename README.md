@@ -74,3 +74,11 @@ https://www.systutorials.com/how-to-enlarge-linux-udp-buffer-size/
 
 ## Gstreamer c++ library debug
 See: [gst_modules](./server/gst_modules/SrtVideoPlayer/README.md)
+
+## ***[Large scale media-router applications](https://teams.microsoft.com/l/message/19:c03ee3df-2ced-415b-a03b-8721d514d3d6_c7308394-f7b9-4a7e-8510-ffb8a5e8b271@unq.gbl.spaces/1709803010063?context=%7B%22contextType%22%3A%22chat%22%7Dexir)***
+* Important note on large scale media-router applications, you need to increse the default file limit for your pipewire.service and pipewire-pulse.service config files, otherwise you will be limited to 50 pulseaudio loopbacks
+* This can be done by adding the following line in your pipewire.service and pipewire-pulse.service files in /usr/lib/sytstemd/user
+```
+[Service]
+LimitNOFILE=<Your file count>
+```
