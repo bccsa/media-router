@@ -42,9 +42,7 @@ class SrtOpusInput extends _paNullSinkBase {
         if (!this._gst) {
             try {
                 let _this = this;
-                // // Request a PulseAudio connection
-                this._parent.PaReqConnection();
-
+                
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus decoder (gstreamer)`);
 
                 let crypto = '';
