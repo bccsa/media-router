@@ -176,8 +176,6 @@ class _paAudioBase extends dm {
 
     _startVU() {
         try {
-            // Request a PulseAudio connection
-            this._parent.PaReqConnection();
 
             if (this.monitor && !this._vuProc) {
                 let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
@@ -220,9 +218,6 @@ class _paAudioBase extends dm {
     _stopVU() {
         if (this._vuProc) {
             try {
-                // Release a PulseAudio connection
-                this._parent.PaRemConnection();
-
                 this._parent._log("INFO", `${this._controlName} (${this.displayName}): Stopping VU`);
                 this._vuProc.kill('SIGTERM');
                 this._vuProc.kill('SIGKILL');

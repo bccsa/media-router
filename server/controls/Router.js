@@ -354,30 +354,6 @@ class Router extends dm {
             }
         }
     }
-
-    /**
-     * Request a new PulseAudio connection. Throws an exception of the requested connection exceeds the maximum connection count
-     */
-    PaReqConnection() {
-        if (this._paConnectionCount >= 50) {
-            throw new Error('Unable to create new PulseAudio connection: Maximum configured connection count of 50 reached.');
-        } else {
-            this._paConnectionCount++;
-            console.log('PaConnections:' + this._paConnectionCount);
-        }
-    }
-
-    /**
-     * Decreases the PulseAudio connection count.
-     */
-    PaRemConnection() {
-        if (this._paConnectionCount > 0) {
-            this._paConnectionCount--;
-            console.log('PaConnections:' + this._paConnectionCount);
-        } else {
-            this._paConnectionCount = 0;
-        }
-    }
 }
 
 module.exports = Router;
