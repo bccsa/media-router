@@ -22,6 +22,7 @@ class Router extends ui {
         this.logFATAL = true;       // log level enabled/ disabled
         this.resetCmd = false;      // Reset router process
         this.restartCmd = false;    // Restart router device
+        this.cpuUsage = 0;          // CPU usage indication
     }
 
     get html() {
@@ -55,6 +56,8 @@ class Router extends ui {
                                 <!--    TOP BAR CONTROLS     -->
                                 <div id="@{_topBarControls}" class="h-auto w-auto flex mr-2 items-center" title=""></div>
 
+                                <!--    CPU Usage Indication -->
+                                <div id="@{_cpuUsage}" class="items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">CPU: <span>@{cpuUsage}</span></div>
 
                                 <!--    ONLINE/OFFLINE -->
                                 <span id="@{_online}" class="hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
@@ -554,8 +557,26 @@ class Router extends ui {
             } else {
                 this._btnReset.style.display = 'none';
                 this._btnRestart.style.display = 'none';
+                // set CPU usage to 0 when offline 
+                this.cpuUsage = 0;
             }
         }, { immediate: true });
+
+        // Handle CPU load indicator 
+        this.on('cpuUsage', (v) => {
+            // red 
+            if (v > 80) {
+                this._cpuUsage.style.backgroundColor = "rgb(185 28 28)";
+            } 
+            // oranage
+            else if (v > 50) {
+                this._cpuUsage.style.backgroundColor = "rgb(245 158 11)";
+            } 
+            // green
+            else {
+                this._cpuUsage.style.backgroundColor = "rgb(22 163 74)";
+            }
+        })
 
         //----------------------Scaling-----------------------------//
         this.on('scale', scale => {

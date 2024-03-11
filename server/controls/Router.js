@@ -1,6 +1,7 @@
 let { dm } = require('../modular-dm');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
+var os = require('os-utils');
 
 /**
  * Router control
@@ -36,11 +37,19 @@ class Router extends dm {
         this._paConnectionCount = 0                 // PulseAudio connection counter
         this.startupDelayTime = 3000;               // Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up.
         this.startupState = true;                   // true = Auto (manager selected state); false = Start in stopped state.
+        this.cpuUsage = 0;                          // CPU usage indication
     }
 
     Init() {
         super.Init();
         let startupDelay = true;
+
+        // Get device resources
+        setInterval(() => {
+            os.cpuUsage((v) => {
+                this.cpuUsage = Math.round(v * 100);
+            });
+        }, 2000)
 
         // Relay external run command to child controls
         this.on('run', run => {
