@@ -1,7 +1,11 @@
 
-# [Router.js](./Router.js)
+# Router.js
 
-## Router settings
+## <ins>Router Info </ins>
+### IP address
+Client device IP address
+
+## <ins>Router settings </ins>
 
 ### Display name
 Name to display on device, also used as username to connect client to the manager 
