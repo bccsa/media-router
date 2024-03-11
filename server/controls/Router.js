@@ -56,15 +56,16 @@ class Router extends dm {
         }, 2000)
 
         // IP address
-        let interfaces = os.networkInterfaces();
-        Object.values(interfaces).forEach(iface => {
-            for (var i = 0; i < iface.length; i++) {
-                var alias = iface[i];
-                if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal)
-                    this.ipAddress = alias.address;
-            }
-        })
-
+        setInterval(() => {
+            let interfaces = os.networkInterfaces();
+            Object.values(interfaces).forEach(iface => {
+                for (var i = 0; i < iface.length; i++) {
+                    var alias = iface[i];
+                    if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal)
+                        this.ipAddress = alias.address;
+                }
+            })
+        }, 60000)
         //----------------------Get device resources-----------------------------//
 
         // Relay external run command to child controls
