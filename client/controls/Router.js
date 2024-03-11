@@ -59,10 +59,10 @@ class Router extends ui {
                                 <div id="@{_topBarControls}" class="h-auto w-auto flex mr-2 items-center" title=""></div>
 
                                 <!--    CPU Usage Indication -->
-                                <div id="@{_cpuUsage}" class="items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">CPU: <span>@{cpuUsage}</span></div>
+                                <div id="@{_cpuUsage}" class="items-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-20 rounded-full">CPU: <span>@{cpuUsage}</span></div>
 
                                 <!--    ONLINE/OFFLINE -->
-                                <span id="@{_online}" class="hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
+                                <span id="@{_online}" class="hidden items-center  bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
                                 <span class="w-2 h-2 mr-1 bg-white rounded-full"></span>
                                 Online
                                 </span>
