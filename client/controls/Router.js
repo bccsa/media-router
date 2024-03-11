@@ -23,6 +23,7 @@ class Router extends ui {
         this.resetCmd = false;      // Reset router process
         this.restartCmd = false;    // Restart router device
         this.cpuUsage = 0;          // CPU usage indication
+        this.ipAddress = "127.0.0.1"// system IP address   
     }
 
     get html() {
@@ -57,7 +58,7 @@ class Router extends ui {
                                 <div id="@{_topBarControls}" class="h-auto w-auto flex mr-2 items-center" title=""></div>
 
                                 <!--    CPU Usage Indication -->
-                                <div id="@{_cpuUsage}" class="items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">CPU: <span>@{cpuUsage}</span></div>
+                                <div id="@{_cpuUsage}" class="items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">CPU: <span>@{cpuUsage}</span></div>
 
                                 <!--    ONLINE/OFFLINE -->
                                 <span id="@{_online}" class="hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
@@ -161,6 +162,18 @@ class Router extends ui {
                         </div>
 
                         <hr class="w-full h-[1px] bg-gray-500 mb-2"> 
+
+                        <! --   Info Section   -->
+                        <label for="@{_info}" class="router-label-settings mb-4 italic text-xl">INFO</label><br>
+
+                        <!--    IP Address     -->
+                        <label for="@{_ipAddress}" class="router-label-settings">IP Address: <span>@{ipAddress}</span></label>
+
+                        <!--    DIVIDER LINE      -->
+                        <div class="router-line mb-4"></div>
+
+                        <! --  Setting  -->
+                        <label for="@{_settings}" class="router-label-settings mb-4 italic text-xl">SETTINGS</label><br>
 
                         <!--    DISPLAY NAME      -->
                         <label for="@{_displayName}" class="router-label-settings">Display Name: </label>
@@ -572,9 +585,9 @@ class Router extends ui {
             else if (v > 50) {
                 this._cpuUsage.style.backgroundColor = "rgb(245 158 11)";
             } 
-            // green
+            // gray
             else {
-                this._cpuUsage.style.backgroundColor = "rgb(22 163 74)";
+                this._cpuUsage.style.backgroundColor = "rgb(203 213 225)";
             }
         })
 

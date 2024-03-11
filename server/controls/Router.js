@@ -1,7 +1,8 @@
 let { dm } = require('../modular-dm');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
-var os = require('os-utils');
+const os_utils = require('os-utils');
+const os = require('os');
 
 /**
  * Router control
@@ -38,18 +39,32 @@ class Router extends dm {
         this.startupDelayTime = 3000;               // Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up.
         this.startupState = true;                   // true = Auto (manager selected state); false = Start in stopped state.
         this.cpuUsage = 0;                          // CPU usage indication
+        this.ipAddress = "127.0.0.1"                // system IP address    
     }
 
     Init() {
         super.Init();
         let startupDelay = true;
 
-        // Get device resources
+        //----------------------Get device resources-----------------------------//
+        // CPU usage
         setInterval(() => {
-            os.cpuUsage((v) => {
+            os_utils.cpuUsage((v) => {
                 this.cpuUsage = Math.round(v * 100);
             });
         }, 2000)
+
+        // IP address
+        let interfaces = os.networkInterfaces();
+        Object.values(interfaces).forEach(iface => {
+            for (var i = 0; i < iface.length; i++) {
+                var alias = iface[i];
+                if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal)
+                    this.ipAddress = alias.address;
+            }
+        })
+
+        //----------------------Get device resources-----------------------------//
 
         // Relay external run command to child controls
         this.on('run', run => {
