@@ -1,7 +1,11 @@
 
-# [Router.js](./Router.js)
+# Router.js
 
-## Title 2
+## <ins>Router Info </ins>
+### IP address
+Client device IP address
+
+## <ins>Router settings </ins>
 
 ### Title 3
 
