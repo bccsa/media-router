@@ -55,21 +55,8 @@ class Router extends dm {
         }, 2000)
 
         // IP address
-        this.ipAddress = getIP();
-        setInterval(() => {
-            this.ipAddress = getIP();
-        }, 120000)
-
-        function getIP () {
-            let interfaces = os.networkInterfaces();
-            Object.values(interfaces).forEach(iface => {
-                for (var i = 0; i < iface.length; i++) {
-                    var alias = iface[i];
-                    if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal)
-                        return alias.address;
-                }
-            })
-        }
+        setTimeout(() => { this.ipAddress = this._getIP() }, 5000);
+        setInterval(() => { this.ipAddress = this._getIP() }, 120000)
         //----------------------Get device resources-----------------------------//
 
         // Relay external run command to child controls
@@ -383,6 +370,20 @@ class Router extends dm {
                 }, 100);
             }
         }
+    }
+
+    /**
+     * Get device ip Address
+     */
+    _getIP () {
+        let interfaces = os.networkInterfaces();
+        Object.values(interfaces).forEach(iface => {
+            for (var i = 0; i < iface.length; i++) {
+                var alias = iface[i];
+                if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal)
+                    return alias.address;
+            }
+        })
     }
 }
 
