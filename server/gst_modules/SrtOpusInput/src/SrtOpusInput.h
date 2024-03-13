@@ -57,6 +57,8 @@ class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
         Napi::Value SetUri(const Napi::CallbackInfo &info);
         Napi::Value SetPALatency(const Napi::CallbackInfo &info);
         Napi::Value SetSink(const Napi::CallbackInfo &info);
+        // Getters
+        Napi::Value GetSrtStats(const Napi::CallbackInfo &info);
 };
 
 /**
@@ -65,11 +67,14 @@ class _SrtOpusInput : public Napi::ObjectWrap<_SrtOpusInput> {
 Napi::Object _SrtOpusInput::Init(Napi::Env env, Napi::Object exports) {
     // This method is used to hook the accessor and method callbacks
     Napi::Function func = DefineClass(env, "_SrtOpusInput", {
+        // setters
         InstanceMethod("Start", &_SrtOpusInput::Start),
         InstanceMethod("Stop", &_SrtOpusInput::Stop),
         InstanceMethod("SetUri", &_SrtOpusInput::SetUri),
         InstanceMethod("SetPALatency", &_SrtOpusInput::SetPALatency),
         InstanceMethod("SetSink", &_SrtOpusInput::SetSink),
+        // getters 
+        InstanceMethod("GetSrtStats", &_SrtOpusInput::GetSrtStats)
     });
 
     // Create a peristent reference to the class constructor. This will allow
@@ -159,6 +164,68 @@ Napi::Value _SrtOpusInput::SetSink(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsString() ) { this->_sink = info[0].As<Napi::String>().Utf8Value(); } else { return Napi::String::New(info.Env(), "_sink not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
+}
+
+// --------
+// Getters
+// --------
+
+/**
+ * Convert GstStructure to Json Object
+*/
+static Napi::Object struct_to_json (const Napi::CallbackInfo &info, GstStructure * d) {
+    const gchar *name;
+    const GValue *value;
+    Napi::Object res = Napi::Object::New(info.Env());
+    
+    for (gint i = 0; i < gst_structure_n_fields(d); ++i) {
+        name = gst_structure_nth_field_name(d, i);
+        value = gst_structure_get_value(d, name);
+
+        // Proccess array'
+        if (G_VALUE_TYPE(value) == G_TYPE_VALUE_ARRAY) {
+            GValueArray *_arr = (GValueArray *) g_value_get_boxed (value);
+            for (gint k = 0; k < _arr->n_values; ++k) {
+                const GValue *_value = g_value_array_get_nth(_arr, k);
+                if (G_VALUE_TYPE(_value) == GST_TYPE_STRUCTURE) {
+                    GstStructure *_d = (GstStructure*)g_value_get_boxed(_value);
+                    Napi::Object _res = struct_to_json(info, _d);
+                    res.Set(uint32_t(k), _res);
+                } else {
+                    gchar * strVal = g_strdup_value_contents (_value);
+                    res.Set(uint32_t(k), strVal);
+                    free (strVal);
+                }
+            }
+        // Process Structures
+        } else if (G_VALUE_TYPE(value) == GST_TYPE_STRUCTURE) { 
+            GstStructure *_d = (GstStructure*)g_value_get_boxed(value);
+            Napi::Object _res = struct_to_json(info, _d);
+            res.Set(uint32_t(i), _res);
+        // Process Value pairs
+        } else {
+            gchar * strVal = g_strdup_value_contents (value);
+            res.Set(name, strVal);
+            free (strVal);
+        }
+    }    
+
+    return res;
+}
+
+/**
+* Get SRT Bitrate ( https://github.com/gstreamer-java/gst1-java-core/issues/173 )
+*/
+Napi::Value _SrtOpusInput::GetSrtStats(const Napi::CallbackInfo &info){
+    GValue propValue = G_VALUE_INIT;
+    GType gstStructure = gst_structure_get_type();
+    g_value_init(&propValue, gstStructure);
+    g_object_get_property(G_OBJECT(this->gl.srtsrc), "stats", &propValue);
+    GstStructure *d = (GstStructure*)g_value_get_boxed(&propValue);
+    Napi::Object res = struct_to_json(info, d);
+    g_value_unset(&propValue);
+   
+    return res;
 }
 
 // ====================================
