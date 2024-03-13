@@ -53,6 +53,7 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         std::string _pulseSink = "null";
         int _paLatency = 50;
         GstElement *pipeline;
+        CustomData gl;
         // Process varialbes 
         gboolean running = false;   // Gstreamer running state
         gboolean killing = false;   // Gstreamer killing state
@@ -66,6 +67,8 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         Napi::Value SetUri(const Napi::CallbackInfo &info);
         Napi::Value SetSink(const Napi::CallbackInfo &info);
         Napi::Value SetPALatency(const Napi::CallbackInfo &info);
+        // Getters
+        Napi::Value GetSrtStats(const Napi::CallbackInfo &info);
 };
 
 /**
@@ -78,7 +81,8 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
         InstanceMethod("Stop", &_SrtVideoPlayer::Stop),
         InstanceMethod("SetUri", &_SrtVideoPlayer::SetUri),
         InstanceMethod("SetSink", &_SrtVideoPlayer::SetSink),
-        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency)
+        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency),// getters 
+        InstanceMethod("GetSrtStats", &_SrtVideoPlayer::GetSrtStats)
     });
 
     // Create a peristent reference to the class constructor. This will allow
@@ -198,13 +202,11 @@ static void on_pad_added (GstElement *element, GstPad *pad, gpointer data)
 void _SrtVideoPlayer::th_Start() {
     _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline started"); });
     /* Varaibles */
-    CustomData gl;
+    std::string uri = this->_uri;
     // Gstreamer
     GstBus *bus;
-
     /* Initialize GStreamer */
     gst_init (NULL, NULL);
-    gtk_init_check (NULL, NULL);
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
@@ -225,7 +227,6 @@ void _SrtVideoPlayer::th_Start() {
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
     gl.v_convert_queue = gst_element_factory_make ("queue", "v_convert_queue");
     gl.kmssink = gst_element_factory_make ("kmssink", "kmssink");
-
     /* Create the empty pipeline */
     this->pipeline = gst_pipeline_new ("pipeline");
 
@@ -237,7 +238,7 @@ void _SrtVideoPlayer::th_Start() {
 
     /* Configure elements */
     // src
-    g_object_set (gl.source, "uri", this->_uri.c_str(), NULL);
+    g_object_set (gl.source, "uri", uri.c_str(), NULL);
     g_object_set (gl.source, "wait-for-connection", false, NULL);
     g_object_set (gl.tsdemux, "latency", 1, NULL);
     g_object_set (gl.tsdemux, "ignore-pcr", false, NULL);
@@ -375,4 +376,66 @@ Napi::Value _SrtVideoPlayer::SetPALatency(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsNumber() ) { this->_paLatency = info[0].As<Napi::Number>(); } else { return Napi::String::New(info.Env(), "_paLatency not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
+}
+
+// --------
+// Getters
+// --------
+
+/**
+ * Convert GstStructure to Json Object
+*/
+static Napi::Object struct_to_json (const Napi::CallbackInfo &info, GstStructure * d) {
+    const gchar *name;
+    const GValue *value;
+    Napi::Object res = Napi::Object::New(info.Env());
+    
+    for (gint i = 0; i < gst_structure_n_fields(d); ++i) {
+        name = gst_structure_nth_field_name(d, i);
+        value = gst_structure_get_value(d, name);
+
+        // Proccess array'
+        if (G_VALUE_TYPE(value) == G_TYPE_VALUE_ARRAY) {
+            GValueArray *_arr = (GValueArray *) g_value_get_boxed (value);
+            for (gint k = 0; k < _arr->n_values; ++k) {
+                const GValue *_value = g_value_array_get_nth(_arr, k);
+                if (G_VALUE_TYPE(_value) == GST_TYPE_STRUCTURE) {
+                    GstStructure *_d = (GstStructure*)g_value_get_boxed(_value);
+                    Napi::Object _res = struct_to_json(info, _d);
+                    res.Set(uint32_t(k), _res);
+                } else {
+                    gchar * strVal = g_strdup_value_contents (_value);
+                    res.Set(uint32_t(k), strVal);
+                    free (strVal);
+                }
+            }
+        // Process Structures
+        } else if (G_VALUE_TYPE(value) == GST_TYPE_STRUCTURE) { 
+            GstStructure *_d = (GstStructure*)g_value_get_boxed(value);
+            Napi::Object _res = struct_to_json(info, _d);
+            res.Set(uint32_t(i), _res);
+        // Process Value pairs
+        } else {
+            gchar * strVal = g_strdup_value_contents (value);
+            res.Set(name, strVal);
+            free (strVal);
+        }
+    }    
+
+    return res;
+}
+
+/**
+* Get SRT Bitrate ( https://github.com/gstreamer-java/gst1-java-core/issues/173 )
+*/
+Napi::Value _SrtVideoPlayer::GetSrtStats(const Napi::CallbackInfo &info){
+    GValue propValue = G_VALUE_INIT;
+    GType gstStructure = gst_structure_get_type();
+    g_value_init(&propValue, gstStructure);
+    g_object_get_property(G_OBJECT(this->gl.source), "stats", &propValue);
+    GstStructure *d = (GstStructure*)g_value_get_boxed(&propValue);
+    Napi::Object res = struct_to_json(info, d);
+    g_value_unset(&propValue);
+   
+    return res;
 }
