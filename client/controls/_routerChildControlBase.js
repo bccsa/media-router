@@ -27,15 +27,19 @@ class _routerChildControlBase extends ui {
         <!--    MAIN CARD CONTAINER     -->
         <div id="@{_draggable}" class="paAudioBase-main-card absolute">
             <!--    TOP HEADING CONTAINER    -->
-            <div id="@{_heading}" class="paAudioBase-card-heading overflow-hidden">
+            <div id="@{_heading}" class="paAudioBase-card-heading grid grid-cols-8 overflow-hidden">
         
                 <!--    NAME     -->
-                <div class="col-span-2">
-                    <div class="font-medium text-lg truncate max-w-[190px]" title="@{description}">@{displayName}</div>
+                <div class="col-span-6">
+                    <div class="font-medium text-lg truncate max-w-[175px]" title="@{description}">@{displayName}</div>
                 </div>
-        
+
+                <!--    SrtStats BUTTON    -->
+                <button id="@{_btnSrtStats}" class="paAudioBase-btn-srtstats col-start-7 hidden" type="button" title="SrtStats"
+                    data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
+
                 <!--    SETTINGS BUTTON     -->
-                <button id="@{_btnSettings}" class="paAudioBase-btn-settings" type="button" title="Settings"
+                <button id="@{_btnSettings}" class="paAudioBase-btn-settings col-start-8" type="button" title="Settings"
                     data-bs-toggle="modal" data-bs-target="#@{_modalDeviceDetails}"></button>
         
             </div>
@@ -52,7 +56,7 @@ class _routerChildControlBase extends ui {
                 <div class="flex justify-center w-full">
 
                     <!--  Settings section  -->
-                    <div class="paAudioBase-modal-content">
+                    <div id=@{_SettingsContent} class="paAudioBase-modal-content">
             
                         <div class="paAudioBase-modal-header">
                             <div class="flex flex-shrink-0 items-center justify-between">
@@ -132,7 +136,7 @@ class _routerChildControlBase extends ui {
                     </div>
 
                     <!--  Help section  -->
-                    <div id="@{_modalHelp}" class="paAudioBase-modal-help">
+                    <div id="@{_modalHelp}" class="paAudioBase-sub-modal">
 
                         <div class="paAudioBase-modal-header">
                             <div class="flex flex-shrink-0 items-center justify-between">
@@ -152,6 +156,10 @@ class _routerChildControlBase extends ui {
                         <div class="paAudioBase-modal-footer h-10">
                             
                         </div>
+                    </div>
+
+                    <div>
+                        <!--  %SrtStatsHtml%  -->
                     </div>
                     
                 </div>

@@ -10,4 +10,10 @@ setTimeout(() => {
     p.Start((message) => {
         console.log(message);
     })
+
+    // Poll for srt stats
+    setInterval(() => {
+        process.send && process.send(p.GetSrtStats());
+    }, 2000)
+
 }, 1000);

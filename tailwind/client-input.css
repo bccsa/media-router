@@ -254,7 +254,7 @@
 }
 
 .router-btn-help {
-    @apply icon-[mdi-light--information] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
+    @apply icon-[mdi-light--help-circle] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
 }
 
 /* form-select */
@@ -342,7 +342,7 @@
 }
 
 .paAudioBase-card-heading {
-    @apply flex justify-between rounded-t-lg cursor-move items-center pt-1 mb-1 px-4 w-full h-8;
+    @apply flex justify-between rounded-t-lg cursor-move items-center pt-1 mb-1 px-2 w-full h-8;
 }
 
 .paAudioBase-card-body {
@@ -365,6 +365,10 @@
 
 .paAudioBase-btn-settings {                                                                     
     @apply icon-[mdi-light--settings] text-white hover:text-[#6fb2f5] text-base text-[24px]; 
+}
+
+.paAudioBase-btn-srtstats {                                                                     
+    @apply icon-[mdi-light--information] text-white hover:text-[#6fb2f5] text-base text-[24px]; 
 }
 
 .paAudioBase-line {
@@ -422,7 +426,7 @@
     @apply modal-content min-w-[30rem] max-w-[35rem] border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current mr-6;
 }
 
-.paAudioBase-modal-help {
+.paAudioBase-sub-modal {
     @apply min-w-[40rem] border-none shadow-lg relative flex flex-col w-full pointer-events-auto bg-white bg-clip-padding rounded-md outline-none text-current;
 }
 
