@@ -19,6 +19,9 @@ class SrtBase {
         this.srtPassphrase = '';
         this.srtMaxBw = 8000;       // not implemented in server yet
         this.caller_count = 0;      // amount of callers connected to module
+
+        // local variables 
+        this._prev_caller = 0;      // previous caller count
     }
 
     /**
@@ -153,7 +156,12 @@ class SrtBase {
             this._removeCallers();
         }
 
-        if (_calcRemoveCallers) {this._removeCallers()};
+        if (_calcRemoveCallers) {
+            if (this._prev_caller != _c) {
+                setTimeout(() => {this._removeCallers()}, 100);
+            }
+            this._prev_caller = _c;
+        }
     }
 
     /**
