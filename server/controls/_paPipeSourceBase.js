@@ -21,10 +21,10 @@ class _paPipeSourceBase extends _paAudioSourceBase {
 
         this.on('run', run => {
             if (run) {
-                this._startPipeSource();
+                this._parent.PaCmdQueue(() => { this._startPipeSource() });
             } else {
                 this._stopDrain();
-                this._stopPipeSource();
+                this._parent.PaCmdQueue(() => { this._stopPipeSource() });
             }
         });
 
@@ -40,7 +40,7 @@ class _paPipeSourceBase extends _paAudioSourceBase {
         // Start the drain when the pipe-source is created
         this.on('pipe_ready', (ready) => {
             if (ready) {
-                this._startDrain();
+                this._parent.PaCmdQueue(() => { this._startDrain() });
             }
         });
     }
