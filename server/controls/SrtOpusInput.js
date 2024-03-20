@@ -16,11 +16,13 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
             if (ready) {
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus decoder (gstreamer)`);
 
-                this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtOpusInput_child.js`, [
-                    this.uri(), 
-                    this._parent.paLatency, 
-                    this.sink
-                ]);
+                this._parent.PaCmdQueue(() => { 
+                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtOpusInput_child.js`, [
+                        this.uri(), 
+                        this._parent.paLatency, 
+                        this.sink
+                    ]);
+                });
             }
         });
 

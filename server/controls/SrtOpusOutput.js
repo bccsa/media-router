@@ -22,15 +22,17 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
             this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus encoder (gstreamer)`);
             
             if (ready) {
-                this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtOpusOutput_child.js`, [
-                    this.source, 
-                    this._parent.paLatency, 
-                    this.sampleRate, 
-                    this.bitDepth, 
-                    this.channels, 
-                    this.bitrate,
-                    this.uri()
-                ]);
+                this._parent.PaCmdQueue(() => { 
+                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtOpusOutput_child.js`, [
+                        this.source, 
+                        this._parent.paLatency, 
+                        this.sampleRate, 
+                        this.bitDepth, 
+                        this.channels, 
+                        this.bitrate,
+                        this.uri()
+                    ]);
+                });
             }
         });
 

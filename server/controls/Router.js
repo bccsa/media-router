@@ -35,7 +35,6 @@ class Router extends dm {
         this.resetCmd = false;                      // Router process reset command. Kills the router.js process. Process should be restarted externally (e.g. via systemd service)
         this.enableDesktop = true;                  // Toggle desktop environment (Enabled/ disabled)
         this._paQueue = [];                         // PulseAudio command rate limiter callback queue
-        this._paQueueTimer = undefined;             // Rate limiter timer
         this._paConnectionCount = 0                 // PulseAudio connection counter
         this.startupDelayTime = 3000;               // Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up.
         this.startupState = true;                   // true = Auto (manager selected state); false = Start in stopped state.
@@ -361,17 +360,14 @@ class Router extends dm {
             // Add callback to queue
             this._paQueue.push({ callback: callback, resolve: resolve, reject: reject });
 
-            // Start the rate limiter timer if not running
-            if (!this._paQueueTimer || this._paQueueTimer._destroyed) {
-                this._paCmdQueueNext();
-            }
+            if (this._paQueue.length == 1) this.paCmdQueueNext();   // Start queue processing on first entry
         });
     }
 
     /**
      * Execute the next callback from the pulseaudio command rate limiter queue
      */
-    _paCmdQueueNext() {
+    paCmdQueueNext() {
         if (this._paQueue.length > 0) {
             let c = this._paQueue.shift();
             try {
@@ -380,11 +376,12 @@ class Router extends dm {
                 c.resolve();
             } catch (err) {
                 c.reject(err);
-            } finally {
-                this._paQueueTimer = setTimeout(() => {
-                    this._paCmdQueueNext();
-                }, 100);
-            }
+            } 
+            c.finaly(() => {
+                setTimeout(() => {
+                    this.paCmdQueueNext();
+                }, 10)
+            })
         }
     }
 

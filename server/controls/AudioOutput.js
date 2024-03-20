@@ -28,10 +28,10 @@ class AudioOutput extends _paAudioSinkBase {
                 if (sinks.find(t => t.name == this.master)) {
                     if (!this._paModuleID) {
                         this._map();
-                        this._startRemapSink();
+                        this._parent.PaCmdQueue(() => { this._startRemapSink() });
                     }
                 } else {
-                    this._stopRemapSink();
+                    this._parent.PaCmdQueue(() => { this._stopRemapSink() });
                 }
             }.bind(this);
 

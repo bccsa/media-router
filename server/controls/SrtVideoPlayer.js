@@ -15,12 +15,14 @@ class SrtVideoPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this.on('ready', ready => {
             if (ready) {
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting srt video decoder (gstreamer)`);
-                
-                this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtVideoPlayer_child.js`, [
-                    this.uri(),
-                    this.sink,
-                    this._parent.paLatency
-                ]);
+
+                this._parent.PaCmdQueue(() => { 
+                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtVideoPlayer_child.js`, [
+                        this.uri(),
+                        this.sink,
+                        this._parent.paLatency
+                    ]);
+                });
             }
         });
 

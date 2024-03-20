@@ -28,10 +28,10 @@ class AudioInput extends _paAudioSourceBase {
                 if (sources.find(t => t.name == this.master)) {
                     if (!this._paModuleID) {
                         this._map();
-                        this._startRemapSource();
+                        this._parent.PaCmdQueue(() => { this._startRemapSource() });
                     }
                 } else {
-                    this._stopRemapSource();
+                    this._parent.PaCmdQueue(() => { this._stopRemapSource() });
                 }
             }.bind(this);
 
@@ -39,8 +39,6 @@ class AudioInput extends _paAudioSourceBase {
                 // Wait for master source to be available before starting the remap source
                 this._parent.on('sources', eventHandler, { immediate: true });
             } else {
-                // this._parent.off('sources', s);
-                // this._stopRemapSource();
                 this._parent.off('sources', eventHandler);
             }
         });
