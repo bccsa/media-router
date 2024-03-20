@@ -262,6 +262,7 @@ void _SrtOpusInput::th_Start() {
     // src
     g_object_set (gl.srtsrc, "uri", this->_uri.c_str(), NULL);
     g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
+    g_object_set (gl.srtsrc, "keep-listening", true, NULL);
     g_object_set (gl.srtsrc, "poll-timeout", -1, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
