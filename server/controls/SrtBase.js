@@ -153,7 +153,6 @@ class SrtBase {
         else {
             if (this._controls[ctr_name])
             this._controls[ctr_name].status = "disconnected";
-            this._removeCallers();
         }
 
         if (_calcRemoveCallers) {
