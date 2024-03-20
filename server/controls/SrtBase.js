@@ -68,8 +68,6 @@ class SrtBase {
                 this._gst.on('message', (data) => {
                     if (this._controls)
                     _this._stats(data);
-                    // Check if unneeded calles should be removed
-                    setTimeout(() => {this._removeCallers()}, 1100);
                 });
                 
                 // Restart pipeline on exit
@@ -108,6 +106,7 @@ class SrtBase {
      */
     _stats(stats, caller = 0) {
         this.caller_count = caller;
+        let _calcRemoveCallers = false; // determine if callers should be recalcated
         // list of usefull stats linked to their class property
         let props = {
             "rtt-ms"                : "rtt_ms",
@@ -129,6 +128,7 @@ class SrtBase {
             if (typeof stats[key] === "object") {
                 _c ++;
                 this._stats(stats[key], _c);
+                _calcRemoveCallers = true;
             } else {
                 if (props[key])
                 obj[props[key]] = stats[key];
@@ -150,7 +150,10 @@ class SrtBase {
         else {
             if (this._controls[ctr_name])
             this._controls[ctr_name].status = "disconnected";
+            this._removeCallers();
         }
+
+        if (_calcRemoveCallers) {this._removeCallers()};
     }
 
     /**
