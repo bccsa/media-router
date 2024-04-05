@@ -52,6 +52,7 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         std::string _uri = "null";
         std::string _pulseSink = "null";
         int _paLatency = 50;
+        int _srtLatency = 10;
         GstElement *pipeline;
         CustomData gl;
         // Process varialbes 
@@ -67,6 +68,7 @@ class _SrtVideoPlayer : public Napi::ObjectWrap<_SrtVideoPlayer> {
         Napi::Value SetUri(const Napi::CallbackInfo &info);
         Napi::Value SetSink(const Napi::CallbackInfo &info);
         Napi::Value SetPALatency(const Napi::CallbackInfo &info);
+        Napi::Value SetSRTLatency(const Napi::CallbackInfo &info);
         // Getters
         Napi::Value GetSrtStats(const Napi::CallbackInfo &info);
 };
@@ -81,7 +83,9 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
         InstanceMethod("Stop", &_SrtVideoPlayer::Stop),
         InstanceMethod("SetUri", &_SrtVideoPlayer::SetUri),
         InstanceMethod("SetSink", &_SrtVideoPlayer::SetSink),
-        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency),// getters 
+        InstanceMethod("SetPALatency", &_SrtVideoPlayer::SetPALatency),
+        InstanceMethod("SetSRTLatency", &_SrtVideoPlayer::SetSRTLatency),
+        // getters 
         InstanceMethod("GetSrtStats", &_SrtVideoPlayer::GetSrtStats)
     });
 
@@ -104,6 +108,7 @@ Napi::Object _SrtVideoPlayer::Init(Napi::Env env, Napi::Object exports) {
  * [1] - _uri - Srt url - default: null
  * [2] - _pulseSink - Pulse audio sink - default: null
  * [3] - _paLatency - Palse audio latency (ms) - default: 50
+ * [4] - +srtLatency - SRT latency (ms) - default: 10
 */
 _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectWrap<_SrtVideoPlayer>(info) {
     int len = info.Length();
@@ -111,6 +116,7 @@ _SrtVideoPlayer::_SrtVideoPlayer(const Napi::CallbackInfo &info) : Napi::ObjectW
     if (len >= 1 && info[0].IsString() ) { this->_uri = info[0].As<Napi::String>().Utf8Value(); } else { std::cout << "_uri not supplied or invalid type\n"; };
     if (len >= 2 && info[1].IsString() ) { this->_pulseSink = info[1].As<Napi::String>().Utf8Value(); } else { std::cout << "_pulseSink not supplied or invalid type\n"; };
     if (len >= 3 && info[2].IsNumber() ) { this->_paLatency = info[2].As<Napi::Number>(); } else { std::cout << "_paLatency not supplied or invalid type\n"; };
+    if (len >= 4 && info[3].IsNumber() ) { this->_srtLatency = info[3].As<Napi::Number>(); } else { std::cout << "_srtLatency not supplied or invalid type\n"; };
 }
 
 Napi::FunctionReference _SrtVideoPlayer::constructor;
@@ -185,7 +191,7 @@ static void on_pad_added (GstElement *element, GstPad *pad, gpointer data)
     GstElement *gl_item = (GstElement *) data;
     
     /* We can now link this pad with the sink pad */
-    g_print ("Dynamic pad created\n");
+    g_print ("Dynamic pad created");
     
     sinkpad = gst_element_get_static_pad (gl_item, "sink");
     gst_pad_link (pad, sinkpad);
@@ -240,17 +246,22 @@ void _SrtVideoPlayer::th_Start() {
     // src
     g_object_set (gl.source, "uri", uri.c_str(), NULL);
     g_object_set (gl.source, "wait-for-connection", false, NULL);
+    g_object_set (gl.source, "keep-listening", true, NULL);
+    g_object_set (gl.src_queue, "leaky", 2, NULL); 
+    g_object_set (gl.src_queue, "max-size-time", ((this->_srtLatency + 200) * 1000000), NULL);  // 200 ms play
     g_object_set (gl.tsdemux, "latency", 1, NULL);
     g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);
     // audio 
+    g_object_set (gl.a_convert_queue, "leaky", 2, NULL); 
+    g_object_set (gl.a_convert_queue, "max-size-time", ((this->_srtLatency + 300) * 1000000), NULL);  // 300 ms play
     g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);  
     // video
-    g_object_set (gl.kmssink, "connector-id", 32, NULL); 
+    // g_object_set (gl.kmssink, "connector-id", 32, NULL); 
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                                        // src
-        gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,                               // audio
-        gl.h264parser, gl.decoder, gl.decode_queue, gl.v_convert_queue, gl.kmssink,              // video
+    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                // src
+        gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,               // audio
+        gl.h264parser, gl.decoder, gl.decode_queue, gl.v_convert_queue, gl.kmssink,                 // video
         NULL);
 
     /* Linking */
@@ -372,6 +383,14 @@ Napi::Value _SrtVideoPlayer::SetSink(const Napi::CallbackInfo &info){
 Napi::Value _SrtVideoPlayer::SetPALatency(const Napi::CallbackInfo &info){
     int len = info.Length();
     if (len >= 1 && info[0].IsNumber() ) { this->_paLatency = info[0].As<Napi::Number>(); } else { return Napi::String::New(info.Env(), "_paLatency not supplied or invalid type\n"); };
+    return Napi::Number::New(info.Env(), 0);
+}
+/**
+ * [0] - +srtLatency - SRT latency (ms) - default: 10
+*/
+Napi::Value _SrtVideoPlayer::SetSRTLatency(const Napi::CallbackInfo &info){
+    int len = info.Length();
+    if (len >= 1 && info[0].IsNumber() ) { this->_srtLatency = info[0].As<Napi::Number>(); } else { return Napi::String::New(info.Env(), "_srtLatency not supplied or invalid type\n"); };
     return Napi::Number::New(info.Env(), 0);
 }
 

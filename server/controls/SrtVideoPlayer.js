@@ -20,7 +20,8 @@ class SrtVideoPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtVideoPlayer_child.js`, [
                         this.uri(),
                         this.sink,
-                        this._parent.paLatency
+                        this._parent.paLatency,
+                        this.srtLatency
                     ]);
                 });
             }

@@ -3,8 +3,9 @@ const { _SrtVideoPlayer } = require('bindings')('../../gst_modules/SrtVideoPlaye
 const _uri = process.argv[2];
 const _sink = process.argv[3];
 const _paLatency = process.argv[4];
+const _srtLatency = process.argv[5];
 
-const p = new _SrtVideoPlayer(_uri, _sink, parseFloat(_paLatency));
+const p = new _SrtVideoPlayer(_uri, _sink, parseFloat(_paLatency), parseFloat(_srtLatency));
 
 setTimeout(() => {
     p.Start((message) => {
