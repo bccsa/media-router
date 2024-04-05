@@ -276,12 +276,12 @@ class Router extends ui {
                         </div>
 
                         <!--    Log limit    -->  
-                        <label for="@{_scale}" class="router-label-settings">Logs Limit:</label>
+                        <label for="@{_scale}" class="router-label-settings">Log Limit:</label>
                         <div class="router-container">
                             <div class="mr-4 w-full">
                                 
                                 <input id="@{_logLimit}" class="router-number-range" type="number" step="1" min="1" oninput="validity.valid||(value='1')"
-                                title="Max amount of logs to be displayed in the console" step="1" value="@{logLimit}"/>
+                                title="Maximum amount of log entries to be displayed in the console" step="1" value="@{logLimit}"/>
 
                             </div>
                         </div>

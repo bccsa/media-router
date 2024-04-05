@@ -31,7 +31,7 @@ Width of page
 ### Router control's scale
 Scale of manager module area
 
-### Lohg Limit 
-Max amount of logs to be displayed in the console
+### Log Limit 
+Maximum amount of log entries to be displayed in the console
 
 
