@@ -27,10 +27,12 @@ class Router extends dm {
         this._udpSocketPortIndex = 2000;
         this.paLatency = 50;                        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
         this._paServerType = '';                    // PulseAudio server type (PipeWire or PulseAudio)
-        this.log = [];                              // controls output logs
-        this.logINFO = false;                       // log level enabled/ disabled 
-        this.logERROR = false;                      // log level enabled/ disabled 
-        this.logFATAL = true;                       // log level enabled/ disabled 
+        this.logMessage = [];                       // Last log message
+        this.SetAccess('logMessage', { Set: 'none' });// Disable Set() access to prevent frontend changing the property
+        this.log = [];                              // complet list of recent logs
+        this.SetAccess('log', { Set: 'none' });     // Disable Set() access to prevent frontend changing the property
+        this.logLimit = 100;                        // max amout of logs in list
+        this.fetchLog = false;                      // Toggle from fron end to fetch log on page load
         this.restartCmd = false;                    // Router restart command. Router process needs passwordless sudo access to the followng command: "sudo reboot now"
         this.resetCmd = false;                      // Router process reset command. Kills the router.js process. Process should be restarted externally (e.g. via systemd service)
         this.enableDesktop = true;                  // Toggle desktop environment (Enabled/ disabled)
@@ -168,6 +170,14 @@ class Router extends dm {
                 });
             }
         });
+
+        // toggle on front end to emit the log
+        this.on('fetchLog', res => {
+            if (res) {
+                this.NotifyProperty('log');
+                this.fetchLog = false;
+            }
+        })
     }
 
     /**
@@ -346,8 +356,10 @@ class Router extends dm {
         let date = new Date().toLocaleString('en-ZA');
         let msg = [level, `${date} | ${level}: \t${message.trim()}`];
         console.log(msg[1]);
-        if (this[`log${msg[0]}`])
-            this.log = msg;
+        this.logMessage = msg;
+        this.log.push(msg);
+        // clear old log items when log is full
+        while (this.log.length > this.logLimit) {this.log.shift()}; 
     }
 
     /**
