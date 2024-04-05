@@ -17,6 +17,9 @@ class Router extends ui {
         this.width = 1500;
         this.scale = 1;
         this.log = [];              // controls output logs
+        this.logLimit = 100;        // max amout of logs in list
+        this.logMessage = [];       // Last log message
+        this.fetchLog = false;      // Toggle from fron end to fetch log on page load
         this.logINFO = false;       // log level enabled/ disabled 
         this.logERROR = false;      // log level enabled/ disabled 
         this.logFATAL = true;       // log level enabled/ disabled
@@ -164,8 +167,6 @@ class Router extends ui {
                         <hr class="w-full h-[1px] bg-gray-500 mb-2"> 
 
                         <! --   Info Section   -->
-                        <label for="@{_info}" class="router-label-settings mb-4 italic text-xl">INFO</label><br>
-
                         <!--    IP Address     -->
                         <label for="@{_ipAddress}" class="router-label-settings">IP Address: <span>@{ipAddress}</span></label>
 
@@ -173,8 +174,6 @@ class Router extends ui {
                         <div class="router-line mb-4"></div>
 
                         <! --  Setting  -->
-                        <label for="@{_settings}" class="router-label-settings mb-4 italic text-xl">SETTINGS</label><br>
-
                         <!--    DISPLAY NAME      -->
                         <label for="@{_displayName}" class="router-label-settings">Display Name: </label>
                         <div class="router-container">
@@ -275,17 +274,29 @@ class Router extends ui {
 
                             </div>
                         </div>
+
+                        <!--    Log limit    -->  
+                        <label for="@{_scale}" class="router-label-settings">Logs Limit:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_logLimit}" class="router-number-range" type="number" step="1" min="1" oninput="validity.valid||(value='1')"
+                                title="Max amount of logs to be displayed in the console" step="1" value="@{logLimit}"/>
+
+                            </div>
+                        </div>
+
                     </div> 
                 </div> 
 
                 <!--   console window   -->
                 <div class="flex justify-center m-2">
                     <button class="mr-2" id="@{_console}">Console</button>
-                    <input checked id="@{_logFATAL}" type="checkbox" value="FATAL" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <input checked="@{logFATAL}" id="@{_logFATAL}" type="checkbox" value="FATAL" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
                     <label class="mr-2" for="@{_logFATAL}">Fatal</label>
-                    <input checked id="@{_logERROR}" type="checkbox" value="ERROR" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <input checked="@{logERROR}" id="@{_logERROR}" type="checkbox" value="ERROR" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
                     <label class="mr-2" for="@{_logERROR}">Error</label>
-                    <input checked id="@{_logINFO}" type="checkbox" value="INFO" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <input checked="@{logINFO}" id="@{_logINFO}" type="checkbox" value="INFO" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
                     <label class="mr-2" for="@{_logINFO}">Info</label>
                 </div>
                 <pre id="@{_log}" class="text-sm h-60 overflow-auto p-2 bg-slate-800 text-slate-50 col-span-4 snap-y"></pre>
@@ -684,25 +695,30 @@ class Router extends ui {
         //----------------------Scaling-----------------------------//
         
         //----------------------Logging-----------------------------//
+        // emit fetch log event
+        this.fetchLog = true;
+
+        // listen for logs
+        this.on('log', res => {
+            this._createLog();
+        })
+
         this._log.style.display = "none";
-        this._logINFO.checked = this.logINFO;
-        this._logERROR.checked = this.logERROR;
-        this._logFATAL.checked = this.logFATAL;
 
-        this.on('logINFO', val => { this._logINFO.checked = val });
-        this.on('logERROR', val => { this._logERROR.checked = val });
-        this.on('logFATAL', val => { this._logFATAL.checked = val });
+        this.on('logINFO', val => { this._createLog() });
+        this.on('logERROR', val => { this._createLog() });
+        this.on('logFATAL', val => { this._createLog() });
 
-        this._logINFO.addEventListener("click", e => { this.logINFO = this._logINFO.checked });
-        this._logERROR.addEventListener("click", e => { this.logERROR = this._logERROR.checked });
-        this._logFATAL.addEventListener("click", e => { this.logFATAL = this._logFATAL.checked });
+        this.on('logMessage', msg => {
+            // Add log to history
+            this.log.push(msg);
 
-        this.on('log', msg => {
+            // scrolling
             let isScrolled = true;
             if ((this._log.clientHeight + this._log.scrollTop) >= this._log.scrollHeight - 20)
                 isScrolled = false;
             
-            this._log.innerHTML += msg[1] + "\n";
+            this._addLog(msg);
 
             if (!isScrolled)
                 this._log.scrollTop = this._log.scrollHeight; 
@@ -743,11 +759,6 @@ class Router extends ui {
 
             this._controlsDiv.style.height = (this.height / this.scale) + "px";
             this._controlsDiv.style.width = (this.width / this.scale) + "px";
-
-            // this._scrollDiv.scrollTop = this._scrollDiv.scrollTop * this.scale;
-            // this._scrollDiv.scrollLeft = this._scrollDivscrollLeft * this.scale;
-
-
         }
     }
 
@@ -774,5 +785,26 @@ class Router extends ui {
             this._settingsContainer.style.display = "none";
             this._btnSettings.style.display = "block";
         }
+    }
+
+    _addLog(msg) {
+        // clear old log items when log is full
+        while (this.log.length > this.logLimit) {this.log.shift()}; 
+
+        // add log to html
+        if (this[`log${msg[0]}`]) {
+            let span = document.createElement("span");
+            span.innerHTML = `${msg[1]}\n`;
+            this._log.append(span);
+            while (this._log.childElementCount > this.logLimit) { this._log.removeChild(this._log.children[0]) }
+        }
+    }
+
+    _createLog() {
+        // clear console
+        while (this._log.firstChild) { this._log.removeChild(this._log.firstChild); }
+        this.log.forEach(msg => {
+            this._addLog(msg);
+        })
     }
 }
