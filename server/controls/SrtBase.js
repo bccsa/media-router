@@ -46,7 +46,7 @@ class SrtBase {
      * @param {Array} args - List of process arguments to pass
      */
     _start_gst(path, args) {
-        if (!this._gst) {
+        if (!this._gst && this.ready && this.run) {
             try {
                 let _this = this;
 
@@ -77,13 +77,14 @@ class SrtBase {
                 this._gst.on('exit', (data) => {
                     this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
                     this._stop_gst();
-                    setTimeout(() => { if (this.ready && this.run) { this._start_gst() } }, 3000);
+                    setTimeout(() => { this._start_gst(path, args) }, 3000);
                 });
 
             }
             catch (err) {
-                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error ${err.message}`);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error: ${err.message}, restarting in 3s`);
                 this._stop_gst();
+                setTimeout(() => { this._start_gst(path, args) }, 3000);
             }
         }
     }
