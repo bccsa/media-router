@@ -18,7 +18,6 @@ typedef struct _CustomData {
     GstElement *a_convert_queue;
     GstElement *audiosink;
     // video
-    GstElement *src_queue;
     GstElement *h264parser;
     GstElement *decoder;
     GstElement *decode_queue;
@@ -227,7 +226,6 @@ void _SrtVideoPlayer::th_Start() {
     gl.a_convert_queue = gst_element_factory_make ("queue", "a_convert_queue");
     gl.audiosink = gst_element_factory_make ("pulsesink", "audiosink");
     // video
-    gl.src_queue = gst_element_factory_make ("queue", "src_queue");
     gl.h264parser = gst_element_factory_make ("h264parse", "h264parser");
     gl.decoder = gst_element_factory_make ("v4l2h264dec", "decoder");
     gl.decode_queue = gst_element_factory_make ("queue", "decode_queue");
@@ -238,7 +236,7 @@ void _SrtVideoPlayer::th_Start() {
 
     if (!this->pipeline || !gl.source || !gl.tsdemux ||                                                                                                                                        // src
         !gl.aacparse || !gl.avdec_aac || !gl.audioconvert || !gl.a_convert_queue || !gl.audiosink ||                          // audio
-        !gl.src_queue || !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.v_convert_queue || !gl.kmssink) {      // video
+        !gl.h264parser || !gl.decoder || !gl.decode_queue || !gl.v_convert_queue || !gl.kmssink) {      // video
         g_printerr ("Not all elements could be created.\n");
     }
 
@@ -247,26 +245,32 @@ void _SrtVideoPlayer::th_Start() {
     g_object_set (gl.source, "uri", uri.c_str(), NULL);
     g_object_set (gl.source, "wait-for-connection", false, NULL);
     g_object_set (gl.source, "keep-listening", true, NULL);
-    g_object_set (gl.src_queue, "leaky", 2, NULL); 
-    g_object_set (gl.src_queue, "max-size-time", ((this->_srtLatency + 200) * 1000000), NULL);  // 200 ms play
     g_object_set (gl.tsdemux, "latency", 1, NULL);
     g_object_set (gl.tsdemux, "ignore-pcr", true, NULL);
     // audio 
+    g_object_set (gl.a_convert_queue, "flush-on-eos", true, NULL);
     g_object_set (gl.a_convert_queue, "leaky", 2, NULL); 
-    g_object_set (gl.a_convert_queue, "max-size-time", ((this->_srtLatency + 300) * 1000000), NULL);  // 300 ms play
+    g_object_set (gl.a_convert_queue, "max-size-time", ((this->_srtLatency + 100) * 1000000), NULL);  // 100 ms play
     g_object_set (gl.audiosink, "device", this->_pulseSink.c_str(), NULL);  
+    g_object_set (gl.audiosink, "async", false, NULL); 
+    g_object_set (gl.audiosink, "sync", false, NULL); 
     // video
     // g_object_set (gl.kmssink, "connector-id", 32, NULL); 
+    g_object_set (gl.v_convert_queue, "leaky", 2, NULL); 
+    g_object_set (gl.v_convert_queue, "max-size-time", ((this->_srtLatency + 100) * 1000000), NULL);  // 100 ms play
+    g_object_set (gl.v_convert_queue, "flush-on-eos", true, NULL);
+    g_object_set (gl.kmssink, "async", false, NULL); 
+    g_object_set (gl.kmssink, "sync", false, NULL); 
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.src_queue, gl.tsdemux,                // src
+    gst_bin_add_many (GST_BIN (this->pipeline), gl.source, gl.tsdemux,                // src
         gl.aacparse, gl.avdec_aac, gl.audioconvert, gl.a_convert_queue, gl.audiosink,               // audio
         gl.h264parser, gl.decoder, gl.decode_queue, gl.v_convert_queue, gl.kmssink,                 // video
         NULL);
 
     /* Linking */
     if (// src
-        gst_element_link_many (gl.source, gl.src_queue, gl.tsdemux, NULL) != TRUE ||
+        gst_element_link_many (gl.source, gl.tsdemux, NULL) != TRUE ||
         // audio
         gst_element_link_many (gl.aacparse, gl.avdec_aac, gl.a_convert_queue, gl.audioconvert, gl.audiosink, NULL) != TRUE ||
         // video
