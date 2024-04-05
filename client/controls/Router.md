@@ -34,4 +34,7 @@ Scale of manager module area
 ### Enable/ Disable desktop 
 Toggle desktop environment on client to enabled or disabled
 
+### Lohg Limit 
+Max amount of logs to be displayed in the console
+
 
