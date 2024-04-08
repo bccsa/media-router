@@ -8,7 +8,6 @@
 typedef struct _CustomData {
     // src
     GstElement *srtsrc;
-    GstElement *queue2;
     GstElement *tsparse;
     GstElement *tsdemux;
     GstElement *opusparse;
@@ -240,7 +239,6 @@ void _SrtOpusInput::th_Start() {
 
     /* Create the elements */
     gl.srtsrc = gst_element_factory_make ("srtserversrc", "srtsrc");
-    gl.queue2 = gst_element_factory_make ("queue", "queue2");
     gl.tsparse = gst_element_factory_make ("tsparse", "tsparse");
     gl.tsdemux = gst_element_factory_make ("tsdemux", "tsdemux");
     gl.opusparse = gst_element_factory_make ("opusparse", "opusparse");
@@ -253,7 +251,7 @@ void _SrtOpusInput::th_Start() {
     /* Create the empty pipeline */
     this->pipeline = gst_pipeline_new ("pipeline");
 
-    if (!this->pipeline || !gl.srtsrc || !gl.queue2 || !gl.tsparse || !gl.tsdemux ||
+    if (!this->pipeline || !gl.srtsrc || !gl.tsparse || !gl.tsdemux ||
         !gl.opusparse || !gl.opusdec  || !gl.audioconvert || !gl.audioresample || !gl.queue || !gl.pulsesink) { 
         g_printerr ("Not all elements could be created.\n");
     }
