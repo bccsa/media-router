@@ -262,7 +262,6 @@ void _SrtOpusInput::th_Start() {
     // src
     g_object_set (gl.srtsrc, "uri", this->_uri.c_str(), NULL);
     g_object_set (gl.srtsrc, "wait-for-connection", false, NULL);
-    g_object_set (gl.srtsrc, "keep-listening", true, NULL);
     g_object_set (gl.srtsrc, "poll-timeout", -1, NULL);
     g_object_set (gl.tsparse, "ignore-pcr", true, NULL); 
     g_object_set (gl.tsdemux, "latency", (guint64)1, NULL);    
@@ -272,16 +271,17 @@ void _SrtOpusInput::th_Start() {
     g_object_set (gl.pulsesink, "buffer-time", (guint64)this->_paLatency * 1000, NULL);   // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     g_object_set (gl.pulsesink, "max-lateness", (guint64)this->_paLatency * 1000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
     // queue's
-    g_object_set (gl.queue, "leaky", 1, NULL);   
+    g_object_set (gl.queue, "leaky", 2, NULL);   
     g_object_set (gl.queue, "max-size-time", (guint64)100000000, NULL); // value need to be cast to guint64 (https://gstreamer-devel.narkive.com/wr5HjCpX/gst-devel-how-to-set-max-size-time-property-of-queue)
+    g_object_set (gl.queue, "flush-on-eos", true, NULL);
 
     /* Link all elements that can be automatically linked because they have "Always" pads */
-    gst_bin_add_many (GST_BIN (this->pipeline), gl.srtsrc, gl.queue2, gl.tsparse, gl.tsdemux,
+    gst_bin_add_many (GST_BIN (this->pipeline), gl.srtsrc, gl.tsparse, gl.tsdemux,
         gl.opusparse, gl.opusdec, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL);
 
     // /* Linking */
     if (// src
-        gst_element_link_many (gl.srtsrc, gl.queue2, gl.tsparse, gl.tsdemux, NULL) != TRUE ||
+        gst_element_link_many (gl.srtsrc, gl.tsparse, gl.tsdemux, NULL) != TRUE ||
         // sink
         gst_element_link_many (gl.opusparse, gl.opusdec, gl.audioconvert, gl.audioresample, gl.queue, gl.pulsesink, NULL) != TRUE) 
     {

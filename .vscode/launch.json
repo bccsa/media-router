@@ -23,15 +23,6 @@
             "program": "${workspaceFolder}/server/manager.js"
         },
         {
-            "type": "node",
-            "request": "launch",
-            "name": "test.js",
-            "skipFiles": [
-                "<node_internals>/**"
-            ],
-            "program": "${workspaceFolder}/server/gst_modules/SrtVideoPlayer/test.js"
-        },
-        {
             "type": "lldb",
             "request": "launch",
             "name": "Test Gstreamer c++ (SrtVideoPlayer)",
