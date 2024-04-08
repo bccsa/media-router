@@ -157,7 +157,7 @@ class _paAudioBase extends dm {
 
         // Subscribe to parent (router) run command
         this._parent.on('runCmd', run => {
-            this.run = run;
+            setTimeout(() => { this.run = run; }) // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emited
         }, { immediate: true, caller: this });
 
         // Restart control on reload command
