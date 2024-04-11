@@ -139,7 +139,7 @@ class SrtBase {
                             Available Bandwidth (Mbps)
                         </div>
                         <div class="border px-4 py-2">
-                            Send Duration (s)
+                            Send Duration
                         </div>
                         <div class="border px-4 py-2">
                             Status
