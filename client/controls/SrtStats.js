@@ -17,7 +17,7 @@ class SrtStats extends ui {
         this.receive_rate_mbps = 0;
         this.send_rate_mbps = 0;
         this.send_duration_us = 0;                  // send duration in us
-        this.send_duration_s = 0;                   // send duration in seconds
+        this.send_duration = "0s";                   // send duration in seconds
         this.packet_loss = 0;                       // packetloss %
         this.MB_send_receive = 0;                   // total MB send / receive
         this.send_receive_rate = 0;                 // rate sending / receiving
@@ -47,7 +47,7 @@ class SrtStats extends ui {
                 <span>@{available_bandwidth_rounded}</span>
             </div>
             <div class="border px-4 py-2">
-                <span>@{send_duration_s}</span>s
+                <span>@{send_duration}</span>
             </div>
             <div class="border px-4 py-2">
                 <span>@{status}</span>
