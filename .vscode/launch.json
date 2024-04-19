@@ -54,6 +54,17 @@
             "args": [
                "./test.js"
             ]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Test Gstreamer c++ (SrtVideoEncoder)",
+            "cwd": "${workspaceFolder}/server/gst_modules/SrtVideoEncoder",
+            "preLaunchTask": "npm: build:gst-opusIn:dev",
+            "program": "/usr/bin/node",
+            "args": [
+               "./test.js"
+            ]
         }
     ]
 }
