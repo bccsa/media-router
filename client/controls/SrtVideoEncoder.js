@@ -9,10 +9,10 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.encoder = "v4l2h264enc";   // options (software: openh264enc, hardware: v4l2h264enc)
         this.video_bitrate = "2M";
         this.video_gop = 30;            // amount of frame interval before a new full frame is sent       
-        this.video_width = 1920;
-        this.video_height = 1080;
+        this.video_width = 1280;
+        this.video_height = 720;
         this.video_framerate = 30;
-        this.audio_bitrate = "184k";
+        this.audio_bitrate = 196;
     }
 
     get html() {

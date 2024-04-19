@@ -14,10 +14,10 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.encoder = "v4l2h264enc"; // options (software: openh264enc, hardware: v4l2h264enc)
         this.video_bitrate = "2M";
         this.video_gop = 30;            // amount of frame interval before a new full frame is sent  
-        this.video_width = 1920;
-        this.video_height = 1080;
+        this.video_width = 1280;
+        this.video_height = 720;
         this.video_framerate = 30;
-        this.audio_bitrate = "184k";
+        this.audio_bitrate = 196;
         this._srtElementName = "srtserversink";
     }
 
@@ -45,13 +45,6 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 if (typeof vb != "number") { 
                     _valid = false;
                     this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Invalid video bitrate, <b>pipeline NOT started</b>.`);
-                }
-
-                // audio bitrate
-                let ab = parseInt(this.audio_bitrate.toString().replace('k', '000').replace('M', '000000'));
-                if (typeof vb != "number") { 
-                    _valid = false;
-                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Invalid audio bitrate, <b>pipeline NOT started</b>.`);
                 }
 
                 // ------------ Encoding ------------ //
@@ -86,7 +79,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // audio convert and resample 
                 `queue leaky=2 max-size-time=20000000 flush-on-eos=true ! audioconvert ! audioresample ! ` +
                 // audio encoding 
-                `voaacenc bitrate=${ab} ! aacparse ! ` +
+                `voaacenc bitrate=${this.audio_bitrate * 1000} ! aacparse ! ` +
                 // mpegts mux
                 `mpegtsmux latency=1 name=mux ! queue leaky=2 max-size-time=10000000 flush-on-eos=true ! ` +
                 // srt sink
