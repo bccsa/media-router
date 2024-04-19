@@ -1,4 +1,5 @@
 # SrtVideoEncoder
+Encode's Video to h264 and audio to aac encoding, and sending it over SRT
 
 ## Capture Settings
 * Video Device - Video device to use
