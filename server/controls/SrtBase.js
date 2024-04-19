@@ -47,6 +47,8 @@ class SrtBase {
      */
     _start_gst(path, args) {
         if (!this._gst && this.ready && this.run) {
+            // clear old stats data
+            this._clearStats();
             try {
                 let _this = this;
 
@@ -175,6 +177,16 @@ class SrtBase {
                 c._notify({remove: true}); c.Set({remoce: true})
             }
             count ++;
+        });
+    }
+
+    /**
+     * Clear all stats on restart 
+     */
+    _clearStats() {
+        if (this._controls)
+        Object.values(this._controls).forEach(c => {
+            c._notify({remove: true}); c.Set({remoce: true})
         });
     }
 }
