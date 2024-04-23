@@ -137,6 +137,10 @@ mpegtsmux latency=1 name=mux ! queue leaky=2 max-size-time=10000000 flush-on-eos
 GST_DEBUG=2 gst-launch-1.0 -v v4l2src device=/dev/video0 do-timestamp=true ! queue leaky=2 max-size-time=20000000 flush-on-eos=true ! videoconvert ! videorate ! video/x-raw,framerate=50/1 ! videoscale n-threads=4 ! video/x-raw,width=1280,height=720 ! v4l2h264enc capture-io-mode=4 output-io-mode=4 extra-controls="encode,video_bitrate=2048000,video_bitrate_mode=0,h264_level=13,repeat_sequence_header=1,video_gop_size=30,h264_profile=0" ! 'video/x-h264,level=(string)4.2' ! mux. pulsesrc device="alsa_input.usb-0b0e_Jabra_SPEAK_510_USB_1C48F9F6B5B3020A00-00.mono-fallback" ! queue leaky=2 max-size-time=20000000 flush-on-eos=true ! audioconvert ! audioresample ! voaacenc bitrate=184000 ! aacparse ! \
 mpegtsmux latency=1 name=mux ! queue leaky=2 max-size-time=10000000 flush-on-eos=true ! srtserversink sync=false wait-for-connection=false uri="srt://0.0.0.0:5000?mode=listener&latency=10"
 
+# Test with high latency, (Seems like buffers pack up) (added alignment=7 to the mpegtsmux element, this is for udp streaming)
+GST_DEBUG=2 gst-launch-1.0 -v v4l2src device=/dev/video0 do-timestamp=true ! queue leaky=2 max-size-time=20000000 flush-on-eos=true ! videoconvert ! videorate ! video/x-raw,framerate=50/1 ! videoscale n-threads=4 ! video/x-raw,width=1280,height=720 ! v4l2h264enc extra-controls="encode,video_bitrate=2048000,video_bitrate_mode=0,h264_level=13,repeat_sequence_header=1,video_gop_size=30,h264_profile=0" ! 'video/x-h264,level=(string)4.2' ! mux. pulsesrc device="alsa_input.usb-0b0e_Jabra_SPEAK_510_USB_1C48F9F6B5B3020A00-00.mono-fallback" ! queue leaky=2 max-size-time=20000000 flush-on-eos=true ! audioconvert ! audioresample ! voaacenc bitrate=184000 ! aacparse ! \
+mpegtsmux latency=1 name=mux ! queue leaky=2 max-size-time=10000000 flush-on-eos=true ! srtserversink sync=false wait-for-connection=false uri="srt://10.9.1.53:5000?mode=caller&latency=3000"
+
 ```
 
 # Local playout 
