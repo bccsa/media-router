@@ -2,7 +2,9 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
     constructor() {
         super();
         // capture
+        this.devices = [];
         this.video_device = "/dev/video0";
+        this.video_device_descr = "Video0 (disconnected)";
         this.capture_format = "raw";
         this.deinterlace = false;
         // encoder
@@ -30,8 +32,8 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
             <!-- Video Device -->
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_video_device}" class="form-label inline-block mb-2">Video Device:</label>
-                    <input id="@{_video_device}" class="paAudioBase-text-area" type="text"
-                    title="Video device" placeholder="2M" value="@{video_device}"/>
+                <select id="@{_video_device}" title="Video device" value="@{video_device}" 
+                class="paAudioBase-select" type="text"></select>
             </div>
 
             <!-- Capture Format -->
@@ -176,6 +178,47 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
 
         // init SRT Spesific
         this._SrtInit();
+
+        // update list of video devices 
+        this.on('devices', devices => {
+            // add new options
+            devices.forEach(device => {
+                let _s = [...this._video_device.options].find(t => t.value == device.device);
+                if (!_s) {
+                    let o = document.createElement('option');
+                    o.value = device.device;
+                    o.text = device.name;
+                    this._video_device.options.add(o);
+                } else if (_s.value == this.video_device)  {
+                    _s.text = device.name;
+                }
+            });
+
+            // remove invalid options
+            [...this._video_device.options].forEach(option => {
+                let _s = devices.find(t => t.device == option.value)
+                if (!_s && option.value != this.video_device) {       // Remove removed input's && input is not the master input (this is done to avoid input's changing when the device is not connected)
+                    this._video_device.options.remove(option.index);
+                } else if (!_s) {                               // If master is removed, change name to disconnected
+                    option.text = this._video_device_descr + " (disconnected)";
+                }
+            });
+
+            // Set index / device
+            let o = [...this._video_device.options].find(t => t.value == this.video_device);
+            if (o) {
+                this._video_device.selectedIndex = o.index;
+            } else {
+                // add master to the list, if it is not in the list 
+                let o = document.createElement('option');
+                o.value = this.master;
+                o.text = this.master_descr + " (disconnected)";
+                this._video_device.options.add(o);
+            }
+        })
+
+        // update saved video device desctiption
+        this.on('video_device', () => this.video_device_descr = this.devices.find(t => t.device == this.video_device));
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD

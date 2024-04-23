@@ -1,4 +1,6 @@
 const _paNullSinkBase = require('./_paNullSinkBase');
+const util = require('util');
+const exec = util.promisify(require('child_process').exec);
 const SrtBase = require('./SrtBase');
 const path = require('path');
 const { Classes } = require('../modular-dm');
@@ -7,7 +9,9 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
     constructor() {
         super();
         // capture
+        this.devices = [];
         this.video_device = "/dev/video0";
+        this.video_device_desc = "Video0 (disconnected)";
         this.capture_format = "raw";
         this.deinterlace = false;
         // encoder
@@ -23,6 +27,10 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
 
     Init() {
         super.Init();
+
+        setInterval(() => {
+            this._getV4l().then((res) => { this.devices = res });
+        }, 2000)
 
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('ready', ready => {
@@ -102,6 +110,39 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 this._stop_gst();
             }
         });
+
+        this.on('video_device', res => {console.log(res)});
+    }
+
+    /**
+     * Get list of available video devices
+     */
+    _getV4l() {
+        function parseBlocks(block) {
+            var l = block.split(":");
+            var name = '';
+            for (var i = 0; i < (l.length -1); i++) { name += l[i]; };
+            var d = l[l.length -1].split('\n\t');
+            var device = d[1];
+            
+            return {name, device};
+        }
+
+        return new Promise((resolve, reject) => {
+            exec('v4l2-ctl --list-devices', { silent: true }).then(data => {
+                if (data.stderr) reject(stderr);
+                let arr = [];
+                if (data.stdout.length) {
+                    var inputBlocks = data.stdout.split('\n\n');
+                    inputBlocks.map(function (block) { arr.push(parseBlocks(block)) });
+                } 
+                // remove invalid elements from arr
+                arr = arr.filter(r => { if (r.name != "" &&  r.name.search("platform") == -1 ) { return r } });
+                resolve(arr);
+            }).catch(err => {
+                reject(err);
+            });
+        })
     }
 }
 
