@@ -97,29 +97,31 @@ class SrtStats extends dm {
         })
 
         // calculate exponential moving avarage srt stats
-        setInterval(() => {
-            if (this._pl_prev > this.packets_send_recieve || this._pl_prev < 0) { this._pl_prev = 0 };
-            if (this._pl_prev_loss > this._pl_packet_loss || this._pl_prev_loss < 0) { this._pl_prev_loss = 0 };
+        this.on("packets_send_recieve", () => {
+            setTimeout(() => {
+                if (this._pl_prev > this.packets_send_recieve || this._pl_prev < 0) { this._pl_prev = 0 };
+                if (this._pl_prev_loss > this._pl_packet_loss || this._pl_prev_loss < 0) { this._pl_prev_loss = 0 };
 
-            let _pl_smaple = this.packets_send_recieve - this._pl_prev;
-            let _pl_smaple_pl = this._pl_packet_loss - this._pl_prev_loss;
+                let _pl_smaple = this.packets_send_recieve - this._pl_prev;
+                let _pl_smaple_pl = this._pl_packet_loss - this._pl_prev_loss;
 
-            if (this._sma.length > this._pl_sampleCount) { this._sma.shift(); };
-            this._sma.push([_pl_smaple, _pl_smaple_pl])
+                if (this._sma.length > this._pl_sampleCount) { this._sma.shift(); };
+                this._sma.push([_pl_smaple, _pl_smaple_pl])
 
-            let _t_pl = 0;  // total packet loss in sma
-            let _t = 0;     // total packets in sma
+                let _t_pl = 0;  // total packet loss in sma
+                let _t = 0;     // total packets in sma
 
-            this._sma.forEach(val => {
-                _t += val[0];
-                _t_pl += val[1];
-            })
+                this._sma.forEach(val => {
+                    _t += val[0];
+                    _t_pl += val[1];
+                })
 
-            this.packet_loss = Math.round((_t_pl / _t) * 100);
+                this.packet_loss = Math.round((_t_pl / _t) * 100);
 
-            this._pl_prev = this.packets_send_recieve;
-            this._pl_prev_loss = this._pl_packet_loss;
-        }, 2000)
+                this._pl_prev = this.packets_send_recieve;
+                this._pl_prev_loss = this._pl_packet_loss;
+            },1022)
+        })
     }
 
 }
