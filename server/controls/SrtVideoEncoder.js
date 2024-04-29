@@ -129,8 +129,9 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         }
 
         return new Promise((resolve, reject) => {
-            exec('v4l2-ctl --list-devices', { silent: true }).then(data => {
-                if (data.stderr) reject(stderr);
+            exec('v4l2-ctl --list-devices || true', { silent: true }).then(data => {
+                if (data.stderr) 
+                    this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data.stderr}`);
                 let arr = [];
                 if (data.stdout.length) {
                     var inputBlocks = data.stdout.split('\n\n');

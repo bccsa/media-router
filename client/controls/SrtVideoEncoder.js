@@ -30,12 +30,14 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
 
         <div class="w-full mb-4 flex ">
             <!-- Video Device -->
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div class="w-full flex flex-col">
                 <label for="@{_video_device}" class="form-label inline-block mb-2">Video Device:</label>
                 <select id="@{_video_device}" title="Video device" value="@{video_device}" 
                 class="paAudioBase-select" type="text"></select>
             </div>
+        </div>
 
+        <div class="w-full mb-4 flex ">
             <!-- Capture Format -->
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_capture_format}" class="form-label inline-block mb-2">Capture Format:</label>
@@ -97,7 +99,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
             </div>
 
             <!-- Encoder -->
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div class="w-1/3 flex flex-col">
                 <label for="@{_encoder}" class="form-label inline-block mb-2">Encoder:</label>
                 <select id="@{_encoder}" title="options (software: openh264enc, hardware: v4l2h264enc)" value="@{encoder}" 
                 class="paAudioBase-select" type="text">
@@ -155,7 +157,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
             </div>
 
             <!-- Video Framerate  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
+            <div class="w-1/3 flex flex-col">
                 <label for="@{_video_framerate}" class="form-label inline-block mb-2 mr-2">Video Framerate:</label>
                 <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_video_framerate}" 
                     title="Video Framerate" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
@@ -200,7 +202,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
                 if (!_s && option.value != this.video_device) {       // Remove removed input's && input is not the master input (this is done to avoid input's changing when the device is not connected)
                     this._video_device.options.remove(option.index);
                 } else if (!_s) {                               // If master is removed, change name to disconnected
-                    option.text = this._video_device_descr + " (disconnected)";
+                    option.text = this.video_device_descr + " (disconnected)";
                 }
             });
 
@@ -209,16 +211,16 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
             if (o) {
                 this._video_device.selectedIndex = o.index;
             } else {
-                // add master to the list, if it is not in the list 
+                // add video_device to the list, if it is not in the list 
                 let o = document.createElement('option');
-                o.value = this.master;
-                o.text = this.master_descr + " (disconnected)";
+                o.value = this.video_device;
+                o.text = this.video_device_descr + " (disconnected)";
                 this._video_device.options.add(o);
             }
         })
 
         // update saved video device desctiption
-        this.on('video_device', () => this.video_device_descr = this.devices.find(t => t.device == this.video_device));
+        this.on('video_device', () => this.video_device_descr = this.devices.find(t => t.device == this.video_device).name);
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
