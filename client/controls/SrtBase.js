@@ -186,7 +186,20 @@ class SrtBase {
             }
         }, { immediate: true })
 
+        this.on("caller_count", (_c) => { 
+            if (_c == 0)
+                this._SrtConnectionStat("disconnected");
+        });
+
         //----------------------SrtStats Modification-----------------------------//
+    }
+
+    _SrtConnectionStat(status) {
+        if (status == "disconnected" && this.srtMode == "caller") {
+            this._draggable.style["background-color"] = "#a1151a";
+        } else {
+            this._draggable.style["background-color"] = "#1E293B";
+        }
     }
 
 }

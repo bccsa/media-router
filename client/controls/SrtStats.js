@@ -58,6 +58,8 @@ class SrtStats extends ui {
 
 
     Init() {
-
+        this.on('status', (status) => {
+            this._parent._SrtConnectionStat(status);
+        }, {immediate: true})
     }
 }
