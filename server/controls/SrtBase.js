@@ -158,7 +158,7 @@ class SrtBase {
             this._controls[ctr_name].status = "disconnected";
         }
 
-        if (_calcRemoveCallers) {
+        if (_calcRemoveCallers || _c == 0) {
             if (this._prev_caller != _c) {
                 setTimeout(() => {this._removeCallers()}, 100);
             }
@@ -174,7 +174,7 @@ class SrtBase {
         if (this._controls && this.srtMode == "listener")
         Object.values(this._controls).forEach(c => {
             if (count >= this.caller_count) {
-                c._notify({remove: true}); c.Set({remoce: true})
+                c._notify({remove: true}); c.Set({remove: true})
             }
             count ++;
         });
