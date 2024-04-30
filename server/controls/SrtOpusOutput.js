@@ -26,7 +26,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
                 let _pipeline = `pulsesrc device=${this.source} latency-time=${this._parent.paLatency * 1000} buffer-time=${this._parent.paLatency * 1000} ! ` + 
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
                 `audioconvert ! audioresample ! ` +
-                `queue max-size-time=100000000 leaky=2 flush-on-eos=true ! ` +
+                `queue max-size-time=10000000 leaky=2 flush-on-eos=true ! ` +
                 `opusenc bitrate=${this.bitrate * 1000} audio-type=2051 bitrate-type=2 ! ` + 
                 `mpegtsmux latency=1 alignment=7 ! ` + 
                 `srtserversink name=${this._srtElementName} uri="${this.uri()}" sync=false wait-for-connection=false`
