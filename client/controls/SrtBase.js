@@ -184,14 +184,14 @@ class SrtBase {
             } else {
                 this._callerCount.style.display = "none";
             }
-        }, { immediate: true })
+        }, { immediate: true });
 
         this.on("caller_count", (_c) => { 
             if (_c == 0)
                 this._SrtConnectionStat("disconnected");
             else 
                 this._SrtConnectionStat();
-        });
+        }, { immediate: true });
 
         //----------------------SrtStats Modification-----------------------------//
     }
