@@ -71,8 +71,24 @@ class SrtBase {
 
                 // standart message handeling
                 this._gst.on('message', (data) => {
-                    if (this._controls)
-                    _this._stats(data);
+                    if (this._controls) {
+                        let _c = 0;
+                        this.caller_count = Object.keys(data).length -1;
+                        Object.keys(data).forEach(key => {
+                            if (typeof data[key] === "object") {
+                                _c ++;
+                                this._stats(data[key], _c);
+                            } else {
+                                this._stats(data, 0);
+                            }
+                        })
+                        
+                        // remove old stat rows
+                        if (this._prev_caller != this.caller_count) {
+                            setTimeout(() => {this._removeCallers()}, 100);
+                        }
+                        this._prev_caller = this.caller_count;
+                    }
                 });
                 
                 // Restart pipeline on exit
@@ -111,8 +127,6 @@ class SrtBase {
      * @param {String} stats - Json object with statistics 
      */
     _stats(stats, caller = 0) {
-        this.caller_count = caller;
-        let _calcRemoveCallers = false; // determine if callers should be recalcated
         // list of usefull stats linked to their class property
         let props = {
             "rtt-ms"                : "rtt_ms",
@@ -129,16 +143,9 @@ class SrtBase {
         }
 
         let obj = {};
-        let _c = 0;
         Object.keys(stats).forEach(key => {
-            if (typeof stats[key] === "object") {
-                _c ++;
-                this._stats(stats[key], _c);
-                _calcRemoveCallers = true;
-            } else {
-                if (props[key])
-                obj[props[key]] = stats[key];
-            }
+            if (props[key])
+            obj[props[key]] = stats[key];
         })
 
         let ctr_name = `${this._controlName}_${caller}`;
@@ -156,13 +163,6 @@ class SrtBase {
         else {
             if (this._controls[ctr_name])
             this._controls[ctr_name].status = "disconnected";
-        }
-
-        if (_calcRemoveCallers || _c == 0) {
-            if (this._prev_caller != _c) {
-                setTimeout(() => {this._removeCallers()}, 100);
-            }
-            this._prev_caller = _c;
         }
     }
 

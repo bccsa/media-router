@@ -189,13 +189,15 @@ class SrtBase {
         this.on("caller_count", (_c) => { 
             if (_c == 0)
                 this._SrtConnectionStat("disconnected");
+            else 
+                this._SrtConnectionStat();
         });
 
         //----------------------SrtStats Modification-----------------------------//
     }
 
     _SrtConnectionStat(status) {
-        if (status == "disconnected" && this.srtMode == "caller") {
+        if (status == "disconnected") {
             this._draggable.style["background-color"] = "#a1151a";
         } else {
             this._draggable.style["background-color"] = "#1E293B";
