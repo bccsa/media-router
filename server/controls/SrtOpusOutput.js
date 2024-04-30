@@ -12,6 +12,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
+        this._srtElementName = "srtserversink";
     }
 
     Init() {
@@ -22,15 +23,18 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
             this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus encoder (gstreamer)`);
             
             if (ready) {
+                let _pipeline = `pulsesrc device=${this.source} latency-time=${this._parent.paLatency * 1000} buffer-time=${this._parent.paLatency * 1000} ! ` + 
+                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
+                `audioconvert ! audioresample ! ` +
+                `queue max-size-time=100000000 leaky=2 flush-on-eos=true ! ` +
+                `opusenc bitrate=${this.bitrate * 1000} audio-type=2051 bitrate-type=2 ! ` + 
+                `mpegtsmux latency=1 alignment=7 ! ` + 
+                `srtserversink name=${this._srtElementName} uri="${this.uri()}" sync=false wait-for-connection=false`
+
                 this._parent.PaCmdQueue(() => { 
-                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtOpusOutput_child.js`, [
-                        this.source, 
-                        this._parent.paLatency, 
-                        this.sampleRate, 
-                        this.bitDepth, 
-                        this.channels, 
-                        this.bitrate,
-                        this.uri()
+                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
+                        _pipeline,
+                        this._srtElementName
                     ]);
                 });
             }
