@@ -59,6 +59,7 @@ class SrtStats extends ui {
 
     Init() {
         this.on('status', (status) => {
+            if (this._parent.srtMode == "caller")
             this._parent._SrtConnectionStat(status);
         }, {immediate: true})
     }
