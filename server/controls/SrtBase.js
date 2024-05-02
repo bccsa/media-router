@@ -17,7 +17,7 @@ class SrtBase {
         this.srtStreamID = '';
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
-        this.srtMaxBw = 8000;       // not implemented in server yet
+        this.srtMaxBw = 250;        // % of bandwidth
         this.caller_count = 0;      // amount of callers connected to module
 
         // local variables 
@@ -33,9 +33,12 @@ class SrtBase {
         if (this.srtPassphrase) { crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}` };
 
         let streamID = '';
-        if (this.srtStreamID) { streamID = '&streamid=' + this.srtStreamID };
+        if (this.srtStreamID) { streamID = `&streamid=${this.srtStreamID}` };
 
-        let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${streamID}${crypto}`;
+        let maxBW = '';
+        if (this.srtEnableMaxBW) { maxBW = `&maxbw=${(this.calcBitrate()/8) * this.srtMaxBw / 100}` };
+
+        let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${maxBW}${streamID}${crypto}`;
 
         return _uri;
     }

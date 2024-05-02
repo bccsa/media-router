@@ -1,17 +1,9 @@
-# [SrtOpusOutput.js](./SrtOpusOutput.js)
+# SrtOpusOutput.js
+Encodes PCM Audio to Opus and send it over SRT
 
-## Title 2
-
-### Title 3
-
-``` 
-function test () {
-
-}
-```
-
-**BOLD**
-
-*Italic*
+## Encoder Settings
+* Enable Opus FEC - Enable opus Forward Error Correction
+* FEC Packet Loss - Opus FEC packet loss percentage (preset value)
+* Complexity level - Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
 
 ---
