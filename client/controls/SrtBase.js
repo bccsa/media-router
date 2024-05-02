@@ -6,7 +6,7 @@ class SrtBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this.srtLatency = 10;
-        this.srtMaxBw = 8000;   // not implemented in server yet
+        this.srtMaxBw = 250;   // % of Bandwidth
         this.srtStreamID = '';
         this.caller_count = 0;      // amount of callers connected to module
     }
@@ -49,11 +49,13 @@ class SrtBase {
 
             <!-- SRT Max Bandwidth  --> 
             <div class="w-1/3 flex flex-col">
-                <label for="@{_srtMaxBw}" class="form-label inline-block mb-2 mr-2">Max Bw:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtMaxBw}" 
-                    title="SRT Max Bandwidth in bytes per second" name="SRT MaxBw" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{srtMaxBw}"
-                >
+                <div id=@{maxBW}>
+                    <label for="@{_srtMaxBw}" class="form-label inline-block mb-2 mr-2">Max Bw (% of BW):</label>
+                    <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtMaxBw}" 
+                        title="SRT Max Bandwidth in bytes per second" name="SRT MaxBw" step="1" min="100" max="1000" class="srtOpusInput-pos-number-input"
+                        value="@{srtMaxBw}"
+                    >
+                </div>
             </div>
 
         </div>
@@ -82,7 +84,7 @@ class SrtBase {
             </div>
 
             <!-- Place holder  --> 
-            <div class="w-1/3 mr-4 flex flex-col"></div>
+            <div class="w-1/3 flex flex-col"></div>
 
         </div>
 
@@ -192,6 +194,9 @@ class SrtBase {
             else 
                 this._SrtConnectionStat();
         }, { immediate: true });
+
+        // Enable disable maxBandwidth based on parent
+        if (!this.srtEnableMaxBW) { this.maxBW.style.display = "none" };
 
         //----------------------SrtStats Modification-----------------------------//
     }

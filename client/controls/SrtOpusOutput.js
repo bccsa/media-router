@@ -2,10 +2,11 @@ class SrtOpusOutput extends _uiClasses(_paAudioSinkBase, SrtBase) {
     constructor() {
         super();
         // Encoder Settings
-        this.fec = false;            // Enable opus Forward Error Correction
+        this.fec = false;           // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
-        this.compression = 10;      // Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
+        this.complexity = 10;       // Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
+        this.srtEnableMaxBW = true; // Enable MaxBandwidth property for srt  
     }
 
     get html() {
@@ -41,12 +42,12 @@ class SrtOpusOutput extends _uiClasses(_paAudioSinkBase, SrtBase) {
                 >
             </div>
 
-            <!-- Compression  --> 
+            <!-- complexity  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_compression}" class="form-label inline-block mb-2 mr-2">Compression level:</label>
-                <input type="number" min="0" max="10" oninput="validity.valid||(value='')" id="@{_compression}" 
-                    title="Opus compression level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality." step="1" class="srtOpusInput-pos-number-input"
-                    value="@{compression}"
+                <label for="@{_complexity}" class="form-label inline-block mb-2 mr-2">Complexity level:</label>
+                <input type="number" min="0" max="10" oninput="validity.valid||(value='')" id="@{_complexity}" 
+                    title="Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality." step="1" class="srtOpusInput-pos-number-input"
+                    value="@{complexity}"
                 >
             </div>
 

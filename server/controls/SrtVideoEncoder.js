@@ -23,6 +23,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.video_framerate = 30;
         this.audio_bitrate = 196;
         this._srtElementName = "srtserversink";
+        this.srtEnableMaxBW = true; // Enable MaxBandwidth property for srt  
     }
 
     Init() {
@@ -49,7 +50,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
 
                 // ------------ Validation ------------ //
                 // video bitrate
-                let vb = parseInt(this.video_bitrate.toString().replace('k', '000').replace('M', '000000'));
+                let vb = this.calcBitrate();
                 if (typeof vb != "number") { 
                     _valid = false;
                     this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Invalid video bitrate, <b>pipeline NOT started</b>.`);
@@ -144,6 +145,13 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 reject(err);
             });
         })
+    }
+
+    /**
+     * Calculate Module Video Bitrate (Used by SRT Base to have a standard format to calculate the MaxBandwidth)
+     */
+    calcBitrate () {
+        return parseInt(this.video_bitrate.toString().replace('k', '000').replace('M', '000000'));
     }
 }
 
