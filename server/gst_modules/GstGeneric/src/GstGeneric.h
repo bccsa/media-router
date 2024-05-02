@@ -125,7 +125,11 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     
                     // restarting on EOS
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    // obj->Stop();
+
+                    obj->th_Start();
+
                     break;
                 }
                 default:
