@@ -15,11 +15,11 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on('ready', ready => {
             if (ready) {
-                let _pipeline = `srtserversrc name=${this._srtElementName} uri="${this.uri()}" wait-for-connection=false poll-timeout=-1 ! ` +
-                `tsparse ignore-pcr=true ! tsdemux ignore-pcr=true latency=1 ! ` +
-                `opusparse ! opusdec ! ` + 
-                `audioconvert ! audioresample ! ` +
+                let _pipeline = `srtserversrc name=${this._srtElementName} uri="${this.uri()}" wait-for-connection=false ! ` +
+                `tsdemux ignore-pcr=true latency=1 ! ` +
+                `opusdec ! ` + 
                 `queue leaky=2 max-size-time=100000000 flush-on-eos=true ! ` + 
+                `audioresample ! ` +
                 `pulsesink device="${this.sink}" sync=false buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
 
                 this._parent.PaCmdQueue(() => { 
