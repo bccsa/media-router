@@ -111,8 +111,9 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 
                     // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                    sleep(5);
-                    gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    sleep(2);
+                    // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
+                    obj->th_Start();    
 
                     g_error_free (err);
                     g_free (debug);
@@ -127,7 +128,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
                     // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
                     // obj->Stop();
-
+                    sleep(2);
                     obj->th_Start();
 
                     break;
