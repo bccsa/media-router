@@ -6,6 +6,7 @@ class SrtOpusOutput extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.complexity = 10;       // Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
         this.bitrate = 64;          // Opus encoding target bitrate in kbps 
+        this.opusFrameSize = 20     // Opus frame size
     }
 
     get html() {
@@ -75,6 +76,32 @@ class SrtOpusOutput extends _uiClasses(_paAudioSinkBase, SrtBase) {
                     <option value="8">8</option>
                 </select>
             </div>
+        </div>
+
+        <div class="w-full mb-1 flex ">
+
+            <!-- Opus Frame size -->
+            <div class="w-1/3 flex mr-4 flex-col">
+                <label for="@{_opusFrameSize}" class="form-label inline-block mb-2">Opus Frame Size:</label>
+                <select id="@{_opusFrameSize}" title="Opus frame size (Can decrease to improve latency)" value="@{opusFrameSize}" 
+                class="paAudioBase-select" type="text">
+                    <option value="2.5">2.5</option>
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                    <option value="40">40</option>
+                    <option value="60">60</option>
+                </select>
+            </div>
+
+            <div class="w-1/3 mb-2 mr-4 flex">
+                
+            </div>
+
+            <div class="w-1/3 mb-2 flex">
+                
+            </div>
+
         </div>
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
