@@ -26,6 +26,6 @@ GST_DEBUG=2 gst-launch-1.0 pulsesrc device=alsa_input.usb-Solid_State_Logic_SSL_
 ```
 ## SrtOpusInput 
 ```bash 
-GST_DEBUG=2 gst-launch-1.0 srtserversrc name=srtserversrc uri="srt://10.9.1.43:1234?mode=caller&latency=10" wait-for-connection=false ! tsparse ! tsdemux ignore-pcr=true latency=1 ! opusparse ! opusdec ! queue leaky=2 max-size-time=100000000 flush-on-eos=true ! audioconvert ! audioresample ! pulsesink device="MR_PA_SrtOpusInput_4186" sync=false buffer-time=50000 max-lateness=50000000
+GST_DEBUG=2 gst-launch-1.0 srtserversrc name=srtserversrc uri="srt://10.9.1.43:1233?mode=caller&latency=10" wait-for-connection=false ! tsparse ignore-pcr=true ! tsdemux ignore-pcr=true latency=1 ! opusparse ! opusdec use-inband-fec=true plc=true ! queue leaky=2 max-size-time=100000000 flush-on-eos=true ! audioconvert ! audioresample ! pulsesink device="MR_PA_SrtOpusInput_4186" sync=false buffer-time=50000 max-lateness=50000000
 
 ```
