@@ -31,7 +31,8 @@ class SrtBase {
      */
     uri() {
         let crypto = '';
-        if (this.srtPassphrase) { crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}` };
+        if (this.srtPassphrase && this.srtPassphrase.length >= 10) { crypto = `&pbkeylen=${this.srtPbKeyLen}&passphrase=${this.srtPassphrase}` }
+        else if (this.srtPassphrase && this.srtPassphrase.length < 10) { this._parent._log('ERROR', `${this._controlName} (${this.displayName}): SRT Passphrase need to be 10 or more characters, Encryption not enabled`); };
 
         let streamID = '';
         if (this.srtStreamID) { streamID = `&streamid=${this.srtStreamID}` };
