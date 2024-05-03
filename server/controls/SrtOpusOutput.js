@@ -10,6 +10,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.complexity = 10;       // Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
+        this.opusFrameSize = 20     // Opus frame size
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
         this._srtElementName = "srtserversink";   
@@ -23,7 +24,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
             this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting opus encoder (gstreamer)`);
             
             if (ready) {
-                let encoder = `opusenc bitrate=${this.calcBitrate()} audio-type=2051 bitrate-type=2 complexity=${this.complexity}`;
+                let encoder = `opusenc bitrate=${this.calcBitrate()} audio-type=2051 bitrate-type=2 complexity=${this.complexity} frame-size=${this.opusFrameSize}`;
                 if (this.fec) { encoder += ` inband-fec=true packet-loss-percentage=${this.fecPacketLoss}` };
 
                 let _pipeline = `pulsesrc device=${this.source} latency-time=${this._parent.paLatency * 1000} buffer-time=${this._parent.paLatency * 1000} ! ` + 
