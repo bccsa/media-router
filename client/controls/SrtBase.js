@@ -7,6 +7,7 @@ class SrtBase {
         this.srtPassphrase = '';
         this.srtLatency = 10;
         this.srtMaxBw = 250;   // % of Bandwidth
+        this.srtEnableMaxBW = false; // Enable MaxBandwidth property for srt 
         this.srtStreamID = '';
         this.caller_count = 0;      // amount of callers connected to module
     }
@@ -19,7 +20,20 @@ class SrtBase {
         <div class="w-full items-center justify-items-center justify-center">
             <div class="text-center align-top font-semibold text-base">SRT Settings</div>
         </div>
-    
+
+        <div class="w-full mb-1 flex ">
+
+            <!--    Enable SRT Max Bandwidth      --> 
+            <div class="w-2/3 mr-2 mb-2 flex">
+                <input id="@{_srtEnableMaxBW}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{srtEnableMaxBW}"/>  
+                <label for="@{_srtEnableMaxBW}" class="" title="Enable SRT max bandwidth">Enable SRT max bandwidth</label> 
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+        </div>
 
         <!-- SRT host  -->
         <div class="w-full mb-2">
@@ -195,8 +209,11 @@ class SrtBase {
                 this._SrtConnectionStat();
         }, { immediate: true });
 
-        // Enable disable maxBandwidth based on parent
-        if (!this.srtEnableMaxBW) { this.maxBW.style.display = "none" };
+        // Enable disable / maxBandwidth
+        this.on('srtEnableMaxBW', res => {
+            if (!res) { this.maxBW.style.display = "none" }
+            else {this.maxBW.style.display = "block" }
+        }, { immediate: true });
 
         //----------------------SrtStats Modification-----------------------------//
     }

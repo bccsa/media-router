@@ -18,6 +18,7 @@ class SrtBase {
         this.srtPbKeyLen = 16;
         this.srtPassphrase = '';
         this.srtMaxBw = 250;        // % of bandwidth
+        this.srtEnableMaxBW = false;// Enable MaxBandwidth property for srt   
         this.caller_count = 0;      // amount of callers connected to module
 
         // local variables 
@@ -36,7 +37,7 @@ class SrtBase {
         if (this.srtStreamID) { streamID = `&streamid=${this.srtStreamID}` };
 
         let maxBW = '';
-        if (this.srtEnableMaxBW && false) { maxBW = `&maxbw=${(this.calcBitrate()/8) * this.srtMaxBw / 100}` };
+        if (this.srtEnableMaxBW) { maxBW = `&maxbw=${(Math.round(this.calcBitrate()/8) * this.srtMaxBw / 100)}` };
 
         let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${maxBW}${streamID}${crypto}`;
 
