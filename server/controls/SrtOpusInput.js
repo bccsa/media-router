@@ -19,7 +19,7 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 `tsdemux ignore-pcr=true latency=1 ! ` +
                 `opusdec use-inband-fec=true plc=true ! ` + 
                 `queue leaky=2 max-size-time=100000000 flush-on-eos=true ! ` + 
-                `audioresample ! ` +
+                `audioconvert ! audioresample ! ` +
                 `pulsesink device="${this.sink}" sync=false buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
 
                 this._parent.PaCmdQueue(() => { 
