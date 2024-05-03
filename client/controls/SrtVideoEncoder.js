@@ -14,8 +14,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.video_width = 1280;
         this.video_height = 720;
         this.video_framerate = 30;
-        this.audio_bitrate = 196;
-        this.srtEnableMaxBW = true; // Enable MaxBandwidth property for srt  
+        this.audio_bitrate = 196; 
     }
 
     get html() {

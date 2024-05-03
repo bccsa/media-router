@@ -23,7 +23,6 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.video_framerate = 30;
         this.audio_bitrate = 196;
         this._srtElementName = "srtserversink";
-        this.srtEnableMaxBW = true; // Enable MaxBandwidth property for srt  
     }
 
     Init() {

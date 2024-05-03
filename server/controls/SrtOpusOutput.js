@@ -12,8 +12,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
         this.bitrate = 64;          // Opus encoding target bitrate in kbps
         this.outBitrate = 0;        // Opus encoder output bitrate
         this.SetAccess('outBitrate', { Set: 'none' });
-        this._srtElementName = "srtserversink";
-        this.srtEnableMaxBW = true; // Enable MaxBandwidth property for srt      
+        this._srtElementName = "srtserversink";   
     }
 
     Init() {

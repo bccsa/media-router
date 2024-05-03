@@ -5,8 +5,7 @@ class SrtOpusOutput extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.fec = false;           // Enable opus Forward Error Correction
         this.fecPacketLoss = 5;     // Opus FEC packet loss percentage (preset value)
         this.complexity = 10;       // Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.
-        this.bitrate = 64;          // Opus encoding target bitrate in kbps
-        this.srtEnableMaxBW = true; // Enable MaxBandwidth property for srt  
+        this.bitrate = 64;          // Opus encoding target bitrate in kbps 
     }
 
     get html() {
