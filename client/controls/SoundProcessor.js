@@ -76,7 +76,7 @@ class SoundProcessor extends _paAudioSourceBase {
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
         <div class="w-full items-center justify-items-center justify-center mb-2">
-            <div class="text-center align-top font-semibold text-base">EQ Settings</div>
+            <div class="text-center align-top font-semibold text-base">EQ Settings (Live Updates)</div>
         </div>
 
         <div class="w-full mb-1 flex ">
