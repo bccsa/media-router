@@ -8,7 +8,8 @@ const p = new _GstGeneric(_pipeline);
 let running = false;
 
 const _functions = {
-    GetSrtStats: GetSrtStats
+    GetSrtStats : GetSrtStats,
+    Set         : Set
 }
 
 setTimeout(() => {
@@ -36,4 +37,16 @@ process.on("message", ([action, ...args]) => {
 function GetSrtStats ([resMessage, srtElementName]) {
     if (running)
     process.send && process.send([resMessage, p.GetSrtStats(srtElementName)]);
+}
+
+/**
+ * Live Changes to GST pipeline
+ * @param {*} valType - Type of value 
+ * @param {String} srtElementName - Element name
+ * @param {String} key - Key in element to set
+ * @param {*} value - value to set 
+ */
+function Set([srtElementName, valType, key, value]) {
+    if (running)
+    p.Set(srtElementName, valType, key, value);
 }

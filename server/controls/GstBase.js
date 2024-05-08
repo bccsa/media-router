@@ -15,6 +15,8 @@ class GstBase {
         this.start_gst = this._start_gst;   // need to map that child class can access function
         this.stop_gst = this._stop_gst;     // need to map that child class can access function
         this.get_gst_SrtStats = this._get_gst_SrtStats;
+        // Setters
+        this.set_gst = this._set_gst;
     }
 
     /**
@@ -24,8 +26,6 @@ class GstBase {
      */
     _start_gst(path, args) {
         if (!this._gst && this.ready && this.run) {
-            // clear old stats data
-            this._clearStats();
             try {
                 let _this = this;
 
@@ -85,6 +85,16 @@ class GstBase {
      */
     _get_gst_SrtStats(resMessage, srtElementName) {
         this._gst && this._gst.send(["GetSrtStats", resMessage, srtElementName]);
+    }
+
+    /**
+     * Live Changes to GST pipeline
+     * @param {String} srtElementName 
+     * @param {String} key 
+     * @param {*} value 
+     */
+    _set_gst(srtElementName, valType, key, value) {
+        this._gst && this._gst.send(["Set", srtElementName, valType, key, value]);
     }
 }
 

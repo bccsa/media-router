@@ -52,6 +52,8 @@ class SrtBase extends GstBase {
      * @param {Array} args - List of process arguments to pass
      */
     _start_srt(path, args) {
+        // clear old stats data
+        this._clearStats();
         // Listen on srt stats
         this.on("SrtStats", data => {
             if (this._controls && data) {
