@@ -35,8 +35,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
                 let _pipeline = `pulsesrc device=${this._source} ! ` +
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! `;
                 // EQ
-                if (this.eq)
-                _pipeline += `equalizer-10bands name="eq" band0=${this.band0} band1=${this.band1} band2=${this.band2} band3=${this.band3} band4=${this.band4} band5=${this.band5} band6=${this.band6} band7=${this.band7} band8=${this.band8} band9=${this.band9} ! `; 
+                _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
                 // Delay
                 if (this.delay)
                 _pipeline += `queue name="delay" leaky=2 min-threshold-time=${this.delayVal * 1000000} max-size-buffers=0 max-size-bytes=0 max-size-time=${(this.delayVal + 100) * 1000000} ! `
@@ -67,11 +66,38 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
             })
         }
 
+        // listen on EQ change
+        this.on("eq", val => {
+            this._setBands();
+        })
+
         // Listen on DElay change (Live delay change does not work)
         // this.on("delayVal", val => {
         //     this.set_gst("delay", "int", `min-threshold-time`, val * 1000000);
         //     this.set_gst("delay", "int", `max-size-time`, (val + 100) * 1000000);
         // })
+    }
+
+    // create list of bands
+    _bands(bandCount = 10) {
+        let bands = "";
+        for (let i = 0; i < bandCount; i++) {
+            if (!this.eq) 
+                bands += `band${i}=0 `;
+            else 
+                bands += `band${i}=${this[`band${i}`]} `;
+        }
+            
+        return bands;
+    }
+
+    _setBands(bandCount = 10) {
+        for (let i = 0; i < bandCount; i++) {
+            if (!this.eq) 
+                this.set_gst("eq", "gdouble", `band${i}`, 0);
+            else 
+                this.set_gst("eq", "gdouble", `band${i}`, this[`band${i}`]);
+        }
     }
 
 }
