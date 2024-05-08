@@ -2,14 +2,14 @@
  * Base class for processing base srt functions
 */
 
-const { spawn } = require('child_process');
+const GstBase = require('./GstBase');
 
 /**
  * SrtBase Class, used as a base class for all shared SRT function
  */
-class SrtBase {
+class SrtBase extends GstBase {
     constructor() {
-        this._gst;
+        super();
         this.srtHost = 'srt';
         this.srtPort = 1234;
         this.srtMode = 'caller';
@@ -50,77 +50,41 @@ class SrtBase {
      * @param {String} path - path to child process
      * @param {Array} args - List of process arguments to pass
      */
-    _start_gst(path, args) {
-        if (!this._gst && this.ready && this.run) {
-            // clear old stats data
-            this._clearStats();
-            try {
-                let _this = this;
+    _start_srt(path, args) {
+        // Listen on srt stats
+        this.on("gstMessage", res => {
+            if (res == true) {
+                let data = this.gstMessageData;
 
-                this._gst = spawn('node', [path, ...args], {cwd: "./", stdio: [null, null, null, 'ipc']} );
-
-                // standart stdout handeling
-                this._gst.stdout.on('data', (data) => {
-                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
-                });
-                
-                // standart stderr handeling
-                this._gst.stderr.on('data', (data) => {
-                    _this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data}`);
-                });
-                
-                // standart stdin handeling
-                this._gst.stdin.on('data', (data) => {
-                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
-                });
-
-                // standart message handeling
-                this._gst.on('message', (data) => {
-                    if (this._controls) {
-                        let _c = 0;
-                        this.caller_count = Object.keys(data).length -1;
-                        Object.keys(data).forEach(key => {
-                            if (typeof data[key] === "object") {
-                                _c ++;
-                                this._stats(data[key], _c);
-                            } else {
-                                this._stats(data, 0);
-                            }
-                        })
-                        
-                        // remove old stat rows
-                        if (this._prev_caller != this.caller_count) {
-                            setTimeout(() => {this._removeCallers()}, 100);
+                if (this._controls && data) {
+                    let _c = 0;
+                    this.caller_count = Object.keys(data).length -1;
+                    Object.keys(data).forEach(key => {
+                        if (typeof data[key] === "object") {
+                            _c ++;
+                            this._stats(data[key], _c);
+                        } else {
+                            this._stats(data, 0);
                         }
-                        this._prev_caller = this.caller_count;
+                    })
+                    
+                    // remove old stat rows
+                    if (this._prev_caller != this.caller_count) {
+                        setTimeout(() => {this._removeCallers()}, 100);
                     }
-                });
-                
-                // Restart pipeline on exit
-                this._gst.on('exit', (data) => {
-                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
-                    this._stop_gst();
-                    setTimeout(() => { this._start_gst(path, args) }, 3000);
-                });
+                    this._prev_caller = this.caller_count;
+                }
+            }
+        })
 
-            }
-            catch (err) {
-                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error: ${err.message}, restarting in 3s`);
-                this._stop_gst();
-                setTimeout(() => { this._start_gst(path, args) }, 3000);
-            }
-        }
+        this.start_gst(path, args);
     }
 
     /**
      * Stop spawned node process
      */
-    _stop_gst() {
-        if (this._gst) {
-            this._gst.stdin.pause();
-            this._gst.kill();
-            this._gst = undefined;
-        }
+    _stop_srt() {
+        this.stop_gst();
         // set all child controls as disconnected 
         this.caller_count = 0;
         if (this._controls)
