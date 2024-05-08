@@ -96,7 +96,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // ------------ start srt encoder ------------ //
                 if (_valid)
                 this._parent.PaCmdQueue(() => { 
-                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtVideoEncoder_child.js`, [
+                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtVideoEncoder_child.js`, [
                         _pipeline,
                         this._srtElementName
                     ]);
@@ -107,7 +107,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
-                this._stop_gst();
+                this._stop_srt();
             }
         });
 
