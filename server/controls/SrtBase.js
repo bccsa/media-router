@@ -23,6 +23,7 @@ class SrtBase extends GstBase {
 
         // local variables 
         this._prev_caller = 0;      // previous caller count
+        this._statsInterval = undefined;
     }
 
     /**
@@ -52,38 +53,42 @@ class SrtBase extends GstBase {
      */
     _start_srt(path, args) {
         // Listen on srt stats
-        this.on("gstMessage", res => {
-            if (res == true) {
-                let data = this.gstMessageData;
-
-                if (this._controls && data) {
-                    let _c = 0;
-                    this.caller_count = Object.keys(data).length -1;
-                    Object.keys(data).forEach(key => {
-                        if (typeof data[key] === "object") {
-                            _c ++;
-                            this._stats(data[key], _c);
-                        } else {
-                            this._stats(data, 0);
-                        }
-                    })
-                    
-                    // remove old stat rows
-                    if (this._prev_caller != this.caller_count) {
-                        setTimeout(() => {this._removeCallers()}, 100);
+        this.on("SrtStats", data => {
+            if (this._controls && data) {
+                let _c = 0;
+                this.caller_count = Object.keys(data).length -1;
+                Object.keys(data).forEach(key => {
+                    if (typeof data[key] === "object") {
+                        _c ++;
+                        this._stats(data[key], _c);
+                    } else {
+                        this._stats(data, 0);
                     }
-                    this._prev_caller = this.caller_count;
+                })
+                
+                // remove old stat rows
+                if (this._prev_caller != this.caller_count) {
+                    setTimeout(() => {this._removeCallers()}, 100);
                 }
+                this._prev_caller = this.caller_count;
             }
         })
 
         this.start_gst(path, args);
+
+        // Poll for srt stats 
+        let _srtElementName = args[1];
+        this._statsInterval = setInterval(() => {
+            if (_srtElementName)
+            this.get_gst_SrtStats("SrtStats", _srtElementName);
+        }, 1000);
     }
 
     /**
      * Stop spawned node process
      */
     _stop_srt() {
+        clearInterval(this._statsInterval); // clear stats interval
         this.stop_gst();
         // set all child controls as disconnected 
         this.caller_count = 0;

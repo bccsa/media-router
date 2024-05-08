@@ -10,10 +10,11 @@ const { spawn } = require('child_process');
 class GstBase {
     constructor() {
         this._gst = undefined;
-        this.gstMessage = false;
+        this.gstMessage = "";
         this.gstMessageData = undefined; 
         this.start_gst = this._start_gst;   // need to map that child class can access function
         this.stop_gst = this._stop_gst;     // need to map that child class can access function
+        this.get_gst_SrtStats = this._get_gst_SrtStats;
     }
 
     /**
@@ -46,10 +47,8 @@ class GstBase {
                 });
 
                 // standard message handeling
-                this._gst.on('message', (data) => {
-                    this.gstMessage = true;
-                    this.gstMessageData = data;
-                    this.gstMessage = false;
+                this._gst.on('message', ([msg, data]) => {
+                    this.emit(msg, data);
                 });
                 
                 // Restart pipeline on exit
@@ -77,6 +76,15 @@ class GstBase {
             this._gst.kill();
             this._gst = undefined;
         }
+    }
+
+    /**
+     * Get Srt Stats from gstreamer element
+     * @param {String} resMessage - Message name for SrtStats
+     * @param {String} srtElementName - Srt Element name
+     */
+    _get_gst_SrtStats(resMessage, srtElementName) {
+        this._gst && this._gst.send(["GetSrtStats", resMessage, srtElementName]);
     }
 }
 
