@@ -222,9 +222,23 @@ Napi::Value _GstGeneric::Set(const Napi::CallbackInfo &info){
     }
 
     // update field
-    std::string key = info[1].As<Napi::String>().Utf8Value();
-    int value = info[2].As<Napi::Number>();
-    g_object_set (_element, key.c_str(), value, NULL); 
+    std::string valType = info[1].As<Napi::String>().Utf8Value();
+    std::string key = info[2].As<Napi::String>().Utf8Value();
+    if (valType == "gdouble") {
+        gdouble value = info[3].As<Napi::Number>();
+        g_object_set (_element, key.c_str(), value, NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | gDouble Value Updated"); });
+    } else if (valType == "int") {
+        gint64 value = info[3].As<Napi::Number>();
+        g_object_set (_element, key.c_str(), value, NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Int Value Updated"); });
+    } else if (valType == "string") {
+        std::string value = info[3].As<Napi::String>().Utf8Value();
+        g_object_set (_element, key.c_str(), value.c_str(), NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | String Value Updated"); });
+    } else {
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Invalid Value type"); });
+    }
     
     return Napi::String::New(info.Env(), "Set | Changed " + _elementName + ": " + key);
 }

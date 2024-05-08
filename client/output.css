@@ -9132,6 +9132,26 @@ textarea.paAudioBase-text-area.is-invalid {
     z-index:9999;
 } */
 
+/* --------EQ---------*/
+
+.EQ-slider {
+  margin-left: 0.5rem;
+  margin-right: 0.5rem;
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+  width: 8rem;
+  --tw-rotate: 270deg;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+  cursor: pointer;
+  overflow: hidden;
+  --tw-bg-opacity: 1;
+  background-color: rgb(41 53 72 / var(--tw-bg-opacity));
+  --tw-text-opacity: 1;
+  color: rgb(117 196 235 / var(--tw-text-opacity));
+}
+
+/* --------EQ---------*/
+
 /* . {
     @apply ;
 } */
@@ -9383,6 +9403,14 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .mt-5 {
   margin-top: 1.25rem;
+}
+
+.mt-9 {
+  margin-top: 2.25rem;
+}
+
+.mt-10 {
+  margin-top: 2.5rem;
 }
 
 .box-border {
@@ -9674,6 +9702,21 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .origin-top-left {
   transform-origin: top left;
+}
+
+.rotate-90 {
+  --tw-rotate: 90deg;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+}
+
+.rotate-\[270deg\] {
+  --tw-rotate: 270deg;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+}
+
+.rotate-\[90deg\] {
+  --tw-rotate: 90deg;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
 }
 
 .scale-100 {
@@ -9978,16 +10021,20 @@ textarea.paAudioBase-text-area.is-invalid {
   grid-template-columns: repeat(1, minmax(0, 1fr));
 }
 
+.grid-cols-10 {
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+}
+
 .grid-cols-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.grid-cols-7 {
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-}
-
 .grid-cols-8 {
   grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+
+.grid-cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .flex-row {
@@ -10172,6 +10219,10 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .justify-items-stretch {
   justify-items: stretch;
+}
+
+.gap-2 {
+  gap: 0.5rem;
 }
 
 .gap-4 {
