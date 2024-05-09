@@ -96,7 +96,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // ------------ start srt encoder ------------ //
                 if (_valid)
                 this._parent.PaCmdQueue(() => { 
-                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtVideoEncoder_child.js`, [
+                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
                         _pipeline,
                         this._srtElementName
                     ]);
