@@ -9409,10 +9409,6 @@ textarea.paAudioBase-text-area.is-invalid {
   margin-top: 2.25rem;
 }
 
-.mt-10 {
-  margin-top: 2.5rem;
-}
-
 .box-border {
   box-sizing: border-box;
 }
@@ -9572,6 +9568,10 @@ textarea.paAudioBase-text-area.is-invalid {
   width: 0px;
 }
 
+.w-1\/12 {
+  width: 8.333333%;
+}
+
 .w-1\/2 {
   width: 50%;
 }
@@ -9648,6 +9648,10 @@ textarea.paAudioBase-text-area.is-invalid {
   max-width: 40px;
 }
 
+.max-w-\[60px\] {
+  max-width: 60px;
+}
+
 .max-w-full {
   max-width: 100%;
 }
@@ -9702,16 +9706,6 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .origin-top-left {
   transform-origin: top left;
-}
-
-.rotate-90 {
-  --tw-rotate: 90deg;
-  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
-}
-
-.rotate-\[270deg\] {
-  --tw-rotate: 270deg;
-  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
 }
 
 .rotate-\[90deg\] {
@@ -10031,10 +10025,6 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .grid-cols-8 {
   grid-template-columns: repeat(8, minmax(0, 1fr));
-}
-
-.grid-cols-4 {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .flex-row {
