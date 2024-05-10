@@ -25,12 +25,21 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
 
         // Audio Compressor
         this.compressor = false;
-        this.knee = 2.8;
-        this.ratio = 1;
-        this.threshold = 0.001;
-        this.attack = 20;
-        this.release = 250;
-        this.makeup = 1;
+        this.comp_knee = 2.8;
+        this.comp_ratio = 1;
+        this.comp_threshold = 0.001;
+        this.comp_attack = 20;
+        this.comp_release = 250;
+        this.comp_makeup = 1;
+
+        // Gate / Expander 
+        this.gate = false;
+        this.gate_knee = 2.8;
+        this.gate_ratio = 1;
+        this.gate_threshold = 0.001;
+        this.gate_attack = 20;
+        this.gate_release = 250;
+        this.gate_makeup = 1;
 
         // Gstreamer 
         this._gst;
@@ -47,7 +56,9 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
                 // EQ
                 _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
                 // Compressor
-                _pipeline += `calf-sourceforge-net-plugins-Compressor name="compressor" bypass=${!this.compressor} knee=${this.knee} ratio=${this.ratio} threshold=${this.threshold} attack=${this.attack} release=${this.release} makeup=${this.makeup} ! `;
+                _pipeline += `calf-sourceforge-net-plugins-Compressor name="compressor" bypass=${!this.compressor} knee=${this.comp_knee} ratio=${this.comp_ratio} threshold=${this.comp_threshold} attack=${this.comp_attack} release=${this.comp_release} makeup=${this.comp_makeup} ! `;
+                // Gate
+                _pipeline += `calf-sourceforge-net-plugins-Gate name="gate" bypass=${!this.gate} knee=${this.gate_knee} ratio=${this.gate_ratio} threshold=${this.gate_threshold} attack=${this.gate_attack} release=${this.gate_release} makeup=${this.gate_makeup} ! `;
                 // Delay
                 if (this.delay)
                 _pipeline += `queue name="delay" leaky=2 min-threshold-time=${this.delayVal * 1000000} max-size-buffers=0 max-size-bytes=0 max-size-time=${(this.delayVal + 100) * 1000000} ! `
@@ -88,37 +99,69 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
 
         // ------------ EQ ------------ //
 
-        // ------------ AudioDynamic ------------ //
+        // ------------ Audio Compressor ------------ //
 
         this.on("compressor", val => {
             this.set_gst("compressor", "bool", `bypass`, !val);
         })
 
-        this.on("knee", val => {
+        this.on("comp_knee", val => {
             this.set_gst("compressor", "gdouble", `knee`, val);
         })
 
-        this.on("ratio", val => {
+        this.on("comp_ratio", val => {
             this.set_gst("compressor", "gdouble", `ratio`, val);
         })
 
-        this.on("threshold", val => {
+        this.on("comp_threshold", val => {
             this.set_gst("compressor", "gdouble", `threshold`, val);
         })
 
-        this.on("attack", val => {
+        this.on("comp_attack", val => {
             this.set_gst("compressor", "gdouble", `attack`, val);
         })
 
-        this.on("release", val => {
+        this.on("comp_release", val => {
             this.set_gst("compressor", "gdouble", `release`, val);
         })
 
-        this.on("makeup", val => {
+        this.on("comp_makeup", val => {
             this.set_gst("compressor", "gdouble", `makeup`, val);
         })
 
-        // ------------ AudioDynamic ------------ //
+        // ------------ Audio Compressor ------------ //
+
+        // ------------ Audio Gate ------------ //
+
+        this.on("gate", val => {
+            this.set_gst("gate", "bool", `bypass`, !val);
+        })
+
+        this.on("gate_knee", val => {
+            this.set_gst("gate", "gdouble", `knee`, val);
+        })
+
+        this.on("gate_ratio", val => {
+            this.set_gst("gate", "gdouble", `ratio`, val);
+        })
+
+        this.on("gate_threshold", val => {
+            this.set_gst("gate", "gdouble", `threshold`, val);
+        })
+
+        this.on("gate_attack", val => {
+            this.set_gst("gate", "gdouble", `attack`, val);
+        })
+
+        this.on("gate_release", val => {
+            this.set_gst("gate", "gdouble", `release`, val);
+        })
+
+        this.on("gate_makeup", val => {
+            this.set_gst("gate", "gdouble", `makeup`, val);
+        })
+
+        // ------------ Audio Compressor ------------ //
 
         // ------------ Delay ------------ //
 
