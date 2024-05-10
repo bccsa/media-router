@@ -236,6 +236,10 @@ Napi::Value _GstGeneric::Set(const Napi::CallbackInfo &info){
         std::string value = info[3].As<Napi::String>().Utf8Value();
         g_object_set (_element, key.c_str(), value.c_str(), NULL);
         _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | String Value Updated"); });
+    } else if (valType == "bool") {
+        bool value = info[3].As<Napi::Boolean>();
+        g_object_set (_element, key.c_str(), value, NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Boolean Value Updated"); });
     } else {
         _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Invalid Value type"); });
     }

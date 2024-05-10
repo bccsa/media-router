@@ -30,6 +30,15 @@ class SoundProcessor extends _paAudioSourceBase {
         //Delay Settings
         this.delay = false          // Enable Delay
         this.delayVal = 0;          // Delay Value
+
+        // Audio Compressor
+        this.compressor = false;
+        this.knee = 2.8;
+        this.ratio = 1;
+        this.threshold = 0;
+        this.attack = 20;
+        this.release = 250;
+        this.makeup = 1;
     }
 
     get html() {
@@ -75,6 +84,8 @@ class SoundProcessor extends _paAudioSourceBase {
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
+        <!-- ----------------------------------------------------------   EQ Settings   ---------------------------------------------------------- -->
+
         <div class="w-full items-center justify-items-center justify-center mb-2">
             <div class="text-center align-top font-semibold text-base">EQ Settings (Live Updates)</div>
         </div>
@@ -99,6 +110,120 @@ class SoundProcessor extends _paAudioSourceBase {
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
+        <!-- ----------------------------------------------------------    Compressor Settings    ---------------------------------------------------------- -->
+
+        <div class="w-full items-center justify-items-center justify-center mb-2">
+            <div class="text-center align-top font-semibold text-base">Audio Compressor (Live Updates)</div>
+        </div>
+
+        <div class="w-full mb-1 flex ">
+
+            <!--    Enable Compressor     --> 
+            <div class="w-2/3 mr-2 mb-2 flex">
+                <input id="@{_showCompressor}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{compressor}"/>  
+                <label for="@{_showCompressor}" class="" title="Enable EQ">Enable Compressor</label> 
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+        </div>
+
+        <!--    knee     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_knee}" class="mt-5 w-1/6">Knee:</label>
+        
+            <input id="@{_knee}" class="paAudioBase-slider" type="range"
+                title="Curve the sharp knee around the threshold to enter gain reduction more softly" name="knee" step="0.01" min="1" max="8" value="@{knee}">
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_knee}" class="max-w-[40px] truncate text-clip">@{knee}</label>
+            </div>
+
+        </div>
+
+        <!--    ratio     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_ratio}" class="mt-5 w-1/6">Ratio:</label>
+        
+            <input id="@{_ratio}" class="paAudioBase-slider" type="range"
+                title="Set a ratio about which the signal is reduced. 1:2 means that if the level rises 4dB above the threshold, it will be only 2dB above after the reduction." name="ratio" step="0.01" min="1" max="20" value="@{ratio}">
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_ratio}" class="max-w-[40px] truncate text-clip">@{ratio}</label>
+            </div>
+
+        </div>
+
+        <!--    threshold     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_threshold}" class="mt-5 w-1/6">Threshold:</label>
+        
+            <input id="@{_threshold}" class="paAudioBase-slider" type="range" list="@{_tickMarks}"
+                title="If a signal rises above this level it will affect the gain reduction" name="threshold" step="0.001" min="0.000976563" max="1" value="@{threshold}">
+        
+            <datalist id="@{_tickMarks}">
+                <option value="0"></option>
+                <option value="0.5"></option>
+                <option value="1"></option>
+            </datalist>
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_threshold}" class="max-w-[40px] truncate text-clip">@{threshold}</label>
+            </div>
+
+        </div>
+
+        <!--    attack     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_attack}" class="mt-5 w-1/6">Attack:</label>
+        
+            <input id="@{_attack}" class="paAudioBase-slider" type="range"
+                title="Amount of milliseconds the signal has to rise above the threshold before gain reduction starts" name="attack" step="0.01" min="0.01" max="2000" value="@{attack}">
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_attack}" class="max-w-[40px] truncate text-clip">@{attack}</label>
+            </div>
+
+        </div>
+
+        <!--    release     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_release}" class="mt-5 w-1/6">Release:</label>
+        
+            <input id="@{_release}" class="paAudioBase-slider" type="range"
+                title="Amount of milliseconds the signal has to fall below the threshold before the reduction is decreased again" name="release" step="0.01" min="0.01" max="2000" value="@{release}">
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_release}" class="max-w-[40px] truncate text-clip">@{release}</label>
+            </div>
+
+        </div>
+
+        <!--    makeup     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_makeup}" class="mt-5 w-1/6">Makeup:</label>
+        
+            <input id="@{_makeup}" class="paAudioBase-slider" type="range"
+                title="Amplify your signal after processing" name="makeup" step="0.01" min="1" max="64" value="@{makeup}">
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_makeup}" class="max-w-[40px] truncate text-clip">@{makeup}</label>
+            </div>
+
+        </div>
+
+        <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
+
+        <!-- ----------------------------------------------------------    Delay Settings    ---------------------------------------------------------- -->
+
         <div class="w-full items-center justify-items-center justify-center mb-2">
             <div class="text-center align-top font-semibold text-base">Delay Settings</div>
         </div>
@@ -117,7 +242,6 @@ class SoundProcessor extends _paAudioSourceBase {
 
         </div>
 
-        <!--    Delay     -->
         <div class="w-full mb-2 flex flex-row items-center">
         
             <!-- Delay --> 
@@ -135,7 +259,6 @@ class SoundProcessor extends _paAudioSourceBase {
 
         </div>
 
-        <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
         `);
     }
 

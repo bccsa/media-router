@@ -69,7 +69,7 @@ example.SetPipeline("New pipeline");
 // Set (Generic setter)
 /**
  * elementName - name of elemnet, specified in the pipeline with name=<name>
- * valType - Type of value to set (gdouble, int, string)
+ * valType - Type of value to set (gdouble, int, string, bool)
  * key - key to update
  * value - Integer value to update (atm it only work with intager)
 */
