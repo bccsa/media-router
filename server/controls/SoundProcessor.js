@@ -55,10 +55,10 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audiorate ! `;
                 // EQ
                 _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
-                // Compressor
-                _pipeline += `calf-sourceforge-net-plugins-Compressor name="compressor" bypass=${!this.compressor} knee=${this.comp_knee} ratio=${this.comp_ratio} threshold=${this.comp_threshold} attack=${this.comp_attack} release=${this.comp_release} makeup=${this.comp_makeup} ! `;
                 // Gate
                 _pipeline += `calf-sourceforge-net-plugins-Gate name="gate" bypass=${!this.gate} knee=${this.gate_knee} ratio=${this.gate_ratio} threshold=${this.gate_threshold} attack=${this.gate_attack} release=${this.gate_release} makeup=${this.gate_makeup} ! `;
+                // Compressor
+                _pipeline += `calf-sourceforge-net-plugins-Compressor name="compressor" bypass=${!this.compressor} knee=${this.comp_knee} ratio=${this.comp_ratio} threshold=${this.comp_threshold} attack=${this.comp_attack} release=${this.comp_release} makeup=${this.comp_makeup} ! `;
                 // Delay
                 if (this.delay)
                 _pipeline += `queue name="delay" leaky=2 min-threshold-time=${this.delayVal * 1000000} max-size-buffers=0 max-size-bytes=0 max-size-time=${(this.delayVal + 100) * 1000000} ! `

@@ -9307,6 +9307,10 @@ textarea.paAudioBase-text-area.is-invalid {
   clear: none;
 }
 
+.m-10 {
+  margin: 2.5rem;
+}
+
 .m-2 {
   margin: 0.5rem;
 }
@@ -9373,12 +9377,20 @@ textarea.paAudioBase-text-area.is-invalid {
   margin-left: 0.5rem;
 }
 
+.ml-24 {
+  margin-left: 6rem;
+}
+
 .mr-1 {
   margin-right: 0.25rem;
 }
 
 .mr-2 {
   margin-right: 0.5rem;
+}
+
+.mr-24 {
+  margin-right: 6rem;
 }
 
 .mr-3 {
@@ -9566,10 +9578,6 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .w-0 {
   width: 0px;
-}
-
-.w-1\/12 {
-  width: 8.333333%;
 }
 
 .w-1\/2 {
@@ -10878,6 +10886,10 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .bg-origin-content {
   background-origin: content-box;
+}
+
+.stroke-current {
+  stroke: currentColor;
 }
 
 .object-contain {
