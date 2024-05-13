@@ -31,31 +31,33 @@ class SoundProcessor extends _paAudioSourceBase {
         this.delay = false          // Enable Delay
         this.delayVal = 0;          // Delay Value
 
-        // Audio Compressor
-        this.compressor = false;
-        this.comp_knee = 2.8;
-        this.comp_ratio = 1;
-        this.comp_threshold = 0.001;
-        this.comp_attack = 20;
-        this.comp_release = 250;
-        this.comp_makeup = 1;
-        this.comp_threshold_val = Math.round(this.comp_threshold * 1000) / 1000;
-        // comp Graph
-        this.comp_path0 = "M 0 100 L 80 20 L 100 10";
-        this.comp_path1 = "M 0 20 L 100 20";
-
         // Gate / Expander 
         this.gate = false;
         this.gate_knee = 2.8;
         this.gate_ratio = 1;
         this.gate_threshold = 0.001;
+        this.gate_makeup = 1;
         this.gate_attack = 20;
         this.gate_release = 250;
-        this.gate_makeup = 1;
         this.gate_threshold_val = Math.round(this.comp_threshold * 1000) / 1000;
         // gate Graph
         this.gate_path0 = "M 0 100 L 80 20 L 100 10";
         this.gate_path1 = "M 0 20 L 100 20";
+
+        // Audio Compressor
+        this.compressor = false;
+        this.comp_knee = 2.8;
+        this.comp_ratio = 1;
+        this.comp_threshold = 0.001;
+        this.comp_makeup = 1;
+        this.comp_mix = 1;
+        this.comp_attack = 20;
+        this.comp_release = 250;
+        this.comp_threshold_val = Math.round(this.comp_threshold * 1000) / 1000;
+        // comp Graph
+        this.comp_path0 = "M 0 100 L 80 20 L 100 10";
+        this.comp_path1 = "M 0 20 L 100 20";
+    
     }
 
     get html() {
@@ -337,6 +339,20 @@ class SoundProcessor extends _paAudioSourceBase {
 
         </div>
 
+        <!--    mix     -->
+        <div class="w-full mb-2 flex flex-row items-center">
+        
+            <label for="@{_comp_mix}" class="mt-5 w-1/6">Mix:</label>
+        
+            <input id="@{_comp_mix}" class="paAudioBase-slider" type="range"
+                title="Ratio to mix compressed audio into feed" name="comp_mix" step="0.01" min="0" max="1" value="@{comp_mix}">
+
+            <div class="max-w-[60px] truncate text-clip">
+                <label for="@{_comp_mix}" class="max-w-[40px] truncate text-clip">@{comp_mix}</label>
+            </div>
+
+        </div>
+
         <!--    attack     -->
         <div class="w-full mb-2 flex flex-row items-center">
         
@@ -458,6 +474,7 @@ class SoundProcessor extends _paAudioSourceBase {
     gate_calcGraph() {
         let _threshhold_x = this.gate_threshold * 100; 
         let _threshhold_y = 100 - (this.gate_threshold * 100); 
+        let _ratio_x = _threshhold_x - (_threshhold_x / this.gate_ratio);
 
         let ang = Math.atan(1 / this.gate_ratio);
         let side = 25 * (this.gate_knee - 1) / 8 // side length (max = 25% of graph)
@@ -468,9 +485,9 @@ class SoundProcessor extends _paAudioSourceBase {
 
         let makeup = (this.gate_makeup -1) / 63 * 100;
 
-        let s = ((100 - knee_y1) - (100 - _threshhold_y))/(knee_x1 - _threshhold_x);
+        let s = (1 - (100 - _threshhold_y))/(_ratio_x - _threshhold_x);
         let m = -s * _threshhold_x + (100 - _threshhold_y + makeup);
-        let _ratio_x = -m / s;
+        _ratio_x = -m / s;
 
         this._gate_path0.setAttribute("d", `M ${_ratio_x} 100 L ${knee_x1} ${knee_y1 - makeup} S ${_threshhold_x} ${_threshhold_y - makeup} ${knee_x2} ${knee_y2 - makeup} L 100 ${0 - makeup}`);
         this._gate_path1.setAttribute("d", `M 0 ${_threshhold_y - makeup} L 100 ${_threshhold_y - makeup}`);
