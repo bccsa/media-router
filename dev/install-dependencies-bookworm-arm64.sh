@@ -28,12 +28,12 @@ sudo node-gst configure
 npm i
 cd ../../..
 
-cd server/gst_modules/SrtOpusOutput
+cd server/gst_modules/GstGeneric
 sudo node-gst configure
 npm i
 cd ../../..
 
-cd server/gst_modules/SrtOpusInput
+cd server/gst_modules/GstvuMeter
 sudo node-gst configure
 npm i
 cd ../../..
