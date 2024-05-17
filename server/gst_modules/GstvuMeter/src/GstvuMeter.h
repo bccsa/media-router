@@ -13,22 +13,23 @@ Napi::ThreadSafeFunction _emit;
 /**
  * Event Emiter
 */
-void Emit(const Napi::Env& env, const Napi::Function& emitFn, std::string message) {
-    emitFn.Call({ Napi::String::New(env, message) });
+void Emit(const Napi::Env& env, const Napi::Function& emitFn, Napi::Value val) {
+    emitFn.Call({ val });
 }
 
 // ====================================
 // Init 
 // ====================================
-class _GstGeneric : public Napi::ObjectWrap<_GstGeneric> {
+class _GstvuMeter : public Napi::ObjectWrap<_GstvuMeter> {
     public:
         static Napi::Object Init(Napi::Env env, Napi::Object exports);
         gboolean _w = false;
-        _GstGeneric(const Napi::CallbackInfo &info);
+        _GstvuMeter(const Napi::CallbackInfo &info);
         void th_Start(std::string _pipeline_);
         // Variables
         GstElement *pipeline;
         std::string _pipeline = "null"; 
+        Napi::Function event;
         // Process varialbes 
         gboolean running = false;   // Gstreamer running state
         gboolean killing = false;   // Gstreamer killing state
@@ -40,23 +41,17 @@ class _GstGeneric : public Napi::ObjectWrap<_GstGeneric> {
         Napi::Value Stop(const Napi::CallbackInfo &info);
         // Setters
         Napi::Value SetPipeline(const Napi::CallbackInfo &info);
-        Napi::Value Set(const Napi::CallbackInfo &info);
-        // Getters
-        Napi::Value GetSrtStats(const Napi::CallbackInfo &info);
 };
 
 /**
  * Link Class to NAPI 
 */
-Napi::Object _GstGeneric::Init(Napi::Env env, Napi::Object exports) {
+Napi::Object _GstvuMeter::Init(Napi::Env env, Napi::Object exports) {
     // This method is used to hook the accessor and method callbacks
-    Napi::Function func = DefineClass(env, "_GstGeneric", {
-        InstanceMethod("Start", &_GstGeneric::Start),
-        InstanceMethod("Stop", &_GstGeneric::Stop),
-        InstanceMethod("SetPipeline", &_GstGeneric::SetPipeline),
-        InstanceMethod("Set", &_GstGeneric::Set),
-        // getters 
-        InstanceMethod("GetSrtStats", &_GstGeneric::GetSrtStats)
+    Napi::Function func = DefineClass(env, "_GstvuMeter", {
+        InstanceMethod("Start", &_GstvuMeter::Start),
+        InstanceMethod("Stop", &_GstvuMeter::Stop),
+        InstanceMethod("SetPipeline", &_GstvuMeter::SetPipeline)
     });
 
     // Create a peristent reference to the class constructor. This will allow
@@ -67,6 +62,6 @@ Napi::Object _GstGeneric::Init(Napi::Env env, Napi::Object exports) {
     // to this destructor to reset the reference when the environment is no longer
     // available.
     constructor.SuppressDestruct();
-    exports.Set("_GstGeneric", func);
+    exports.Set("_GstvuMeter", func);
     return exports;
 }

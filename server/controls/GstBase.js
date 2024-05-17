@@ -60,7 +60,7 @@ class GstBase {
 
             }
             catch (err) {
-                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error: ${err.message}, restarting in 3s`);
+                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): (gstreamer) error: ${err.message}, restarting in 3s`);
                 this.stop_gst();
                 setTimeout(() => { this.start_gst(path, args) }, 3000);
             }
