@@ -172,7 +172,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Curve the sharp knee around the threshold to enter gain reduction more softly" name="gate_knee" step="0.01" min="1" max="8" value="@{gate_knee}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_gate_knee}" class="max-w-[40px] truncate text-clip">@{gate_knee}</label>
+                <input type="number" for="@{_gate_knee}" step="0.1" min="1" max="8" value="@{gate_knee}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -186,7 +186,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Set a ratio about which the signal is reduced. 1:2 means that if the level rises 4dB above the threshold, it will be only 2dB above after the reduction." name="gate_ratio" step="0.01" min="1" max="20" value="@{gate_ratio}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_gate_ratio}" class="max-w-[40px] truncate text-clip">@{gate_ratio}</label>
+                <input type="number" for="@{_gate_ratio}" step="0.1" min="1" max="20" value="@{gate_ratio}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -200,7 +200,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="If a signal rises above this level it will affect the gain reduction" name="gate_threshold" step="0.000976563" min="0.000976563" max="1" value="@{gate_threshold}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_gate_threshold}" class="max-w-[40px] truncate text-clip">@{gate_threshold_val}</label>
+                <input type="number" for="@{_gate_threshold}" step="0.01" min="0.000976563" max="1" value="@{gate_threshold}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -214,7 +214,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Amplify your signal after processing" name="gate_makeup" step="0.01" min="1" max="64" value="@{gate_makeup}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_gate_makeup}" class="max-w-[40px] truncate text-clip">@{gate_makeup}</label>
+                <input type="number" for="@{_gate_makeup}" step="1" min="1" max="64" value="@{gate_makeup}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -228,7 +228,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Amount of milliseconds the signal has to rise above the threshold before gain reduction starts" name="gate_attack" step="1" min="1" max="2000" value="@{gate_attack}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_gate_attack}" class="max-w-[40px] truncate text-clip">@{gate_attack}</label>
+                <input type="number" for="@{_gate_attack}" step="1" min="1" max="2000" value="@{gate_attack}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -242,7 +242,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Amount of milliseconds the signal has to fall below the threshold before the reduction is decreased again" name="gate_release" step="1" min="1" max="2000" value="@{gate_release}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_gate_release}" class="max-w-[40px] truncate text-clip">@{gate_release}</label>
+                <input type="number" for="@{_gate_release}" step="1" min="1" max="2000" value="@{gate_release}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -292,7 +292,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Curve the sharp knee around the threshold to enter gain reduction more softly" name="comp_knee" step="0.01" min="1" max="8" value="@{comp_knee}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_knee}" class="max-w-[40px] truncate text-clip">@{comp_knee}</label>
+                <input type="number" for="@{_comp_knee}" step="0.1" min="1" max="8" value="@{comp_knee}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -306,7 +306,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Set a ratio about which the signal is reduced. 1:2 means that if the level rises 4dB above the threshold, it will be only 2dB above after the reduction." name="comp_ratio" step="0.01" min="1" max="20" value="@{comp_ratio}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_ratio}" class="max-w-[40px] truncate text-clip">@{comp_ratio}</label>
+                <input type="number" for="@{_comp_ratio}" step="0.1" min="1" max="20" value="@{comp_ratio}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -320,7 +320,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="If a signal rises above this level it will affect the gain reduction" name="comp_threshold" step="0.000976563" min="0.000976563" max="1" value="@{comp_threshold}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_threshold}" class="max-w-[40px] truncate text-clip">@{comp_threshold_val}</label>
+                <input type="number" for="@{_comp_threshold}" step="0.01" min="0.000976563" max="1" value="@{comp_threshold}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -334,7 +334,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Amplify your signal after processing" name="comp_makeup" step="0.01" min="1" max="64" value="@{comp_makeup}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_makeup}" class="max-w-[40px] truncate text-clip">@{comp_makeup}</label>
+                <input type="number" for="@{_comp_makeup}" step="1" min="1" max="64" value="@{comp_makeup}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -348,7 +348,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Ratio to mix compressed audio into feed" name="comp_mix" step="0.01" min="0" max="1" value="@{comp_mix}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_mix}" class="max-w-[40px] truncate text-clip">@{comp_mix}</label>
+                <input type="number" for="@{_comp_mix}" step="0.01" min="0" max="1" value="@{comp_mix}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -362,7 +362,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Amount of milliseconds the signal has to rise above the threshold before gain reduction starts" name="comp_attack" step="1" min="1" max="2000" value="@{comp_attack}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_attack}" class="max-w-[40px] truncate text-clip">@{comp_attack}</label>
+                <input type="number" for="@{_comp_attack}" step="1" min="1" max="2000" value="@{comp_attack}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -376,7 +376,7 @@ class SoundProcessor extends _paAudioSourceBase {
                 title="Amount of milliseconds the signal has to fall below the threshold before the reduction is decreased again" name="comp_release" step="1" min="1" max="2000" value="@{comp_release}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <label for="@{_comp_release}" class="max-w-[40px] truncate text-clip">@{comp_release}</label>
+                <input type="number" for="@{_comp_release}" step="1" min="1" max="2000" value="@{comp_release}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
