@@ -41,9 +41,6 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
         this.comp_mix = 1;
         this.comp_attack = 20;
         this.comp_release = 250;
-
-        // Gstreamer 
-        this._gst;
     }
 
     Init() {

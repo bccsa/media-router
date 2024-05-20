@@ -12,6 +12,18 @@ class vuMeter {
         this._gstVU = undefined;
         this.start_vu = this._start_vu;   // need to map that child class can access function
         this.stop_vu = this._stop_vu;     // need to map that child class can access function
+        this._this = undefined;
+    }
+
+    /**
+     * Init Vu Meter (Only needed if class is used as a subclass)
+     * @param {Object} _this - this of modulatUi class (used to be able to use class as subclass)
+     */
+    Init(_this) {
+        this._this = _this;
+        this.run = _this.run; 
+        this.ready = _this.ready;
+        this.runVU = true;
     }
 
     /**
@@ -22,40 +34,40 @@ class vuMeter {
     _start_vu(path, args) {
         if (!this._gstVU && this.ready && this.run && this.runVU) {
             try {
-                let _this = this;
+                let _this = this._this || this;
 
                 this._gstVU = spawn('node', [path, ...args], {cwd: "./", stdio: [null, null, null, 'ipc']} );
 
                 // standard stdout handeling
                 this._gstVU.stdout.on('data', (data) => {
-                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
+                    _this._parent._log('INFO', `${_this._controlName} (${_this.displayName}): ${data}`);
                 });
                 
                 // standard stderr handeling
                 this._gstVU.stderr.on('data', (data) => {
-                    _this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data}`);
+                    _this._parent._log('ERROR', `${_this._controlName} (${_this.displayName}): ${data}`);
                 });
                 
                 // standard stdin handeling
                 this._gstVU.stdin.on('data', (data) => {
-                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
+                    _this._parent._log('INFO', `${_this._controlName} (${_this.displayName}): ${data}`);
                 });
 
                 // standard message handeling
                 this._gstVU.on('message', ([msg, data]) => {
-                    this.emit(msg, data);
+                    _this.emit(msg, data);
                 });
                 
                 // Restart pipeline on exit
                 this._gstVU.on('exit', (data) => {
-                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
+                    _this._parent._log('FATAL', `${_this._controlName} (${_this.displayName}): Got exit code, restarting in 3s`);
                     this.stop_vu();
                     setTimeout(() => { this.start_vu(path, args) }, 3000);
                 });
 
             }
             catch (err) {
-                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (VU) error: ${err.message}, restarting in 3s`);
+                this._parent._log('FATAL', `${_this._controlName} (${_this.displayName}): opus decoder (VU) error: ${err.message}, restarting in 3s`);
                 this.stop_vu();
                 setTimeout(() => { this.start_vu(path, args) }, 3000);
             }
