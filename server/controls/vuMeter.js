@@ -20,7 +20,7 @@ class vuMeter {
      * @param {Array} args - List of process arguments to pass
      */
     _start_vu(path, args) {
-        if (!this._gstVU && this.ready && this.run) {
+        if (!this._gstVU && this.ready && this.run && this.runVU) {
             try {
                 let _this = this;
 
@@ -69,8 +69,8 @@ class vuMeter {
         if (this._gstVU) {
             this._gstVU.stdin.pause();
             this._gstVU.kill();
-            this._gstVU = undefined;
         }
+        this._gstVU = undefined;
     }
 }
 

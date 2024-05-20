@@ -1,6 +1,4 @@
-const { clearInterval } = require('timers');
 let { dm } = require('../modular-dm');
-const { spawn } = require('child_process');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const vuMeter = require('./vuMeter');
@@ -26,11 +24,9 @@ class _paAudioBase extends Classes(dm, vuMeter) {
         this.clientControl = "client_AudioInputDevice";
         this.monitor = "";      // PulseAudio monitor source
         this.SetAccess('monitor', { Set: 'none' });
-        this._vuProc;           // external process for VU meter
         this._vu = [];          // internal vu array
         this._vuPrev = [];      // Previous vu values array
         this._vuInterval;       // VU indication interval timer
-        this._vuResetPeak = false;
         this.vuInterval = 100;  // VU meter indication interval in milliseconds
         this.SetAccess('vuData', { Set: 'none' });
         this.enableVU = true;   // true: Enable VU calculation
@@ -69,55 +65,23 @@ class _paAudioBase extends Classes(dm, vuMeter) {
             if (run) {
                 this._parent.PaCmdQueue(() => {
                     this._startVU();
-                }).then(() => {
-                    // this._vuInterval = setInterval(() => {
-                    //     let vu = [...this._vu];
-
-                    //     let notify = false;
-                    //     if (this._vuPrev.length != vu.length) {
-                    //         notify = true;
-                    //     }
-
-                    //     for (let i = 0; i < vu.length; i++) {
-                    //         // volume in fraction of 1
-                    //         // vu[i] = Math.round(vu[i] / 32768 * 100) / 100;
-
-                    //         // volume in dB
-                    //         vu[i] = Math.round(20 * Math.log10(vu[i] / 32768));
-
-                    //         // Rate limit graph decline
-                    //         if (vu[i] < this._vuPrev[i] - 5) vu[i] = this._vuPrev[i] - 5;
-
-                    //         // Clamp at -60 db
-                    //         if (vu[i] < -60) vu[i] = -60;
-
-                    //         // Check if value changed
-                    //         if (!notify) {
-                    //             notify = (vu[i] !== this._vuPrev[i]);
-                    //         }
-                    //     }
-
-                    //     if (notify) {
-                    //         this._notify({ vuData: vu });   // Notifies with through _topLevelParent.on('data', data => {});
-                    //     }
-
-                    //     this._vuPrev = [...vu]; // create a shallow copy of the internal VU array
-                    //     this._vuResetPeak = true;
-                    // }, this.vuInterval);
                 }).catch(err => {
                     this._parent._log('FATAL', `${this._paModuleName} (${this.displayName}): ${err.message}`);
                 });
-
             } else {
-                this._stopVU();
-                clearInterval(this._vuInterval);
-                // Clear vu meter indication
-                for (let i = 0; i < this._vu.length; i++) {
-                    this._vu[i] = -60;
-                }
+                this._parent.PaCmdQueue(() => {
+                    this._stopVU();
+                }).then(() => {
+                    // Clear vu meter indication
+                    for (let i = 0; i < this._vu.length; i++) {
+                        this._vu[i] = -60;
+                    }
 
-                this._notify({ vuData: this._vu });
-                this._vuPrev = [...this._vu]; // create a shallow copy of the internal VU array
+                    this._notify({ vuData: this._vu });
+                    this._vuPrev = [...this._vu]; // create a shallow copy of the internal VU array
+                }).catch(err => {
+                    this._parent._log('FATAL', `${this._paModuleName} (${this.displayName}): ${err.message}`);
+                });
             }
         });
 
@@ -179,70 +143,32 @@ class _paAudioBase extends Classes(dm, vuMeter) {
     }
 
     _startVU() {
+        this._parent._log('INFO', `${this._paModuleName} (${this.displayName}): Starting VU`);
         const _pl = `pulsesrc device=${this.monitor} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true`;
         const _path = `${path.dirname(process.argv[1])}/child_processes/vu_child.js`;
         this.start_vu(_path, [_pl]);
         // start vu
         this.on("vuData", (data) => {
             if (data && data.decay_dB) {
-                let vu = [];
+                this._vu = [];
                 Object.values(data.decay_dB).forEach((val, i) => {
-                    vu[i] = Math.round(val);
+                    this._vu[i] = Math.round(val);
                     // Clamp at -60 db
-                    if (vu[i] < -60) vu[i] = -60;
+                    if (this._vu[i] < -60) this._vu[i] = -60;
                 })
 
-                this._notify({ vuData: vu });
+                this._notify({ vuData: this._vu });
 
-                if (JSON.stringify(this._vuPrev) != JSON.stringify(vu)) {
-                    this._notify({ vuData: vu });   // Notifies with through _topLevelParent.on('data', data => {});
-                    this._vuPrev = vu;
+                if (JSON.stringify(this._vuPrev) != JSON.stringify(this._vu)) {
+                    this._notify({ vuData: this._vu });   // Notifies with through _topLevelParent.on('data', data => {});
+                    this._vuPrev = this._vu;
                 }
             }
-        })
-
-
-        // try {
-
-        //     if (this.monitor && !this._vuProc) {
-        //         let args = `--record --device ${this.monitor} --format s16le --fix-channels --fix-rate --latency-msec 100 --volume 65536 --raw`; // record at normal rate. Lowering the rate does not keep peak values, so not useful for level indication where peak volumes should be calculated.
-        //         this._vuProc = spawn('pacat', args.split(' '));
-        //         this._parent._log("INFO", `${this._controlName} (${this.displayName}): Starting VU`);
-        //         this._vuProc.stdout.on('data', buffer => {
-        //             // Set VU array to channel count
-        //             this._vu = new Array(this.channels).fill(0);
-    
-        //             if (this.channels > 0) {
-        //                 // Store peak volumes
-        //                 for (let i = 0; i < buffer.length - 1; i += 2) { // skip to next 16bit sample (2 * 8bit)
-        //                     let v = Math.abs(buffer.readInt16LE(i));
-        //                     let channel = i / 2 % this.channels;
-    
-        //                     if (this._vu[channel] < v || this._vuResetPeak) this._vu[channel] = v;
-        //                 }
-        //                 this._vuResetPeak = false;
-        //             }
-        //         });
-    
-        //         this._vuProc.stderr.on('data', data => {
-        //             this._parent._log('ERROR', `${this._controlName} (${this.displayName}) - VU meter error ` + data.toString());
-        //         });
-    
-        //         this._vuProc.on('close', code => {
-    
-        //         });
-    
-        //         this._vuProc.on('error', err => {
-        //             this._parent._log('FATAL', `${this._controlName} (${this.displayName}) - VU meter error: ` + err.message);
-        //         });
-        //     }
-        // } catch (err) {
-        //     this._parent._log('FATAL', `${this._controlName} (${this.displayName}) - VU meter error: ` + err.message);
-        // }
-        
+        })        
     }
 
     _stopVU() {
+        this._parent._log('INFO', `${this._paModuleName} (${this.displayName}): Stopping VU`);
         this.stop_vu();
     }
 

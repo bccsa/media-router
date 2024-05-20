@@ -1,9 +1,8 @@
 let _paAudioSourceBase = require('./_paAudioSourceBase');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
-const _paNullSinkBase = require('./_paNullSinkBase');
 
-class AudioInput extends _paNullSinkBase {
+class AudioInput extends _paAudioSourceBase {
     constructor() {
         super();
         // Set audio format settings to read-only. These settings are read / calculated from the PulseAudio server, and cannot be modified by the user.
@@ -15,22 +14,19 @@ class AudioInput extends _paNullSinkBase {
         this._srcChannels = 0;      // Master source channel count
         this._srcChannelMap = [];   // Master source channel map
         this.master = '';           // PulseAudio master source
-        this._paModuleID_ = undefined;  // Ramap module id
-        this._loopbackID = undefined;  // Loopback module id
-        this._remapSource = undefined;   // name of remap
     }
 
     Init() {
         super.Init();
 
-        this._remapSource = this._paModuleName + "_remap";
-        // this.monitor = this.source;
+        this.source = this._paModuleName;
+        this.monitor = this.source;
 
         this.on('run', run => {
 
             let eventHandler = function (sources) {
                 if (sources.find(t => t.name == this.master)) {
-                    if (!this._paModuleID_) {
+                    if (!this._paModuleID) {
                         this._map();
                         this._parent.PaCmdQueue(() => { this._startRemapSource() });
                     }
@@ -40,8 +36,6 @@ class AudioInput extends _paNullSinkBase {
             }.bind(this);
 
             if (run) {
-                // start loopback if run && _paModuleID_ exists
-                if (this._paModuleID_) this._startLoopback();
                 // Wait for master source to be available before starting the remap source
                 this._parent.on('sources', eventHandler, { immediate: true });
             } else {
@@ -119,52 +113,31 @@ class AudioInput extends _paNullSinkBase {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startRemapSource() {
         if (this.channels > 0) {
-            let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._remapSource} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
+            let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     this._parent._log('ERROR', data.stderr.toString());
                 }
 
                 if (data.stdout.length) {
-                    this._paModuleID_ = data.stdout.toString().trim();
-                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created remap-source; ID: ${this._paModuleID_}`);
-                    // start loopback
-                    this._startLoopback();
+                    this._paModuleID = data.stdout.toString().trim();
+                    this._parent._log('INFO', `${this._controlName} (${this.displayName}): Created remap-source; ID: ${this._paModuleID}`);
                 }
             }).catch(err => {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
-                this._paModuleID_ = undefined;
+                this._paModuleID = undefined;
             });
         } else {
             this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to create remap-source: Invalid channel map`);
-            this._paModuleID_ = undefined;
+            this._paModuleID = undefined;
         }
 
     }
 
-    _startLoopback() {
-        //  start loopback from device to null sink
-        let channelMap = '';
-        if (this.channels == 1) channelMap = 'channel_map=mono'
-        let cmd = `pactl load-module module-loopback source=${this._remapSource} sink=${this.sink} latency_msec=${this._parent.paLatency} channels=${this.channels} rate=${this.sampleRate} format=s${this.bitDepth}le source_dont_move=true sink_dont_move=true ${channelMap}`;
-        exec(cmd, { silent: true }).then(data => {
-            if (data.stderr) {
-                this._parent._log('ERROR', `${this._controlName}: ${data.stderr.toString()}`);
-            }
-
-            if (data.stdout.length) {
-                this._loopbackID = data.stdout.toString().trim();
-                this._parent._log('INFO', `${this._controlName}: Connected ${this._remapSource} to ${this.sink}; ID: ${this._loopbackID}`);
-            }
-        }).catch(err => {
-            this._parent._log('FATAL', `${this._controlName}: ${err.message}`);
-        });
-    }
-
     // Remove PulseAudio module
     _stopRemapSource() {
-        if (this._paModuleID_) {
-            let cmd = `pactl unload-module ${this._paModuleID_}`;
+        if (this._paModuleID) {
+            let cmd = `pactl unload-module ${this._paModuleID}`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
                     this._parent._log('ERROR', data.stderr.toString());
@@ -172,10 +145,10 @@ class AudioInput extends _paNullSinkBase {
                     this._parent._log('INFO', `${this._controlName} (${this.displayName}): Removed remap-source`);
                 }
 
-                this._paModuleID_ = undefined;
+                this._paModuleID = undefined;
             }).catch(err => {
                 this._parent._log('FATAL', `${this._controlName} (${this.displayName}): ` + err.message);
-                this._paModuleID_ = undefined;
+                this._paModuleID = undefined;
             });
         }
     }
