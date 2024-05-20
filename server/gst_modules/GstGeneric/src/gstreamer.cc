@@ -106,7 +106,6 @@ void _GstGeneric::th_Start(std::string _pipeline_) {
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* Create the pipeline */
-    std::cout << _pipeline_.c_str() << "\n";
     this->pipeline = gst_parse_launch(_pipeline_.c_str() ,NULL);
 
     /* ------------------------------ Prep pipline -------------------------------- */
