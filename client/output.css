@@ -9636,6 +9636,10 @@ textarea.paAudioBase-text-area.is-invalid {
   width: 3/24;
 }
 
+.w-\[80px\] {
+  width: 80px;
+}
+
 .w-auto {
   width: auto;
 }
@@ -9644,8 +9648,16 @@ textarea.paAudioBase-text-area.is-invalid {
   width: 100%;
 }
 
+.w-\[60px\] {
+  width: 60px;
+}
+
 .min-w-\[12rem\] {
   min-width: 12rem;
+}
+
+.max-w-\[100px\] {
+  max-width: 100px;
 }
 
 .max-w-\[175px\] {
