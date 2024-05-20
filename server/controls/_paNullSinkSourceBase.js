@@ -27,7 +27,7 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
         this._source = `${this._paModuleName}_sink.monitor`;
         this._sink = `${this._paModuleName}_source`;
         this.source = `${this._paModuleName}_source.monitor`;
-        this.monitor = this._source;
+        this.monitor = this.source;
 
         this.on('run', run => {
             if (run) {
