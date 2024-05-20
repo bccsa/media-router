@@ -1,17 +1,6 @@
-# [AudioOutput.js](./AudioOutput.js)
+# Audio Output 
 
-## Title 2
-
-### Title 3
-
-``` 
-function test () {
-
-}
-```
-
-**BOLD**
-
-*Italic*
+* Sink - Audio Sink
+* Channel Map - Enter channel map as a comma-separated list of channel numbers
 
 ---
