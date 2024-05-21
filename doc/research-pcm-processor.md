@@ -32,9 +32,10 @@ GST_DEBUG=comp:5 gst-launch-1.0 pulsesrc device=MR_PA_SoundProcessor_2145_sink.m
 ```
 
 ## Improve sound processor stability && latency
-
 ```bash
-GST_DEBUG=2 gst-launch-1.0 pulsesrc device=MR_PA_SoundProcessor_9082_sink.monitor ! audio/x-raw,rate=48000,format=S16LE,channels=1 ! audioconvert ! audiorate ! equalizer-10bands name="eq" band0=-24 band1=-19.7 band2=-12.5 band3=-4.6 band4=0 band5=0 band6=0 band7=3 band8=6.1 band9=6.5  ! calf-sourceforge-net-plugins-Gate name="gate" bypass=false knee=6.5 ratio=3.8 threshold=0.160976563 attack=19 release=292 makeup=8 ! calf-sourceforge-net-plugins-Compressor name="compressor" bypass=false knee=1.4 ratio=3.4 threshold=0.460976563 makeup=1 mix=0.63 attack=55 release=418 ! pulsesink device=MR_PA_SoundProcessor_9082_source
+GST_DEBUG=2 gst-launch-1.0 pulsesrc device=MR_PA_SoundProcessor_9082_sink.monitor do-timestamp=false ! audio/x-raw,rate=48000,format=S16LE,channels=1 ! audioconvert ! audiorate ! equalizer-10bands name="eq" band0=0 band1=0 band2=0 band3=0 band4=0 band5=0 band6=0 band7=0 band8=0 band9=0  ! calf-sourceforge-net-plugins-Gate name="gate" bypass=true knee=6.5 ratio=3.8 threshold=0.081054729 attack=19 release=292 makeup=8 ! calf-sourceforge-net-plugins-Compressor name="compressor" bypass=true knee=1.4 ratio=3.4 threshold=0.460976563 makeup=1 mix=0.63 attack=55 release=418 ! pulsesink device=MR_PA_SoundProcessor_9082_source sync=true async=false
+
+GST_DEBUG=2 gst-launch-1.0 pulsesrc device=MR_PA_SoundProcessor_1813_sink.monitor ! audio/x-raw,rate=48000,format=S16LE,channels=1 ! audioconvert ! audiorate ! equalizer-10bands name="eq" band0=0 band1=0 band2=0 band3=0 band4=0 band5=0 band6=0 band7=0 band8=0 band9=0  ! calf-sourceforge-net-plugins-Gate name="gate" bypass=true knee=2.8 ratio=1 threshold=0.001 attack=20 release=250 makeup=1 ! calf-sourceforge-net-plugins-Compressor name="compressor" bypass=true knee=2.8 ratio=1 threshold=0.001 makeup=1 mix=1 attack=20 release=250 ! pulsesink device=MR_PA_SoundProcessor_1813_source
 ```
 
 # Audio Ducker

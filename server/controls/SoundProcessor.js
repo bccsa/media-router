@@ -49,7 +49,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
         this.on('ready', ready => {
             if (ready) {
                 // Source
-                let _pipeline = `pulsesrc device=${this._source} ! ` +
+                let _pipeline = `pulsesrc device=${this._source} do-timestamp=false ! ` +
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audiorate ! `;
                 // EQ
                 _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
@@ -62,7 +62,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
                 _pipeline += `queue name="delay" leaky=2 min-threshold-time=${this.delayVal * 1000000} max-size-buffers=0 max-size-bytes=0 max-size-time=${(this.delayVal + 100) * 1000000} ! `
                 
                 // Sink 
-                _pipeline += `pulsesink device=${this._sink}`;
+                _pipeline += `pulsesink device=${this._sink} sync=true`;
 
                 // ------------ start sound processor ------------ //
                 this._parent.PaCmdQueue(() => { 

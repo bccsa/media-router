@@ -1,6 +1,6 @@
 class SrtBase {
     constructor() {
-        this.srtHost = 'srt.invalid';
+        this.srtHost = '';
         this.srtPort = 1234;
         this.srtMode = 'caller';
         this.srtPbKeyLen = 16;
