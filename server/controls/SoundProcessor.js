@@ -49,7 +49,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
         this.on('ready', ready => {
             if (ready) {
                 // Source
-                let _pipeline = `pulsesrc device=${this._source} do-timestamp=false ! ` +
+                let _pipeline = `pulsesrc device=${this._source} do-timestamp=false ! ` + // do-timestamp=false used for live audio (see: https://github.com/ros-drivers/audio_common/issues/120)
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audiorate ! `;
                 // EQ
                 _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
