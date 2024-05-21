@@ -10,7 +10,7 @@ const GstBase = require('./GstBase');
 class SrtBase extends GstBase {
     constructor() {
         super();
-        this.srtHost = 'srt';
+        this.srtHost = '';
         this.srtPort = 1234;
         this.srtMode = 'caller';
         this.srtLatency = 1;
@@ -76,7 +76,11 @@ class SrtBase extends GstBase {
             }
         })
 
-        this.start_gst(path, args);
+        if (this.srtHost) {
+            this.start_gst(path, args);
+        } else {
+            this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to start, Please enter a valid SrtHost`);
+        }
 
         // Poll for srt stats 
         let _srtElementName = args[1];
