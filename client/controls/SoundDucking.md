@@ -1,8 +1,8 @@
 # Sound Ducking
 PCM Sound Ducker
 
-* Side Chain - Input to use to activate ducker 
-* Channel Map - Enter channel map as a comma-separated list of channel numbers
+* Side Chain - Input to use to activate ducker (Need to reload module when this is updated)
+* Channel Map - Enter channel map as a comma-separated list of channel numbers (Need to reload module when this is updated)
 * Threshold - Audio level % where the ducker should kick in" name="threshold
 * Duckin Level - Audio level % that the audio should be ducked to
 * Attack - Time (ms) that the audio need to above the threshold, before levels is ducked
