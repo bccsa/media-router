@@ -81,7 +81,7 @@ class SoundDucking extends _paNullSinkBase {
             this.channelMap.split(',').forEach(channel => {
                 let ch = parseInt(channel);
                 if (ch && ch > 0 && ch <= this._srcChannels) {
-                    channelMap += `d.src_${ch} ! i. `;
+                    channelMap += `d.src_${ch -1} ! i. `;
                     channelCount ++;
                 }
             });
