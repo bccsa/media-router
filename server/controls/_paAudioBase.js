@@ -45,6 +45,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
         this.enableVolControl = false;
         this.SetAccess('enableVolControl', { Set: 'none', Get: 'none' });
         this.reload = false;    // Reload configuration command. Stops and starts the control to apply changes.
+        this._vuDataListener = undefined;   // eventlistener for vuData, used to unsubscribe
     }
 
     Init() {
@@ -72,6 +73,9 @@ class _paAudioBase extends Classes(dm, vuMeter) {
                 this._parent.PaCmdQueue(() => {
                     this._stopVU();
                 }).then(() => {
+                    // unsubscribe from vuData
+                    this.off("vuData", this._vuDataListener);
+                    this._vuDataListener = undefined;
                     // Clear vu meter indication
                     for (let i = 0; i < this._vu.length; i++) {
                         this._vu[i] = -60;
@@ -148,7 +152,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
         const _path = `${path.dirname(process.argv[1])}/child_processes/vu_child.js`;
         this.start_vu(_path, [_pl]);
         // start vu
-        this.on("vuData", (data) => {
+        this._vuDataListener = this.on("vuData", (data) => {
             if (data && data.decay_dB) {
                 this._vu = [];
                 Object.values(data.decay_dB).forEach((val, i) => {
