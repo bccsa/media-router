@@ -31,6 +31,12 @@ GST_DEBUG=comp:5 gst-launch-1.0 pulsesrc device=alsa_input.usb-C-Media_Electroni
 GST_DEBUG=comp:5 gst-launch-1.0 pulsesrc device=MR_PA_SoundProcessor_2145_sink.monitor ! audio/x-raw,rate=48000,format=S16LE,channels=1 ! equalizer-10bands name="eq" band0=0 band1=0 band2=0 band3=0 band4=0 band5=0 band6=0 band7=0 band8=0 band9=0 ! calf-sourceforge-net-plugins-Compressor name="compressor" bypass=false knee=7.2 ratio=12.5 threshold=0.894976563 attack=672.95 release=1180.04 ! pulsesink device=MR_PA_SoundProcessor_2145_source
 ```
 
+## Improve sound processor stability && latency
+
+```bash
+GST_DEBUG=2 gst-launch-1.0 pulsesrc device=MR_PA_SoundProcessor_9082_sink.monitor ! audio/x-raw,rate=48000,format=S16LE,channels=1 ! audioconvert ! audiorate ! equalizer-10bands name="eq" band0=-24 band1=-19.7 band2=-12.5 band3=-4.6 band4=0 band5=0 band6=0 band7=3 band8=6.1 band9=6.5  ! calf-sourceforge-net-plugins-Gate name="gate" bypass=false knee=6.5 ratio=3.8 threshold=0.160976563 attack=19 release=292 makeup=8 ! calf-sourceforge-net-plugins-Compressor name="compressor" bypass=false knee=1.4 ratio=3.4 threshold=0.460976563 makeup=1 mix=0.63 attack=55 release=418 ! pulsesink device=MR_PA_SoundProcessor_9082_source
+```
+
 # Audio Ducker
 ```bash 
 GST_DEBUG=2 gst-launch-1.0 pulsesrc device=${this.side_chain} ! audio/x-raw,rate=48000,format=S16LE,channels=2 ! deinterleave name=d audiomixer name=i ! level peak-falloff=120 peak-ttl=50000000 interval=500000000 ! fakesink silent=true d.src_0 ! i. d.src_1 ! i.
