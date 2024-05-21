@@ -18,7 +18,7 @@ setTimeout(() => {
     })
 
     running = true;
-}, 1000);
+}, 50);
 
 
 /**

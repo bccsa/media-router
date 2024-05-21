@@ -60,16 +60,16 @@ class vuMeter {
                 
                 // Restart pipeline on exit
                 this._gstVU.on('exit', (data) => {
-                    _this._parent._log('FATAL', `${_this._controlName} (${_this.displayName}): Got exit code, restarting in 3s`);
+                    _this._parent._log('FATAL', `${_this._controlName} (${_this.displayName}): Got exit code, restarting in 500ms`);
                     this.stop_vu();
-                    setTimeout(() => { this.start_vu(path, args) }, 3000);
+                    setTimeout(() => { this.start_vu(path, args) }, 500);
                 });
 
             }
             catch (err) {
-                this._parent._log('FATAL', `${_this._controlName} (${_this.displayName}): opus decoder (VU) error: ${err.message}, restarting in 3s`);
+                this._parent._log('FATAL', `${_this._controlName} (${_this.displayName}): opus decoder (VU) error: ${err.message}, restarting in 500ms`);
                 this.stop_vu();
-                setTimeout(() => { this.start_vu(path, args) }, 3000);
+                setTimeout(() => { this.start_vu(path, args) }, 500);
             }
         }
     }
