@@ -11,7 +11,7 @@ class SoundDucking extends _paAudioSourceBase {
         // side chain
         this.side_chain = '';       // side_chain source
         this.side_chain_descr = ''; // Description of side_chain source
-        this.channelMap = '1,2';
+        this.channelMap = '';
     
     }
 

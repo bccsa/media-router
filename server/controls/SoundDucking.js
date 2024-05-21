@@ -27,7 +27,10 @@ class SoundDucking extends _paNullSinkBase {
 
         // side chain
         this.side_chain = "";       // chain to listen on
-        this.channelMap = '';
+        this.channelMap = '';       // Input channel map
+        this._channelMap = '';      // PulseAudio calculated channel map
+        this._srcChannels = 0;      // Master source channel count
+        this._srcChannelMap = [];   // Master source channel map
     }
 
     Init() {
@@ -71,34 +74,25 @@ class SoundDucking extends _paNullSinkBase {
      */
     _map() {
         if (this._parent._sources[this.side_chain]) {
-            let _srcChannels = this._parent._sources[this.side_chain].channels;
-            let _srcChannelMap = this._parent._sources[this.side_chain].channelmap;
+            this._srcChannels = this._parent._sources[this.side_chain].channels;
+            let channelMap = "";
 
-            let masterMap = [];
             let channelCount = 0;
-            let channelMap = [];
-
             this.channelMap.split(',').forEach(channel => {
                 let ch = parseInt(channel);
-                if (ch && ch > 0 && ch <= _srcChannels) {
-                    masterMap.push(_srcChannelMap[ch - 1]);
-                    channelMap.push(ch);
-                    channelCount++;
+                if (ch && ch > 0 && ch <= this._srcChannels) {
+                    channelMap += `d.src_${ch} ! i. `;
+                    channelCount ++;
                 }
             });
 
-            // Reduce channel count if larger than side_chain channel count
-            if (channelCount > _srcChannels) {
-                channelCount = _srcChannels;
-                channelMap.splice(channelCount);
-            }
-
             if (channelCount > 0) {
-                this.channelMap = channelMap.join(',');
-            } else {
+                this._channelMap = channelMap;
+            }
+            else {
                 // Create default channel map
                 channelMap = [];
-                for (let i = 1; i <= _srcChannels; i++) {
+                for (let i = 1; i <= this._srcChannels; i++) {
                     channelMap.push(i);
                 }
                 this.channelMap = channelMap.join(',');
@@ -112,7 +106,7 @@ class SoundDucking extends _paNullSinkBase {
     _startAudioDucker() {
         if (this.side_chain) {
             this._parent._log('INFO', `${this._paModuleName} (${this.displayName}): Starting Audio Ducker`);
-            const _pl = `pulsesrc device=${this.side_chain} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=1 ! audioconvert mix-matrix="<<${this.channelMap}>>" ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true`;
+            const _pl = `pulsesrc device=${this.side_chain} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this._srcChannels} ! deinterleave name=d audiomixer name=i ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true ${this._channelMap}`;
             const _path = `${path.dirname(process.argv[1])}/child_processes/vu_child.js`;
             vu.start_vu(_path, [_pl, "audioLevel"]);
             // start vu
