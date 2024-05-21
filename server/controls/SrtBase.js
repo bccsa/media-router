@@ -149,10 +149,12 @@ class SrtBase extends GstBase {
         let count = 0; 
         if (this._controls && this.srtMode == "listener")
         Object.values(this._controls).forEach(c => {
-            if (count >= this.caller_count) {
-                c._notify({remove: true}); c.Set({remove: true})
+            if (c.controlType == "SrtStats") {
+                if (count >= this.caller_count) {
+                    c._notify({remove: true}); c.Set({remove: true})
+                }
+                count ++;
             }
-            count ++;
         });
     }
 
@@ -162,7 +164,8 @@ class SrtBase extends GstBase {
     _clearStats() {
         if (this._controls)
         Object.values(this._controls).forEach(c => {
-            c._notify({remove: true}); c.Set({remoce: true})
+            if (c.controlType == "SrtStats")
+                c._notify({remove: true}); c.Set({remoce: true})
         });
     }
 }
