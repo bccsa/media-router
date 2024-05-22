@@ -49,7 +49,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
         this.on('ready', ready => {
             if (ready) {
                 // Source
-                let _pipeline = `pulsesrc device=${this._source} do-timestamp=false ! ` + // do-timestamp=false used for live audio (see: https://github.com/ros-drivers/audio_common/issues/120)
+                let _pipeline = `pulsesrc device=${this._source} latency-time=${this._parent.paLatency * 1000} buffer-time=${this._parent.paLatency * 1000} ! ` + // do-timestamp=false used for live audio (see: https://github.com/ros-drivers/audio_common/issues/120)
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audiorate ! `;
                 // EQ
                 _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
@@ -62,7 +62,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
                 _pipeline += `queue name="delay" leaky=2 min-threshold-time=${this.delayVal * 1000000} max-size-buffers=0 max-size-bytes=0 max-size-time=${(this.delayVal + 100) * 1000000} ! `
                 
                 // Sink 
-                _pipeline += `pulsesink device=${this._sink} sync=true`;
+                _pipeline += `pulsesink device=${this._sink} sync=false buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`;
 
                 // ------------ start sound processor ------------ //
                 this._parent.PaCmdQueue(() => { 
