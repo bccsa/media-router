@@ -173,7 +173,7 @@ class SoundDucking extends _paNullSinkBase {
             this._ducked = true;
             let end_vol = this.ducking_level / this.volume * 100;
             let hops = Math.round(this.attack_time / 100);
-            if (hops < 5) hops = 5; // cap min hops
+            if (hops < 2) hops = 2; // cap min hops
             let step = (this._currentVol - end_vol) /hops;
             this._attackInterval = setInterval(() => {
                 if (this._currentVol > end_vol) {   // decreasing
