@@ -338,6 +338,7 @@ class Router extends ui {
                             <option value="AudioOutput">Audio Output</option>
                             <option value="SrtOpusInput">Opus over SRT Input</option>
                             <option value="SrtOpusOutput">Opus over SRT Output</option>
+                            <option value="SrtRelay">Srt Relay</option>
                             <option value="SoundProcessor">PCM Sound Processor</option>
                             <option value="SoundDucking">PCM Sound Ducking</option>
                             <option value="SrtVideoPlayer">Video over SRT Player</option>

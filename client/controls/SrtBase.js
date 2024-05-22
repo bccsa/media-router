@@ -12,21 +12,31 @@ class SrtBase {
         this.caller_count = 0;      // amount of callers connected to module
     }
 
-    SrtBaseHtml() {
+    SrtBaseHtml(title = "SRT Settings", 
+        prop_host = "srtHost", 
+        prop_port = "srtPort", 
+        prop_mode = "srtMode", 
+        porp_PbKeyLen = "srtPbKeyLen", 
+        prop_passphrase = "srtPassphrase", 
+        prop_latency = "srtLatency", 
+        prop_maxBw = "srtMaxBw", 
+        prop_enableMaxBw = "srtEnableMaxBW", 
+        prop_streamId = "srtStreamID"
+    ) {
         return `
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
         <div class="w-full items-center justify-items-center justify-center">
-            <div class="text-center align-top font-semibold text-base">SRT Settings</div>
+            <div class="text-center align-top font-semibold text-base">${title}</div>
         </div>
 
         <div class="w-full mb-1 flex ">
 
             <!--    Enable SRT Max Bandwidth      --> 
             <div class="w-2/3 mr-2 mb-2 flex">
-                <input id="@{_srtEnableMaxBW}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{srtEnableMaxBW}"/>  
-                <label for="@{_srtEnableMaxBW}" class="" title="Enable SRT max bandwidth">Enable SRT max bandwidth</label> 
+                <input id="@{_${prop_enableMaxBw}}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{${prop_enableMaxBw}}"/>  
+                <label for="@{_${prop_enableMaxBw}}" class="" title="Enable SRT max bandwidth">Enable SRT max bandwidth</label> 
             </div>
 
             <div class="w-1/3 mb-2 ml-2 flex">
@@ -37,37 +47,37 @@ class SrtBase {
 
         <!-- SRT host  -->
         <div class="w-full mb-2">
-            <label for="@{_srtHost}" class="form-label inline-block mb-2">Host:</label>
-                <input id="@{_srtHost}" class="paAudioBase-text-area" type="text"
-                title="SRT host name / ip address" placeholder="Your srt Host" value="@{srtHost}"/>
+            <label for="@{_${prop_host}}" class="form-label inline-block mb-2">Host:</label>
+                <input id="@{_${prop_host}}" class="paAudioBase-text-area" type="text"
+                title="SRT host name / ip address" placeholder="Your srt Host" value="@{${prop_host}}"/>
         </div>
 
         <div class="w-full mb-2 flex ">
             <!-- SRT port  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_srtPort}" class="form-label inline-block mb-2 mr-2">Port:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtPort}" 
+                <label for="@{_${prop_port}}" class="form-label inline-block mb-2 mr-2">Port:</label>
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_${prop_port}}" 
                     title="SRT port" name="SRT port" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{srtPort}"
+                    value="@{${prop_port}}"
                 >
             </div>
 
             <!-- SRT Latency  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_srtLatency}" class="form-label inline-block mb-2 mr-2">Latency:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtLatency}" 
+                <label for="@{_${prop_latency}}" class="form-label inline-block mb-2 mr-2">Latency:</label>
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_${prop_latency}}" 
                     title="SRT latency in milliseconds" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{srtLatency}"
+                    value="@{${prop_latency}}"
                 >
             </div>
 
             <!-- SRT Max Bandwidth  --> 
             <div class="w-1/3 flex flex-col">
-                <div id=@{maxBW}>
-                    <label for="@{_srtMaxBw}" class="form-label inline-block mb-2 mr-2">Max Bw (% of BW):</label>
-                    <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_srtMaxBw}" 
+                <div id=@{${prop_maxBw}_div}>
+                    <label for="@{_${prop_maxBw}}" class="form-label inline-block mb-2 mr-2">Max Bw (% of BW):</label>
+                    <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_${prop_maxBw}}" 
                         title="SRT Max Bandwidth in bytes per second" name="SRT MaxBw" step="1" min="100" max="1000" class="srtOpusInput-pos-number-input"
-                        value="@{srtMaxBw}"
+                        value="@{${prop_maxBw}}"
                     >
                 </div>
             </div>
@@ -78,8 +88,8 @@ class SrtBase {
 
             <!-- SRT Mode  -->    
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_srtMode}" class="form-label inline-block mb-2">Mode:</label>
-                <select id="@{_srtMode}" title="SRT mode (caller, listener, rendezvous)" value="@{srtMode}" 
+                <label for="@{_${prop_mode}}" class="form-label inline-block mb-2">Mode:</label>
+                <select id="@{_${prop_mode}}" title="SRT mode (caller, listener, rendezvous)" value="@{${prop_mode}}" 
                 name="SRT Mode" class="paAudioBase-select" type="text">
                     <option value="caller">Caller</option>
                     <option value="listener">Listener</option>
@@ -89,8 +99,8 @@ class SrtBase {
 
             <!-- SRT PbKeyLen  -->    
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_srtPbKeyLen}" class="form-label inline-block mb-2">Pb Key Length:</label>
-                <select id="@{_srtPbKeyLen}" title="SRT encryption key length (16, 32)" value="@{srtPbKeyLen}" 
+                <label for="@{_${porp_PbKeyLen}}" class="form-label inline-block mb-2">Pb Key Length:</label>
+                <select id="@{_${porp_PbKeyLen}}" title="SRT encryption key length (16, 32)" value="@{${porp_PbKeyLen}}" 
                 name="SRT PbKeyLen" class="paAudioBase-select" type="text">
                     <option value="16">16</option>
                     <option value="32">32</option>
@@ -104,16 +114,16 @@ class SrtBase {
 
         <!-- SRT Passphrase  -->
         <div class="w-full mb-2">
-            <label for="@{_srtPassphrase}" class="form-label inline-block mb-2">Passphrase:</label>
-            <input id="@{_srtPassphrase}" class="paAudioBase-text-area" type="text" 
-            title="SRT encryption passphrase" placeholder="Your srt Passphrase" value="@{srtPassphrase}"/>
+            <label for="@{_${prop_passphrase}}" class="form-label inline-block mb-2">Passphrase:</label>
+            <input id="@{_${prop_passphrase}}" class="paAudioBase-text-area" type="text" 
+            title="SRT encryption passphrase" placeholder="Your srt Passphrase" value="@{${prop_passphrase}}"/>
         </div>
 
         <!-- SRT StreamID  -->
         <div class="w-full mb-2">
-            <label for="@{_srtStreamID}" class="form-label inline-block mb-2">Stream ID:</label>
-                <input id="@{_srtStreamID}" class="paAudioBase-text-area" type="text" 
-                title="SRT Stream ID" placeholder="Your srt StreamID" value="@{srtStreamID}"/>
+            <label for="@{_${prop_streamId}}" class="form-label inline-block mb-2">Stream ID:</label>
+                <input id="@{_${prop_streamId}}" class="paAudioBase-text-area" type="text" 
+                title="SRT Stream ID" placeholder="Your srt StreamID" value="@{${prop_streamId}}"/>
         </div>
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
@@ -211,8 +221,8 @@ class SrtBase {
 
         // Enable disable / maxBandwidth
         this.on('srtEnableMaxBW', res => {
-            if (!res) { this.maxBW.style.display = "none" }
-            else {this.maxBW.style.display = "block" }
+            if (!res) { this.srtMaxBw_div.style.display = "none" }
+            else {this.srtMaxBw_div.style.display = "block" }
         }, { immediate: true });
 
         //----------------------SrtStats Modification-----------------------------//
