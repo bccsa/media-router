@@ -1,17 +1,6 @@
-# [AudioInput.js](./AudioInput.js)
+# Audio Input 
 
-## Title 2
-
-### Title 3
-
-``` 
-function test () {
-
-}
-```
-
-**BOLD**
-
-*Italic*
+* Source - Audio Source
+* Channel Map - Enter channel map as a comma-separated list of channel numbers
 
 ---

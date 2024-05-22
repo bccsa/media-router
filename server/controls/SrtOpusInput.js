@@ -23,7 +23,7 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 `pulsesink device="${this.sink}" sync=false buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
 
                 this._parent.PaCmdQueue(() => { 
-                    this._start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
+                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
                         _pipeline,
                         this._srtElementName
                     ]);
@@ -34,7 +34,7 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on('run', run => {
             if (!run) {
-                this._stop_gst();
+                this._stop_srt();
             }
         });
     }

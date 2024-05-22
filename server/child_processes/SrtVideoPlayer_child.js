@@ -14,7 +14,7 @@ setTimeout(() => {
 
     // Poll for srt stats
     setInterval(() => {
-        process.send && process.send(p.GetSrtStats());
+        process.send && process.send(["SrtStats", p.GetSrtStats()]);
     }, 2000)
     
 }, 1000);

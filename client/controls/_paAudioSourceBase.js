@@ -99,7 +99,7 @@ class _paAudioSourceBase extends _paAudioBase {
     //Add destination if new _paAudioSinkBase control is added to the parent
     _addDestination(dstControl) {
         try {
-            if (dstControl instanceof _paAudioSinkBase) {
+            if (dstControl instanceof _paAudioSinkBase || dstControl instanceof SoundProcessor || dstControl instanceof SoundDucking) {
                 let check = 'dst_' + dstControl.name;
                 let line = 'line_' + this.name + "To" + dstControl.name;
 

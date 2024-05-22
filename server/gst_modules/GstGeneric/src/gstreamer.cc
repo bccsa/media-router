@@ -51,7 +51,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     gst_element_set_state(obj->pipeline, GST_STATE_NULL);
                     sleep(2);
                     // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
-                    obj->th_Start();    
+                    obj->th_Start(obj->_pipeline);    
 
                     g_error_free (err);
                     g_free (debug);
@@ -67,7 +67,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
                     // obj->Stop();
                     sleep(2);
-                    obj->th_Start();
+                    obj->th_Start(obj->_pipeline);
 
                     break;
                 }
@@ -94,7 +94,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 /**
  * Start Gstreamer in a seperate thread
 */
-void _GstGeneric::th_Start() {
+void _GstGeneric::th_Start(std::string _pipeline_) {
     _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline started"); });
     /* Varaibles */
     // std::string uri = this->_uri;
@@ -106,7 +106,7 @@ void _GstGeneric::th_Start() {
     /* ------------------------------ Prep pipline -------------------------------- */
 
     /* Create the pipeline */
-    this->pipeline = gst_parse_launch(this->_pipeline.c_str() ,NULL);
+    this->pipeline = gst_parse_launch(_pipeline_.c_str() ,NULL);
 
     /* ------------------------------ Prep pipline -------------------------------- */
 
@@ -163,7 +163,7 @@ Napi::Value _GstGeneric::Start(const Napi::CallbackInfo &info){
         } else {
             this->running = true;
 
-            std::thread t1([this] { this->th_Start(); });
+            std::thread t1([this] { this->th_Start(this->_pipeline); });
             t1.detach();
 
             return Napi::String::New(info.Env(), "Pipline started");
@@ -222,9 +222,27 @@ Napi::Value _GstGeneric::Set(const Napi::CallbackInfo &info){
     }
 
     // update field
-    std::string key = info[1].As<Napi::String>().Utf8Value();
-    int value = info[2].As<Napi::Number>();
-    g_object_set (_element, key.c_str(), value, NULL); 
+    std::string valType = info[1].As<Napi::String>().Utf8Value();
+    std::string key = info[2].As<Napi::String>().Utf8Value();
+    if (valType == "gdouble") {
+        gdouble value = info[3].As<Napi::Number>();
+        g_object_set (_element, key.c_str(), value, NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | gDouble Value Updated"); });
+    } else if (valType == "int") {
+        gint64 value = info[3].As<Napi::Number>();
+        g_object_set (_element, key.c_str(), value, NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Int Value Updated"); });
+    } else if (valType == "string") {
+        std::string value = info[3].As<Napi::String>().Utf8Value();
+        g_object_set (_element, key.c_str(), value.c_str(), NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | String Value Updated"); });
+    } else if (valType == "bool") {
+        bool value = info[3].As<Napi::Boolean>();
+        g_object_set (_element, key.c_str(), value, NULL);
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Boolean Value Updated"); });
+    } else {
+        _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Set | Invalid Value type"); });
+    }
     
     return Napi::String::New(info.Env(), "Set | Changed " + _elementName + ": " + key);
 }

@@ -2,15 +2,15 @@
  * Base class for processing base srt functions
 */
 
-const { spawn } = require('child_process');
+const GstBase = require('./GstBase');
 
 /**
  * SrtBase Class, used as a base class for all shared SRT function
  */
-class SrtBase {
+class SrtBase extends GstBase {
     constructor() {
-        this._gst;
-        this.srtHost = 'srt';
+        super();
+        this.srtHost = '';
         this.srtPort = 1234;
         this.srtMode = 'caller';
         this.srtLatency = 1;
@@ -23,6 +23,7 @@ class SrtBase {
 
         // local variables 
         this._prev_caller = 0;      // previous caller count
+        this._statsInterval = undefined;
     }
 
     /**
@@ -50,77 +51,51 @@ class SrtBase {
      * @param {String} path - path to child process
      * @param {Array} args - List of process arguments to pass
      */
-    _start_gst(path, args) {
-        if (!this._gst && this.ready && this.run) {
-            // clear old stats data
-            this._clearStats();
-            try {
-                let _this = this;
-
-                this._gst = spawn('node', [path, ...args], {cwd: "./", stdio: [null, null, null, 'ipc']} );
-
-                // standart stdout handeling
-                this._gst.stdout.on('data', (data) => {
-                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
-                });
-                
-                // standart stderr handeling
-                this._gst.stderr.on('data', (data) => {
-                    _this._parent._log('ERROR', `${this._controlName} (${this.displayName}): ${data}`);
-                });
-                
-                // standart stdin handeling
-                this._gst.stdin.on('data', (data) => {
-                    _this._parent._log('INFO', `${this._controlName} (${this.displayName}): ${data}`);
-                });
-
-                // standart message handeling
-                this._gst.on('message', (data) => {
-                    if (this._controls) {
-                        let _c = 0;
-                        this.caller_count = Object.keys(data).length -1;
-                        Object.keys(data).forEach(key => {
-                            if (typeof data[key] === "object") {
-                                _c ++;
-                                this._stats(data[key], _c);
-                            } else {
-                                this._stats(data, 0);
-                            }
-                        })
-                        
-                        // remove old stat rows
-                        if (this._prev_caller != this.caller_count) {
-                            setTimeout(() => {this._removeCallers()}, 100);
-                        }
-                        this._prev_caller = this.caller_count;
+    _start_srt(path, args) {
+        // clear old stats data
+        this._clearStats();
+        // Listen on srt stats
+        this.on("SrtStats", data => {
+            if (this._controls && data) {
+                let _c = 0;
+                this.caller_count = Object.keys(data).length -1;
+                Object.keys(data).forEach(key => {
+                    if (typeof data[key] === "object") {
+                        _c ++;
+                        this._stats(data[key], _c);
+                    } else {
+                        this._stats(data, 0);
                     }
-                });
+                })
                 
-                // Restart pipeline on exit
-                this._gst.on('exit', (data) => {
-                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
-                    this._stop_gst();
-                    setTimeout(() => { this._start_gst(path, args) }, 3000);
-                });
+                // remove old stat rows
+                if (this._prev_caller != this.caller_count) {
+                    setTimeout(() => {this._removeCallers()}, 100);
+                }
+                this._prev_caller = this.caller_count;
+            }
+        })
 
-            }
-            catch (err) {
-                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): opus decoder (gstreamer) error: ${err.message}, restarting in 3s`);
-                this._stop_gst();
-                setTimeout(() => { this._start_gst(path, args) }, 3000);
-            }
+        if (this.srtHost) {
+            this.start_gst(path, args);
+        } else {
+            this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to start, Please enter a valid SrtHost`);
         }
+
+        // Poll for srt stats 
+        let _srtElementName = args[1];
+        this._statsInterval = setInterval(() => {
+            if (_srtElementName)
+            this.get_gst_SrtStats("SrtStats", _srtElementName);
+        }, 1000);
     }
 
     /**
      * Stop spawned node process
      */
-    _stop_gst() {
-        if (this._gst) {
-            this._gst.stdin.pause();
-            this._gst.kill();
-            this._gst = undefined;
-        }
+    _stop_srt() {
+        clearInterval(this._statsInterval); // clear stats interval
+        this.stop_gst();
         // set all child controls as disconnected 
         this.caller_count = 0;
         if (this._controls)
@@ -178,10 +153,12 @@ class SrtBase {
         let count = 0; 
         if (this._controls && this.srtMode == "listener")
         Object.values(this._controls).forEach(c => {
-            if (count >= this.caller_count) {
-                c._notify({remove: true}); c.Set({remove: true})
+            if (c.controlType == "SrtStats") {
+                if (count >= this.caller_count) {
+                    c._notify({remove: true}); c.Set({remove: true})
+                }
+                count ++;
             }
-            count ++;
         });
     }
 
@@ -191,7 +168,8 @@ class SrtBase {
     _clearStats() {
         if (this._controls)
         Object.values(this._controls).forEach(c => {
-            c._notify({remove: true}); c.Set({remoce: true})
+            if (c.controlType == "SrtStats")
+                c._notify({remove: true}); c.Set({remoce: true})
         });
     }
 }
