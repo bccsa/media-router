@@ -9,17 +9,16 @@ class SoundDucking extends _paNullSinkBase {
         super();
         this.threshold = 60;        // level where to activate 
         this.ducking_level = 30;    // level to drop audio to
-        this.attack = 20;           // attack in ms (time before ducking)
-        this.attack_time = 20;      // attack time in ms (time to duck to 100%)
-        this.release = 250;         // release in ms (time before release)
-        this.release_time = 250;    // release time in ms (time to release 100%)
+        this.attack = 20;           // attack time in ms (time to duck to 100%)
+        this.hold = 250;            // hold in ms (time before release)
+        this.release = 250;         // release time in ms (time to release 100%)
         this._attack = false;
         this._release = true;
         this._ducked = false;
         this._threshold = 0;
 
         // timers 
-        this._attackTimer = undefined;
+        this._holdTimer = undefined;
         this._releaseTimer = undefined;
         this._attackInterval = undefined;
         this._releaseInterval = undefined;
@@ -116,19 +115,18 @@ class SoundDucking extends _paNullSinkBase {
 
                     if (val >= this._threshold) {
                         if (!this._attack) {
-                            this._startAttackTimer();
-                            this._stopReleaseTimer();
+                            this._setDuckingVol();
+                            this._stopHoldTimer();
+                            this._attack = true;
+                            this._release = false;
                         }
-                        this._attack = true;
-                        this._release = false;
                     } 
                     else {
-                        if (!this._release) {
-                            this._startReleaseTimer();
-                            this._stopAttackTimer();
+                        if (!this._release && this._ducked) {
+                            this._startHoldTimer();
+                            this._attack = false;
+                            this._release = true;
                         }
-                        this._attack = false;
-                        this._release = true;
                     }
                 }
             })    
@@ -142,24 +140,14 @@ class SoundDucking extends _paNullSinkBase {
         vu.stop_vu();
     }
 
-    _startAttackTimer() {
-        this._attackTimer = setTimeout(this._setDuckingVol.bind(this), this.attack);
+    _startHoldTimer() {
+        this._holdTimer = setTimeout(this._restoreVol.bind(this), this.hold);
     }
 
-    _stopAttackTimer() {
-        if (this._attackTimer)
-            clearTimeout(this._attackTimer);
-        this._attackTimer = undefined;
-    }
-
-    _startReleaseTimer() {
-        this._releaseTimer = setTimeout(this._restoreVol.bind(this), this.release)
-    }
-
-    _stopReleaseTimer() {
-        if (this._releaseTimer)
-            clearTimeout(this._releaseTimer);
-        this._releaseTimer = undefined;
+    _stopHoldTimer() {
+        if (this._holdTimer)
+            clearTimeout(this._holdTimer);
+        this._holdTimer = undefined;
     }
 
     _setDuckingVol() {
@@ -170,9 +158,8 @@ class SoundDucking extends _paNullSinkBase {
                 this._releaseInterval = undefined; 
             }
 
-            this._ducked = true;
             let end_vol = this.ducking_level / this.volume * 100;
-            let hops = Math.round(this.attack_time / 100);
+            let hops = Math.round(this.attack / 100);
             if (hops < 2) hops = 2; // cap min hops
             let step = (this._currentVol - end_vol) /hops;
             this._attackInterval = setInterval(() => {
@@ -181,11 +168,12 @@ class SoundDucking extends _paNullSinkBase {
                     this._setVolume(this._currentVol);
                 } 
                 else {
+                    this._ducked = true;
                     clearInterval(this._attackInterval);
                     this._setVolume(end_vol);
                     this._attackInterval = undefined;
                 }
-            }, this.attack_time / hops);
+            }, this.attack / hops);
         }
     }
 
@@ -199,7 +187,7 @@ class SoundDucking extends _paNullSinkBase {
 
             this._ducked = false;
             let end_vol = this.volume;
-            let hops = Math.round(this.release_time / 100);
+            let hops = Math.round(this.release / 100);
             if (hops < 2) hops = 2; // cap min hops
             let step = (end_vol - this._currentVol) /hops;
             this._releaseInterval = setInterval(() => {
@@ -212,7 +200,7 @@ class SoundDucking extends _paNullSinkBase {
                     this._setVolume(end_vol);
                     this._releaseInterval = undefined;
                 }
-            }, this.release_time / hops);
+            }, this.release / hops);
         }
     }
 
