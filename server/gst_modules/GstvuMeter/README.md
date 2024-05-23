@@ -102,4 +102,29 @@ example.Start((message) => {
  * Stop SRT Player
 */
 example.Stop();
+
+```
+### Example (Used for vu meter data)
+
+```js
+// ------------------
+// Using gstGeneric for VUdata
+// prerequisite (event emmiter, level element in pipeline)
+// ------------------
+const event = require("events");
+const emitter = new event.EventEmitter();
+
+const example2 = new _GstGeneric(    // gstreamer pipeline
+    `pulsesrc device=MR_PA_SoundProcessor_4157_sink.monitor ! audio/x-raw,rate=48000,format=S16LE,channels=2 ! level ! fakesink`,
+    emitter.emit.bind(emitter)
+)
+
+example2.Start(msg => {
+    console.log(msg);
+})
+
+// Listen on vuData to get an object with the following data: rms, peak and decay for all available channels
+emitter.on("vuData", data => {
+    console.log(data);
+})
 ```

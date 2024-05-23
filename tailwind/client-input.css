@@ -599,6 +599,13 @@
     z-index:9999;
 } */
 
+/* --------EQ---------*/
+.EQ-slider {
+    @apply ml-2 mr-2 mt-5 mb-5 w-32 bg-[#293548] text-[#75C4EB] cursor-pointer rotate-[270deg] overflow-hidden;
+}
+
+/* --------EQ---------*/
+
 
 
 
