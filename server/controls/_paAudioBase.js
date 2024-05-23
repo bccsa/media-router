@@ -161,8 +161,6 @@ class _paAudioBase extends Classes(dm, vuMeter) {
                     if (this._vu[i] < -60) this._vu[i] = -60;
                 })
 
-                this._notify({ vuData: this._vu });
-
                 if (JSON.stringify(this._vuPrev) != JSON.stringify(this._vu)) {
                     this._notify({ vuData: this._vu });   // Notifies with through _topLevelParent.on('data', data => {});
                     this._vuPrev = this._vu;
