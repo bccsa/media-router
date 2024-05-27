@@ -20,7 +20,7 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 `opusdec use-inband-fec=true plc=true ! ` + 
                 `audioconvert ! audiorate tolerance=10000000 skip-to-first=true ! ` +
                 // `queue leaky=2 max-size-time=100000000 flush-on-eos=true ! ` + 
-                `pulsesink device="${this.sink}" sync=false buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}  slave-method=0`
+                `pulsesink device="${this.sink}" sync=false slave-method=0`
 
                 this._parent.PaCmdQueue(() => { 
                     this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
