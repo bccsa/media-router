@@ -27,10 +27,10 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
                 let encoder = `opusenc bitrate=${this.calcBitrate()} audio-type=2051 bitrate-type=2 complexity=${this.complexity} frame-size=${this.opusFrameSize}`;
                 if (this.fec) { encoder += ` inband-fec=true packet-loss-percentage=${this.fecPacketLoss}` };
 
-                let _pipeline = `pulsesrc device=${this.source} latency-time=${this._parent.paLatency * 1000} buffer-time=${this._parent.paLatency * 1000} ! ` + 
+                let _pipeline = `pulsesrc device=${this.source} ! ` + 
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
                 `audioconvert ! audioresample ! ` +
-                `queue max-size-time=20000000 leaky=2 flush-on-eos=true ! ` +
+                `queue max-size-time=50000000 leaky=2 flush-on-eos=true ! ` +
                 `${encoder} ! ` + 
                 `mpegtsmux latency=1 alignment=7 ! ` + 
                 `srtserversink name=${this._srtElementName} uri="${this.uri()}" sync=false wait-for-connection=false`

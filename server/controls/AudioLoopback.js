@@ -61,6 +61,9 @@ class AudioLoopback extends dm {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startLoopback() {
         if (this._src && this._src.source && this._dst && this._dst.sink) {
+            // mute dest to avoid loud sound when loopback connenect
+            this._dst._setMute(true);
+
             let sampleRate = this._dst.sampleRate;
             let bitDepth = this._dst.bitDepth;
             let channels = this._dst.channels;
@@ -81,8 +84,10 @@ class AudioLoopback extends dm {
                     this._paModuleID = data.stdout.toString().trim();
                     this._router._log('INFO', `${this._controlName}: Connected ${this._src.source} to ${this._dst.sink}; ID: ${this._paModuleID}`);
                 }
+                setTimeout(() => { this._dst._setMute(this._dst.mute) }, 200); // restore destination mute 
             }).catch(err => {
                 this._router._log('FATAL', `${this._controlName}: ${err.message}`);
+                this._dst._setMute(this._dst.mute);
             });
         } else {
             this._router._log('ERROR', `${this._controlName}: Unable to connect source to sink: Invalid source or sink`)

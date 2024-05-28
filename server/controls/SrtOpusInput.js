@@ -18,9 +18,9 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 let _pipeline = `srtserversrc name=${this._srtElementName} uri="${this.uri()}" wait-for-connection=false ! ` +
                 `tsparse ignore-pcr=true ! tsdemux ignore-pcr=true latency=1 ! ` +
                 `opusdec use-inband-fec=true plc=true ! ` + 
-                `audioconvert ! audiorate tolerance=10000000 skip-to-first=true ! ` +
-                // `queue leaky=2 max-size-time=100000000 flush-on-eos=true ! ` + 
-                `pulsesink device="${this.sink}" sync=false buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}  slave-method=0`
+                `audioconvert ! ` +
+                `queue leaky=2 max-size-time=50000000 flush-on-eos=true ! ` + 
+                `pulsesink device="${this.sink}" sync=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000`
 
                 this._parent.PaCmdQueue(() => { 
                     this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
