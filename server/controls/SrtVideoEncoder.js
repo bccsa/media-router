@@ -89,7 +89,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // audio encoding 
                 `voaacenc bitrate=${this.audio_bitrate * 1000} ! aacparse ! ` +
                 // mpegts mux
-                `mpegtsmux latency=1 alignment=7 name=mux ! queue leaky=2 max-size-time=10000000 flush-on-eos=true ! ` +
+                `mpegtsmux latency=1 name=mux ! queue leaky=2 max-size-time=10000000 flush-on-eos=true ! ` +
                 // srt sink
                 `srtserversink name=${this._srtElementName} sync=false wait-for-connection=false uri="${this.uri()}"`;
 

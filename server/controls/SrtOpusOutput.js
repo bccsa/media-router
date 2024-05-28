@@ -32,7 +32,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
                 `audioconvert ! audioresample ! ` +
                 `queue max-size-time=50000000 leaky=2 flush-on-eos=true ! ` +
                 `${encoder} ! ` + 
-                `mpegtsmux latency=1 alignment=7 ! ` + 
+                `mpegtsmux ! ` + 
                 `srtserversink name=${this._srtElementName} uri="${this.uri()}" sync=false wait-for-connection=false`
 
                 this._parent.PaCmdQueue(() => { 
