@@ -24,7 +24,7 @@ class SrtVideoPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 `kmssink sync=false async=false t. ! ` + 
                 `aacparse ! avdec_aac ! audioconvert ! ` + 
                 `queue flush-on-eos=true leaky=2 max-size-time=50000000 ! ` +
-                `pulsesink device=${this.sink} sync=false slave-method=0 processing-deadline=40000000`;
+                `pulsesink device=${this.sink} sync=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000`;
  
                 this._parent.PaCmdQueue(() => { 
                     this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
