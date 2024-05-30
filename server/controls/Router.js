@@ -136,6 +136,10 @@ class Router extends dm {
             if (reset) {
                 this.reset = false;
                 this._log('INFO', 'Reset command received. Resetting router process...');
+                this._log('INFO', 'Restarting Pipewire');
+                exec('systemctl --user restart pipewire').catch((err) => {
+                    this._log('ERROR', 'Unable to restart pipewire: ' + err.message);
+                });
                 setTimeout(() => {
                     this._log('ERROR', 'Reset command timeout. Killing router process...');
                     process.kill('SIGKILL');
