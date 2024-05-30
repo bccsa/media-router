@@ -1,4 +1,4 @@
-# SrtOpusOutput.js
+# SrtOpusOutput
 Encodes PCM Audio to Opus and send it over SRT
 
 ## Encoder Settings

@@ -1,17 +1,3 @@
-# [Separator.js](./Separator.js)
+# Separator
 
-## Title 2
-
-### Title 3
-
-``` 
-function test () {
-
-}
-```
-
-**BOLD**
-
-*Italic*
-
----
+* Seperator used on local client as a devider 

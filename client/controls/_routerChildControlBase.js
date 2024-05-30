@@ -19,6 +19,7 @@ class _routerChildControlBase extends ui {
         this._top = this.top;    // Internal top position tracking
         this.reload = false;     // Reload configuration command. Stops and starts the control to apply changes.
         this.Help_md = ""        // Help info
+        this.md_queue = [];      // queue to load md files, to keep them in the right seq. 
     }
 
     get html() {
@@ -413,16 +414,25 @@ class _routerChildControlBase extends ui {
      * @param {String} _path - path to file 
      */
     _loadHelpMD(_path) {
-        let _this = this
-        fetch(_path)
-        .then(function(response) {
-            if (!response.ok) { throw new Error('Network response was not ok') }
-            return response.text();
-        })
-        .then(function(fileContent) {
-            _this.Help_md += `${fileContent}\n`;
-        })
-        .catch(function(error) { console.error('There was a problem fetching the file:', error) });
+        this.md_queue.push(_path);
+        if (this.md_queue.length == 1) { this._processMDQueue() };
+    }
+
+    _processMDQueue() {
+        if (this.md_queue.length > 0) {
+            let _path = this.md_queue.shift();
+            let _this = this
+            fetch(_path)
+            .then(function(response) {
+                if (!response.ok) { throw new Error('Network response was not ok') }
+                return response.text();
+            })
+            .then(function(fileContent) {
+                _this.Help_md = `${fileContent}\n${_this.Help_md}\n`;
+                _this._processMDQueue();
+            })
+            .catch(function(error) { console.error('There was a problem fetching the file:', error); _this._processMDQueue(); });
+        }
     }
 
     _setScale() {
