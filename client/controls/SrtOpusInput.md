@@ -1,17 +1,5 @@
-# [SrtOpusInput.js](./SrtOpusInput.js)
+# SrtOpusInput
 
-## Title 2
-
-### Title 3
-
-``` 
-function test () {
-
-}
-```
-
-**BOLD**
-
-*Italic*
+* Decodes Opus Audio received on SRT and plays out PCM
 
 ---
