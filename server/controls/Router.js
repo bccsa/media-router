@@ -381,7 +381,7 @@ class Router extends dm {
      */
     paCmdQueueNext() {
         if (this._paQueue.length > 0) {
-            let c = this._paQueue.shift();
+            let c = this._paQueue[0]
             try {
                 // Execute callback from queue
                 c.callback();
@@ -389,11 +389,10 @@ class Router extends dm {
             } catch (err) {
                 c.reject(err);
             } 
-            c.finaly(() => {
-                setTimeout(() => {
-                    this.paCmdQueueNext();
-                }, 10)
-            })
+            setTimeout(() => {
+                this._paQueue.shift();
+                this.paCmdQueueNext();
+            }, 200)
         }
     }
 
