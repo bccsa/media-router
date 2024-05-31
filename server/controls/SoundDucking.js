@@ -66,6 +66,11 @@ class SoundDucking extends _paNullSinkBase {
         this.on('threshold', val => {
             this._threshold = (val / 100 * 60) -60; // offset with -60 to make a negative
         }, { immediate: true })
+
+        this.on('ducking_level', () => {
+            if (this._ducked) 
+                this._setVolume(this.ducking_level / this.volume * 100);
+        })
     }
 
     /**
