@@ -3,10 +3,9 @@ class SoundDucking extends _paAudioSourceBase {
         super();
         this.threshold = 60;        // level where to activate 
         this.ducking_level = 30;    // level to drop audio to
-        this.attack = 20;           // attack in ms (time before ducking)
-        this.attack_time = 20;      // attack time in ms (time to duck to 100%)
-        this.release = 250;         // release in ms (time before release)
-        this.release_time = 250;    // release time in ms (time to release 100%)
+        this.attack = 20;           // attack time in ms (time to duck to 100%)
+        this.hold = 250;            // hold in ms (time before release)
+        this.release = 250;         // release time in ms (time to release 100%)
 
         // side chain
         this.side_chain = '';       // side_chain source
@@ -82,16 +81,16 @@ class SoundDucking extends _paAudioSourceBase {
 
         </div>
 
-        <!--    attack_time     -->
+        <!--    hold     -->
         <div class="w-full mb-2 flex flex-row items-center">
         
-            <label for="@{_attack_time}" class="mt-5 w-1/6">Attack Time:</label>
+            <label for="@{_hold}" class="mt-5 w-1/6">Hold:</label>
         
-            <input id="@{_attack_time}" class="paAudioBase-slider" type="range"
-                title="Time (ms) that the audio will take to duck" step="1" min="0" max="2000" value="@{attack_time}">
+            <input id="@{_hold}" class="paAudioBase-slider" type="range"
+                title="Time (ms) that the audio need to below the threshold, before levels is restored" step="1" min="0" max="2000" value="@{hold}">
 
             <div class="max-w-[60px] truncate text-clip">
-                <input type="number" for="@{_attack_time}" step="1" min="0" max="2000" value="@{attack_time}" class="w-[60px] truncate text-clip">
+                <input type="number" for="@{_hold}" step="1" min="0" max="2000" value="@{hold}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
@@ -102,24 +101,10 @@ class SoundDucking extends _paAudioSourceBase {
             <label for="@{_release}" class="mt-5 w-1/6">Release:</label>
         
             <input id="@{_release}" class="paAudioBase-slider" type="range"
-                title="Time (ms) that the audio need to below the threshold, before levels is restored" step="1" min="0" max="2000" value="@{release}">
+                title="Time (ms) that the audio will take to restore to normal levels" step="1" min="0" max="2000" value="@{release}">
 
             <div class="max-w-[60px] truncate text-clip">
                 <input type="number" for="@{_release}" step="1" min="0" max="2000" value="@{release}" class="w-[60px] truncate text-clip">
-            </div>
-
-        </div>
-
-        <!--    release_time     -->
-        <div class="w-full mb-2 flex flex-row items-center">
-        
-            <label for="@{_release_time}" class="mt-5 w-1/6">Release Time:</label>
-        
-            <input id="@{_release_time}" class="paAudioBase-slider" type="range"
-                title="Time (ms) that the audio will take to restore to normal levels" step="1" min="0" max="2000" value="@{release_time}">
-
-            <div class="max-w-[60px] truncate text-clip">
-                <input type="number" for="@{_release_time}" step="1" min="0" max="2000" value="@{release_time}" class="w-[60px] truncate text-clip">
             </div>
 
         </div>
