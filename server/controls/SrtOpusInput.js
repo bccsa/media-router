@@ -19,6 +19,7 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 `tsparse ignore-pcr=true ! tsdemux ignore-pcr=true latency=1 ! ` +
                 `opusdec use-inband-fec=true plc=true ! ` + 
                 `audioconvert ! ` +
+                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! ` +
                 `queue leaky=2 max-size-time=50000000 flush-on-eos=true ! ` + 
                 `pulsesink device="${this.sink}" sync=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000`
 

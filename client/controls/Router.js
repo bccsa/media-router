@@ -343,6 +343,7 @@ class Router extends ui {
                             <option value="SoundDucking">PCM Sound Ducking</option>
                             <option value="SrtVideoPlayer">Video over SRT Player</option>
                             <option value="SrtVideoEncoder">Video over SRT Encoder</option>
+                            <option value="HlsPlayer">Hls Video Player</option>
                             <option value="WebRTCClient">WebRTC Client WebApp</option>
                             <option value="Separator">Separator</option>
                             </select>

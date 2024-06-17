@@ -22,6 +22,8 @@ class AudioLoopback extends dm {
         this._dstRun = false;
         this.ready = false;
         this._router;
+        this._srcChannelMap = "";
+        this.channels = 0;
     }
 
     Init() {
@@ -61,6 +63,7 @@ class AudioLoopback extends dm {
     // Create a PulseAudio loopback-module linking the source to the sink
     _startLoopback() {
         if (this._src && this._src.source && this._dst && this._dst.sink) {
+            this._srcMap()
             // mute dest to avoid loud sound when loopback connenect
             this._dst._setMute(true);
 
@@ -109,6 +112,53 @@ class AudioLoopback extends dm {
             }).catch(err => {
                 this._router._log('FATAL', `${this._controlName}: ${err.message}`);
             });
+        }
+    }
+
+     /**
+     * Calculates and sets this.channels and this._channelMap from this.channelMap
+     */
+    _srcMap() {
+        if (this._src && this._dst) {
+            let _srcChannels = this._src.channels;
+            let _srcChannelMap = this._dst.srcChannelMap;
+
+            let masterMap = [];
+            let channelCount = 0;
+            let channelMap = [];
+
+            _srcChannelMap.split(',').forEach(channel => {
+                let ch = parseInt(channel);
+                if (ch && ch > 0 && ch <= _srcChannels) {
+                    masterMap.push(_srcChannelMap[ch - 1]);
+                    channelMap.push(ch);
+                    channelCount++;
+                }
+            });
+
+            // Reduce channel count if larger than master channel count
+            if (channelCount > _srcChannels) {
+                channelCount = _srcChannels;
+                channelMap.splice(channelCount);
+            }
+
+            if (channelCount > 0) {
+                this._srcChannelMap = `channel_map=${masterMap.join(',')}`;
+                this.channels = channelCount;
+                this._dst.srcChannelMap = channelMap.join(',');
+            } else if (this.channels.channels == 1 && channelCount > 1) { 
+                this._srcChannelMap = `channel_map=mono`
+            } else {
+                // Create default channel map
+                channelMap = [];
+                for (let i = 1; i <= _srcChannels; i++) {
+                    channelMap.push(i);
+                }
+                this._dst.srcChannelMap = channelMap.join(',');
+
+                // Regenerate map
+                this._srcMap();
+            }
         }
     }
 }

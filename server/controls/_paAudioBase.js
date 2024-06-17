@@ -46,6 +46,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
         this.SetAccess('enableVolControl', { Set: 'none', Get: 'none' });
         this.reload = false;    // Reload configuration command. Stops and starts the control to apply changes.
         this._vuDataListener = undefined;   // eventlistener for vuData, used to unsubscribe
+        this.srcChannelMap = "";            // srcMap used with loopbacks to be able to select the audio channels you want to pass
     }
 
     Init() {
@@ -148,7 +149,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
 
     _startVU() {
         this._parent._log('INFO', `${this._paModuleName} (${this.displayName}): Starting VU`);
-        const _pl = `pulsesrc device=${this.monitor} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true`;
+        const _pl = `pulsesrc device=${this.monitor} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true`;
         const _path = `${path.dirname(process.argv[1])}/child_processes/vu_child.js`;
         this.start_vu(_path, [_pl]);
         // start vu

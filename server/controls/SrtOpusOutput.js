@@ -28,7 +28,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
                 if (this.fec) { encoder += ` inband-fec=true packet-loss-percentage=${this.fecPacketLoss}` };
 
                 let _pipeline = `pulsesrc device=${this.source} ! ` + 
-                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
+                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! ` +
                 `audioconvert ! audioresample ! ` +
                 `queue max-size-time=50000000 leaky=2 flush-on-eos=true ! ` +
                 `${encoder} ! ` + 
