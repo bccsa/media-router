@@ -50,7 +50,7 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
             if (ready) {
                 // Source
                 let _pipeline = `pulsesrc device=${this._source} latency-time=${this._parent.paLatency * 1000} buffer-time=${this._parent.paLatency * 1000} ! ` + // do-timestamp=false used for live audio (see: https://github.com/ros-drivers/audio_common/issues/120)
-                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! audioconvert ! audiorate ! `;
+                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! audioconvert ! audiorate ! `;
                 // EQ
                 _pipeline += `equalizer-10bands name="eq" ${this._bands()} ! `; 
                 // Gate

@@ -53,16 +53,20 @@ class GstBase {
                 
                 // Restart pipeline on exit
                 this._gst.on('exit', (data) => {
-                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
                     this.stop_gst();
-                    setTimeout(() => { this.start_gst(path, args) }, 3000);
+                    if (this.ready) {
+                        this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
+                        setTimeout(() => { this.start_gst(path, args) }, 3000);
+                    }
                 });
 
             }
             catch (err) {
-                this._parent._log('FATAL', `${this._controlName} (${this.displayName}): (gstreamer) error: ${err.message}, restarting in 3s`);
                 this.stop_gst();
-                setTimeout(() => { this.start_gst(path, args) }, 3000);
+                if (this.ready) {
+                    this._parent._log('FATAL', `${this._controlName} (${this.displayName}): (gstreamer) error: ${err.message}, restarting in 3s`);
+                    setTimeout(() => { this.start_gst(path, args) }, 3000);
+                }
             }
         }
     }

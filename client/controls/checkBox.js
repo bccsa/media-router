@@ -5,6 +5,7 @@ class checkBox extends ui {
         this.value = false;
         this.label = '';
         this.color = "#293548";
+        this.index = -1;
     }
 
     get html() {

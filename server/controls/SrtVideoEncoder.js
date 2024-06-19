@@ -83,7 +83,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // audio device
                 `mux. pulsesrc device="${this.source}" ! ` +
                 // audio caps
-                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
+                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! ` +
                 // audio convert and resample 
                 `queue leaky=2 max-size-time=20000000 flush-on-eos=true ! audioconvert ! audioresample ! ` +
                 // audio encoding 

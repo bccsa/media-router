@@ -110,7 +110,7 @@ class SoundDucking extends _paNullSinkBase {
     _startAudioDucker() {
         if (this.side_chain) {
             this._parent._log('INFO', `${this._paModuleName} (${this.displayName}): Starting Audio Ducker`);
-            const _pl = `pulsesrc device=${this.side_chain} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this._srcChannels} ! deinterleave name=d audiomixer name=i ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true ${this._channelMap}`;
+            const _pl = `pulsesrc device=${this.side_chain} ! audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this._srcChannels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! deinterleave name=d audiomixer name=i ! level peak-falloff=120 peak-ttl=50000000 interval=${this.vuInterval * 1000000} ! fakesink silent=true ${this._channelMap}`;
             const _path = `${path.dirname(process.argv[1])}/child_processes/vu_child.js`;
             vu.start_vu(_path, [_pl, "audioLevel"]);
             // start vu

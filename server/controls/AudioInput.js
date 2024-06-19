@@ -14,6 +14,7 @@ class AudioInput extends _paAudioSourceBase {
         this._srcChannels = 0;      // Master source channel count
         this._srcChannelMap = [];   // Master source channel map
         this.master = '';           // PulseAudio master source
+        this.masterExists = false;  // toggle to only allow remap when master exists 
     }
 
     Init() {
@@ -28,9 +29,11 @@ class AudioInput extends _paAudioSourceBase {
                 if (sources.find(t => t.name == this.master)) {
                     if (!this._paModuleID) {
                         this._map();
+                        this.masterExists = true;
                         this._parent.PaCmdQueue(() => { this._startRemapSource() });
                     }
                 } else {
+                    this.masterExists = true;
                     this._parent.PaCmdQueue(() => { this._stopRemapSource() });
                 }
             }.bind(this);
@@ -40,6 +43,7 @@ class AudioInput extends _paAudioSourceBase {
                 this._parent.on('sources', eventHandler, { immediate: true });
             } else {
                 this._parent.off('sources', eventHandler);
+                this._stopRemapSource();
             }
         });
 
@@ -112,7 +116,7 @@ class AudioInput extends _paAudioSourceBase {
 
     // Create a PulseAudio loopback-module linking the source to the sink
     _startRemapSource() {
-        if (this.channels > 0) {
+        if (this.channels > 0 && !this._paModuleID) {
             let cmd = `pactl load-module module-remap-source master=${this.master} source_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} ${this._channelMap} remix=no source_properties="latency_msec=${this._parent.paLatency}"`;
             exec(cmd, { silent: true }).then(data => {
                 if (data.stderr) {
