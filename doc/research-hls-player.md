@@ -1,13 +1,13 @@
 # Base pipeline 
 
 ```bash 
-GST_DEBUG=2 gst-launch-1.0 playbin3 uri=https://url.com/toplevel.m3u8video-sink=kmssink
+gst-launch-1.0 -v playbin3 video-sink=kmssink uri=""
 
-GST_DEBUG=2 gst-launch-1.0 uridecodebin3 download=true use-buffering=true async-handling=true buffer-duration=100000 uri=https://url.com/toplevel.m3u8! kmssink
+GST_DEBUG=2 gst-launch-1.0 uridecodebin3 download=true use-buffering=true async-handling=true buffer-duration=100000 uri=https://url.com/toplevel.m3u8 ! kmssink
 
 GST_DEBUG=5 gst-launch-1.0 uridecodebin3 uri=https://url.com/toplevel.m3u8! kmssink
 
-GST_DEBUG=2 gst-launch-1.0 uridecodebin3 download=true use-buffering=true async-handling=true buffer-duration=100000 uri=https://url.com/toplevel.m3u8name=d ! kmssink d. ! audioconvert ! pulsesink device="MR_PA_HlsPlayer_7633" sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000
+gst-launch-1.0 -v uridecodebin3 download=true use-buffering=true async-handling=true buffer-duration=100000 caps="audio/x-raw" name=t uri="""" t. ! videoconvert ! queue ! kmssink t. ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_eng sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 t. ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_fra sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000
 
 GST_DEBUG=2 GST_BIN_FLAG_STREAMS_AWARE=true gst-launch-1.0 -v urisourcebin uri=https://url.com/toplevel.m3u8name=src src. ! decodebin3 ! kmssink sync=false
 
@@ -44,7 +44,7 @@ GST_DEBUG=2 gst-launch-1.0 uridecodebin connection-speed=1024 uri=https://url.co
 # Working 
 GST_DEBUG=2 gst-launch-1.0 uridecodebin connection-speed=8192 uri=https://url.com/toplevel.m3u8name=d ! kmssink d. ! audioconvert ! interleave name=mix ! pulsesink device="MR_PA_HlsPlayer_7633" sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 d. ! audioconvert ! mix. d. ! audioconvert ! mix.    d. ! audioconvert ! mix. d. ! audioconvert ! mix. 
 
-GST_DEBUG=2 gst-launch-1.0 uridecodebin connection-speed=4192 uri="https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" name=d ! queue ! kmssink audiointerleave name=mix ! queue ! pulsesink device="MR_PA_HlsPlayer_7633" sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 d. ! audioconvert ! "audio/x-raw,channels=2" ! deinterleave name=dia dia.src_0 ! audioconvert ! mix.sink_0 dia.src_1 ! audioconvert ! mix.sink_1 d. ! audioconvert ! "audio/x-raw,channels=2" ! deinterleave name=dib dib.src_0 ! audioconvert ! mix.sink_2 dib.src_1 ! audioconvert ! mix.sink_3 d. ! audioconvert ! "audio/x-raw,channels=2" ! deinterleave name=dic dic.src_0 ! audioconvert ! mix.sink_4 dic.src_1 ! audioconvert ! mix.sink_5
+GST_DEBUG=2 gst-launch-1.0 uridecodebin connection-speed=4192 uri="""" name=d ! queue ! kmssink audiointerleave name=mix ! queue ! pulsesink device="MR_PA_HlsPlayer_7633" sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 d. ! audioconvert ! "audio/x-raw,channels=2" ! deinterleave name=dia dia.src_0 ! audioconvert ! mix.sink_0 dia.src_1 ! audioconvert ! mix.sink_1 d. ! audioconvert ! "audio/x-raw,channels=2" ! deinterleave name=dib dib.src_0 ! audioconvert ! mix.sink_2 dib.src_1 ! audioconvert ! mix.sink_3 d. ! audioconvert ! "audio/x-raw,channels=2" ! deinterleave name=dic dic.src_0 ! audioconvert ! mix.sink_4 dic.src_1 ! audioconvert ! mix.sink_5
 
 # test to split stereo channels into mono streams
 GST_DEBUG=2 gst-launch-1.0 uridecodebin connection-speed=8192 uri=https://url.com/toplevel.m3u8name=d ! kmssink interleave name=mix ! pulsesink device="MR_PA_HlsPlayer_7633" sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 d. ! audioconvert ! deinterleave name=a a. ! audioconvert ! mix. d. ! audioconvert ! mix.
@@ -70,7 +70,7 @@ master_channel_map=aux0,aux1,aux2,aux3,aux4,aux5,aux6,aux7 channel_map=aux0,aux1
 
 pactl load-module module-null-sink sink_name=MR_PA_HlsPlayer_test format=s16le rate=48000 channels=6 channel_map=aux0,aux1,aux2,aux3,aux4,aux5
 
-GST_DEBUG=2 gst-launch-1.0 -v uridecodebin uri="https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" connection-speed=4096 name=bin ! videoconvert ! queue ! kmssink sync=false audiointerleave name=mix ! queue min-threshold-time=0 max-size-buffers=0 max-size-bytes=0 ! pulsesink device=MR_PA_HlsPlayer_7633 sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di1 di1.src_0 ! audioconvert ! mix.sink_0 di1.src_1 ! audioconvert ! mix.sink_1 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di2 di2.src_0 ! audioconvert ! mix.sink_2 di2.src_1 ! audioconvert ! mix.sink_3 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di3 di3.src_0 ! audioconvert ! mix.sink_4 di3.src_1 ! audioconvert ! mix.sink_5 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di4 di4.src_0 ! audioconvert ! mix.sink_6 di4.src_1 ! audioconvert ! mix.sink_7
+GST_DEBUG=2 gst-launch-1.0 -v uridecodebin uri="""" connection-speed=4096 name=bin ! videoconvert ! queue ! kmssink sync=false audiointerleave name=mix ! queue min-threshold-time=0 max-size-buffers=0 max-size-bytes=0 ! pulsesink device=MR_PA_HlsPlayer_7633 sync=false async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di1 di1.src_0 ! audioconvert ! mix.sink_0 di1.src_1 ! audioconvert ! mix.sink_1 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di2 di2.src_0 ! audioconvert ! mix.sink_2 di2.src_1 ! audioconvert ! mix.sink_3 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di3 di3.src_0 ! audioconvert ! mix.sink_4 di3.src_1 ! audioconvert ! mix.sink_5 bin. ! audioconvert ! audio/x-raw,channels=2 ! deinterleave name=di4 di4.src_0 ! audioconvert ! mix.sink_6 di4.src_1 ! audioconvert ! mix.sink_7
 
 
 pw-loopback --name=nnasa --channels=8 -channel-map='[aux0, aux1, aux2, aux3, aux4, aux5, aux6, aux7]' --capture=149 --capture-props='media.class=Audio/Sink audio.position=[aux2, aux3] stream.capture.sink=true' --playback=168 --playback-props='media.class=Audio/Source audio.position=[FL, FR]'
@@ -86,11 +86,11 @@ GST_DEBUG=2 gst-launch-1.0 -v pulsesrc device=MR_PA_HlsPlayer_7633.monitor ! aud
 
 pactl load-module module-remap-sink sink_name=MR_PA_HlsPlayer_7633-remap master=MR_PA_HlsPlayer_7633 master_channel_map=aux0,aux1,aux2,aux3,aux4,aux5,aux6,aux7 channel_map=aux0,aux1,aux2,aux3,aux4,aux5,aux6,aux7 channels=8
 
-GST_DEBUG=2 gst-launch-1.0 uridecodebin download=true use-buffering=true async-handling=true buffer-duration=100000 uri="https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" connection-speed=10000 name=bin ! videoconvert ! kmssink sync=false  bin. ! audioconvert ! audio/x-raw,channels=2 ! pulsesink device=HlsPlayer_7633_sink_0 sync=false async=false slave-method=0 bin. ! audioconvert ! audio/x-raw,channels=2 ! pulsesink device=HlsPlayer_7633_sink_1 sync=false async=false slave-method=0
+GST_DEBUG=2 gst-launch-1.0 uridecodebin download=true use-buffering=true async-handling=true buffer-duration=100000 uri="""" connection-speed=10000 name=bin ! videoconvert ! kmssink sync=false  bin. ! audioconvert ! audio/x-raw,channels=2 ! pulsesink device=HlsPlayer_7633_sink_0 sync=false async=false slave-method=0 bin. ! audioconvert ! audio/x-raw,channels=2 ! pulsesink device=HlsPlayer_7633_sink_1 sync=false async=false slave-method=0
 
-GST_DEBUG=2 gst-launch-1.0 urisourcebin uri="https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" ! fakesink
+GST_DEBUG=2 gst-launch-1.0 urisourcebin uri="""" ! fakesink
 
-GST_DEBUG=2 gst-launch-1.0 souphttpsrc location="https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" ! hlsdemux2 ! fakesink
+GST_DEBUG=2 gst-launch-1.0 souphttpsrc location="""" ! hlsdemux2 ! fakesink
 
 
 ## link used: https://stackoverflow.com/questions/25201109/gstreamer-recording-m3u8-stream
@@ -111,10 +111,25 @@ GST_DEBUG=2 gst-launch-1.0 souphttpsrc is-live=true keep-alive=true do-timestamp
 
 GST_DEBUG=2 gst-launch-1.0 souphttpsrc is-live=true keep-alive=true do-timestamp=true location=https://url.com/toplevel.m3u8 name=demux ! hlsdemux connection-speed=4096 name=demux demux.src_0 ! parsebin ! mpegtsmux alignment=7 name=mux ! srtserversink name="srtserversink" wait-for-connection=false sync=true ts-offset=0 uri="srt://0.0.0.0:1234?mode=listener&latency=10" demux.src_1 ! tee name=tee ! queue ! parsebin ! mux. tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink ts-offset=0 device=MR_PA_HlsPlayer_7633 sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 demux.src_2 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_deu sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 demux.src_3 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_eng sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 demux.src_4 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_fra sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 demux.src_5 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_spa sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000
 
-GST_DEBUG=2 gst-launch-1.0 souphttpsrc is-live=true keep-alive=true do-timestamp=true location=https://liveoht.brunstad.tv/out/v1/oslofjord-streaming/live/cloudfront/index.m3u8?EncodedPolicy=Policy%3DeyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9saXZlb2h0LmJydW5zdGFkLnR2L291dC92MS9vc2xvZmpvcmQtc3RyZWFtaW5nL2xpdmUvY2xvdWRmcm9udC8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzE4Mzk4MTYxfX19XX0_%26Signature%3DWrGULbd1ub5Y9UQ-WqwNbWDU88ZfzzZQQ92JiI1iXpabiaNnSq-4Ylj~mE1R5dc0Ewd9jz--8Lhv5w8Luqu3mRjMVgIfmX19RF-3WwSKxqXKYvw32Bnc068EDVEtXtMWEz0em4JiL8pJ1KOAzx0JHZHI18S~Ni1ky5-Lxq88DvmWOERApdfeJreHe5-qZxYOdzlkSfApaR8ypihTWuaxVap1tcsiiUlKCPEqHBNq58OAcsGjFWqsMxzxV4G7TENmMZ7eUZy6gNimMAa6unv3E26mc3cu6mrs4Cgw9J2qBCQYal9wdjnF~JY~dkxcbZZ5zVk7sCTA~AcLLMHubxQRJg__%26Key-Pair-Id%3DK1GSYT1GS8OW1X ! hlsdemux connection-speed=4096 name=demux demux. ! decodebin3 ! videoconvert ! queue ! kmssink ts-offset=0 sync=true  demux.src_3 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink ts-offset=0 device=MR_PA_HlsPlayer_7633 sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 demux.src_5 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_eng sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000 demux.src_6 ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=HlsPlayer_7633_sink_fra sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000
 
-srtserversink name="srtserversink" wait-for-connection=true sync=true async=false uri="srt://0.0.0.0:1234?mode=listener&latency=10"
 
+GST_DEBUG=2 gst-launch-1.0 -v souphttpsrc is-live=true keep-alive=true do-timestamp=true ssl-strict=false location="" ! queue2 ! hlsdemux2 name=demux demux.src_0 ! queue2 !  decodebin3 ! videoconvert ! queue ! kmssink
+
+GST_DEBUG=0 gst-launch-1.0 -v playbin3 connection-speed=2000 video-sink=kmssink uri="" ! kmssink
+
+GST_DEBUG=2 gst-launch-1.0 -v urisourcebin3 uri="" ! parsebin ! decodebin3 ! videoconvert ! queue ! kmssink
+
+gst-launch-1.0 -v souphttpsrc is-live=true keep-alive=true do-timestamp=true location="" ! parsebin connection-speed=2048 async-handling=true name=s s. ! decodebin3 caps="text/x-raw" ! autovideosink
+
+gst-launch-1.0 souphttpsrc location="" ! parsebin ! autovideosink
+
+gst-launch-1.0 uridecodebin3 uri="" ! videoscale ! video/x-raw,width=178,height=100 ! videoconvert ! kmssink
+
+gst-launch-1.0 -v souphttpsrc is-live=true keep-alive=true do-timestamp=true location="" ! hlsdemux message-forward=true connection-speed=2048 ! qtdemux ! h264parse ! v4l2h264dec ! queue ! videoscale ! videoconvert ! kmssink
+
+gst-launch-1.0 -v urisourcebin connection-speed=2048 uri="" ! decodebin3 ! queue ! videoscale ! video/x-raw,width=1280,height=720 ! videoconvert ! video/x-raw ! fakesink
+
+gst-launch-1.0 -v souphttpsrc is-live=true keep-alive=true do-timestamp=true location="" ! parsebin connection-speed=2048 ! decodebin3 async-handling=true name=s s. ! kmssink
 
 ```
 
