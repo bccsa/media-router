@@ -7,6 +7,7 @@ sudo apt-get -y install nodejs npm
 sudo apt-get -y install srt-tools
 sudo apt-get -y install git
 sudo apt-get -y install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-tools gstreamer1.0-x gstreamer1.0-alsa gstreamer1.0-gl gstreamer1.0-gtk3 gstreamer1.0-pulseaudio libatk1.0-dev libgdk-pixbuf2.0-dev libcairo2-dev libharfbuzz-dev libpango1.0-dev libgtk-3-dev 
+sudo apt-get -y install streamlink
 
 # Dependencies needed to build PulseAudio 16.1
 sudo apt-get -y build-dep pulseaudio
@@ -28,17 +29,12 @@ npm install
 cd ..
 
 # Gstreamer node-addon-api 
-cd server/gst_modules/SrtVideoPlayer
+cd server/gst_modules/GstvuMeter
 sudo node-gst configure
 npm i
 cd ../../..
 
-cd server/gst_modules/SrtOpusOutput
-sudo node-gst configure
-npm i
-cd ../../..
-
-cd server/gst_modules/SrtOpusInput
+cd server/gst_modules/GstGeneric
 sudo node-gst configure
 npm i
 cd ../../..
