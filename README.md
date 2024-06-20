@@ -2,9 +2,11 @@
 Configurable media router built on NodeJS with [Tailwind CSS](https://tailwindcss.com/), [modular-dm](https://github.com/bccsa/modular-dm) and [modular-ui](https://github.com/bccsa/modular-ui).
 
 The media-router makes use of the following Linux audio and video processes / applications:
-* PulseAudio
+* Pipewire-pulse
 * ffmpeg
 * srt-tools
+* gstreamer 
+* streamlink
 
 The media-router can be used to build flexible distributed media routing applications like remote audio translation systems, video feeds for broadcast, education, etc.
 
@@ -13,12 +15,13 @@ The following processes are part of the media-router project
 * server/router.js - process running on the client devices, responsible for all media processing. router.js receives its configuration upon connection to manager.js.
 * server/manager.js - process responsible for storing and distributing client configurations.
 
-Important: As the media-router makes use of PulseAudio for audio processing, router.js must be run in a user scope (logged in user) and not as a system service.
+Important: As the media-router makes use of Pipewire-pulse for audio processing, router.js must be run in a user scope (logged in user) and not as a system service.
 
 ## Compatibility
 This project has been tested on:
 * Raspberry Pi OS Bullseye (armhf / 32bit)
-* Ubuntu Desktop 22.04 LTS (amd64 / 64bit)
+* Raspberry Pi OS Bookworm (armhf / 64bit)
+* Ubuntu Desktop 23.04 LTS (amd64 / 64bit)
 
 ## Modules
 * AudioInput: Capture audio from hardware and output to a PCM stream.
@@ -27,6 +30,13 @@ This project has been tested on:
 * SrtOpusOutput: Publishes an audio stream as Opus encoded SRT. 
 * Spacer: Visual spacer for web control interface.
 * SrtVideoPlayer: Video Player for a srt video stream
+* SrtVideoEncoder: Video over SRT Encoder
+* SrtRelay: Srt Relay 
+* SoundProcessor: PCM Sound Processor
+* SoundDucking: PCM Sound Ducking
+* SrtVideoPlayer: Video Player for a srt video stream
+* HlsPlayer: Hls Video Player
+* WebRTCClient: WebRTC Client WebApp
 
 Planned modules:
 * Video encoding & decoding
