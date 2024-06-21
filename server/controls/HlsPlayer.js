@@ -9,7 +9,8 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
     constructor() {
         super();
         this.hlsUrl = "";
-        this.connectionSpeed = 4096;
+        this.videoQuality = "";
+        this.videoQualities = [];
         this.videoDelay = 0;
         this.audioDelay = 0;
         this.sinkspaModuleID = [];
@@ -47,24 +48,26 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     isEnabled = s.enabled;
             })
             if ((c > 0 && c == this._enabledStreams) || !isEnabled) {
+                // Source
+                let lang = "";
+                this.audioStreams.forEach(stream => { if (stream.enabled || stream.language == this.defaultLanguage) { lang += stream.language + "," } })
+                let streamlink = `streamlink --ringbuffer-size 64M --player-continuous-http --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
+                let _pipeline = `filesrc location="/dev/stdin" ! tsdemux name=demux `
+                // video
                 let videoSink = "";
                 if (this.enableSrt) {
-                    videoSink = `demux. ! parsebin ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${this._srtElementName}" wait-for-connection=false sync=true ts-offset=${this.videoDelay * 1000000} uri="${this.uri()}"`
+                    videoSink = `demux. ! h264parse ! queue ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${this._srtElementName}" wait-for-connection=false sync=true ts-offset=${this.videoDelay * 1000000} uri="${this.uri()}"`
                 } else {    
-                    videoSink = `demux. ! decodebin3 ! videoconvert ! queue ! ` + 
+                    videoSink = `demux. ! decodebin ! videoconvert ! queue ! ` + 
                     `kmssink ts-offset=${this.videoDelay * 1000000} sync=true `
                 }
-                // Source
-                let _pipeline = `souphttpsrc is-live=true keep-alive=true do-timestamp=true location=${this.hlsUrl} ! ` + 
-                `hlsdemux connection-speed=${this.connectionSpeed} name=demux ` + 
-                // video
-                videoSink
+                _pipeline += videoSink;
                 // audio
                 this.audioStreams.forEach((stream, i) => {
                     // audio to default sink
                     if (stream.language == this.defaultLanguage) {
                         if (this.enableSrt) { // (Pipe audio to default sink and mux with srt)
-                            _pipeline += ` demux.src_${i + 1} ! ` +
+                            _pipeline += ` demux. ! ` +
                             `tee name=tee ! ` + 
                             `queue ! ` +
                             `parsebin ! mux. ` + 
@@ -73,14 +76,14 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                             `queue ! ` +
                             `pulsesink ts-offset=${this.audioDelay * 1000000} device=${this.sink} sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                         } else {
-                            _pipeline += ` demux.src_${i + 1} ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! ` +
+                            _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
                             `queue ! ` +
                             `pulsesink ts-offset=${this.audioDelay * 1000000} device=${this.sink} sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`    
                         }
                     } 
                     // audio to null sinks
                     else if (stream.enabled)
-                        _pipeline += ` demux.src_${i + 1} ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! ` +
+                        _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
                         `queue ! ` +
                         `pulsesink device=${this._controlName}_sink_${stream.language} sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                 })
@@ -90,15 +93,10 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 this._parent.PaCmdQueue(() => {
                     if (this.enableSrt) {
                         this.runningSrt = true;
-                        this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
-                            _pipeline,
-                            this._srtElementName
-                        ]);
+                        this._start_srt(`${streamlink} | node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`, this._srtElementName);
                     } else {
                         this.runningSrt = false;
-                        this.start_gst(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
-                            _pipeline
-                        ]);
+                        this.start_gst(`${streamlink} | node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`);
                     }
                 });
             }
@@ -129,6 +127,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     })
 
                     this.audioStreams = [];
+                    this.videoQualities = [];
 
                     res.streams.forEach((s, i) => {
                         if (s.codec_type == "audio") {
@@ -140,15 +139,23 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                                 else 
                                     this.audioStreams.push({language: s.tags.language, comment: s.tags.comment, index: i, enabled: c.enabled});
                             }
-                        } 
+                        } else if (s.codec_type == 'video' && s.coded_height > 0) {
+                            this.videoQualities.push(`${s.coded_height}p`)
+                        }
                     })
-                    this.NotifyProperty('audioStreams');
 
                     // check if defaultLanguage not exist, then set it to the first sink
                     if (!this.audioStreams.find(c => { if (c.language == this.defaultLanguage) return true }) && this.audioStreams.length > 0)
                         this.defaultLanguage = this.audioStreams[0].language;
-                    
+
+                    // check if videoQuality not exist, then set it to the first sink
+                    if (!this.videoQualities.find(v => { if (v == this.videoQuality) return true }) && this.videoQualities.length > 0)
+                        this.videoQuality = this.videoQualities[this.videoQualities.length -1];
+
+                    this.NotifyProperty('audioStreams');
+                    this.NotifyProperty('videoQualities');
                     this.NotifyProperty('defaultLanguage');
+                    this.NotifyProperty('videoQuality');
                 } 
             })
         })
