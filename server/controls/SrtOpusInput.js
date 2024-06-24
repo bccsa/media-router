@@ -24,10 +24,7 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 `pulsesink device="${this.sink}" sync=false slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000`
 
                 this._parent.PaCmdQueue(() => { 
-                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
-                        _pipeline,
-                        this._srtElementName
-                    ]);
+                    this._start_srt(`node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`, this._srtElementName);
                 });
             }
         });

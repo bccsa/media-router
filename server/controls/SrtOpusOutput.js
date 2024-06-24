@@ -36,10 +36,7 @@ class SrtOpusOutput extends Classes(_paNullSinkBase, SrtBase) {
                 `srtserversink name=${this._srtElementName} uri="${this.uri()}" sync=false wait-for-connection=false`
 
                 this._parent.PaCmdQueue(() => { 
-                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
-                        _pipeline,
-                        this._srtElementName
-                    ]);
+                    this._start_srt(`node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`, this._srtElementName);
                 });
             }
         });

@@ -48,10 +48,10 @@ class SrtBase extends GstBase {
 
     /**
      * Spawn's a node subprocess, to start gstreamer (Reason for node sub process, is to avoid crashink the whole process when the c++ proccess crashes)
-     * @param {String} path - path to child process
-     * @param {Array} args - List of process arguments to pass
+     * @param {String} cmd - command to exe
+     * @param {String} _srtElementName - name of srt element to poll for stats 
      */
-    _start_srt(path, args) {
+    _start_srt(cmd, _srtElementName) {
         // clear old stats data
         this._clearStats();
         // Listen on srt stats
@@ -77,13 +77,12 @@ class SrtBase extends GstBase {
         })
 
         if (this.srtHost) {
-            this.start_gst(path, args);
+            this.start_gst(cmd);
         } else {
             this._parent._log('ERROR', `${this._controlName} (${this.displayName}): Unable to start, Please enter a valid SrtHost`);
         }
 
         // Poll for srt stats 
-        let _srtElementName = args[1];
         this._statsInterval = setInterval(() => {
             if (_srtElementName)
             this.get_gst_SrtStats("SrtStats", _srtElementName);

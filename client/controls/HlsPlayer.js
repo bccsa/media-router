@@ -1,10 +1,9 @@
 class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
     constructor() {
         super();
-        this.formatHideRW = true;   // true = Disable Read Write audio format controls
-        this.formatHideRO = false;  // true = Disable Read Only audio format controls
         this.hlsUrl = "";
-        this.connectionSpeed = 4096;
+        this.videoQuality = "";
+        this.videoQualities = ['auto'];
         this.videoDelay = 0;
         this.audioDelay = 0;
         this.audioStreams = [];
@@ -32,7 +31,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
                 <input id="@{_hlsUrl}" class="paAudioBase-select" type="text" title="Hls (m3u8) Url" placeholder="http://your.address.m3u8?some=params" value="@{hlsUrl}"></input>
         </div>
 
-        <!-- Default Sink  -->
+        <!-- Default Language  -->
         <div class="w-full mb-2">
             <label for="@{_defaultLanguage}" class="form-label inline-block">Default Language:</label>
             <select id="@{_defaultLanguage}" class="paAudioBase-select" type="text" title="Default Audio Language" value="@{defaultLanguage}">
@@ -42,11 +41,10 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
 
         <!-- connection Speed -->
         <div class="w-1/3 mr-4 flex flex-col">
-            <label for="@{_connectionSpeed}" class="form-label inline-block mb-2 mr-2">Connection Speed (Kbps):</label>
-            <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_connectionSpeed}" 
-                title="Connection Speed (Kbps), used to pick video quality" step="1" class="srtOpusInput-pos-number-input"
-                value="@{connectionSpeed}"
-            >
+            <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Quality:</label>
+            <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Quality" value="@{videoQuality}">
+               
+            </select>
         </div>
 
         <!-- audio sinks -->
@@ -134,6 +132,27 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         });
 
         //----------------------Load Audio streams-----------------------------//
+
+        //----------------------Load Video streams-----------------------------//
+        
+        this.on('videoQualities', videoQualities => {
+            // clear dp
+            while (this._videoQuality.options.length > 0) {                
+                this._videoQuality.remove(0);
+            } 
+
+            this.videoQualities.forEach(v => {
+                var opt = document.createElement('option');
+                opt.value = v;
+                opt.innerHTML = v;
+                this._videoQuality.add(opt);
+            })
+
+            this.videoQuality = this.videoQualities[0];
+
+        }, { immediate: true });
+
+        //----------------------Load Video streams-----------------------------//
 
         //----------------------Srt Settings-----------------------------//
         this.on('enableSrt', e => {

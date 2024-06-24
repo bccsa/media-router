@@ -10,6 +10,7 @@
     "express-session": "^1.17.2",
     "node-addon-api": "^7.0.0",
     "os-utils": "^0.0.14",
+    "ps-tree": "^1.2.0",
     "readable-stream-clone": "^0.0.7",
     "socket.io": "^4.6.2",
     "socket.io-client": "^4.5.4",
