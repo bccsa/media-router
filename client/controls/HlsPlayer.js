@@ -3,9 +3,8 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         super();
         this.hlsUrl = "";
         this.videoQuality = "";
-        this.videoQualities = ['auto'];
+        this.videoQualities = [];
         this.videoDelay = 0;
-        this.audioDelay = 0;
         this.audioStreams = [];
         this._checkBoxes = [];
         this.defaultLanguage = "";
@@ -96,15 +95,6 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
                 >
             </div>
 
-            <!-- Audio Delay -->
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_audioDelay}" class="form-label inline-block mb-2 mr-2">Audio Delay (ms):</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_audioDelay}" 
-                    title="Audio Delay (ms)" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{audioDelay}"
-                >
-            </div>
-
             <div class="w-1/3 flex flex-col"></div>
 
         </div>
@@ -148,7 +138,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
                 this._videoQuality.add(opt);
             })
 
-            this.videoQuality = this.videoQualities[0];
+            this._videoQuality.value = this.videoQuality;
 
         }, { immediate: true });
 

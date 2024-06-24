@@ -12,7 +12,6 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this.videoQuality = "";
         this.videoQualities = [];
         this.videoDelay = 0;
-        this.audioDelay = 0;
         this.sinkspaModuleID = [];
         this.readyNullSinks = 0;
         this.audioStreams = [];
@@ -72,20 +71,20 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                             `queue ! ` +
                             `parsebin ! mux. ` + 
                             `tee. ! ` + 
-                            `decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! ` +
+                            `decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
                             `queue ! ` +
-                            `pulsesink ts-offset=${this.audioDelay * 1000000} device=${this.sink} sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
+                            `pulsesink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                         } else {
                             _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
                             `queue ! ` +
-                            `pulsesink ts-offset=${this.audioDelay * 1000000} device=${this.sink} sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`    
+                            `pulsesink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`    
                         }
                     } 
                     // audio to null sinks
                     else if (stream.enabled)
                         _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
                         `queue ! ` +
-                        `pulsesink device=${this._controlName}_sink_${stream.language} sync=true async=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
+                        `pulsesink device=${this._controlName}_sink_${stream.language} sync=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                 })
 
                 // // ------------ start sound processor ------------ //
