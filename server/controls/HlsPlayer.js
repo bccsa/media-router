@@ -29,6 +29,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             if (ready) {
                 // start null sinks
                 this._enabledStreams = 0;
+                this.readyNullSinks = -1;
                 this.readyNullSinks = 0;
                 this.audioStreams.forEach(stream => {
                     if (stream.enabled && stream.language != this.defaultLanguage) {
