@@ -46,7 +46,7 @@ function GetSrtStats ([resMessage, srtElementName]) {
  * @param {String} key - Key in element to set
  * @param {*} value - value to set 
  */
-function Set([srtElementName, valType, key, value]) {
+function Set([elementName, valType, key, value]) {
     if (running)
-    p.Set(srtElementName, valType, key, value);
+    p.Set(elementName, valType, key, value);
 }

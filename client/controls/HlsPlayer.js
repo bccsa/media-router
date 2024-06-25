@@ -89,7 +89,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             <!-- Video Delay --> 
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_videoDelay}" class="form-label inline-block mb-2 mr-2">Video Delay (ms):</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_videoDelay}" 
+                <input type="number" min="0" max="2000" oninput="validity.valid||(value='')" id="@{_videoDelay}" 
                     title="Video Delay (ms)" step="1" class="srtOpusInput-pos-number-input"
                     value="@{videoDelay}"
                 >
