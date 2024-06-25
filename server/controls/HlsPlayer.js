@@ -19,7 +19,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this.defaultLanguage = "";
         this.enableSrt = false;
         this.runningSrt = false;
-        this._srtElementName = "srtserversink";
+        this._vidoeElementName = "videosink";
     }
 
     Init() {
@@ -56,10 +56,10 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 // video
                 let videoSink = "";
                 if (this.enableSrt) {
-                    videoSink = `demux. ! h264parse ! queue ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${this._srtElementName}" wait-for-connection=false sync=true ts-offset=${this.videoDelay * 1000000} uri="${this.uri()}"`
+                    videoSink = `demux. ! h264parse ! queue ! mpegtsmux alignment=7 name=mux ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! srtserversink name="${this._vidoeElementName}" wait-for-connection=false sync=true ts-offset=${this.videoDelay * 1000000} uri="${this.uri()}"`
                 } else {    
-                    videoSink = `demux. ! decodebin ! videoconvert ! queue ! ` + 
-                    `kmssink ts-offset=${this.videoDelay * 1000000} sync=true `
+                    videoSink = `demux. ! decodebin ! videoconvert ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! ` + 
+                    `kmssink name=${this._vidoeElementName} ts-offset=${this.videoDelay * 1000000} sync=true `
                 }
                 _pipeline += videoSink;
                 // audio
@@ -73,12 +73,12 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                             `parsebin ! mux. ` + 
                             `tee. ! ` + 
                             `decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
-                            `queue ! ` +
-                            `pulsesink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
+                            `queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! ` +
+                            `pulsesink name=audioSink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                         } else {
                             _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
-                            `queue ! ` +
-                            `pulsesink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`    
+                            `queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! ` +
+                            `pulsesink name=audioSink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`    
                         }
                     } 
                     // audio to null sinks
@@ -93,7 +93,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 this._parent.PaCmdQueue(() => {
                     if (this.enableSrt) {
                         this.runningSrt = true;
-                        this._start_srt(`${streamlink} | node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`, this._srtElementName);
+                        this._start_srt(`${streamlink} | node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`, this._vidoeElementName);
                     } else {
                         this.runningSrt = false;
                         this.start_gst(`${streamlink} | node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`);
@@ -158,6 +158,11 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     this.NotifyProperty('videoQuality');
                 } 
             })
+        })
+
+        this.on('videoDelay', d => {
+            this.set_gst("audioSink", "int", "ts-offset", d);
+            this.set_gst(this._vidoeElementName, "int", "ts-offset", d * 1000000);
         })
     }
 

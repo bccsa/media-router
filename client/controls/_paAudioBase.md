@@ -1,4 +1,4 @@
-# Base Settings
+# Base Audio Settings
 
 ## Audio Settings
 * Channels - Audio channel number (default = 1)

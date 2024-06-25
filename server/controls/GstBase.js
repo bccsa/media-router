@@ -104,12 +104,13 @@ class GstBase {
 
     /**
      * Live Changes to GST pipeline
-     * @param {String} srtElementName 
+     * @param {String} elementName 
+     * @param {String} valType (gdouble / int / string / bool)
      * @param {String} key 
-     * @param {*} value 
+     * @param {*} value (gdouble, int, string, bool)
      */
-    _set_gst(srtElementName, valType, key, value) {
-        this._gst && this._gst.send(["Set", srtElementName, valType, key, value]);
+    _set_gst(elementName, valType, key, value) {
+        this._gst && this._gst.send(["Set", elementName, valType, key, value]);
     }
 }
 

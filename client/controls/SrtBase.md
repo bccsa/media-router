@@ -1,4 +1,4 @@
-# SrtBase
+# Base SRT Settings
 
 ***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***
 
