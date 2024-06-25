@@ -26,11 +26,11 @@ cd ..
 
 # Gstreamer node-addon-api 
 cd server/gst_modules/GstvuMeter
-sudo node-gst configure
+node-gyp configure
 npm i
 cd ../../..
 
 cd server/gst_modules/GstGeneric
-sudo node-gst configure
+node-gyp configure
 npm i
 cd ../../..
