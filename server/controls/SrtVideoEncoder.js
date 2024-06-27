@@ -83,7 +83,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // audio device
                 `mux. pulsesrc device="${this.source}" ! ` +
                 // audio caps
-                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
+                `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels},channel-mask=(bitmask)0x${(Math.pow(2, this.channels) -1).toString(16)} ! ` +
                 // audio convert and resample 
                 `queue leaky=2 max-size-time=20000000 flush-on-eos=true ! audioconvert ! audioresample ! ` +
                 // audio encoding 
@@ -96,10 +96,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // ------------ start srt encoder ------------ //
                 if (_valid)
                 this._parent.PaCmdQueue(() => { 
-                    this._start_srt(`${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js`, [
-                        _pipeline,
-                        this._srtElementName
-                    ]);
+                    this._start_srt(`node ${path.dirname(process.argv[1])}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`, this._srtElementName);
                 });
             }
         });
