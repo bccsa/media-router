@@ -41,7 +41,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // ------------ Capture ------------ //
                 // capture format
                 let gstVideoDecode = "";
-                if (this.capture_format == "mjpeg") { gstVideoDecode = `jpegdec ! ` };
+                if (this.capture_format == "mjpeg") { gstVideoDecode = `avdec_mjpeg ! ` };
 
                 // deinterlace
                 let gstDeinterlace = "";
