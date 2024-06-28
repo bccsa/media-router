@@ -60,7 +60,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 if (this.encoder == "v4l2h264enc") {
                     gstEncoder = `v4l2h264enc extra-controls="encode,video_bitrate=${vb},video_bitrate_mode=0,h264_level=13,repeat_sequence_header=1,video_gop_size=${this.video_gop},h264_profile=0" ! video/x-h264,level=(string)4.2 ! `; // h264level 4.2 to support 50p (https://en.wikipedia.org/wiki/Advanced_Video_Coding)
                 } else if (this.encoder == "openh264enc") {
-                    gstEncoder = `openh264enc multi-thread=4 bitrate=2048000 min-force-key-unit-interval=5000000000 rate-control=off slice-mode=5 ! video/x-h264,profile=baseline ! `;
+                    gstEncoder = `openh264enc multi-thread=4 bitrate=${vb} min-force-key-unit-interval=5000000000 rate-control=off slice-mode=5 ! video/x-h264,profile=baseline ! `;
                 } else {
                     _valid = false;
                     this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Invalid encoder selected, <b>pipeline NOT started</b>.`);
