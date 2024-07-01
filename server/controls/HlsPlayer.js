@@ -19,6 +19,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this.defaultLanguage = "";
         this.enableSrt = false;
         this.runningSrt = false;
+        this.hlsLoading = false;
         this._vidoeElementName = "videosink";
     }
 
@@ -38,6 +39,9 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     }
                 })
             }
+
+            // reset hlsLoading
+            this.hlsLoading = false;
         });
 
         this.on('readyNullSinks', c => {
@@ -114,6 +118,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         }, { immediate: true });
 
         this.on('hlsUrl', url => {
+            this.hlsLoading = true;
             this.parse_hls(url)
             .then((res) => {
                 if (res && Object.keys(res).length > 0) {
@@ -140,7 +145,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                                     this.audioStreams.push({language: s.tags.language, comment: s.tags.comment, index: i, enabled: c.enabled});
                             }
                         } else if (s.codec_type == 'video' && s.coded_height > 0) {
-                            this.videoQualities.push(`${s.coded_height}p`)
+                            this.videoQualities.push(`${s.height}p`)
                         }
                     })
 
@@ -157,6 +162,8 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     this.NotifyProperty('defaultLanguage');
                     this.NotifyProperty('videoQuality');
                 } 
+
+                this.hlsLoading = false;
             })
         })
 
