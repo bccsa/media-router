@@ -11,6 +11,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.sinkspaModuleID = [];
         this.enableSrt = false;
         this.runningSrt = false;
+        this.hlsLoading = false;
     }
 
     get html() {
@@ -20,8 +21,14 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
 
         <!-- ----------------------------------------------------------    Input    ---------------------------------------------------------- -->
 
-        <div class="w-full items-center justify-items-center justify-center mb-2">
+        <div class="w-full grid grid-cols-3 items-center mb-2">
+            <div></div>
+
             <div class="text-center align-top font-semibold text-base">Input Settings</div>
+
+            <div class="flex place-items-right">
+                <div id=@{_hlsLoading} class="icon-[line-md--loading-twotone-loop] ml-auto w-7 h-7" title="Loading"></div>
+            </div>
         </div>
 
         <!-- Hls url  -->
@@ -140,6 +147,13 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
 
             this._videoQuality.value = this.videoQuality;
 
+        }, { immediate: true });
+
+        this.on('hlsLoading', v => {
+            if (!v)
+                this._hlsLoading.style.display = "none";
+            else 
+                this._hlsLoading.style.display = "block";
         }, { immediate: true });
 
         //----------------------Load Video streams-----------------------------//
