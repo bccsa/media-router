@@ -18,8 +18,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.encoder = "v4l2h264enc"; // options (software: openh264enc, hardware: v4l2h264enc)
         this.video_bitrate = "2M";
         this.video_gop = 30;            // amount of frame interval before a new full frame is sent  
-        this.video_width = 1280;
-        this.video_height = 720;
+        this.video_quality = 720;
         this.video_framerate = 30;
         this.audio_bitrate = 96;
         this._srtElementName = "srtserversink";
@@ -77,7 +76,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 // video frame rate conversion
                 `videorate ! video/x-raw,framerate=${this.video_framerate}/1 ! ` +
                 // video scale conversion
-                `videoscale n-threads=4 ! video/x-raw,width=${this.video_width},height=${this.video_height} ! ` +
+                `videoscale n-threads=4 ! video/x-raw,width=${Math.ceil(this.video_quality / 9 * 16)},height=${this.video_quality} ! ` +
                 // h264 encoding
                 gstEncoder +
                 // audio device

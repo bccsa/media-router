@@ -11,8 +11,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.encoder = "v4l2h264enc";   // options (software: openh264enc, hardware: v4l2h264enc)
         this.video_bitrate = "2M";
         this.video_gop = 30;            // amount of frame interval before a new full frame is sent       
-        this.video_width = 1280;
-        this.video_height = 720;
+        this.video_quality = 720;
         this.video_framerate = 30;
         this.audio_bitrate = 96; 
     }
@@ -94,8 +93,25 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
             <!-- Video Bitrate -->
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_video_bitrate}" class="form-label inline-block mb-2">Video Bitrate:</label>
-                    <input id="@{_video_bitrate}" class="paAudioBase-text-area" type="text"
-                    title="Video Encoding bitrate" placeholder="2M" value="@{video_bitrate}"/>
+                <select id="@{_video_bitrate}" title="Video Encoding bitrate" value="@{video_bitrate}" 
+                class="paAudioBase-select" type="text">
+                    <option value="24M">24M</option>
+                    <option value="20M">20M</option>
+                    <option value="16M">16M</option>
+                    <option value="12M">12M</option>
+                    <option value="10M">10M</option>
+                    <option value="8M">8M</option>
+                    <option value="6M">6M</option>
+                    <option value="5M">5M</option>
+                    <option value="4M">4M</option>
+                    <option value="3M">3M</option>
+                    <option value="2M">2M</option>
+                    <option value="1M">1M</option>
+                    <option value="768k">768k</option>
+                    <option value="512k">512k</option>
+                    <option value="256k">256k</option>
+                    <option value="128k">128k</option>
+                </select>
             </div>
 
             <!-- Encoder -->
@@ -138,22 +154,20 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         </div>
 
         <div class="w-full mb-4 flex ">
-            <!-- Video Width  --> 
+            <!-- Video Quality  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_video_width}" class="form-label inline-block mb-2 mr-2">Video Width:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_video_width}" 
-                    title="Video Width" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{video_width}"
-                >
-            </div>
-
-            <!-- Video Height  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_video_height}" class="form-label inline-block mb-2 mr-2">Video Height:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_video_height}" 
-                    title="Video Height" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{video_height}"
-                >
+                <label for="@{_video_quality}" class="form-label inline-block mb-2 mr-2">Video Quality:</label>
+                <select id="@{_video_quality}" title="Video Quality (16X9)" value="@{video_quality}" 
+                class="paAudioBase-select" type="number">
+                    <option value="2160">2160p (4k)</option>
+                    <option value="1800">1800p (QHD+)</option>
+                    <option value="1440">1440p (WQHD)</option>
+                    <option value="1080">1080p (FHD)</option>
+                    <option value="720">720p (HD)</option>
+                    <option value="540">540p (qHD)</option>
+                    <option value="480">480p (FWVGA)</option>
+                    <option value="360">360p (nHD)</option>
+                </select>
             </div>
 
             <!-- Video Framerate  --> 
@@ -163,6 +177,10 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
                     title="Video Framerate" name="SRT Latency" step="1" class="srtOpusInput-pos-number-input"
                     value="@{video_framerate}"
                 >
+            </div>
+
+            <!-- Place holder -->
+            <div class="w-1/3 mr-4 flex flex-col">
             </div>
         </div>
 
