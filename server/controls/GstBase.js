@@ -52,9 +52,9 @@ class GstBase {
                 });
                 
                 // Restart pipeline on exit
-                this._gst.on('exit', (data) => {
+                this._gst.on('exit', (code) => {
                     this.stop_gst();
-                    if (this.ready) {
+                    if (this.ready && !(code == null || code == 0)) {
                         this._parent._log('FATAL', `${this._controlName} (${this.displayName}): Got exit code, restarting in 3s`);
                         setTimeout(() => { this.start_gst(cmd) }, 3000);
                     }
