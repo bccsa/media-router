@@ -16,7 +16,7 @@ class SrtRelay extends _uiClasses(_routerChildControlBase, SrtBase) {
         return super.html.replace('%modalHtml%', `
 
         ${this.SrtBaseHtml(
-            "SRT Sink Settings",
+            "SRT Receiver Settings",
             "sink_srtHost",
             "sink_srtPort",
             "sink_srtMode",
@@ -28,7 +28,7 @@ class SrtRelay extends _uiClasses(_routerChildControlBase, SrtBase) {
             "sink_srtStreamID"
         )}
 
-        ${this.SrtBaseHtml("SRT Source Settings")}
+        ${this.SrtBaseHtml("SRT Transmitter Settings")}
         `).replace("<!--  %SrtStatsHtml%  -->", this.SrtStatsHtml())
         .replace('%cardHtml%',`
         <div class="w-full items-center justify-items-center justify-center">
