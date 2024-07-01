@@ -35,7 +35,8 @@ class SrtRelay extends Classes(dm, SrtBase) {
             if (run) {
                 let _pipeline = 
                 // sink
-                `srtserversrc uri="${this.sink_uri()}" wait-for-connection=false ! ` + 
+                `srtserversrc uri="${this.sink_uri()}" wait-for-connection=false ! tsparse ! ` +
+                `queue leaky=2 max-size-time=200000000 flush-on-eos=true ! `  + 
                 // source
                 `srtserversink name=${this._srtElementName} uri="${this.uri()}" sync=false wait-for-connection=false`
 
