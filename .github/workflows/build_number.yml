@@ -17,7 +17,7 @@ jobs:
         run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
         id: extract_branch
       # Generate build file
-      - uses: bccsa/generate-build-number
+      - uses: bccsa/generate-build-number@v1
       - name: Generate Build Number
         run: |
           echo -n "${{ steps.extract_branch.outputs.branch }} | " > build-number.txt; date >> build-number.txt 
