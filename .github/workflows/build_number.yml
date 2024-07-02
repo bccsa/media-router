@@ -11,13 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
       # Get branch name
       - name: Extract branch name
         shell: bash
         run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
         id: extract_branch
       # Generate build file
-      - uses: bccsa
       - name: Generate Build Number
         run: |
           echo -n "${{ steps.extract_branch.outputs.branch }} | " > build-number.txt; date >> build-number.txt 
