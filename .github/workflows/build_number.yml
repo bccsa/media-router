@@ -1,0 +1,23 @@
+name: build_number
+
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      # Get branch name
+      - name: Extract branch name
+        shell: bash
+        run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+        id: extract_branch
+      # Generate build file
+      - run: |
+          echo -n "${{ steps.extract_branch.outputs.branch }} | " > build-number.txt; date >> build-number.txt 
+          git submodule update --init
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add .
+          git commit -m "generate build number"
+          git push
