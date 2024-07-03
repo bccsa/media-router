@@ -2,6 +2,7 @@ class appFrame extends ui {
     constructor() {
         super();
         this.orderBy = 'displayOrder';
+        this.build_number = 'DEV';
     }
 
     get html() {
@@ -30,6 +31,12 @@ class appFrame extends ui {
                         <h5 class="appFrame-modal-heading" > Profile manager</h5>
                         <button id="@{_btnCloseModal}" class="appFrame-modal-btn-close" type="button"
                         data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <!--    Build Number     -->
+                    <div class="router-container flex grid grid-cols-1 mt-2">
+                        <label for="@{_build_number}" class="">Build Number:</label>
+                        <div>@{build_number}</div>
                     </div>
 
                     <div class="appFrame-modal-footer grid grid-cols-2 gap-4 items-stretch">
