@@ -1,7 +1,7 @@
 name: build_number
 
 on: 
-  pull_request_target:
+  pull_request:
     types:
       - opened
     paths:
@@ -14,18 +14,14 @@ jobs:
     environment: generate_build_number
     steps:
       - uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.BCCSA_BOT_TOKEN }}
       # Generate build file (https://stackoverflow.com/questions/58033366/how-to-get-the-current-branch-within-github-actions) 
       - name: Generate Build Number
-        env:
-          GH_TOKEN: ${{ secrets.BCCSA_BOT_TOKEN }}
         run: |
-          git config user.name "${{ secrets.BCCSA_BOT_NAME }}"
-          git config user.email "${{ secrets.BCCSA_BOT_EMAIL }}"
+          git config user.name github-actions
+          git config user.email github-actions@github.com
           git config pull.rebase false
-          echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
+          echo -n "${{ github.head_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
-          git commit -m "generate build number"
+          git commit -m "generate build number" 
           git pull
-          git push https://${{ secrets.BCCSA_BOT_TOKEN }}@github.com/bccsa/media-router.git --force
+          git push origin ${{ github.base_ref || github.ref_name }} --force
