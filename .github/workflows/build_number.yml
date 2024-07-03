@@ -1,8 +1,8 @@
 name: build_number
 
 on: 
-  push:
-    branches: "*"
+  pull_request_target:
+    branches: "v1.*"
     paths:
       - '**'
       - '!build-number.txt'
