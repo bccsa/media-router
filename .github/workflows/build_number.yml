@@ -2,7 +2,8 @@ name: build_number
 
 on: 
   pull_request_target:
-    branches: "v1.*"
+    types:
+      - opened
     paths:
       - '**'
       - '!build-number.txt'
