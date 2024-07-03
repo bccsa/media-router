@@ -25,4 +25,4 @@ jobs:
           git add .
           git commit -m "generate build number"
           git pull
-          git push
+          git push --force
