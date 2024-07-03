@@ -3,6 +3,9 @@ name: build_number
 on: 
   pull_request_target:
     branches: "v1.*"
+    paths:
+      - '**'
+      - '!build-number.txt'
 
 jobs:
   generate_build_number:
@@ -15,10 +18,11 @@ jobs:
       # Generate build file (https://stackoverflow.com/questions/58033366/how-to-get-the-current-branch-within-github-actions)
       - name: Generate Build Number
         run: |
-          echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git config user.name "${{ secrets.BCCSA_BOT_NAME }}"
           git config user.email "${{ secrets.BCCSA_BOT_EMAIL }}"
+          git config pull.rebase false
           git pull
+          echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
           git commit -m "generate build number"
           git push
