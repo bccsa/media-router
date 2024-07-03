@@ -190,6 +190,11 @@ router_io.on('connection', socket => {
         // Remove socket from routers sockets list
         delete router_sockets[socket.data.routerID];
 
+        // force disconnect socket
+        socket.disconnect();
+
+        delete socket;
+
         // Set offline status
         routerConf.online = false;
         manager_io.emit('data', { [socket.data.routerID]: { online: false } });
