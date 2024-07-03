@@ -11,8 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/create-github-app-token@v1
-        id: app-token
         with:
           fetch-depth: 0
           token: ${{ secrets.BCCSA_BOT_TOEKN }}
