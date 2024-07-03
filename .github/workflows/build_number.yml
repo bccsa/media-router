@@ -1,13 +1,13 @@
 name: build_number
 
 on: 
-  push:
-    paths:
-      - '**'
-      - '!build_number.txt'
+  pull_request_target:
+    branches: [ "v1.*" ]
 
 jobs:
+  generate_build_number:
     runs-on: ubuntu-latest
+    environment: geenrate_build_number
     steps:
       - uses: actions/checkout@v3
         with:
