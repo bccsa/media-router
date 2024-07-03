@@ -21,8 +21,8 @@ jobs:
           git config user.name "${{ secrets.BCCSA_BOT_NAME }}"
           git config user.email "${{ secrets.BCCSA_BOT_EMAIL }}"
           git config pull.rebase false
-          git pull
           echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
           git commit -m "generate build number"
+          git pull
           git push
