@@ -1,8 +1,8 @@
 name: build_number
 
 on: 
-  pull_request_target:
-    branches: "v1.*"
+  push:
+    branches: "*"
 
 jobs:
   generate_build_number:
