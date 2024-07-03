@@ -98,7 +98,7 @@ class SoundDucking extends _paAudioSourceBase {
         <!--    release     -->
         <div class="w-full mb-2 flex flex-row items-center">
         
-            <label for="@{_release}" class="mt-5 w-1/6">Release:</label>
+            <label for="@{_release}" class="mt-5 w-1/6">Release Time:</label>
         
             <input id="@{_release}" class="paAudioBase-slider" type="range"
                 title="Time (ms) that the audio will take to restore to normal levels" step="1" min="0" max="2000" value="@{release}">
