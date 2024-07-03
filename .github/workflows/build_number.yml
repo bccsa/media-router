@@ -7,8 +7,6 @@ on:
     paths:
       - '**'
       - '!build-number.txt'
-    branches:
-      - 'v.1*'
 
 jobs:
   generate_build_number:
