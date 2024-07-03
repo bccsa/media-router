@@ -26,6 +26,6 @@ jobs:
           git config pull.rebase false
           echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
-          git commit -m "generate build number"
+          git commit -m "generate build number" 
           git pull
           git push https://${{ secrets.BCCSA_BOT_TOKEN }}@github.com/bccsa/media-router.git --force
