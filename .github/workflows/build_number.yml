@@ -7,18 +7,18 @@ on:
       - '!build_number.txt'
 
 jobs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.BCCSA_BOT_TOKEN }}
-      # Generate build file (https://stackoverflow.com/questions/58033366/how-to-get-the-current-branch-within-github-actions)
-      - name: Generate Build Number
-        run: |
-          echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
-          git config user.name "${{ secrets.BCCSA_BOT_NAME }}"
-          git config user.email "${{ secrets.BCCSA_BOT_EMAIL }}"
-          git add .
-          git commit -m "generate build number"
-          git push
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.BCCSA_BOT_TOKEN }}
+    # Generate build file (https://stackoverflow.com/questions/58033366/how-to-get-the-current-branch-within-github-actions)
+    - name: Generate Build Number
+      run: |
+        echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
+        git config user.name "${{ secrets.BCCSA_BOT_NAME }}"
+        git config user.email "${{ secrets.BCCSA_BOT_EMAIL }}"
+        git add .
+        git commit -m "generate build number"
+        git push
