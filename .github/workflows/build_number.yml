@@ -27,4 +27,4 @@ jobs:
           git add .
           git commit -m "generate build number"
           git pull
-          git push https://${{ secrets.BCCSA_BOT_TOKEN }}@github.com/bccsa/media-router.git --force
+          git push https://${{ secrets.BCCSA_BOT_TOKEN }}@github.com/bccsa/media-router.git --force 
