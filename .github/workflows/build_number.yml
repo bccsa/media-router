@@ -20,9 +20,8 @@ jobs:
           git config user.name github-actions
           git config user.email github-actions@github.com
           git config pull.rebase false
-          git checkout origin/${{ github.base_ref || github.ref_name }}
           echo -n "${{ github.head_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
           git commit -m "generate build number" 
           git pull
-          git push
+          git push origin ${{ github.base_ref || github.ref_name }} --force
