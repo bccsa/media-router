@@ -1,7 +1,7 @@
 name: build_number
 
 on: 
-  pull_request:
+  pull_request_target:
       types:
         - closed
 
@@ -13,6 +13,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          token: ${{ secrets.BCCSA_BOT_TOKEN }}
       # Generate build file (https://stackoverflow.com/questions/58033366/how-to-get-the-current-branch-within-github-actions)
       - name: Generate Build Number
         run: |
