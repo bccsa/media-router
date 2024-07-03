@@ -18,6 +18,7 @@ jobs:
           echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git config user.name "${{ secrets.BCCSA_BOT_NAME }}"
           git config user.email "${{ secrets.BCCSA_BOT_EMAIL }}"
+          git pull
           git add .
           git commit -m "generate build number"
           git push
