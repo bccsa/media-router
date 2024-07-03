@@ -10,7 +10,7 @@ on:
 jobs:
   generate_build_number:
     runs-on: ubuntu-latest
-    environment: geenrate_build_number
+    environment: generate_build_number
     steps:
       - uses: actions/checkout@v3
         with:
@@ -27,4 +27,4 @@ jobs:
           git add .
           git commit -m "generate build number"
           git pull
-          git push
+          git push https://${{ secrets.BCCSA_BOT_TOKEN }}@github.com/${{ secrets.BCCSA_BOT_USER }}/media-router.git
