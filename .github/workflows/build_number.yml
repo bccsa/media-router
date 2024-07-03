@@ -23,5 +23,5 @@ jobs:
           echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
           git commit -m "generate build number" 
-          git pull
+          git pull origin ${{ github.head_ref || github.ref_name }}
           git push origin ${{ github.head_ref || github.ref_name }} --force 
