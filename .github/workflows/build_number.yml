@@ -13,15 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     environment: generate_build_number
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+        with: 
+          ref: ${{ github.head_ref || github.ref_name }}
       # Generate build file (https://stackoverflow.com/questions/58033366/how-to-get-the-current-branch-within-github-actions) 
       - name: Generate Build Number
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
           git config pull.rebase false
-          echo -n "${{ github.head_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
+          echo -n "${{ github.base_ref || github.ref_name }} | " > build-number.txt; date >> build-number.txt 
           git add .
           git commit -m "generate build number" 
-          git pull
-          git push origin ${{ github.base_ref || github.ref_name }} --force
+          git pull origin ${{ github.head_ref || github.ref_name }}
+          git push origin ${{ github.head_ref || github.ref_name }} --force 
