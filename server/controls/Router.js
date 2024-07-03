@@ -44,7 +44,7 @@ class Router extends dm {
         this.startupState = true;                   // true = Auto (manager selected state); false = Start in stopped state.
         this.cpuUsage = 0;                          // CPU usage indication
         this.ipAddress = "127.0.0.1";               // system IP address    
-        this.buildNumber2 = "DEV";                   // Software Build number
+        this.buildNumber = "DEV";                   // Software Build number
     }
 
     Init() {
@@ -66,11 +66,11 @@ class Router extends dm {
         // Load Build Number (Timeout is to run this on the next tick to otherwise it does not sync through to the manager)
         setTimeout(() => { 
             try {
-                this.buildNumber2 = fs.readFileSync(path.join(__dirname, '../../build-number.txt'), 'utf8').toString().replace(/\r?\n|\r/g, "");
+                this.buildNumber = fs.readFileSync(path.join(__dirname, '../../build-number.txt'), 'utf8').toString().replace(/\r?\n|\r/g, "");
             }
             catch (err) {
                 this._log('ERROR', 'Unable to load build numebr: ' + err.message);
-                this.buildNumber2 = 'DEV';
+                this.buildNumber = 'DEV';
             }
         }, 5000);
         //----------------------Get device resources-----------------------------//

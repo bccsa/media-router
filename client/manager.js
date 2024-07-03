@@ -97,6 +97,11 @@ function socket_comms() {
     }
 
     socket.on('connect', socket_connect);
+
+    // listen for build number
+    socket.on('build_number', bn => {
+        controls.appFrame.build_number = bn;
+    })
 }
 
 

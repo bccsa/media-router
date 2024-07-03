@@ -4,6 +4,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 
 process.chdir(__dirname);
 
@@ -119,6 +120,17 @@ manager_io.on('connection', manager_socket => {
             manager_socket.emit('new_password', false)
         }
     })
+
+    // Emit build number to manager 
+    let bn = "DEV"
+    try {
+        bn =  fs.readFileSync(path.join(__dirname, '../build-number.txt'), 'utf8').toString().replace(/\r?\n|\r/g, "");
+    }
+    catch (err) {
+        bn =  "DEV";
+    }
+
+    manager_socket.emit('build_number', bn);
 });
 
 // -------------------------------------
