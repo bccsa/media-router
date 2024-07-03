@@ -1,13 +1,12 @@
 name: build_number
 
 on: 
-  pull_request_target:
-      types:
-        - closed
+  push:
+    paths:
+      - '**'
+      - '!build_number.txt'
 
 jobs:
-  if_merged:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
