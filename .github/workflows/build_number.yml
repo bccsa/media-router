@@ -24,4 +24,4 @@ jobs:
           git add .
           git commit -m "generate build number" 
           git pull
-          git push origin ${{ github.base_ref || github.ref_name }} --force
+          git push origin ${{ github.base_ref || github.ref_name }} --force 
