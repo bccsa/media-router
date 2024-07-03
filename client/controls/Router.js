@@ -27,7 +27,8 @@ class Router extends ui {
         this.restartCmd = false;    // Restart router device
         this.enableDesktop = true;  // Enable/ disable dsktop environment
         this.cpuUsage = 0;          // CPU usage indication
-        this.ipAddress = "127.0.0.1"// system IP address   
+        this.ipAddress = "127.0.0.1";// system IP address     
+        this.buildNumber2 = "DEV";    // buildNumber Build number
     }
 
     get html() {
@@ -169,7 +170,14 @@ class Router extends ui {
 
                         <! --   Info Section   -->
                         <!--    IP Address     -->
-                        <label for="@{_ipAddress}" class="router-label-settings">IP Address: <span>@{ipAddress}</span></label>
+                        <div class="router-container">
+                            <label for="@{_ipAddress}" class="">IP Address: <span>@{ipAddress}</span></label>
+                        </div>    
+                    
+                        <!--    Build Number     -->
+                        <div class="router-container">
+                            <label for="@{_buildNumber}" class="">Build Number: <span>@{buildNumber2}</span></label>
+                        </div>  
 
                         <!--    DIVIDER LINE      -->
                         <div class="router-line mb-4"></div>
@@ -616,6 +624,10 @@ class Router extends ui {
             else {
                 this._cpuUsage.style.backgroundColor = "rgb(203 213 225)";
             }
+        })
+
+        this.on('buildNumber2', b => {
+            console.log(b);
         })
 
         //----------------------Scaling-----------------------------//

@@ -3,6 +3,8 @@ const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const os_utils = require('os-utils');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * Router control
@@ -41,7 +43,8 @@ class Router extends dm {
         this.startupDelayTime = 3000;               // Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up.
         this.startupState = true;                   // true = Auto (manager selected state); false = Start in stopped state.
         this.cpuUsage = 0;                          // CPU usage indication
-        this.ipAddress = "127.0.0.1"                // system IP address    
+        this.ipAddress = "127.0.0.1";               // system IP address    
+        this.buildNumber2 = "DEV";                   // Software Build number
     }
 
     Init() {
@@ -59,6 +62,17 @@ class Router extends dm {
         // IP address
         setTimeout(() => { this._getIP().then(ip => { this.ipAddress = ip }) }, 5000);
         setInterval(() => { this._getIP().then(ip => { this.ipAddress = ip }) }, 10000)
+
+        // Load Build Number (Timeout is to run this on the next tick to otherwise it does not sync through to the manager)
+        setTimeout(() => { 
+            try {
+                this.buildNumber2 = fs.readFileSync(path.join(__dirname, '../../build-number.txt'), 'utf8').toString().replace(/\r?\n|\r/g, "");
+            }
+            catch (err) {
+                this._log('ERROR', 'Unable to load build numebr: ' + err.message);
+                this.buildNumber2 = 'DEV';
+            }
+        }, 5000);
         //----------------------Get device resources-----------------------------//
 
         // Relay external run command to child controls
