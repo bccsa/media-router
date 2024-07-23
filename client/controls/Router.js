@@ -25,7 +25,7 @@ class Router extends ui {
         this.logFATAL = true;       // log level enabled/ disabled
         this.resetCmd = false;      // Reset router process
         this.restartCmd = false;    // Restart router device
-        this.enableDesktop = true;  // Enable/ disable dsktop environment
+        this.startLocalCTR = false; // Start local control panel (When the MR starts) (!!! This script was build for bookworm / noble / bullseye, if you have a diffrent release update teh script in ./media-router/server/scripts/start-localCTR.sh)
         this.cpuUsage = 0;          // CPU usage indication
         this.ipAddress = "127.0.0.1";// system IP address     
         this.buildNumber = "DEV";    // buildNumber Build number
@@ -285,12 +285,12 @@ class Router extends ui {
                             </div>
                         </div>
 
-                        <!--    Enable/ Disable desktop environment    -->  
-                        <label for="@{_enableDesktop}" class="router-label-settings">Enable/ Disable desktop:</label>
+                        <!--    Lunch local control panel on device   -->  
+                        <label for="@{_startLocalCTR}" class="router-label-settings">Start local control panel:</label>
                         <div class="router-container">
                             <label class="relative inline-flex items-center cursor-pointer">
                             <span class="router-label">Off</span>
-                                <input id="@{_enableDesktop}" class="sr-only peer" type="checkbox" role="switch" checked="@{enableDesktop}">
+                                <input id="@{_startLocalCTR}" class="sr-only peer" type="checkbox" role="switch" checked="@{startLocalCTR}">
                                 <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
                             <span class="router-label -mr-2 ml-2">On</span>
                         </div>
