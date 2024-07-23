@@ -31,8 +31,10 @@ Width of page
 ### Router control's scale
 Scale of manager module area
 
-### Enable/ Disable desktop 
-Toggle desktop environment on client to enabled or disabled
+### Start local control panel
+Start a browser session with the local control panel
+
+***NB. This runs a script (scripts/start-LocalCTR.sh) which is an example script, that only works for noble / bookworm / bullseye distro's, to use this functionality you need to replace this script with one that will work for your distro***
 
 ### Log Limit 
 Maximum amount of log entries to be displayed in the console

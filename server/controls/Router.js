@@ -1,10 +1,12 @@
 let { dm } = require('../modular-dm');
 const util = require('util');
+const spawn = require('child_process').spawn;
 const exec = util.promisify(require('child_process').exec);
 const os_utils = require('os-utils');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const psTree = require('ps-tree');
 
 /**
  * Router control
@@ -37,7 +39,7 @@ class Router extends dm {
         this.fetchLog = false;                      // Toggle from fron end to fetch log on page load
         this.restartCmd = false;                    // Router restart command. Router process needs passwordless sudo access to the followng command: "sudo reboot now"
         this.resetCmd = false;                      // Router process reset command. Kills the router.js process. Process should be restarted externally (e.g. via systemd service)
-        this.enableDesktop = true;                  // Toggle desktop environment (Enabled/ disabled)
+        this.startLocalCTR = false;                 // Start local control panel on startup (When the MR starts) (!!! This script was build for bookworm / noble / bullseye, if you have a diffrent release update teh script in ./media-router/server/script/startLocalCTR.sh)
         this._paQueue = [];                         // PulseAudio command rate limiter callback queue
         this._paConnectionCount = 0                 // PulseAudio connection counter
         this.startupDelayTime = 3000;               // Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up.
@@ -174,20 +176,37 @@ class Router extends dm {
             }
         });
 
-        // Enable/ Disable Desktop 
-        this.on('enableDesktop', enable => {
-            if (enable) {
-                this._log('INFO', 'Enabling desktop environment, please restart');
-                exec('sudo systemctl enable lightdm; sudo rm /etc/systemd/system/default.target; sudo systemctl set-default graphical.target').catch(err => {
-                    this._log('ERROR', 'Unable to enable desktop environment: ' + err.message);
+        // Start Local Control panel
+        let _startLocalCTR_process = undefined;
+        this.on('startLocalCTR', s => {
+            if (s && !_startLocalCTR_process) {
+                this._log('INFO', 'Starting local control panel');
+                _startLocalCTR_process = spawn(`bash`, [`${path.join(__dirname, '../scripts/start-localCTR.sh')}`]);
+                // standard stderr handeling
+                _startLocalCTR_process.stdout.on('data', (data) => {
+                    this._log('ERROR', `Unable to start local control panel: ${data}`);
                 });
-            } else {
-                this._log('INFO', 'Disabling desktop environment, please restart');
-                exec('sudo systemctl disable lightdm').catch(err => {
-                    this._log('ERROR', 'Unable to disable desktop environment: ' + err.message);
+                // _startLocalCTR_process = exec(`bash ${path.join(__dirname, '../scripts/start-localCTR.sh')}`).catch(err => {
+                //     this._log('ERROR', 'Unable start local control panel: ' + err.message);
+                // });
+            } else if (!s && _startLocalCTR_process) {
+                this._log('INFO', 'Stopping local control panel');
+                _startLocalCTR_process.stdin.pause();
+                let _this = this;
+                let pid = _startLocalCTR_process.pid;
+                psTree(pid, function (err, children) { // Solution found here: https://stackoverflow.com/questions/18694684/spawn-and-kill-a-process-in-node-js
+                    [pid].concat(
+                        children.map(function (p) {
+                            return p.PID;
+                        })
+                    ).forEach((tpid) => {
+                        try { process.kill(tpid, "SIGKILL") }
+                        catch (ex) { _this._log('FATAL', `${_this._controlName} (${_this.displayName}): ${ex.message}`) }
+                    });
                 });
+                _startLocalCTR_process = undefined;
             }
-        });
+        }, { immediate: true });
 
         // toggle on front end to emit the log
         this.on('fetchLog', res => {
