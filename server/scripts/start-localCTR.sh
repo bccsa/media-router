@@ -15,7 +15,7 @@ oscode=$(lsb_release -a|grep Codename|cut -f2 -d':' | xargs)
 # ----------------------------------------
 # Bullseye / Bookworm
 # ----------------------------------------
-if [ "$oscode" == "bullseye" ] || [ "$oscode" == "bookworm" ]; then 
+if [ "$oscode" == "bullseye" ]; then 
     # Start the local client in a full-screen (kiosk mode) chromium browser window.
     sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' ~/.config/chromium/'Local State'
     sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"[^"]\+"/"exit_type":"Normal"/' ~/.config/chromium/Default/Preferences
@@ -23,7 +23,7 @@ if [ "$oscode" == "bullseye" ] || [ "$oscode" == "bookworm" ]; then
 # ----------------------------------------
 # Noble
 # ----------------------------------------
-elif [ "$oscode" == "noble" ]; then
+elif [ "$oscode" == "noble" ] || [ "$oscode" == "bookworm" ]; then
     # Start the local client in a full-screen (kiosk mode) chromium browser window.
     # --test-type: https://stackoverflow.com/questions/44429624/chromium-headless-remove-no-sandbox-notification
     # --window-size: https://unix.stackexchange.com/questions/273989/how-can-i-make-chromium-start-full-screen-under-x
