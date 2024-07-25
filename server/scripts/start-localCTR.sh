@@ -3,6 +3,7 @@
 #################################
 #
 # This is a example script, replace yo work for your distro / build
+# !!! You need to setup the os to be able to be able to start the browser from a non root user, otherwise the software wont be able to kill it 
 #
 #################################
 
