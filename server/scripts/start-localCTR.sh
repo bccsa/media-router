@@ -37,7 +37,7 @@ elif [ "$oscode" == "noble" ] || [ "$oscode" == "bookworm" ]; then
     if [ "$ENABLE_TOUCH" == "true" ] 
     then
         ## RPI 7inch Touch
-        DISPLAY=:0.0 xinit /bin/chromium-browser --test-type --no-sandbox --start-maximized --start-fullscreen --kiosk --autoplay-policy=no-user-gesture-required  --check-for-update-interval=604800 --window-size=800,480 --window-position=0,0 --disable-extensions http://localhost:8081 
+        DISPLAY=:0.0 xinit /bin/chromium-browser --test-type --no-sandbox --start-maximized --start-fullscreen --kiosk --autoplay-policy=no-user-gesture-required  --check-for-update-interval=604800 --window-size=800,480 --window-position=0,0 --disable-extensions http://localhost:8081 -- -nocursor
     else 
         ## Normal
         DISPLAY=:0.0 xinit /bin/chromium-browser --test-type --no-sandbox --start-maximized --start-fullscreen --kiosk --autoplay-policy=no-user-gesture-required  --check-for-update-interval=604800 --window-size=1920,1080 --window-position=0,0 --disable-extensions http://localhost:8081 
