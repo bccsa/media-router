@@ -7,6 +7,11 @@
 #
 #################################
 
+# Load environment configuration file
+if [ -f "/etc/media-router/.env" ]; then
+    source "/etc/media-router/.env";
+fi
+
 # Get the platform
 platform=$(dpkg --print-architecture | xargs)
 # Get the OS codename
@@ -28,5 +33,13 @@ elif [ "$oscode" == "noble" ] || [ "$oscode" == "bookworm" ]; then
     # Start the local client in a full-screen (kiosk mode) chromium browser window.
     # --test-type: https://stackoverflow.com/questions/44429624/chromium-headless-remove-no-sandbox-notification
     # --window-size: https://unix.stackexchange.com/questions/273989/how-can-i-make-chromium-start-full-screen-under-x
-    DISPLAY=:0.0 xinit /bin/chromium-browser --test-type --no-sandbox --start-maximized --start-fullscreen --kiosk --autoplay-policy=no-user-gesture-required  --check-for-update-interval=604800 --window-size=1920,1080 --window-position=0,0 --disable-extensions http://localhost:8081 
+    sleep 3
+    if [ "$ENABLE_TOUCH" == "true" ] 
+    then
+        ## RPI 7inch Touch
+        DISPLAY=:0.0 xinit /bin/chromium-browser --test-type --no-sandbox --start-maximized --start-fullscreen --kiosk --autoplay-policy=no-user-gesture-required  --check-for-update-interval=604800 --window-size=800,480 --window-position=0,0 --disable-extensions http://localhost:8081 
+    else 
+        ## Normal
+        DISPLAY=:0.0 xinit /bin/chromium-browser --test-type --no-sandbox --start-maximized --start-fullscreen --kiosk --autoplay-policy=no-user-gesture-required  --check-for-update-interval=604800 --window-size=1920,1080 --window-position=0,0 --disable-extensions http://localhost:8081 
+    fi
 fi
