@@ -44,7 +44,7 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     const gchar *name = gst_structure_get_name (s);
 
                     if (strcmp (name, "level") == 0) {
-                        _emit.NonBlockingCall(gst_structure_copy(s), [](Napi::Env env, Napi::Function _emit, const GstStructure *s) { // https://github.com/nodejs/node-addon-api/issues/1457
+                        _emit.NonBlockingCall(gst_structure_copy(s), [](Napi::Env env, Napi::Function _emit, GstStructure *s) { // https://github.com/nodejs/node-addon-api/issues/1457
                             const GValue *array_val;
                             GValueArray *rms_arr, *peak_arr, *decay_arr;
 
@@ -87,6 +87,8 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                             res.Set("decay_dB", obj_decay);
 
                             Emit(env, _emit, res); 
+                            // free struct
+                            gst_structure_free(s);
                         });
                     }
 
