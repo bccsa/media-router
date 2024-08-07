@@ -1,6 +1,5 @@
 #include <napi.h>
 #include <gst/gst.h>
-#include <gtk/gtk.h>
 #include <thread>
 #include <iostream>
 
@@ -23,12 +22,14 @@ void Emit(const Napi::Env& env, const Napi::Function& emitFn, Napi::Value val) {
 class _GstvuMeter : public Napi::ObjectWrap<_GstvuMeter> {
     public:
         static Napi::Object Init(Napi::Env env, Napi::Object exports);
-        gboolean _w = false;
         _GstvuMeter(const Napi::CallbackInfo &info);
         void th_Start(std::string _pipeline_);
         // Variables
         GstElement *pipeline;
         std::string _pipeline = "null"; 
+        GMainLoop *loop;
+        int reload_count = 0;       // Reload count used to hard reload pipeline, due to memory leak each time the pipe line soft reload, 
+        int reload_limit = 20;     // Max amount of soft reload's before a hard reload is needed
         Napi::Function event;
         // Process varialbes 
         gboolean running = false;   // Gstreamer running state
