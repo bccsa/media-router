@@ -95,36 +95,53 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                     break;
                 }
                 case GST_MESSAGE_ERROR:{
-                    std::string errorMessage;
                     GError *err;
                     gchar *debug;
                     gst_message_parse_error (message, &err, &debug);
                     g_print ("Error: %s\n", err->message);
-                    
-                    // _emit.NonBlockingCall([err](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, g_strdup(err->message)); });
-                    // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Reloading pipline"); });
-
-                    // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
-                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                    sleep(2);
-                    // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
-                    obj->th_Start(obj->_pipeline);    
 
                     g_error_free (err);
                     g_free (debug);
+
+                    obj->reload_count++;
+                    if (obj->reload_count > obj->reload_limit) {
+                        // Hard reload pipeline if reload_count passed the reload limit
+                        // * A hard reload, abourds the pipeline and nodejs will restart it, more cpu intensave
+                        // * This is to avoid a memory build up each time the pipeline soft reload's, 
+                        // * As of now we cant find the memory leak, so this is done as a workaround to avoid the devices freezing up due to running out of memory
+                        g_print ("Reseting pipline, (reload_cound > reload_limit)");
+                        sleep(2);
+                        abort();
+                    } else {
+                        // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
+                        g_print ("Reloading pipline");
+                        g_main_loop_quit (obj->loop);
+                        gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                        sleep(1);
+                        obj->th_Start(obj->_pipeline); 
+                    }
 
                     break;
                 }
                 case GST_MESSAGE_EOS:{
                     /* end-of-stream */
-                    // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "EOS | Reloading pipline"); });
-                    
-                    // restarting on EOS
-                    gst_element_set_state(obj->pipeline, GST_STATE_NULL);
-                    // gst_element_set_state (obj->pipeline, GST_STATE_PLAYING);
-                    // obj->Stop();
-                    sleep(2);
-                    obj->th_Start(obj->_pipeline);
+                    obj->reload_count++;
+                    if (obj->reload_count > obj->reload_limit) {
+                        // Hard reload pipeline if reload_count passed the reload limit
+                        // * A hard reload, abourds the pipeline and nodejs will restart it, more cpu intensave
+                        // * This is to avoid a memory build up each time the pipeline soft reload's, 
+                        // * As of now we cant find the memory leak, so this is done as a workaround to avoid the devices freezing up due to running out of memory
+                        g_print ("Reseting pipline, (reload_cound > reload_limit)");
+                        sleep(2);
+                        abort();
+                    } else {
+                        // Reload pipeline on stream error (This is that the srt keep's trying to reconnect, when an stream error occurs)
+                        g_print ("Reloading pipline");
+                        g_main_loop_quit (obj->loop);
+                        gst_element_set_state(obj->pipeline, GST_STATE_NULL);
+                        sleep(1);
+                        obj->th_Start(obj->_pipeline); 
+                    }
 
                     break;
                 }
@@ -154,9 +171,8 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
 void _GstvuMeter::th_Start(std::string _pipeline_) {
     // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline started"); });
     /* Varaibles */
-    // std::string uri = this->_uri;
-    // Gstreamer
     GstBus *bus;
+    guint bus_watch_id;
     /* Initialize GStreamer */
     gst_init (NULL, NULL);
 
@@ -176,16 +192,19 @@ void _GstvuMeter::th_Start(std::string _pipeline_) {
     /* Wait until error or EOS */
     bus = gst_element_get_bus (this->pipeline);
 
-    gst_bus_add_watch (bus, my_bus_callback, this);
+    bus_watch_id = gst_bus_add_watch (bus, my_bus_callback, this);
     gst_object_unref (bus);
 
-    gtk_main ();
+    this->loop = g_main_loop_new (NULL, FALSE);
+    g_main_loop_run (this->loop);
 
     /* ------------------------------- Post cleanup -------------------------------- */
     // _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "Pipeline stopped"); });
 
     gst_element_set_state(this->pipeline, GST_STATE_NULL);
     gst_object_unref (this->pipeline);
+    g_source_remove (bus_watch_id);
+    g_main_loop_unref (this->loop);
 
     this->running = false;
     this->killing = false;
@@ -234,7 +253,7 @@ Napi::Value _GstvuMeter::Stop(const Napi::CallbackInfo &info){
         return Napi::String::New(info.Env(), "Process is not running, Please try again later.");
     } else {
         this->killing = true;
-        gtk_main_quit();
+        g_main_loop_quit (this->loop);
         return Napi::String::New(info.Env(), "Pipline stopped");
     }
 }
