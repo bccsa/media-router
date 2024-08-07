@@ -55,14 +55,14 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 // Source
                 let lang = "";
                 this.audioStreams.forEach(stream => { if (stream.enabled || stream.language == this.defaultLanguage) { lang += stream.language + "," } })
-                let streamlink = `streamlink --ringbuffer-size 64M --player-continuous-http --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
+                let streamlink = `streamlink --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
                 let _pipeline = `filesrc location="/dev/stdin" ! tsdemux name=demux `
                 // video
                 let videoSink = "";
                 if (this.enableSrt) {
-                    videoSink = `demux. ! h264parse ! queue ! mpegtsmux alignment=7 name=mux ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! srtserversink name="${this._vidoeElementName}" wait-for-connection=false sync=true ts-offset=${this.videoDelay * 1000000} uri="${this.uri()}"`
+                    videoSink = `demux. ! h264parse ! queue flush-on-eos=true ! mpegtsmux alignment=7 name=mux ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! srtserversink name="${this._vidoeElementName}" wait-for-connection=false sync=true ts-offset=${this.videoDelay * 1000000} uri="${this.uri()}"`
                 } else {    
-                    videoSink = `demux. ! decodebin ! videoconvert ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! ` + 
+                    videoSink = `demux. ! decodebin ! videoconvert ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! ` + 
                     `kmssink name=${this._vidoeElementName} ts-offset=${this.videoDelay * 1000000} sync=true `
                 }
                 _pipeline += videoSink;
@@ -73,22 +73,22 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                         if (this.enableSrt) { // (Pipe audio to default sink and mux with srt)
                             _pipeline += ` demux. ! ` +
                             `tee name=tee ! ` + 
-                            `queue ! ` +
+                            `queue flush-on-eos=true ! ` +
                             `parsebin ! mux. ` + 
                             `tee. ! ` + 
                             `decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
-                            `queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! ` +
+                            `queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! ` +
                             `pulsesink name=audioSink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                         } else {
                             _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
-                            `queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 ! ` +
+                            `queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! ` +
                             `pulsesink name=audioSink ts-offset=${this.videoDelay * 1000000} device=${this.sink} sync=true slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`    
                         }
                     } 
                     // audio to null sinks
                     else if (stream.enabled)
                         _pipeline += ` demux. ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! ` +
-                        `queue ! ` +
+                        `queue flush-on-eos=true ! ` +
                         `pulsesink device=${this._controlName}_sink_${stream.language} sync=false slave-method=0 processing-deadline=40000000 buffer-time=${this._parent.paLatency * 1000} max-lateness=${this._parent.paLatency * 1000000}`
                 })
 
