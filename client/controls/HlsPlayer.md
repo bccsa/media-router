@@ -4,6 +4,7 @@
 * HLS URL - m3u8 URL
 * Default Language - Language you want to playout with the video (List will be populated withing a few seconds after the HLS URL is added)
 * Video Quality - Video playout quality (List will be populated withing a few seconds after the HLS URL is added)
+* Start time - ***For VOD HLS only***, give a startime, where the hls video should start playing (Format: HH:MM:SS)
 * Audio Streams - List of streams that you want to playout in addition to the default language, virtual device will be created for each audio stream (List will be populated withing a few seconds after the HLS URL is added)
 * Output Over SRT - Playout Video and default language over SRT instead if the screen (See Info on SRT settings in addition)
 * Video Delay (ms) - Delay the video and default language in milliseconds 
