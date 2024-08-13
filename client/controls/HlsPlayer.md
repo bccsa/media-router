@@ -5,6 +5,7 @@
 * Default Language - Language you want to playout with the video (List will be populated withing a few seconds after the HLS URL is added)
 * Video Quality - Video playout quality (List will be populated withing a few seconds after the HLS URL is added)
 * Audio Streams - List of streams that you want to playout in addition to the default language, virtual device will be created for each audio stream (List will be populated withing a few seconds after the HLS URL is added)
+* Enable debug logs - Enable's debug logs for streamlink
 * Output Over SRT - Playout Video and default language over SRT instead if the screen (See Info on SRT settings in addition)
 * Video Delay (ms) - Delay the video and default language in milliseconds 
 

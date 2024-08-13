@@ -18,6 +18,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this._enabledStreams = 0;
         this.defaultLanguage = "";
         this.enableSrt = false;
+        this.streamlinkDebug = false;
         this.runningSrt = false;
         this.hlsLoading = false;
         this._vidoeElementName = "videosink";
@@ -53,9 +54,11 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             })
             if ((c > 0 && c == this._enabledStreams) || !isEnabled) {
                 // Source
+                let debug = "";
+                if (this.streamlinkDebug) {debug = "--loglevel debug"};
                 let lang = "";
                 this.audioStreams.forEach(stream => { if (stream.enabled || stream.language == this.defaultLanguage) { lang += stream.language + "," } })
-                let streamlink = `streamlink --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
+                let streamlink = `streamlink ${debug} --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
                 let _pipeline = `filesrc location="/dev/stdin" ! tsdemux name=demux `
                 // video
                 let videoSink = "";
