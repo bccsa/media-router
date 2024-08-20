@@ -10,6 +10,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.defaultLanguage = "";
         this.sinkspaModuleID = [];
         this.enableSrt = false;
+        this.streamlinkDebug = false;
         this.runningSrt = false;
         this.hlsLoading = false;
         this.startTime = "00:00:00";
@@ -72,8 +73,22 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             </div>
         </div>
 
-        <!-- ----------------------------------------------------------    Srt Settings    ---------------------------------------------------------- -->
+        <!-- ----------------------------------------------------------    Extra Settings    ---------------------------------------------------------- -->
 
+        <div class="w-full mb-1 flex ">
+
+            <!--    Enable SRT      --> 
+            <div class="w-2/3 mr-2 mb-2 flex">
+                <input id="@{_streamlinkDebug}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{streamlinkDebug}"/>  
+                <label for="@{_streamlinkDebug}" class="" title="Enable streamlink debug logs">Enable debug log</label> 
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+        </div>
+        
         <div class="w-full mb-1 flex ">
 
             <!--    Enable SRT      --> 
