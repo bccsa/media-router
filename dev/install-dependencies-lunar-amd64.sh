@@ -20,6 +20,10 @@ cd client
 npm install
 cd ..
 
+cd local-profileman
+npm install
+cd ..
+
 cd tailwind
 npm install
 cd ..

@@ -1,4 +1,5 @@
 const fs = require('fs');
+const events = require('events');
 
 /**
  * Configuration management
@@ -6,13 +7,14 @@ const fs = require('fs');
  * @property {string} defaultConfig - path to a default configuration file to be loaded if 'path' does not exist or is invalid
  * @property {object} config - Configuration object managed by the configuration manager
  */
-class configManager {
+class configManager extends events {
     /**
      * Configuration management
      * @param {string} path - path to the configuration file
      * @param {string} defaultConfig - optional: path to a default configuration file to be loaded if 'path' does not exist or is invalid
      */
     constructor(path, defaultConfig = undefined) {
+        super();
         this.path = path;
         this.defaultConfig = defaultConfig;
         this.config = this._load();
@@ -90,6 +92,8 @@ class configManager {
             } else {
                 var v = val; // Break reference to source object
                 destination[key] = v;
+                // emit updated value
+                this.emit(key, v);
             }
         });
     }

@@ -11,5 +11,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "gypfile": true
+  "gypfile": true,
+  "dependencies": {
+    "showdown": "^2.1.0",
+    "tw-elements": "^2.0.0"
+  }
 }

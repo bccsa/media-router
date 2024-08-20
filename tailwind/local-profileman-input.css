@@ -14,6 +14,18 @@
     @apply icon-[mdi-light--plus-circle] text-white hover:text-blue-500 text-2xl text-[32px];
 }
 
+.appFrame-btn-env {
+    @apply icon-[mdi-light--file] text-white hover:text-blue-500 text-2xl text-[32px];
+}
+
+.appFrame-btn-exit {
+    @apply icon-[mdi-light--plus] text-white hover:text-red-500 text-2xl text-[32px] rotate-45;
+}
+
+.appFrame-btn-help {
+    @apply icon-[mdi-light--help-circle] text-white hover:text-blue-500 text-2xl text-[32px] m-2;
+}
+
 .appFrame-heading {
     @apply inline-block select-none text-2xl text-white;
 }
@@ -40,12 +52,26 @@
 
 /*-------------------------*/
 
+/* The Modal (background) */
+.env-modal {
+    @apply hidden fixed z-[1000] left-0 top-0 w-full h-full overflow-y-auto overflow-x-auto bg-[#00000066]
+}
+
+/* Modal Content/Box */
+.env-modal-content {
+    @apply bg-[#6b7280] m-auto mt-[10%] p-4 border-0 border-solid w-[80%] rounded-b-lg rounded-t-xl
+}
+
+/* Modal Header */
+.env-modal-header {
+    @apply text-white
+}
 
 /*--------------------------*/
 
 /* Audio Device css */
 .managerPanel-main-card {
-    @apply z-10 m-2 select-none w-[250px] h-80 bg-[#F8FAFC] rounded-t-xl rounded-b-lg text-black [border-style:outset] border-[#6b7280] border;
+    @apply z-10 m-2 select-none w-[250px] h-80 bg-[#F8FAFC] rounded-xl text-black [border-style:outset] border-[#6b7280] border;
 }
 
 .managerPanel-card-heading {
