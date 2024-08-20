@@ -18,8 +18,10 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this._enabledStreams = 0;
         this.defaultLanguage = "";
         this.enableSrt = false;
+        this.streamlinkDebug = false;
         this.runningSrt = false;
         this.hlsLoading = false;
+        this.startTime = "00:00:00";
         this._vidoeElementName = "videosink";
     }
 
@@ -30,7 +32,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             if (ready) {
                 // start null sinks
                 this._enabledStreams = 0;
-                this.readyNullSinks = -1;
+                this.readyNullSinks = -1; // Toggle to -1 that the event triggers if there is cuttrntly 0 ready null sinks and none is started
                 this.readyNullSinks = 0;
                 this.audioStreams.forEach(stream => {
                     if (stream.enabled && stream.language != this.defaultLanguage) {
@@ -53,9 +55,11 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             })
             if ((c > 0 && c == this._enabledStreams) || !isEnabled) {
                 // Source
+                let debug = "";
+                if (this.streamlinkDebug) {debug = "--loglevel debug"};
                 let lang = "";
                 this.audioStreams.forEach(stream => { if (stream.enabled || stream.language == this.defaultLanguage) { lang += stream.language + "," } })
-                let streamlink = `streamlink --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
+                let streamlink = `streamlink --hls-start-offset ${this.startTime} --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
                 let _pipeline = `filesrc location="/dev/stdin" ! tsdemux name=demux `
                 // video
                 let videoSink = "";

@@ -10,8 +10,10 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.defaultLanguage = "";
         this.sinkspaModuleID = [];
         this.enableSrt = false;
+        this.streamlinkDebug = false;
         this.runningSrt = false;
         this.hlsLoading = false;
+        this.startTime = "00:00:00";
     }
 
     get html() {
@@ -45,12 +47,22 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             </select>
         </div>
 
-        <!-- connection Speed -->
-        <div class="w-1/3 mr-4 flex flex-col">
-            <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Quality:</label>
-            <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Quality" value="@{videoQuality}">
-               
-            </select>
+        <div class="w-full grid grid-cols-3 items-center mb-2">
+            <!-- videoQuality -->
+            <div class="w-full flex flex-col">
+                <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Quality:</label>
+                <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Quality" value="@{videoQuality}">
+                
+                </select>
+            </div>
+
+            <!-- Start Time  --> 
+            <div class="w-full flex flex-col">
+                <label for="@{_startTime}" class="form-label inline-block mb-2 mr-2">Start Time(hh:mm:ss):</label>
+                <input id="@{_startTime}" class="paAudioBase-select" type="text" title="HLS Startime" placeholder="HH:MM:SS" maxlength="8" value="@{startTime}"></input>
+            </div>
+
+            <div class="w-full flex flex-col"></div>
         </div>
 
         <!-- audio sinks -->
@@ -61,8 +73,22 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             </div>
         </div>
 
-        <!-- ----------------------------------------------------------    Srt Settings    ---------------------------------------------------------- -->
+        <!-- ----------------------------------------------------------    Extra Settings    ---------------------------------------------------------- -->
 
+        <div class="w-full mb-1 flex ">
+
+            <!--    Enable SRT      --> 
+            <div class="w-2/3 mr-2 mb-2 flex">
+                <input id="@{_streamlinkDebug}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{streamlinkDebug}"/>  
+                <label for="@{_streamlinkDebug}" class="" title="Enable streamlink debug logs">Enable debug log</label> 
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+        </div>
+        
         <div class="w-full mb-1 flex ">
 
             <!--    Enable SRT      --> 
@@ -118,6 +144,15 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         // Load help from MD
         this._loadHelpMD('controls/HlsPlayer.md');
         //----------------------Help Modal-----------------------------//
+
+        //----------------------Start time-----------------------------//
+        this.on('startTime', e => {
+            if (!/^\d{0,2}(:\d{0,2})?(:\d{0,2})?$/.test(e) || e.length != 8) {
+                this._startTime.value = "00:00:00";
+                this.startTime = "00:00:00";
+            }
+        })
+        //----------------------Start time-----------------------------//
 
         //----------------------Load Audio streams-----------------------------//
         this.on('audioStreams', audioStreams => {
