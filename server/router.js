@@ -14,6 +14,7 @@ let { dmTopLevelContainer } = require('./modular-dm');
 const process = require('process')
 const io = require('socket.io-client');
 const { configManager } = require('./configManager');
+const fs = require('fs');
 
 // Set path to runtime directory
 process.chdir(__dirname);
@@ -270,6 +271,44 @@ profilemanIO.on('connection', socket => {
         loadRouter();
     });
 });
+
+// -------------------------------------
+// ENV File manager
+// -------------------------------------
+function loadEnv() {
+    let _path = "./.env"
+    if (process.argv.length > 3) { _path = process.argv[3] }
+    try {
+        let _md = fs.readFileSync(_path);
+        profileConf.append({ envFile: _md.toString(), envFileErr: "" });
+        profilemanIO.emit("data", ({ envFile: _md.toString(), envFileErr: "" }));
+    } catch (err) {
+        // try to create the file if it does not exsists
+        if (err.code == "ENOENT") {
+            try { fs.writeFileSync(_path, profileConf.config.envFile) } catch (err) {
+                profileConf.append({ envFile: "", envFileErr: err.message });
+                profilemanIO.emit("data", ({ envFile: "", envFileErr: err.message }));
+            }
+        } else {
+            profileConf.append({ envFile: "", envFileErr: err.message });
+            profilemanIO.emit("data", ({ envFile: "", envFileErr: err.message }));
+        }
+    }
+}
+loadEnv();
+
+function saveEnv(e) {
+    let _path = "./.env"
+    if (process.argv.length > 3) { _path = process.argv[3] }
+    try {
+        fs.writeFileSync(_path, e);
+    } catch (err) {
+        profileConf.append({ envFileErr: err.message });
+        profilemanIO.emit("data", ({ envFileErr: err.message }));
+    }
+}
+
+profileConf.on("envFile", e => {saveEnv(e)});
 
 // -------------------------------------
 // Event logging
