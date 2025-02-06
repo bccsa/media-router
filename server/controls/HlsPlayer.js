@@ -59,7 +59,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 if (this.streamlinkDebug) {debug = "--loglevel debug"};
                 let lang = "";
                 this.audioStreams.forEach(stream => { if (stream.enabled || stream.language == this.defaultLanguage) { lang += stream.language + "," } })
-                let streamlink = `streamlink --hls-start-offset ${this.startTime} --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
+                let streamlink = `streamlink ${debug} --hls-start-offset ${this.startTime} --player-no-close --hls-audio-select "${lang.slice(0, -1)}" --hls-live-restart "${this.hlsUrl}" ${this.videoQuality} -O`;
                 let _pipeline = `filesrc location="/dev/stdin" ! tsdemux name=demux `
                 // video
                 let videoSink = "";
