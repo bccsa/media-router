@@ -18,7 +18,7 @@ class SrtVideoPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 this._parent._log('INFO', `${this._controlName} (${this.displayName}): Starting srt video decoder (gstreamer)`);
 
                 let _pipeline = `srtserversrc name=${this._srtElementName} uri="${this.uri()}" wait-for-connection=false ! ` +
-                `tsparse ignore-pcr=true ! tsdemux ignore-pcr=true latency=1 name=t t. ! ` +
+                `tsparse ignore-pcr=true ! tsdemux latency=1 name=t t. ! ` +
                 `h264parse ! v4l2h264dec ! ` + 
                 `queue flush-on-eos=true leaky=2 max-size-time=50000000 ! ` +
                 `kmssink sync=false async=false t. ! ` + 
