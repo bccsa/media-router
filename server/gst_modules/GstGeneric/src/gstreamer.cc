@@ -273,45 +273,82 @@ Napi::Value _GstGeneric::Set(const Napi::CallbackInfo &info){
 /**
  * Convert GstStructure to Json Object
 */
-static Napi::Object struct_to_json (const Napi::CallbackInfo &info, GstStructure * d) {
-    const gchar *name;
-    const GValue *value;
+static Napi::Object struct_to_json(const Napi::CallbackInfo &info, GstStructure *d) {
     Napi::Object res = Napi::Object::New(info.Env());
-    
+
+    // Null check to prevent segmentation fault
+    if (!d) {
+        std::cerr << "struct_to_json | Null GstStructure encountered" << std::endl;
+        return res;
+    }
+
     try {
         for (gint i = 0; i < gst_structure_n_fields(d); ++i) {
-            name = gst_structure_nth_field_name(d, i);
-            value = gst_structure_get_value(d, name);
+            const gchar *name = gst_structure_nth_field_name(d, i);
+            if (!name) {
+                std::cerr << "struct_to_json | Null field name encountered" << std::endl;
+                continue;
+            }
 
-            // Proccess array'
+            const GValue *value = gst_structure_get_value(d, name);
+            if (!value) {
+                std::cerr << "struct_to_json | Null value encountered for field: " << name << std::endl;
+                continue;
+            }
+
+            // Process arrays
             if (G_VALUE_TYPE(value) == G_TYPE_VALUE_ARRAY) {
-                GValueArray *_arr = (GValueArray *) g_value_get_boxed (value);
+                GValueArray *_arr = (GValueArray *)g_value_get_boxed(value);
+                if (!_arr) {
+                    std::cerr << "struct_to_json | Null GValueArray encountered for field: " << name << std::endl;
+                    continue;
+                }
+
+                Napi::Array arr = Napi::Array::New(info.Env(), _arr->n_values);
                 for (gint k = 0; k < _arr->n_values; ++k) {
                     const GValue *_value = g_value_array_get_nth(_arr, k);
+                    if (!_value) {
+                        std::cerr << "struct_to_json | Null GValue in array at index " << k << std::endl;
+                        continue;
+                    }
+
                     if (G_VALUE_TYPE(_value) == GST_TYPE_STRUCTURE) {
-                        GstStructure *_d = (GstStructure*)g_value_get_boxed(_value);
-                        Napi::Object _res = struct_to_json(info, _d);
-                        res.Set(uint32_t(k), _res);
+                        GstStructure *_d = (GstStructure *)g_value_get_boxed(_value);
+                        if (_d) {
+                            arr.Set(uint32_t(k), struct_to_json(info, _d));
+                        }
                     } else {
-                        gchar * strVal = g_strdup_value_contents (_value);
-                        res.Set(uint32_t(k), strVal);
-                        free (strVal);
+                        gchar *strVal = g_strdup_value_contents(_value);
+                        if (strVal) {
+                            arr.Set(uint32_t(k), strVal);
+                            g_free(strVal);
+                        }
                     }
                 }
-            // Process Structures
-            } else if (G_VALUE_TYPE(value) == GST_TYPE_STRUCTURE) { 
-                GstStructure *_d = (GstStructure*)g_value_get_boxed(value);
-                Napi::Object _res = struct_to_json(info, _d);
-                res.Set(uint32_t(i), _res);
-            // Process Value pairs
+                res.Set(name, arr);
+
+            // Process structures
+            } else if (G_VALUE_TYPE(value) == GST_TYPE_STRUCTURE) {
+                GstStructure *_d = (GstStructure *)g_value_get_boxed(value);
+                if (_d) {
+                    res.Set(name, struct_to_json(info, _d));
+                } else {
+                    std::cerr << "struct_to_json | Null GstStructure encountered for field: " << name << std::endl;
+                }
+
+            // Process value pairs
             } else {
-                gchar * strVal = g_strdup_value_contents (value);
-                res.Set(name, strVal);
-                free (strVal);
+                gchar *strVal = g_strdup_value_contents(value);
+                if (strVal) {
+                    res.Set(name, strVal);
+                    g_free(strVal);
+                } else {
+                    std::cerr << "struct_to_json | Failed to convert value for field: " << name << std::endl;
+                }
             }
-        }    
-    } catch (std::exception& e) {
-        std::cerr << "Exception caught : " << e.what() << std::endl;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "Exception caught in struct_to_json: " << e.what() << std::endl;
     }
 
     return res;
@@ -320,41 +357,54 @@ static Napi::Object struct_to_json (const Napi::CallbackInfo &info, GstStructure
 /**
 * Get SRT Bitrate ( https://github.com/gstreamer-java/gst1-java-core/issues/173 )
 */
-Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info){
+Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info) {
     try {
-        // valadity checks
-        int len = info.Length();
-        if (len < 1) { 
-            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "GetSrtStats | Element name not supplied."); });
-            return Napi::Number::New(info.Env(), 0);
-        };
-
-        if (!this->pipeline) { 
-            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "GetSrtStats | Pipeline is not created yet, please try again later"); });
-            return Napi::Number::New(info.Env(), 0);
-        };
-
-        std::string _elementName = info[0].As<Napi::String>().Utf8Value();
-        GstElement *_element = gst_bin_get_by_name(GST_BIN(this->pipeline), _elementName.c_str()); // https://gist.github.com/justinjoy/243e5874922cd553b6a25a29247c5900
-
-        if (!_element) {
-            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { Emit(env, _emit, "GetSrtStats | Element does not exsist, please make sure the name is correct"); });
+        if (info.Length() < 1) {
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { 
+                Emit(env, _emit, "GetSrtStats | Element name not supplied."); 
+            });
             return Napi::Number::New(info.Env(), 0);
         }
 
-        // get srt stats
+        if (!this->pipeline) {
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { 
+                Emit(env, _emit, "GetSrtStats | Pipeline is not created yet, please try again later"); 
+            });
+            return Napi::Number::New(info.Env(), 0);
+        }
+
+        std::string _elementName = info[0].As<Napi::String>().Utf8Value();
+        GstElement *_element = gst_bin_get_by_name(GST_BIN(this->pipeline), _elementName.c_str());
+
+        if (!_element) {
+            _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { 
+                Emit(env, _emit, "GetSrtStats | Element does not exist, please make sure the name is correct"); 
+            });
+            return Napi::Number::New(info.Env(), 0);
+        }
+
+        // Get SRT stats
         GValue propValue = G_VALUE_INIT;
-        GType gstStructure = gst_structure_get_type();
-        g_value_init(&propValue, gstStructure);
+        g_value_init(&propValue, gst_structure_get_type());
         g_object_get_property(G_OBJECT(_element), "stats", &propValue);
-        GstStructure *d = (GstStructure*)g_value_get_boxed(&propValue);
+
+        GstStructure *d = (GstStructure *)g_value_get_boxed(&propValue);
+        if (!d) {
+            std::cerr << "GetSrtStats | Failed to get SRT stats from element: " << _elementName << std::endl;
+            g_value_unset(&propValue);
+            return Napi::Number::New(info.Env(), 0);
+        }
+
         Napi::Object res = struct_to_json(info, d);
         g_value_unset(&propValue);
 
         return res;
-    } catch (std::exception& e) {
-        std::cerr << "Exception caught : " << e.what() << std::endl;
+
+    } catch (const std::exception &e) {
+        std::cerr << "Exception caught in GetSrtStats: " << e.what() << std::endl;
     }
+
+    return Napi::Number::New(info.Env(), 0);
 }
 
 // Register and initialize native add-on
