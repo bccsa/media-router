@@ -223,53 +223,12 @@ class Router extends dm {
      * @returns - Promise
      */
     _getPA(type) {
-        // code adapted from https://github.com/ctemplin/pactl-lists-json/blob/master/index.js
-        function unquote(s) {
-            return s.replace(/^[\"\']/, '').replace(/[\"\']$/, '')
-        }
-
-        function tokenize(s) {
-            function splitLine(l) {
-                var hsi = l.indexOf('#')
-                var sci = l.indexOf(':')
-                var eqi = l.indexOf('=')
-                hsi = hsi > -1 ? hsi : Number.MAX_SAFE_INTEGER
-                sci = sci > -1 ? sci : Number.MAX_SAFE_INTEGER
-                eqi = eqi > -1 ? eqi : Number.MAX_SAFE_INTEGER
-                var tokens
-                if (hsi < sci) {
-                    tokens = l.split('#', 2)
-                }
-                else if (sci < eqi) {
-                    tokens = l.split(':', 2)
-                } else {
-                    tokens = l.split('=', 2)
-                }
-                tokens = tokens.map(t => unquote(t.trim()))
-                return tokens
-            }
-            var lineArr = s.split('\n')
-            var o = {}
-            lineArr = lineArr.map(
-                function (l) {
-                    var kv = splitLine(l)
-                    var key = kv[0]
-                    if (key)
-                        o[key] = kv[1]
-                }
-            )
-            return o
-        }
-
         function get(type) {
             return new Promise((resolve, reject) => {
-                exec('pactl list ' + type, { silent: true }).then(data => {
+                exec('pactl -fjson list ' + type, { silent: true }).then(data => {
                     if (data.stderr) reject(stderr);
                     let arr = [];
-                    if (data.stdout.length) {
-                        var inputBlocks = data.stdout.split('\n\n');
-                        inputBlocks.map(function (block) { arr.push(tokenize(block)) });
-                    }
+                    try {arr = JSON.parse(data.stdout)} catch (err) { this._log('ERROR', `${_this._controlName} (${_this.displayName}): ${err.message}`); }
                     resolve(arr);
                 }).catch(err => {
                     reject(err);
@@ -287,55 +246,59 @@ class Router extends dm {
      * @returns {boolean} - Returns a promise resolving to true if the destination object (dst) has been updated
      */
     async _updatePAlist(type, dst) {
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
             try {
-                this._getPA(type).then(data => {
+                await this._getPA(type).then(async data => {
                     let active = {};
                     let updated = false;
 
                     // Add new items to dst
-                    Object.values(data).forEach(item => {
-                        if (item.Name) {
+                    for (const item of Object.values(data)) {
+                        if (item.name) {
                             // Mark item as active
-                            active[item.Name] = true;
+                            active[item.name] = true;
 
                             // Add to dst if not existing
-                            if (!dst[item.Name]) {
-                                let ch = item['Sample Specification'].match(/[0-9][0-9]*ch/gi);
+                            if (!dst[item.name]) {
+                                let ch = item['sample_specification'].match(/[0-9][0-9]*ch/gi);
                                 if (ch[0]) ch = parseInt(ch[0].match(/[0-9][0-9]*/gi));
 
-                                let bitDepth = item['Sample Specification'].match(/(float|[sf])\d{1,2}[a-z]{0,2}/gi);
+                                let bitDepth = item['sample_specification'].match(/(float|[sf])\d{1,2}[a-z]{0,2}/gi);
                                 if (bitDepth[0]) bitDepth = parseInt(bitDepth[0].match(/[0-9][0-9]*/gi));
 
-                                let sampleRate = item['Sample Specification'].match(/[1-9]\d*Hz/gi);
+                                let sampleRate = item['sample_specification'].match(/[1-9]\d*Hz/gi);
                                 if (sampleRate[0]) sampleRate = parseInt(sampleRate[0].match(/[0-9][0-9]*/gi));
 
                                 // description
-                                let description = item.Description;
+                                let description = item.description;
                                 let descIteration = 0;
                                 while (Object.values(dst).find(t => t.description == description) != undefined) {
                                     descIteration++;
-                                    description = `${item.Description} (${descIteration})`;
+                                    description = `${item.description} (${descIteration})`;
                                 }
 
-                                if (item.Description && typeof ch === 'number' && ch > 0) {
-                                    dst[item.Name] = {
-                                        name: item.Name,
+                                if (item.description && typeof ch === 'number' && ch > 0) {
+                                    dst[item.name] = {
+                                        name: item.name,
                                         description: description,
                                         channels: ch,
                                         bitDepth: bitDepth,
                                         sampleRate: sampleRate,
-                                        monitorsource: item['Monitor Source'],
-                                        channelmap: item['Channel Map'].split(','),
-                                        // mute: item.Mute,
+                                        monitorsource: item['monitor_source'],
+                                        channelmap: item['channel_map'].split(','),
+                                        cardId: item.properties["alsa.card"]
+                                        // mute: item.mute,
                                     };
                                 }
 
+                                // set alsa input / output / auto gain control
+                                await this._setAlsaInputDefaults(item.properties["alsa.card"]);
+
                                 updated = true;
-                                this._log('INFO', `PulseAudio ${type} detected: ${item.Name}`);
+                                this._log('INFO', `PulseAudio ${type} detected: ${item.name}`);
                             }
                         }
-                    });
+                    };
 
                     // Remove old items from dst
                     Object.keys(dst).forEach(itemName => {
@@ -356,6 +319,39 @@ class Router extends dm {
                 resolve(false);
             }
         });
+    }
+
+    /**
+     * Set alsa device input / output gain by default to 100% and auto gain control to off
+     * @param {*} cardId - alsa device card id
+     */
+    async _setAlsaInputDefaults(cardId) {
+        return new Promise((resolve, reject) => {
+            if (!cardId || cardId == undefined) resolve();
+            else
+            exec(`amixer -c ${cardId} controls`).then(async result => {
+                if (!result.stdout) return;
+                let controls = result.stdout.split('\n');
+                for (const control of controls) {
+                    if (control.indexOf('Capture Volume') >= 0) {
+                        await exec(`amixer -c ${cardId} cset ${control} 100%`).catch(err => {
+                            this._log('ERROR', 'Unable to set alsa input volume to 100%: ' + err.message);
+                        });
+                    } else if (control.indexOf('Playback Volume') >= 0 && !(control.indexOf('Mic Playback Volume') >= 0)) {
+                        await exec(`amixer -c ${cardId} cset ${control} 100%`).catch(err => {
+                            this._log('ERROR', 'Unable to set alsa output volume to 100%: ' + err.message);
+                        });
+                    } else if (control.indexOf('Auto Gain Control') >= 0) {
+                        await exec(`amixer -c ${cardId} cset ${control} off`).catch(err => {
+                            this._log('ERROR', 'Unable to set alsa auto gain control to off: ' + err.message);
+                        });
+                    }
+                }
+                resolve();
+            }).catch(err => {
+                this._log('ERROR', 'Unable to set alsa input defaults: ' + err.message);
+            })
+        })
     }
 
     /**
