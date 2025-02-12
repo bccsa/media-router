@@ -361,13 +361,14 @@ static Napi::Object struct_to_json(const Napi::CallbackInfo &info, GstStructure 
 */
 Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info) {
     try {
+        std::cout << "Start of function";
         if (info.Length() < 1) {
             _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { 
                 Emit(env, _emit, "GetSrtStats | Element name not supplied."); 
             });
             return Napi::Number::New(info.Env(), 0);
         }
-
+        std::cout << "pre pipeline check";
         if (!this->pipeline) {
             _emit.NonBlockingCall([](Napi::Env env, Napi::Function _emit) { 
                 Emit(env, _emit, "GetSrtStats | Pipeline is not created yet, please try again later"); 
@@ -375,6 +376,7 @@ Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info) {
             return Napi::Number::New(info.Env(), 0);
         }
 
+        std::cout << "pre element check";
         std::string _elementName = info[0].As<Napi::String>().Utf8Value();
         GstElement *_element = gst_bin_get_by_name(GST_BIN(this->pipeline), _elementName.c_str());
 
@@ -386,6 +388,7 @@ Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info) {
         }
 
         // Get SRT stats
+        std::cout << "pre object set";
         GValue propValue = G_VALUE_INIT;
         g_value_init(&propValue, gst_structure_get_type());
         g_object_get_property(G_OBJECT(_element), "stats", &propValue);
@@ -397,9 +400,11 @@ Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info) {
             return Napi::Number::New(info.Env(), 0);
         }
 
+        std::cout << "pre struct to json";
         Napi::Object res = struct_to_json(info, d);
         g_value_unset(&propValue);
 
+        std::cout << "pre return";
         return res;
 
     } catch (const std::exception &e) {
