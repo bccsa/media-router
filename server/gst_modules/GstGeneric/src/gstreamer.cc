@@ -345,16 +345,6 @@ static Napi::Object struct_to_json(const Napi::CallbackInfo &info, GstStructure 
                 } else {
                     std::cerr << "struct_to_json | Failed to convert value for field: " << name << std::endl;
                 }
-            // Process Structures
-            } else if (G_VALUE_TYPE(value) == GST_TYPE_STRUCTURE) { 
-                GstStructure *_d = (GstStructure*)g_value_get_boxed(value);
-                Napi::Object _res = struct_to_json(info, _d);
-                res.Set(uint32_t(i), _res);
-            // Process Value pairs
-            } else {
-                gchar * strVal = g_strdup_value_contents (value);
-                res.Set(name, strVal);
-                free (strVal);
             }
         }
     } catch (const std::exception &e) {
