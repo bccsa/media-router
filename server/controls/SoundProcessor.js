@@ -176,6 +176,12 @@ class SoundProcessor extends Classes(_paNullSinkSourceBase, GstBase) {
         // ------------ Delay ------------ //
     }
 
+    startPipeline() {
+        if (this.ready && this.run) {
+         
+       }
+    }
+
     /**
      * Create a list of bands with their set gain
      * @param {Number} bandCount - Number of bands (Dafualt: 10)
