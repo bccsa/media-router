@@ -1,4 +1,6 @@
 #include "GstGeneric.h"
+#include <gst/gst.h>
+#include <glib.h>
 
 // ====================================
 // Main gstreamer class (Class links to all sub modules)
@@ -389,8 +391,8 @@ Napi::Value _GstGeneric::GetSrtStats(const Napi::CallbackInfo &info) {
         g_object_get_property(G_OBJECT(_element), "stats", &propValue);
 
         GstStructure *d = (GstStructure *)g_value_get_boxed(&propValue);
-        if (!d) {
-            std::cerr << "GetSrtStats | Failed to get SRT stats from element: " << _elementName << std::endl;
+        if (!d || !GST_IS_STRUCTURE(d)) {
+            std::cerr << "GetSrtStats | Failed to get valid SRT stats from element: " << _elementName << std::endl;
             g_value_unset(&propValue);
             return Napi::Number::New(info.Env(), 0);
         }
