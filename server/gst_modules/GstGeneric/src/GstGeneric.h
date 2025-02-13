@@ -25,7 +25,7 @@ class _GstGeneric : public Napi::ObjectWrap<_GstGeneric> {
         _GstGeneric(const Napi::CallbackInfo &info);
         void th_Start(std::string _pipeline_);
         // Variables
-        GstElement *pipeline;
+        GstElement *pipeline = NULL;
         GMainLoop *loop;
         std::string _pipeline = "null";
         int reload_count = 0;       // Reload count used to hard reload pipeline, due to memory leak each time the pipe line soft reload, 
