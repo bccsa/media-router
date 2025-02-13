@@ -6,7 +6,9 @@ class _paAudioSourceBase extends _paAudioBase {
     }
 
     get html() {
-        return super.html.replace('%additionalHtml%', `
+        return super.html.replace(
+            "%additionalHtml%",
+            `
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
         <div class="w-full items-center justify-items-center justify-center">
@@ -23,36 +25,36 @@ class _paAudioSourceBase extends _paAudioBase {
 
         <!-- Additional controls  --> 
         %additionalHtml%
-        `);
+        `
+        );
     }
 
     Init() {
         super.Init();
 
-        this._parent.on('newChildControl', c => {
+        this._parent.on("newChildControl", (c) => {
             this._addDestination(c);
         });
-        
+
         let a = this;
         function showHideDest(destinations) {
-            a._destinations_prev.forEach(dest => {
-                let line = 'line_' + a.name + "To" + dest;
-                let check = 'dst_' + dest;
-                if (!destinations.find(t => t == dest) && a[line]) {
+            a._destinations_prev.forEach((dest) => {
+                let line = "line_" + a.name + "To" + dest;
+                let check = "dst_" + dest;
+                if (!destinations.find((t) => t == dest) && a[line]) {
                     a[check].value = false;
                     a[line].Hide();
                 }
-            })
+            });
 
             // Clear prev destinations list
             a._destinations_prev = [];
 
-            destinations.forEach(dest => {
-                let line = 'line_' + a.name + "To" + dest;
-                let check = 'dst_' + dest;
+            destinations.forEach((dest) => {
+                let line = "line_" + a.name + "To" + dest;
+                let check = "dst_" + dest;
 
-                if(a[line])
-                {
+                if (a[line]) {
                     a[check].value = true;
                     a[line].Show();
                 }
@@ -62,7 +64,7 @@ class _paAudioSourceBase extends _paAudioBase {
             });
         }
 
-        this.on('destinations', destinations => {
+        this.on("destinations", (destinations) => {
             showHideDest(destinations);
         });
 
@@ -70,101 +72,106 @@ class _paAudioSourceBase extends _paAudioBase {
         showHideDest(this.destinations);
 
         // Add destination if new _audioInputDevice control is added to the parent
-        this.on('init', () => {
+        this.on("init", () => {
             // Scan for valid destination
-            Object.values(this._parent._controls).forEach(control => {
+            Object.values(this._parent._controls).forEach((control) => {
                 this._addDestination(control);
             });
         });
 
-
-        this.on('newChildControl', control => {
+        this.on("newChildControl", (control) => {
             try {
                 if (control instanceof checkBox) {
-                    let dstName = control.name.replace('dst_', '');
+                    let dstName = control.name.replace("dst_", "");
                     let dstControl = this._parent[dstName];
                     if (dstControl) {
                         this._addDestination(dstControl);
                     }
                 }
-            } catch { }
+            } catch {}
         });
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
-        this._loadHelpMD('controls/_paAudioSourceBase.md');
+        this._loadHelpMD("controls/_paAudioSourceBase.md");
         //----------------------Help Modal-----------------------------//
     }
 
     //Add destination if new _paAudioSinkBase control is added to the parent
     _addDestination(dstControl) {
         try {
-            if (dstControl instanceof _paAudioSinkBase || dstControl.controlType == 'SoundDucking' || dstControl.controlType == 'SoundProcessor') {
-                let check = 'dst_' + dstControl.name;
-                let line = 'line_' + this.name + "To" + dstControl.name;
+            if (
+                ((dstControl.controlType == "SoundDucking" ||
+                    dstControl.controlType == "SoundProcessor") &&
+                    this.name != dstControl.name) ||
+                dstControl instanceof _paAudioSinkBase
+            ) {
+                let check = "dst_" + dstControl.name;
+                let line = "line_" + this.name + "To" + dstControl.name;
 
                 let existing = this[check] != undefined;
 
                 // Create new checkbox
                 if (!existing) {
                     // Create new checkBox control if the checkbox is not already existing
-                    this.once(check, control => {
+                    this.once(check, (control) => {
                         // send newly created audio device's data to manager
-                        control.on('check', value => {
-
-                            const index = this.destinations.indexOf(dstControl.name);
+                        control.on("check", (value) => {
+                            const index = this.destinations.indexOf(
+                                dstControl.name
+                            );
                             if (value) {
-
                                 // Add Destination to array if it is not existing
                                 if (index == -1) {
                                     this.destinations.push(dstControl.name);
                                     this[line].Show();
-                                    this.NotifyProperty('destinations');
+                                    this.NotifyProperty("destinations");
                                 }
-
                             } else {
                                 // Remove Destination from array if it is existing
                                 if (index != -1) {
                                     this.destinations.splice(index, 1);
                                     this[line].Hide();
-                                    this.NotifyProperty('destinations');
+                                    this.NotifyProperty("destinations");
                                 }
                             }
                         });
 
-                        dstControl.on('displayName', displayName => {
+                        dstControl.on("displayName", (displayName) => {
                             control.label = displayName;
                         });
-
                     });
 
                     let sourceCon = this.calcConnectors(this.top, this.left);
-                    let dstCon = dstControl.calcConnectors(dstControl.top, dstControl.left);
+                    let dstCon = dstControl.calcConnectors(
+                        dstControl.top,
+                        dstControl.left
+                    );
 
                     this.SetData({
-                        [check]:
-                    {
-                        controlType: "checkBox",
-                        label: dstControl.displayName,
-                        color: dstControl._heading.style.backgroundColor,
-                        parentElement: "_checkboxes",
-                        hideData: true
-                    }
+                        [check]: {
+                            controlType: "checkBox",
+                            label: dstControl.displayName,
+                            color: dstControl._heading.style.backgroundColor,
+                            parentElement: "_checkboxes",
+                            hideData: true,
+                        },
                     });
 
-
-                    this.once(line, lineControl => {
-                        this.on('posChanged', sourceCon => {
+                    this.once(line, (lineControl) => {
+                        this.on("posChanged", (sourceCon) => {
                             lineControl.top = sourceCon.rightConnector.top;
                             lineControl.left = sourceCon.rightConnector.left;
                         });
-                        dstControl.on('posChanged', dstCon => {
+                        dstControl.on("posChanged", (dstCon) => {
                             lineControl.bottom = dstCon.leftConnector.top;
                             lineControl.right = dstCon.leftConnector.left;
                         });
 
                         // Set checkbox value to true if it in the destination array
-                        const index = this.destinations.indexOf(dstControl.name);
+                        const index = this.destinations.indexOf(
+                            dstControl.name
+                        );
                         if (index != -1) {
                             this[check].value = true;
                         }
@@ -181,18 +188,17 @@ class _paAudioSourceBase extends _paAudioBase {
                             bottom: dstCon.leftConnector.top,
                             right: dstCon.leftConnector.left,
                             parentElement: "_externalControls",
-                            hideData: true
-                        }
+                            hideData: true,
+                        },
                     });
-
                 } else {
                     // Subscribe to control remove event to remove destination checkbox controls
-                    dstControl.once('remove', control => {
+                    dstControl.once("remove", (control) => {
                         this.SetData({ [check]: { remove: true } });
                         this.SetData({ [line]: { remove: true } });
                     });
                 }
             }
-        } catch { }
+        } catch {}
     }
 }
