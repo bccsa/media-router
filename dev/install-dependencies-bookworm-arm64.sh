@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Installation script to install development dependencies & tools on Raspberry Pi OS Bullseye armhf (32bit)
+# Installation script to install development dependencies & tools on Raspberry Pi OS Bookworm arm64 (64bit)
 
 sudo apt-get -y update
 sudo apt-get -y install nodejs npm
