@@ -2,7 +2,7 @@ class managerPanel extends ui {
     constructor() {
         super();
         this.managerUrl = "http://localhost:3000"; // fallback
-        this.managerHost = "localhost";
+        this.managerHost = "";
         this.managerPort = 3000;
         this.username = "New manager";
         this.password = "";
