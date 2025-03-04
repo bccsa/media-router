@@ -55,6 +55,14 @@ let firstConnect = true;
  * @param {string} url
  */
 function manager_connect(managerHost, managerPort, username, password, oldUrl) {
+    if (!managerHost || managerHost == "") {
+        const _url = new URL(oldUrl);
+        managerHost = _url.hostname;
+        managerPort = _url.port;
+    }
+
+    if (!managerHost || !managerPort || !username || !password) return;
+
     const client = new Client({
         port: managerPort,
         address: managerHost,
@@ -113,8 +121,21 @@ function loadRouter() {
     // Ignore if more than one profile is selected
     if (s.length == 1) {
         let p = s[0];
-        if (p && p.url + p.username + p.password != cString) {
-            cString = p.url + p.username + p.password;
+        if (
+            p &&
+            p.managerHost +
+                p.managerPort +
+                p.managerUrl +
+                p.username +
+                p.password !=
+                cString
+        ) {
+            cString =
+                p.managerHost +
+                p.managerPort +
+                p.managerUrl +
+                p.username +
+                p.password;
 
             // Remove the current router configuration
             if (controls.router) {
@@ -156,7 +177,7 @@ controls.on(
         let c = Object.values(profileConf.config).find((t) => t.selected);
         if (c) {
             manager_connect(
-                c.managerHost || "localhost", // default
+                c.managerHost, // default
                 c.managerPort || 3000, // default
                 c.username,
                 c.password,
