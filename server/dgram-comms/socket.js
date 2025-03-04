@@ -146,8 +146,9 @@ class Socket extends Events {
      * Disconnect socket
      */
     disconnect() {
+        this.removeAllListeners();
+        console.log("disconnecting socket: " + this.socketID);
         this.deleted = true;
-        this.emitLocal("disconnected", this.socketID);
         clearInterval(this.keepAlive);
     }
 
