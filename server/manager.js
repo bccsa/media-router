@@ -230,6 +230,15 @@ router_io.on("connected", (socket) => {
 
         delete socket;
 
+        // check that router has not connected on a different socket
+        if (
+            Object.values(router_io.sockets).find(
+                (s) => s.data.routerID === socket.data.routerID
+            )
+        ) {
+            return; // early return if router connected on a new socket
+        }
+
         // Set offline status
         routerConf.online = false;
         manager_io.emit("data", { [socket.data.routerID]: { online: false } });
