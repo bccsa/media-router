@@ -101,12 +101,12 @@ class Server extends ClientServerBase {
             s.emit(null, null, { type: "keepAlive" });
             const now = new Date();
             if (now - s.keepAliveTime > this.connectionTimeout) {
-                // emit offline event
-                s.emitLocal("disconnected", s.socketID);
                 // remove socket
                 s.deleted = true;
                 clearInterval(s.keepAlive);
                 delete this.sockets[s.socketID];
+                // emit offline event
+                s.emitLocal("disconnected", s.socketID);
                 s = undefined;
             }
         });
