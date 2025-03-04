@@ -222,9 +222,6 @@ router_io.on("connected", (socket) => {
     });
 
     socket.on("disconnected", (data) => {
-        // Remove socket from routers sockets list
-        delete router_sockets[socket.data.routerID];
-
         // force disconnect socket
         socket.disconnect();
 
@@ -238,6 +235,9 @@ router_io.on("connected", (socket) => {
         ) {
             return; // early return if router connected on a new socket
         }
+
+        // Remove socket from routers sockets list
+        delete router_sockets[socket.data.routerID];
 
         // Set offline status
         routerConf.online = false;
