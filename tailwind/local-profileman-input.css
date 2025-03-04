@@ -35,7 +35,7 @@
 }
 
 .appFrame_contents {
-    @apply  absolute top-[51px] flex flex-wrap;
+    @apply absolute top-[51px] flex flex-wrap;
 }
 
 .appFrame-disconnect-alert-container {
@@ -54,24 +54,24 @@
 
 /* The Modal (background) */
 .env-modal {
-    @apply hidden fixed z-[1000] left-0 top-0 w-full h-full overflow-y-auto overflow-x-auto bg-[#00000066]
+    @apply hidden fixed z-[1000] left-0 top-0 w-full h-full overflow-y-auto overflow-x-auto bg-[#00000066];
 }
 
 /* Modal Content/Box */
 .env-modal-content {
-    @apply bg-[#6b7280] m-auto mt-[10%] p-4 border-0 border-solid w-[80%] rounded-b-lg rounded-t-xl
+    @apply bg-[#6b7280] m-auto mt-[10%] p-4 border-0 border-solid w-[80%] rounded-b-lg rounded-t-xl;
 }
 
 /* Modal Header */
 .env-modal-header {
-    @apply text-white
+    @apply text-white;
 }
 
 /*--------------------------*/
 
 /* Audio Device css */
 .managerPanel-main-card {
-    @apply z-10 m-2 select-none w-[250px] h-80 bg-[#F8FAFC] rounded-xl text-black [border-style:outset] border-[#6b7280] border;
+    @apply z-10 m-2 select-none w-[250px] h-auto bg-[#F8FAFC] rounded-xl text-black [border-style:outset] border-[#6b7280] border;
 }
 
 .managerPanel-card-heading {
@@ -100,4 +100,3 @@
 } */
 
 @tailwind utilities;
-
