@@ -1,8 +1,8 @@
 class appFrame extends ui {
     constructor() {
         super();
-        this.orderBy = 'displayOrder';
-        this.build_number = 'DEV';
+        this.orderBy = "displayOrder";
+        this.build_number = "DEV";
     }
 
     get html() {
@@ -10,20 +10,25 @@ class appFrame extends ui {
         <!--    NAV BAR   -->
         <div class="appFrame-top-bar"> <div class="appFrame-top-flex-div">
 
-            <!--    ADD BUTTON    -->
-            <button id="@{_btnAddRouter}" class="appFrame-btn-add" type="button" title="Add a new Router"></button>
+            <div>
+                <!--    ADD BUTTON    -->
+                <button id="@{_btnAddRouter}" class="appFrame-btn-add" type="button" title="Add a new Router"></button>
+
+                <!--    Import BUTTON    -->
+                <button id="@{_btnImport}" class="appFrame-btn-import ml-2" type="button" title="Import a router"></button>
+            </div>
 
             <!--    HEADING   -->
             <div class="container-fluid"> <a class="appFrame-heading">Media Router Manager</a></div>
 
-            <!--    LOG OUT BUTTON    -->
-            <button id="@{_btnUser}" class="appFrame-btn-log-out" type="button" title="Log in or out"
-            data-bs-toggle="modal"  data-bs-target="#@{_modalProfile}"></button>
+            <!--    Manager Configuration    -->
+            <button id="@{_manConfig}" class="appFrame-btn-log-out" type="button" title="Manager Configuration"
+            data-bs-toggle="modal"  data-bs-target="#@{_modalManConfig}"></button>
 
         </div> </div>
 
-        <!--    MODAL Profile   -->
-        <div id="@{_modalProfile}" class="appFrame-modal-log-out modal fade" tabindex="-1" aria-hidden="true">
+        <!--    MODAL Manager Config   -->
+        <div id="@{_modalManConfig}" class="appFrame-modal-log-out modal fade" tabindex="-1" aria-hidden="true">
             <div class="modal-dialog modal-sm appFrame-modal-dialog">
                 <div class="appFrame-modal-content">
 
@@ -45,6 +50,9 @@ class appFrame extends ui {
 
                         <button class="appFrame-modal-btn-log-out"
                         data-bs-toggle="modal"  data-bs-target="#@{_modalLogOut}"> Log out</button>
+
+                        <button id="@{_btnExportManagerConfig}" class="appFrame-modal-btn-log-out"> Export Manager</button>
+                        <button id="@{_btnImportManagerConfig}" class="appFrame-modal-btn-log-out"> Import Manager</button>
                     </div>
                 </div>
             </div>
@@ -176,33 +184,34 @@ class appFrame extends ui {
     }
 
     Init() {
-
         // --------------------------
-        // change password 
+        // change password
         // --------------------------
-        // event listeners 
-        this._txtPass2.addEventListener("input", e => {
+        // event listeners
+        this._txtPass2.addEventListener("input", (e) => {
             if (this._txtPass1.value == this._txtPass2.value)
                 this._errPass2.innerHTML = "";
-            else 
-                this._errPass2.innerHTML = "Password's does not match";
-        })
+            else this._errPass2.innerHTML = "Password's does not match";
+        });
 
-        this._btcChangePass.addEventListener("click", e => {
+        this._btcChangePass.addEventListener("click", (e) => {
             if (this._txtPass1.value == this._txtPass2.value) {
-                let data = {currentPass: this._txtCurrnetPass.value, newPass: this._txtPass1.value}
-                this.emit('change_password', data, 'top');
+                let data = {
+                    currentPass: this._txtCurrnetPass.value,
+                    newPass: this._txtPass1.value,
+                };
+                this.emit("change_password", data, "top");
             }
-        })
+        });
 
-        this.on('new_password', data => {
+        this.on("new_password", (data) => {
             if (data) {
-                console.log("Password updated")
-                this._errCurrentPass.innerHTML = "Password updated successfully";
-            }
-            else 
+                console.log("Password updated");
+                this._errCurrentPass.innerHTML =
+                    "Password updated successfully";
+            } else
                 this._errCurrentPass.innerHTML = "Current password is invalid";
-        })
+        });
 
         // --------------------------
         // Other
@@ -212,35 +221,34 @@ class appFrame extends ui {
         this._incorrectPassAlert.style.display = "none";
         this._disconnectAlert.style.display = "none";
         this._btnAddRouter.disabled = true;
-        this._btnUser.disabled = true;
+        this._manConfig.disabled = true;
 
         // Event subscriptions
-        this._btnAddRouter.addEventListener('click', (e) => {
+        this._btnAddRouter.addEventListener("click", (e) => {
             // Get unique random name
             function randomName() {
                 return "router_" + Math.round(Math.random() * 10000);
             }
-            
+
             let name = randomName();
             while (this[name]) {
                 name = randomName();
             }
 
             // Create new router
-            this.SetData({[name]: {controlType: "Router"}});
-            this.on(name, control => {
+            this.SetData({ [name]: { controlType: "Router" } });
+            this.on(name, (control) => {
                 // send newly created router's data to manager
-                this._notify({[name]: control.GetData()});
+                this._notify({ [name]: control.GetData() });
 
                 f.updateOrder();
             });
-
         });
 
-        this._logOutButton.addEventListener('click', (e) => {
+        this._logOutButton.addEventListener("click", (e) => {
             this.clearControls();
             this._btnAddRouter.disabled = true;
-            this._btnUser.disabled = true;
+            this._manConfig.disabled = true;
             this._formLogIn.style.display = "flex";
             this._controlsDiv.style.display = "none";
             this._incorrectPassAlert.style.display = "none";
@@ -250,26 +258,26 @@ class appFrame extends ui {
             localStorage.removeItem("username");
             localStorage.removeItem("password");
             // disconnect socket
-            this.emit('disconnect', true, 'top');
+            this.emit("disconnect", true, "top");
         });
 
-        this._userRemember.addEventListener('click', (e) => {
-            
-        });
+        this._userRemember.addEventListener("click", (e) => {});
 
-        this._btnSignIn.addEventListener('click', (e) => {
-            this.emit('login', { username: this._userName.value, password: this._userPassword.value  });
-
+        this._btnSignIn.addEventListener("click", (e) => {
+            this.emit("login", {
+                username: this._userName.value,
+                password: this._userPassword.value,
+            });
         });
 
         // Save the list order when the router order is changed
         var sortable = Sortable.create(this._controlsDiv, {
-            handle: '.router-btn-handel',
+            handle: ".router-btn-handel",
             animation: 350,
             chosenClass: "sortable-chosen",
             dragClass: "sortable-drag",
             group: {
-                name: 'my-sortable-group'
+                name: "my-sortable-group",
             },
 
             store: {
@@ -278,63 +286,113 @@ class appFrame extends ui {
                  * @param {Sortable}  sortable
                  */
                 set: function (sortable) {
-                    
                     // Update the displayOrder property for each Router
                     f.updateOrder();
                 },
-
-            }
-            
+            },
         });
 
-        
+        // ======================= Import / Export =======================
+        // Import a single router from a file
+        this._btnImport.addEventListener("click", (e) => {
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = ".mr";
+            fileInput.onchange = (e) => {
+                const file = e.target.files[0];
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const data = JSON.parse(e.target.result);
+                    const name = data.name;
+                    this.SetData({ [name]: data });
+                    this.on(name, (control) => {
+                        // send newly created router's data to manager
+                        this._notify({ [name]: control.GetData() });
+
+                        f.updateOrder();
+                    });
+                };
+                reader.readAsText(file);
+            };
+            fileInput.click();
+        });
+
+        // Create an export of all the manager configuration
+        this._btnExportManagerConfig.addEventListener("click", (e) => {
+            const data = JSON.stringify(this.GetData());
+            const blob = new Blob([data], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "manager_config.mrm";
+            a.click();
+        });
+
+        // Import a manager configuration from a file
+        this._btnImportManagerConfig.addEventListener("click", (e) => {
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = ".mrm";
+            fileInput.onchange = (e) => {
+                const file = e.target.files[0];
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const data = JSON.parse(e.target.result);
+                    this.SetData(data);
+                };
+                reader.readAsText(file);
+            };
+            fileInput.click();
+        });
+        // ======================= Import / Export =======================
     }
 
     // Update the displayOrder property for each control using Sortable js
     updateOrder() {
         var sortable = Sortable.create(this._controlsDiv, {
-            handle: '.router-btn-handel',
+            handle: ".router-btn-handel",
             animation: 350,
             chosenClass: "sortable-chosen",
             dragClass: "sortable-drag",
             group: {
-                name: 'my-sortable-group'
-            }
+                name: "my-sortable-group",
+            },
         });
 
         // Get the ordered list of children elements
         var controlElements = sortable.el.children;
 
         // Create a list of all the routers
-        Object.values(controls.appFrame._controls)
+        Object.values(controls.appFrame._controls);
 
-        var controlId
+        var controlId;
         const router = [];
-  
+
         // Get the ordered list of all the routers
         for (var i = 0; i < controlElements.length; i++) {
-          controlId = controlElements[i].id;
-          
-           router[i] = Object.values(controls.appFrame._controls).find(R => R._uuid == controlId.toString());
-           
+            controlId = controlElements[i].id;
+
+            router[i] = Object.values(controls.appFrame._controls).find(
+                (R) => R._uuid == controlId.toString()
+            );
         }
 
         // Update the displayOrder property for each control
         for (var i = 0; i < router.length; i++) {
-             router[i].displayOrder = i;
-          }
+            router[i].displayOrder = i;
+        }
     }
 
     logIn() {
         this._btnAddRouter.disabled = false;
-        this._btnUser.disabled = false;
+        this._manConfig.disabled = false;
         this._controlsDiv.style.display = "block";
         this._formLogIn.style.display = "none";
         this._incorrectPassAlert.style.display = "none";
     }
-      
+
     clearControls() {
-        Object.keys(this._controls).forEach(control => {
+        Object.keys(this._controls).forEach((control) => {
             this.RemoveChild(control);
         });
     }

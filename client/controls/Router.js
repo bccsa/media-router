@@ -162,6 +162,9 @@ class Router extends ui {
                                 <button class="router-btn-restart" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalRestart}" title="Restart Router"></button>
 
+                                <!--    Export Config     -->
+                                <button id="@{_btnExport}" class="router-btn-export" type="button" title="Export Config"></button>
+
                                 <!--    HELP MODAL     -->
                                 <button id="@{_btnHelp}" class="router-btn-help" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalHelp}" title="Help"></button>
@@ -588,6 +591,9 @@ class Router extends ui {
             delete dup.name;
             delete dup.online;
             delete dup.run;
+            data.cpuUsage = 0;
+            data.cpuTemperature = 0;
+            data.memoryUsage = 0;
             dup.name = name; // Manually set name. This is used by the manager service as a unique router socket identification.
 
             dup.displayName += " (copy)";
@@ -599,6 +605,40 @@ class Router extends ui {
 
             // Close group
             this._details.removeAttribute("open");
+        });
+
+        /**
+         * Export and download the router configuration
+         */
+        this._btnExport.addEventListener("click", (e) => {
+            // Get unique random name
+            function genName(name) {
+                return name + "_copy_" + Math.round(Math.random() * 100);
+            }
+
+            let name = genName(this.name);
+            while (this._parent[name]) {
+                name = genName(this.name);
+            }
+
+            let data = this.GetData();
+            delete data.name;
+            delete data.online;
+            delete data.run;
+            data.cpuUsage = 0;
+            data.cpuTemperature = 0;
+            data.memoryUsage = 0;
+            data.name = name; // Manually set name. This is used by the manager service as a unique router socket identification.
+            data.displayName = genName(data.displayName);
+            let blob = new Blob([JSON.stringify(data, null, 2)], {
+                type: "application/json",
+            });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            a.download = `${data.name}.router-config.mr`;
+            a.click();
+            URL.revokeObjectURL(url);
         });
 
         // Handle property changes
