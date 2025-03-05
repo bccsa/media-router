@@ -278,36 +278,36 @@ controls.on(
 );
 
 // -------------------------------------
-// Profileman WebApp Express webserver
+// ProfileMan WebApp Express webserver
 // -------------------------------------
 
-const profilemanApp = express();
-const profilemanHttp = require("http").createServer(profilemanApp);
+const profileManApp = express();
+const profileManHttp = require("http").createServer(profileManApp);
 
 try {
     // Serve the default file
-    profilemanApp.get("/", (req, res) => {
+    profileManApp.get("/", (req, res) => {
         res.sendFile(path.join(__dirname, "/../local-profileman/index.html"));
     });
 
     // Serve all the files
-    profilemanApp.use(
+    profileManApp.use(
         express.static(path.join(__dirname, "/../local-profileman"))
     );
 
-    profilemanHttp.listen(8082, () => {
+    profileManHttp.listen(8082, () => {
         eventLog("Profileman WebApp running on *:8082");
     });
 } catch (err) {
-    eventLog(`Unable to start Profileman WebApp: ${err.message}`);
+    eventLog(`Unable to start ProfileMan WebApp: ${err.message}`);
 }
 
 // -------------------------------------
-// Profileman WebApp Socket.IO
+// ProfileMan WebApp Socket.IO
 // -------------------------------------
 
-const profilemanIO = require("socket.io")(profilemanHttp);
-profilemanIO.on("connection", (socket) => {
+const profileManIO = require("socket.io")(profileManHttp);
+profileManIO.on("connection", (socket) => {
     socket.emit("data", profileConf.config);
 
     socket.on("data", (data) => {
@@ -330,22 +330,22 @@ function loadEnv() {
     try {
         let _md = fs.readFileSync(_path);
         profileConf.append({ envFile: _md.toString(), envFileErr: "" });
-        profilemanIO.emit("data", { envFile: _md.toString(), envFileErr: "" });
+        profileManIO.emit("data", { envFile: _md.toString(), envFileErr: "" });
     } catch (err) {
-        // try to create the file if it does not exsists
+        // try to create the file if it does not exists
         if (err.code == "ENOENT") {
             try {
                 fs.writeFileSync(_path, profileConf.config.envFile);
             } catch (err) {
                 profileConf.append({ envFile: "", envFileErr: err.message });
-                profilemanIO.emit("data", {
+                profileManIO.emit("data", {
                     envFile: "",
                     envFileErr: err.message,
                 });
             }
         } else {
             profileConf.append({ envFile: "", envFileErr: err.message });
-            profilemanIO.emit("data", { envFile: "", envFileErr: err.message });
+            profileManIO.emit("data", { envFile: "", envFileErr: err.message });
         }
     }
 }
@@ -360,7 +360,7 @@ function saveEnv(e) {
         fs.writeFileSync(_path, e);
     } catch (err) {
         profileConf.append({ envFileErr: err.message });
-        profilemanIO.emit("data", { envFileErr: err.message });
+        profileManIO.emit("data", { envFileErr: err.message });
     }
 }
 
