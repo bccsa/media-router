@@ -189,7 +189,7 @@ controls.on(
         router.on("data", (data) => {
             if (manager_io) {
                 manager_io.emit("data", data, {
-                    guaranteeDelivery: false,
+                    guaranteeDelivery: router.guaranteeDelivery,
                 });
             }
         });
@@ -263,7 +263,7 @@ controls.on(
                 // Send data to manager
                 if (manager_io) {
                     manager_io.emit("data", data, {
-                        guaranteeDelivery: false,
+                        guaranteeDelivery: true,
                     });
                 }
             });
