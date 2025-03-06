@@ -14,6 +14,10 @@
     @apply icon-[mdi-light--plus-circle] text-white hover:text-blue-500 text-2xl text-[32px];
 }
 
+.appFrame-btn-import {
+    @apply icon-[mdi-light--upload] text-white hover:text-blue-500 text-2xl text-[32px];
+}
+
 .appFrame-heading {
     @apply inline-block select-none text-2xl text-white;
 }
@@ -197,7 +201,6 @@
 
 .router-btn-settings {
     @apply icon-[mdi-light--settings] text-black hover:text-blue-500 text-2xl text-[32px];
-
 }
 
 .router-settingsContainer {
@@ -223,6 +226,10 @@
 
 .router-btn-duplicate {
     @apply icon-[mdi-light--content-duplicate] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
+}
+
+.router-btn-export {
+    @apply icon-[mdi-light--download] text-black hover:text-blue-500 text-2xl text-[32px] m-2;
 }
 
 .router-label-settings {
@@ -363,12 +370,12 @@
     @apply form-check-input appearance-none w-9 -ml-10 rounded-full float-left h-5 align-top bg-no-repeat bg-contain bg-red-600 focus:outline-none cursor-pointer shadow-sm;
 }
 
-.paAudioBase-btn-settings {                                                                     
-    @apply icon-[mdi-light--settings] text-white hover:text-[#6fb2f5] text-base text-[24px]; 
+.paAudioBase-btn-settings {
+    @apply icon-[mdi-light--settings] text-white hover:text-[#6fb2f5] text-base text-[24px];
 }
 
-.paAudioBase-btn-srtstats {                                                                     
-    @apply icon-[mdi-light--information] text-white hover:text-[#6fb2f5] text-base text-[24px]; 
+.paAudioBase-btn-srtstats {
+    @apply icon-[mdi-light--information] text-white hover:text-[#6fb2f5] text-base text-[24px];
 }
 
 .paAudioBase-line {
@@ -461,18 +468,20 @@
 
 ._paAudioBase_volume_slit {
     @apply w-[15/16] h-[16px] border block shadow-[white] rounded-[25px] border-[#75c4eb94] my-1;
-    background: linear-gradient(to right,
-            hsla(120, 100%, 25%, 0.2) 66.6666%,
-            rgba(255, 166, 0, 0.2) 66.6666% 85%,
-            rgba(255, 0, 0, 0.2) 85%);
-    border-style: inset; 
+    background: linear-gradient(
+        to right,
+        hsla(120, 100%, 25%, 0.2) 66.6666%,
+        rgba(255, 166, 0, 0.2) 66.6666% 85%,
+        rgba(255, 0, 0, 0.2) 85%
+    );
+    border-style: inset;
 }
 
 ._paAudioBase_volume_slit div {
     @apply w-full h-full;
-  }
+}
 
-  /* .container-div {
+/* .container-div {
     @apply bg-[#c3c3c3] w-[200px] h-[1000px] pt-2.5 pb-0 px-2.5;
   }
 
@@ -484,7 +493,6 @@
     @apply block w-[100px] h-[100px] relative -translate-x-2/4 -translate-y-2/4 bg-[rgb(2,255,15)] left-2/4 top-2/4;
     -webkit-transform: translate(-50%, -50%);
   } */
-
 
 /*-------------------------*/
 
@@ -606,12 +614,8 @@
 
 /* --------EQ---------*/
 
-
-
-
 /* . {
     @apply ;
 } */
 
 @tailwind utilities;
-
