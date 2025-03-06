@@ -71,7 +71,7 @@ class Router extends ui {
                                 <div id="@{_cpuUsage}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-24 rounded-full">CPU: <span>@{cpuUsage}</span>%</div>
 
                                 <!--    CPU Temperature Indication -->
-                                <div id="@{_cpuTemperature}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-36 rounded-full">TEMP: <span>@{cpuTemperature}</span>&deg;C</div>
+                                <div id="@{_cpuTemperature}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-[110px] rounded-full">TEMP: <span>@{cpuTemperature}</span>&deg;C</div>
 
                                 <!--    ONLINE/OFFLINE -->
                                 <span id="@{_online}" class="hidden items-center  bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">

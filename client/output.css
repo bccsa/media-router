@@ -9681,8 +9681,8 @@ textarea.paAudioBase-text-area.is-invalid {
   width: 6rem;
 }
 
-.w-36 {
-  width: 9rem;
+.w-32 {
+  width: 8rem;
 }
 
 .w-4 {
@@ -9727,6 +9727,18 @@ textarea.paAudioBase-text-area.is-invalid {
 
 .w-full {
   width: 100%;
+}
+
+.w-\[100px\] {
+  width: 100px;
+}
+
+.w-\[105px\] {
+  width: 105px;
+}
+
+.w-\[110px\] {
+  width: 110px;
 }
 
 .min-w-\[12rem\] {
