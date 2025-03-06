@@ -47,7 +47,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
         this.reload = false; // Reload configuration command. Stops and starts the control to apply changes.
         this._vuDataListener = undefined; // eventlistener for vuData, used to unsubscribe
         this.srcChannelMap = ""; // srcMap used with loopbacks to be able to select the audio channels you want to pass
-        this.moduleEnabled = false; // Enable or disable individual module
+        this.moduleEnabled = true; // Enable or disable individual module
     }
 
     Init() {
