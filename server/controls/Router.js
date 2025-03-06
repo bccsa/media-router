@@ -50,6 +50,8 @@ class Router extends dm {
         this.memoryUsage = 0; // Memory usage indication
         this.ipAddress = "127.0.0.1"; // system IP address
         this.buildNumber = "DEV"; // Software Build number
+        this.guaranteeDelivery = false; // Internal run command, used for controls, if they want to guarantee delivery of a message to the manager
+        this.SetAccess("guaranteeDelivery", { Set: "none", Get: "none" }); // Disable Set() and Get() access to prevent frontend changing the property
     }
 
     Init() {
@@ -197,20 +199,32 @@ class Router extends dm {
 
         // PulseAudio items detection
         this._updatePAlist("sources", this._sources).then((updated) => {
-            if (updated) this.sources = Object.values(this._sources);
+            if (!updated) return;
+            this.guaranteeDelivery = true;
+            this.sources = Object.values(this._sources);
+            this.guaranteeDelivery = false;
         });
         this._updatePAlist("sinks", this._sinks).then((updated) => {
-            if (updated) this.sinks = Object.values(this._sinks);
+            if (!updated) return;
+            this.guaranteeDelivery = true;
+            this.sinks = Object.values(this._sinks);
+            this.guaranteeDelivery = false;
         });
         let scanTimer = setInterval(async () => {
             this.PaCmdQueue(() => {
                 this._updatePAlist("sources", this._sources).then((updated) => {
-                    if (updated) this.sources = Object.values(this._sources);
+                    if (!updated) return;
+                    this.guaranteeDelivery = true;
+                    this.sources = Object.values(this._sources);
+                    this.guaranteeDelivery = false;
                 });
             });
             this.PaCmdQueue(() => {
                 this._updatePAlist("sinks", this._sinks).then((updated) => {
-                    if (updated) this.sinks = Object.values(this._sinks);
+                    if (!updated) return;
+                    this.guaranteeDelivery = true;
+                    this.sinks = Object.values(this._sinks);
+                    this.guaranteeDelivery = false;
                 });
             });
         }, 1000);
