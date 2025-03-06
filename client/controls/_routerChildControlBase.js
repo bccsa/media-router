@@ -88,6 +88,15 @@ class _routerChildControlBase extends ui {
                         </div>
             
                         <div class="paAudioBase-modal-body">
+                            <!--    TOGGLE ENABLE/DISABLE     -->
+                            <div class="flex text-[15px] justify-self-end">
+                                <label for="@{_moduleEnabled}" class="router-label">Disable</label>
+                                <div class="form-check form-switch">
+                                    <input id="@{_moduleEnabled}" class="router-toggle" type="checkbox"
+                                    role="switch" title="Enable or disable an individual module" checked="@{moduleEnabled}">
+                                    <label for="@{_moduleEnabled}" class="router-label">Enable</label>
+                                </div>
+                            </div>
             
                             <!--    DISPLAY NAME      -->
                             <div class="w-full mb-1 mr-4">
@@ -127,22 +136,6 @@ class _routerChildControlBase extends ui {
                                 <!-- <div class="w-1/4 mr-3"></div>
                                 <div class="w-1/4 mr-3"></div>
                                 <div class="w-1/4"></div> -->
-                            </div>
-
-                            <div class="w-full mb-3 flex ">
-            
-                                <!--    TOGGLE ENABLE/DISABLE     -->
-                                <div class="mr-4 flex text-[15px]">
-                                    <label for="@{_moduleEnabled}" class="router-label">Disable</label>
-                                    <div class="form-check form-switch">
-                                        <input id="@{_moduleEnabled}" class="router-toggle" type="checkbox"
-                                        role="switch" title="Enable or disable an individual module" checked="@{moduleEnabled}">
-                                        <label for="@{_moduleEnabled}" class="router-label">Enable</label>
-                                    </div>
-                                </div>
-            
-                                <div class="w-1/4 mr-3"></div>
-                                <div class="w-1/4 mr-3"></div>
                             </div>
             
                             <!-- MODAL HTML added by extended controls  -->
