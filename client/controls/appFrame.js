@@ -319,8 +319,20 @@ class appFrame extends ui {
 
         // Create an export of all the manager configuration
         this._btnExportManagerConfig.addEventListener("click", (e) => {
-            const data = JSON.stringify(this.GetData());
-            const blob = new Blob([data], { type: "application/json" });
+            const data = this.GetData();
+            Object.values(data).forEach((control) => {
+                if (control.controlType == "Router") {
+                    delete control.name;
+                    delete control.online;
+                    delete control.run;
+                    control.cpuUsage = 0;
+                    control.cpuTemperature = 0;
+                    control.memoryUsage = 0;
+                }
+            });
+            const blob = new Blob([JSON.stringify(data)], {
+                type: "application/json",
+            });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;

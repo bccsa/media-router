@@ -591,9 +591,9 @@ class Router extends ui {
             delete dup.name;
             delete dup.online;
             delete dup.run;
-            data.cpuUsage = 0;
-            data.cpuTemperature = 0;
-            data.memoryUsage = 0;
+            dub.cpuUsage = 0;
+            dub.cpuTemperature = 0;
+            dub.memoryUsage = 0;
             dup.name = name; // Manually set name. This is used by the manager service as a unique router socket identification.
 
             dup.displayName += " (copy)";
@@ -613,7 +613,7 @@ class Router extends ui {
         this._btnExport.addEventListener("click", (e) => {
             // Get unique random name
             function genName(name) {
-                return name + "_copy_" + Math.round(Math.random() * 100);
+                return name + "_backup_" + Math.round(Math.random() * 100);
             }
 
             let name = genName(this.name);
@@ -629,7 +629,7 @@ class Router extends ui {
             data.cpuTemperature = 0;
             data.memoryUsage = 0;
             data.name = name; // Manually set name. This is used by the manager service as a unique router socket identification.
-            data.displayName = genName(data.displayName);
+            data.displayName = data.displayName + " (backup)";
             let blob = new Blob([JSON.stringify(data, null, 2)], {
                 type: "application/json",
             });
