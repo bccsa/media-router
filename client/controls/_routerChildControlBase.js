@@ -20,7 +20,7 @@ class _routerChildControlBase extends ui {
         this.reload = false; // Reload configuration command. Stops and starts the control to apply changes.
         this.Help_md = ""; // Help info
         this.md_queue = []; // queue to load md files, to keep them in the right seq.
-        this.pause = false; // Pause control
+        this.moduleEnabled = true; // Enable or disable individual module
     }
 
     get html() {
@@ -127,6 +127,22 @@ class _routerChildControlBase extends ui {
                                 <!-- <div class="w-1/4 mr-3"></div>
                                 <div class="w-1/4 mr-3"></div>
                                 <div class="w-1/4"></div> -->
+                            </div>
+
+                            <div class="w-full mb-3 flex ">
+            
+                                <!--    TOGGLE ENABLE/DISABLE     -->
+                                <div class="mr-4 flex text-[15px]">
+                                    <label for="@{_moduleEnabled}" class="router-label">Disable</label>
+                                    <div class="form-check form-switch">
+                                        <input id="@{_moduleEnabled}" class="router-toggle" type="checkbox"
+                                        role="switch" title="Enable or disable an individual module" checked="@{moduleEnabled}">
+                                        <label for="@{_moduleEnabled}" class="router-label">Enable</label>
+                                    </div>
+                                </div>
+            
+                                <div class="w-1/4 mr-3"></div>
+                                <div class="w-1/4 mr-3"></div>
                             </div>
             
                             <!-- MODAL HTML added by extended controls  -->
@@ -436,6 +452,22 @@ class _routerChildControlBase extends ui {
             this._modalHelp_md.innerHTML = html;
         });
         //----------------------Help Modal-----------------------------//
+
+        //----------------------Enable / Disable Modal-----------------------------//
+
+        this.on(
+            "moduleEnabled",
+            (e) => {
+                if (e) {
+                    this._draggable.style["opacity"] = "1";
+                } else {
+                    this._draggable.style["opacity"] = "0.5";
+                }
+            },
+            { immediate: true }
+        );
+
+        //----------------------Enable / Disable Modal-----------------------------//
     }
 
     /**

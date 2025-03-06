@@ -52,7 +52,11 @@ class _paAudioBase extends Classes(dm, vuMeter) {
 
     Init() {
         // Set PulseAudio Module name
-        this._paModuleName = "MR_PA_" + this._controlName;
+        this._paModuleName =
+            "MR_PA_" +
+            this._controlName +
+            "_" +
+            Math.floor(Math.random() * 100);
 
         // Mute all other modules (with the same parent) in the solo group
         this.on(
@@ -172,7 +176,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
             "runCmd",
             (run) => {
                 setTimeout(() => {
-                    this.run = run;
+                    this.moduleEnabled && (this.run = run);
                 }); // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emited
             },
             { immediate: true, caller: this }
@@ -181,7 +185,7 @@ class _paAudioBase extends Classes(dm, vuMeter) {
         // Restart control on reload command
         this.on("reload", (reload) => {
             if (reload) {
-                if (this._parent.runCmd) {
+                if (this._parent.runCmd && this.moduleEnabled) {
                     this.run = false;
                     setTimeout(() => {
                         this.run = this._parent.runCmd;
@@ -189,6 +193,23 @@ class _paAudioBase extends Classes(dm, vuMeter) {
                 }
             }
             this.reload = false;
+        });
+
+        // enable or disable module
+        this.on("moduleEnabled", (enabled) => {
+            if (enabled) {
+                this._parent._log(
+                    "INFO",
+                    `${this._paModuleName} (${this.displayName}): Enabling module`
+                );
+                this.run = true;
+            } else {
+                this._parent._log(
+                    "INFO",
+                    `${this._paModuleName} (${this.displayName}): Disabling module`
+                );
+                this.run = false;
+            }
         });
     }
 
