@@ -17,8 +17,8 @@ const util = require("util");
 const exec = util.promisify(require("child_process").exec);
 const path = require("path");
 
-const MAX_RETRIES = 3;
-const BANDWIDTH_SMOOTHING_FACTOR = 0.6;
+const MAX_RETRIES = 5;
+const BANDWIDTH_SMOOTHING_FACTOR = 0.9;
 const BANDWIDTH_ADJUSTMENT_FACTOR = 0.9;
 
 if (process.argv.length < 3) {
@@ -37,7 +37,7 @@ const preferredAudioLangs = config.languages;
 let lastSegment = null;
 let currentVariant = null;
 let _currentVariant_ = null;
-let estimatedBandwidth = 1000000;
+let estimatedBandwidth = 2000000;
 let masterPlaylist = null;
 let selectedAudioTracks = null;
 let isVod = false;
@@ -61,7 +61,8 @@ async function fetchPlaylist(url) {
 async function fetchSegmentList(stream) {
     if (!isVod) {
         stream.playlist = await fetchPlaylist(stream.url);
-        isVod = stream.playlist.segments.length > 20 ? true : false; // toggle vod flag if segmentes is > 20
+        if (!stream.playlist) return await fetchSegmentList(stream);
+        isVod = stream.playlist.segments.length > 30 ? true : false; // toggle vod flag if segmentes is > 30
     }
     if (!isVod) return stream.playlist;
 
@@ -97,7 +98,8 @@ async function selectBestVariant(index = 0) {
     });
 
     const bestVariant = masterPlaylist.variants.reduce((best, variant) => {
-        return variant.bandwidth <= estimatedBandwidth &&
+        return variant.bandwidth <=
+            estimatedBandwidth * BANDWIDTH_ADJUSTMENT_FACTOR &&
             variant.bandwidth > best.bandwidth &&
             variant.resolution.height <= config.maxQuality
             ? variant
@@ -105,9 +107,9 @@ async function selectBestVariant(index = 0) {
     }, least);
 
     if (currentVariant !== bestVariant.uri) {
-        // console.log(
-        //     `Switching to Variant: ${bestVariant.resolution?.height} @ ${bestVariant.bandwidth} bps`
-        // );
+        console.log(
+            `Switching to Variant: ${bestVariant.resolution?.height} @ ${bestVariant.bandwidth} bps`
+        );
         currentVariant = bestVariant.uri;
         _currentVariant_ = bestVariant;
         // update vod segments if quality changes
@@ -192,9 +194,8 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
             await new Promise((res) => setTimeout(res, 1000));
             return fetchSegment(segmentUrl, pipe, isVideo, retryCount + 1);
         } else {
-            console.log("Max retries reached. Switching to lower quality...");
-            estimatedBandwidth *= BANDWIDTH_ADJUSTMENT_FACTOR;
-            selectBestVariant();
+            console.log("Max retries reached. skipping segment...");
+            return;
         }
     }
 }
@@ -207,10 +208,19 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
  */
 async function streamLiveSegments(stream, index) {
     let playlist;
+    let lastSeqNumber = 0;
     do {
-        // update audio trancks
+        // update audio tracks
         await selectAudioTracks();
         playlist = await fetchSegmentList(stream, index);
+        playlist.segments =
+            playlist.segments.filter(
+                (s) => s.mediaSequenceNumber > lastSeqNumber
+            ) || [];
+        playlist.segments.length > 0 &&
+            (lastSeqNumber =
+                playlist.segments[playlist.segments.length - 1]
+                    .mediaSequenceNumber);
         const map = playlist.source.match(/(?<=EXT-X-MAP:URI=\")(.*)(?=\")/gm);
         if (map)
             await fetchSegment(
@@ -271,6 +281,7 @@ async function startStreams() {
             pipe: audioPipe,
             isVod: false,
             playlist: undefined,
+            language: track.language,
         });
         count++;
     }

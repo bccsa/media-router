@@ -167,8 +167,8 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
 
         const src = (pipe, isSrt = false) => {
             if (isSrt)
-                return `filesrc location="${pipe}" ! parsebin ! queue flush-on-eos=true`;
-            return `filesrc location="${pipe}" ! queue flush-on-eos=true ! parsebin ! decodebin3 ! queue flush-on-eos=true max-size-bytes=40000000`;
+                return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin`;
+            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin ! decodebin3 ! queue`;
         };
 
         // ================ HLS Demuxer ===================
@@ -184,7 +184,8 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             ? `${src(
                   "/tmp/videoPipe",
                   true
-              )} ! mpegtsmux alignment=7 name=mux ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! srtserversink name="${
+              )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${
+
                   this._videoElementName
               }" wait-for-connection=false sync=true ts-offset=${
                   this.videoDelay * 1000000
@@ -202,12 +203,13 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     audio += ` ${src(
                         `/tmp/${stream.language}_audioPipe`,
                         true
-                    )} ! tee name=tee ! queue flush-on-eos=true ! mux.`;
+                    )} ! tee name=tee ! queue ! mux.`;
+
                 audio += ` ${
                     !this.enableSrt
                         ? src(`/tmp/${stream.language}_audioPipe`)
                         : `tee. ! decodebin3 `
-                } ! audioconvert ! audio/x-raw,channels=2 ! queue flush-on-eos=true ! pulsesink name=audioSink ts-offset=${
+                } ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink name=audioSink ts-offset=${
                     this.videoDelay * 1000000
                 } device=${
                     this.sink
@@ -217,7 +219,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             } else
                 audio += ` ${src(
                     `/tmp/${stream.language}_audioPipe`
-                )} ! audioconvert ! audio/x-raw,channels=2 ! queue flush-on-eos=true ! pulsesink device=${
+                )} ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=${
                     this._controlName
                 }_sink_${
                     stream.language
