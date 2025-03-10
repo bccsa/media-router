@@ -185,6 +185,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                   "/tmp/videoPipe",
                   true
               )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${
+
                   this._videoElementName
               }" wait-for-connection=false sync=true ts-offset=${
                   this.videoDelay * 1000000
@@ -203,6 +204,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                         `/tmp/${stream.language}_audioPipe`,
                         true
                     )} ! tee name=tee ! queue ! mux.`;
+
                 audio += ` ${
                     !this.enableSrt
                         ? src(`/tmp/${stream.language}_audioPipe`)
