@@ -13,6 +13,9 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
         this.hlsUrl = "";
         this.videoQuality = "";
         this.videoQualities = [];
+        this.subtitleLanguage = "off";
+        this.subtitleLanguages = [];
+        this.subtitlePosition = "baseline";
         this.videoDelay = 0;
         this.sinkspaModuleID = [];
         this.readyNullSinks = 0;
@@ -100,6 +103,17 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 }, []);
 
                 this.videoQualities = availableVideo.map((s) => `${s.height}`);
+                this.subtitleLanguages = availableAudio.map((s) => {
+                    return { language: s.language, comment: s.name };
+                });
+
+                // remove selected sub if it is not in the subtitleLanguages
+                if (
+                    !this.subtitleLanguages.some(
+                        (s) => s.language === this.subtitleLanguage
+                    )
+                )
+                    this.subtitleLanguage = "off";
 
                 // Set default language if not available
                 if (
@@ -119,12 +133,13 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                     this.videoQuality =
                         this.videoQualities[this.videoQualities.length - 1];
                 }
-
                 [
                     "audioStreams",
                     "videoQualities",
                     "defaultLanguage",
                     "videoQuality",
+                    "subtitleLanguages",
+                    "subtitleLanguage",
                 ].forEach((prop) => this.NotifyProperty(prop));
             }
 
@@ -165,70 +180,20 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
             }
         });
 
-        const src = (pipe, isSrt = false) => {
-            if (isSrt)
-                return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin`;
-            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin ! decodebin3 ! queue`;
-        };
-
         // ================ HLS Demuxer ===================
         let hlsDemuxer = `node ${path.dirname(
             process.argv[1]
         )}/hlsDemuxer/index.js "${this.hlsUrl}" '${JSON.stringify({
             languages: lang,
             maxQuality: this.videoQuality,
+            subtitleLanguage:
+                this.subtitleLanguage == "off" ? "" : this.subtitleLanguage,
         })}'`;
 
-        // ================ Video ===================
-        let video = this.enableSrt
-            ? `${src(
-                  "/tmp/videoPipe",
-                  true
-              )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${
+        let _pipeline = `${this._video()} ${this._audio()} ${this._subtitles()}`;
 
-                  this._videoElementName
-              }" wait-for-connection=false sync=true ts-offset=${
-                  this.videoDelay * 1000000
-              } uri="${this.uri()}"`
-            : `${src("/tmp/videoPipe")} ! kmssink sync=true`;
-
-        // ================ Audio ===================
-        let audio = "";
-        this.audioStreams.forEach((stream) => {
-            if (!stream.enabled && stream.language !== this.defaultLanguage)
-                return;
-
-            if (stream.language == this.defaultLanguage) {
-                if (this.enableSrt)
-                    audio += ` ${src(
-                        `/tmp/${stream.language}_audioPipe`,
-                        true
-                    )} ! tee name=tee ! queue ! mux.`;
-
-                audio += ` ${
-                    !this.enableSrt
-                        ? src(`/tmp/${stream.language}_audioPipe`)
-                        : `tee. ! decodebin3 `
-                } ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink name=audioSink ts-offset=${
-                    this.videoDelay * 1000000
-                } device=${
-                    this.sink
-                } sync=true slave-method=0 processing-deadline=40000000 buffer-time=${
-                    this._parent.paLatency * 1000
-                } max-lateness=${this._parent.paLatency * 1000000}`;
-            } else
-                audio += ` ${src(
-                    `/tmp/${stream.language}_audioPipe`
-                )} ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=${
-                    this._controlName
-                }_sink_${
-                    stream.language
-                } sync=false slave-method=0 processing-deadline=40000000 buffer-time=${
-                    this._parent.paLatency * 1000
-                } max-lateness=${this._parent.paLatency * 1000000}`;
-        });
-
-        let _pipeline = `${video} ${audio}`;
+        console.log(_pipeline);
+        console.log(hlsDemuxer);
 
         // ------------ start sound processor ------------ //
         if (!this.hlsUrl) return;
@@ -250,6 +215,94 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                 );
             }
         });
+    }
+
+    _src = (pipe, isSrt = false) => {
+        if (isSrt)
+            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin`;
+        return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin ! decodebin3 ! queue`;
+    };
+
+    _video() {
+        let video = "";
+
+        if (!this.enableSrt)
+            // local playout
+            video = `${this._src(
+                "/tmp/videoPipe"
+            )} ! textoverlay wait-text=false valignment=${
+                this.subtitlePosition
+            } name=ov ! kmssink sync=true`;
+        else if (this.enableSrt)
+            // srt without subtitles
+            video = `${this._src(
+                "/tmp/videoPipe",
+                true
+            )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${
+                this._videoElementName
+            }" wait-for-connection=false sync=true ts-offset=${
+                this.videoDelay * 1000000
+            } uri="${this.uri()}"`;
+
+        return video;
+    }
+
+    _audio() {
+        let audio = "";
+        this.audioStreams.forEach((stream) => {
+            if (!stream.enabled && stream.language !== this.defaultLanguage)
+                return;
+
+            if (stream.language == this.defaultLanguage) {
+                if (this.enableSrt)
+                    audio += ` ${this._src(
+                        `/tmp/${stream.language}_audioPipe`,
+                        true
+                    )} ! tee name=tee ! queue ! mux.`;
+
+                audio += ` ${
+                    !this.enableSrt
+                        ? this._src(`/tmp/${stream.language}_audioPipe`)
+                        : `tee. ! decodebin3 `
+                } ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink name=audioSink ts-offset=${
+                    this.videoDelay * 1000000
+                } device=${
+                    this.sink
+                } sync=true slave-method=0 processing-deadline=40000000 buffer-time=${
+                    this._parent.paLatency * 1000
+                } max-lateness=${this._parent.paLatency * 1000000}`;
+            } else
+                audio += ` ${this._src(
+                    `/tmp/${stream.language}_audioPipe`
+                )} ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=${
+                    this._controlName
+                }_sink_${
+                    stream.language
+                } sync=false slave-method=0 processing-deadline=40000000 buffer-time=${
+                    this._parent.paLatency * 1000
+                } max-lateness=${this._parent.paLatency * 1000000}`;
+        });
+
+        return audio;
+    }
+
+    _subtitles() {
+        let subs = "";
+        if (
+            this.subtitleLanguage &&
+            this.subtitleLanguage !== "off" &&
+            !this.enableSrt
+        )
+            // only enable subtitles if srt is disabled or the user explicity enables subtitles for srt
+            subs = ` filesrc location="/tmp/${this.subtitleLanguage}_subtitlePipe" ! queue ! parsebin ! decodebin3 ! queue ! ov.text_sink`;
+        else if (
+            this.subtitleLanguage &&
+            this.subtitleLanguage !== "off" &&
+            this.enableSrt
+        )
+            // subtitles is not yet supported on srt
+            subs = ` filesrc location="/tmp/${this.subtitleLanguage}_subtitlePipe" ! queue ! fakesink sync=true`;
+        return subs;
     }
 
     // Create a PulseAudio loopback-module linking the source to the sink
