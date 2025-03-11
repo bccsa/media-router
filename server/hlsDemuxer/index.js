@@ -2,7 +2,7 @@
  * HLS Demuxer
  *
  * This script fetches and processes an HLS stream, dynamically selecting the best video variant based on estimated bandwidth.
- * It creates named pipes (FIFO) to output video and audio streams, which can be read by external media players.
+ * It creates named pipes (FIFO) to output video, audio, and subtitle streams, which can be read by external media players.
  *
  * To read the video stream with GStreamer, use the following pipeline:
  *
@@ -30,16 +30,19 @@ if (process.argv.length < 3) {
  * Config
  * languages: Array<string>
  * maxQuality: number
+ * subtitleTrack: string
  */
 const config = JSON.parse(process.argv[3]);
 const hlsUrl = process.argv[2];
 const preferredAudioLangs = config.languages;
+const subtitleLanguage = config.subtitleLanguage;
 let lastSegment = null;
 let currentVariant = null;
 let _currentVariant_ = null;
 let estimatedBandwidth = 2000000;
 let masterPlaylist = null;
 let selectedAudioTracks = null;
+let selectedSubtitleTracks = null;
 let isVod = false;
 
 /**
@@ -150,6 +153,23 @@ async function selectAudioTracks() {
 }
 
 /**
+ * Selects the preferred subtitle tracks based on user preferences.
+ * @returns {object} - Selected subtitle tracks.
+ */
+async function selectSubtitleTracks() {
+    if (!masterPlaylist || !masterPlaylist.isMasterPlaylist) return;
+    const selectedTracks = {};
+
+    for (const track of _currentVariant_.subtitles) {
+        if (subtitleLanguage === track.language) {
+            selectedTracks[track.language] = track;
+        }
+    }
+
+    return selectedTracks;
+}
+
+/**
  * Fetches a media segment and pipes it to the provided writable stream.
  * @param {string} segmentUrl - The URL of the segment.
  * @param {fs.WriteStream} pipe - The writable stream.
@@ -210,9 +230,17 @@ async function streamLiveSegments(stream, index) {
     let playlist;
     let lastSeqNumber = 0;
     do {
-        // update audio tracks
+        // update audio and subtitle tracks
         await selectAudioTracks();
+        await selectSubtitleTracks();
         playlist = await fetchSegmentList(stream, index);
+
+        // start halfway through the playlist if it's a live stream and we're just starting
+        if (!isVod && lastSeqNumber === 0) {
+            lastSeqNumber =
+                playlist.segments[Math.floor(playlist.segments.length / 2)]
+                    .mediaSequenceNumber;
+        }
         playlist.segments =
             playlist.segments.filter(
                 (s) => s.mediaSequenceNumber > lastSeqNumber
@@ -240,19 +268,25 @@ async function streamLiveSegments(stream, index) {
         );
     } while (!isVod || playlist.segments.length > 0);
 
-    console.log("EOF, exiting");
-    process.exit(0);
+    console.log(
+        "EOF: " + stream.language
+            ? isSub
+                ? "subtitle"
+                : stream.language
+            : "video"
+    );
 }
 
 let streams = [];
 
 /**
- * Initializes and starts video and audio streams.
+ * Initializes and starts video, audio, and subtitle streams.
  */
 async function startStreams() {
     masterPlaylist = await fetchPlaylist(hlsUrl);
     selectBestVariant();
     selectedAudioTracks = await selectAudioTracks();
+    selectedSubtitleTracks = await selectSubtitleTracks();
     const pipe = `videoPipe`;
     const videoPipe = await createPipe(pipe);
 
@@ -282,6 +316,24 @@ async function startStreams() {
             isVod: false,
             playlist: undefined,
             language: track.language,
+        });
+        count++;
+    }
+
+    for (const track of Object.values(selectedSubtitleTracks)) {
+        let pipe = `${track.language}_subtitlePipe`;
+        const subtitlePipe = await createPipe(pipe);
+        streams.push({
+            index: count,
+            url: new URL(track.uri, hlsUrl).href,
+            pointer: 0,
+            page: 36,
+            isVideo: false,
+            pipe: subtitlePipe,
+            isVod: false,
+            playlist: undefined,
+            language: track.language,
+            isSub: true,
         });
         count++;
     }
