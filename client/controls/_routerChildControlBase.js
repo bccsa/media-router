@@ -9,17 +9,18 @@ class _routerChildControlBase extends ui {
         super();
         this.description = "";
         this.displayName = "New " + this.controlType;
-        this.showControl = true;        // show control on local client
-        this.displayOrder = 0;          // Sort order on local client
+        this.showControl = true; // show control on local client
+        this.displayOrder = 0; // Sort order on local client
         this.left = 50;
         this.top = 50;
         this.width = 0;
         this.height = 0;
-        this._left = this.left;  // Internal left position tracking
-        this._top = this.top;    // Internal top position tracking
-        this.reload = false;     // Reload configuration command. Stops and starts the control to apply changes.
-        this.Help_md = ""        // Help info
-        this.md_queue = [];      // queue to load md files, to keep them in the right seq. 
+        this._left = this.left; // Internal left position tracking
+        this._top = this.top; // Internal top position tracking
+        this.reload = false; // Reload configuration command. Stops and starts the control to apply changes.
+        this.Help_md = ""; // Help info
+        this.md_queue = []; // queue to load md files, to keep them in the right seq.
+        this.moduleEnabled = true; // Enable or disable individual module
     }
 
     get html() {
@@ -87,6 +88,15 @@ class _routerChildControlBase extends ui {
                         </div>
             
                         <div class="paAudioBase-modal-body">
+                            <!--    TOGGLE ENABLE/DISABLE     -->
+                            <div class="flex text-[15px] justify-self-end">
+                                <label for="@{_moduleEnabled}" class="router-label">Disable</label>
+                                <div class="form-check form-switch">
+                                    <input id="@{_moduleEnabled}" class="router-toggle" type="checkbox"
+                                    role="switch" title="Enable or disable an individual module" checked="@{moduleEnabled}">
+                                    <label for="@{_moduleEnabled}" class="router-label">Enable</label>
+                                </div>
+                            </div>
             
                             <!--    DISPLAY NAME      -->
                             <div class="w-full mb-1 mr-4">
@@ -195,32 +205,38 @@ class _routerChildControlBase extends ui {
 
         // recalculate card body on resize
         const divResizeObserver = new ResizeObserver(() => {
-            this.height = this._draggable.getBoundingClientRect().height / this._parent.scale;
-            this.width = this._draggable.getBoundingClientRect().width / this._parent.scale;
+            this.height =
+                this._draggable.getBoundingClientRect().height /
+                this._parent.scale;
+            this.width =
+                this._draggable.getBoundingClientRect().width /
+                this._parent.scale;
         });
         divResizeObserver.observe(this._cardBody);
 
         // Delete control
-        this._btnDelete.addEventListener('click', (e) => {
+        this._btnDelete.addEventListener("click", (e) => {
             // Show message box
-            this.emit('messageBox',
+            this.emit(
+                "messageBox",
                 {
                     buttons: ["Cancel", "Yes"],
                     title: `Delete ${control.displayName}?`,
-                    text: 'Are you sure you want to delete the device?',
-                    img: 'paAudioBase-modal-img-delete',
+                    text: "Are you sure you want to delete the device?",
+                    img: "paAudioBase-modal-img-delete",
                     callback: function (data) {
-                        if (data == 'Yes') {
+                        if (data == "Yes") {
                             control._notify({ remove: true });
                             control.SetData({ remove: true });
                         }
-                    }
-                }, 'top');
+                    },
+                },
+                "top"
+            );
         });
 
         // Duplicate control
-        this._btnDuplicate.addEventListener('click', (e) => {
-
+        this._btnDuplicate.addEventListener("click", (e) => {
             // Get unique random name
             let type = this.controlType;
             function randomName() {
@@ -238,7 +254,7 @@ class _routerChildControlBase extends ui {
             delete dup.destinations;
 
             dup.displayName += "(copy)";
-            let position = this._checkCollision((dup.left), (dup.top + 70), "down");
+            let position = this._checkCollision(dup.left, dup.top + 70, "down");
             dup.top = position.newTop;
             dup.left = position.newLeft;
 
@@ -249,7 +265,7 @@ class _routerChildControlBase extends ui {
         });
 
         // Reload control
-        this._btnReload.addEventListener('click', (e) => {
+        this._btnReload.addEventListener("click", (e) => {
             this.reload = false; // reset state if stuck to true
             this.reload = true; // Toggle to true. Client router will reset reload prop to false.
         });
@@ -258,29 +274,36 @@ class _routerChildControlBase extends ui {
 
         let isMoving = false;
         let newLeft, newTop;
-        let offsetH = 0, offsetW = 0;
+        let offsetH = 0,
+            offsetW = 0;
 
         // Mouse down on heading, start to move the control position
-        this._heading.addEventListener("mousedown", event => {
-
+        this._heading.addEventListener("mousedown", (event) => {
             if (event.target !== this._btnSettings) {
-                newTop = event.clientY - control._heading.getBoundingClientRect().top + 4.8; // this._parent.scale;
-                newLeft = event.clientX - control._heading.getBoundingClientRect().left + 4.8; // this._parent.scale;
+                newTop =
+                    event.clientY -
+                    control._heading.getBoundingClientRect().top +
+                    4.8; // this._parent.scale;
+                newLeft =
+                    event.clientX -
+                    control._heading.getBoundingClientRect().left +
+                    4.8; // this._parent.scale;
                 offsetH = newTop;
                 offsetW = newLeft;
 
                 this._draggable.style.zIndex = "100";
                 isMoving = true;
             }
-
-        })
-
+        });
 
         // Mouse move on the container
-        this._parent._scrollDiv.addEventListener("mousemove", event => {
-
-            newTop = event.clientY - control._parent._controlsDiv.getBoundingClientRect().top;/// this._parent.scale;
-            newLeft = event.clientX - control._parent._controlsDiv.getBoundingClientRect().left;/// this._parent.scale;
+        this._parent._scrollDiv.addEventListener("mousemove", (event) => {
+            newTop =
+                event.clientY -
+                control._parent._controlsDiv.getBoundingClientRect().top; /// this._parent.scale;
+            newLeft =
+                event.clientX -
+                control._parent._controlsDiv.getBoundingClientRect().left; /// this._parent.scale;
             newTop -= offsetH;
             newLeft -= offsetW;
 
@@ -294,44 +317,65 @@ class _routerChildControlBase extends ui {
 
         // Change Device position as the mouse is moving
         function setPosition() {
-
             // check container bounds
             let dropZoneLeft = control._parent._controlsDiv.offsetLeft;
             let dropZoneTop = control._parent._controlsDiv.offsetTop - 10;
-            let dropZoneWidth = control._parent._controlsDiv.scrollWidth - control.width + 22;
-            let dropZoneHeight = control._parent._controlsDiv.scrollHeight - control.height - 10;
+            let dropZoneWidth =
+                control._parent._controlsDiv.scrollWidth - control.width + 22;
+            let dropZoneHeight =
+                control._parent._controlsDiv.scrollHeight - control.height - 10;
 
             // verify and adapt newLeft and newTop positions
-            if (newLeft < dropZoneLeft) { newLeft = dropZoneLeft }
-            if (newLeft > dropZoneWidth) { newLeft = dropZoneWidth }
-            if (newTop < dropZoneTop) { newTop = dropZoneTop }
-            if (newTop > dropZoneHeight) { newTop = dropZoneHeight }
+            if (newLeft < dropZoneLeft) {
+                newLeft = dropZoneLeft;
+            }
+            if (newLeft > dropZoneWidth) {
+                newLeft = dropZoneWidth;
+            }
+            if (newTop < dropZoneTop) {
+                newTop = dropZoneTop;
+            }
+            if (newTop > dropZoneHeight) {
+                newTop = dropZoneHeight;
+            }
 
             // Check Collision so that no Device stack on each other
             let position = control._checkCollision(newLeft, newTop);
 
-            control._draggable.style.left = (position.newLeft) + "px";
-            control._draggable.style.top = (position.newTop) + "px";
+            control._draggable.style.left = position.newLeft + "px";
+            control._draggable.style.top = position.newTop + "px";
 
             control._left = position.newLeft;
             control._top = position.newTop;
 
             // Emit event posChanged, so that the Lines are updated when Device is moved
-            control.emit('posChanged', control.calcConnectors(control._top, control._left));
+            control.emit(
+                "posChanged",
+                control.calcConnectors(control._top, control._left)
+            );
         }
 
         // Mouse up on document, stop to move the Device position
-        document.addEventListener("mouseup", event => {
+        document.addEventListener("mouseup", (event) => {
             control._draggable.style.zIndex = "10";
             if (isMoving) {
-
                 let position;
                 // Check if the Device is at the upper or lower bound and adjust accordingly
-                if (this._top > (control._parent._controlsDiv.scrollHeight - 90)) {
-                    position = control._checkCollision(this._left, this._top, "up");
-                }
-                else {
-                    position = control._checkCollision(this._left, this._top, "down");
+                if (
+                    this._top >
+                    control._parent._controlsDiv.scrollHeight - 90
+                ) {
+                    position = control._checkCollision(
+                        this._left,
+                        this._top,
+                        "up"
+                    );
+                } else {
+                    position = control._checkCollision(
+                        this._left,
+                        this._top,
+                        "down"
+                    );
                 }
 
                 control._draggable.style.left = position.newLeft + "px";
@@ -339,23 +383,26 @@ class _routerChildControlBase extends ui {
                 control.left = position.newLeft;
                 control.top = position.newTop;
                 this._left = position.newLeft;
-                this._top = position.newTop
+                this._top = position.newTop;
 
-                control.emit('posChanged', control.calcConnectors(this._top, this._left));
+                control.emit(
+                    "posChanged",
+                    control.calcConnectors(this._top, this._left)
+                );
             }
 
             isMoving = false;
         });
 
-        this.on('left', left => {
+        this.on("left", (left) => {
             this._draggable.style.left = left + "px";
-            this.emit('posChanged', this.calcConnectors(this.top, left));
+            this.emit("posChanged", this.calcConnectors(this.top, left));
             this._left = left;
         });
 
-        this.on('top', top => {
+        this.on("top", (top) => {
             this._draggable.style.top = top + "px";
-            this.emit('posChanged', this.calcConnectors(top, this.left));
+            this.emit("posChanged", this.calcConnectors(top, this.left));
             this._top = top;
         });
 
@@ -366,35 +413,54 @@ class _routerChildControlBase extends ui {
         this._topLevelParent._controlsDiv.prepend(this._modalDeviceDetails);
 
         // Delete modal when this control is removed
-        this.on('remove', () => {
+        this.on("remove", () => {
             this._modalDeviceDetails.remove();
         });
 
         //----------------------Scale-----------------------------//
-        this._parent.on('scale', scale => {
-            this._setScale();
-        }, { immediate: true, caller: this });
+        this._parent.on(
+            "scale",
+            (scale) => {
+                this._setScale();
+            },
+            { immediate: true, caller: this }
+        );
         //----------------------Scale-----------------------------//
 
         //----------------------Help Modal-----------------------------//
         this.Help_md = "";
-        this._modalHelp.style.display = 'none';   
-        this._btnHelp.addEventListener('click', e => {
+        this._modalHelp.style.display = "none";
+        this._btnHelp.addEventListener("click", (e) => {
             this._toggleHelp();
-        })
-        this._btnHelpDismiss.addEventListener('click', e => {
+        });
+        this._btnHelpDismiss.addEventListener("click", (e) => {
             this._toggleHelp();
-        })
-        this._btnSettings.addEventListener('click', e => {
-            this._modalHelp.style.display = "none"
-        })
-        this.on('Help_md', e => {
+        });
+        this._btnSettings.addEventListener("click", (e) => {
+            this._modalHelp.style.display = "none";
+        });
+        this.on("Help_md", (e) => {
             let converter = new showdown.Converter();
             let html = converter.makeHtml(this.Help_md);
-            this._modalHelp_md.innerHTML = html; 
-        })
+            this._modalHelp_md.innerHTML = html;
+        });
         //----------------------Help Modal-----------------------------//
 
+        //----------------------Enable / Disable Modal-----------------------------//
+
+        this.on(
+            "moduleEnabled",
+            (e) => {
+                if (e) {
+                    this._draggable.style["opacity"] = "1";
+                } else {
+                    this._draggable.style["opacity"] = "0.5";
+                }
+            },
+            { immediate: true }
+        );
+
+        //----------------------Enable / Disable Modal-----------------------------//
     }
 
     /**
@@ -402,61 +468,74 @@ class _routerChildControlBase extends ui {
      */
     _toggleHelp() {
         if (this._modalHelp.style.display == "none") {
-            this._modalHelp.style.display = "block"
-        }
-        else {
-            this._modalHelp.style.display = "none"
+            this._modalHelp.style.display = "block";
+        } else {
+            this._modalHelp.style.display = "none";
         }
     }
 
     /**
      * Load help md file into help section
-     * @param {String} _path - path to file 
+     * @param {String} _path - path to file
      */
     _loadHelpMD(_path) {
         this.md_queue.push(_path);
-        if (this.md_queue.length == 1) { this._processMDQueue() };
+        if (this.md_queue.length == 1) {
+            this._processMDQueue();
+        }
     }
 
     _processMDQueue() {
         if (this.md_queue.length > 0) {
             let _path = this.md_queue.shift();
-            let _this = this
+            let _this = this;
             fetch(_path)
-            .then(function(response) {
-                if (!response.ok) { throw new Error('Network response was not ok') }
-                return response.text();
-            })
-            .then(function(fileContent) {
-                _this.Help_md = `${fileContent}\n${_this.Help_md}\n`;
-                _this._processMDQueue();
-            })
-            .catch(function(error) { console.error('There was a problem fetching the file:', error); _this._processMDQueue(); });
+                .then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("Network response was not ok");
+                    }
+                    return response.text();
+                })
+                .then(function (fileContent) {
+                    _this.Help_md = `${fileContent}\n${_this.Help_md}\n`;
+                    _this._processMDQueue();
+                })
+                .catch(function (error) {
+                    console.error(
+                        "There was a problem fetching the file:",
+                        error
+                    );
+                    _this._processMDQueue();
+                });
         }
     }
 
     _setScale() {
         if (this._draggable) {
+            this.height =
+                this._draggable.getBoundingClientRect().height /
+                this._parent.scale;
+            this.width =
+                this._draggable.getBoundingClientRect().width /
+                this._parent.scale;
 
-            this.height = this._draggable.getBoundingClientRect().height / this._parent.scale;
-            this.width = this._draggable.getBoundingClientRect().width / this._parent.scale;
-
-           
             this.calcConnectors(this.top, this.left);
 
             // console.log(this.height + " <> " + this.width + " ^ " + this.top + " < " + this.left  );
-
         }
     }
 
     /**
      * Calculate connector positions
-     * @returns 
+     * @returns
      */
     calcConnectors(top, left) {
         return {
-            leftConnector: { top: (top + (this.height / 2) + 4), left: left + 5 },
-            rightConnector: { top: (top + (this.height / 2) + 4), left: (left + (this.width) + 5) }
+            leftConnector: { top: top + this.height / 2 + 4, left: left + 5 },
+            rightConnector: {
+                top: top + this.height / 2 + 4,
+                left: left + this.width + 5,
+            },
         };
     }
 
@@ -481,10 +560,8 @@ class _routerChildControlBase extends ui {
         while (collision) {
             collision = false;
 
-            Object.values(this._parent._controls).forEach(control => {
-
+            Object.values(this._parent._controls).forEach((control) => {
                 if (this._draggable != control._draggable) {
-
                     let childLeft = control.left;
                     let childTop = control.top;
                     let childWidth = control.width;
@@ -496,8 +573,12 @@ class _routerChildControlBase extends ui {
                     let childMidY = control.top + control.height / 2;
 
                     // Check Collision
-                    if (newLeft < childLeft + childWidth && newLeft + this.width > childLeft &&
-                        newTop < childTop + childHeight && newTop + this.height > childTop) {
+                    if (
+                        newLeft < childLeft + childWidth &&
+                        newLeft + this.width > childLeft &&
+                        newTop < childTop + childHeight &&
+                        newTop + this.height > childTop
+                    ) {
                         collision = true;
 
                         if (direction == "") {
@@ -523,11 +604,29 @@ class _routerChildControlBase extends ui {
                         }
 
                         // Check border bounds and limit movement
-                        newLeft = Math.max(dropZoneLeft, Math.min(newLeft, dropZoneLeft + dropZoneWidth - this.width));
-                        newTop = Math.max(dropZoneTop, Math.min(newTop, dropZoneTop + dropZoneHeight - this.height));
+                        newLeft = Math.max(
+                            dropZoneLeft,
+                            Math.min(
+                                newLeft,
+                                dropZoneLeft + dropZoneWidth - this.width
+                            )
+                        );
+                        newTop = Math.max(
+                            dropZoneTop,
+                            Math.min(
+                                newTop,
+                                dropZoneTop + dropZoneHeight - this.height
+                            )
+                        );
 
-                        if (newLeft === dropZoneLeft || newLeft === dropZoneLeft + dropZoneWidth - this.width ||
-                            newTop === dropZoneTop || newTop === dropZoneTop + dropZoneHeight - this.height) {
+                        if (
+                            newLeft === dropZoneLeft ||
+                            newLeft ===
+                                dropZoneLeft + dropZoneWidth - this.width ||
+                            newTop === dropZoneTop ||
+                            newTop ===
+                                dropZoneTop + dropZoneHeight - this.height
+                        ) {
                             collision = false;
                         }
                     }
@@ -537,7 +636,7 @@ class _routerChildControlBase extends ui {
 
         return {
             newLeft,
-            newTop
-        }
+            newTop,
+        };
     }
 }

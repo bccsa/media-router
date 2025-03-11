@@ -3,32 +3,34 @@ class Router extends ui {
         super();
         this.deviceType = "Router";
         this.description = "";
-        this.startupState = true;   // true = Auto (manager selected state); false = Start in stopped state.
-        this.startupDelayTime = 3000;  // milliseconds
+        this.startupState = true; // true = Auto (manager selected state); false = Start in stopped state.
+        this.startupDelayTime = 3000; // milliseconds
         this.run = false;
         this.password = "";
         this.displayName = "New Router";
         this.online = false;
-        this.sources = [];          // Array with PulseAudio sources
-        this.sinks = [];            // Array with PulseAudio sinks
-        this.paLatency = 50;        // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
+        this.sources = []; // Array with PulseAudio sources
+        this.sinks = []; // Array with PulseAudio sinks
+        this.paLatency = 50; // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
         this.displayOrder = 100;
         this.height = 700;
         this.width = 1500;
         this.scale = 1;
-        this.log = [];              // controls output logs
-        this.logLimit = 100;        // max amout of logs in list
-        this.logMessage = [];       // Last log message
-        this.fetchLog = false;      // Toggle from fron end to fetch log on page load
-        this.logINFO = false;       // log level enabled/ disabled 
-        this.logERROR = false;      // log level enabled/ disabled 
-        this.logFATAL = true;       // log level enabled/ disabled
-        this.resetCmd = false;      // Reset router process
-        this.restartCmd = false;    // Restart router device
+        this.log = []; // controls output logs
+        this.logLimit = 100; // max amout of logs in list
+        this.logMessage = []; // Last log message
+        this.fetchLog = false; // Toggle from fron end to fetch log on page load
+        this.logINFO = false; // log level enabled/ disabled
+        this.logERROR = false; // log level enabled/ disabled
+        this.logFATAL = true; // log level enabled/ disabled
+        this.resetCmd = false; // Reset router process
+        this.restartCmd = false; // Restart router device
         this.startLocalCTR = false; // Start local control panel (When the MR starts) (!!! This script was build for bookworm / noble / bullseye, if you have a diffrent release update teh script in ./media-router/server/scripts/start-localCTR.sh)
-        this.cpuUsage = 0;          // CPU usage indication
-        this.ipAddress = "127.0.0.1";// system IP address     
-        this.buildNumber = "DEV";    // buildNumber Build number
+        this.cpuUsage = 0; // CPU usage indication
+        this.cpuTemperature = 0; // CPU temperature indication
+        this.memoryUsage = 0; // Memory usage indication
+        this.ipAddress = "127.0.0.1"; // system IP address
+        this.buildNumber = "DEV"; // buildNumber Build number
     }
 
     get html() {
@@ -62,8 +64,14 @@ class Router extends ui {
                                 <!--    TOP BAR CONTROLS     -->
                                 <div id="@{_topBarControls}" class="h-auto w-auto flex mr-2 items-center" title=""></div>
 
+                                <!--    Memory Usage Indication -->
+                                <div id="@{_memoryUsage}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-24 rounded-full">MEM: <span>@{memoryUsage}</span>%</div>
+
                                 <!--    CPU Usage Indication -->
-                                <div id="@{_cpuUsage}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-24 rounded-full">CPU: <span>@{cpuUsage}</span></div>
+                                <div id="@{_cpuUsage}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-24 rounded-full">CPU: <span>@{cpuUsage}</span>%</div>
+
+                                <!--    CPU Temperature Indication -->
+                                <div id="@{_cpuTemperature}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-[110px] rounded-full">TEMP: <span>@{cpuTemperature}</span>&deg;C</div>
 
                                 <!--    ONLINE/OFFLINE -->
                                 <span id="@{_online}" class="hidden items-center  bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
@@ -153,6 +161,9 @@ class Router extends ui {
                                 <!--    RESTART ROUTER     -->
                                 <button class="router-btn-restart" type="button" data-bs-toggle="modal"
                                 data-bs-target="#@{_modalRestart}" title="Restart Router"></button>
+
+                                <!--    Export Config     -->
+                                <button id="@{_btnExport}" class="router-btn-export" type="button" title="Export Config"></button>
 
                                 <!--    HELP MODAL     -->
                                 <button id="@{_btnHelp}" class="router-btn-help" type="button" data-bs-toggle="modal"
@@ -487,7 +498,6 @@ class Router extends ui {
             </div>
         </div>
         `;
-
     }
 
     Init() {
@@ -500,54 +510,52 @@ class Router extends ui {
             this._controlsDiv.style.width = this.width + "px";
         }, 100);
 
-        this._height.addEventListener('change', (e) => {
+        this._height.addEventListener("change", (e) => {
             if (this._height.value <= 450) {
                 this._height.value = 450;
                 this.height = 450;
             }
-        })
+        });
 
-        this._width.addEventListener('change', (e) => {
+        this._width.addEventListener("change", (e) => {
             if (this._width.value <= 450) {
                 this._width.value = 450;
                 this.width = 450;
             }
-        })
+        });
 
-        this.on('width', width => {
+        this.on("width", (width) => {
             if (this.scale <= 1) {
-                this._controlsDiv.style.width = (this.width / this.scale) + "px";
-            }
-            else {
-                this._controlsDiv.style.width = (this.width * this.scale) + "px";
+                this._controlsDiv.style.width = this.width / this.scale + "px";
+            } else {
+                this._controlsDiv.style.width = this.width * this.scale + "px";
             }
         });
 
-
-        this.on('height', height => {
-
+        this.on("height", (height) => {
             if (this.scale <= 1) {
-                this._controlsDiv.style.height = (this.height / this.scale) + "px";
-            }
-            else {
-                this._controlsDiv.style.height = (this.height * this.scale) + "px";
+                this._controlsDiv.style.height =
+                    this.height / this.scale + "px";
+            } else {
+                this._controlsDiv.style.height =
+                    this.height * this.scale + "px";
             }
         });
 
-        this._btnSettings.addEventListener('click', (e) => {
+        this._btnSettings.addEventListener("click", (e) => {
             this._toggleSettingContainer();
         });
 
-        this._btnExit.addEventListener('click', (e) => {
+        this._btnExit.addEventListener("click", (e) => {
             this._toggleSettingContainer();
         });
 
-        this._btnDeleteRouter.addEventListener('click', (e) => {
+        this._btnDeleteRouter.addEventListener("click", (e) => {
             this._notify({ remove: true });
             this.SetData({ remove: true });
         });
 
-        this._btnAddDevice.addEventListener('click', (e) => {
+        this._btnAddDevice.addEventListener("click", (e) => {
             // Get unique random name
             let type = this._deviceType.value;
             function randomName() {
@@ -561,13 +569,13 @@ class Router extends ui {
 
             // Create new audio device
             this.SetData({ [name]: { controlType: this._deviceType.value } });
-            this.on(name, control => {
+            this.on(name, (control) => {
                 // send newly created audio device's data to manager
                 this._notify({ [name]: control.GetData() });
             });
         });
 
-        this._btnDuplicate.addEventListener('click', (e) => {
+        this._btnDuplicate.addEventListener("click", (e) => {
             // Get unique random name
             function randomName() {
                 return "router_" + Math.round(Math.random() * 10000);
@@ -583,9 +591,12 @@ class Router extends ui {
             delete dup.name;
             delete dup.online;
             delete dup.run;
-            dup.name = name;        // Manually set name. This is used by the manager service as a unique router socket identification.
+            dub.cpuUsage = 0;
+            dub.cpuTemperature = 0;
+            dub.memoryUsage = 0;
+            dup.name = name; // Manually set name. This is used by the manager service as a unique router socket identification.
 
-            dup.displayName += " (copy)"
+            dup.displayName += " (copy)";
 
             this._parent.SetData({ [name]: dup });
 
@@ -596,216 +607,206 @@ class Router extends ui {
             this._details.removeAttribute("open");
         });
 
+        /**
+         * Export and download the router configuration
+         */
+        this._btnExport.addEventListener("click", (e) => {
+            // Get unique random name
+            function genName(name) {
+                return name + "_backup_" + Math.round(Math.random() * 100);
+            }
+
+            let name = genName(this.name);
+            while (this._parent[name]) {
+                name = genName(this.name);
+            }
+
+            let data = this.GetData();
+            delete data.name;
+            delete data.online;
+            delete data.run;
+            data.cpuUsage = 0;
+            data.cpuTemperature = 0;
+            data.memoryUsage = 0;
+            data.name = name; // Manually set name. This is used by the manager service as a unique router socket identification.
+            data.displayName = data.displayName + " (backup)";
+            let blob = new Blob([JSON.stringify(data, null, 2)], {
+                type: "application/json",
+            });
+            let url = URL.createObjectURL(blob);
+            let a = document.createElement("a");
+            a.href = url;
+            a.download = `${data.name}.router-config.mr`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
         // Handle property changes
-        this.on('online', online => {
-            this._checkOnline();
+        this.on(
+            "online",
+            (online) => {
+                this._checkOnline();
 
-            if (online) {
-                this._btnReset.style.display = '';
-                this._btnRestart.style.display = '';
-            } else {
-                this._btnReset.style.display = 'none';
-                this._btnRestart.style.display = 'none';
-                // set CPU usage to 0 when offline 
-                this.cpuUsage = 0;
-            }
-        }, { immediate: true });
+                if (online) {
+                    this._btnReset.style.display = "";
+                    this._btnRestart.style.display = "";
+                } else {
+                    this._btnReset.style.display = "none";
+                    this._btnRestart.style.display = "none";
+                    // set CPU usage and temp to 0 when offline
+                    this.cpuUsage = 0;
+                    this.cpuTemperature = 0;
+                    this.memoryUsage = 0;
+                }
+            },
+            { immediate: true }
+        );
 
-        // Handle CPU load indicator 
-        this.on('cpuUsage', (v) => {
-            // red 
-            if (v > 80) {
-                this._cpuUsage.style.backgroundColor = "rgb(185 28 28)";
-            } 
-            // oranage
-            else if (v > 50) {
-                this._cpuUsage.style.backgroundColor = "rgb(245 158 11)";
-            } 
+        //----------------------Resource indication-----------------------------//
+
+        const h = (obj, val, disaster, warning) => {
+            // red
+            if (val > disaster) obj.style.backgroundColor = "rgb(185 28 28)";
+            // orange
+            else if (val > warning)
+                obj.style.backgroundColor = "rgb(245 158 11)";
             // gray
-            else {
-                this._cpuUsage.style.backgroundColor = "rgb(203 213 225)";
-            }
-        })
+            else obj.style.backgroundColor = "rgb(203 213 225)";
+        };
+
+        // Memory Usage indicator
+        this.on("memoryUsage", (v) => {
+            h(this._memoryUsage, v, 80, 50);
+        });
+
+        // Handle CPU load indicator
+        this.on("cpuUsage", (v) => {
+            h(this._cpuUsage, v, 80, 50);
+        });
+
+        // Handle CPU temp indicator
+        this.on("cpuTemperature", (v) => {
+            h(this._cpuTemperature, v, 85, 70);
+        });
+
+        //----------------------Resource indication-----------------------------//
 
         //----------------------Scaling-----------------------------//
-        this.on('scale', scale => {
-            this._setScale();
-        }, { immediate: true });
+        this.on(
+            "scale",
+            (scale) => {
+                this._setScale();
+            },
+            { immediate: true }
+        );
 
         // Toggle reset command
-        this._btnReset.addEventListener('click', e => {
+        this._btnReset.addEventListener("click", (e) => {
             this.resetCmd = false;
             this.resetCmd = true;
         });
 
         // Toggle restart command
-        this._btnRestart.addEventListener('click', e => {
+        this._btnRestart.addEventListener("click", (e) => {
             this.restartCmd = false;
             this.restartCmd = true;
         });
-
-
-        // let isAltKeyPressed = false; // Flag to track Alt key press
-
-        // document.addEventListener('keydown', (event) => {
-        //     if (event.key === 'Alt') {
-        //         isAltKeyPressed = true;
-        //         this._scrollDiv.style.cursor = 'zoom-in'; // Show zoom-in cursor when Alt key is pressed
-        //     }
-        // });
-
-        // document.addEventListener('keyup', (event) => {
-        //     if (event.key === 'Alt' || (event.ctrlKey && event.altKey))  {
-        //         isAltKeyPressed = false;
-        //         this._scrollDiv.style.cursor = 'auto'; // Reset cursor when Alt key is released
-        //     }
-        // });
-
-        // document.addEventListener('keydown', (event) => {
-        //     if (event.key === '+' || event.key === '=') {
-        //         if (isAltKeyPressed) {
-        //             this._scrollDiv.style.cursor = 'zoom-in';
-                    
-        //             this.scale += 0.05;
-        //             // Ensure scale doesn't go above 2
-        //             this.scale = Math.min(this.scale, 2);
-
-        //             // Round the scale value to two decimal places
-        //             this.scale = parseFloat(this.scale.toFixed(2));
-        //             this._setScale();
-        //         }
-        //     }
-
-        //     if (event.key === '-') {
-        //         if (isAltKeyPressed) {
-                    
-        //             this.scale -= 0.05;
-        //             // Ensure scale doesn't go below 0.1
-        //             this.scale = Math.max(this.scale, 0.1);
-
-        //             // Round the scale value to two decimal places
-        //             this.scale = parseFloat(this.scale.toFixed(2));
-        //             this._setScale();
-        //         }
-        //     }
-        // });
-
-        // this._scrollDiv.addEventListener('mousedown', (event) => {
-        //     if (isAltKeyPressed) {
-        //         this._scrollDiv.style.cursor = 'zoom-in';
-        //         if (event.button === 0) {
-        //             // Left click to increase scale
-        //             this.scale += 0.05;
-        //             // this.scale = Number.parseFloat(this.scale).toFixed(2);
-        //             // Ensure scale doesn't go above 2
-        //             this.scale = Math.min(this.scale, 2);
-        //         } else if (event.button === 2) {
-        //             // Right click to decrease scale
-        //             this.scale -= 0.05;
-        //             // Ensure scale doesn't go below 0.1
-        //             this.scale = Math.max(this.scale, 0.1);
-        //         }
-
-        //         // Round the scale value to two decimal places
-        //         this.scale = parseFloat(this.scale.toFixed(2));
-        //         this._setScale();
-        //     }
-        // });
-
-        // this._scrollDiv.addEventListener('contextmenu', (event) => {
-        //     if (isAltKeyPressed) {
-        //         event.preventDefault(); // Prevent the default right-click context menu when Alt key is pressed
-        //     }
-        // });
         //----------------------Scaling-----------------------------//
-        
+
         //----------------------Logging-----------------------------//
         // emit fetch log event
         this.fetchLog = true;
 
         // listen for logs
-        this.on('log', res => {
+        this.on("log", (res) => {
             this._createLog();
-        })
+        });
 
         this._log.style.display = "none";
 
-        this.on('logINFO', val => { this._createLog() });
-        this.on('logERROR', val => { this._createLog() });
-        this.on('logFATAL', val => { this._createLog() });
+        this.on("logINFO", (val) => {
+            this._createLog();
+        });
+        this.on("logERROR", (val) => {
+            this._createLog();
+        });
+        this.on("logFATAL", (val) => {
+            this._createLog();
+        });
 
-        this.on('logMessage', msg => {
+        this.on("logMessage", (msg) => {
             // Add log to history
             this.log.push(msg);
 
             // scrolling
             let isScrolled = true;
-            if ((this._log.clientHeight + this._log.scrollTop) >= this._log.scrollHeight - 20)
+            if (
+                this._log.clientHeight + this._log.scrollTop >=
+                this._log.scrollHeight - 20
+            )
                 isScrolled = false;
-            
+
             this._addLog(msg);
 
-            if (!isScrolled)
-                this._log.scrollTop = this._log.scrollHeight; 
-        })
+            if (!isScrolled) this._log.scrollTop = this._log.scrollHeight;
+        });
 
-        this._console.addEventListener('click', e => {
+        this._console.addEventListener("click", (e) => {
             if (this._log.style.display == "none")
                 this._log.style.display = "block";
-            else 
-                this._log.style.display = "none"; 
+            else this._log.style.display = "none";
 
             this._log.scrollTop = this._log.scrollHeight;
-        })
+        });
         //----------------------Logging-----------------------------//
 
         //----------------------Help Modal-----------------------------//
-        
+
         // Load help from MD
-        let _this = this
-        fetch('controls/Router.md')
-        .then(function(response) {
-            if (!response.ok) { throw new Error('Network response was not ok') }
-            return response.text();
-        })
-        .then(function(fileContent) {
-            let converter = new showdown.Converter();
-            let html = converter.makeHtml(fileContent);
-            _this._modalHelp_md.innerHTML = html; 
-        })
-        .catch(function(error) { console.error('There was a problem fetching the file:', error) });
+        let _this = this;
+        fetch("controls/Router.md")
+            .then(function (response) {
+                if (!response.ok) {
+                    throw new Error("Network response was not ok");
+                }
+                return response.text();
+            })
+            .then(function (fileContent) {
+                let converter = new showdown.Converter();
+                let html = converter.makeHtml(fileContent);
+                _this._modalHelp_md.innerHTML = html;
+            })
+            .catch(function (error) {
+                console.error("There was a problem fetching the file:", error);
+            });
 
         //----------------------Help Modal-----------------------------//
     }
 
     _setScale() {
         if (this._controlsDiv) {
-            this._controlsDiv.style.transform = "scale(" + this.scale + "," + this.scale + ")";  // Apply the scale transformation to the control element
+            this._controlsDiv.style.transform =
+                "scale(" + this.scale + "," + this.scale + ")"; // Apply the scale transformation to the control element
 
-            this._controlsDiv.style.height = (this.height / this.scale) + "px";
-            this._controlsDiv.style.width = (this.width / this.scale) + "px";
+            this._controlsDiv.style.height = this.height / this.scale + "px";
+            this._controlsDiv.style.width = this.width / this.scale + "px";
         }
     }
 
-
     _checkOnline() {
-
         if (this.online) {
             this._online.style.display = "inline-flex";
             this._offline.style.display = "none";
-        }
-        else {
+        } else {
             this._online.style.display = "none";
             this._offline.style.display = "inline-flex";
         }
-
     }
 
     _toggleSettingContainer() {
         if (this._settingsContainer.style.display === "none") {
             this._btnSettings.style.display = "none";
             this._settingsContainer.style.display = "block";
-
         } else {
             this._settingsContainer.style.display = "none";
             this._btnSettings.style.display = "block";
@@ -814,22 +815,28 @@ class Router extends ui {
 
     _addLog(msg) {
         // clear old log items when log is full
-        while (this.log.length > this.logLimit) {this.log.shift()}; 
+        while (this.log.length > this.logLimit) {
+            this.log.shift();
+        }
 
         // add log to html
         if (this[`log${msg[0]}`]) {
             let span = document.createElement("span");
             span.innerHTML = `${msg[1]}\n`;
             this._log.append(span);
-            while (this._log.childElementCount > this.logLimit) { this._log.removeChild(this._log.children[0]) }
+            while (this._log.childElementCount > this.logLimit) {
+                this._log.removeChild(this._log.children[0]);
+            }
         }
     }
 
     _createLog() {
         // clear console
-        while (this._log.firstChild) { this._log.removeChild(this._log.firstChild); }
-        this.log.forEach(msg => {
+        while (this._log.firstChild) {
+            this._log.removeChild(this._log.firstChild);
+        }
+        this.log.forEach((msg) => {
             this._addLog(msg);
-        })
+        });
     }
 }

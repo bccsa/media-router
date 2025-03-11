@@ -259,6 +259,7 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
                         `/tmp/${stream.language}_audioPipe`,
                         true
                     )} ! tee name=tee ! queue ! mux.`;
+
                 audio += ` ${
                     !this.enableSrt
                         ? this._src(`/tmp/${stream.language}_audioPipe`)
