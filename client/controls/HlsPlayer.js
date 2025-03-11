@@ -4,6 +4,9 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.hlsUrl = "";
         this.videoQuality = "";
         this.videoQualities = [];
+        this.subtitleLanguage = "off";
+        this.subtitleLanguages = [];
+        this.subtitlePosition = "baseline";
         this.videoDelay = 0;
         this.audioStreams = [];
         this._checkBoxes = [];
@@ -51,16 +54,32 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         <div class="w-full grid grid-cols-3 items-center mb-2">
             <!-- videoQuality -->
             <div class="w-full flex flex-col">
-                <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Max Quality (Will limit the max quality to the selected quality):</label>
-                <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Max Quality" value="@{videoQuality}">
+                <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Max Quality:</label>
+                <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Max Quality (Will limit the max quality to the selected quality)" value="@{videoQuality}">
                 
                 </select>
             </div>
             
-            <div class="w-full flex flex-col"></div>
+            <!-- Subtitle -->
+            <div class="w-full flex flex-col">
+                <label for="@{_subtitleLanguage}" class="form-label inline-block mb-2 mr-2">Subtitle Language:</label>
+                <select id="@{_subtitleLanguage}" class="paAudioBase-select" type="text" title="Subtitle Language" value="@{subtitleLanguage}">
+                
+                </select>
+            </div>
 
-            <div class="w-full flex flex-col"></div>
+            <!-- Subtitle Position -->
+            <div class="w-full flex flex-col">
+                <label for="@{_subtitlePosition}" class="form-label inline-block mb-2 mr-2">Subtitle Position:</label>
+                <select id="@{_subtitlePosition}" class="paAudioBase-select" type="text" title="Subtitle Position" value="@{subtitlePosition}">
+                    <option value="baseline">Baseline</option>
+                    <option value="top">Top</option>
+                    <option value="center">Center</option>
+                    <option value="bottom">Bottom</option>
+                </select>
+            </div>
         </div>
+        
 
         <!-- audio sinks -->
         <div class="mr-4 flex flex-col">
@@ -87,6 +106,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         </div>
 
         <div id=@{_srtDiv}>
+            <label><i>Subtitles is not yet supported on srt video</i></label> 
             ${this.SrtBaseHtml()}
         </div>
 
@@ -149,8 +169,8 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
 
         this.on(
             "videoQualities",
-            (videoQualities) => {
-                // clear dp
+            () => {
+                // clear dd
                 while (this._videoQuality.options.length > 0) {
                     this._videoQuality.remove(0);
                 }
@@ -167,16 +187,37 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             { immediate: true }
         );
 
+        //----------------------Load Video streams-----------------------------//
+
+        //----------------------Load Subtitle streams-----------------------------//
+
         this.on(
-            "hlsLoading",
-            (v) => {
-                if (!v) this._hlsLoading.style.display = "none";
-                else this._hlsLoading.style.display = "block";
+            "subtitleLanguages",
+            () => {
+                // clear dd
+                while (this._subtitleLanguage.options.length > 0) {
+                    this._subtitleLanguage.remove(0);
+                }
+
+                this.subtitleLanguages.forEach((v) => {
+                    var opt = document.createElement("option");
+                    opt.value = v.language;
+                    opt.innerHTML = v.comment;
+                    this._subtitleLanguage.add(opt);
+                });
+
+                // add default off language
+                var opt = document.createElement("option");
+                opt.value = "off";
+                opt.innerHTML = "off";
+                this._subtitleLanguage.add(opt);
+
+                this._subtitleLanguage.value = this.subtitleLanguage;
             },
             { immediate: true }
         );
 
-        //----------------------Load Video streams-----------------------------//
+        //----------------------Load Subtitle streams-----------------------------//
 
         //----------------------Srt Settings-----------------------------//
         this.on(
@@ -204,6 +245,15 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             { immediate: true }
         );
         //----------------------Srt Settings-----------------------------//
+
+        this.on(
+            "hlsLoading",
+            (v) => {
+                if (!v) this._hlsLoading.style.display = "none";
+                else this._hlsLoading.style.display = "block";
+            },
+            { immediate: true }
+        );
     }
 
     /**
