@@ -24,6 +24,7 @@ class Client extends ClientServerBase {
         this.address = address || "localhost";
         this.clientID = clientID;
         this.encryptionKey = encryptionKey;
+        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
 
         this.socket = new Socket({
             port,
@@ -82,7 +83,7 @@ class Client extends ClientServerBase {
                 this.socket.emitLocal("disconnected", this.socket.socketID);
                 this.setupConnection();
             }
-        }, 250);
+        }, connectionTimeout / 4);
     }
 
     /**
