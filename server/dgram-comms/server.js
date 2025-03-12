@@ -35,7 +35,7 @@ class Server extends ClientServerBase {
         });
 
         this.server.bind(port, bindAddress, () => {
-            this.server.setSendBufferSize(65507); // Max UDP packet size
+            this.server.setSendBufferSize(1.6e7); // Max UDP packet size
         });
         setInterval(() => {
             this.connectionWatchDog();
