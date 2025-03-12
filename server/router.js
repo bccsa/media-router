@@ -186,10 +186,14 @@ controls.on(
         }
 
         // forward data from router controls to manager
-        router.on("data", (data) => {
+        router.on("data", (data, meta) => {
             if (manager_io) {
                 manager_io.emit("data", data, {
-                    guaranteeDelivery: router.guaranteeDelivery,
+                    guaranteeDelivery:
+                        meta &&
+                        Object.values(meta).some(
+                            (v) => v && v.guaranteeDelivery
+                        ),
                 });
             }
         });
