@@ -69,10 +69,10 @@ async function fetchSegmentList(stream) {
     }
     if (!isVod) return stream.playlist;
 
-    if (!stream.playlist)
-        setTimeout(async () => {
-            return await fetchSegmentList(stream);
-        }, 2000);
+    if (!stream.playlist) {
+        await new Promise((res) => setTimeout(res, 1000));
+        return await fetchSegmentList(stream);
+    }
 
     if (stream.playlist.segments.length > 0) {
         const p = JSON.parse(JSON.stringify(stream.playlist));
