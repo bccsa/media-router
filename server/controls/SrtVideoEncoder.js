@@ -10,6 +10,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         super();
         // capture
         this.devices = [];
+        this.SetMeta("devices", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
         this.video_device = "/dev/video0";
         this.video_device_desc = "Video0 (disconnected)";
         this.capture_format = "raw";
@@ -29,9 +30,16 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
 
         setInterval(() => {
             this._getV4l().then((res) => {
-                this._parent.guaranteeDelivery = true;
-                this.devices = res;
-                this._parent.guaranteeDelivery = true;
+                // compare devices to see if there is a change
+                let change = false;
+                for (let i = 0; i < res.length; i++) {
+                    if (change) break;
+                    change = !this.devices.find(
+                        (r) =>
+                            r.name == res[i].name && r.device == res[i].device
+                    );
+                }
+                if (change) this.devices = res;
             });
         }, 2000);
 
