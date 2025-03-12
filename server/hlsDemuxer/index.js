@@ -1,5 +1,5 @@
 /**
- * HLS Demuxer
+ * HLS Demultiplexer
  *
  * This script fetches and processes an HLS stream, dynamically selecting the best video variant based on estimated bandwidth.
  * It creates named pipes (FIFO) to output video, audio, and subtitle streams, which can be read by external media players.
@@ -64,8 +64,7 @@ async function fetchPlaylist(url) {
 async function fetchSegmentList(stream) {
     if (!isVod) {
         stream.playlist = await fetchPlaylist(stream.url);
-        if (!stream.playlist) return await fetchSegmentList(stream);
-        isVod = stream.playlist.segments.length > 30 ? true : false; // toggle vod flag if segmentes is > 30
+        isVod = stream.playlist.segments.length > 30 ? true : false; // toggle vod flag if segments is > 30
     }
     if (!isVod) return stream.playlist;
 
@@ -120,6 +119,10 @@ async function selectBestVariant(index = 0) {
             streams[0].url = new URL(currentVariant, hlsUrl);
             streams[0].playlist = await fetchPlaylist(currentVariant);
         }
+
+        // update audio and subtitle tracks when video track changes
+        await selectAudioTracks();
+        await selectSubtitleTracks();
         return bestVariant.uri;
     }
     return currentVariant;
@@ -140,13 +143,14 @@ async function selectAudioTracks() {
             preferredAudioLangs.includes(track.language)
         ) {
             selectedTracks[track.language] = track;
+            if (streams[count]) {
+                streams[count].uri = new URL(track.uri, hlsUrl);
+                streams[count].playlist = await fetchPlaylist(
+                    streams[count].uri
+                );
+            }
+            count++;
         }
-
-        if (streams[count]) {
-            streams[count].uri = new URL(track.uri, hlsUrl);
-            streams[count].playlist = await fetchPlaylist(streams[count].uri);
-        }
-        count++;
     }
 
     return selectedTracks;
@@ -192,7 +196,7 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
                 resolve();
             })
         );
-
+        response.data.destroy();
         delete response.data;
 
         if (isVideo) {
@@ -230,9 +234,6 @@ async function streamLiveSegments(stream, index) {
     let playlist;
     let lastSeqNumber = 0;
     do {
-        // update audio and subtitle tracks
-        await selectAudioTracks();
-        await selectSubtitleTracks();
         playlist = await fetchSegmentList(stream, index);
 
         // start halfway through the playlist if it's a live stream and we're just starting
@@ -337,9 +338,9 @@ async function startStreams() {
         });
         count++;
     }
-
-    streams.forEach((s, i) => {
-        streamLiveSegments(s, i);
+    streams.forEach(async (s, i) => {
+        await streamLiveSegments(s, i);
+        s.pipe.end();
     });
 }
 
