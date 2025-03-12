@@ -192,9 +192,10 @@ router_io.on('connection', socket => {
 
         delete socket;
 
-        // check that router has not connected on a different socket
+         // check that router has not connected on a different socket
         if (
-            Object.values(router_io.sockets).find(
+            Object.values(router_sockets).find(
+
                 (s) => s.data.routerID === socket.data.routerID
             )
         ) {
