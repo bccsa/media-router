@@ -26,8 +26,10 @@ class Router extends dm {
         this._sources = {};
         this._sinks = {};
         this.sources = []; // json sources list for front-end
+        this.SetMeta("sources", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
         this.SetAccess("sources", { Set: "none" }); // Disable Set() access to prevent frontend changing the property
         this.sinks = []; // json sinks list for front-end
+        this.SetMeta("sinks", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
         this.SetAccess("sinks", { Set: "none" }); // Disable Set() access to prevent frontend changing the property
         this._udpSocketPortIndex = 2000;
         this.paLatency = 50; // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
@@ -50,8 +52,6 @@ class Router extends dm {
         this.memoryUsage = 0; // Memory usage indication
         this.ipAddress = "127.0.0.1"; // system IP address
         this.buildNumber = "DEV"; // Software Build number
-        this.guaranteeDelivery = false; // Internal run command, used for controls, if they want to guarantee delivery of a message to the manager
-        this.SetAccess("guaranteeDelivery", { Set: "none", Get: "none" }); // Disable Set() and Get() access to prevent frontend changing the property
     }
 
     Init() {
@@ -200,31 +200,23 @@ class Router extends dm {
         // PulseAudio items detection
         this._updatePAlist("sources", this._sources).then((updated) => {
             if (!updated) return;
-            this.guaranteeDelivery = true;
             this.sources = Object.values(this._sources);
-            this.guaranteeDelivery = false;
         });
         this._updatePAlist("sinks", this._sinks).then((updated) => {
             if (!updated) return;
-            this.guaranteeDelivery = true;
             this.sinks = Object.values(this._sinks);
-            this.guaranteeDelivery = false;
         });
         let scanTimer = setInterval(async () => {
             this.PaCmdQueue(() => {
                 this._updatePAlist("sources", this._sources).then((updated) => {
                     if (!updated) return;
-                    this.guaranteeDelivery = true;
                     this.sources = Object.values(this._sources);
-                    this.guaranteeDelivery = false;
                 });
             });
             this.PaCmdQueue(() => {
                 this._updatePAlist("sinks", this._sinks).then((updated) => {
                     if (!updated) return;
-                    this.guaranteeDelivery = true;
                     this.sinks = Object.values(this._sinks);
-                    this.guaranteeDelivery = false;
                 });
             });
         }, 1000);
