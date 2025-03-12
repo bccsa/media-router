@@ -187,13 +187,22 @@ router_io.on('connection', socket => {
     });
 
     socket.on('disconnect', data => {
-        // Remove socket from routers sockets list
-        delete router_sockets[socket.data.routerID];
-
         // force disconnect socket
         socket.disconnect();
 
         delete socket;
+
+        // check that router has not connected on a different socket
+        if (
+            Object.values(router_io.sockets).find(
+                (s) => s.data.routerID === socket.data.routerID
+            )
+        ) {
+            return; // early return if router connected on a new socket
+        }
+        
+        // Remove socket from routers sockets list
+        delete router_sockets[socket.data.routerID];
 
         // Set offline status
         routerConf.online = false;
