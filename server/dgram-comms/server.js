@@ -17,7 +17,7 @@ class Server extends ClientServerBase {
         port,
         encryptionKeys = {},
         enforceEncryption = false,
-        connectionTimeout = 5000,
+        connectionTimeout = 1000,
         retryTimeout = 500,
     }) {
         super({ connectionTimeout, retryTimeout });
@@ -34,9 +34,7 @@ class Server extends ClientServerBase {
             );
         });
 
-        this.server.bind(port, bindAddress, () => {
-            this.server.setSendBufferSize(65507); // Max UDP packet size
-        });
+        this.server.bind(port, bindAddress);
         setInterval(() => {
             this.connectionWatchDog();
         }, connectionTimeout / 4);

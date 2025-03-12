@@ -24,6 +24,7 @@ class Client extends ClientServerBase {
         this.address = address || "localhost";
         this.clientID = clientID;
         this.encryptionKey = encryptionKey;
+        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
 
         this.socket = new Socket({
             port,
@@ -82,7 +83,7 @@ class Client extends ClientServerBase {
                 this.socket.emitLocal("disconnected", this.socket.socketID);
                 this.setupConnection();
             }
-        }, 250);
+        }, this.connectionTimeout / 4);
     }
 
     /**
@@ -97,119 +98,5 @@ class Client extends ClientServerBase {
         return await decipher(data, iv, this.encryptionKey);
     }
 }
-
-// const Client = {
-//     _s: undefined,
-//     _socket: undefined,
-//     /**
-//      * Create a new socket
-//      * @param {Object} options - port, address
-//      */
-//     createSocket({ port, address, clientID, encryptionKey }) {
-//         this._s = dgram.createSocket("udp4");
-//         this._s.on("message", this._messageHandler.bind(this));
-
-//         this._s.on("error", (err) => {
-//             console.error(`Server error: ${err.stack}`);
-//             this._s.close();
-//         });
-
-//         this._socket = new Socket({
-//             port,
-//             address,
-//             serverSocket: this._s,
-//             isClient: true,
-//             clientID,
-//             encryptionKey,
-//         });
-
-//         this._setupConnection();
-//         this.connectionWatchDog();
-
-//         // retry connection when loosing connection
-//         this._socket.event.on("disconnect", (msg) => {
-//             this._setupConnection();
-//         });
-
-//         return this._socket;
-//     },
-
-//     _setupConnection() {
-//         // setup connection
-//         this._socket.emit(null, null, {
-//             type: "connect",
-//             guaranteeDelivery: true,
-//             socketID: this._socket.socketID,
-//         });
-//     },
-
-//     /**
-//      * Handle incoming messages format: (see: messageStructure)
-//      * message should be in JSON format
-//      * @param {string} msg - message from socket
-//      */
-//     _messageHandler(msg) {
-//         let m = msg.toString();
-//         try {
-//             m = JSON.parse(msg);
-//         } catch (e) {
-//             console.error("Error parsing message: ", e);
-//             return;
-//         }
-
-//         const { type, data } = m;
-
-//         // return ackID to client to guarantee delivery
-//         data &&
-//             data.ackID &&
-//             this._socket &&
-//             this._socket.emit("ack", null, {
-//                 type: "ack",
-//                 ackID: data.ackID,
-//             });
-
-//         this[type] && this[type](m);
-//     },
-
-//     keepAlive({ data }) {
-//         // update keepAliveTime
-//         data && this._socket && (this._socket.keepAliveTime = new Date());
-//     },
-
-//     data({ data }) {
-//         // emit data event
-//         this._socket.event.emit(data.topic, data.message);
-//     },
-
-//     ack({ data }) {
-//         // remove message from waitingAck
-//         delete waitingAck[data.ackID];
-//     },
-
-//     connected({ data }) {
-//         // set socketID
-//         this._socket.socketID = data.socketID;
-//         // emit data event
-//         this._socket.event.emit(data.topic, data.message);
-//     },
-
-//     /**
-//      * Check if socket is still connected
-//      */
-//     connectionWatchDog() {
-//         this._socket.keepAlive = setInterval(() => {
-//             this._socket.emit(null, null, { type: "keepAlive" });
-//             const now = new Date();
-//             if (
-//                 now - this._socket.keepAliveTime > 2000 &&
-//                 this._socket.connected
-//             ) {
-//                 // emit offline event
-//                 this._socket.event.emit("disconnected", this._socket.socketID);
-//                 this._setupConnection();
-//             }
-//         }, 250);
-//     },
-// };
 
 module.exports = Client;

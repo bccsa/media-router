@@ -1,6 +1,7 @@
 const dgram = require("dgram");
 const { waitingAck } = require("./data");
 const Events = require("events").EventEmitter;
+const messageFragmentation = require("./messageFragmentation");
 
 // ===========================
 // Client server base class
@@ -15,10 +16,12 @@ class ClientServerBase extends Events {
     constructor({ connectionTimeout, retryTimeout }) {
         super();
         this.server = dgram.createSocket("udp4");
-        this.connectionTimeout = connectionTimeout || 5000; // 5 seconds
+        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
         this.retryTimeout = retryTimeout || 500; // 500 ms
-
-        this.server.on("message", this.messageHandler.bind(this));
+        this.frag = new messageFragmentation(
+            this.server,
+            this.messageHandler.bind(this)
+        );
 
         this.server.on("error", (err) => {
             console.error(`Server error: ${err.stack}`);

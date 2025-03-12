@@ -2,6 +2,7 @@ const { v4: uuidv4 } = require("uuid");
 const { waitingAck } = require("./data");
 const { encrypt } = require("./encryption");
 const Events = require("events").EventEmitter;
+const messageFragmentation = require("./messageFragmentation");
 
 /**
  * Used to give a unique id to each ack message
@@ -39,6 +40,7 @@ class Socket extends Events {
         this.clientID = clientID; // used to identify client
         this.encryptionKey = encryptionKey; // used to encrypt/decrypt messages
         this.retryTimeout = retryTimeout || 500;
+        this.frag = new messageFragmentation(this.socket);
 
         this.on("connected", () => {
             this.connected = true;
@@ -108,11 +110,7 @@ class Socket extends Events {
             clientID: this.clientID,
         });
 
-        _dgram.send(M, port, address, (err) => {
-            if (err) {
-                console.error("Error sending message: ", err);
-            }
-        });
+        this.frag.sendFragmentedMessage(M, port, address);
 
         // if guaranteeDelivery is true, add message to waitingAck
         options.guaranteeDelivery &&
