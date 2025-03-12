@@ -85,7 +85,7 @@ class Router extends dm {
             si.mem()
                 .then((data) => {
                     this.memoryUsage = Math.round(
-                        (data.free / data.total) * 100
+                        (data.used / data.total) * 100
                     );
                 })
                 .catch((err) => {
