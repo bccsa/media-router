@@ -83,7 +83,7 @@ class Client extends ClientServerBase {
                 this.socket.emitLocal("disconnected", this.socket.socketID);
                 this.setupConnection();
             }
-        }, connectionTimeout / 4);
+        }, this.connectionTimeout / 4);
     }
 
     /**
