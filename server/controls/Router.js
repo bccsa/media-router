@@ -26,8 +26,10 @@ class Router extends dm {
         this._sources = {};
         this._sinks = {};
         this.sources = []; // json sources list for front-end
+        this.SetMeta("sources", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
         this.SetAccess("sources", { Set: "none" }); // Disable Set() access to prevent frontend changing the property
         this.sinks = []; // json sinks list for front-end
+        this.SetMeta("sinks", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
         this.SetAccess("sinks", { Set: "none" }); // Disable Set() access to prevent frontend changing the property
         this._udpSocketPortIndex = 2000;
         this.paLatency = 50; // PulsAudio modules latency (applied to each dynamically loaded PulseAudio module). Lower latency gives higher PulseAudio CPU usage.
@@ -197,20 +199,24 @@ class Router extends dm {
 
         // PulseAudio items detection
         this._updatePAlist("sources", this._sources).then((updated) => {
-            if (updated) this.sources = Object.values(this._sources);
+            if (!updated) return;
+            this.sources = Object.values(this._sources);
         });
         this._updatePAlist("sinks", this._sinks).then((updated) => {
-            if (updated) this.sinks = Object.values(this._sinks);
+            if (!updated) return;
+            this.sinks = Object.values(this._sinks);
         });
         let scanTimer = setInterval(async () => {
             this.PaCmdQueue(() => {
                 this._updatePAlist("sources", this._sources).then((updated) => {
-                    if (updated) this.sources = Object.values(this._sources);
+                    if (!updated) return;
+                    this.sources = Object.values(this._sources);
                 });
             });
             this.PaCmdQueue(() => {
                 this._updatePAlist("sinks", this._sinks).then((updated) => {
-                    if (updated) this.sinks = Object.values(this._sinks);
+                    if (!updated) return;
+                    this.sinks = Object.values(this._sinks);
                 });
             });
         }, 1000);
