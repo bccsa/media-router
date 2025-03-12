@@ -16,7 +16,7 @@ class ClientServerBase extends Events {
     constructor({ connectionTimeout, retryTimeout }) {
         super();
         this.server = dgram.createSocket("udp4");
-        this.connectionTimeout = connectionTimeout || 5000; // 5 seconds
+        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
         this.retryTimeout = retryTimeout || 500; // 500 ms
         this.frag = new messageFragmentation(
             this.server,
