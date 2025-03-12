@@ -192,9 +192,6 @@ class HlsPlayer extends Classes(_paNullSinkBase, SrtBase) {
 
         let _pipeline = `${this._video()} ${this._audio()} ${this._subtitles()}`;
 
-        console.log(_pipeline);
-        console.log(hlsDemuxer);
-
         // ------------ start sound processor ------------ //
         if (!this.hlsUrl) return;
         this._parent.PaCmdQueue(() => {
