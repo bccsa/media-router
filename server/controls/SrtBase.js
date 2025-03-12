@@ -90,6 +90,16 @@ class SrtBase extends GstBase {
             }
         });
 
+        // check that mode != caller and host 0.0.0.0
+        if (this.srtMode == "caller" && this.srtHost == "0.0.0.0") {
+            this._parent._log(
+                "ERROR",
+                `${this._controlName} (${this.displayName}): Unable to start, Mode can't be caller with host: 0.0.0.0`
+            );
+
+            return;
+        }
+
         if (this.srtHost) {
             this.start_gst(cmd);
         } else {
