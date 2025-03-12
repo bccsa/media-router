@@ -270,7 +270,7 @@ async function streamLiveSegments(stream, index) {
 
     console.log(
         "EOF: " + stream.language
-            ? isSub
+            ? stream.isSub
                 ? "subtitle"
                 : stream.language
             : "video"
