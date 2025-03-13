@@ -34,6 +34,10 @@ class messageFragmentation {
                 this.fragments.set(messageId, {
                     fragments: new Array(totalFragments),
                     received: 0,
+                    timer: setTimeout(() => {
+                        this.fragments.delete(messageId);
+                        console.error(`Message ${messageId} timed out and was deleted.`);
+                    }, 2000) // 2 seconds timeout
                 });
             }
 
@@ -46,6 +50,7 @@ class messageFragmentation {
 
             // Check if all fragments are received
             if (messageData.received === totalFragments) {
+                clearTimeout(messageData.timer); // Clear the timeout
                 const fullMessage = Buffer.concat(
                     messageData.fragments
                 ).toString();
