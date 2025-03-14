@@ -38,6 +38,7 @@ class Client extends ClientServerBase {
 
         this.setupConnection();
         this.connectionWatchDog();
+        this.connectionRetry();
 
         // retry connection when loosing connection
         this.socket.on("disconnect", (msg) => {
@@ -81,9 +82,18 @@ class Client extends ClientServerBase {
             ) {
                 // emit offline event
                 this.socket.emitLocal("disconnected", this.socket.socketID);
-                this.setupConnection();
             }
         }, this.connectionTimeout / 4);
+    }
+
+    /**
+     * Try to reconnect as long as socket is disconnected
+     */
+    connectionRetry() {
+        setInterval(() => {
+            // try to setupConnection as log as socket is disconnected
+            if (!this.socket.connected) this.setupConnection();
+        }, this.connectionTimeout);
     }
 
     /**
