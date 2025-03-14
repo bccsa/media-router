@@ -2,11 +2,14 @@ class WebRTCClient extends _routerChildControlBase {
     constructor() {
         super();
         this.appPort = 2000;
-        this.title = '';
+        this.title = "";
     }
 
     get html() {
-        return super.html.replace('%modalHtml%', `
+        return super.html
+            .replace(
+                "%modalHtml%",
+                `
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
@@ -31,6 +34,7 @@ class WebRTCClient extends _routerChildControlBase {
                     title="WebApp port" name="WebApp port" step="1" class="WebRTCClient-pos-number-input"
                     value="@{appPort}"
                 >
+                <span id="@{_appPortWarning}" class="text-red-600" style="display: none;">
             </div>
 
             <!-- SRT Latency  --> 
@@ -47,37 +51,55 @@ class WebRTCClient extends _routerChildControlBase {
 
         <div id="@{_controlsDiv}"> </div>
 
-        `).replace('%cardHtml%',`
+        `
+            )
+            .replace(
+                "%cardHtml%",
+                `
         <div class="w-full items-center justify-items-center justify-center">
             <div class="text-center align-top font-semibold text-base">WebRTC Client WebApp</div>
-        `);
+        `
+            );
     }
-
 
     Init() {
         super.Init();
-        this.setHeaderColor('#0D6EFD');
+        this.setHeaderColor("#0D6EFD");
+
+        this.on("appPort", () => {
+            const warn = this._parent.publishPort(
+                this.name,
+                "tcp",
+                this.appPort
+            );
+            if (!warn) {
+                this._appPortWarning.style.display = "none";
+                return;
+            }
+            this._appPortWarning.innerHTML = warn;
+            this._appPortWarning.style.display = "block";
+        });
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
-        this._loadHelpMD('controls/WebRTCClient.md');
+        this._loadHelpMD("controls/WebRTCClient.md");
         //----------------------Help Modal-----------------------------//
 
-        this._addPlayer.addEventListener('click', e => {
+        this._addPlayer.addEventListener("click", (e) => {
             let name = `player_${this._generateUuid()}`;
 
-            this.once(name, data => {
+            this.once(name, (data) => {
                 // send newly created router's data to manager
-                this._notify({ [name]: data.Get()});
-            })
-            
+                this._notify({ [name]: data.Get() });
+            });
+
             this.Set({
                 [name]: {
-                    controlType: 'WebRTCPlayer',
+                    controlType: "WebRTCPlayer",
                     url: "http://localhost:1234/player",
-                    playerName: 'WebRTC Player'
-                }
-            })
-        })
+                    playerName: "WebRTC Player",
+                },
+            });
+        });
     }
 }
