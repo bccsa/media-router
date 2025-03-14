@@ -1,0 +1,468 @@
+module.exports = {
+    html: (name) => {
+        return `
+        <!-- ${name} -->
+
+        <!--    MAIN CARD CONTAINER     -->
+        <div class="router-main-card list-group-item">
+            <details id="@{_details}" class="rounded group">
+
+                <!--    TOP HEADING CONTAINER    -->
+                <summary class="router-summary-container">
+                    <div class="router-top-bar">
+                        <div class="router-top-flex-div">
+
+                            <div class="router-flex-justify-end min-w-[12rem]">
+
+                                <!--    LIST HANDEL  -->
+                                <div  class="router-btn-handel" title="Drag and drop"></div>
+                    
+
+                                <!--    ROUTER NAME    -->
+                                <div class="ml-1">
+                                    <span id="@{_name}" class="font-medium text-2xl" title="Router Name">@{displayName}</span>
+                                </div>
+                            </div>
+
+                            
+                            <div class="router-flex-justify-end">
+
+                                <!--    TOP BAR CONTROLS     -->
+                                <div id="@{_topBarControls}" class="h-auto w-auto flex mr-2 items-center" title=""></div>
+
+                                <!--    Memory Usage Indication -->
+                                <div id="@{_memoryUsage}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-24 rounded-full">MEM: <span>@{memoryUsage}</span>%</div>
+
+                                <!--    CPU Usage Indication -->
+                                <div id="@{_cpuUsage}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-24 rounded-full">CPU: <span>@{cpuUsage}</span>%</div>
+
+                                <!--    CPU Temperature Indication -->
+                                <div id="@{_cpuTemperature}" class="items-center - text-center justify-items-center bg-slate-300 text-white text-sm font-medium mr-2 px-2.5 py-0.5 w-[110px] rounded-full">TEMP: <span>@{cpuTemperature}</span>&deg;C</div>
+
+                                <!--    ONLINE/OFFLINE -->
+                                <span id="@{_online}" class="hidden items-center  bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
+                                <span class="w-2 h-2 mr-1 bg-white rounded-full"></span>
+                                Online
+                                </span>
+
+                                <span id="@{_offline}" class="inline-flex items-center bg-red-100 text-red-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full">
+                                <span class="w-2 h-2 mr-1 bg-red-500 rounded-full"></span>
+                                Offline
+                                </span>
+
+                                <!--    TOGGLE ON/OFF     
+                                <div class="mr-4 flex text-[15px]" title="Switch Router on or off">
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <span class="router-label">Off</span>
+                                            <input id="@{_switchOnOff}" class="sr-only peer" type="checkbox" role="switch" checked="@{run}">
+                                            <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
+                                        <span class="router-label -mr-2 ml-2">On</span>
+                                    </label>
+                                </div>
+                                -->
+                                
+                                <!--    TOGGLE ON/OFF     -->
+                                <div class="mr-4 flex text-[15px]">
+                                    <label for="@{_switchOnOff}" class="router-label">Off</label>
+                                    <div class="form-check form-switch">
+                                        <input id="@{_switchOnOff}" class="router-toggle" type="checkbox"
+                                        role="switch" title="Switch Router on or off" checked="@{run}">
+                                        <label for="@{_switchOnOff}" class="router-label">On</label>
+                                    </div>
+                                </div>
+
+                                <!--    CONTAINER TOGGLE     -->
+                                <div class="mr-1">
+                                    <div class="router-toggle-arrow"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </summary>
+
+                <!--    DIVIDER LINE      -->
+                <div class="router-line"></div>
+
+                <!--    MORE INFO CONTAINER       -->
+                <div id="@{_moreInfo}" class="router-content">
+
+                    <div class="h-8 w-8 z-50 top-11 left-1 absolute rounded-full bg-white bg-opacity-50 pl-[0.5px] pb-[1.5px]"
+                        <!--    ADD BUTTON    -->
+                        <button class="router-btn-add " type="button" data-bs-toggle="modal"
+                        data-bs-target="#@{_modalAddDevice}" title="Add a new Device"></button>
+                    </div>
+
+                    <div id="@{_scrollDiv}" class="overflow-scroll block w-full h-full max-h-[750px]">
+                        <!--    CHILD DEVICE    -->
+                        <div id="@{_controlsDiv}" class="router-devices-div z-10 block relative transform scale-100 origin-top-left"> </div>
+                    </div>
+
+                    <div class="h-8 w-8 z-50 top-11 right-5 absolute rounded-full bg-white bg-opacity-50"
+                        <!--    SETTINGS BUTTON       -->
+                        <div class="justify-between">
+                            <button id="@{_btnSettings}" class="router-btn-settings"
+                            type="button" title="Open Router Settings"> </button>
+                        </div>
+                    </div>
+
+                    <div id="@{_settingsContainer}" class="router-settingsContainer z-50"  >
+
+                        <!--    EXIT SETTING BUTTON       -->
+                        <div class="router-flex-justify-between">
+                            <div class="router-flex-justify-end">
+
+                                
+                                <!--    DUPLICATE BUTTON      -->
+                                <button id="@{_btnDuplicate}" class="router-btn-duplicate" 
+                                type="button" title="Duplicate Router"></button>
+
+                                <!--    DELETE ROUTER     -->
+                                <button class="router-btn-delete" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalDelete}" title="Remove Router"></button>
+                                
+                                <!--    RESET ROUTER     -->
+                                <button class="router-btn-reset" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalReset}" title="Reset Router"></button>
+
+                                <!--    RESTART ROUTER     -->
+                                <button class="router-btn-restart" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalRestart}" title="Restart Router"></button>
+
+                                <!--    Export Config     -->
+                                <button id="@{_btnExport}" class="router-btn-export" type="button" title="Export Config"></button>
+
+                                <!--    HELP MODAL     -->
+                                <button id="@{_btnHelp}" class="router-btn-help" type="button" data-bs-toggle="modal"
+                                data-bs-target="#@{_modalHelp}" title="Help"></button>
+                            </div>
+
+                            <!--    EXIT BUTTON   -->
+                            <div class="justify-end">
+                                <button id="@{_btnExit}" class="router-btn-exit"
+                                type="button" title="Close Router Settings"></button>
+                            </div>
+                        </div>
+
+                        <hr class="w-full h-[1px] bg-gray-500 mb-2"> 
+
+                        <! --   Info Section   -->
+                        <!--    IP Address     -->
+                        <div class="router-container">
+                            <label for="@{_ipAddress}" class="">IP Address: <span>@{ipAddress}</span></label>
+                        </div>    
+                    
+                        <!--    Build Number     -->
+                        <div class="router-container flex grid grid-cols-1">
+                            <label for="@{_buildNumber}" class="">Build Number:</label>
+                            <div>@{buildNumber}</div>
+                        </div>  
+
+                        <!--    DIVIDER LINE      -->
+                        <div class="router-line mb-4"></div>
+
+                        <! --  Setting  -->
+                        <!--    DISPLAY NAME      -->
+                        <label for="@{_displayName}" class="router-label-settings">Display Name: </label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                            
+                                <input id="@{_displayName}" class="router-text-area" type="text" maxlength="30"
+                                placeholder="Your display name" title="Router display name" value="@{displayName}"/>
+
+                            </div>
+                        </div>
+                                    
+                        <!--    DESCRIPTION       -->
+                        <label for="@{_description}" class="router-label-settings">Description: </label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                            
+                                <textarea id="@{_description}" class="router-text-area" rows="2"
+                                placeholder="Your description" title="Router description">@{description}</textarea>
+
+                            </div>
+                        </div>
+
+                        <!--    PASSWORD      -->
+                        <label for="@{_password}" class="router-label-settings">Password: </label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                <input id="@{_password}" class="router-text-area"
+                                placeholder="Your password" title="Enter a password" value="@{password}"/>
+                            </div>
+                        </div>
+
+                        <!--    PULSEAUDIO LATENCY      -->
+                        <label for="@{_paLatency}" class="router-label-settings">PulseAudio modules latency:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_paLatency}" class="router-number-range" type="number" min="1" oninput="validity.valid||(value='')"
+                                title="Latency setting for PulseAudio modules. Lower latency results in higher CPU usage." step="1" value="@{paLatency}"/>
+
+                            </div>
+                        </div>
+
+                        <!--    STARTUP DELAY      -->
+                        <label for="@{_startupDelayTime}" class="router-label-settings">Startup delay:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_startupDelayTime}" class="router-number-range" type="number" min="1" oninput="validity.valid||(value='')"
+                                title="Startup delay time in milliseconds. This is sometimes needed to give other services (e.g. PulseAudio) sufficient time to start up." step="1" value="@{startupDelayTime}"/>
+
+                            </div>
+                        </div>
+
+                        <!--    STARTUP STATE      -->
+                        <label for="@{_startupState}" class="router-label-settings">Startup state:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                <select id="@{_startupState}" class="paAudioBase-select" title="Auto: manager selected state; Stopped = Start in stopped state" value="@{startupState}">
+                                    <option value=true>Auto</option>
+                                    <option value=false>Stopped</option>
+                                </select>
+
+                            </div>
+                        </div>
+
+                        <hr class="w-full h-[1px] bg-gray-500 mt-1 mb-2"> 
+
+                        <!--    Height      -->
+                        <label for="@{_height}" class="router-label-settings">Router page height:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_height}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                title="Page height in px (Min: 450)" step="1" value="@{height}"/>
+
+                            </div>
+                        </div>
+                        
+
+                        <!--    Width    -->  
+                        <label for="@{_width}" class="router-label-settings">Router page width:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_width}" class="router-number-range" type="number" min="0" oninput="validity.valid||(value='')"
+                                title="Page width in px" step="1" value="@{width}"/>
+
+                            </div>
+                        </div>
+
+                        <!--    Scale    -->  
+                        <label for="@{_scale}" class="router-label-settings">Router control's scale:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_scale}" class="router-number-range" type="number" step="0.05" min="0.1" max=2 oninput="validity.valid||(value='1')"
+                                title="Page width in px" step="1" value="@{scale}"/>
+
+                            </div>
+                        </div>
+
+                        <!--    Lunch local control panel on device   -->  
+                        <label for="@{_startLocalCTR}" class="router-label-settings">Start local control panel:</label>
+                        <div class="router-container">
+                            <label class="relative inline-flex items-center cursor-pointer">
+                            <span class="router-label">Off</span>
+                                <input id="@{_startLocalCTR}" class="sr-only peer" type="checkbox" role="switch" checked="@{startLocalCTR}">
+                                <div class="w-9 h-5 bg-gray-300 rounded-full peer peer-focus:ring-2 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[30px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-500"></div>
+                            <span class="router-label -mr-2 ml-2">On</span>
+                        </div>
+
+                        <!--    Log limit    -->  
+                        <label for="@{_scale}" class="router-label-settings">Log Limit:</label>
+                        <div class="router-container">
+                            <div class="mr-4 w-full">
+                                
+                                <input id="@{_logLimit}" class="router-number-range" type="number" step="1" min="1" oninput="validity.valid||(value='1')"
+                                title="Maximum amount of log entries to be displayed in the console" step="1" value="@{logLimit}"/>
+
+                            </div>
+                        </div>
+
+                    </div> 
+                </div> 
+
+                <!--   console window   -->
+                <div class="flex justify-center m-2">
+                    <button class="mr-2" id="@{_console}">Console</button>
+                    <input checked="@{logFATAL}" id="@{_logFATAL}" type="checkbox" value="FATAL" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label class="mr-2" for="@{_logFATAL}">Fatal</label>
+                    <input checked="@{logERROR}" id="@{_logERROR}" type="checkbox" value="ERROR" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label class="mr-2" for="@{_logERROR}">Error</label>
+                    <input checked="@{logINFO}" id="@{_logINFO}" type="checkbox" value="INFO" class="mr-1 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500">
+                    <label class="mr-2" for="@{_logINFO}">Info</label>
+                </div>
+                <pre id="@{_log}" class="text-sm h-60 overflow-auto p-2 bg-slate-800 text-slate-50 col-span-4 snap-y"></pre>
+
+            </details> 
+        </div>
+
+        <!--    MODAL ADD DEVICES    -->
+        <div id="@{_modalAddDevice}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-add"></div>
+                        <h5 class="router-modal-heading"> Add Audio Device</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+
+                        <!--    DEVICE TYPE      -->
+                        <label for="@{_deviceType}" class="form-label inline-block mb-2">Device Type:</label>
+                        <div class="mb-3 w-full">
+                            <select id="@{_deviceType}" class="router-select" 
+                            title="Choose a Device type" value="" type="text">
+                            <option value="AudioInput">Audio Input</option>
+                            <option value="AudioOutput">Audio Output</option>
+                            <option value="SrtOpusInput">Opus over SRT Input</option>
+                            <option value="SrtOpusOutput">Opus over SRT Output</option>
+                            <option value="SrtRelay">Srt Relay</option>
+                            <option value="SoundProcessor">PCM Sound Processor</option>
+                            <option value="SoundDucking">PCM Sound Ducking</option>
+                            <option value="SrtVideoPlayer">Video over SRT Player</option>
+                            <option value="SrtVideoEncoder">Video over SRT Encoder</option>
+                            <option value="HlsPlayer">Hls Video Player</option>
+                            <option value="WebRTCClient">WebRTC Client WebApp</option>
+                            <option value="Separator">Separator</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal"> Cancel</button>
+                        
+                        <button id="@{_btnAddDevice}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal"> Add</button>
+                    </div>
+                    
+                </div>
+            </div>
+        </div>
+
+        <!--    MODAL DELETE ROUTER -->
+        <div id="@{_modalDelete}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-rm"></div>
+                        <h5 class="router-modal-heading"> Delete Router</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                    Are you sure you want to delete the Router?
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal"> Cancel</button>
+                        
+                        <button id="@{_btnDeleteRouter}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal"> Delete</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!--    MODAL RESET ROUTER -->
+        <div id="@{_modalReset}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-reset"></div>
+                        <h5 class="router-modal-heading"> Reset Router</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                    Are you sure you want to reset the Router?
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal">Cancel</button>
+                        
+                        <button id="@{_btnReset}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal">Reset</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!--    MODAL RESTART ROUTER -->
+        <div id="@{_modalRestart}" class="router-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm router-modal-dialog">
+                <div class="router-modal-content">
+
+                    <div class="router-modal-header">
+                        <div class="router-modal-img-restart"></div>
+                        <h5 class="router-modal-heading"> Restart Router</h5>
+                        <button class="router-modal-btn-close" type="button"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+
+                    <div class="router-modal-body">
+                    Are you sure you want to restart the Router?
+                    </div>
+
+                    <div class="router-modal-footer">
+                        
+                        <button class="router-modal-btn mr-2" type="button"  
+                        data-bs-dismiss="modal">Cancel</button>
+                        
+                        <button id="@{_btnRestart}" class="router-modal-btn"
+                        type="button" data-bs-dismiss="modal">Restart</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!--    MODAL Help -->
+        <div id="@{_modalHelp}" class="paAudioBase-modal modal fade" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-xl paAudioBase-modal-dialog">
+                <div class="modal-dialog paAudioBase-modal-help">
+                    <div class="router-modal-content">
+
+                        <div class="paAudioBase-modal-header">
+                            <div class="flex flex-shrink-0 items-center justify-between">
+                                <span class="appFrame-control-name">Help</span>
+                                <div class="flex flex-row">
+                                    <!--    CLOSE    -->
+                                    <button class="router-modal-btn-close" type="button"
+                                    data-bs-dismiss="modal" aria-label="Close"></button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="paAudioBase-modal-body">
+                            <div id="@{_modalHelp_md}" class="prose">
+                            </div>
+                        </div>
+
+                        <div class="paAudioBase-modal-footer">
+                            <button class="router-modal-btn mr-2" type="button"  
+                            data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        `;
+    },
+};
