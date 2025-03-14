@@ -34,6 +34,8 @@ class Router extends Classes(dm, Resources, Logs, PulseAudio) {
         this.SetAccess("logMessage", { Set: "none" }); // Disable Set() access to prevent frontend changing the property (!!! Cant setAccess in extended class, since setAccess in not yet available when class is loaded)
         this.SetAccess("sinks", { Set: "none" }); // Disable Set() access to prevent frontend changing the property (!!! Cant setAccess in extended class, since setAccess in not yet available when class is loaded)
         this.SetAccess("sources", { Set: "none" }); // Disable Set() access to prevent frontend changing the property (!!! Cant setAccess in extended class, since setAccess in not yet available when class is loaded)
+        this.SetMeta("sources", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
+        this.SetMeta("sinks", { guaranteeDelivery: true }); // Used to guarantee delivery to the manager
     }
 
     Init() {
