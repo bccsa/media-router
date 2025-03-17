@@ -1,5 +1,5 @@
 /**
- * HLS Demultiplexer
+ * HLS Demuxer
  *
  * This script fetches and processes an HLS stream, dynamically selecting the best video variant based on estimated bandwidth.
  * It creates named pipes (FIFO) to output video, audio, and subtitle streams, which can be read by external media players.
@@ -66,6 +66,12 @@ async function fetchPlaylist(url) {
 async function fetchSegmentList(stream) {
     if (!isVod) {
         stream.playlist = await fetchPlaylist(stream.url);
+
+        if (!stream.playlist) {
+            await new Promise((res) => setTimeout(res, 1000));
+            return await fetchSegmentList(stream);
+        }
+
         isVod = stream.playlist.segments.length > 30 ? true : false; // toggle vod flag if segments is > 30
     }
     if (!isVod) return stream.playlist;
