@@ -2,8 +2,6 @@ const _paNullSinkBase = require("./_paNullSinkBase");
 const path = require("path");
 const SrtBase = require("./SrtBase");
 const { Classes } = require("../modular-dm");
-const util = require("util");
-const exec = util.promisify(require("child_process").exec);
 const HlsParser = require("./HlsPlayer/hlsParser");
 const NullSinks = require("./HlsPlayer/nullSinks");
 
@@ -96,7 +94,6 @@ class HlsPlayer extends Classes(
         })}'`;
 
         let _pipeline = `${this._video()} ${this._audio()} ${this._subtitles()}`;
-        console.log(_pipeline);
 
         // ------------ start sound processor ------------ //
         if (!this.hlsUrl) return;
