@@ -94,6 +94,10 @@ class PulseAudio {
                 });
             });
         }, 1000);
+
+        this.on("remove", () => {
+            clearInterval(scanTimer);
+        });
     }
 
     /**
