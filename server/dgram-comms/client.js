@@ -57,7 +57,6 @@ class Client extends ClientServerBase {
         // setup connection
         this.socket.emit(null, null, {
             type: "connect",
-            guaranteeDelivery: true,
             socketID: this.socket.socketID,
         });
     }
