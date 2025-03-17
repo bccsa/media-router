@@ -56,7 +56,6 @@ class Router extends Classes(dm, Resources, Logs, PulseAudio) {
         // Stop all child controls when the Router control is removed
         this.on("remove", () => {
             this.runCmd = false;
-            clearInterval(scanTimer);
         });
 
         // Reset command from manager
