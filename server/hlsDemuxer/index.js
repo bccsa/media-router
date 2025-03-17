@@ -30,12 +30,14 @@ if (process.argv.length < 3) {
  * Config
  * languages: Array<string>
  * maxQuality: number
- * subtitleTrack: string
+ * subtitleTrack: string - (Optional)
+ * moduleIdentifier: string - this is used to give pipes unique names (Optional)
  */
 const config = JSON.parse(process.argv[3]);
 const hlsUrl = process.argv[2];
 const preferredAudioLangs = config.languages;
 const subtitleLanguage = config.subtitleLanguage;
+const moduleIdentifier = config.moduleIdentifier;
 let lastSegment = null;
 let currentVariant = null;
 let _currentVariant_ = null;
@@ -288,7 +290,7 @@ async function startStreams() {
     selectBestVariant();
     selectedAudioTracks = await selectAudioTracks();
     selectedSubtitleTracks = await selectSubtitleTracks();
-    const pipe = `videoPipe`;
+    const pipe = (moduleIdentifier ? moduleIdentifier + "_" : "") + `videoPipe`;
     const videoPipe = await createPipe(pipe);
 
     streams.push({
@@ -305,7 +307,9 @@ async function startStreams() {
     let count = 1;
 
     for (const track of Object.values(selectedAudioTracks)) {
-        let pipe = `${track.language}_audioPipe`;
+        let pipe =
+            (moduleIdentifier ? moduleIdentifier + "_" : "") +
+            `${track.language}_audioPipe`;
         const audioPipe = await createPipe(pipe);
         streams.push({
             index: count,
@@ -322,7 +326,9 @@ async function startStreams() {
     }
 
     for (const track of Object.values(selectedSubtitleTracks)) {
-        let pipe = `${track.language}_subtitlePipe`;
+        let pipe =
+            (moduleIdentifier ? moduleIdentifier + "_" : "") +
+            `${track.language}_subtitlePipe`;
         const subtitlePipe = await createPipe(pipe);
         streams.push({
             index: count,
