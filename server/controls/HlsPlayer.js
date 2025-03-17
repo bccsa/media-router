@@ -94,7 +94,6 @@ class HlsPlayer extends Classes(
         })}'`;
 
         let _pipeline = `${this._video()} ${this._audio()} ${this._subtitles()}`;
-        console.log(_pipeline);
 
         // ------------ start sound processor ------------ //
         if (!this.hlsUrl) return;
