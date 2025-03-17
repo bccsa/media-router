@@ -196,7 +196,7 @@ router_io.on('connection', socket => {
         if (
             Object.values(router_sockets).find(
 
-                (s) => s.data.routerID === socket.data.routerID
+                (s) => s.data.routerID === socket.data.routerID && !s.disconnected
             )
         ) {
             return; // early return if router connected on a new socket
