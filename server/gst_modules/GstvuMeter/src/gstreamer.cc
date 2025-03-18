@@ -81,8 +81,6 @@ static gboolean my_bus_callback (GstBus * bus, GstMessage * message, gpointer da
                                 obj_decay.Set(uint32_t(i), decay_dB);
                             }
 
-                            cout << channels;
-
                             Napi::Object res = Napi::Object::New(env);
                             res.Set("rms_dB", obj_rms);
                             res.Set("peak_dB", obj_peak);
