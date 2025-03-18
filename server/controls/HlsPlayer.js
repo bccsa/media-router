@@ -88,8 +88,11 @@ class HlsPlayer extends Classes(
         )}/hlsDemuxer/index.js "${this.hlsUrl}" '${JSON.stringify({
             languages: lang,
             maxQuality: this.videoQuality,
-            subtitleLanguage:
-                this.subtitleLanguage == "off" ? "" : this.subtitleLanguage,
+            subtitleLanguage: this.enableSrt
+                ? ""
+                : this.subtitleLanguage == "off"
+                ? ""
+                : this.subtitleLanguage,
             moduleIdentifier: this._controlName,
         })}'`;
 
@@ -195,15 +198,7 @@ class HlsPlayer extends Classes(
             !this.enableSrt
         )
             // only enable subtitles if srt is disabled or the user explicity enables subtitles for srt
-            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000  ! ov.text_sink`;
-        else if (
-            this.subtitleLanguage &&
-            this.subtitleLanguage !== "off" &&
-            this.enableSrt
-        )
-            // subtitles is not yet supported on srt
-            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! fakesink sync=true`;
-        return subs;
+            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000 ! ov.text_sink`;
     }
 }
 

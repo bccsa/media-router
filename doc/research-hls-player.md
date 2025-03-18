@@ -241,9 +241,9 @@ ffmpeg -i  "https://url.com/toplevel.m3u8X" -t 3000 -f mpegts - | ffplay -i "htt
 # Test with self build streamer
 
 ```bash
-node hls.js "https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" eng,fra | GST_DEBUG=3 gst-launch-1.0 filesrc location="/tmp/videoPipe" ! tsparse ! tsdemux name=demux demux. ! decodebin ! videoconvert ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! kmssink sync=false async=false demux. ! decodebin ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! fakesink
+node hls.js "" eng,fra | GST_DEBUG=3 gst-launch-1.0 filesrc location="/tmp/videoPipe" ! tsparse ! tsdemux name=demux demux. ! decodebin ! videoconvert ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! kmssink sync=false async=false demux. ! decodebin ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! fakesink
 
-node hls.js "https://stream.cdn.bcc.africa/toplevelmanifest.m3u8" eng,fra
+node hls.js "" eng,fra
 
 
 GST_DEBUG=3 gst-launch-1.0 filesrc location="/tmp/videoPipe" ! tsparse ! tsdemux name=demux ! decodebin ! videoconvert ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! kmssink sync=true filesrc location="/tmp/eng_audioPipe" ! decodebin ! audioconvert ! audio/x-raw,channels=2 ! queue flush-on-eos=true  ! fakesink sync=true
@@ -265,4 +265,17 @@ GST_DEBUG=3 gst-launch-1.0 filesrc location="/tmp/videoPipe" ! queue max-size-by
 filesrc location="/tmp/videoPipe" ! queue max-size-bytes=10000000 ! parsebin !  mpegtsmux alignment=7 name=mux ! queue max-size-buffers=0 max-size-time=0 max-size-bytes=0 flush-on-eos=true ! srtserversink name="videoSink" wait-for-connection=false sync=true ts-offset=0 uri="srt://0.0.0.0:1234?mode=listener&latency=10"  filesrc location="/tmp/nor_audioPipe" ! queue max-size-bytes=10000000 ! parsebin ! tee name=tee ! queue ! mux. tee. ! decodebin3 ! queue max-size-bytes=40000000 ! audioconvert ! audio/x-raw,channels=2 ! pulsesink name=audioSink ts-offset=0 device=MR_PA_HlsPlayer_7783 sync=true slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000
 
 filesrc location="/tmp/videoPipe" ! queue max-size-bytes=10000000 ! parsebin !  mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="videoSink" wait-for-connection=false sync=true ts-offset=0 uri="srt://0.0.0.0:1234?mode=listener&latency=10"  filesrc location="/tmp/nor_audioPipe" ! queue max-size-bytes=10000000 ! parsebin ! tee name=tee ! queue ! mux. tee. ! decodebin3 ! max-size-bytes=40000000  ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink name=audioSink ts-offset=0 device=MR_PA_HlsPlayer_7783 sync=true slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000
+```
+
+# Test 2025-03-18
+
+```bash
+GST_DEBUG=3 gst-launch-1.0 filesrc location="/tmp/HlsPlayer_8265_videoPipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! h264parse ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=80000000 ! srtserversink name="videoSink" wait-for-connection=false sync=true ts-offset=0 uri="srt://0.0.0.0:1234?mode=listener&latency=10"  filesrc location="/tmp/HlsPlayer_8265_nor_audioPipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000  ! mux. tee. ! decodebin3  ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=0 device=MR_PA_HlsPlayer_8265_17 sync=true slave-method=0 processing-deadline=60000000 buffer-time=50000 max-lateness=50000000 filesrc location="/tmp/HlsPlayer_8265_eng_audioPipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000  ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink device=HlsPlayer_8265_sink_eng sync=true slave-method=0 processing-deadline=40000000 buffer-time=50000 max-lateness=50000000  filesrc location="/tmp/HlsPlayer_8265_eng_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! fakesink
+
+node /home/mrstation/media-router/server/hlsDemuxer/index.js "" '{"languages":["nor","eng"],"maxQuality":"1080","subtitleLanguage":"eng","moduleIdentifier":"HlsPlayer_8265"}'
+
+GST_DEBUG=3 gst-launch-1.0 filesrc location="/tmp/HlsPlayer_8265_videoPipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! h264parse ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=80000000 ! srtserversink name="videoSink" wait-for-connection=false sync=true ts-offset=0 uri="srt://0.0.0.0:1234?mode=listener&latency=10"  filesrc location="/tmp/HlsPlayer_8265_eng_audioPipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000  ! mux. tee. ! decodebin3  ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=0 device=MR_PA_HlsPlayer_8265_74 sync=true slave-method=0 processing-deadline=60000000 buffer-time=50000 max-lateness=50000000
+
+
+node /home/mrstation/media-router/server/hlsDemuxer/index.js "" '{"languages":["eng"],"maxQuality":"1080","moduleIdentifier":"HlsPlayer_8265"}'
 ```
