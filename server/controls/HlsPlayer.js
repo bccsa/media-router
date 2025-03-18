@@ -138,7 +138,7 @@ class HlsPlayer extends Classes(
             video = `${this._src(
                 `/tmp/${this._controlName}_videoPipe`,
                 true
-            )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=40000000 ! srtserversink name="${
+            )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=80000000 ! srtserversink name="${
                 this._videoElementName
             }" wait-for-connection=false sync=true ts-offset=${
                 this.videoDelay * 1000000
