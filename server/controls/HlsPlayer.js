@@ -119,8 +119,8 @@ class HlsPlayer extends Classes(
 
     _src = (pipe, isSrt = false) => {
         if (isSrt)
-            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=40000000 ! parsebin`;
-        return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=40000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=40000000 `;
+            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin`;
+        return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000 `;
     };
 
     _video() {
@@ -158,28 +158,28 @@ class HlsPlayer extends Classes(
                     audio += ` ${this._src(
                         `/tmp/${this._controlName}_${stream.language}_audioPipe`,
                         true
-                    )} ! tee name=tee ! queue2 use-buffering=true max-size-time=40000000  ! mux.`;
+                    )} ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000  ! mux.`;
                 audio += ` ${
                     !this.enableSrt
                         ? this._src(
                               `/tmp/${this._controlName}_${stream.language}_audioPipe`
                           )
                         : `tee. ! decodebin3 `
-                } ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=40000000 ! pulsesink name=audioSink ts-offset=${
+                } ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
                     this.videoDelay * 1000000
                 } device=${
                     this.sink
-                } sync=true slave-method=0 processing-deadline=40000000 buffer-time=${
+                } sync=true slave-method=0 processing-deadline=60000000 buffer-time=${
                     this._parent.paLatency * 1000
                 } max-lateness=${this._parent.paLatency * 1000000}`;
             } else
                 audio += ` ${this._src(
                     `/tmp/${this._controlName}_${stream.language}_audioPipe`
-                )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=40000000 ! pulsesink device=${
+                )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink device=${
                     this._controlName
                 }_sink_${
                     stream.language
-                } sync=false slave-method=0 processing-deadline=40000000 buffer-time=${
+                } sync=false slave-method=0 processing-deadline=60000000 buffer-time=${
                     this._parent.paLatency * 1000
                 } max-lateness=${this._parent.paLatency * 1000000}`;
         });
@@ -195,14 +195,14 @@ class HlsPlayer extends Classes(
             !this.enableSrt
         )
             // only enable subtitles if srt is disabled or the user explicity enables subtitles for srt
-            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=40000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=40000000  ! ov.text_sink`;
+            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000  ! ov.text_sink`;
         else if (
             this.subtitleLanguage &&
             this.subtitleLanguage !== "off" &&
             this.enableSrt
         )
             // subtitles is not yet supported on srt
-            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=40000000 ! fakesink sync=true`;
+            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! fakesink sync=true`;
         return subs;
     }
 }
