@@ -119,8 +119,8 @@ class HlsPlayer extends Classes(
 
     _src = (pipe, isSrt = false) => {
         if (isSrt)
-            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin`;
-        return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=400000000 ! parsebin ! decodebin3 ! queue`;
+            return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=40000000 ! parsebin`;
+        return `filesrc location="${pipe}" ! queue2 use-buffering=true max-size-time=40000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=40000000 `;
     };
 
     _video() {
@@ -138,7 +138,7 @@ class HlsPlayer extends Classes(
             video = `${this._src(
                 `/tmp/${this._controlName}_videoPipe`,
                 true
-            )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue ! srtserversink name="${
+            )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=80000000 ! srtserversink name="${
                 this._videoElementName
             }" wait-for-connection=false sync=true ts-offset=${
                 this.videoDelay * 1000000
@@ -158,14 +158,14 @@ class HlsPlayer extends Classes(
                     audio += ` ${this._src(
                         `/tmp/${this._controlName}_${stream.language}_audioPipe`,
                         true
-                    )} ! tee name=tee ! queue ! mux.`;
+                    )} ! tee name=tee ! queue2 use-buffering=true max-size-time=40000000  ! mux.`;
                 audio += ` ${
                     !this.enableSrt
                         ? this._src(
                               `/tmp/${this._controlName}_${stream.language}_audioPipe`
                           )
                         : `tee. ! decodebin3 `
-                } ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink name=audioSink ts-offset=${
+                } ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=40000000 ! pulsesink name=audioSink ts-offset=${
                     this.videoDelay * 1000000
                 } device=${
                     this.sink
@@ -175,7 +175,7 @@ class HlsPlayer extends Classes(
             } else
                 audio += ` ${this._src(
                     `/tmp/${this._controlName}_${stream.language}_audioPipe`
-                )} ! audioconvert ! audio/x-raw,channels=2 ! queue ! pulsesink device=${
+                )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=40000000 ! pulsesink device=${
                     this._controlName
                 }_sink_${
                     stream.language
@@ -195,14 +195,14 @@ class HlsPlayer extends Classes(
             !this.enableSrt
         )
             // only enable subtitles if srt is disabled or the user explicity enables subtitles for srt
-            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue ! parsebin ! decodebin3 ! queue ! ov.text_sink`;
+            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=40000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=40000000  ! ov.text_sink`;
         else if (
             this.subtitleLanguage &&
             this.subtitleLanguage !== "off" &&
             this.enableSrt
         )
             // subtitles is not yet supported on srt
-            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue ! fakesink sync=true`;
+            subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=40000000 ! fakesink sync=true`;
         return subs;
     }
 }
