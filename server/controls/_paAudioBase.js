@@ -218,13 +218,11 @@ class _paAudioBase extends Classes(dm, vuMeter) {
             "INFO",
             `${this._paModuleName} (${this.displayName}): Starting VU`
         );
-        const _pl = `pulsesrc device=${this.monitor} ! audio/x-raw,rate=${
-            this.sampleRate
-        },format=S${this.bitDepth}LE,channels=${
+        const _pl = `pulsesrc device=${
+            this.monitor
+        } ! rawaudioparse num-channels=${
             this.channels
-        },channel-mask=(bitmask)0x${(Math.pow(2, this.channels) - 1).toString(
-            16
-        )} ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${
+        } ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${
             this.vuInterval * 1000000
         } ! fakesink silent=true`;
         const _path = `${path.dirname(
