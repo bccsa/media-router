@@ -1,4 +1,3 @@
-const { netstat } = require("../../utils/netstat");
 const si = require("systeminformation");
 const fs = require("fs");
 const os_utils = require("os-utils");
@@ -54,18 +53,6 @@ class Resources {
                     );
                 });
         }, 2000);
-
-        // Port usage
-        setInterval(async () => {
-            const ports = await netstat();
-            if (!ports) return;
-            const udp = [...ports.udp, ...ports.udp6];
-            const tcp = [...ports.tcp, ...ports.tcp6];
-            if (udp.toString() && udp.toString() !== this.udpPorts.toString())
-                this.udpPorts = udp;
-            if (tcp.toString() && tcp.toString() !== this.tcpPorts.toString())
-                this.tcpPorts = tcp;
-        }, 5000);
 
         // IP address
         setTimeout(() => {
