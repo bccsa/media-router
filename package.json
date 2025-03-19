@@ -15,6 +15,7 @@
   "dependencies": {
     "node-addon-api": "^8.3.1",
     "showdown": "^2.1.0",
+    "systeminformation": "^5.25.11",
     "tw-elements": "^2.0.0"
   }
 }
