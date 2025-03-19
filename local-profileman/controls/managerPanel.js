@@ -1,12 +1,14 @@
 class managerPanel extends ui {
     constructor() {
         super();
-        this.managerUrl = "http://localhost:3000";
+        this.managerUrl = "http://localhost:3000"; // fallback
+        this.managerHost = "";
+        this.managerPort = 3000;
         this.username = "New manager";
         this.password = "";
-        this.selected = false;        // show control on local client
+        this.selected = false; // show control on local client
         this.rbSelect = "";
-        this.displayOrder = 0;          // Sort order on local client
+        this.displayOrder = 0; // Sort order on local client
     }
 
     get html() {
@@ -48,12 +50,21 @@ class managerPanel extends ui {
                         </div>
                     </div>
     
-                    <!--    MANAGER URL      -->
+                    <!--    MANAGER HOST      -->
                     <div class="w-full mb-1 mr-4 mt-4">
                         <div class="mr-4 w-full">
-                            <label for="@{_managerUrl}" class="mb-2">Manager URL: </label>
-                            <input id="@{_managerUrl}" class="managerPanel-text-area" type="text"
-                                placeholder="Manager URL" title="Enter a manager URL" value="@{managerUrl}" />
+                            <label for="@{_managerHost}" class="mb-2">Manager Host: </label>
+                            <input id="@{_managerHost}" class="managerPanel-text-area" type="text"
+                                placeholder="Manager Host" title="Enter a manager Hostname / IP" value="@{managerHost}" />
+                        </div>
+                    </div>
+
+                    <!--    MANAGER PORT      -->
+                    <div class="w-full mb-1 mr-4 mt-4">
+                        <div class="mr-4 w-full">
+                            <label for="@{_managerPort}" class="mb-2">Manager Port: </label>
+                            <input id="@{_managerPort}" class="managerPanel-text-area" type="number"
+                                placeholder="Manager Port" title="Enter a manager Port" value="@{managerPort}" />
                         </div>
                     </div>
 
@@ -73,30 +84,31 @@ class managerPanel extends ui {
     }
 
     Init() {
-        
         // Handle property changes
-        this.on('selected', selected => {
-            if (selected)
-            {
-                this._mainCard.style.border = "medium solid #DB5461";
-                this._heading.style.backgroundColor = "#DB5461";
+        this.on(
+            "selected",
+            (selected) => {
+                if (selected) {
+                    this._mainCard.style.border = "medium solid #DB5461";
+                    this._heading.style.backgroundColor = "#DB5461";
 
-                // Radio buttons do not trigger on de-selection as per normal browser operation.
-                // We therefore need to manually reset the selected status on all other controls.
-                Object.values(this._parent._controls).filter(c => c.name != this.name).forEach(control => {
-                    control.selected = false;
-                });
-            }
-            else
-            {
-                this._mainCard.style.border = "thin outset #6b7280";
-                this._heading.style.backgroundColor = "#6b7280";
-            }
-        }, { immediate: true });
+                    // Radio buttons do not trigger on de-selection as per normal browser operation.
+                    // We therefore need to manually reset the selected status on all other controls.
+                    Object.values(this._parent._controls)
+                        .filter((c) => c.name != this.name)
+                        .forEach((control) => {
+                            control.selected = false;
+                        });
+                } else {
+                    this._mainCard.style.border = "thin outset #6b7280";
+                    this._heading.style.backgroundColor = "#6b7280";
+                }
+            },
+            { immediate: true }
+        );
 
         // Delete control
-        this._btnDelete.addEventListener('click', (e) => {
-            
+        this._btnDelete.addEventListener("click", (e) => {
             let text = "You are deleting the manager panel!";
             if (confirm(text) == true) {
                 this._notify({ remove: true });
