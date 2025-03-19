@@ -65,7 +65,7 @@ class SrtBase {
 
         function validateHost() {
             const ipPattern =
-                /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+                /^(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))|(([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}))$/;
             if (
                 !ipPattern.test(_this[prop_host]) ||
                 (_this[prop_mode] === "caller" &&
@@ -79,7 +79,7 @@ class SrtBase {
                     _this[prop_hostWarning].innerHTML =
                         "Invalid config: Caller mode cannot use IP 0.0.0.0";
                 } else {
-                    _this[prop_hostWarning].innerHTML = "Invalid IP address";
+                    _this[prop_hostWarning].innerHTML = "Invalid hostname";
                 }
             } else {
                 _this[prop_hostWarning].style.display = "none";
