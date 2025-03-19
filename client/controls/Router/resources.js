@@ -5,8 +5,6 @@ class Resources {
         this.memoryUsage = 0; // Memory usage indication
         this.ipAddress = "127.0.0.1"; // system IP address
         this.buildNumber = "DEV"; // buildNumber Build number
-        this.udpPorts = [];
-        this.tcpPorts = [];
         this._udp = {};
         this._tcp = {};
     }
@@ -51,25 +49,6 @@ class Resources {
     }
 
     /**
-     * Check if port is open for use
-     */
-    checkDevicePort(protocol, port) {
-        if (
-            (protocol == "udp" || protocol == "udp6") &&
-            this.udpPorts.find((v) => v == port)
-        )
-            return "Port is already in use";
-
-        if (
-            (protocol == "tcp" || protocol == "tcp6") &&
-            this.tcpPorts.find((v) => v == port)
-        )
-            return "Port is already in use";
-
-        return "";
-    }
-
-    /**
      * modules need to publish a port, to make sure no duplicate ports is used
      * @param {string} moduleName - module name
      * @param {string} protocol - udp/tcp
@@ -82,14 +61,10 @@ class Resources {
 
         const proto = this[`_${protocol}`];
         const portInUse = Object.values(proto).find((p) => p.port == port);
-        const devicePortInUse = this.checkDevicePort(protocol, port);
-        if (!portInUse && !devicePortInUse) {
+        if (!portInUse) {
             proto[moduleName] = { moduleName, port };
             return "";
         }
-
-        if (!portInUse && devicePortInUse)
-            return "Port is in use by another process";
 
         // return empty if module is the one using the port
         if (portInUse && portInUse.moduleName == moduleName) return "";
