@@ -20,7 +20,8 @@ class ClientServerBase extends Events {
         this.retryTimeout = retryTimeout || 500; // 500 ms
         this.frag = new messageFragmentation(
             this.server,
-            this.messageHandler.bind(this)
+            this.messageHandler.bind(this),
+            connectionTimeout
         );
 
         this.server.on("error", (err) => {

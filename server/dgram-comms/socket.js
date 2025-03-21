@@ -32,6 +32,7 @@ class Socket extends Events {
     }) {
         super();
         this.socketID = !isClient ? uuidv4() : "";
+        this.isClient = isClient;
         this.socket = serverSocket;
         this.port = port;
         this.address = address;
@@ -63,7 +64,7 @@ class Socket extends Events {
         this.keepAlive = setInterval(() => {
             this.emit(null, null, { type: "keepAlive" });
             this.connectionWatchDog();
-        }, this.connectionTimeout / 6);
+        }, this.connectionTimeout / 4);
     }
 
     /**

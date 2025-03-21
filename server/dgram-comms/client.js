@@ -64,7 +64,7 @@ class Client extends ClientServerBase {
         // set socketID
         this.socket.socketID = data.socketID;
         // emit data event
-        this.socket.emitLocal(data.topic, data.message);
+        this.socket.emitLocal("connected", data.message);
     }
 
     disconnect() {
