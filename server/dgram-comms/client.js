@@ -34,16 +34,13 @@ class Client extends ClientServerBase {
             clientID,
             encryptionKey,
             retryTimeout: this.retryTimeout,
+            connectionTimeout: this.connectionTimeout,
+            parentDisconnect: this.disconnect.bind(this),
         });
 
         this.setupConnection();
-        this.connectionWatchDog();
+        // this.connectionWatchDog();
         this.connectionRetry();
-
-        // retry connection when loosing connection
-        this.socket.on("disconnect", (msg) => {
-            this._setupConnection();
-        });
     }
 
     /**
@@ -62,27 +59,16 @@ class Client extends ClientServerBase {
     }
 
     connected({ data }) {
+        // start keepAlive
+        this.socket._keepalive();
         // set socketID
         this.socket.socketID = data.socketID;
         // emit data event
         this.socket.emitLocal(data.topic, data.message);
     }
 
-    /**
-     * Check if socket is still connected
-     */
-    connectionWatchDog() {
-        this.socket.keepAlive = setInterval(() => {
-            this.socket.emit(null, null, { type: "keepAlive" });
-            const now = new Date();
-            if (
-                now - this.socket.keepAliveTime > this.connectionTimeout &&
-                this.socket.connected
-            ) {
-                // emit offline event
-                this.socket.emitLocal("disconnected", this.socket.socketID);
-            }
-        }, this.connectionTimeout / 4);
+    disconnect() {
+        this.socket.connected = false;
     }
 
     /**

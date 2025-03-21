@@ -223,8 +223,6 @@ router_io.on("connected", (socket) => {
 
     socket.on("disconnected", (data) => {
         // force disconnect socket
-        socket.disconnect();
-
         delete socket;
 
         // check that router has not connected on a different socket
