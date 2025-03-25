@@ -120,6 +120,7 @@ manager_io.on("connection", (manager_socket) => {
 
         // Create a new list of encryption keys, used for router communication
         generateEncryptionKeys();
+        router_io.encryptionKeys = encryptionKeys;
     });
 
     // listen on password change requsets
