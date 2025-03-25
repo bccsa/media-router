@@ -113,7 +113,9 @@ class Socket extends Events {
         if (
             this.clientID &&
             this.encryptionKey &&
-            (!options.type || options.type == "data")
+            (!options.type ||
+                options.type == "data" ||
+                options.type == "connect")
         ) {
             data = await encrypt(JSON.stringify(data), this.encryptionKey);
         }
