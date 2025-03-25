@@ -25,6 +25,7 @@ class Client extends ClientServerBase {
         this.clientID = clientID;
         this.encryptionKey = encryptionKey;
         this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
+        this.connectionInterval = undefined;
 
         this.socket = new Socket({
             port,
@@ -56,6 +57,7 @@ class Client extends ClientServerBase {
             type: "connect",
             socketID: this.socket.socketID,
         });
+        this.socket.deleted = false;
     }
 
     connected({ data }) {
@@ -75,7 +77,7 @@ class Client extends ClientServerBase {
      * Try to reconnect as long as socket is disconnected
      */
     connectionRetry() {
-        setInterval(() => {
+        this.connectionInterval = setInterval(() => {
             // try to setupConnection as log as socket is disconnected
             if (!this.socket.connected) this.setupConnection();
         }, this.connectionTimeout);
@@ -91,6 +93,15 @@ class Client extends ClientServerBase {
         // ignore message if encryption key is not provided
         if (clientID && iv && !this.encryptionKey) return;
         return await decipher(data, iv, this.encryptionKey);
+    }
+
+    /**
+     * destroys all intervals and disconnects socket
+     */
+    destroy() {
+        clearInterval(this.connectionInterval);
+        this.socket.disconnect();
+        this.socket.removeAllListeners();
     }
 }
 

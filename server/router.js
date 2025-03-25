@@ -46,7 +46,8 @@ function setProfileDetails(property, value) {
 // -------------------------------------
 // Manager socket.io connection
 // -------------------------------------
-var manager_io;
+let manager_io;
+let manager_client;
 
 let reconnectTimer;
 let firstConnect = true;
@@ -63,7 +64,9 @@ function manager_connect(managerHost, managerPort, username, password, oldUrl) {
 
     if (!managerHost || !managerPort || !username || !password) return;
 
-    const client = new Client({
+    if (manager_client) manager_client.destroy();
+
+    manager_client = new Client({
         port: managerPort,
         address: managerHost,
         clientID: username,
@@ -76,12 +79,7 @@ function manager_connect(managerHost, managerPort, username, password, oldUrl) {
         reconnectTimer = undefined;
     }
 
-    // Clear existing connection
-    if (manager_io) {
-        manager_io.disconnect();
-    }
-
-    manager_io = client.getSocket();
+    manager_io = manager_client.getSocket();
 
     manager_io.on("connected", () => {
         console.log("Connected to manager.");
