@@ -303,14 +303,7 @@ class appFrame extends ui {
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     const data = JSON.parse(e.target.result);
-                    const name = data.name;
-                    this.SetData({ [name]: data });
-                    this.on(name, (control) => {
-                        // send newly created router's data to manager
-                        this._notify({ [name]: control.GetData() });
-
-                        f.updateOrder();
-                    });
+                    loadRouter(data);
                 };
                 reader.readAsText(file);
             };
@@ -319,18 +312,19 @@ class appFrame extends ui {
 
         // Create an export of all the manager configuration
         this._btnExportManagerConfig.addEventListener("click", (e) => {
-            const data = this.GetData();
+            const data = this.GetData({ sparse: false });
+            const controls = [];
             Object.values(data).forEach((control) => {
                 if (control.controlType == "Router") {
-                    delete control.name;
                     delete control.online;
                     delete control.run;
                     control.cpuUsage = 0;
                     control.cpuTemperature = 0;
                     control.memoryUsage = 0;
+                    controls.push(control);
                 }
             });
-            const blob = new Blob([JSON.stringify(data)], {
+            const blob = new Blob([JSON.stringify(controls)], {
                 type: "application/json",
             });
             const url = URL.createObjectURL(blob);
@@ -350,12 +344,24 @@ class appFrame extends ui {
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     const data = JSON.parse(e.target.result);
-                    this.SetData(data);
+                    data.forEach((control) => {
+                        loadRouter(control);
+                    });
                 };
                 reader.readAsText(file);
             };
             fileInput.click();
         });
+
+        const loadRouter = (data) => {
+            const name = data.name;
+            this.SetData({ [name]: data });
+            this._notify({ [name]: data });
+
+            this.once(name, () => {
+                f.updateOrder();
+            });
+        };
         // ======================= Import / Export =======================
     }
 
