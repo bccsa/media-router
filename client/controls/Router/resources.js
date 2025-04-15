@@ -54,20 +54,33 @@ class Resources {
      * @param {string} protocol - udp/tcp
      * @param {number} port - port number
      */
-    publishPort(moduleName, protocol, port) {
+    publishPort(moduleName, protocol, port, identifier = "default") {
         this.cleanPorts();
 
         if (protocol !== "udp" && protocol !== "tcp") return "Invalid protocol";
 
         const proto = this[`_${protocol}`];
-        const portInUse = Object.values(proto).find((p) => p.port == port);
+        const portInUse = Object.values(proto).find((p) =>
+            Object.values(p.port).find((p) => p.port == port)
+        );
         if (!portInUse) {
-            proto[moduleName] = { moduleName, port };
+            if (proto[moduleName])
+                proto[moduleName].port[identifier] = { port, identifier };
+            else
+                proto[moduleName] = {
+                    moduleName,
+                    port: { [identifier]: { port, identifier } },
+                };
             return "";
         }
 
         // return empty if module is the one using the port
-        if (portInUse && portInUse.moduleName == moduleName) return "";
+        if (
+            portInUse &&
+            portInUse.moduleName == moduleName &&
+            portInUse.identifier == identifier
+        )
+            return "";
 
         return `Port is in use by ${portInUse.moduleName}`;
     }
@@ -75,10 +88,11 @@ class Resources {
     /**
      * Remove module mort from list
      */
-    unpublishPort(moduleName, protocol) {
+    unpublishPort(moduleName, protocol, identifier = "default") {
         if (protocol !== "udp" && protocol !== "tcp") return "Invalid protocol";
         const proto = this[`_${protocol}`];
-        delete proto[moduleName];
+        if (!proto[moduleName] || !proto[moduleName].port) return;
+        delete proto[moduleName].port[identifier];
     }
 
     /**
