@@ -324,7 +324,7 @@ module.exports = {
                             <option value="AudioOutput">Audio Output</option>
                             <option value="SrtOpusInput">Opus over SRT Input</option>
                             <option value="SrtOpusOutput">Opus over SRT Output</option>
-                            <option value="SrtRelay">Srt Relay</option>
+                            <option value="SrtRelay">SRT Relay</option>
                             <option value="SoundProcessor">PCM Sound Processor</option>
                             <option value="SoundDucking">PCM Sound Ducking</option>
                             <option value="SrtVideoPlayer">Video over SRT Player</option>
@@ -332,6 +332,8 @@ module.exports = {
                             <option value="HlsPlayer">Hls Video Player</option>
                             <option value="WebRTCClient">WebRTC Client WebApp</option>
                             <option value="Separator">Separator</option>
+                            <option value="SrtToRist">SRT to RIST</option>
+                            <option value="RistToSrt">RIST to SRT</option>
                             </select>
                         </div>
                     </div>
