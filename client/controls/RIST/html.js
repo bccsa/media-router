@@ -21,7 +21,7 @@ module.exports = {
             <!-- buffer  --> 
             <div class="w-1/3 mr-4 flex flex-col  mb-2">
                 <label for="@{_buffer}" class="form-label inline-block mb-2 mr-2">Buffer (ms):</label>
-                <input type="number" min="50" oninput="validity.valid||(value='')" id="@{_buffer}" 
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffer}" 
                     title="Actual buffer size" name="Buffer size in ms" step="1" class="srtOpusInput-pos-number-input"
                     value="@{buffer}">
             </div>
@@ -95,7 +95,7 @@ module.exports = {
             <!-- buffer min  --> 
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_buffermin}" class="form-label inline-block mb-2 mr-2">Buffer min:</label>
-                <input type="number" min="50" oninput="validity.valid||(value='')" id="@{_buffermin}" 
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffermin}" 
                     title="Minimum buffer size" name="Buffer Min" step="1" class="srtOpusInput-pos-number-input"
                     value="@{buffermin}">
             </div>
@@ -103,7 +103,7 @@ module.exports = {
             <!-- buffer max   --> 
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_buffermax}" class="form-label inline-block mb-2 mr-2">Buffer max:</label>
-                <input type="number" min="50" oninput="validity.valid||(value='')" id="@{_buffermax}" 
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffermax}" 
                     title="Maximum buffer size" name="Buffer Max" step="1" class="srtOpusInput-pos-number-input"
                     value="@{buffermax}">
             </div>
@@ -143,7 +143,7 @@ module.exports = {
         <div class="paAudioBase-modal-body">
             <div id="@{_modalSrtStats_table_cols}">
                 <!-- RIST Controls div -->
-                <div class="text-sm text-left grid grid-cols-7">
+                <div class="text-sm text-left grid grid-cols-6">
                     <div class="border px-4 py-2">
                         ID
                     </div>
@@ -152,9 +152,6 @@ module.exports = {
                     </div>
                     <div class="border px-4 py-2">
                         Send/ Receive Rate (MBPS)
-                    </div>
-                    <div class="border px-4 py-2">
-                        Packet Loss (%)
                     </div>
                     <div class="border px-4 py-2">
                         Quality

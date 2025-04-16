@@ -6,7 +6,6 @@ class RistStats extends ui {
         this.id = 0;
         this.cname = "";
         this.bitrate = 0;
-        this.packetLoss = "NA";
         this.quality = 0;
         this.rtt = 0;
         this.status = "disconnected"; // status: running/ disconnected
@@ -15,7 +14,7 @@ class RistStats extends ui {
     get html() {
         return `
         <!-- SRT Controls div -->
-        <div class="text-sm text-left grid grid-cols-7">
+        <div class="text-sm text-left grid grid-cols-6">
             <div class="border px-4 py-2">
              <span>@{id}</span>
             </div>
@@ -24,9 +23,6 @@ class RistStats extends ui {
             </div>
             <div class="border px-4 py-2">
                 <span>@{bitrate}</span>
-            </div>
-            <div class="border px-4 py-2">
-                <span>@{packetLoss}</span>%
             </div>
             <div class="border px-4 py-2">
                 <span>@{quality}</span>
