@@ -10,7 +10,6 @@ class RistStats extends dm {
         this.id = 0;
         this.cname = "";
         this.bitrate = 0;
-        this.packetLoss = "NA";
         this.quality = 0;
         this.rtt = 0;
         this.status = "disconnected"; // status: running/ disconnected

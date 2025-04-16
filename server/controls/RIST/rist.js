@@ -92,18 +92,7 @@ module.exports = {
         if (!stats) return [];
         try {
             const data = [];
-            let packetLoss = 0;
             stats.forEach((s) => {
-                if (s["flow_cumulative_stats"])
-                    packetLoss =
-                        s["flow_cumulative_stats"].lost == 0
-                            ? 0
-                            : Math.round(
-                                  (s["flow_cumulative_stats"].lost /
-                                      s["flow_cumulative_stats"].received) *
-                                      100 *
-                                      100
-                              ) / 100;
                 if (!s["receiver-stats"]) return;
                 const stat = s["receiver-stats"].flowinstant;
                 const quality = stat["stats"].quality;
@@ -122,8 +111,6 @@ module.exports = {
                     res.status = "running";
                     res.controlType = "RistStats";
                     res.timestamp = Date.now();
-                    res.packetLoss = `${packetLoss}`;
-
                     data.push(res);
                 });
             });
