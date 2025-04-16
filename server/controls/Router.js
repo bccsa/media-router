@@ -62,6 +62,7 @@ class Router extends Classes(dm, Resources, Logs, PulseAudio) {
         this.on("resetCmd", (reset) => {
             if (reset) {
                 this.reset = false;
+                this.runCmd = false;
                 this._log(
                     "INFO",
                     "Reset command received. Resetting router process..."
@@ -80,8 +81,6 @@ class Router extends Classes(dm, Resources, Logs, PulseAudio) {
                     );
                     process.kill("SIGKILL");
                 }, 5000);
-
-                process.exit();
             }
         });
 
