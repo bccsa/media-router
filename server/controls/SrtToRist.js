@@ -1,7 +1,7 @@
 const _routerChildControlBase = require("./_routerChildControlBase");
 const SrtBase = require("./SrtBase");
 const { Classes } = require("../modular-dm");
-const { url } = require("./RIST/rist");
+const { url, parseStats, senderStats } = require("./RIST/rist");
 const path = require("path");
 const Spawn = require("./spawn");
 
@@ -79,26 +79,12 @@ class SrtToRist extends Classes(_routerChildControlBase, SrtBase) {
     }
 
     _ristStats(_d) {
-        if (!_d) return;
-        const data = _d.toString();
-        if (!data) return;
-        const parsedObjects = data
-            .trim()
-            .split("\n")
-            .filter((line) => line.includes("{") && line.includes("}")) // keep only lines with JSON
-            .map((line) => {
-                const [, , jsonStr] = line.split("|");
-                try {
-                    const json = JSON.parse(jsonStr.trim().split("[INFO]")[1]);
-                    return json;
-                } catch (e) {
-                    return null; // skip malformed JSON just in case
-                }
-            })
-            .filter((obj) => obj !== null); // remove null entries
-
-        if (parsedObjects.length == 0) return;
-        console.log(parsedObjects);
+        const data = senderStats(parseStats(_d));
+        data.forEach((d) => {
+            const id = `${this._controlName}_${d.cname}_${d.id}`;
+            this.Set({ [id]: d });
+            this._notify({ [id]: this[id].Get() });
+        });
     }
 }
 

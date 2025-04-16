@@ -1,7 +1,7 @@
 class SrtStats extends ui {
     constructor() {
         super();
-        // Parents div for srtStats 
+        // Parents div for srtStats
         this.parentElement = "_SrtStatsDiv";
         this.StatsName = "";
         this.rtt_ms = 0;
@@ -16,12 +16,12 @@ class SrtStats extends ui {
         this.packets_sent_lost = 0;
         this.receive_rate_mbps = 0;
         this.send_rate_mbps = 0;
-        this.send_duration_us = 0;                  // send duration in us
-        this.send_duration = "0s";                   // send duration in seconds
-        this.packet_loss = 0;                       // packetloss %
-        this.MB_send_receive = 0;                   // total MB send / receive
-        this.send_receive_rate = 0;                 // rate sending / receiving
-        this.status = "disconnected";               // status: running/ disconnected
+        this.send_duration_us = 0; // send duration in us
+        this.send_duration = "0s"; // send duration in seconds
+        this.packet_loss = 0; // packetloss %
+        this.MB_send_receive = 0; // total MB send / receive
+        this.send_receive_rate = 0; // rate sending / receiving
+        this.status = "disconnected"; // status: running/ disconnected
     }
 
     get html() {
@@ -56,11 +56,14 @@ class SrtStats extends ui {
         `;
     }
 
-
     Init() {
-        this.on('status', (status) => {
-            if (this._parent.srtMode == "caller")
-            this._parent._SrtConnectionStat(status);
-        }, {immediate: true})
+        this.on(
+            "status",
+            (status) => {
+                if (this._parent.srtMode == "caller")
+                    this._parent._SrtConnectionStat(status);
+            },
+            { immediate: true }
+        );
     }
 }

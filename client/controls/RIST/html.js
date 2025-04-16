@@ -130,4 +130,45 @@ module.exports = {
         </div>
         `;
     },
+
+    ristStatsHtml: () => {
+        return `
+        <!--  Rist Stats section  -->
+        <div class="paAudioBase-modal-header">
+            <div class="flex flex-shrink-0 items-center justify-between">
+                <span class="appFrame-control-name">RIST Stats</span>
+            </div>
+        </div>
+
+        <div class="paAudioBase-modal-body">
+            <div id="@{_modalSrtStats_table_cols}">
+                <!-- RIST Controls div -->
+                <div class="text-sm text-left grid grid-cols-7">
+                    <div class="border px-4 py-2">
+                        ID
+                    </div>
+                    <div class="border px-4 py-2">
+                        CName
+                    </div>
+                    <div class="border px-4 py-2">
+                        Send/ Receive Rate (MBPS)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Packet Loss (%)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Quality
+                    </div>
+                    <div class="border px-4 py-2">
+                        Roundtrip time (ms)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Status
+                    </div>
+                </div>
+                <div id="@{_RistStatsDiv}"></div>
+            </div>
+        </div>
+        `;
+    },
 };

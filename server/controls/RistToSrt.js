@@ -1,7 +1,7 @@
 const _routerChildControlBase = require("./_routerChildControlBase");
 const SrtBase = require("./SrtBase");
 const { Classes } = require("../modular-dm");
-const { url, parseStats } = require("./RIST/rist");
+const { url, parseStats, receiverStats } = require("./RIST/rist");
 const path = require("path");
 const Spawn = require("./spawn");
 
@@ -81,7 +81,12 @@ class RistToSrt extends Classes(_routerChildControlBase, SrtBase) {
     }
 
     _ristStats(_d) {
-        console.log(parseStats(_d));
+        const data = receiverStats(parseStats(_d));
+        data.forEach((d) => {
+            const id = `${this._controlName}_${d.cname}_${d.id}`;
+            this.Set({ [id]: d });
+            this._notify({ [id]: this[id].Get() });
+        });
     }
 }
 
