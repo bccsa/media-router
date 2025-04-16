@@ -62,4 +62,74 @@ module.exports = {
         if (!parsedObjects || parsedObjects.length == 0) return;
         return parsedObjects;
     },
+
+    senderStats(stats) {
+        if (!stats) return [];
+        try {
+            const data = [];
+            stats.forEach((s) => {
+                const stat = s["sender-stats"].peer;
+                const res = {};
+                res.id = stat.id;
+                res.cname = stat.cname;
+                res.quality = stat["stats"].quality;
+                res.bitrate =
+                    Math.round((stat["stats"].bandwidth / 1000000) * 100) / 100;
+                res.rtt = stat["stats"].avg_rtt;
+                res.status = "running";
+                res.controlType = "RistStats";
+                res.timestamp = Date.now();
+
+                data.push(res);
+            });
+            return data;
+        } catch (e) {
+            return [];
+        }
+    },
+
+    receiverStats(stats) {
+        if (!stats) return [];
+        try {
+            const data = [];
+            let packetLoss = 0;
+            stats.forEach((s) => {
+                if (s["flow_cumulative_stats"])
+                    packetLoss =
+                        s["flow_cumulative_stats"].lost == 0
+                            ? 0
+                            : Math.round(
+                                  (s["flow_cumulative_stats"].lost /
+                                      s["flow_cumulative_stats"].received) *
+                                      100 *
+                                      100
+                              ) / 100;
+                if (!s["receiver-stats"]) return;
+                const stat = s["receiver-stats"].flowinstant;
+                const quality = stat["stats"].quality;
+
+                stat.peers.forEach((peer) => {
+                    const res = {};
+
+                    res.id = peer.id;
+                    res.cname = `Link ${peer.id}`;
+                    res.rtt = peer["stats"].avg_rtt;
+                    res.bitrate =
+                        Math.round(
+                            (peer["stats"].avg_bitrate / 1000000) * 100
+                        ) / 100;
+                    res.quality = quality;
+                    res.status = "running";
+                    res.controlType = "RistStats";
+                    res.timestamp = Date.now();
+                    res.packetLoss = `${packetLoss}`;
+
+                    data.push(res);
+                });
+            });
+            return data;
+        } catch (e) {
+            return [];
+        }
+    },
 };
