@@ -1,4 +1,4 @@
-const { ristHtml } = require("controls/RIST/html");
+const { ristHtml, ristStatsHtml } = require("controls/RIST/html");
 
 class Rist {
     constructor() {
@@ -22,7 +22,10 @@ class Rist {
                 <div id="@{_controlsDiv}"> </div>
             `
             )
-            .replace("<!--  %SrtStatsHtml%  -->", this.SrtStatsHtml());
+            .replace(
+                "<!--  %SrtStatsHtml%  -->",
+                `${this.SrtStatsHtml()} ${ristStatsHtml()}`
+            );
     }
 
     _RistInit() {

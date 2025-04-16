@@ -170,7 +170,9 @@ class _routerChildControlBase extends ui {
                     </div>
 
                     <div>
-                        <!--  %SrtStatsHtml%  -->
+                        <div id="@{_modalStats}" class="paAudioBase-sub-modal hidden">
+                            <!--  %SrtStatsHtml%  -->
+                        </div>
                     </div>
                     
                 </div>
