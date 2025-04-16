@@ -79,7 +79,7 @@ class Router extends Classes(dm, Resources, Logs, PulseAudio) {
                         "ERROR",
                         "Reset command timeout. Killing router process..."
                     );
-                    process.kill("SIGKILL");
+                    process.exit();
                 }, 5000);
             }
         });
