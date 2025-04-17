@@ -41,7 +41,6 @@ class SrtRelay extends Classes(_routerChildControlBase, SrtBase) {
             let _pipeline =
                 // sink
                 `srtserversrc uri="${this.sink_uri()}" wait-for-connection=false ! ` +
-                `queue leaky=2 max-size-time=200000000 flush-on-eos=true ! ` +
                 // source
                 `srtserversink name=${
                     this._srtElementName
@@ -96,7 +95,9 @@ class SrtRelay extends Classes(_routerChildControlBase, SrtBase) {
             }`;
         }
 
-        let _uri = `srt://${this.sink_srtHost}:${this.sink_srtPort}?mode=${this.sink_srtMode}&latency=${this.sink_srtLatency}${maxBW}${streamID}${crypto}`;
+        const _host =
+            this.sink_srtMode == "listener" ? "0.0.0.0" : this.sink_srtHost;
+        let _uri = `srt://${_host}:${this.sink_srtPort}?mode=${this.sink_srtMode}&latency=${this.sink_srtLatency}${maxBW}${streamID}${crypto}`;
 
         return _uri;
     }
