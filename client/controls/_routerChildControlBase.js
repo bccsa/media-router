@@ -18,8 +18,8 @@ class _routerChildControlBase extends ui {
         this._left = this.left; // Internal left position tracking
         this._top = this.top; // Internal top position tracking
         this.reload = false; // Reload configuration command. Stops and starts the control to apply changes.
-        this.Help_md = ""; // Help info
-        this.md_queue = []; // queue to load md files, to keep them in the right seq.
+        this._Help_md = ""; // Help info
+        this._md_queue = []; // queue to load md files, to keep them in the right seq.
         this.moduleEnabled = true; // Enable or disable individual module
     }
 
@@ -430,7 +430,7 @@ class _routerChildControlBase extends ui {
         //----------------------Scale-----------------------------//
 
         //----------------------Help Modal-----------------------------//
-        this.Help_md = "";
+        this._Help_md = "";
         this._modalHelp.style.display = "none";
         this._btnHelp.addEventListener("click", (e) => {
             this._toggleHelp();
@@ -440,11 +440,6 @@ class _routerChildControlBase extends ui {
         });
         this._btnSettings.addEventListener("click", (e) => {
             this._modalHelp.style.display = "none";
-        });
-        this.on("Help_md", (e) => {
-            let converter = new showdown.Converter();
-            let html = converter.makeHtml(this.Help_md);
-            this._modalHelp_md.innerHTML = html;
         });
         //----------------------Help Modal-----------------------------//
 
@@ -481,15 +476,15 @@ class _routerChildControlBase extends ui {
      * @param {String} _path - path to file
      */
     _loadHelpMD(_path) {
-        this.md_queue.push(_path);
-        if (this.md_queue.length == 1) {
+        this._md_queue.push(_path);
+        if (this._md_queue.length == 1) {
             this._processMDQueue();
         }
     }
 
     _processMDQueue() {
-        if (this.md_queue.length > 0) {
-            let _path = this.md_queue.shift();
+        if (this._md_queue.length > 0) {
+            let _path = this._md_queue.shift();
             let _this = this;
             fetch(_path)
                 .then(function (response) {
@@ -499,7 +494,8 @@ class _routerChildControlBase extends ui {
                     return response.text();
                 })
                 .then(function (fileContent) {
-                    _this.Help_md = `${fileContent}\n${_this.Help_md}\n`;
+                    _this._Help_md = `${fileContent}\n${_this._Help_md}\n`;
+                    _this.setHelpMd();
                     _this._processMDQueue();
                 })
                 .catch(function (error) {
@@ -510,6 +506,12 @@ class _routerChildControlBase extends ui {
                     _this._processMDQueue();
                 });
         }
+    }
+
+    setHelpMd() {
+        let converter = new showdown.Converter();
+        let html = converter.makeHtml(this._Help_md);
+        this._modalHelp_md.innerHTML = html;
     }
 
     _setScale() {
