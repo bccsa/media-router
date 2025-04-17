@@ -7,6 +7,7 @@ class SrtRelay extends Classes(_routerChildControlBase, SrtBase) {
     constructor() {
         super();
         this._srtElementName = "srtserversink";
+        this.ready = true; // override ready to true, since we are not using pipewire
 
         // SrtSink settings
         this.sink_srtHost = "";
