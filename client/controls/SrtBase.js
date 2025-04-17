@@ -25,66 +25,29 @@ class SrtBase {
         prop_maxBw = "srtMaxBw",
         prop_enableMaxBw = "srtEnableMaxBW",
         prop_streamId = "srtStreamID",
-        prop_hostWarning = "srtHostWarning",
         prop_portWarning = "srtPortWarning"
     ) {
         // ========================== validators =========================
-
-        // ========================= SrtHost
         const _this = this;
-        this.on(
-            prop_host,
-            async () => {
-                // wait for prop to be ready
-                while (
-                    !_this[prop_hostWarning] ||
-                    !_this[prop_host || !_this[prop_mode]]
-                )
-                    await new Promise((res) => setTimeout(res, 1000));
-                validateHost();
-            },
-            { immediate: true }
-        );
-
+        // ========================= SrtHost
         this.on(
             prop_mode,
             async () => {
                 // wait for prop to be ready
-                while (
-                    !_this[prop_hostWarning] ||
-                    !_this[prop_host || !_this[prop_mode]]
-                )
+                while (!_this[`_${prop_port}`] || !_this[`_${prop_host}`])
                     await new Promise((res) => setTimeout(res, 1000));
-                validateHost();
 
                 // unpublish port if mode is caller
-                _this._parent.unpublishPort(_this.name, "udp");
+                if (_this[prop_mode] === "caller")
+                    _this._parent.unpublishPort(_this.name, "udp");
+
+                // hide host if mode is listener
+                if (_this[prop_mode] === "listener")
+                    _this[`_${prop_host}`].style.display = "none";
+                else _this[`_${prop_host}`].style.display = "block";
             },
             { immediate: true }
         );
-
-        function validateHost() {
-            const ipPattern =
-                /^(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?))|(([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}))$/;
-            if (
-                !ipPattern.test(_this[prop_host]) ||
-                (_this[prop_mode] === "caller" &&
-                    _this[prop_host] === "0.0.0.0")
-            ) {
-                _this[prop_hostWarning].style.display = "block";
-                if (
-                    _this[prop_mode] === "caller" &&
-                    _this[prop_host] === "0.0.0.0"
-                ) {
-                    _this[prop_hostWarning].innerHTML =
-                        "Invalid config: Caller mode cannot use IP 0.0.0.0";
-                } else {
-                    _this[prop_hostWarning].innerHTML = "Invalid hostname";
-                }
-            } else {
-                _this[prop_hostWarning].style.display = "none";
-            }
-        }
 
         // ========================= SrtPort
 
@@ -125,7 +88,6 @@ class SrtBase {
             prop_maxBw,
             prop_enableMaxBw,
             prop_streamId,
-            prop_hostWarning,
             prop_portWarning
         );
     }

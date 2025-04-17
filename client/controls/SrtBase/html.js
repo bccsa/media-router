@@ -10,7 +10,6 @@ module.exports = {
         prop_maxBw = "srtMaxBw",
         prop_enableMaxBw = "srtEnableMaxBW",
         prop_streamId = "srtStreamID",
-        prop_hostWarning = "srtHostWarning",
         prop_portWarning = "srtPortWarning"
     ) => {
         return `
@@ -40,7 +39,6 @@ module.exports = {
             <label for="@{_${prop_host}}" class="form-label inline-block mb-2">Host:</label>
                 <input id="@{_${prop_host}}" class="paAudioBase-text-area" type="text"
                 title="SRT host name / ip address" placeholder="Your srt Host" value="@{${prop_host}}"/>
-                <span id="@{${prop_hostWarning}}" class="text-red-600" style="display: none;">
         </div>
 
         <div class="w-full mb-2 flex ">
