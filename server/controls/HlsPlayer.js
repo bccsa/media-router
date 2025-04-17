@@ -182,7 +182,7 @@ class HlsPlayer extends Classes(
                     this._controlName
                 }_sink_${
                     stream.language
-                } sync=false slave-method=0 processing-deadline=60000000 buffer-time=${
+                } sync=true slave-method=0 processing-deadline=60000000 buffer-time=${
                     this._parent.paLatency * 1000
                 } max-lateness=${this._parent.paLatency * 1000000}`;
         });
@@ -199,6 +199,7 @@ class HlsPlayer extends Classes(
         )
             // only enable subtitles if srt is disabled or the user explicity enables subtitles for srt
             subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000 ! ov.text_sink`;
+        return subs;
     }
 }
 
