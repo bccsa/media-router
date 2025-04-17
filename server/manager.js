@@ -120,6 +120,7 @@ manager_io.on("connection", (manager_socket) => {
 
         // Create a new list of encryption keys, used for router communication
         generateEncryptionKeys();
+        router_io.encryptionKeys = encryptionKeys;
     });
 
     // listen on password change requsets
@@ -213,20 +214,19 @@ router_io.on("connected", (socket) => {
     routerConf.online = true;
     manager_io.emit("data", { [socket.data.routerID]: { online: true } });
 
-    // Data received from router
-    socket.on("data", (data) => {
+    const socketData = (data) => {
         // Forward data to manager client UI
         manager_io.emit("data", { [socket.data.routerID]: data });
 
         confManager.append({ [socket.data.routerID]: data });
-    });
+    };
 
-    socket.on("disconnected", (data) => {
-        // force disconnect socket
-        socket.disconnect();
+    // Data received from router
+    socket.on("data", socketData);
 
-        delete socket;
-
+    const socketDisconnect = (data) => {
+        socket.off("data", socketData);
+        socket.off("disconnected", socketDisconnect);
         // check that router has not connected on a different socket
         if (
             Object.values(router_io.sockets).find(
@@ -242,5 +242,7 @@ router_io.on("connected", (socket) => {
         // Set offline status
         routerConf.online = false;
         manager_io.emit("data", { [socket.data.routerID]: { online: false } });
-    });
+    };
+
+    socket.on("disconnected", socketDisconnect);
 });

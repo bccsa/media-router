@@ -35,9 +35,9 @@ class Server extends ClientServerBase {
         });
 
         this.server.bind(port, bindAddress);
-        setInterval(() => {
-            this.connectionWatchDog();
-        }, connectionTimeout / 4);
+        // setInterval(() => {
+        //     this.connectionWatchDog();
+        // }, connectionTimeout / 4);
     }
 
     /**
@@ -80,6 +80,8 @@ class Server extends ClientServerBase {
             clientID: clientID,
             encryptionKey: this.encryptionKeys[clientID],
             retryTimeout: this.retryTimeout,
+            connectionTimeout: this.connectionTimeout,
+            parentDisconnect: this.disconnect.bind(this),
         });
 
         this.sockets[_s.socketID] = _s;
@@ -91,23 +93,9 @@ class Server extends ClientServerBase {
         this.emitLocal("connected", _s);
     }
 
-    /**
-     * Check if socket is still connected
-     */
-    connectionWatchDog() {
-        Object.values(this.sockets).forEach((s) => {
-            s.emit(null, null, { type: "keepAlive" });
-            const now = new Date();
-            if (now - s.keepAliveTime > this.connectionTimeout) {
-                // remove socket
-                s.deleted = true;
-                clearInterval(s.keepAlive);
-                delete this.sockets[s.socketID];
-                // emit offline event
-                s.emitLocal("disconnected", s.socketID);
-                s = undefined;
-            }
-        });
+    disconnect(socketID) {
+        delete this.sockets[socketID];
+        // this.emitLocal("disconnected", socketID);
     }
 
     /**

@@ -152,7 +152,7 @@ class Router extends _uiClasses(ui, Resources, Logs) {
                 name = genName(this.name);
             }
 
-            let data = this.GetData();
+            let data = this.GetData({ sparse: false });
             delete data.name;
             delete data.online;
             delete data.run;

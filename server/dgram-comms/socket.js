@@ -27,9 +27,12 @@ class Socket extends Events {
         clientID = undefined,
         encryptionKey = undefined,
         retryTimeout,
+        connectionTimeout,
+        parentDisconnect,
     }) {
         super();
         this.socketID = !isClient ? uuidv4() : "";
+        this.isClient = isClient;
         this.socket = serverSocket;
         this.port = port;
         this.address = address;
@@ -40,7 +43,9 @@ class Socket extends Events {
         this.clientID = clientID; // used to identify client
         this.encryptionKey = encryptionKey; // used to encrypt/decrypt messages
         this.retryTimeout = retryTimeout || 500;
+        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
         this.frag = new messageFragmentation(this.socket);
+        this.parentDisconnect = parentDisconnect;
 
         this.on("connected", () => {
             this.connected = true;
@@ -48,6 +53,16 @@ class Socket extends Events {
         this.on("disconnected", () => {
             this.connected = false;
         });
+
+        this._keepalive();
+    }
+
+    // start client keepAlive
+    _keepalive() {
+        if (this.keepAlive) return;
+        this.keepAlive = setInterval(() => {
+            this.connectionWatchDog();
+        }, this.connectionTimeout / 4);
     }
 
     /**
@@ -98,7 +113,9 @@ class Socket extends Events {
         if (
             this.clientID &&
             this.encryptionKey &&
-            (!options.type || options.type == "data")
+            (!options.type ||
+                options.type == "data" ||
+                options.type == "connect")
         ) {
             data = await encrypt(JSON.stringify(data), this.encryptionKey);
         }
@@ -144,10 +161,25 @@ class Socket extends Events {
      * Disconnect socket
      */
     disconnect() {
-        this.removeAllListeners();
+        clearInterval(this.keepAlive);
+        this.keepAlive = undefined;
+        this.parentDisconnect(this.socketID);
+        this.emitLocal("disconnected", this.socketID);
+        if (!this.isClient) this.removeAllListeners(); // only remove listener if client
         console.log("disconnecting socket: " + this.socketID);
         this.deleted = true;
-        clearInterval(this.keepAlive);
+        this.connected = false;
+    }
+
+    /**
+     * Connection WatchDog
+     */
+    connectionWatchDog() {
+        this.emit(null, null, { type: "keepAlive" });
+        // check if connection is alive
+        if (new Date() - this.keepAliveTime > this.connectionTimeout) {
+            this.disconnect();
+        }
     }
 
     /**

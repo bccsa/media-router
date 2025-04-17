@@ -25,6 +25,7 @@ class Client extends ClientServerBase {
         this.clientID = clientID;
         this.encryptionKey = encryptionKey;
         this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
+        this.connectionInterval = undefined;
 
         this.socket = new Socket({
             port,
@@ -34,16 +35,13 @@ class Client extends ClientServerBase {
             clientID,
             encryptionKey,
             retryTimeout: this.retryTimeout,
+            connectionTimeout: this.connectionTimeout,
+            parentDisconnect: this.disconnect.bind(this),
         });
 
         this.setupConnection();
-        this.connectionWatchDog();
+        // this.connectionWatchDog();
         this.connectionRetry();
-
-        // retry connection when loosing connection
-        this.socket.on("disconnect", (msg) => {
-            this._setupConnection();
-        });
     }
 
     /**
@@ -59,37 +57,27 @@ class Client extends ClientServerBase {
             type: "connect",
             socketID: this.socket.socketID,
         });
+        this.socket.deleted = false;
     }
 
     connected({ data }) {
+        // start keepAlive
+        this.socket._keepalive();
         // set socketID
         this.socket.socketID = data.socketID;
         // emit data event
-        this.socket.emitLocal(data.topic, data.message);
+        this.socket.emitLocal("connected", data.message);
     }
 
-    /**
-     * Check if socket is still connected
-     */
-    connectionWatchDog() {
-        this.socket.keepAlive = setInterval(() => {
-            this.socket.emit(null, null, { type: "keepAlive" });
-            const now = new Date();
-            if (
-                now - this.socket.keepAliveTime > this.connectionTimeout &&
-                this.socket.connected
-            ) {
-                // emit offline event
-                this.socket.emitLocal("disconnected", this.socket.socketID);
-            }
-        }, this.connectionTimeout / 4);
+    disconnect() {
+        this.socket.connected = false;
     }
 
     /**
      * Try to reconnect as long as socket is disconnected
      */
     connectionRetry() {
-        setInterval(() => {
+        this.connectionInterval = setInterval(() => {
             // try to setupConnection as log as socket is disconnected
             if (!this.socket.connected) this.setupConnection();
         }, this.connectionTimeout);
@@ -105,6 +93,15 @@ class Client extends ClientServerBase {
         // ignore message if encryption key is not provided
         if (clientID && iv && !this.encryptionKey) return;
         return await decipher(data, iv, this.encryptionKey);
+    }
+
+    /**
+     * destroys all intervals and disconnects socket
+     */
+    destroy() {
+        clearInterval(this.connectionInterval);
+        this.socket.disconnect();
+        this.socket.removeAllListeners();
     }
 }
 

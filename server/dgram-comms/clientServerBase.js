@@ -20,7 +20,8 @@ class ClientServerBase extends Events {
         this.retryTimeout = retryTimeout || 500; // 500 ms
         this.frag = new messageFragmentation(
             this.server,
-            this.messageHandler.bind(this)
+            this.messageHandler.bind(this),
+            connectionTimeout
         );
 
         this.server.on("error", (err) => {
@@ -52,7 +53,9 @@ class ClientServerBase extends Events {
         if (clientID && iv) {
             data = await this.decrypt(data, iv, clientID);
             if (!data) return;
-            data = JSON.parse(data);
+            try {
+                data = JSON.parse(data);
+            } catch {}
         }
 
         // return ackID to client to guarantee delivery
@@ -72,7 +75,10 @@ class ClientServerBase extends Events {
     keepAlive({ data }) {
         // update keepAliveTime
         const socket = this.getSocket(data.socketID);
-        data && socket && (socket.keepAliveTime = new Date());
+        data &&
+            socket &&
+            socket.socketID == data.socketID &&
+            (socket.keepAliveTime = new Date());
     }
 
     data({ data }) {

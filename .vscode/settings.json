@@ -1,8 +1,6 @@
 {
     "debug.allowBreakpointsEverywhere": true,
-    "cSpell.words": [
-        "apply"
-    ],
+    "cSpell.words": ["apply", "ristreceiver"],
     "files.associations": {
         "system_error": "cpp",
         "array": "cpp",

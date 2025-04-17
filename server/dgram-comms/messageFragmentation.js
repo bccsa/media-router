@@ -10,10 +10,11 @@ class messageFragmentation {
      * @param {Object} server - dgram server
      * @param {Object} event - events object
      */
-    constructor(server, messageHandler) {
+    constructor(server, messageHandler, connectionTimeout) {
         this.server = server;
         this.messageHandler = messageHandler;
         this.fragments = new Map();
+        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
 
         this.server.on("message", (msg, rinfo) => {
             if (!messageHandler) return;
@@ -36,8 +37,10 @@ class messageFragmentation {
                     received: 0,
                     timer: setTimeout(() => {
                         this.fragments.delete(messageId);
-                        console.error(`Message ${messageId} timed out and was deleted.`);
-                    }, 2000) // 2 seconds timeout
+                        console.error(
+                            `Message ${messageId} timed out and was deleted.`
+                        );
+                    }, this.connectionTimeout * 2), // 2 * the connection timeout
                 });
             }
 
