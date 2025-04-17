@@ -27,8 +27,9 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
 
     Init() {
         super.Init();
+        this._notify({ devices: this.devices });
 
-        setInterval(() => {
+        const _interval = setInterval(() => {
             this._getV4l().then((res) => {
                 // compare devices to see if there is a change
                 let change = false;
@@ -39,9 +40,16 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                             r.name == res[i].name && r.device == res[i].device
                     );
                 }
-                if (change) this.devices = res;
+                if (change) {
+                    this.devices = res;
+                    this._notify({ devices: this.devices });
+                }
             });
         }, 2000);
+
+        this.on("remove", () => {
+            clearInterval(_interval);
+        });
 
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on("ready", (ready) => {
