@@ -95,12 +95,22 @@ manager_io.use((manager_socket, next) => {
 });
 
 // Handle manager WebApp connections
-manager_io.on("connection", (manager_socket) => {
+manager_io.on("connection", async (manager_socket) => {
     let managerName = manager_socket.handshake.auth.username;
     console.log(`manager web client ${managerName} connected`);
 
+    // manager_socket.emit("data", confManager.config);
+
     // Send the full configuration data to the newly connected manager WebApp
-    manager_socket.emit("data", confManager.config);
+    const config = confManager.config;
+    for (const k of Object.keys(config)) {
+        await new Promise((resolve) => {
+            setTimeout(() => {
+                manager_socket.emit("data", { [k]: config[k] });
+                resolve();
+            }, 20);
+        });
+    }
 
     // Data received from manager WebApp
     manager_socket.on("data", (data) => {
