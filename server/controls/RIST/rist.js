@@ -17,7 +17,10 @@ module.exports = {
                 linkUrl += `${link.host}:${link.port}`;
             }
             if (link.cname) {
-                linkUrl += `${_firstParam}cname=${link.cname}`;
+                linkUrl += `${_firstParam}cname=${link._parent._parent.displayName}_${link.cname}`;
+                _firstParam = "&";
+            } else {
+                linkUrl += `${_firstParam}cname=${link._parent._parent.displayName}_${link._parent.displayName}`;
                 _firstParam = "&";
             }
             if (link.buffermin) {
