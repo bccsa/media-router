@@ -109,14 +109,14 @@ class SrtBase {
         this._btnSrtStats.style.display = "block";
 
         //----------------------SrtStats Modal-----------------------------//
-        this._modalSrtStats.style.display = "none";
+        this._modalStats.style.display = "none";
         this._btnSrtStats.addEventListener("click", (e) => {
-            this._modalSrtStats.style.display = "block";
+            this._modalStats.style.display = "block";
             this._SettingsContent.style.display = "none";
             this._modalHelp.style.display = "none";
         });
         this._btnSettings.addEventListener("click", (e) => {
-            this._modalSrtStats.style.display = "none";
+            this._modalStats.style.display = "none";
             this._SettingsContent.style.display = "block";
         });
         //----------------------SrtStats Modal-----------------------------//

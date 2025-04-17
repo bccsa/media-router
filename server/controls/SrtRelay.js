@@ -1,17 +1,12 @@
 const path = require("path");
-const { dm } = require("../modular-dm");
+const _routerChildControlBase = require("./_routerChildControlBase");
 const { Classes } = require("../modular-dm");
 const SrtBase = require("./SrtBase");
 
-class SrtRelay extends Classes(dm, SrtBase) {
+class SrtRelay extends Classes(_routerChildControlBase, SrtBase) {
     constructor() {
         super();
-        this.run = false; // Run command to be set by external code to request the control to start.
-        this.ready = true; // Device will always be ready, since it does not need to wait for any external events like null sinks being spawned
-        this.SetAccess("run", { Get: "none", Set: "none" });
-        this.reload = false; // Reload configuration command. Stops and starts the control to apply changes.
         this._srtElementName = "srtserversink";
-        this.displayName = ""; // Display name
 
         // SrtSink settings
         this.sink_srtHost = "";
@@ -23,51 +18,17 @@ class SrtRelay extends Classes(dm, SrtBase) {
         this.sink_srtMaxBw = 250; // % of Bandwidth
         this.sink_srtEnableMaxBW = false; // Enable MaxBandwidth property for srt
         this.sink_srtStreamID = "";
-        this.moduleEnabled = true; // Enable or disable individual module
     }
 
     Init() {
         super.Init();
+        this.InitBase();
 
         // Start external processes on run
         this.on("run", (run) => {
             if (!run) this.stopPipeline();
             else this.startPipeline();
         });
-
-        this.on("moduleEnabled", (moduleEnabled) => {
-            if (!moduleEnabled) this.stopPipeline();
-            else this.startPipeline();
-        });
-
-        // reload control
-        this.on("reload", (reload) => {
-            if (reload) {
-                if (this._parent.runCmd) {
-                    this.run = false;
-                    setTimeout(() => {
-                        this.run = this._parent.runCmd;
-                    }, 1000);
-                }
-            }
-            this.reload = this._parent.runCmd;
-        });
-
-        // Stop control on removal
-        this.on("remove", () => {
-            this.run = false;
-        });
-
-        // Subscribe to parent (router) run command
-        this._parent.on(
-            "runCmd",
-            (run) => {
-                setTimeout(() => {
-                    this.run = run;
-                }); // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emited
-            },
-            { immediate: true, caller: this }
-        );
     }
 
     startPipeline() {

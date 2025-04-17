@@ -4,20 +4,24 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.hlsUrl = "";
         this.videoQuality = "";
         this.videoQualities = [];
+        this.subtitleLanguage = "off";
+        this.subtitleLanguages = [];
+        this.subtitlePosition = "baseline";
         this.videoDelay = 0;
         this.audioStreams = [];
         this._checkBoxes = [];
         this.defaultLanguage = "";
         this.sinkspaModuleID = [];
         this.enableSrt = false;
-        this.streamlinkDebug = false;
         this.runningSrt = false;
         this.hlsLoading = false;
-        this.startTime = "00:00:00";
     }
 
     get html() {
-        return super.html.replace('%additionalHtml%', `
+        return super.html
+            .replace(
+                "%additionalHtml%",
+                `
 
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
@@ -50,20 +54,32 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         <div class="w-full grid grid-cols-3 items-center mb-2">
             <!-- videoQuality -->
             <div class="w-full flex flex-col">
-                <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Quality:</label>
-                <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Quality" value="@{videoQuality}">
+                <label for="@{_videoQuality}" class="form-label inline-block mb-2 mr-2">Video Max Quality:</label>
+                <select id="@{_videoQuality}" class="paAudioBase-select" type="text" title="Video Max Quality (Will limit the max quality to the selected quality)" value="@{videoQuality}">
+                
+                </select>
+            </div>
+            
+            <!-- Subtitle -->
+            <div class="w-full flex flex-col">
+                <label for="@{_subtitleLanguage}" class="form-label inline-block mb-2 mr-2">Subtitle Language:</label>
+                <select id="@{_subtitleLanguage}" class="paAudioBase-select" type="text" title="Subtitle Language" value="@{subtitleLanguage}">
                 
                 </select>
             </div>
 
-            <!-- Start Time  --> 
+            <!-- Subtitle Position -->
             <div class="w-full flex flex-col">
-                <label for="@{_startTime}" class="form-label inline-block mb-2 mr-2">Start Time(hh:mm:ss):</label>
-                <input id="@{_startTime}" class="paAudioBase-select" type="text" title="HLS Startime" placeholder="HH:MM:SS" maxlength="8" value="@{startTime}"></input>
+                <label for="@{_subtitlePosition}" class="form-label inline-block mb-2 mr-2">Subtitle Position:</label>
+                <select id="@{_subtitlePosition}" class="paAudioBase-select" type="text" title="Subtitle Position" value="@{subtitlePosition}">
+                    <option value="baseline">Baseline</option>
+                    <option value="top">Top</option>
+                    <option value="center">Center</option>
+                    <option value="bottom">Bottom</option>
+                </select>
             </div>
-
-            <div class="w-full flex flex-col"></div>
         </div>
+        
 
         <!-- audio sinks -->
         <div class="mr-4 flex flex-col">
@@ -74,20 +90,6 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         </div>
 
         <!-- ----------------------------------------------------------    Extra Settings    ---------------------------------------------------------- -->
-
-        <div class="w-full mb-1 flex ">
-
-            <!--    Enable SRT      --> 
-            <div class="w-2/3 mr-2 mb-2 flex">
-                <input id="@{_streamlinkDebug}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{streamlinkDebug}"/>  
-                <label for="@{_streamlinkDebug}" class="" title="Enable streamlink debug logs">Enable debug log</label> 
-            </div>
-
-            <div class="w-1/3 mb-2 ml-2 flex">
-                
-            </div>
-
-        </div>
         
         <div class="w-full mb-1 flex ">
 
@@ -104,6 +106,7 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         </div>
 
         <div id=@{_srtDiv}>
+            <label><i>Subtitles is not yet supported on srt video</i></label> 
             ${this.SrtBaseHtml()}
         </div>
 
@@ -131,104 +134,144 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             <div class="w-1/3 flex flex-col"></div>
 
         </div>
-        `).replace("<!--  %SrtStatsHtml%  -->", this.SrtStatsHtml());
+        `
+            )
+            .replace("<!--  %SrtStatsHtml%  -->", this.SrtStatsHtml());
     }
 
     Init() {
         super.Init();
         // init SRT Spesific
         this._SrtInit();
-        this.setHeaderColor('#cc8d72');
+        this.setHeaderColor("#cc8d72");
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
-        this._loadHelpMD('controls/HlsPlayer.md');
+        this._loadHelpMD("controls/HlsPlayer.md");
         //----------------------Help Modal-----------------------------//
 
-        //----------------------Start time-----------------------------//
-        this.on('startTime', e => {
-            if (!/^\d{0,2}(:\d{0,2})?(:\d{0,2})?$/.test(e) || e.length != 8) {
-                this._startTime.value = "00:00:00";
-                this.startTime = "00:00:00";
-            }
-        })
-        //----------------------Start time-----------------------------//
-
         //----------------------Load Audio streams-----------------------------//
-        this.on('audioStreams', audioStreams => {
-            this.createCB(audioStreams);
-        }, { immediate: true });
+        this.on(
+            "audioStreams",
+            (audioStreams) => {
+                this.createCB(audioStreams);
+            },
+            { immediate: true }
+        );
 
-        this.on('defaultLanguage', () => {
+        this.on("defaultLanguage", () => {
             this.createCB(this.audioStreams);
         });
 
         //----------------------Load Audio streams-----------------------------//
 
         //----------------------Load Video streams-----------------------------//
-        
-        this.on('videoQualities', videoQualities => {
-            // clear dp
-            while (this._videoQuality.options.length > 0) {                
-                this._videoQuality.remove(0);
-            } 
 
-            this.videoQualities.forEach(v => {
-                var opt = document.createElement('option');
-                opt.value = v;
-                opt.innerHTML = v;
-                this._videoQuality.add(opt);
-            })
+        this.on(
+            "videoQualities",
+            () => {
+                // clear dd
+                while (this._videoQuality.options.length > 0) {
+                    this._videoQuality.remove(0);
+                }
 
-            this._videoQuality.value = this.videoQuality;
+                this.videoQualities.forEach((v) => {
+                    var opt = document.createElement("option");
+                    opt.value = v;
+                    opt.innerHTML = v;
+                    this._videoQuality.add(opt);
+                });
 
-        }, { immediate: true });
-
-        this.on('hlsLoading', v => {
-            if (!v)
-                this._hlsLoading.style.display = "none";
-            else 
-                this._hlsLoading.style.display = "block";
-        }, { immediate: true });
+                this._videoQuality.value = this.videoQuality;
+            },
+            { immediate: true }
+        );
 
         //----------------------Load Video streams-----------------------------//
 
-        //----------------------Srt Settings-----------------------------//
-        this.on('enableSrt', e => {
-            if (e) {
-                this._srtDiv.style.display = "block";
-            } else {
-                this._srtDiv.style.display = "none";
-            }
-        }, { immediate: true });
+        //----------------------Load Subtitle streams-----------------------------//
 
-        this.on('runningSrt', e => {
-            if (!e) {
-                this._btnSrtStats.style.display = "none";
-                this._draggable.style["background-color"] = "#1E293B";
-            } else {
-                this._btnSrtStats.style.display = "block";
-            }
-        }, { immediate: true });
+        this.on(
+            "subtitleLanguages",
+            () => {
+                // clear dd
+                while (this._subtitleLanguage.options.length > 0) {
+                    this._subtitleLanguage.remove(0);
+                }
+
+                this.subtitleLanguages.forEach((v) => {
+                    var opt = document.createElement("option");
+                    opt.value = v.language;
+                    opt.innerHTML = v.comment;
+                    this._subtitleLanguage.add(opt);
+                });
+
+                // add default off language
+                var opt = document.createElement("option");
+                opt.value = "off";
+                opt.innerHTML = "off";
+                this._subtitleLanguage.add(opt);
+
+                this._subtitleLanguage.value = this.subtitleLanguage;
+            },
+            { immediate: true }
+        );
+
+        //----------------------Load Subtitle streams-----------------------------//
+
         //----------------------Srt Settings-----------------------------//
+        this.on(
+            "enableSrt",
+            (e) => {
+                if (e) {
+                    this._srtDiv.style.display = "block";
+                } else {
+                    this._srtDiv.style.display = "none";
+                }
+            },
+            { immediate: true }
+        );
+
+        this.on(
+            "runningSrt",
+            (e) => {
+                if (!e) {
+                    this._btnSrtStats.style.display = "none";
+                    this._draggable.style["background-color"] = "#1E293B";
+                } else {
+                    this._btnSrtStats.style.display = "block";
+                }
+            },
+            { immediate: true }
+        );
+        //----------------------Srt Settings-----------------------------//
+
+        this.on(
+            "hlsLoading",
+            (v) => {
+                if (!v) this._hlsLoading.style.display = "none";
+                else this._hlsLoading.style.display = "block";
+            },
+            { immediate: true }
+        );
     }
 
     /**
-     * Create check boxes 
+     * Create check boxes
      */
-    createCB (audioStreams) {
+    createCB(audioStreams) {
         // --- Create dropdown --- //
         // clear dp
-        while (this._defaultLanguage.options.length > 0) {                
+        while (this._defaultLanguage.options.length > 0) {
             this._defaultLanguage.remove(0);
-        } 
+        }
 
-        this.audioStreams.forEach(s => {
-            var opt = document.createElement('option');
+        this.audioStreams.forEach((s) => {
+            var opt = document.createElement("option");
             opt.value = s.language;
             opt.innerHTML = s.comment;
             this._defaultLanguage.add(opt);
-        })
+        });
 
         this._defaultLanguage.value = this.defaultLanguage;
 
@@ -236,19 +279,19 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         // clear old elements
         while (this._checkBoxes.length > 0) {
             let c = this._checkBoxes.pop();
-            c.Set({remove: true});
+            c.Set({ remove: true });
         }
-        
+
         // recreate elemnts
         audioStreams.forEach((s, i) => {
             if (s.language != this.defaultLanguage) {
                 this.once([s.language], (lang) => {
                     this._checkBoxes.push(lang);
-                    lang.on('value', val => {
+                    lang.on("value", (val) => {
                         this.audioStreams[lang.index].enabled = val;
-                        this.NotifyProperty('audioStreams');
-                    })
-                })
+                        this.NotifyProperty("audioStreams");
+                    });
+                });
 
                 this.SetData({
                     [s.language]: {
@@ -258,11 +301,10 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
                         parentElement: "_audioStreams",
                         hideData: true,
                         value: s.enabled,
-                        index: i
-                    }
+                        index: i,
+                    },
                 });
             }
-        })
+        });
     }
-
 }
