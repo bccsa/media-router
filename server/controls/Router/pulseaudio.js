@@ -191,6 +191,15 @@ class PulseAudio {
                                         description = `${item.description} (${descIteration})`;
                                     }
 
+                                    // moduleID
+                                    let moduleID = item["owner_module"];
+                                    if (
+                                        item.properties &&
+                                        item.properties["pulse.module.id"]
+                                    )
+                                        moduleID =
+                                            item.properties["pulse.module.id"];
+
                                     if (
                                         item.description &&
                                         typeof ch === "number" &&
@@ -209,6 +218,7 @@ class PulseAudio {
                                             cardId: item.properties[
                                                 "alsa.card"
                                             ],
+                                            moduleID: moduleID,
                                             // mute: item.mute,
                                         };
                                     }
