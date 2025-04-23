@@ -45,11 +45,7 @@ class _paAudioBase extends Classes(_routerChildControlBase, vuMeter) {
     Init() {
         this.InitBase();
         // Set PulseAudio Module name
-        this._paModuleName =
-            "MR_PA_" +
-            this._controlName +
-            "_" +
-            Math.floor(Math.random() * 100);
+        this._paModuleName = "MR_PA_" + this._controlName;
 
         // Mute all other modules (with the same parent) in the solo group
         this.on(
