@@ -180,7 +180,9 @@ class PulseAudio {
                                         );
 
                                     // description
-                                    let description = item.description;
+                                    let description =
+                                        item.properties.description ||
+                                        item.description;
                                     let descIteration = 0;
                                     while (
                                         Object.values(dst).find(
@@ -188,8 +190,20 @@ class PulseAudio {
                                         ) != undefined
                                     ) {
                                         descIteration++;
-                                        description = `${item.description} (${descIteration})`;
+                                        description = `${
+                                            item.properties.description ||
+                                            item.description
+                                        } (${descIteration})`;
                                     }
+
+                                    // moduleID
+                                    let moduleID = item["owner_module"];
+                                    if (
+                                        item.properties &&
+                                        item.properties["pulse.module.id"]
+                                    )
+                                        moduleID =
+                                            item.properties["pulse.module.id"];
 
                                     if (
                                         item.description &&
@@ -209,6 +223,7 @@ class PulseAudio {
                                             cardId: item.properties[
                                                 "alsa.card"
                                             ],
+                                            moduleID: moduleID,
                                             // mute: item.mute,
                                         };
                                     }
