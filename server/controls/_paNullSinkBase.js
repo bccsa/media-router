@@ -56,7 +56,15 @@ class _paNullSinkBase extends _paAudioSourceBase {
             await new Promise((res) => setTimeout(res, 1000));
         }
         // let cmd = `pactl load-module module-null-sink sink_name=${this._paModuleName} format=s${this.bitdepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this.latency_msec},device.description='${this.description}'"`;
-        let cmd = `pactl load-module module-null-sink sink_name=${this._paModuleName} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
+        let cmd = `pactl load-module module-null-sink sink_name=${
+            this._paModuleName
+        } format=s${this.bitDepth}le rate=${this.sampleRate} channels=${
+            this.channels
+        } sink_properties="latency_msec=${
+            this._parent.paLatency
+        }" sink_properties="description='${this.displayName
+            .trim()
+            .replace(" ", "_")}'"`;
         exec(cmd, { silent: true })
             .then((data) => {
                 if (data.stderr) {

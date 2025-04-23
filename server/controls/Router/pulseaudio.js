@@ -180,7 +180,9 @@ class PulseAudio {
                                         );
 
                                     // description
-                                    let description = item.description;
+                                    let description =
+                                        item.properties.description ||
+                                        item.description;
                                     let descIteration = 0;
                                     while (
                                         Object.values(dst).find(
@@ -188,7 +190,10 @@ class PulseAudio {
                                         ) != undefined
                                     ) {
                                         descIteration++;
-                                        description = `${item.description} (${descIteration})`;
+                                        description = `${
+                                            item.properties.description ||
+                                            item.description
+                                        } (${descIteration})`;
                                     }
 
                                     // moduleID
