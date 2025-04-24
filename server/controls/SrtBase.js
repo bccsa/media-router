@@ -52,8 +52,8 @@ class SrtBase extends GstBase {
                 (Math.round(this.calcBitrate() / 8) * this.srtMaxBw) / 100
             }`;
         }
-
-        let _uri = `srt://${this.srtHost}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${maxBW}${streamID}${crypto}`;
+        const _host = this.srtMode == "listener" ? "0.0.0.0" : this.srtHost;
+        let _uri = `srt://${_host}:${this.srtPort}?mode=${this.srtMode}&latency=${this.srtLatency}${maxBW}${streamID}${crypto}`;
 
         return _uri;
     }
@@ -90,17 +90,7 @@ class SrtBase extends GstBase {
             }
         });
 
-        // check that mode != caller and host 0.0.0.0
-        if (this.srtMode == "caller" && this.srtHost == "0.0.0.0") {
-            this._parent._log(
-                "ERROR",
-                `${this._controlName} (${this.displayName}): Unable to start, Mode can't be caller with host: 0.0.0.0`
-            );
-
-            return;
-        }
-
-        if (this.srtHost) {
+        if (this.srtHost || this.srtMode == "listener") {
             this.start_gst(cmd);
         } else {
             this._parent._log(
