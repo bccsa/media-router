@@ -47,16 +47,6 @@ class HlsPlayer extends Classes(
             },
             { immediate: true }
         );
-
-        this.on("videoDelay", (d) => {
-            this.set_gst("audioSink", "int", "ts-offset", d);
-            this.set_gst(
-                this._videoElementName,
-                "int",
-                "ts-offset",
-                d * 1000000
-            );
-        });
     }
 
     startPipeline() {
@@ -172,7 +162,7 @@ class HlsPlayer extends Classes(
                     this.videoDelay * 1000000
                 } device=${
                     this.sink
-                } sync=true slave-method=0 processing-deadline=60000000 buffer-time=${
+                } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
                     this._parent.paLatency * 1000
                 } max-lateness=${this._parent.paLatency * 1000000}`;
             } else
@@ -182,7 +172,7 @@ class HlsPlayer extends Classes(
                     this._controlName
                 }_sink_${
                     stream.language
-                } sync=true slave-method=0 processing-deadline=60000000 buffer-time=${
+                } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
                     this._parent.paLatency * 1000
                 } max-lateness=${this._parent.paLatency * 1000000}`;
         });

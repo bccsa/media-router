@@ -17,6 +17,7 @@ class HlsParser {
 
             if (res?.length) {
                 const availableAudio = res.filter((s) => s.type === "audio");
+                const availableSubs = res.filter((s) => s.type === "subtitle");
                 const availableVideo = res.filter(
                     (s) => s.type === "video" && s.height > 0
                 );
@@ -38,7 +39,7 @@ class HlsParser {
                 }, []);
 
                 this.videoQualities = availableVideo.map((s) => `${s.height}`);
-                this.subtitleLanguages = availableAudio.map((s) => {
+                this.subtitleLanguages = availableSubs.map((s) => {
                     return { language: s.language, comment: s.name };
                 });
 
@@ -103,6 +104,13 @@ class HlsParser {
                 for (const a of playlist.variants[0].audio) {
                     streams.push({
                         type: "audio",
+                        language: a.language,
+                        name: a.name,
+                    });
+                }
+                for (const a of playlist.variants[0].subtitles) {
+                    streams.push({
+                        type: "subtitle",
                         language: a.language,
                         name: a.name,
                     });
