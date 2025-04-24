@@ -15,9 +15,13 @@ class Logs {
         this.fetchLog = true;
 
         // listen for logs
-        this.on("log", (res) => {
-            this._createLog();
-        });
+        this.on(
+            "log",
+            () => {
+                this._createLog();
+            },
+            { immediate: true }
+        );
 
         this._log.style.display = "none";
 
