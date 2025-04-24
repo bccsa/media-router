@@ -122,46 +122,43 @@ module.exports = {
     SrtStatsHtml: () => {
         return `
         <!--  Srt Stats section  -->
-        <div id="@{_modalSrtStats}" class="paAudioBase-sub-modal hidden">
-
-            <div class="paAudioBase-modal-header">
-                <div class="flex flex-shrink-0 items-center justify-between">
-                    <span class="appFrame-control-name">SRT Stats</span>
-                    <span id="@{_callerCount}" class="appFrame-control-name">Callers: <span>@{caller_count}</span></span>
-                </div>
+        <div class="paAudioBase-modal-header">
+            <div class="flex flex-shrink-0 items-center justify-between">
+                <span class="appFrame-control-name">SRT Stats</span>
+                <span id="@{_callerCount}" class="appFrame-control-name">Callers: <span>@{caller_count}</span></span>
             </div>
+        </div>
 
-            <div class="paAudioBase-modal-body">
-                <div id="@{_modalSrtStats_table_cols}">
-                    <!-- SRT Controls div -->
-                    <div class="text-sm text-left grid grid-cols-8">
-                        <div class="border px-4 py-2">
-                            Stats ID
-                        </div>
-                        <div class="border px-4 py-2">
-                            Send/ Receive Rate (Mbps)
-                        </div>
-                        <div class="border px-4 py-2">
-                            Packet Loss (%)
-                        </div>
-                        <div class="border px-4 py-2">
-                            Data Send/ Receive (MB)
-                        </div>
-                        <div class="border px-4 py-2">
-                            Roudtrip time (ms)
-                        </div>
-                        <div class="border px-4 py-2">
-                            Available Bandwidth (Mbps)
-                        </div>
-                        <div class="border px-4 py-2">
-                            Send Duration
-                        </div>
-                        <div class="border px-4 py-2">
-                            Status
-                        </div>
+        <div class="paAudioBase-modal-body">
+            <div id="@{_modalSrtStats_table_cols}">
+                <!-- SRT Controls div -->
+                <div class="text-sm text-left grid grid-cols-8">
+                    <div class="border px-4 py-2">
+                        Stats ID
                     </div>
-                    <div id="@{_SrtStatsDiv}"></div>
+                    <div class="border px-4 py-2">
+                        Send/ Receive Rate (Mbps)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Packet Loss (%)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Data Send/ Receive (MB)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Roundtrip time (ms)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Available Bandwidth (Mbps)
+                    </div>
+                    <div class="border px-4 py-2">
+                        Send Duration
+                    </div>
+                    <div class="border px-4 py-2">
+                        Status
+                    </div>
                 </div>
+                <div id="@{_SrtStatsDiv}"></div>
             </div>
         </div>
         `;
