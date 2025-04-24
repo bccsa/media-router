@@ -13,6 +13,7 @@ class GstBase extends Spawn {
         this.gstMessageData = undefined;
         this.start_gst = this._start_gst; // need to map that child class can access function
         this.stop_gst = this._stop_gst; // need to map that child class can access function
+        this.set_gst = this._set_gst; // need to map that child class can access function
         this.get_cmd_SrtStats = this._get_cmd_SrtStats;
         // Setters
         this.set_cmd = this._set_cmd;

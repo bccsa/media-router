@@ -18,10 +18,14 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
         this.description = "test description";
         this._paSinkModuleID; // PulseAudio module instance ID
         this._paSourceModuleID; // PulseAudio module instance ID
+        this._sinkStarted = false; // Remove existing sink
+        this._sourceStarted = false; // Remove existing sink
     }
 
     Init() {
         super.Init();
+        this._sinkStarted = false; // always reset value on startup
+        this._sourceStarted = false; // always reset value on startup
 
         this.sink = `${this._paModuleName}_sink`;
         this._source = `${this._paModuleName}_sink.monitor`;
@@ -36,7 +40,7 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
                 });
             } else {
                 this._parent.PaCmdQueue(() => {
-                    this._stopNullSink();
+                    this._stopNullSinks();
                 });
             }
         });
@@ -45,7 +49,9 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
         this._parent.on("sinks", (sinks) => {
             if (
                 sinks.find((t) => t.name == this.sink) &&
-                sinks.find((t) => t.name == this._sink)
+                sinks.find((t) => t.name == this._sink) &&
+                this._sourceStarted &&
+                this._sinkStarted
             ) {
                 setTimeout(() => {
                     this.ready = true;
@@ -57,85 +63,85 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
     }
 
     // Create a PulseAudio loopback-module linking the source to the sink
-    _startNullSink() {
+    async _startNullSink() {
         // Start Null sink (sink)
-        let cmd_sink = `pactl load-module module-null-sink sink_name=${this.sink} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
-        exec(cmd_sink, { silent: true })
-            .then((data) => {
-                if (data.stderr) {
-                    this._parent._log("ERROR", data.stderr.toString());
-                }
-
-                if (data.stdout.length) {
-                    this._paSinkModuleID = data.stdout.toString().trim();
-                    this._parent._log(
-                        "INFO",
-                        `${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paSinkModuleID}`
-                    );
-                }
-            })
-            .catch((err) => {
-                this._parent._log(
-                    "FATAL",
-                    `${this._controlName} (${this.displayName}) - Unable to start null-sink: ` +
-                        err.message
-                );
-            });
+        const sinkExists = this.findPAModuleID(this.sink);
+        if (sinkExists) {
+            await this._stopNullSink(sinkExists.moduleID);
+            await new Promise((res) => setTimeout(res, 1000));
+        }
+        this._paSinkModuleID = await this._createNullSink(this.sink);
+        this._sinkStarted = true;
 
         // Start Null sink (source)
-        let cmd_source = `pactl load-module module-null-sink sink_name=${this._sink} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
-        exec(cmd_source, { silent: true })
-            .then((data) => {
-                if (data.stderr) {
-                    this._parent._log("ERROR", data.stderr.toString());
-                }
+        const sourceExists = this.findPAModuleID(this._sink);
+        if (sourceExists) {
+            await this._stopNullSink(sourceExists.moduleID);
+            await new Promise((res) => setTimeout(res, 1000));
+        }
+        this._paSourceModuleID = await this._createNullSink(this._sink);
+        this._sourceStarted = true;
 
-                if (data.stdout.length) {
-                    this._paSourceModuleID = data.stdout.toString().trim();
+        // notify parent that the sink is ready
+        this._parent.emit("sinks", this._parent.sinks);
+    }
+
+    _createNullSink(sink) {
+        return new Promise((resolve, reject) => {
+            let cmd_source = `pactl load-module module-null-sink sink_name=${sink} format=s${this.bitDepth}le rate=${this.sampleRate} channels=${this.channels} sink_properties="latency_msec=${this._parent.paLatency}"`;
+            exec(cmd_source, { silent: true })
+                .then((data) => {
+                    if (data.stderr) {
+                        this._parent._log("ERROR", data.stderr.toString());
+                    }
+
+                    if (data.stdout.length) {
+                        const _id = data.stdout.toString().trim();
+                        this._parent._log(
+                            "INFO",
+                            `${this._controlName} (${this.displayName}): Created null-sink; ID: ${_id}`
+                        );
+                        resolve(_id);
+                        return;
+                    }
+
+                    resolve(undefined);
+                })
+                .catch((err) => {
                     this._parent._log(
-                        "INFO",
-                        `${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paSourceModuleID}`
+                        "FATAL",
+                        `${this._controlName} (${this.displayName}) - Unable to start null-sink: ` +
+                            err.message
                     );
-                }
-            })
-            .catch((err) => {
-                this._parent._log(
-                    "FATAL",
-                    `${this._controlName} (${this.displayName}) - Unable to start null-sink: ` +
-                        err.message
-                );
-            });
+                    resolve(undefined);
+                });
+        });
     }
 
     // Remove PulseAudio module
-    _stopNullSink() {
+    async _stopNullSinks() {
         // Start Null sink (sink)
         if (this._paSinkModuleID) {
-            let cmd = `pactl unload-module ${this._paSinkModuleID}`;
-            exec(cmd, { silent: true })
-                .then((data) => {
-                    if (data.stderr) {
-                        this._parent._log("ERROR", data.stderr.toString());
-                    } else {
-                        this._parent._log(
-                            "INFO",
-                            `${this._controlName} (${this.displayName}): Removed null-sink`
-                        );
-                    }
-
-                    this._paSinkModuleID = undefined;
-                })
-                .catch((err) => {
-                    this._parent._log(
-                        "FATAL",
-                        `${this._controlName} (${this.displayName}):` +
-                            err.message
-                    );
-                });
+            await this._stopNullSink(this._paSinkModuleID);
+            this._sinkStarted = false;
+            this._paSinkModuleID = undefined;
         }
         // Start Null sink (source)
         if (this._paSourceModuleID) {
-            let cmd = `pactl unload-module ${this._paSourceModuleID}`;
+            await this._stopNullSink(this._paSourceModuleID);
+            this._paSourceModuleID = undefined;
+            this._sourceStarted = false;
+        }
+    }
+
+    /**
+     * Stop a null sink
+     * @param {*} moduleID
+     * @returns
+     */
+    _stopNullSink(moduleID) {
+        return new Promise((resolve, reject) => {
+            let cmd = `pactl unload-module ${moduleID}`;
             exec(cmd, { silent: true })
                 .then((data) => {
                     if (data.stderr) {
@@ -146,8 +152,7 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
                             `${this._controlName} (${this.displayName}): Removed null-sink`
                         );
                     }
-                    _paSourceModuleID;
-                    this._paSourceModuleID = undefined;
+                    resolve();
                 })
                 .catch((err) => {
                     this._parent._log(
@@ -155,8 +160,14 @@ class _paNullSinkSourceBase extends _paAudioSourceBase {
                         `${this._controlName} (${this.displayName}):` +
                             err.message
                     );
+                    resolve();
                 });
-        }
+        });
+    }
+
+    // Check if module already exists
+    findPAModuleID(name) {
+        return this._parent.sinks.find((s) => s.name == name);
     }
 }
 

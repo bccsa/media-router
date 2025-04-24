@@ -15,11 +15,12 @@ class _paNullSinkBase extends _paAudioSourceBase {
         this.sampleRate = 44100;
         this.description = "test description";
         this._paModuleID; // PulseAudio module instance ID
+        this._sinkStarted = false; // Remove existing sink
     }
 
     Init() {
         super.Init();
-
+        this._sinkStarted = false; // always reset value on startup
         this.source = `${this._paModuleName}.monitor`;
         this.sink = this._paModuleName;
         this.monitor = this.source;
@@ -38,7 +39,11 @@ class _paNullSinkBase extends _paAudioSourceBase {
 
         // listen for null sink creation
         this._parent.on("sinks", (sinks) => {
-            if (sinks.find((t) => t.name == this._paModuleName)) {
+            if (
+                sinks.find(
+                    (t) => t.name == this._paModuleName && this._sinkStarted
+                )
+            ) {
                 setTimeout(() => {
                     this.ready = true;
                 }, 100);
@@ -67,6 +72,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
             .replace(" ", "_")}'"`;
         exec(cmd, { silent: true })
             .then((data) => {
+                this._sinkStarted = true;
                 if (data.stderr) {
                     this._parent._log("ERROR", data.stderr.toString());
                 }
@@ -77,6 +83,8 @@ class _paNullSinkBase extends _paAudioSourceBase {
                         "INFO",
                         `${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paModuleID}`
                     );
+                    // notify parent that the sink is ready
+                    this._parent.emit("sinks", this._parent.sinks);
                 }
             })
             .catch((err) => {
@@ -94,6 +102,7 @@ class _paNullSinkBase extends _paAudioSourceBase {
      * @returns
      */
     _stopNullSink(moduleID) {
+        this._sinkStarted = false;
         return new Promise((resolve, reject) => {
             const _id = moduleID || this._paModuleID;
             if (_id) {
