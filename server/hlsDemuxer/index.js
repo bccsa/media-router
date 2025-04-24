@@ -272,9 +272,7 @@ async function streamLiveSegments(stream, index) {
             const segmentUrl = new URL(segment.uri, stream.url).href;
             await fetchSegment(segmentUrl, stream.pipe, stream.isVideo);
         }
-        await new Promise((res) =>
-            setTimeout(res, playlist.targetDuration * 1000 || 2000)
-        );
+        await new Promise((res) => setTimeout(res, 1000));
     } while (!isVod || playlist.segments.length > 0);
 
     console.log(
