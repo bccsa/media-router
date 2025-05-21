@@ -9,7 +9,6 @@ class RistToSrt extends Classes(_routerChildControlBase, SrtBase) {
     constructor() {
         super();
         this.udpSocket = 40000;
-        this.buffer = 75;
         this.ready = true;
         this._srtElementName = "RistToSrt";
         this.spawn = new Spawn();
@@ -48,7 +47,7 @@ class RistToSrt extends Classes(_routerChildControlBase, SrtBase) {
                     this._srtElementName
                 }" sync=false`;
 
-            let rist = `ristreceiver --buffer ${this.buffer} -i "${url(
+            let rist = `ristreceiver -i "${url(
                 this._controls
             )}" -o udp://127.0.0.1:${this.udpSocket} `;
 

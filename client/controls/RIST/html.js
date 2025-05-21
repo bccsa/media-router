@@ -72,17 +72,6 @@ module.exports = {
                 </select>
             </div>
 
-            <!-- place holder  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-            </div>
-
-            <!-- place holder  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-            </div>
-
-        </div>
-
-        <div class="w-full mb-2 flex ">
             <!-- port  --> 
             <div class="w-1/3 mr-4 flex flex-col">
                 <label for="@{_port}" class="form-label inline-block mb-2 mr-2">Port:</label>
@@ -92,20 +81,12 @@ module.exports = {
                 <span id="@{_portWarning}" class="text-red-600" style="display: none;">
             </div>
 
-            <!-- buffer min  --> 
+            <!-- buffer  --> 
             <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_buffermin}" class="form-label inline-block mb-2 mr-2">Buffer min:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffermin}" 
-                    title="Minimum buffer size" name="Buffer Min" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{buffermin}">
-            </div>
-
-            <!-- buffer max   --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_buffermax}" class="form-label inline-block mb-2 mr-2">Buffer max:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffermax}" 
-                    title="Maximum buffer size" name="Buffer Max" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{buffermax}">
+                <label for="@{_buffer}" class="form-label inline-block mb-2 mr-2">Buffer:</label>
+                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffer}" 
+                    title="Buffer size" name="Buffer" step="1" class="srtOpusInput-pos-number-input"
+                    value="@{buffer}">
             </div>
 
         </div>

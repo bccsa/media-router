@@ -11,8 +11,9 @@ class RISTConfig extends dm {
         this.port = 1234;
         this.mode = "caller";
         this.cname = "";
-        this.buffermin = 50;
-        this.buffermax = 100;
+        // this.buffermin = 50;
+        // this.buffermax = 100;
+        this.buffer = 50;
         this.weight = 0;
     }
 
