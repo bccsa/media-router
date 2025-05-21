@@ -34,7 +34,7 @@ module.exports = {
         `;
     },
 
-    ristConfigHtml: () => {
+    ristConfigHtml: (type) => {
         return `
         <div class="border-t border-gray-600 rounded-b-md"></div> 
 
@@ -81,13 +81,21 @@ module.exports = {
                 <span id="@{_portWarning}" class="text-red-600" style="display: none;">
             </div>
 
-            <!-- buffer  --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_buffer}" class="form-label inline-block mb-2 mr-2">Buffer:</label>
-                <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffer}" 
-                    title="Buffer size" name="Buffer" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{buffer}">
-            </div>
+            ${
+                type == "RistToSrt"
+                    ? `
+                <!-- buffer  --> 
+                <div class="w-1/3 mr-4 flex flex-col">
+                    <label for="@{_buffer}" class="form-label inline-block mb-2 mr-2">Latency (ms):</label>
+                    <input type="number" min="0" oninput="validity.valid||(value='')" id="@{_buffer}" 
+                        title="Latency (ms)" name="Latency ms" step="1" class="srtOpusInput-pos-number-input"
+                        value="@{buffer}">
+                </div>`
+                    : `
+                <!-- Place holder  --> 
+                <div class="w-1/3 mr-4 flex flex-col">
+                </div>`
+            }
 
         </div>
 
