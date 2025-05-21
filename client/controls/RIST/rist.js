@@ -45,6 +45,7 @@ class Rist {
             this.Set({
                 [name]: {
                     controlType: "RISTConfig",
+                    type: this.controlType,
                 },
             });
         });
