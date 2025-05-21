@@ -30,7 +30,6 @@ class SrtOpusInput extends Classes(_paNullSinkBase, SrtBase) {
                 `srtserversrc name=${
                     this._srtElementName
                 } uri="${this.uri()}" wait-for-connection=false ! ` +
-                `tsparse ignore-pcr=true ! tsdemux ignore-pcr=true latency=1 ! ` +
                 `decodebin max-size-time=40000000 ! ` +
                 `audioconvert ! ` +
                 `audio/x-raw,rate=${this.sampleRate},format=S${this.bitDepth}LE,channels=${this.channels} ! ` +
