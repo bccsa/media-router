@@ -23,14 +23,6 @@ module.exports = {
                 linkUrl += `${_firstParam}cname=${link._parent._parent.displayName}_${link._parent.displayName}`;
                 _firstParam = "&";
             }
-            // if (link.buffermin) {
-            //     linkUrl += `${_firstParam}buffer-min=${link.buffermin}`;
-            //     _firstParam = "&";
-            // }
-            // if (link.buffermax) {
-            //     linkUrl += `${_firstParam}buffer-max=${link.buffermax}`;
-            //     _firstParam = "&";
-            // }
             if (link.buffer) {
                 linkUrl += `${_firstParam}buffer=${link.buffer}`;
                 _firstParam = "&";
