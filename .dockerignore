@@ -1,0 +1,14 @@
+.git
+.vscode
+node_modules
+PKGBUILD
+dev
+
+docker-compose.yaml
+Dockerfile
+build-number
+
+
+*.md
+*.sh
+*.log
