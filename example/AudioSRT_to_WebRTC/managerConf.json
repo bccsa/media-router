@@ -1,0 +1,512 @@
+{
+  "router_defaultConf": {
+    "name": "router_defaultConf",
+    "controlType": "Router",
+    "displayName": "MyRouter",
+    "password": "MyPassword",
+    "AudioInput_defaultConf": {
+      "controlType": "AudioInput",
+      "destinations": [
+        "AudioOutput_defaultConf",
+        "SrtOpusOutput_6348"
+      ],
+      "left": 98.2,
+      "top": 171.2,
+      "height": 100.5,
+      "width": 250,
+      "masterExists": true,
+      "master": "alsa_input.usb-046d_HD_Pro_Webcam_C920_33BE613F-02.analog-stereo",
+      "master_descr": "C920 PRO HD Webcam Analog Stereo",
+      "sampleRate": 32000,
+      "channelMap": "1,2",
+      "channels": 2,
+      "reload": false,
+      "vuData": [
+        -52,
+        -52
+      ],
+      "source": "MR_PA_AudioInput_defaultConf",
+      "monitor": "MR_PA_AudioInput_defaultConf",
+      "volume": 50
+    },
+    "AudioOutput_defaultConf": {
+      "controlType": "AudioOutput",
+      "top": 156.20001525878905,
+      "left": 936.2,
+      "height": 100.5,
+      "width": 250,
+      "monitor": "MR_PA_AudioOutput_defaultConf.monitor",
+      "sink": "MR_PA_AudioOutput_defaultConf",
+      "master": "alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo",
+      "master_descr": "Sound BlasterX G1 Analog Stereo",
+      "sampleRate": 44100,
+      "channelMap": "1,2",
+      "channels": 2,
+      "volume": 100,
+      "reload": false,
+      "srcChannelMap": "1,2",
+      "vuData": [
+        -53,
+        -52
+      ],
+      "moduleEnabled": false
+    },
+    "online": true,
+    "fetchLog": false,
+    "sources": [
+      {
+        "name": "alsa_output.pci-0000_01_00.1.hdmi-stereo.monitor",
+        "description": "Monitor of GP102 HDMI Audio Controller Digital Stereo (HDMI)",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo.monitor",
+        "description": "Monitor of USB PnP Audio Device Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "0",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_input.usb-0c76_USB_PnP_Audio_Device-00.mono-fallback",
+        "description": "USB PnP Audio Device Mono",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "mono"
+        ],
+        "cardId": "0",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo.monitor",
+        "description": "Monitor of Sound BlasterX G1 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 44100,
+        "monitorsource": "alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "4",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_input.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo",
+        "description": "Sound BlasterX G1 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 44100,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "4",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920_33BE613F-02.analog-stereo",
+        "description": "C920 PRO HD Webcam Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 32000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "3",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.pci-0000_00_1f.3.iec958-stereo.monitor",
+        "description": "Monitor of Built-in Audio Digital Stereo (IEC958)",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.pci-0000_00_1f.3.iec958-stereo",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "1",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_input.pci-0000_00_1f.3.analog-stereo",
+        "description": "Built-in Audio Analog Stereo",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "1",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_AudioOutput_defaultConf.monitor",
+        "description": "Monitor of Remapped alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo sink",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_AudioOutput_defaultConf",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870917"
+      },
+      {
+        "name": "MR_PA_AudioInput_defaultConf",
+        "description": "Remapped alsa_input.usb-046d_HD_Pro_Webcam_C920_33BE613F-02.analog-stereo source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870916"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_6348.monitor",
+        "description": "New_SrtOpusOutput",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_6348",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870918"
+      }
+    ],
+    "sinks": [
+      {
+        "name": "alsa_output.pci-0000_01_00.1.hdmi-stereo",
+        "description": "GP102 HDMI Audio Controller Digital Stereo (HDMI)",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.pci-0000_01_00.1.hdmi-stereo.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo",
+        "description": "USB PnP Audio Device Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "0",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo",
+        "description": "Sound BlasterX G1 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 44100,
+        "monitorsource": "alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "4",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.pci-0000_00_1f.3.iec958-stereo",
+        "description": "Built-in Audio Digital Stereo (IEC958)",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.pci-0000_00_1f.3.iec958-stereo.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "1",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_AudioOutput_defaultConf",
+        "description": "Remapped alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo sink",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_AudioOutput_defaultConf.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870917"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_6348",
+        "description": "New_SrtOpusOutput",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_6348.monitor",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870918"
+      }
+    ],
+    "log": [
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sinks detected: alsa_output.pci-0000_01_00.1.hdmi-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_output.pci-0000_01_00.1.hdmi-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sinks detected: alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_output.usb-0c76_USB_PnP_Audio_Device-00.analog-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sinks detected: alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_input.usb-0c76_USB_PnP_Audio_Device-00.mono-fallback"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_output.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_input.usb-Creative_Technology_Ltd_Sound_BlasterX_G1_00062304-00.analog-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_input.usb-046d_HD_Pro_Webcam_C920_33BE613F-02.analog-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sinks detected: alsa_output.pci-0000_00_1f.3.iec958-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sinks detected: MR_PA_AudioOutput_defaultConf"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_6348"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_output.pci-0000_00_1f.3.iec958-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: alsa_input.pci-0000_00_1f.3.analog-stereo"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: MR_PA_AudioOutput_defaultConf.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_defaultConf"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:10 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_6348.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:12 | INFO: \tWebRTCClient_3727 (New WebRTCClient) - WebRTC WebApp running on http://*: 2000"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:12 | INFO: \tMR_PA_AudioInput_defaultConf (): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:13 | INFO: \tAudioInput_defaultConf (): Created remap-source; ID: 536870921"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:13 | INFO: \tSrtOpusOutput_6348 (New SrtOpusOutput): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:14 | INFO: \tPulseAudio sources removed: MR_PA_SrtOpusOutput_6348.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:14 | INFO: \tPulseAudio sinks removed: MR_PA_SrtOpusOutput_6348"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:14 | INFO: \tSrtOpusOutput_6348 (New SrtOpusOutput): Created null-sink; ID: 536870918"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:15 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_6348.monitor"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:15 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_6348"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:15 | INFO: \tMR_PA_SrtOpusOutput_6348 (New SrtOpusOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:16 | INFO: \tSrtOpusOutput_6348 (New SrtOpusOutput): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/06/14, 15:46:16 | INFO: \tMR_PA_AudioInput_defaultConf_loopback_SrtOpusOutput_6348: Connected MR_PA_AudioInput_defaultConf to MR_PA_SrtOpusOutput_6348; ID: 536870924"
+      ]
+    ],
+    "cpuTemperature": 40,
+    "cpuUsage": 3,
+    "run": true,
+    "logMessage": [
+      "INFO",
+      "2025/06/14, 15:46:16 | INFO: \tMR_PA_AudioInput_defaultConf_loopback_SrtOpusOutput_6348: Connected MR_PA_AudioInput_defaultConf to MR_PA_SrtOpusOutput_6348; ID: 536870924"
+    ],
+    "memoryUsage": 25,
+    "startupDelay": false,
+    "ipAddress": "172.18.0.3",
+    "buildNumber": "dev | 2025-02-11 00:00:00 am CAT",
+    "WebRTCClient_3727": {
+      "height": 78,
+      "width": 250,
+      "name": "WebRTCClient_3727",
+      "controlType": "WebRTCClient",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New WebRTCClient",
+      "showControl": true,
+      "left": 94.59999389648436,
+      "top": 47.59999389648438,
+      "moduleEnabled": true,
+      "appPort": 2000,
+      "player__68c7b2d8cd4e446d904875012aa47744": {
+        "name": "player__68c7b2d8cd4e446d904875012aa47744",
+        "controlType": "WebRTCPlayer",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "url": "http://192.168.35.225:8889/de",
+        "playerName": "🇩🇪 German",
+        "flag": "DE"
+      },
+      "reload": true
+    },
+    "SrtOpusOutput_6348": {
+      "height": 100.5,
+      "width": 250,
+      "name": "SrtOpusOutput_6348",
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput",
+      "showControl": true,
+      "left": 932.2,
+      "top": 309.20001525878905,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 1234,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_6348.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_6348.monitor",
+      "sink": "MR_PA_SrtOpusOutput_6348",
+      "vuData": [
+        -52
+      ],
+      "srcChannelMap": "1,2",
+      "reload": false,
+      "caller_count": 1,
+      "srtHost": "127.0.0.1",
+      "SrtOpusOutput_6348_1": {
+        "packets_send_recieve": "33693",
+        "MB_send_receive": 7.82,
+        "rtt_ms_rounded": 0.07,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput: 1",
+        "rtt_ms": "0.074000",
+        "bytes_sent": "7816776",
+        "packets_sent": "33693",
+        "send_rate_mbps": "0.158010",
+        "send_duration_us": "144460494",
+        "send_duration": "2M 24s",
+        "send_receive_rate": 0.16,
+        "status": "running",
+        "available_bandwidth_rounded": 98.59,
+        "available_bandwidth": "98.592000"
+      }
+    }
+  },
+  "build_number": "dev | 2025-02-11 00:00:00 am CAT"
+}
