@@ -1,0 +1,39 @@
+services:
+  manager:
+    image: media-router
+    pull_policy: never
+    build: .
+    ports:
+      - "8080:8080"   # WebApp
+      - "3000:3000"   # router configuration
+    volumes:
+      - ./server/managerConf.json:/app/server/managerConf.json
+    working_dir: /app
+    command: node server/manager
+  router:
+    image: media-router
+    pull_policy: never
+    ports:
+      - "8890:8890"   # SRT
+      - "2000:2000"   # WebApp for WebRTC
+      - "8081:8081"   # WebApp for Control
+      - "8082:8082"   # WebApp for Profile Manager
+    environment:
+      - PULSE_SERVER=unix:${XDG_RUNTIME_DIR}/pulse/native
+    volumes:
+      - ${XDG_RUNTIME_DIR}/pulse/native:${XDG_RUNTIME_DIR}/pulse/native
+      - ./server/profileConf.json:/app/server/profileConf.json
+    working_dir: /app
+    devices:
+      - /dev/snd
+    group_add:
+      - audio
+    command: node server/router
+  mediamtx:
+    image: bluenviron/mediamtx
+    restart: unless-stopped
+    ports:
+      - "8889:8889"   # WebRTC
+      - "8189:8189"   # ICE/UDP
+    volumes:
+      - ./example/AudioSRT_to_WebRTC/mediamtx.yml:/mediamtx.yml
