@@ -186,7 +186,18 @@ class WebRTCPlayer extends ui {
                 if (res.status !== 201) {
                     throw new Error('bad status code');
                 }
-                this._sessionUrl = `${this.url}/${res.headers.get('location')}`;
+                let urlElements = this.url.split('/');
+                let locationElements = res.headers.get('location').split('/');
+                // if the last element of urlElements and the first element of locationElements are equal
+                // NOTE: Assumes the actual MediaMTX path differs from the final segment of this.url
+                if (urlElements[urlElements.length - 1] === locationElements[1])
+                {
+                    // concat both paths, but drop the first item in locationElements
+                    this._sessionUrl = urlElements.concat(locationElements.slice(2)).join('/');
+                }
+                else {
+                    this._sessionUrl = `${this.url}/${res.headers.get('location')}`;
+                }
                 return res.text();
             })
             .then((sdp) => this.onRemoteAnswer(new RTCSessionDescription({
