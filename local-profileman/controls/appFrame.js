@@ -11,6 +11,17 @@ class appFrame extends ui {
         <!--    NAV BAR   -->
         <div class="appFrame-top-bar"> <div class="appFrame-top-flex-div">
 
+            <!--    ONLINE/OFFLINE -->
+            <span id="@{_online}" class="badge_online">
+            <span class="badge_online_dot"></span>
+            Online
+            </span>
+
+            <span id="@{_offline}" class="badge_offline">
+            <span class="badge_offline_dot"></span>
+            Offline
+            </span>
+
             <div class="flex items-center">
                 <!--    ADD BUTTON    -->
                 <button id="@{_btnAddManager}" class="appFrame-btn-add" type="button" title="Add a new manager profile"></button>
@@ -172,5 +183,17 @@ class appFrame extends ui {
             this.RemoveChild(control);
         });
     }
-
+    /**
+     * Check if device is online or offline
+     */
+    setOnline(manager_online) {
+        if (manager_online) {
+            this._online.style.display = "inline-flex";
+            this._offline.style.display = "none";
+        } else {
+            this._online.style.display = "none";
+            this._offline.style.display = "inline-flex";
+        }
+    }
 }
+

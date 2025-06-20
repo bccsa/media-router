@@ -95,6 +95,22 @@
     @apply max-h-40 min-h-[2rem] mr-4 block w-full text-sm font-normal text-[#293548] bg-white border border-solid border-gray-300 rounded transition ease-in-out  focus:border-blue-600 focus:outline-none px-2;
 }
 
+.badge_online {
+    @apply hidden items-center bg-green-600 text-white text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full
+}
+
+.badge_online_dot {
+    @apply w-2 h-2 mr-1 bg-white rounded-full
+}
+
+.badge_offline {
+    @apply inline-flex items-center bg-red-100 text-red-800 text-sm font-medium mr-2 px-2.5 py-0.5 rounded-full
+}
+
+.badge_offline_dot {
+    @apply w-2 h-2 mr-1 bg-red-500 rounded-full
+}
+
 /* . {
     @apply ;
 } */
