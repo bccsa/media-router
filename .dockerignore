@@ -4,6 +4,7 @@ node_modules
 PKGBUILD
 dev
 
+build
 docker-compose.yaml
 Dockerfile
 build-number
