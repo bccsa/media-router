@@ -1,0 +1,12 @@
+{
+  "default": {
+    "controlType": "managerPanel",
+    "managerUrl": "http://localhost:3000",
+    "username": "MyRouter",
+    "password": "MyPassword",
+    "selected": true,
+    "managerHost": "manager"
+  },
+  "envFile": "",
+  "envFileErr": ""
+}
