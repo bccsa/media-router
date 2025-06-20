@@ -25,7 +25,11 @@ controls.on('appFrame', appFrame => {
     
     // Receive data from router
     socket.on('data', data => {
-        appFrame.SetData(data);
+        appFrame.Set(data);
+    });
+
+    socket.on('manager_online', data => {
+        appFrame.setOnline(data);
     });
 
     // Forward data from client UI to router

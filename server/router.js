@@ -51,6 +51,7 @@ let manager_client;
 
 let reconnectTimer;
 let firstConnect = true;
+let manager_online = false;
 /**
  * Connect to the manager's socket.io server
  * @param {string} url
@@ -83,9 +84,21 @@ function manager_connect(managerHost, managerPort, username, password, oldUrl) {
 
     manager_io.on("connected", () => {
         console.log("Connected to manager.");
+        manager_online = true;
+        profileManIO.emit("manager_online", manager_online, {
+            guaranteeDelivery: true,
+        });
         // Send PulseAudio sources and sinks to manager
         controls.router.NotifyProperty("sources");
         controls.router.NotifyProperty("sinks");
+    });
+
+    manager_io.on("disconnected", () => {
+        console.log("Disconnected from manager.");
+        profileManIO.emit("manager_online", manager_online, {
+            guaranteeDelivery: true,
+        });
+        manager_online = false;
     });
 
     // set data from manager to router controls
@@ -135,6 +148,10 @@ function loadRouter() {
                 p.username +
                 p.password;
 
+            if (manager_online){
+                manager_io.disconnect();
+                manager_online = false;
+            }
             // Remove the current router configuration
             if (controls.router) {
                 controls.router.Set({ remove: true });
@@ -311,6 +328,7 @@ try {
 const profileManIO = require("socket.io")(profileManHttp);
 profileManIO.on("connection", (socket) => {
     socket.emit("data", profileConf.config);
+    socket.emit("manager_online", manager_online);
 
     socket.on("data", (data) => {
         profileConf.append(data);
