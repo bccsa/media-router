@@ -7,7 +7,9 @@ services:
       - "8080:8080"   # WebApp
       - "3000:3000"   # router configuration
     volumes:
-      - ./server/managerConf.json:/app/server/managerConf.json
+      - .:/app/
+      - /app/server/gst_modules # exclude gstreamer modules since GLIBCXX could mismatch between host and container
+      - /app/server/node_modules # exclude node_modules
     working_dir: /app
     command: node server/manager
   router:
@@ -22,7 +24,9 @@ services:
       - PULSE_SERVER=unix:${XDG_RUNTIME_DIR}/pulse/native
     volumes:
       - ${XDG_RUNTIME_DIR}/pulse/native:${XDG_RUNTIME_DIR}/pulse/native
-      - ./server/profileConf.json:/app/server/profileConf.json
+      - .:/app/
+      - /app/server/gst_modules # exclude gstreamer modules since GLIBCXX could mismatch between host and container
+      - /app/server/node_modules # exclude node_modules
     working_dir: /app
     devices:
       - /dev/snd
