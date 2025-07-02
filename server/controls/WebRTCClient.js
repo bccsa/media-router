@@ -25,6 +25,19 @@ class WebRTCClient extends dm {
     }
 
     Init() {
+        // Check if other WebRTCClient modules are already running
+        const m = Object.values(this._parent._controls)
+        .find((c) => c.controlType == this.constructor.name && c.name != this.name);
+
+        if (m) {
+            this._parent._log(
+                "FATAL",
+                `${this._controlName} (${this.displayName}) - Another WebRTCClient module is already active. Only one WebRTCClient module is supported.`
+            );
+            this.moduleEnabled = false; // Disable this module
+            return; // Prevent initialization of this module
+        }
+
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on("reload", (reload) => {
             if (reload && this._parent.runCmd && this.moduleEnabled) {
@@ -53,7 +66,7 @@ class WebRTCClient extends dm {
             (run) => {
                 setTimeout(() => {
                     this.moduleEnabled && (this.run = run);
-                }); // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emited
+                }); // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emitted
             },
             { immediate: true, caller: this }
         );
@@ -140,6 +153,10 @@ class WebRTCClient extends dm {
             this._io = undefined;
             this._http = undefined;
         }
+    }
+
+    _saveWebRtcClientConfig() {
+
     }
 }
 
