@@ -6,6 +6,7 @@ const events = require('events');
  * @property {string} path - path to the configuration file
  * @property {string} defaultConfig - path to a default configuration file to be loaded if 'path' does not exist or is invalid
  * @property {object} config - Configuration object managed by the configuration manager
+ * @property {string} configDirectory - Directory of the configuration file
  */
 class configManager extends events {
     /**
@@ -18,6 +19,7 @@ class configManager extends events {
         this.path = path;
         this.defaultConfig = defaultConfig;
         this.config = this._load();
+        this.configDirectory = this.path.substring(0, this.path.lastIndexOf('/')) || __dirname;
     }
 
     /**
