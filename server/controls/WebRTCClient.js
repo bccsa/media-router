@@ -11,7 +11,6 @@ process.chdir(__dirname);
 class WebRTCClient extends dm {
     constructor() {
         super();
-        this.url = "http://localhost:8889/test";
         this.title = "name";
         this.displayName = "WebRTCClient";
         this.appPort = 2000;
@@ -87,6 +86,11 @@ class WebRTCClient extends dm {
                 this.run = false;
             }
         });
+
+        // Save WebRTC client configuration when the display name changes
+        this.on("title", () => {
+            this._saveWebRtcClientConfig();
+        });
     }
 
     _start_webApp() {
@@ -155,8 +159,25 @@ class WebRTCClient extends dm {
         }
     }
 
-    _saveWebRtcClientConfig() {
 
+    /**
+     * Extract the WebRTC client configuration and emit it to the top level parent control for saving to disk.
+     */
+    _saveWebRtcClientConfig() {
+        const streams = Object.values(this._controls)
+            .filter((c) => c.controlType == "WebRTCPlayer")
+            .map((c) => ({
+                id: c._controlName,
+                name: c.playerName,
+                url: c.url,
+                countryCode: c.flag,
+                note: c.note,
+            }));
+
+        this._topLevelParent.emit("WebRTCClientConfig", {
+            displayName: this.title,
+            webRtcAudioStreams: streams,
+        });
     }
 }
 
