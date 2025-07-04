@@ -214,30 +214,6 @@ controls.on(
     { immediate: true }
 );
 
-// Save WebRTCClient configuration to file to be hosted by external web server
-let saveRateLimiter = 0;
-let webRtcPlayerConfig;
-controls.on("WebRTCClientConfig", (config) => {
-    webRtcPlayerConfig = config;
-
-    if (!saveRateLimiter) {
-        saveRateLimiter = setTimeout(() => {
-            saveRateLimiter = 0;
-
-            const configPath = path.join(profileConf.configDirectory, "WebRTCClientConfig.json");
-            try {
-                fs.writeFileSync(configPath, JSON.stringify(webRtcPlayerConfig, null, 2));
-                console.log(`WebRTCClient configuration saved to ${configPath}`);
-            }
-            catch (err) {
-                console.error(`Failed to save WebRTCClient configuration: ${err.message}`);
-                router._log("FATAL", `Failed to save WebRTCClient configuration: ${err.message}`);
-            }
-        }, 100);
-    }
-
-});
-
 loadRouter();
 
 // -------------------------------------

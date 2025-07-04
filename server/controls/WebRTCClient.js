@@ -21,6 +21,7 @@ class WebRTCClient extends dm {
         this.run = false; // Run command to be set by external code to request the control to start.
         this.SetAccess("run", { Get: "none", Set: "none" });
         this.moduleEnabled = true; // Enable or disable individual module
+        this._webRtcClientConfig = { displayName: "New audio streaming service", webRtcAudioStreams: [] };
     }
 
     Init() {
@@ -89,8 +90,11 @@ class WebRTCClient extends dm {
 
         // Save WebRTC client configuration when the display name changes
         this.on("title", () => {
-            this._saveWebRtcClientConfig();
+            this._setWebRtcClientConfig();
         });
+
+        // Set initial configuration
+        this._setWebRtcClientConfig();
     }
 
     _start_webApp() {
@@ -102,7 +106,7 @@ class WebRTCClient extends dm {
                 this._http.listen(this.appPort, () => {
                     this._parent._log(
                         "INFO",
-                        `${this._controlName} (${this.displayName}) - WebRTC WebApp running on http://*: ${this.appPort}`
+                        `${this._controlName} (${this.displayName}) - WebRTC client API running on http://*: ${this.appPort}`
                     );
                 });
 
@@ -117,6 +121,11 @@ class WebRTCClient extends dm {
                 this._app.use(
                     express.static(path.join(__dirname, "/../../webRTC-client"))
                 );
+
+                // Serve the WebRTC client configuration
+                this._app.get("/config.json", (req, res) => {
+                    res.json(this._webRtcClientConfig);
+                });
 
                 // -------------------------------------
                 // Socket.io communication with WebRTC WebApp
@@ -163,7 +172,7 @@ class WebRTCClient extends dm {
     /**
      * Extract the WebRTC client configuration and emit it to the top level parent control for saving to disk.
      */
-    _saveWebRtcClientConfig() {
+    _setWebRtcClientConfig() {
         const streams = Object.values(this._controls)
             .filter((c) => c.controlType == "WebRTCPlayer")
             .map((c) => ({
@@ -174,10 +183,10 @@ class WebRTCClient extends dm {
                 note: c.note,
             }));
 
-        this._topLevelParent.emit("WebRTCClientConfig", {
+        this._webRtcClientConfig = {
             displayName: this.title,
             webRtcAudioStreams: streams,
-        });
+        };
     }
 }
 
