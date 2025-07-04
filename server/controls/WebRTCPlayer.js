@@ -15,10 +15,10 @@ class WebRTCPlayer extends dm {
 
     Init() {
         // Trigger saving of configuration when player values change
-        this.on("url", () => this._parent._saveWebRtcClientConfig());
-        this.on("playerName", () => this._parent._saveWebRtcClientConfig());
-        this.on("note", () => this._parent._saveWebRtcClientConfig());
-        this.on("flag", () => this._parent._saveWebRtcClientConfig());
+        this.on("url", () => this._parent._setWebRtcClientConfig());
+        this.on("playerName", () => this._parent._setWebRtcClientConfig());
+        this.on("note", () => this._parent._setWebRtcClientConfig());
+        this.on("flag", () => this._parent._setWebRtcClientConfig());
     }
 
 }

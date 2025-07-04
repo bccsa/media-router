@@ -110,9 +110,6 @@ sdp/
 # Config files in root folder
 /*.json
 
-# files ending with (C)onfig.json
-*onfig.json
-
 # Config files in router folder
 server/config.json
 server/profileConf.json
