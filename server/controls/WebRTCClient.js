@@ -27,7 +27,7 @@ class WebRTCClient extends dm {
     Init() {
         // Check if other WebRTCClient modules are already running
         const m = Object.values(this._parent._controls)
-        .find((c) => c.controlType == this.constructor.name && c.name != this.name);
+        .find((c) => c.controlType == this.constructor.name && c._controlName != this._controlName);
 
         if (m) {
             this._parent._log(
