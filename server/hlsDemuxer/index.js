@@ -197,18 +197,25 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
         });
         const contentLength =
             parseInt(response.headers["content-length"], 10) || 0;
-        response.data.pipe(pipe, { end: false });
-        await new Promise((resolve) =>
+        
+        // Measure actual download time (before pipe blocking)
+        let downloadEndTime;
+        const downloadPromise = new Promise((resolve) => {
             response.data.on("end", () => {
+                downloadEndTime = Date.now();
                 response.data.destroy();
                 resolve();
-            })
-        );
+            });
+        });
+        
+        response.data.pipe(pipe, { end: false });
+        await downloadPromise;
+        
         response.data.destroy();
         delete response.data;
 
         if (isVideo) {
-            const duration = (Date.now() - startTime) / 1000;
+            const duration = (downloadEndTime - startTime) / 1000;
             if (duration > 0) {
                 const newBandwidth = (contentLength * 8) / duration;
                 estimatedBandwidth =
