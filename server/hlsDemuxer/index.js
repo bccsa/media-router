@@ -18,8 +18,8 @@ const exec = util.promisify(require("child_process").exec);
 const path = require("path");
 
 const MAX_RETRIES = 5;
-const BANDWIDTH_SMOOTHING_FACTOR = 0.2;
-const BANDWIDTH_ADJUSTMENT_FACTOR = 0.7;
+const BANDWIDTH_SMOOTHING_FACTOR = 0.3;
+const BANDWIDTH_ADJUSTMENT_FACTOR = 0.8;
 
 if (process.argv.length < 3) {
     console.error("Usage: node index.js <HLS_URL> config (JSON Object)");
