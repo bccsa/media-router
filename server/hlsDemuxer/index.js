@@ -18,7 +18,7 @@ const exec = util.promisify(require("child_process").exec);
 const path = require("path");
 
 const MAX_RETRIES = 5;
-const BANDWIDTH_SMOOTHING_FACTOR = 0.3;
+const BANDWIDTH_SMOOTHING_FACTOR = 0.38;
 const BANDWIDTH_ADJUSTMENT_FACTOR = 0.8;
 
 if (process.argv.length < 3) {
