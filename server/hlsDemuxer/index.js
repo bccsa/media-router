@@ -18,8 +18,8 @@ const exec = util.promisify(require("child_process").exec);
 const path = require("path");
 
 const MAX_RETRIES = 5;
-const BANDWIDTH_SMOOTHING_FACTOR = 0.9;
-const BANDWIDTH_ADJUSTMENT_FACTOR = 0.9;
+const BANDWIDTH_SMOOTHING_FACTOR = 0.2;
+const BANDWIDTH_ADJUSTMENT_FACTOR = 0.7;
 
 if (process.argv.length < 3) {
     console.error("Usage: node index.js <HLS_URL> config (JSON Object)");
@@ -99,7 +99,7 @@ async function fetchSegmentList(stream) {
  * Selects the best video variant based on estimated bandwidth.
  * @returns {string|null} - The selected variant URI.
  */
-async function selectBestVariant(index = 0) {
+async function selectBestVariant() {
     if (!masterPlaylist || !masterPlaylist.isMasterPlaylist) return;
 
     // find least bitrate
@@ -118,22 +118,20 @@ async function selectBestVariant(index = 0) {
 
     if (currentVariant !== bestVariant.uri) {
         console.log(
-            `Switching to Variant: ${bestVariant.resolution?.height} @ ${bestVariant.bandwidth} bps`
+            `Switching to Variant: ${bestVariant.resolution?.height} @ ${
+                bestVariant.bandwidth / 1000
+            } Kbps`
         );
         currentVariant = bestVariant.uri;
         _currentVariant_ = bestVariant;
         // update vod segments if quality changes
-        if (isVod && index == 0) {
+        if (isVod) {
             streams[0].url = new URL(currentVariant, hlsUrl);
             streams[0].playlist = await fetchPlaylist(currentVariant);
         }
-
-        // update audio and subtitle tracks when video track changes
-        await selectAudioTracks();
-        await selectSubtitleTracks();
-        return bestVariant.uri;
+        return;
     }
-    return currentVariant;
+    return;
 }
 
 /**
@@ -195,32 +193,33 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
             url: segmentUrl,
             responseType: "stream",
         });
+
         const contentLength =
             parseInt(response.headers["content-length"], 10) || 0;
-        
-        // Measure actual download time (before pipe blocking)
-        let downloadEndTime;
-        const downloadPromise = new Promise((resolve) => {
+
+        const chunks = [];
+        await new Promise((resolve, reject) => {
+            response.data.on("data", (chunk) => chunks.push(chunk));
             response.data.on("end", () => {
-                downloadEndTime = Date.now();
-                response.data.destroy();
                 resolve();
             });
+            response.data.on("error", reject);
         });
-        
-        response.data.pipe(pipe, { end: false });
-        await downloadPromise;
-        
-        response.data.destroy();
-        delete response.data;
 
-        if (isVideo) {
+        const downloadEndTime = Date.now();
+
+        const buffer = Buffer.concat(chunks);
+        // Now pipe the buffer to the pipe stream
+        await pipe.write(buffer);
+
+        // Only calculate bandwidth for video segments and if content length is greater than 10000 bytes
+        if (isVideo && contentLength > 10000) {
             const duration = (downloadEndTime - startTime) / 1000;
             if (duration > 0) {
-                const newBandwidth = (contentLength * 8) / duration;
+                const bandwidth = (contentLength * 8) / duration;
                 estimatedBandwidth =
                     estimatedBandwidth * BANDWIDTH_SMOOTHING_FACTOR +
-                    newBandwidth * (1 - BANDWIDTH_SMOOTHING_FACTOR);
+                    bandwidth * (1 - BANDWIDTH_SMOOTHING_FACTOR);
                 selectBestVariant();
             }
         }
