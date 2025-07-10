@@ -82,11 +82,14 @@ async function fetchSegmentList(stream) {
     }
 
     if (stream.playlist.segments.length > 0) {
-        const p = JSON.parse(JSON.stringify(stream.playlist));
-        p.segments = p.segments.slice(
-            stream.pointer,
-            stream.pointer + stream.page
-        );
+        // Create a shallow copy with only the needed segments to reduce memory usage
+        const p = {
+            ...stream.playlist,
+            segments: stream.playlist.segments.slice(
+                stream.pointer,
+                stream.pointer + stream.page
+            ),
+        };
         stream.pointer += stream.page;
 
         return p;
