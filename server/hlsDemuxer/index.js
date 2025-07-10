@@ -18,8 +18,8 @@ const exec = util.promisify(require("child_process").exec);
 const path = require("path");
 
 const MAX_RETRIES = 5;
-const BANDWIDTH_SMOOTHING_FACTOR = 0.38;
-const BANDWIDTH_ADJUSTMENT_FACTOR = 0.8;
+const BANDWIDTH_SMOOTHING_FACTOR = 0.25;
+const BANDWIDTH_ADJUSTMENT_FACTOR = 0.6;
 
 if (process.argv.length < 3) {
     console.error("Usage: node index.js <HLS_URL> config (JSON Object)");
@@ -82,11 +82,14 @@ async function fetchSegmentList(stream) {
     }
 
     if (stream.playlist.segments.length > 0) {
-        const p = JSON.parse(JSON.stringify(stream.playlist));
-        p.segments = p.segments.slice(
-            stream.pointer,
-            stream.pointer + stream.page
-        );
+        // Create a shallow copy with only the needed segments to reduce memory usage
+        const p = {
+            ...stream.playlist,
+            segments: stream.playlist.segments.slice(
+                stream.pointer,
+                stream.pointer + stream.page
+            ),
+        };
         stream.pointer += stream.page;
 
         return p;
@@ -125,8 +128,13 @@ async function selectBestVariant() {
         currentVariant = bestVariant.uri;
         _currentVariant_ = bestVariant;
         // update vod segments if quality changes
-        if (isVod) {
-            streams[0].url = new URL(currentVariant, hlsUrl);
+        if (isVod && streams[0]) {
+            // Clear old references to prevent memory leak
+            streams[0].playlist = null;
+            streams[0].url = null;
+
+            // Set new references
+            streams[0].url = new URL(currentVariant, hlsUrl).href;
             streams[0].playlist = await fetchPlaylist(currentVariant);
         }
         return;
@@ -150,7 +158,12 @@ async function selectAudioTracks() {
         ) {
             selectedTracks[track.language] = track;
             if (streams[count]) {
-                streams[count].uri = new URL(track.uri, hlsUrl);
+                // Clear old references to prevent memory leak
+                streams[count].uri = null;
+                streams[count].playlist = null;
+
+                // Set new references
+                streams[count].uri = new URL(track.uri, hlsUrl).href;
                 streams[count].playlist = await fetchPlaylist(
                     streams[count].uri
                 );
@@ -189,28 +202,32 @@ async function selectSubtitleTracks() {
 async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
     try {
         const startTime = Date.now();
-        const response = await axios({
-            url: segmentUrl,
-            responseType: "stream",
-        });
-
-        const contentLength =
-            parseInt(response.headers["content-length"], 10) || 0;
-
-        const chunks = [];
-        await new Promise((resolve, reject) => {
-            response.data.on("data", (chunk) => chunks.push(chunk));
-            response.data.on("end", () => {
-                resolve();
+        let downloadEndTime;
+        let contentLength;
+        let buffer;
+        await axios
+            .get(segmentUrl, {
+                responseType: "arraybuffer",
+                onDownloadProgress: (progressEvent) => {
+                    if (progressEvent.loaded >= progressEvent.total) {
+                        downloadEndTime = Date.now();
+                        contentLength = progressEvent.total;
+                    }
+                },
+            })
+            .then(async (response) => {
+                buffer = Buffer.from(response.data);
+            })
+            .catch((error) => {
+                throw error;
             });
-            response.data.on("error", reject);
+
+        await new Promise((resolve, reject) => {
+            pipe.write(buffer, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
         });
-
-        const downloadEndTime = Date.now();
-
-        const buffer = Buffer.concat(chunks);
-        // Now pipe the buffer to the pipe stream
-        await pipe.write(buffer);
 
         // Only calculate bandwidth for video segments and if content length is greater than 10000 bytes
         if (isVideo && contentLength > 10000) {
@@ -399,3 +416,48 @@ async function createPipe(pipeName) {
 }
 
 process.on("unhandledRejection", console.log);
+
+// Add cleanup handlers
+process.on("SIGINT", () => {
+    console.log("Received SIGINT, cleaning up...");
+    cleanup();
+    process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+    console.log("Received SIGTERM, cleaning up...");
+    cleanup();
+    process.exit(0);
+});
+
+process.on("exit", () => {
+    cleanup();
+});
+
+/**
+ * Cleanup function to release memory references
+ */
+function cleanup() {
+    // Clear all stream references
+    if (streams) {
+        streams.forEach((stream) => {
+            if (stream.playlist) {
+                stream.playlist = null;
+            }
+            if (stream.pipe) {
+                stream.pipe.end();
+                stream.pipe = null;
+            }
+            stream.url = null;
+        });
+        streams = null;
+    }
+
+    // Clear other references
+    masterPlaylist = null;
+    selectedAudioTracks = null;
+    selectedSubtitleTracks = null;
+    _currentVariant_ = null;
+
+    console.log("Cleanup completed");
+}
