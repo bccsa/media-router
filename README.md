@@ -51,6 +51,12 @@ The media-router process by default points to the locally installed manager but 
 ## Local operator web interface
 A local operator web-interface is available on http://localhost:8081. This interface can be used for local control of volume controls, etc.
 
+## WebRTC client configuration API
+A client config API is included in the WebRTCClient module, serving the configuration on http://[host]:2000/config.json
+This can be used to configure client applications to connect to the respective WHEP WebRTC endpoints configured in the module.
+
+*Note* Media Router does not include a built-in WebRTC server. A server like e.g. MediaMTX can be used as SRT to WebRTC bridge to serve streams as WebRTC to clients.
+
 ## Development environment
 * Ensure that your user on the development environment has sudo access (some versions of Debian ships without sudo, and you may need to configure it manually).
 * Clone the project to your development environment.
