@@ -125,8 +125,13 @@ async function selectBestVariant() {
         currentVariant = bestVariant.uri;
         _currentVariant_ = bestVariant;
         // update vod segments if quality changes
-        if (isVod) {
-            streams[0].url = new URL(currentVariant, hlsUrl);
+        if (isVod && streams[0]) {
+            // Clear old references to prevent memory leak
+            streams[0].playlist = null;
+            streams[0].url = null;
+
+            // Set new references
+            streams[0].url = new URL(currentVariant, hlsUrl).href;
             streams[0].playlist = await fetchPlaylist(currentVariant);
         }
         return;
@@ -150,7 +155,12 @@ async function selectAudioTracks() {
         ) {
             selectedTracks[track.language] = track;
             if (streams[count]) {
-                streams[count].uri = new URL(track.uri, hlsUrl);
+                // Clear old references to prevent memory leak
+                streams[count].uri = null;
+                streams[count].playlist = null;
+
+                // Set new references
+                streams[count].uri = new URL(track.uri, hlsUrl).href;
                 streams[count].playlist = await fetchPlaylist(
                     streams[count].uri
                 );
