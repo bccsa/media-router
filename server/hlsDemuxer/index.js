@@ -202,28 +202,32 @@ async function selectSubtitleTracks() {
 async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
     try {
         const startTime = Date.now();
-        const response = await axios({
-            url: segmentUrl,
-            responseType: "stream",
-        });
-
-        const contentLength =
-            parseInt(response.headers["content-length"], 10) || 0;
-
-        const chunks = [];
-        await new Promise((resolve, reject) => {
-            response.data.on("data", (chunk) => chunks.push(chunk));
-            response.data.on("end", () => {
-                resolve();
+        let downloadEndTime;
+        let contentLength;
+        let buffer;
+        await axios
+            .get(segmentUrl, {
+                responseType: "arraybuffer",
+                onDownloadProgress: (progressEvent) => {
+                    if (progressEvent.loaded >= progressEvent.total) {
+                        downloadEndTime = Date.now();
+                        contentLength = progressEvent.total;
+                    }
+                },
+            })
+            .then(async (response) => {
+                buffer = Buffer.from(response.data);
+            })
+            .catch((error) => {
+                throw error;
             });
-            response.data.on("error", reject);
+
+        await new Promise((resolve, reject) => {
+            pipe.write(buffer, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
         });
-
-        const downloadEndTime = Date.now();
-
-        const buffer = Buffer.concat(chunks);
-        // Now pipe the buffer to the pipe stream
-        await pipe.write(buffer);
 
         // Only calculate bandwidth for video segments and if content length is greater than 10000 bytes
         if (isVideo && contentLength > 10000) {
