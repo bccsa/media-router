@@ -399,3 +399,48 @@ async function createPipe(pipeName) {
 }
 
 process.on("unhandledRejection", console.log);
+
+// Add cleanup handlers
+process.on("SIGINT", () => {
+    console.log("Received SIGINT, cleaning up...");
+    cleanup();
+    process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+    console.log("Received SIGTERM, cleaning up...");
+    cleanup();
+    process.exit(0);
+});
+
+process.on("exit", () => {
+    cleanup();
+});
+
+/**
+ * Cleanup function to release memory references
+ */
+function cleanup() {
+    // Clear all stream references
+    if (streams) {
+        streams.forEach((stream) => {
+            if (stream.playlist) {
+                stream.playlist = null;
+            }
+            if (stream.pipe) {
+                stream.pipe.end();
+                stream.pipe = null;
+            }
+            stream.url = null;
+        });
+        streams = null;
+    }
+
+    // Clear other references
+    masterPlaylist = null;
+    selectedAudioTracks = null;
+    selectedSubtitleTracks = null;
+    _currentVariant_ = null;
+
+    console.log("Cleanup completed");
+}
