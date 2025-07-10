@@ -19,7 +19,7 @@ const path = require("path");
 
 const MAX_RETRIES = 5;
 const BANDWIDTH_SMOOTHING_FACTOR = 0.25;
-const BANDWIDTH_ADJUSTMENT_FACTOR = 0.6;
+const BANDWIDTH_ADJUSTMENT_FACTOR = 0.8;
 
 if (process.argv.length < 3) {
     console.error("Usage: node index.js <HLS_URL> config (JSON Object)");
@@ -125,6 +125,8 @@ async function selectBestVariant() {
                 bestVariant.bandwidth / 1000
             } Kbps`
         );
+        currentVariant = null;
+        _currentVariant_ = null;
         currentVariant = bestVariant.uri;
         _currentVariant_ = bestVariant;
         // update vod segments if quality changes
