@@ -36,28 +36,28 @@ class Spawn {
                 this._cmd.stdout.on("data", (data) => {
                     this.stdoutCallback
                         ? this.stdoutCallback(data)
-                        : console.log(data);
+                        : console.log(data.toString());
                 });
 
                 // standard stderr handling
                 this._cmd.stderr.on("data", (data) => {
                     this.stderrCallback
                         ? this.stderrCallback(data)
-                        : console.log(data);
+                        : console.log(data.toString());
                 });
 
                 // standard stdin handling
                 this._cmd.stdin.on("data", (data) => {
                     this.stdinCallback
                         ? this.stdinCallback(data)
-                        : console.log(data);
+                        : console.log(data.toString());
                 });
 
                 // standard message handling
                 this._cmd.on("message", ([msg, data]) => {
                     this.messageCallback
                         ? this.messageCallback(msg, data)
-                        : console.log(msg, data);
+                        : console.log(msg, data.toString());
                 });
 
                 // Restart pipeline on exit
