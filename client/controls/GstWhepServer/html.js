@@ -3,6 +3,35 @@ module.exports = {
         return `
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
+        <!------------------------------ General Settings ------------------------------>
+
+        <div class="w-full items-center justify-items-center justify-center mb-2">
+            <div class="text-center align-top font-semibold text-base">General Settings</div>
+        </div>
+
+        <div class="w-full mb-4 flex ">
+
+            <!--    Whep server port     --> 
+            <div class="w-1/3 mr-4 flex flex-col">
+                <label for="@{_port}" class="form-label inline-block mb-2 mr-2">Whep Server Port:</label>
+                <input type="number" min="1" oninput="validity.valid||(value='')" id="@{_port}" 
+                    title="Opus FEC packet loss percentage (preset value)" step="1" class="srtOpusInput-pos-number-input"
+                    value="@{port}"
+                >
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+        </div>
+
+        <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
+
         <!------------------------------ Opus Settings ------------------------------>
 
         <div class="w-full items-center justify-items-center justify-center mb-2">
@@ -94,7 +123,11 @@ module.exports = {
             </div>
 
         </div>
+        `;
+    },
+};
 
+const disabledSettings = `
         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
 
         <!------------------------------ RED Settings ------------------------------>
@@ -115,25 +148,4 @@ module.exports = {
                 
             </div>
 
-        </div>
-
-        <div class="w-full mb-4 flex ">
-            <!-- RED Distance --> 
-            <div class="w-1/3 mr-4 flex flex-col">
-                <label for="@{_rtpRedDistance}" class="form-label inline-block mb-2 mr-2">RED Distance:</label>
-                <input type="number" min="0" max="100" oninput="validity.valid||(value='')" id="@{_rtpRedDistance}" 
-                    title="Tells which media packet to use as a redundant block (0 - no redundant blocks, 1 to use previous packet, 2 to use the packet before previous, etc.)" step="1" class="srtOpusInput-pos-number-input"
-                    value="@{rtpRedDistance}"
-                >
-            </div>
-
-            <div class="w-1/3 mr-4 flex flex-col">
-
-            </div>
-
-            <div class="w-1/3 flex flex-col">
-
-        </div>
-        `;
-    },
-};
+        </div>`;
