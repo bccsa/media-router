@@ -1,8 +1,18 @@
 const { WHEPGStreamerServer } = require("../gst-whep-server/dist/index.js");
+const args = require("minimist")(process.argv.slice(2));
 
-const pulseDevice = process.argv[2];
-const port = process.argv[3] || 9090; // Default port for WHEP server
+const settings = {
+    pulseDevice: args.pulseDevice,
+    port: args.port,
+    opusFec: args.opusFec == "true", // Convert string to boolean,
+    opusFecPacketLoss: args.opusFecPacketLoss,
+    opusComplexity: args.opusComplexity,
+    opusBitrate: args.opusBitrate,
+    opusFrameSize: args.opusFrameSize,
+    rtpRed: args.rtpRed == "true", // Convert string to boolean
+    rtpRedDistance: args.rtpRedDistance,
+};
 
-const _whepServer = new WHEPGStreamerServer(pulseDevice);
+const _whepServer = new WHEPGStreamerServer(settings);
 
-_whepServer.start(parseInt(port));
+_whepServer.start(parseInt(settings.port));
