@@ -38,10 +38,17 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
             this._start_cmd(
                 `node ${path.dirname(
                     process.argv[1]
-                )}/child_processes/GstWhepServer_child.js '${this.source}' ${
-                    this.port
-                }`,
-                this._srtElementName
+                )}/child_processes/GstWhepServer_child.js --pulseDevice="${
+                    this.pulseDevice
+                }" --port="${this.port}" --opusFec=${
+                    this.opusFec
+                } --opusFecPacketLoss="${
+                    this.opusFecPacketLoss
+                }" --opusComplexity="${this.opusComplexity}" --opusBitrate="${
+                    this.opusBitrate
+                }" --opusFrameSize="${this.opusFrameSize}" --rtpRed=${
+                    this.rtpRed
+                } --rtpRedDistance="${this.rtpRedDistance}"`
             );
             this._parent._log(
                 "INFO",
