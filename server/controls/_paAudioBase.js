@@ -160,11 +160,7 @@ class _paAudioBase extends Classes(_routerChildControlBase, vuMeter) {
             "INFO",
             `${this._paModuleName} (${this.displayName}): Starting VU`
         );
-        const _pl = `pulsesrc device=${this.monitor} ! audio/x-raw,rate=${
-            this.sampleRate
-        },format=S${this.bitDepth}LE,channels=${
-            this.channels
-        } ! queue ! level peak-falloff=120 peak-ttl=50000000 interval=${
+        const _pl = `pulsesrc device=${this.monitor} ! level peak-falloff=120 peak-ttl=50000000 interval=${
             this.vuInterval * 1000000
         } ! fakesink silent=true`;
         const _path = `${path.dirname(
