@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WHEP Audio Client</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background: white;
+        padding: 30px;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        text-align: center;
+        margin-bottom: 30px;
+      }
+      .status {
+        padding: 15px;
+        border-radius: 5px;
+        margin: 15px 0;
+        font-weight: bold;
+      }
+      .status.connecting {
+        background-color: #fff3cd;
+        color: #856404;
+      }
+      .status.connected {
+        background-color: #d4edda;
+        color: #155724;
+      }
+      .status.error {
+        background-color: #f8d7da;
+        color: #721c24;
+      }
+      .controls {
+        text-align: center;
+        margin: 20px 0;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 16px;
+        margin: 0 10px;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      button:disabled {
+        background-color: #6c757d;
+        cursor: not-allowed;
+      }
+      .info {
+        background-color: #e9ecef;
+        padding: 15px;
+        border-radius: 5px;
+        margin-top: 20px;
+      }
+      audio {
+        width: 100%;
+        margin: 20px 0;
+      }
+      .logs {
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        max-height: 200px;
+        overflow-y: auto;
+        font-family: monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🎵 WHEP Audio Client</h1>
+
+      <div id="status" class="status connecting">🔄 Ready to connect</div>
+
+      <div class="controls">
+        <button id="connectBtn" onclick="connect()">Connect to Stream</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+      </div>
+
+      <audio id="audioPlayer" controls autoplay>Your browser does not support the audio element.</audio>
+
+      <div class="info">
+        <h3>📡 Connection Info</h3>
+        <p>
+          <strong>WHEP Endpoint:</strong>
+          <span id="endpoint">http://localhost:9090/whep</span>
+        </p>
+        <p>
+          <strong>Session ID:</strong>
+          <span id="sessionId">Not connected</span>
+        </p>
+        <p>
+          <strong>Connection State:</strong>
+          <span id="connectionState">disconnected</span>
+        </p>
+      </div>
+
+      <div class="info">
+        <h3>📋 Logs</h3>
+        <div id="logs" class="logs">Ready to connect to WHEP server...\n</div>
+      </div>
+    </div>
+
+    <script>
+      let pc = null;
+      let sessionId = null;
+      let whepEndpoint = 'http://10.9.1.189:9090/whep';
+
+      const statusDiv = document.getElementById('status');
+      const connectBtn = document.getElementById('connectBtn');
+      const disconnectBtn = document.getElementById('disconnectBtn');
+      const audioPlayer = document.getElementById('audioPlayer');
+      const sessionIdSpan = document.getElementById('sessionId');
+      const connectionStateSpan = document.getElementById('connectionState');
+      const logsDiv = document.getElementById('logs');
+
+      function log(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        logsDiv.textContent += `[${timestamp}] ${message}\n`;
+        logsDiv.scrollTop = logsDiv.scrollHeight;
+        console.log(message);
+      }
+
+      function updateStatus(message, className) {
+        statusDiv.textContent = message;
+        statusDiv.className = `status ${className}`;
+      }
+
+      function updateConnectionState(state) {
+        connectionStateSpan.textContent = state;
+        log(`Connection state: ${state}`);
+      }
+
+      async function connect() {
+        try {
+          log('🔄 Starting WHEP connection...');
+          updateStatus('🔄 Connecting to stream...', 'connecting');
+          connectBtn.disabled = true;
+
+          // Create RTCPeerConnection
+          pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+          });
+
+          // Handle connection state changes
+          pc.onconnectionstatechange = () => {
+            updateConnectionState(pc.connectionState);
+
+            if (pc.connectionState === 'connected') {
+              updateStatus('✅ Connected and streaming!', 'connected');
+              disconnectBtn.disabled = false;
+            } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+              updateStatus('❌ Connection failed', 'error');
+              cleanup();
+            }
+          };
+
+          // Handle incoming audio stream
+          pc.ontrack = event => {
+            log('🎵 Received audio track');
+            audioPlayer.srcObject = event.streams[0];
+          };
+
+          // Add transceiver for receiving audio
+          pc.addTransceiver('audio', { direction: 'recvonly' });
+
+          // Create offer
+          log('📄 Creating SDP offer...');
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          // Send offer to WHEP server
+          log('📤 Sending offer to WHEP server...');
+          const response = await fetch(whepEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/sdp',
+            },
+            body: offer.sdp,
+          });
+
+          if (!response.ok) {
+            throw new Error(`WHEP request failed: ${response.status} ${response.statusText}`);
+          }
+
+          // Get session ID from Location header
+          const location = response.headers.get('Location');
+          if (location) {
+            sessionId = location.split('/').pop();
+            sessionIdSpan.textContent = sessionId;
+            log(`📋 Session ID: ${sessionId}`);
+          }
+
+          if (response.status === 201) {
+            // Handle ICE candidates
+            pc.onicecandidate = async event => {
+              if (event.candidate && location) {
+                log('🧊 Sending ICE candidate');
+
+                // Format as SDP fragment
+                const candidateFragment = `a=candidate:${event.candidate.candidate}`;
+
+                // Send via PATCH request
+                await fetch(`${whepEndpoint}/${sessionId}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/trickle-ice-sdpfrag' },
+                  body: candidateFragment,
+                });
+              } else if (!event.candidate && location) {
+                // Send end-of-candidates
+                log('🏁 Sending end-of-candidates');
+                await fetch(`${whepEndpoint}/${sessionId}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/trickle-ice-sdpfrag' },
+                  body: 'a=end-of-candidates',
+                });
+              }
+            };
+          }
+
+          // Get SDP answer
+          const answerSdp = await response.text();
+          log('📥 Received SDP answer');
+
+          const answer = new RTCSessionDescription({
+            type: 'answer',
+            sdp: answerSdp,
+          });
+
+          await pc.setRemoteDescription(answer);
+          log('✅ Remote description set successfully');
+        } catch (error) {
+          log(`❌ Connection error: ${error.message}`);
+          updateStatus(`❌ Connection failed: ${error.message}`, 'error');
+          cleanup();
+        }
+      }
+
+      async function disconnect() {
+        log('🛑 Disconnecting...');
+
+        try {
+          // Delete session on server if we have a session ID
+          if (sessionId) {
+            await fetch(`${whepEndpoint}/${sessionId}`, {
+              method: 'DELETE',
+            });
+            log('🗑️ Session deleted on server');
+          }
+        } catch (error) {
+          log(`⚠️ Error deleting session: ${error.message}`);
+        }
+
+        cleanup();
+        updateStatus('🔄 Disconnected', 'connecting');
+        log('✅ Disconnected successfully');
+      }
+
+      function cleanup() {
+        if (pc) {
+          pc.close();
+          pc = null;
+        }
+
+        audioPlayer.srcObject = null;
+        sessionId = null;
+        sessionIdSpan.textContent = 'Not connected';
+        connectionStateSpan.textContent = 'disconnected';
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+      }
+
+      // Handle page unload
+      window.addEventListener('beforeunload', () => {
+        if (sessionId) {
+          navigator.sendBeacon(`${whepEndpoint}/${sessionId}`, '');
+        }
+      });
+
+      log('🎵 WHEP Audio Client ready');
+      log(`📡 Server endpoint: ${whepEndpoint}`);
+    </script>
+  </body>
+</html>
