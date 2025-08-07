@@ -19,9 +19,43 @@ export function getElementByName(
     const childCount = parent.getChildrenCount();
 
     for (let i = 0; i < childCount; i++) {
-        const child = parent.getChildByIndex(i) as Gst.Element;
-        if (child && child.name && child.name.includes(name)) {
-            return child;
+        let bestMatch: Gst.Element | null = null;
+        let bestScore = Infinity;
+
+        for (let i = 0; i < childCount; i++) {
+            const child = parent.getChildByIndex(i) as Gst.Element;
+            if (child && child.name) {
+                const distance = levenshteinDistance(name, child.name);
+                if (distance < bestScore) {
+                    bestScore = distance;
+                    bestMatch = child;
+                }
+            }
+        }
+
+        return bestMatch;
+
+        // Helper function to calculate Levenshtein distance
+        function levenshteinDistance(str1: string, str2: string): number {
+            const matrix = Array(str2.length + 1)
+                .fill(null)
+                .map(() => Array(str1.length + 1).fill(null));
+
+            for (let i = 0; i <= str1.length; i++) matrix[0][i] = i;
+            for (let j = 0; j <= str2.length; j++) matrix[j][0] = j;
+
+            for (let j = 1; j <= str2.length; j++) {
+                for (let i = 1; i <= str1.length; i++) {
+                    const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+                    matrix[j][i] = Math.min(
+                        matrix[j][i - 1] + 1,
+                        matrix[j - 1][i] + 1,
+                        matrix[j - 1][i - 1] + cost
+                    );
+                }
+            }
+
+            return matrix[str2.length][str1.length];
         }
     }
 
