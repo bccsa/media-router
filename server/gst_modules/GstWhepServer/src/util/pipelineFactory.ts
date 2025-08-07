@@ -1,6 +1,8 @@
+import GObject from "@girs/node-gobject-2.0";
 import { WhepServerSettings } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
+import { getElementByName } from "./index";
 
 export type WhepBin = {
     queue: Gst.Element;
@@ -331,8 +333,8 @@ export function enableRtpRed(
 
     let rtpredenc;
     const _bin_webrtc = whepBin.webrtc as Gst.Bin;
-    const _bin_rtp = _bin_webrtc.getChildByIndex(0) as Gst.Bin;
-    if (_bin_rtp) rtpredenc = _bin_rtp.getChildByIndex(0);
+    const _bin = getElementByName(_bin_webrtc, "bin", false) as Gst.Bin;
+    if (_bin) rtpredenc = getElementByName(_bin, "rtpredenc", false);
     else console.log("❌ Unable to set RED distance due to rtpbin not found");
     if (rtpredenc) rtpredenc.setProperty("distance", distance);
     if (rtpredenc) rtpredenc.setProperty("allow-no-red-blocks", false);

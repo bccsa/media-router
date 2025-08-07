@@ -12,6 +12,7 @@ import {
     startBin,
     stopBin,
     createSdpAnswer,
+    getElementByName,
 } from "./util";
 import GObject from "@girs/node-gobject-2.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
@@ -51,6 +52,7 @@ export class WHEPGStreamerServer {
         this.app = express();
         this.basePipeline = creatBasePipeline(settings);
         if (this.basePipeline) {
+            this.setupBusWatch();
             this.setupMiddleware();
             this.setupRoutes();
         }
@@ -73,14 +75,13 @@ export class WHEPGStreamerServer {
     }
 
     private setupRoutes(): void {
-        if (this.settings.enableTestClient) {
+        if (this.settings.enableTestClient)
             // Root route - serve client page
             this.app.get("/", (req, res) => {
                 res.sendFile(
                     path.join(__dirname, "../public/whep-client.html")
                 );
             });
-        }
 
         // List active sessions
         this.app.get("/sessions", (req, res) => {
@@ -225,9 +226,6 @@ export class WHEPGStreamerServer {
             // Setup WebRTC signals
             this.setupWebRTCSignals(session);
 
-            // Setup bus message handling
-            this.setupBusWatch(session);
-
             this.sessions.set(sessionId, session);
             console.log(`✅ Session ${sessionId} created`);
 
@@ -274,6 +272,25 @@ export class WHEPGStreamerServer {
                     );
                 }
             });
+
+            // watch for RTP Timeout (If RTP session times out, we will cleanup the session)
+            const rtpbin = getElementByName(
+                session.whepBin.webrtc as Gst.Bin,
+                "rtpbin",
+                false
+            );
+
+            if (rtpbin) {
+                rtpbin.connect("on-timeout", () => {
+                    console.log(`⏰ RTP timeout for session: ${session.id}`);
+                    // cleanup session
+                    setTimeout(() => this.cleanupSession(session.id), 5000);
+                });
+            } else {
+                console.log(
+                    `⚠️ RTPBin not found in WebRTC element for session ${session.id}`
+                );
+            }
         } catch (e) {
             console.log(
                 "⚠️ Could not connect connection state signals:",
@@ -282,57 +299,48 @@ export class WHEPGStreamerServer {
         }
     }
 
-    private setupBusWatch(session: WHEPSession): void {
+    private setupBusWatch(basePipelineRunning: boolean = true): void {
         if (!this.basePipeline) return;
         const bus = this.basePipeline.getBus();
         if (!bus) return;
 
-        const messageHandler = () => {
-            const msg = bus.pop();
-            if (msg) {
-                switch (msg.type) {
-                    case Gst.MessageType.ERROR:
-                        const [error, debug] = msg.parseError();
-                        console.error(
-                            `❌ Session ${session.id} error: ${error.message}`
+        const msg = bus.pop();
+        if (msg) {
+            switch (msg.type) {
+                case Gst.MessageType.ERROR:
+                    const [error, debug] = msg.parseError();
+                    console.error(
+                        `❌ Error message in base pipeline: ${error.message}`
+                    );
+                    if (debug) console.error(`🐛 Debug: ${debug}`);
+                    break;
+
+                case Gst.MessageType.EOS:
+                    console.log(`🔚 Base pipeline- End of stream`);
+                    // Cleanup all sessions
+                    for (const [sessionId] of this.sessions) {
+                        this.cleanupSession(sessionId);
+                    }
+                    break;
+
+                case Gst.MessageType.STATE_CHANGED:
+                    const [oldState, newState, pending] =
+                        msg.parseStateChanged();
+                    if (msg.src === this.basePipeline) {
+                        console.log(
+                            `🔄 Base pipeline state changed: ${Gst.Element.stateGetName(
+                                oldState
+                            )} -> ${Gst.Element.stateGetName(newState)}`
                         );
-                        if (debug) console.error(`🐛 Debug: ${debug}`);
-                        session.state = "failed";
-                        this.cleanupSession(session.id);
-                        break;
-
-                    case Gst.MessageType.EOS:
-                        console.log(`🔚 Session ${session.id} - End of stream`);
-                        this.cleanupSession(session.id);
-                        break;
-
-                    case Gst.MessageType.STATE_CHANGED:
-                        const [oldState, newState, pending] =
-                            msg.parseStateChanged();
-                        if (msg.src === this.basePipeline) {
-                            console.log(
-                                `🔄 Session ${
-                                    session.id
-                                } - Pipeline state: ${Gst.Element.stateGetName(
-                                    oldState
-                                )} -> ${Gst.Element.stateGetName(newState)}`
-                            );
-                        }
-                        break;
-                }
+                    }
+                    break;
             }
+        }
 
-            // Continue polling if session exists and pipeline is active
-            if (!this.basePipeline) return;
-            if (
-                this.sessions.has(session.id) &&
-                this.basePipeline.currentState !== Gst.State.NULL
-            ) {
-                setTimeout(messageHandler, 100);
-            }
-        };
-
-        messageHandler();
+        if (basePipelineRunning)
+            setTimeout(() => {
+                this.setupBusWatch();
+            }, 100);
     }
 
     private async generateAnswer(session: WHEPSession): Promise<string | null> {

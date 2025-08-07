@@ -10,6 +10,7 @@ async function main(): Promise<void> {
         const server = new WHEPGStreamerServer({
             pulseDevice: process.env.PULSE_DEVICE || "default",
             enableTestClient: true, // Enable test client by default for development
+            rtpRed: true,
         });
 
         // Graceful shutdown handling
