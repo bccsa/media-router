@@ -51,10 +51,6 @@ cd server/gst_modules/GstWhepServer
 npm ci && npm run build
 cd ../../..
 
-cd server/gst_modules/GstWhepServer
-npm ci && npm run build
-cd ../../..
-
 # Build and Install PulseAudio 16.1 (version included on Raspberry Pi OS - V14 - does not include latency control on null-sink modules)
 # References:
 # https://www.freedesktop.org/wiki/Software/PulseAudio/Download/
