@@ -13,6 +13,8 @@ import {
     stopBin,
     createSdpAnswer,
 } from "./util";
+import GObject from "@girs/node-gobject-2.0";
+import GstWebRTC from "@girs/node-gstwebrtc-1.0";
 
 // Initialize GStreamer//
 Gst.init([]);
@@ -241,19 +243,24 @@ export class WHEPGStreamerServer {
             // Handle connection state changes
             session.whepBin.webrtc.connect("notify::connection-state", () => {
                 try {
-                    const state =
-                        session.whepBin.webrtc.getProperty("connection-state");
-                    console.log(
-                        `🔗 Session ${session.id} - Connection state: ${state}`
-                    );
+                    const state = (
+                        session.whepBin.webrtc.getProperty(
+                            "connection-state"
+                        ) as GObject.Value
+                    ).getBoxed();
 
                     // Update session state based on WebRTC state
-                    if (state === "connected") {
+                    if (
+                        state === GstWebRTC.WebRTCPeerConnectionState.CONNECTED
+                    ) {
                         session.state = "connected";
                         console.log(
                             `✅ Session ${session.id} - Client connected and receiving audio`
                         );
-                    } else if (state === "failed" || state === "closed") {
+                    } else if (
+                        state === GstWebRTC.WebRTCPeerConnectionState.FAILED ||
+                        state === GstWebRTC.WebRTCPeerConnectionState.CLOSED
+                    ) {
                         session.state = "failed";
                         console.log(
                             `❌ Session ${session.id} - Connection failed/closed`
