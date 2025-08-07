@@ -1,6 +1,6 @@
-import Gst from '@girs/node-gst-1.0';
-import GstWebRTC from '@girs/node-gstwebrtc-1.0';
-import GstSdp from '@girs/node-gstsdp-1.0';
+import Gst from "@girs/node-gst-1.0";
+import GstWebRTC from "@girs/node-gstwebrtc-1.0";
+import GstSdp from "@girs/node-gstsdp-1.0";
 
 /**
  * Helper function to emit a GStreamer signal with a promise
@@ -35,8 +35,14 @@ export function gstPromisifySignal(
         timeoutId = setTimeout(() => {
             if (!isResolved) {
                 isResolved = true;
-                console.error(`❌ GStreamer promise timeout for signal '${signalName}'`);
-                reject(new Error(`Timeout waiting for GStreamer promise: ${signalName}`));
+                console.error(
+                    `❌ GStreamer promise timeout for signal '${signalName}'`
+                );
+                reject(
+                    new Error(
+                        `Timeout waiting for GStreamer promise: ${signalName}`
+                    )
+                );
             }
         }, options.timeout);
 
@@ -63,7 +69,9 @@ export function gstPromisifySignal(
                             `❌ GStreamer promise failed for signal '${signalName}', result: ${result}`
                         );
                         reject(
-                            new Error(`GStreamer promise failed: ${signalName}, result: ${result}`)
+                            new Error(
+                                `GStreamer promise failed: ${signalName}, result: ${result}`
+                            )
                         );
                     }
                 }
@@ -76,14 +84,17 @@ export function gstPromisifySignal(
             if (!isResolved) {
                 isResolved = true;
                 clearTimeout(timeoutId);
-                console.error(`❌ Error emitting GStreamer signal '${signalName}':`, error);
+                console.error(
+                    `❌ Error emitting GStreamer signal '${signalName}':`,
+                    error
+                );
                 reject(error);
             }
         }
 
         // Handle abort signal
         abortSignal.addEventListener(
-            'abort',
+            "abort",
             () => {
                 resolve(gstPromise);
             },
@@ -107,8 +118,11 @@ export function gstSetRemoteDescription(
         throw new Error(`Parsing SDP failed: ${res}`);
     }
 
-    const offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, msg);
-    return gstPromisifySignal(webrtcElement, 'set-remote-description', offer, {
+    const offer = GstWebRTC.WebRTCSessionDescription.new(
+        GstWebRTC.WebRTCSDPType.OFFER,
+        msg
+    );
+    return gstPromisifySignal(webrtcElement, "set-remote-description", offer, {
         timeout,
         waitForResult: true,
     });
@@ -117,20 +131,30 @@ export function gstSetRemoteDescription(
 /**
  * Specialized helper for WebRTC create-answer
  */
-export async function gstCreateAnswer(webrtcElement: Gst.Element, timeout: number = 5000) {
-    const options = Gst.Structure.newEmpty('application/x-gst-webrtc-answer-options');
-    const res = await gstPromisifySignal(webrtcElement, 'create-answer', options, {
-        timeout,
-        waitForResult: true,
-    });
+export async function gstCreateAnswer(
+    webrtcElement: Gst.Element,
+    timeout: number = 5000
+) {
+    const options = Gst.Structure.newEmpty(
+        "application/x-gst-webrtc-answer-options"
+    );
+    const res = await gstPromisifySignal(
+        webrtcElement,
+        "create-answer",
+        options,
+        {
+            timeout,
+            waitForResult: true,
+        }
+    );
     const reply = res.getReply();
 
     if (!reply) {
-        console.error('❌ No reply received from create-answer');
+        console.error("❌ No reply received from create-answer");
         return null;
     }
 
-    return reply.getValue('answer')?.getBoxed() || null;
+    return reply.getValue("answer")?.getBoxed() || null;
 }
 
 /**
@@ -141,10 +165,15 @@ export function gstSetLocalDescription(
     sessionDescription: any,
     timeout: number = 5000
 ) {
-    return gstPromisifySignal(webrtcElement, 'set-local-description', sessionDescription, {
-        timeout,
-        waitForResult: false,
-    });
+    return gstPromisifySignal(
+        webrtcElement,
+        "set-local-description",
+        sessionDescription,
+        {
+            timeout,
+            waitForResult: false,
+        }
+    );
 }
 
 /**
@@ -155,56 +184,10 @@ export function gstSetLocalDescription(
  * @param timeout
  * @returns
  */
-export function gstSetIceCandidate(webrtcElement: Gst.Element, num: number, candidate: string) {
-    webrtcElement.emit('add-ice-candidate', num, candidate);
+export function gstSetIceCandidate(
+    webrtcElement: Gst.Element,
+    num: number,
+    candidate: string
+) {
+    webrtcElement.emit("add-ice-candidate", num, candidate);
 }
-
-export async function gstGetTransceivers(webrtcElement: Gst.Element, timeout: number = 5000) {
-    // let data;
-    // webrtcElement.on('get-transceivers', () => {
-    //     data = webrtcElement.Tran
-    // });
-    // return data;
-}
-
-// /**
-//  * Specialized helper for WebRTC create-offer
-//  */
-// export function gstCreateOffer(
-//   webrtcElement: Gst.Element,
-//   options: Gst.Structure | null = null,
-//   timeout: number = 5000
-// ) {
-//   return gstPromisifySignal(webrtcElement, 'create-offer', options, { timeout, waitForResult: true });
-// }
-
-// /**
-//  * Extract session description from GStreamer promise reply
-//  */
-// export function gstExtractSessionDescription(reply: Gst.Structure, key: string = 'answer'): any | null {
-//   try {
-//     const sessionDesc = reply.getValue(key);
-//     if (sessionDesc && sessionDesc.data && sessionDesc.data[0]) {
-//       return sessionDesc.data[0];
-//     }
-//     return sessionDesc;
-//   } catch (error) {
-//     console.error(`❌ Error extracting session description with key '${key}':`, error);
-//     return null;
-//   }
-// }
-
-// /**
-//  * Get SDP text from session description
-//  */
-// export function gstGetSdpText(sessionDescription: any): string | null {
-//   try {
-//     if (sessionDescription && sessionDescription.sdp) {
-//       return sessionDescription.sdp.asText();
-//     }
-//     return null;
-//   } catch (error) {
-//     console.error('❌ Error getting SDP text:', error);
-//     return null;
-//   }
-// }
