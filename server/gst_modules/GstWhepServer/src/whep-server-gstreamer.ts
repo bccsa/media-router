@@ -326,7 +326,10 @@ export class WHEPGStreamerServer {
                 case Gst.MessageType.STATE_CHANGED:
                     const [oldState, newState, pending] =
                         msg.parseStateChanged();
-                    if (msg.src === this.basePipeline) {
+                    if (
+                        msg.src.name &&
+                        msg.src.name === this.basePipeline.name
+                    ) {
                         console.log(
                             `🔄 Base pipeline state changed: ${Gst.Element.stateGetName(
                                 oldState
