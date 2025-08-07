@@ -2,33 +2,30 @@ import express from "express";
 import cors from "cors";
 import { v4 as uuidv4 } from "uuid";
 import Gst from "@girs/node-gst-1.0";
-import GstWebRTC from "@girs/node-gstwebrtc-1.0";
 import path from "path";
 import {
-    gstCreateAnswer,
     gstSetIceCandidate,
-    gstSetLocalDescription,
-    gstSetRemoteDescription,
-    sdpMudgeIceCandidates,
     filterSdp,
+    creatBasePipeline,
+    createWhepBin,
+    WhepBin,
+    startBin,
+    stopBin,
+    createSdpAnswer,
 } from "./util";
 
 // Initialize GStreamer//
 Gst.init([]);
 
-const timeout = (ms: number) =>
-    new Promise((resolve) => setTimeout(resolve, ms));
-
-interface WHEPSession {
+export interface WHEPSession {
     id: string;
-    pipeline: Gst.Pipeline;
-    webrtc: Gst.Element;
+    whepBin: WhepBin;
     createdAt: Date;
     state: "connecting" | "connected" | "failed" | "closed";
     sdpOffer?: string; // Store SDP offer for later processing
 }
 
-type WhepServerSettings = {
+export type WhepServerSettings = {
     pulseDevice: string; // PulseAudio source device
     port?: number; // Port for the WHEP server
     opusFec?: boolean; // Enable Opus FEC
@@ -38,20 +35,23 @@ type WhepServerSettings = {
     opusFrameSize?: number; // Opus frame size in ms
     rtpRed?: boolean; // Enable RTP RED
     rtpRedDistance?: number; // RTP RED distance
+    enableTestClient?: boolean; // Enable test client
 };
 
-class WHEPGStreamerServer {
+export class WHEPGStreamerServer {
     private app: express.Application;
     private sessions: Map<string, WHEPSession> = new Map();
-    private audioFreq: number = 440;
-    private waveType: number = 0; // sine wave
     private settings: WhepServerSettings;
+    private basePipeline: Gst.Pipeline | null = null;
 
     constructor(settings: WhepServerSettings) {
         this.settings = settings;
         this.app = express();
-        this.setupMiddleware();
-        this.setupRoutes();
+        this.basePipeline = creatBasePipeline(settings);
+        if (this.basePipeline) {
+            this.setupMiddleware();
+            this.setupRoutes();
+        }
     }
 
     private setupMiddleware(): void {
@@ -71,19 +71,14 @@ class WHEPGStreamerServer {
     }
 
     private setupRoutes(): void {
-        // Root route - serve client page
-        this.app.get("/", (req, res) => {
-            res.sendFile(path.join(__dirname, "../public/whep-client.html"));
-        });
-
-        // Health check
-        this.app.get("/health", (req, res) => {
-            res.json({
-                status: "healthy",
-                sessions: this.sessions.size,
-                timestamp: new Date().toISOString(),
+        if (this.settings.enableTestClient) {
+            // Root route - serve client page
+            this.app.get("/", (req, res) => {
+                res.sendFile(
+                    path.join(__dirname, "../public/whep-client.html")
+                );
             });
-        });
+        }
 
         // List active sessions
         this.app.get("/sessions", (req, res) => {
@@ -94,7 +89,10 @@ class WHEPGStreamerServer {
                     createdAt: session.createdAt,
                 })
             );
-            res.json({ sessions: sessionList });
+            res.json({
+                sessionCount: sessionList.length,
+                sessions: sessionList,
+            });
         });
 
         // WHEP endpoint - create new session
@@ -186,7 +184,7 @@ class WHEPGStreamerServer {
             ) {
                 console.log("🧊 Received ICE candidate");
 
-                gstSetIceCandidate(session.webrtc, 0, req.body);
+                gstSetIceCandidate(session.whepBin.webrtc, 0, req.body);
                 res.status(204).send();
             } else {
                 res.status(400).json({ error: "Unsupported content type" });
@@ -201,161 +199,26 @@ class WHEPGStreamerServer {
                 `🔧 Creating GStreamer pipeline for session ${sessionId}`
             );
 
-            // Create pipeline
-            const pipeline = Gst.Pipeline.new(`whep-session-${sessionId}`);
-            if (!pipeline) {
-                console.error("❌ Failed to create pipeline");
+            // link elements to the base pipeline
+            const whepBin = createWhepBin(this.basePipeline, sessionId);
+            if (!whepBin) {
+                console.error("❌ Failed to create whepBin");
                 return null;
             }
 
-            // Create elements
-            const audioTestSrc = Gst.ElementFactory.make(
-                "pulsesrc",
-                "audio-source"
-            );
-            // const audioTestSrc = Gst.ElementFactory.make('audiotestsrc', 'audio-source');
-            const audioConvert = Gst.ElementFactory.make(
-                "audioconvert",
-                "audio-convert"
-            );
-            const audioResample = Gst.ElementFactory.make(
-                "audioresample",
-                "audio-resample"
-            );
-            const queue1 = Gst.ElementFactory.make("queue", "queue1");
-            const opusEnc = Gst.ElementFactory.make("opusenc", "opus-encoder");
-            const rtpOpusPay = Gst.ElementFactory.make(
-                "rtpopuspay",
-                "rtp-opus-pay"
-            );
-            const rtpUlpFecEnc = Gst.ElementFactory.make(
-                "rtpulpfecenc",
-                "rtp-ulpfec-encoder"
-            );
-            // const identifier = Gst.ElementFactory.make('identity', 'identity');
-            const queue2 = Gst.ElementFactory.make("queue", "queue2");
-            const webrtc = Gst.ElementFactory.make("webrtcbin", "webrtc");
-
-            if (
-                !audioTestSrc ||
-                !audioConvert ||
-                !audioResample ||
-                !queue1 ||
-                !opusEnc ||
-                !rtpOpusPay ||
-                !rtpUlpFecEnc ||
-                !queue2 ||
-                !webrtc
-            ) {
-                console.error("❌ Failed to create pipeline elements");
-                return null;
-            }
-
-            // Configure elements
-            // audioTestSrc.setProperty('is-live', true);
-            // audioTestSrc.setProperty('freq', this.audioFreq);
-            // audioTestSrc.setProperty('wave', this.waveType);
-            // audioTestSrc.setProperty('volume', 0.3);
-            audioTestSrc.setProperty(
-                "device",
-                this.settings.pulseDevice || "default"
-            );
-
-            // Configure opus encoder
-            opusEnc.setProperty("bitrate", this.settings.opusBitrate || 64000);
-            opusEnc.setProperty(
-                "frame-size",
-                this.settings.opusFrameSize || 20
-            );
-            opusEnc.setProperty("inband-fec", this.settings.opusFec || false);
-            opusEnc.setProperty(
-                "packet-loss-percentage",
-                this.settings.opusFecPacketLoss || 0
-            );
-
-            // Configure RTP payloader
-            rtpOpusPay.setProperty("pt", 111);
-
-            // Configure ULPFEC encoder
-            rtpUlpFecEnc.setProperty("pt", 122);
-            rtpUlpFecEnc.setProperty("percentage", 100);
-
-            // Add elements to pipeline
-            pipeline.add(audioTestSrc);
-            pipeline.add(audioConvert);
-            pipeline.add(audioResample);
-            pipeline.add(queue1);
-            pipeline.add(opusEnc);
-            pipeline.add(rtpOpusPay);
-            pipeline.add(rtpUlpFecEnc);
-            // pipeline.add(identifier);
-            pipeline.add(queue2);
-            pipeline.add(webrtc);
-
-            webrtc.on(
-                "on-new-transceiver",
-                (transceiver: GstWebRTC.WebRTCRTPTransceiver) => {
-                    transceiver.direction =
-                        GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY;
-                    transceiver.setProperty(
-                        "fec-type",
-                        GstWebRTC.WebRTCFECType.ULP_RED
-                    );
-                    transceiver.setProperty("do-nack", true);
-                }
-            );
-
-            // Link elements
-            if (
-                !audioTestSrc.link(audioConvert) ||
-                !audioConvert.link(audioResample) ||
-                !audioResample.link(queue1) ||
-                !queue1.link(opusEnc) ||
-                !opusEnc.link(rtpOpusPay) ||
-                !rtpOpusPay.link(rtpUlpFecEnc) ||
-                !rtpUlpFecEnc.link(queue2)
-            ) {
-                console.error("❌ Failed to link pipeline elements");
-                return null;
-            }
-
-            // Link queue2 to webrtc with caps
-            const caps = Gst.Caps.fromString(
-                // 'application/x-rtp,media=audio,encoding-name=OPUS,payload=111'
-                "application/x-rtp,media=audio,encoding-name=RED,clock-rate=48000,payload=63"
-            );
-            // if (!queue2.linkFiltered(webrtc, caps)) {
-            //     console.error('❌ Failed to link queue to webrtc with caps');
-            //     return null;
-            // }
-            if (!queue2.link(webrtc)) {
-                console.error("❌ Failed to link queue to webrtc");
+            const webrtc = whepBin.webrtc;
+            if (!webrtc) {
+                console.error("❌ WebRTC element not found in WHEP bin");
                 return null;
             }
 
             const session: WHEPSession = {
                 id: sessionId,
-                pipeline,
-                webrtc,
+                whepBin: whepBin,
                 createdAt: new Date(),
                 state: "connecting",
+                sdpOffer: sdpOffer,
             };
-
-            // Store the SDP offer for later processing
-            session.sdpOffer = sdpOffer;
-
-            // Set the server ice candidates for the webrtc element.
-            // This is needed as per WHEP server spec:
-            // "The WHEP Endpoint SHALL gather all the ICE candidates for the Media Server
-            // before responding to the client request and the SDP answer SHALL contain the
-            // full list of ICE candidates of the Media Server"
-            // (see https://www.ietf.org/archive/id/draft-murillo-whep-01.html)
-
-            // Ivan Note: This is actually adding the client's ICE candidates, so it is not achieving what we want...
-            // It seems as if the only way to add candidates is to mundge the SDP answer.
-            // for (let i = 0; i < this.serverIceCandidates.length; i++) {
-            //     setIceCandidate(webrtc, i, this.serverIceCandidates[i]);
-            // }
 
             // Setup WebRTC signals
             this.setupWebRTCSignals(session);
@@ -376,10 +239,10 @@ class WHEPGStreamerServer {
     private setupWebRTCSignals(session: WHEPSession): void {
         try {
             // Handle connection state changes
-            session.webrtc.connect("notify::connection-state", () => {
+            session.whepBin.webrtc.connect("notify::connection-state", () => {
                 try {
                     const state =
-                        session.webrtc.getProperty("connection-state");
+                        session.whepBin.webrtc.getProperty("connection-state");
                     console.log(
                         `🔗 Session ${session.id} - Connection state: ${state}`
                     );
@@ -404,23 +267,6 @@ class WHEPGStreamerServer {
                     );
                 }
             });
-
-            // Handle ICE connection state
-            session.webrtc.connect("notify::ice-connection-state", () => {
-                try {
-                    const iceState = session.webrtc.getProperty(
-                        "ice-connection-state"
-                    );
-                    console.log(
-                        `🧊 Session ${session.id} - ICE connection state: ${iceState}`
-                    );
-                } catch (error) {
-                    console.log(
-                        `⚠️ Error handling ICE state for session ${session.id}:`,
-                        error
-                    );
-                }
-            });
         } catch (e) {
             console.log(
                 "⚠️ Could not connect connection state signals:",
@@ -430,7 +276,8 @@ class WHEPGStreamerServer {
     }
 
     private setupBusWatch(session: WHEPSession): void {
-        const bus = session.pipeline.getBus();
+        if (!this.basePipeline) return;
+        const bus = this.basePipeline.getBus();
         if (!bus) return;
 
         const messageHandler = () => {
@@ -455,7 +302,7 @@ class WHEPGStreamerServer {
                     case Gst.MessageType.STATE_CHANGED:
                         const [oldState, newState, pending] =
                             msg.parseStateChanged();
-                        if (msg.src === session.pipeline) {
+                        if (msg.src === this.basePipeline) {
                             console.log(
                                 `🔄 Session ${
                                     session.id
@@ -469,9 +316,10 @@ class WHEPGStreamerServer {
             }
 
             // Continue polling if session exists and pipeline is active
+            if (!this.basePipeline) return;
             if (
                 this.sessions.has(session.id) &&
-                session.pipeline.currentState !== Gst.State.NULL
+                this.basePipeline.currentState !== Gst.State.NULL
             ) {
                 setTimeout(messageHandler, 100);
             }
@@ -480,145 +328,29 @@ class WHEPGStreamerServer {
         messageHandler();
     }
 
-    // private async waitForIceGathering(session: WHEPSession): Promise<void> {
-    //     return new Promise<void>((resolve, reject) => {
-    //         let timeoutId: NodeJS.Timeout;
-
-    //         const checkGatheringState = () => {
-    //             try {
-    //                 const gatheringState = session.webrtc.getProperty('ice-gathering-state');
-    //                 console.log(`🧊 ICE gathering state: ${gatheringState}`);
-
-    //                 if (gatheringState === 'complete') {
-    //                     if (timeoutId) clearTimeout(timeoutId);
-    //                     resolve();
-    //                 } else {
-    //                     // Keep checking
-    //                     setTimeout(checkGatheringState, 100);
-    //                 }
-    //             } catch (error) {
-    //                 if (timeoutId) clearTimeout(timeoutId);
-    //                 reject(error);
-    //             }
-    //         };
-
-    //         // Set timeout
-    //         timeoutId = setTimeout(() => {
-    //             reject(new Error('ICE gathering timeout'));
-    //         }, 10000);
-
-    //         checkGatheringState();
-    //     });
-    // }
-
     private async generateAnswer(session: WHEPSession): Promise<string | null> {
         try {
             console.log(`📝 Generating SDP answer for session ${session.id}`);
 
-            const sdpOffer = (session as any).sdpOffer;
-            if (!sdpOffer) {
-                console.error("❌ No SDP offer stored");
-                return null;
-            }
-
-            console.log("📥 Processing SDP offer and generating answer...");
-
             // Use a promise-based approach since the GStreamer bindings have limitations
-            return new Promise<string>((resolve, reject) => {
-                let answerReceived = false;
-                let timeoutId: NodeJS.Timeout;
-
-                // Handle the answer creation
-                const createAnswer = async () => {
-                    if (answerReceived) return;
-
-                    console.log("🤝 Creating WebRTC answer...");
-
-                    const iceCandidates: string[] = [];
-                    session.webrtc.connect(
-                        "on-ice-candidate",
-                        (num, candidate: string) => {
-                            iceCandidates.push(candidate);
-                        }
-                    );
-
-                    await gstSetRemoteDescription(session.webrtc, sdpOffer);
-                    const answer = await gstCreateAnswer(session.webrtc);
-                    if (!answer) {
-                        console.error("❌ Failed to create answer");
-                        reject(new Error("Failed to create answer"));
-                        return;
-                    }
-                    answerReceived = true;
-                    gstSetLocalDescription(session.webrtc, answer);
-
-                    // Wait for the candidates to be collected
-                    // TODO: We need a better way to get the candidates without using a timer
-                    await timeout(3000);
-
-                    let rtpredenc;
-                    const _bin_webrtc = session.webrtc as Gst.Bin;
-                    const _bin_rtp = _bin_webrtc.getChildByIndex(0) as Gst.Bin;
-                    if (_bin_rtp) rtpredenc = _bin_rtp.getChildByIndex(0);
-                    else
-                        console.log(
-                            "❌ Unable to set RED distance due to rtpbin not found"
-                        );
-                    if (rtpredenc) rtpredenc.setProperty("distance", 2);
-                    if (rtpredenc)
-                        rtpredenc.setProperty("allow-no-red-blocks", false);
-                    else
-                        console.log(
-                            "❌ Unable to set RED distance due to rtpredenc0 not found"
-                        );
-
-                    const mudgedSddWidthCandidates = sdpMudgeIceCandidates(
-                        answer.sdp.asText(),
-                        iceCandidates
-                    );
-                    // const mudgedSdpWithRed = sdpMudgeAudioRedEnc(mudgedSddWidthCandidates);
-                    resolve(mudgedSddWidthCandidates);
-                    return;
-                };
-
-                // Parse the offer for validation
-                const offerLines = sdpOffer.split("\n");
-                let hasAudio = false;
-
-                for (const line of offerLines) {
-                    if (line.startsWith("m=audio")) {
-                        hasAudio = true;
-                        break;
-                    }
-                }
-
-                if (!hasAudio) {
-                    reject(new Error("No audio media in SDP offer"));
-                    return;
-                }
-
+            return new Promise<string>(async (resolve, reject) => {
                 // Start the pipeline first
-                console.log("🚀 Starting pipeline...");
-                const ret = session.pipeline.setState(Gst.State.PLAYING);
-                if (ret === Gst.StateChangeReturn.FAILURE) {
-                    reject(new Error("Failed to start pipeline"));
+                console.log(`🚀 Starting webrtcBin for session: ${session.id}`);
+                const ret = startBin(session.whepBin);
+                if (!ret) {
+                    reject(new Error("Failed to start webrtc element"));
                     return;
                 }
 
-                // Try to create answer after a short delay
-                setTimeout(() => {
-                    if (!answerReceived) {
-                        createAnswer();
-                    }
-                }, 1000);
+                const sdpAnswer = await createSdpAnswer(session, this.settings);
 
-                // Set a timeout in case answer creation fails
-                timeoutId = setTimeout(() => {
-                    if (!answerReceived) {
-                        console.error("❌ Timeout waiting for SDP answer");
-                        reject(new Error("Timeout waiting for SDP answer"));
-                    }
-                }, 15000);
+                if (!sdpAnswer) {
+                    console.error("❌ Failed to create SDP answer");
+                    reject(new Error("Failed to create SDP answer"));
+                    return;
+                }
+
+                resolve(sdpAnswer);
             });
         } catch (error) {
             console.error("❌ Error generating answer:", error);
@@ -633,7 +365,7 @@ class WHEPGStreamerServer {
         try {
             console.log(`🧹 Cleaning up session ${sessionId}`);
             session.state = "closed";
-            session.pipeline.setState(Gst.State.NULL);
+            if (session.whepBin) stopBin(session.whepBin);
             this.sessions.delete(sessionId);
         } catch (error) {
             console.error(`❌ Error cleaning up session ${sessionId}:`, error);
@@ -645,7 +377,8 @@ class WHEPGStreamerServer {
             console.log("🚀 WHEP GStreamer Server started");
             console.log("=====================================");
             console.log(`📡 Server running on port ${port}`);
-            console.log(`📊 Health check: http://localhost:${port}/health`);
+            this.settings.enableTestClient &&
+                console.log(`📋 Local test client: http://localhost:${port}`);
             console.log(`📋 Sessions list: http://localhost:${port}/sessions`);
             console.log(`🎶 WHEP endpoint: http://localhost:${port}/whep`);
             console.log("");
@@ -666,5 +399,3 @@ class WHEPGStreamerServer {
         process.exit(0);
     }
 }
-
-export { WHEPGStreamerServer };
