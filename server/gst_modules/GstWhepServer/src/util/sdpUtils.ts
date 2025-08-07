@@ -1,5 +1,5 @@
 import { WHEPSession, WhepServerSettings } from "../whep-server-gstreamer";
-
+import GObject from "@girs/node-gobject-2.0";
 import {
     gstCreateAnswer,
     gstSetLocalDescription,
@@ -180,16 +180,18 @@ export function createSdpAnswer(
         );
 
         /**
-         * At the moment i have no way how to parse the ICE gathering state variable,
-         * But the `ice-gathering-state` signal is emitted when the ICE gathering state changes.
-         * So we can use it to track the state changes.
-         * Starts at 0 (new), the the first change will be to 1 (gathering), and the final change will be to 2 (complete).
-         * In this way we can track the state changes and wait for the final state to be reached.
-         * As a fallback, we can also use a timeout to avoid waiting indefinitely.
+         * Update the ICE gathering state to wait for it to be complete
+         * This is necessary to ensure that all ICE candidates are gathered before proceeding.
+         * The state is 2 when gathering is complete, and we will wait for it to be set.
+         * If it takes too long, we will timeout after 3 seconds.
          */
         let iceGatheringState: number = 0;
         session.whepBin.webrtc.connect("notify::ice-gathering-state", () => {
-            iceGatheringState++;
+            iceGatheringState = (
+                session.whepBin.webrtc.getProperty(
+                    "ice-gathering-state"
+                ) as GObject.Value
+            ).getBoxed();
         });
 
         await gstSetRemoteDescription(session.whepBin.webrtc, sdpOffer);
