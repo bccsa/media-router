@@ -283,6 +283,7 @@ export class WHEPGStreamerServer {
             if (rtpbin) {
                 rtpbin.connect("on-timeout", () => {
                     console.log(`⏰ RTP timeout for session: ${session.id}`);
+                    session.state = "closed";
                     // cleanup session
                     setTimeout(() => this.cleanupSession(session.id), 5000);
                 });
