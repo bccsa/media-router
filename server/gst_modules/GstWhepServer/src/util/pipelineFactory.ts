@@ -1,4 +1,3 @@
-import GObject from "@girs/node-gobject-2.0";
 import { WhepServerSettings } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
