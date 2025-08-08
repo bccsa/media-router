@@ -88,7 +88,7 @@ function levenshteinDistance(str1: string, str2: string): number {
 export function getWebrtcBinStats(whepBin: WhepBin): whepBinStats | null {
     const gstPromise = Gst.Promise.new();
 
-    const pad = whepBin.webrtc.getStaticPad("sink_0");
+    const pad = whepBin.webrtc.getStaticPad("sink_0"); // check event no more pads
 
     whepBin.webrtc.emit("get-stats", pad, gstPromise);
 
@@ -184,35 +184,31 @@ const convertGstTypeToValue = (value: any): any => {
 
     const type = GObject.typeName(value.gType);
 
-    if (GObject.typeIsA(value.gType, GObject.TYPE_STRING)) {
+    if (GObject.typeIsA(value.gType, GObject.TYPE_STRING))
         return value.getString();
-    } else if (GObject.typeIsA(value.gType, GObject.TYPE_INT)) {
-        return value.getInt();
-    } else if (GObject.typeIsA(value.gType, GObject.TYPE_UINT)) {
-        return value.getUint();
-    } else if (GObject.typeIsA(value.gType, GObject.TYPE_INT64)) {
+    if (GObject.typeIsA(value.gType, GObject.TYPE_INT)) return value.getInt();
+    if (GObject.typeIsA(value.gType, GObject.TYPE_UINT)) return value.getUint();
+    if (GObject.typeIsA(value.gType, GObject.TYPE_INT64))
         return value.getInt64();
-    } else if (GObject.typeIsA(value.gType, GObject.TYPE_UINT64)) {
+    if (GObject.typeIsA(value.gType, GObject.TYPE_UINT64))
         return value.getUint64();
-    } else if (
+    if (
         GObject.typeIsA(value.gType, GObject.TYPE_DOUBLE) ||
         GObject.typeIsA(value.gType, GObject.TYPE_FLOAT)
-    ) {
+    )
         return value.getDouble();
-    } else if (GObject.typeIsA(value.gType, GObject.TYPE_BOOLEAN)) {
+    if (GObject.typeIsA(value.gType, GObject.TYPE_BOOLEAN))
         return value.getBoolean();
-    } else if (type === "GstStructure") {
+    if (type === "GstStructure")
         // Recursively handle nested structures
         return value.getBoxed();
-    } else if (type === "GstWebRTCStatsType") {
-        return type;
-    } else {
-        // Fallback to string representation for unknown types
-        try {
-            return value.toString();
-        } catch (e) {
-            return null;
-        }
+    if (type === "GstWebRTCStatsType") return type;
+
+    // Fallback to string representation for unknown types
+    try {
+        return value.toString();
+    } catch (e) {
+        return null;
     }
 };
 
