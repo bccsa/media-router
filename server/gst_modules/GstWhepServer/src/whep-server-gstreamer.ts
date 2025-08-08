@@ -13,6 +13,7 @@ import {
     stopBin,
     createSdpAnswer,
     getElementByName,
+    getWebrtcBinStats,
 } from "./util";
 import GObject from "@girs/node-gobject-2.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
@@ -298,6 +299,13 @@ export class WHEPGStreamerServer {
                 (e as Error).message
             );
         }
+
+        setInterval(() => {
+            const stats = getWebrtcBinStats(session.whepBin);
+            if (stats) session.whepBin.stats = stats;
+
+            console.log(stats);
+        }, 1000);
     }
 
     private setupBusWatch(basePipelineRunning: boolean = true): void {
