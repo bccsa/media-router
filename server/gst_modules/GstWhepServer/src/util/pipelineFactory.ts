@@ -1,7 +1,7 @@
 import { WhepServerSettings } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
-import { getElementByName } from "./index";
+import { getElementByName, whepBinStats } from "./index";
 
 export type WhepBin = {
     queue: Gst.Element;
@@ -9,6 +9,7 @@ export type WhepBin = {
     webrtc: Gst.Element;
     teeSrcpad: Gst.Pad;
     tee: Gst.Element;
+    stats?: whepBinStats;
 };
 
 /**
