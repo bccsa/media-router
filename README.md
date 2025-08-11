@@ -16,6 +16,12 @@ The media-router can be used to build flexible distributed media routing applica
 
 <img src="./doc/version-numbering-and-branching.drawio.svg">
 
+For each new release, a branch needs to be create with the following naming: vA.B (where N is the release number, e.g. v1.3).
+
+After the branch is created tags will be used to tag the release on the branch, e.g. v1.3.0.0 (initial tag)
+
+All changes should be merged into the main branch, and then it can be merged / cherry picked into the version branch, and a new tag should be crated.
+
 ## Processes
 
 The following processes are part of the media-router project
