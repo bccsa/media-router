@@ -4,6 +4,3 @@
 [submodule "server/modular-dm"]
 	path = server/modular-dm
 	url = https://github.com/bccsa/modular-dm.git
-[submodule "server/gst-whep-server"]
-	path = server/gst-whep-server
-	url = https://github.com/bccsa/gst-whep-server.git

@@ -58,13 +58,11 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
     }
 
     stopPipeline() {
-        if (this._whep) {
-            this._stop_cmd();
-            this._parent._log(
-                "INFO",
-                `${this._controlName} (${this.displayName}): Stopped WHEP server.`
-            );
-        }
+        this._stop_cmd();
+        this._parent._log(
+            "INFO",
+            `${this._controlName} (${this.displayName}): Stopped WHEP server.`
+        );
     }
 }
 
