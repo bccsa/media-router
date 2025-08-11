@@ -1,4 +1,4 @@
-const runningAvgSamples = 6;
+const runningAvgSamples = 6; // Number of samples to use for running average
 
 import GObject from "@girs/node-gobject-2.0";
 import Gst from "@girs/node-gst-1.0";
@@ -136,9 +136,8 @@ export function getWebrtcBinStats(whepBin: WhepBin): whepBinStats | null {
     stats.rtt = calculateRunningAverage(stats.rtt, rtt);
     stats.lastPacketsLoss = packetLoss ? packetLoss : stats.lastPacketsLoss;
     stats.lastPacketsSent = packetSent ? packetSent : stats.lastPacketsSent;
-    stats.packetsLostPercent = stats.packetsLost / stats.packetSent;
-
-    console.log("======= " + rtt + " =======");
+    stats.packetsLostPercent =
+        Math.round((stats.packetsLost / stats.packetSent) * 10000) / 100;
 
     return stats;
 }
