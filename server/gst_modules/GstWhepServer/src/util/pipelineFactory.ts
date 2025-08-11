@@ -1,7 +1,7 @@
-import { WhepServerSettings } from "../whep-server-gstreamer";
+import { WhepServerSettings, WHEPSession } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
-import { getElementByName, whepBinStats } from "./index";
+import { getElementByName, whepBinStats, cleanupSession } from "./";
 
 export type WhepBin = {
     queue: Gst.Element;
@@ -10,6 +10,7 @@ export type WhepBin = {
     teeSrcpad: Gst.Pad;
     tee: Gst.Element;
     stats?: whepBinStats;
+    statsIntervalId?: NodeJS.Timeout;
 };
 
 /**
@@ -24,7 +25,6 @@ export type WhepBin = {
  * * @param settings - Configuration settings for the WHEP server, including PulseAudio device and Opus codec parameters.
  * @returns Gst.Pipeline | null - Returns the constructed GStreamer pipeline or null if creation fails.
  */
-
 export function creatBasePipeline(
     settings: WhepServerSettings
 ): Gst.Pipeline | null {
@@ -127,6 +127,12 @@ export function creatBasePipeline(
     }
 }
 
+/**
+ * Create a new whep bin when a client connects
+ * @param basePipeline - The base GStreamer pipeline to which the WHEP bin will be added.
+ * @param sessionId - Whep session id
+ * @returns
+ */
 export function createWhepBin(
     basePipeline: Gst.Pipeline | null,
     sessionId: string
@@ -229,6 +235,11 @@ export function createWhepBin(
     }
 }
 
+/**
+ * Starts whep bin for client
+ * @param whepBin
+ * @returns
+ */
 export function startBin(whepBin: WhepBin): boolean {
     try {
         if (!whepBin) {
@@ -276,7 +287,16 @@ export function startBin(whepBin: WhepBin): boolean {
     }
 }
 
-export function stopBin(whepBin: WhepBin): boolean {
+/**
+ * Stop whep bin fo client
+ * @param basePipeline - Base pipeline
+ * @param whepBin
+ * @returns
+ */
+export function stopBin(
+    basePipeline: Gst.Pipeline | null,
+    whepBin: WhepBin
+): boolean {
     try {
         if (!whepBin) {
             console.error("❌ WHEP bin is not initialized");
@@ -295,10 +315,10 @@ export function stopBin(whepBin: WhepBin): boolean {
         // release pad
         whepBin.tee.releaseRequestPad(whepBin.teeSrcpad);
 
-        // Set the state of the queue to NULL
-        const ret1 = whepBin.queue.setState(Gst.State.NULL);
-        if (ret1 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set queue to NULL state");
+        // Set the state of the webrtc to NULL
+        const ret3 = whepBin.webrtc.setState(Gst.State.NULL);
+        if (ret3 === Gst.StateChangeReturn.FAILURE) {
+            console.error("❌ Failed to set webrtc to NULL state");
             return false;
         }
 
@@ -309,12 +329,17 @@ export function stopBin(whepBin: WhepBin): boolean {
             return false;
         }
 
-        // Set the state of the webrtc to NULL
-        const ret3 = whepBin.webrtc.setState(Gst.State.NULL);
-        if (ret3 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set webrtc to NULL state");
+        // Set the state of the queue to NULL
+        const ret1 = whepBin.queue.setState(Gst.State.NULL);
+        if (ret1 === Gst.StateChangeReturn.FAILURE) {
+            console.error("❌ Failed to set queue to NULL state");
             return false;
         }
+
+        // Remove elements from the base pipeline
+        basePipeline?.remove(whepBin.webrtc);
+        basePipeline?.remove(whepBin.capsfilter);
+        basePipeline?.remove(whepBin.queue);
 
         console.log("✅ WHEP bin stopped successfully");
         return true;
@@ -324,6 +349,13 @@ export function stopBin(whepBin: WhepBin): boolean {
     }
 }
 
+/**
+ * Enable RTP RED for client
+ * @param whepBin
+ * @param enabled
+ * @param distance
+ * @returns
+ */
 export function enableRtpRed(
     whepBin: WhepBin,
     enabled: boolean = false,
@@ -342,4 +374,55 @@ export function enableRtpRed(
         console.log(
             "❌ Unable to set RED distance due to rtpredenc0 not found"
         );
+}
+
+/**
+ * Setup bus watch to process messages
+ * @param sessions - Map of session ID to WHEPSession
+ * @param basePipeline - The base GStreamer pipeline to watch for messages.
+ * @returns 
+ */
+export function setupBusWatch(
+    sessions: Map<string, WHEPSession>,
+    basePipeline: Gst.Pipeline | null
+): void {
+    if (!basePipeline) return;
+    const bus = basePipeline.getBus();
+    if (!bus) return;
+
+    const msg = bus.pop();
+    if (msg) {
+        switch (msg.type) {
+            case Gst.MessageType.ERROR:
+                const [error, debug] = msg.parseError();
+                console.error(
+                    `❌ Error message in base pipeline: ${error.message}`
+                );
+                if (debug) console.error(`🐛 Debug: ${debug}`);
+                break;
+
+            case Gst.MessageType.EOS:
+                console.log(`🔚 Base pipeline- End of stream`);
+                // Cleanup all sessions
+                for (const [sessionId] of sessions) {
+                    cleanupSession(sessionId, sessions, basePipeline);
+                }
+                break;
+
+            case Gst.MessageType.STATE_CHANGED:
+                const [oldState, newState, pending] = msg.parseStateChanged();
+                if (msg.src.name && msg.src.name === basePipeline.name) {
+                    console.log(
+                        `🔄 Base pipeline state changed: ${Gst.Element.stateGetName(
+                            oldState
+                        )} -> ${Gst.Element.stateGetName(newState)}`
+                    );
+                }
+                break;
+        }
+    }
+
+    setTimeout(() => {
+        setupBusWatch(sessions, basePipeline);
+    }, 100);
 }

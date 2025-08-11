@@ -5,7 +5,8 @@ import {
     gstSetLocalDescription,
     gstSetRemoteDescription,
     enableRtpRed,
-} from "../util";
+    startBin,
+} from "./";
 
 /**
  * Filters an SDP string to create an audio-only, receive-only stream
@@ -232,4 +233,43 @@ export function createSdpAnswer(
 
         resolve(mudgedSdpWithCandidates);
     });
+}
+
+/**
+ * Generate sdp awnser
+ * @param session - The WHEP session to generate the answer for
+ * @param settings - The WHEP server settings
+ * @returns
+ */
+export async function generateAnswer(
+    session: WHEPSession,
+    settings: WhepServerSettings
+): Promise<string | null> {
+    try {
+        console.log(`📝 Generating SDP answer for session ${session.id}`);
+
+        // Use a promise-based approach since the GStreamer bindings have limitations
+        return new Promise<string>(async (resolve, reject) => {
+            // Start the pipeline first
+            console.log(`🚀 Starting webrtcBin for session: ${session.id}`);
+            const ret = startBin(session.whepBin);
+            if (!ret) {
+                reject(new Error("Failed to start webrtc element"));
+                return;
+            }
+
+            const sdpAnswer = await createSdpAnswer(session, settings);
+
+            if (!sdpAnswer) {
+                console.error("❌ Failed to create SDP answer");
+                reject(new Error("Failed to create SDP answer"));
+                return;
+            }
+
+            resolve(sdpAnswer);
+        });
+    } catch (error) {
+        console.error("❌ Error generating answer:", error);
+        return null;
+    }
 }

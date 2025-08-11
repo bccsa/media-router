@@ -1,6 +1,9 @@
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
 import GstSdp from "@girs/node-gstsdp-1.0";
+import { WHEPSession } from "../whep-server-gstreamer";
+import GObject from "@girs/node-gobject-2.0";
+import { cleanupSession, getElementByName } from "./";
 
 /**
  * Helper function to emit a GStreamer signal with a promise
@@ -190,4 +193,77 @@ export function gstSetIceCandidate(
     candidate: string
 ) {
     webrtcElement.emit("add-ice-candidate", num, candidate);
+}
+
+export function setupWebRTCSignals(
+    session: WHEPSession,
+    sessions: Map<string, WHEPSession>,
+    basePipeline: Gst.Pipeline | null
+): void {
+    try {
+        // Handle connection state changes
+        session.whepBin.webrtc.connect("notify::connection-state", () => {
+            try {
+                const state = (
+                    session.whepBin.webrtc.getProperty(
+                        "connection-state"
+                    ) as GObject.Value
+                ).getBoxed();
+
+                // Update session state based on WebRTC state
+                if (state === GstWebRTC.WebRTCPeerConnectionState.CONNECTED) {
+                    session.state = "connected";
+                    console.log(
+                        `✅ Session ${session.id} - Client connected and receiving audio`
+                    );
+                } else if (
+                    state === GstWebRTC.WebRTCPeerConnectionState.FAILED ||
+                    state === GstWebRTC.WebRTCPeerConnectionState.CLOSED
+                ) {
+                    session.state = "failed";
+                    console.log(
+                        `❌ Session ${session.id} - Connection failed/closed`
+                    );
+                    setTimeout(
+                        () =>
+                            cleanupSession(session.id, sessions, basePipeline),
+                        5000
+                    );
+                }
+            } catch (error) {
+                console.log(
+                    `⚠️ Error handling connection state for session ${session.id}:`,
+                    error
+                );
+            }
+        });
+
+        // watch for RTP Timeout (If RTP session times out, we will cleanup the session)
+        const rtpbin = getElementByName(
+            session.whepBin.webrtc as Gst.Bin,
+            "rtpbin",
+            false
+        );
+
+        if (rtpbin) {
+            rtpbin.connect("on-timeout", () => {
+                console.log(`⏰ RTP timeout for session: ${session.id}`);
+                session.state = "closed";
+                // cleanup session
+                setTimeout(
+                    () => cleanupSession(session.id, sessions, basePipeline),
+                    5000
+                );
+            });
+        } else {
+            console.log(
+                `⚠️ RTPBin not found in WebRTC element for session ${session.id}`
+            );
+        }
+    } catch (e) {
+        console.log(
+            "⚠️ Could not connect connection state signals:",
+            (e as Error).message
+        );
+    }
 }
