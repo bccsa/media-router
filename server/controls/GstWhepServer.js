@@ -1,6 +1,7 @@
 const _paNullSinkBase = require("./_paNullSinkBase");
 const Spawn = require("./spawn");
 const path = require("path");
+const axios = require("axios");
 
 const { Classes } = require("../modular-dm");
 
@@ -15,6 +16,11 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
         this.opusFrameSize = 20; // Opus frame size
         this.rtpRed = false; // Enable RED (Redundant Encoding Data) for Opus
         this.rtpRedDistance = 2; // default RED disable value
+        // statistics
+        this.rtt = []; // Round-trip time for the WHEP server
+        this.packetLoss = []; // Packet loss statistics for the WHEP server
+        this._statsInterval = 10000; // Interval for collecting statistics in milliseconds
+        this._statsIntervalId = null; // Interval ID for statistics collection
     }
 
     Init() {
@@ -34,7 +40,21 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
     }
 
     startPipeline() {
+        if (this._statsIntervalId) clearInterval(this._statsIntervalId);
         if (this.ready && this.run) {
+            // clear statistics when the control is started
+            this.rtt = [];
+            this.packetLoss = [];
+            // start stats interval
+            this._statsIntervalId = setInterval(
+                this.getStats.bind(this),
+                this._statsInterval
+            );
+            // start the child process for the WHEP server
+            this._parent._log(
+                "INFO",
+                `${this._controlName} (${this.displayName}): Starting WHEP server on port ${this.port}.`
+            );
             this._start_cmd(
                 `node ${path.dirname(
                     process.argv[1]
@@ -58,11 +78,47 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
     }
 
     stopPipeline() {
+        // clear statistics when the control is stopped
+        this.rtt = [];
+        this.packetLoss = [];
+        clearInterval(this.statsIntervalId);
+        this.statsIntervalId = null;
+        // stop the child process
         this._stop_cmd();
         this._parent._log(
             "INFO",
             `${this._controlName} (${this.displayName}): Stopped WHEP server.`
         );
+    }
+
+    /**
+     * Collect statistics for the WHEP server.
+     * This method is called periodically based on the statsInterval.
+     * It can be extended to collect more detailed statistics as needed.
+     */
+    async getStats() {
+        try {
+            const resRtt = await axios.get(
+                `http://localhost:${this.port}/sessions/stats/rtt?count=50`
+            );
+            if (resRtt.status === 200) {
+                const data = resRtt.data;
+                this.rtt = data;
+            }
+
+            const resPacketLoss = await axios.get(
+                `http://localhost:${this.port}/sessions/stats/packetsLostPercent?count=50`
+            );
+            if (resPacketLoss.status === 200) {
+                const data = resPacketLoss.data;
+                this.packetLoss = data;
+            }
+        } catch (error) {
+            this._parent._log(
+                "ERROR",
+                `${this._controlName} (${this.displayName}): Error collecting statistics: ${error.message}`
+            );
+        }
     }
 }
 

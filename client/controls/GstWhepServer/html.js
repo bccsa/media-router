@@ -123,6 +123,47 @@ module.exports = {
             </div>
 
         </div>
+
+         <div class="border-t border-gray-200 rounded-b-md mx-[-1rem] my-2"></div> 
+
+        <!------------------------------ RED Settings ------------------------------>
+
+        <div class="w-full items-center justify-items-center justify-center mb-2">
+            <div class="text-center align-top font-semibold text-base">Red Settings</div>
+        </div>
+
+        <div class="w-full mb-1 flex ">
+
+            <!--    Enable RED       --> 
+            <div class="w-2/3 mr-2 mb-2 flex">
+                <input id="@{_rtpRed}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{rtpRed}"/>  
+                <label for="@{_rtpRed}" class="" title="Enable RED (Redundant Encoding Data) for RTP">Enable RED (Redundant Encoding Data) for RTP</label> 
+            </div>
+
+            <div class="w-1/3 mb-2 ml-2 flex">
+                
+            </div>
+
+        </div>
+        `;
+    },
+
+    statsHtml: () => {
+        return `
+        <!--  Srt Stats section  -->
+        <div class="paAudioBase-modal-header">
+            <div class="flex flex-shrink-0 items-center justify-between">
+                <span class="appFrame-control-name">WebRTC Stats</span>
+            </div>
+        </div>
+
+        <div class="paAudioBase-modal-body">
+            <div style="width: 800px;"><canvas id="@{_rttCanvas}"></canvas></div>
+        </div>
+
+        <div class="paAudioBase-modal-body">
+            <div style="width: 800px;"><canvas id="@{_packetLossCanvas}"></canvas></div>
+        </div>
         `;
     },
 };
