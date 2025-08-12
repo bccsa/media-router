@@ -65,7 +65,7 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
                 } --opusFecPacketLoss="${
                     this.opusFecPacketLoss
                 }" --opusComplexity="${this.opusComplexity}" --opusBitrate="${
-                    this.opusBitrate
+                    this.opusBitrate * 1000
                 }" --opusFrameSize="${this.opusFrameSize}" --rtpRed=${
                     this.rtpRed
                 } --rtpRedDistance="${this.rtpRedDistance}"`
