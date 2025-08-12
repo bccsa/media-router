@@ -1,4 +1,4 @@
-let { dm } = require('../modular-dm');
+let { dm } = require("../modular-dm");
 
 // -------------------------------------
 // Class declaration
@@ -7,9 +7,9 @@ let { dm } = require('../modular-dm');
 class WebRTCPlayer extends dm {
     constructor() {
         super();
-        this.url = 'http://localhost:8889/test';
-        this.playerName = 'name';
-        this.note = '';
+        this.url = "http://localhost:8889/test";
+        this.playerName = "name";
+        this.note = "";
         this.flag = "gb";
     }
 
@@ -20,7 +20,6 @@ class WebRTCPlayer extends dm {
         this.on("note", () => this._parent._setWebRtcClientConfig());
         this.on("flag", () => this._parent._setWebRtcClientConfig());
     }
-
 }
 
 // Export class
