@@ -6,6 +6,7 @@ import {
     gstSetRemoteDescription,
     enableRtpRed,
     startBin,
+    log,
 } from "./";
 
 /**
@@ -117,7 +118,7 @@ export function sdpMudgeIceCandidates(
     const mLineIndex = lines.findIndex((line) => line.startsWith("m="));
 
     if (mLineIndex === -1) {
-        console.error("❌ No media line found in SDP");
+        log.error("❌ No media line found in SDP");
         return sdp;
     }
 
@@ -139,7 +140,7 @@ export function sdpMudgeAudioRedEnc(sdp: string): string {
     const lines = sdp.split("\n");
     const mLineIndex = lines.findIndex((line) => line.startsWith("m="));
     if (mLineIndex === -1) {
-        console.error("❌ No media line found in SDP");
+        log.error("❌ No media line found in SDP");
         return sdp;
     }
 
@@ -162,12 +163,12 @@ export function createSdpAnswer(
     session: WHEPSession,
     settings: WhepServerSettings
 ): Promise<string | null> {
-    console.log("🤝 Creating WebRTC sdp answer...");
+    log.info("🤝 Creating WebRTC sdp answer...");
 
     return new Promise(async (resolve) => {
         const sdpOffer = (session as any).sdpOffer;
         if (!sdpOffer) {
-            console.error("❌ No SDP offer stored");
+            log.error("❌ No SDP offer stored");
             return null;
         }
 
@@ -198,7 +199,7 @@ export function createSdpAnswer(
         await gstSetRemoteDescription(session.whepBin.webrtc, sdpOffer);
         const answer = await gstCreateAnswer(session.whepBin.webrtc);
         if (!answer) {
-            console.error("❌ Failed to create answer");
+            log.error("❌ Failed to create answer");
             resolve(null);
         }
 
@@ -246,12 +247,12 @@ export async function generateAnswer(
     settings: WhepServerSettings
 ): Promise<string | null> {
     try {
-        console.log(`📝 Generating SDP answer for session ${session.id}`);
+        log.info(`📝 Generating SDP answer for session ${session.id}`);
 
         // Use a promise-based approach since the GStreamer bindings have limitations
         return new Promise<string>(async (resolve, reject) => {
             // Start the pipeline first
-            console.log(`🚀 Starting webrtcBin for session: ${session.id}`);
+            log.info(`🚀 Starting webrtcBin for session: ${session.id}`);
             const ret = startBin(session.whepBin);
             if (!ret) {
                 reject(new Error("Failed to start webrtc element"));
@@ -261,7 +262,7 @@ export async function generateAnswer(
             const sdpAnswer = await createSdpAnswer(session, settings);
 
             if (!sdpAnswer) {
-                console.error("❌ Failed to create SDP answer");
+                log.error("❌ Failed to create SDP answer");
                 reject(new Error("Failed to create SDP answer"));
                 return;
             }
@@ -269,7 +270,7 @@ export async function generateAnswer(
             resolve(sdpAnswer);
         });
     } catch (error) {
-        console.error("❌ Error generating answer:", error);
+        log.fatal(`❌ Error generating answer: ${error}`);
         return null;
     }
 }

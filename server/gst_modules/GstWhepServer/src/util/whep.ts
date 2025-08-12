@@ -4,6 +4,7 @@ import {
     generateAnswer,
     cleanupSession,
     gstSetIceCandidate,
+    log,
 } from "./";
 import { WHEPSession, WhepServerSettings } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
@@ -28,14 +29,14 @@ export async function createWhepSession(
     sessionId?: string;
 }> {
     try {
-        console.log("📥 Received WHEP request");
+        log.info("📥 Received WHEP request");
 
         const sdpOffer = filterSdp(body);
         if (!sdpOffer || typeof sdpOffer !== "string") {
             return { error: "Invalid SDP offer", status: 400 };
         }
 
-        console.log("📄 SDP Offer received, creating session...");
+        log.info("📄 SDP Offer received, creating session...");
         const session = await createSession(sdpOffer, sessions, basePipeline);
 
         if (!session) {
@@ -49,11 +50,11 @@ export async function createWhepSession(
             return { error: "Failed to generate SDP answer", status: 500 };
         }
 
-        console.log(`✅ Session ${session.id} created successfully`);
+        log.info(`✅ Session ${session.id} created successfully`);
 
         return { sdpAnswer: sdpAnswer, sessionId: session.id };
     } catch (error) {
-        console.error("❌ Error handling WHEP request:", error);
+        log.fatal(`❌ Error handling WHEP request: ${error}`);
         return { error: "Internal server error", status: 500 };
     }
 }
@@ -77,7 +78,7 @@ export function whepPatchIce(
     // Handle ICE candidate
     // TODO: This is untested, and in the testing environment is seems as if the client does not send the ICE candidates (RTCPeerConnection.onicecandidate is not triggered in the browser).
     if (req.headers["content-type"] === "application/trickle-ice-sdpfrag") {
-        console.log("🧊 Received ICE candidate");
+        log.info("🧊 Received ICE candidate");
 
         gstSetIceCandidate(session.whepBin.webrtc, 0, req.body);
         return { status: 204 };

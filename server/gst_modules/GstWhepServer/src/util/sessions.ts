@@ -6,6 +6,7 @@ import {
     createWhepBin,
     getWebrtcBinStats,
     setupWebRTCSignals,
+    log,
 } from "./";
 import { v4 as uuidv4 } from "uuid";
 
@@ -131,18 +132,18 @@ export async function createSession(
 ): Promise<WHEPSession | null> {
     try {
         const sessionId = uuidv4();
-        console.log(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
+        log.info(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
 
         // link elements to the base pipeline
         const whepBin = createWhepBin(basePipeline, sessionId);
         if (!whepBin) {
-            console.error("❌ Failed to create whepBin");
+            log.error("❌ Failed to create whepBin");
             return null;
         }
 
         const webrtc = whepBin.webrtc;
         if (!webrtc) {
-            console.error("❌ WebRTC element not found in WHEP bin");
+            log.error("❌ WebRTC element not found in WHEP bin");
             return null;
         }
 
@@ -170,11 +171,11 @@ export async function createSession(
         }, 10000);
 
         sessions.set(sessionId, session);
-        console.log(`✅ Session ${sessionId} created`);
+        log.info(`✅ Session ${sessionId} created`);
 
         return session;
     } catch (error) {
-        console.error("❌ Error creating session:", error);
+        log.fatal(`❌ Error creating session: ${error}`);
         return null;
     }
 }
@@ -195,7 +196,7 @@ export function cleanupSession(
     if (!session) return;
 
     try {
-        console.log(`🧹 Cleaning up session ${id}`);
+        log.info(`🧹 Cleaning up session ${id}`);
         session.state = "closed";
         // stop whepBin stats interval
         if (session.whepBin.statsIntervalId)
@@ -203,6 +204,6 @@ export function cleanupSession(
         if (session.whepBin) stopBin(basePipeline, session.whepBin);
         sessions.delete(id);
     } catch (error) {
-        console.error(`❌ Error cleaning up session ${id}:`, error);
+        log.error(`❌ Error cleaning up session ${id}: ${error}`);
     }
 }

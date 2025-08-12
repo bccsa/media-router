@@ -13,6 +13,7 @@ import {
     createWhepSession,
     whepPatchIce,
     deleteWhepSession,
+    log,
 } from "./util";
 
 // Initialize GStreamer//
@@ -147,23 +148,23 @@ export class WHEPGStreamerServer {
 
     public start(port: number = 9090): void {
         this.app.listen(port, () => {
-            console.log(`📡 Server running on port ${port}`);
+            log.info(`📡 Server running on port ${port}`);
             this.settings.enableTestClient &&
-                console.log(`📋 Local test client: http://localhost:${port}`);
-            console.log(`📋 Sessions list: http://localhost:${port}/sessions`);
-            console.log(`🎶 WHEP endpoint: http://localhost:${port}/whep`);
+                log.info(`📋 Local test client: http://localhost:${port}`);
+            log.info(`📋 Sessions list: http://localhost:${port}/sessions`);
+            log.info(`🎶 WHEP endpoint: http://localhost:${port}/whep`);
         });
     }
 
     public stop(): void {
-        console.log("🛑 Shutting down WHEP server...");
+        log.info("🛑 Shutting down WHEP server...");
 
         // Cleanup all sessions
         for (const [sessionId] of this.sessions) {
             cleanupSession(sessionId, this.sessions, this.basePipeline);
         }
 
-        console.log("✅ Server stopped");
+        log.info("✅ Server stopped");
         process.exit(0);
     }
 }

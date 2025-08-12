@@ -3,7 +3,7 @@ import GstWebRTC from "@girs/node-gstwebrtc-1.0";
 import GstSdp from "@girs/node-gstsdp-1.0";
 import { WHEPSession } from "../whep-server-gstreamer";
 import GObject from "@girs/node-gobject-2.0";
-import { cleanupSession, getElementByName } from "./";
+import { cleanupSession, getElementByName, log } from "./";
 
 /**
  * Helper function to emit a GStreamer signal with a promise
@@ -38,7 +38,7 @@ export function gstPromisifySignal(
         timeoutId = setTimeout(() => {
             if (!isResolved) {
                 isResolved = true;
-                console.error(
+                log.error(
                     `❌ GStreamer promise timeout for signal '${signalName}'`
                 );
                 reject(
@@ -68,7 +68,7 @@ export function gstPromisifySignal(
                     if (result === Gst.PromiseResult.REPLIED) {
                         resolve(gstPromise);
                     } else {
-                        console.error(
+                        log.error(
                             `❌ GStreamer promise failed for signal '${signalName}', result: ${result}`
                         );
                         reject(
@@ -87,9 +87,8 @@ export function gstPromisifySignal(
             if (!isResolved) {
                 isResolved = true;
                 clearTimeout(timeoutId);
-                console.error(
-                    `❌ Error emitting GStreamer signal '${signalName}':`,
-                    error
+                log.error(
+                    `❌ Error emitting GStreamer signal '${signalName}': ${error}`
                 );
                 reject(error);
             }
@@ -153,7 +152,7 @@ export async function gstCreateAnswer(
     const reply = res.getReply();
 
     if (!reply) {
-        console.error("❌ No reply received from create-answer");
+        log.error("❌ No reply received from create-answer");
         return null;
     }
 
@@ -213,7 +212,7 @@ export function setupWebRTCSignals(
                 // Update session state based on WebRTC state
                 if (state === GstWebRTC.WebRTCPeerConnectionState.CONNECTED) {
                     session.state = "connected";
-                    console.log(
+                    log.info(
                         `✅ Session ${session.id} - Client connected and receiving audio`
                     );
                 } else if (
@@ -221,7 +220,7 @@ export function setupWebRTCSignals(
                     state === GstWebRTC.WebRTCPeerConnectionState.CLOSED
                 ) {
                     session.state = "failed";
-                    console.log(
+                    log.info(
                         `❌ Session ${session.id} - Connection failed/closed`
                     );
                     setTimeout(
@@ -231,9 +230,8 @@ export function setupWebRTCSignals(
                     );
                 }
             } catch (error) {
-                console.log(
-                    `⚠️ Error handling connection state for session ${session.id}:`,
-                    error
+                log.fatal(
+                    `⚠️ Error handling connection state for session ${session.id}: ${error}`
                 );
             }
         });
@@ -247,7 +245,7 @@ export function setupWebRTCSignals(
 
         if (rtpbin) {
             rtpbin.connect("on-timeout", () => {
-                console.log(`⏰ RTP timeout for session: ${session.id}`);
+                log.info(`⏰ RTP timeout for session: ${session.id}`);
                 session.state = "closed";
                 // cleanup session
                 setTimeout(
@@ -256,14 +254,13 @@ export function setupWebRTCSignals(
                 );
             });
         } else {
-            console.log(
+            log.error(
                 `⚠️ RTPBin not found in WebRTC element for session ${session.id}`
             );
         }
     } catch (e) {
-        console.log(
-            "⚠️ Could not connect connection state signals:",
-            (e as Error).message
+        log.fatal(
+            `⚠️ Could not connect connection state signals: ${(e as Error).message}`
         );
     }
 }

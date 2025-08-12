@@ -1,7 +1,7 @@
 import { WhepServerSettings, WHEPSession } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
-import { getElementByName, whepBinStats, cleanupSession } from "./";
+import { getElementByName, whepBinStats, cleanupSession, log } from "./";
 
 export type WhepBin = {
     queue: Gst.Element;
@@ -32,7 +32,7 @@ export function creatBasePipeline(
         // Create pipeline
         const pipeline = Gst.Pipeline.new(`base-pipeline`);
         if (!pipeline) {
-            console.error("❌ Failed to create pipeline");
+            log.error("❌ Failed to create pipeline");
             return null;
         }
 
@@ -66,7 +66,7 @@ export function creatBasePipeline(
             !tee ||
             !fakesink
         ) {
-            console.error("❌ Failed to create pipeline elements");
+            log.error("❌ Failed to create pipeline elements");
             return null;
         }
 
@@ -107,22 +107,22 @@ export function creatBasePipeline(
             !queue2.link(tee) ||
             !tee.link(fakesink)
         ) {
-            console.error("❌ Failed to link pipeline elements");
+            log.error("❌ Failed to link pipeline elements");
             return null;
         }
 
         // start base pipeline
-        console.log("🚀 Starting base pipeline...");
+        log.info("🚀 Starting base pipeline...");
         const ret = pipeline.setState(Gst.State.PLAYING);
         if (ret === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set pipeline to PLAYING state");
+            log.error("❌ Failed to set pipeline to PLAYING state");
             return null;
         }
-        console.log("✅ Base pipeline created successfully");
+        log.info("✅ Base pipeline created successfully");
 
         return pipeline;
     } catch (error) {
-        console.error("❌ Error creating base pipeline:", error);
+        log.fatal(`❌ Error creating base pipeline: ${error}`);
         return null;
     }
 }
@@ -139,17 +139,17 @@ export function createWhepBin(
 ): WhepBin | null {
     try {
         if (!basePipeline) {
-            console.error("❌ Base pipeline is not initialized");
+            log.error("❌ Base pipeline is not initialized");
             return null;
         }
 
         // link elements to the base pipeline
         if (!basePipeline) {
-            console.error("❌ Base pipeline is not initialized");
+            log.error("❌ Base pipeline is not initialized");
             return null;
         }
 
-        console.log(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
+        log.info(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
 
         const queue = Gst.ElementFactory.make("queue", `queue-${sessionId}`);
         const capsfilter = Gst.ElementFactory.make(
@@ -162,7 +162,7 @@ export function createWhepBin(
         );
 
         if (!queue || !capsfilter || !webrtc) {
-            console.error("❌ Failed to create pipeline elements");
+            log.error("❌ Failed to create pipeline elements");
             return null;
         }
 
@@ -186,37 +186,37 @@ export function createWhepBin(
 
         // Link queue → capsfilter → webrtc
         if (!queue.link(capsfilter)) {
-            console.error("❌ Failed to link queue to capsfilter");
+            log.error("❌ Failed to link queue to capsfilter");
             return null;
         }
 
         const webrtcSinkpad = webrtc.requestPadSimple("sink_%u");
         if (!webrtcSinkpad) {
-            console.error("❌ Failed to request webrtc sink pad");
+            log.error("❌ Failed to request webrtc sink pad");
             return null;
         }
 
         const capsfilterSrcPad = capsfilter.getStaticPad("src");
         if (!capsfilterSrcPad) {
-            console.error("❌ Failed to get capsfilter src pad");
+            log.error("❌ Failed to get capsfilter src pad");
             return null;
         }
 
         if (capsfilterSrcPad.link(webrtcSinkpad) !== Gst.PadLinkReturn.OK) {
-            console.error("❌ Failed to link capsfilter to webrtc");
+            log.error("❌ Failed to link capsfilter to webrtc");
             return null;
         }
 
         // Get tee and link to queue
         const tee = basePipeline.getByName("tee");
         if (!tee) {
-            console.error("❌ Tee element not found in base pipeline");
+            log.error("❌ Tee element not found in base pipeline");
             return null;
         }
 
         const teeSrcpad = tee.getRequestPad("src_%u");
         if (!teeSrcpad) {
-            console.error("❌ Tee src pad not found in base pipeline");
+            log.error("❌ Tee src pad not found in base pipeline");
             return null;
         }
 
@@ -230,7 +230,7 @@ export function createWhepBin(
 
         return whepBin;
     } catch (error) {
-        console.error("❌ Error creating whepBin:", error);
+        log.error(`❌ Error creating whepBin: ${error}`);
         return null;
     }
 }
@@ -243,46 +243,46 @@ export function createWhepBin(
 export function startBin(whepBin: WhepBin): boolean {
     try {
         if (!whepBin) {
-            console.error("❌ WHEP bin is not initialized");
+            log.error("❌ WHEP bin is not initialized");
             return false;
         }
 
         // Set the state of the queue to PLAYING
         const ret1 = whepBin.queue.setState(Gst.State.PLAYING);
         if (ret1 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set queue to PLAYING state");
+            log.error("❌ Failed to set queue to PLAYING state");
             return false;
         }
 
         // Set the state of the capsfilter to PLAYING
         const ret2 = whepBin.capsfilter.setState(Gst.State.PLAYING);
         if (ret2 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set capsfilter to PLAYING state");
+            log.error("❌ Failed to set capsfilter to PLAYING state");
             return false;
         }
 
         // Set the state of the webrtc to PLAYING
         const ret3 = whepBin.webrtc.setState(Gst.State.PLAYING);
         if (ret3 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set webrtc to PLAYING state");
+            log.error("❌ Failed to set webrtc to PLAYING state");
             return false;
         }
 
         const queueSinkpad = whepBin.queue.getStaticPad("sink");
         if (!queueSinkpad) {
-            console.error("❌ Failed to get queue sink pad");
+            log.error("❌ Failed to get queue sink pad");
             return false;
         }
 
         if (whepBin.teeSrcpad.link(queueSinkpad) !== Gst.PadLinkReturn.OK) {
-            console.error("❌ Failed to link tee to queue");
+            log.error("❌ Failed to link tee to queue");
             return false;
         }
 
-        console.log("✅ WHEP bin started successfully");
+        log.info("✅ WHEP bin started successfully");
         return true;
     } catch (error) {
-        console.error("❌ Error starting WHEP bin:", error);
+        log.fatal(`❌ Error starting WHEP bin: ${error}`);
         return false;
     }
 }
@@ -299,14 +299,14 @@ export function stopBin(
 ): boolean {
     try {
         if (!whepBin) {
-            console.error("❌ WHEP bin is not initialized");
+            log.error("❌ WHEP bin is not initialized");
             return false;
         }
 
         // unlink bin from tee
         const queueSinkpad = whepBin.queue.getStaticPad("sink");
         if (!queueSinkpad) {
-            console.error("❌ Failed to get queue sink pad");
+            log.error("❌ Failed to get queue sink pad");
             return false;
         }
 
@@ -318,21 +318,21 @@ export function stopBin(
         // Set the state of the webrtc to NULL
         const ret3 = whepBin.webrtc.setState(Gst.State.NULL);
         if (ret3 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set webrtc to NULL state");
+            log.error("❌ Failed to set webrtc to NULL state");
             return false;
         }
 
         // Set the state of the capsfilter to NULL
         const ret2 = whepBin.capsfilter.setState(Gst.State.NULL);
         if (ret2 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set capsfilter to NULL state");
+            log.error("❌ Failed to set capsfilter to NULL state");
             return false;
         }
 
         // Set the state of the queue to NULL
         const ret1 = whepBin.queue.setState(Gst.State.NULL);
         if (ret1 === Gst.StateChangeReturn.FAILURE) {
-            console.error("❌ Failed to set queue to NULL state");
+            log.error("❌ Failed to set queue to NULL state");
             return false;
         }
 
@@ -341,10 +341,10 @@ export function stopBin(
         basePipeline?.remove(whepBin.capsfilter);
         basePipeline?.remove(whepBin.queue);
 
-        console.log("✅ WHEP bin stopped successfully");
+        log.info("✅ WHEP bin stopped successfully");
         return true;
     } catch (error) {
-        console.error("❌ Error stopping WHEP bin:", error);
+        log.fatal(`❌ Error stopping WHEP bin: ${error}`);
         return false;
     }
 }
@@ -367,20 +367,17 @@ export function enableRtpRed(
     const _bin_webrtc = whepBin.webrtc as Gst.Bin;
     const _bin = getElementByName(_bin_webrtc, "bin", false) as Gst.Bin;
     if (_bin) rtpredenc = getElementByName(_bin, "rtpredenc", false);
-    else console.log("❌ Unable to set RED distance due to rtpbin not found");
+    else log.error("❌ Unable to set RED distance due to rtpbin not found");
     if (rtpredenc) rtpredenc.setProperty("distance", distance);
     if (rtpredenc) rtpredenc.setProperty("allow-no-red-blocks", false);
-    else
-        console.log(
-            "❌ Unable to set RED distance due to rtpredenc0 not found"
-        );
+    else log.error("❌ Unable to set RED distance due to rtpredenc not found");
 }
 
 /**
  * Setup bus watch to process messages
  * @param sessions - Map of session ID to WHEPSession
  * @param basePipeline - The base GStreamer pipeline to watch for messages.
- * @returns 
+ * @returns
  */
 export function setupBusWatch(
     sessions: Map<string, WHEPSession>,
@@ -395,14 +392,14 @@ export function setupBusWatch(
         switch (msg.type) {
             case Gst.MessageType.ERROR:
                 const [error, debug] = msg.parseError();
-                console.error(
+                log.error(
                     `❌ Error message in base pipeline: ${error.message}`
                 );
-                if (debug) console.error(`🐛 Debug: ${debug}`);
+                if (debug) log.error(`🐛 Debug: ${debug}`);
                 break;
 
             case Gst.MessageType.EOS:
-                console.log(`🔚 Base pipeline- End of stream`);
+                log.info(`🔚 Base pipeline- End of stream`);
                 // Cleanup all sessions
                 for (const [sessionId] of sessions) {
                     cleanupSession(sessionId, sessions, basePipeline);
@@ -412,7 +409,7 @@ export function setupBusWatch(
             case Gst.MessageType.STATE_CHANGED:
                 const [oldState, newState, pending] = msg.parseStateChanged();
                 if (msg.src.name && msg.src.name === basePipeline.name) {
-                    console.log(
+                    log.info(
                         `🔄 Base pipeline state changed: ${Gst.Element.stateGetName(
                             oldState
                         )} -> ${Gst.Element.stateGetName(newState)}`
