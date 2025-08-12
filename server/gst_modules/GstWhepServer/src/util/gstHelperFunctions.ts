@@ -114,7 +114,7 @@ export function getWebrtcBinStats(whepBin: WhepBin): whepBinStats | null {
         return {
             packetsLost: packetLoss ? packetLoss : 0,
             lastPacketsLoss: packetLoss ? packetLoss : 0,
-            rtt: rtt ? rtt : 0,
+            rtt: rtt ? Math.round(rtt * 1000 * 100) / 100 : 0, // Convert to milliseconds and round to 2 decimal places
             packetSent: packetSent ? packetSent : 0,
             lastPacketsSent: packetSent ? packetSent : 0,
             missingInbound: 0, // Initialize missingInbound to 0
@@ -133,7 +133,8 @@ export function getWebrtcBinStats(whepBin: WhepBin): whepBinStats | null {
         stats.packetSent,
         (packetSent || stats.lastPacketsSent) - stats.lastPacketsSent
     );
-    stats.rtt = calculateRunningAverage(stats.rtt, rtt);
+    stats.rtt =
+        Math.round(calculateRunningAverage(stats.rtt, rtt * 1000 * 100)) / 100; // Convert to milliseconds and round to 2 decimal places
     stats.lastPacketsLoss = packetLoss ? packetLoss : stats.lastPacketsLoss;
     stats.lastPacketsSent = packetSent ? packetSent : stats.lastPacketsSent;
     stats.packetsLostPercent =
