@@ -62,7 +62,7 @@ export function getSessionsStats(
     sessions: Map<string, WHEPSession>,
     req: any
 ): any {
-    const reqParam: string = req.param.type;
+    const reqParam: string = req.params.type;
     const count = req.query.count;
 
     if (
