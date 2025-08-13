@@ -154,6 +154,7 @@ module.exports = {
         <div class="paAudioBase-modal-header">
             <div class="flex flex-shrink-0 items-center justify-between">
                 <span class="appFrame-control-name">WebRTC Stats</span>
+                <span id="@{_clientCount}" class="appFrame-control-name">Clients: <span>@{clientCount}</span></span>
             </div>
         </div>
 

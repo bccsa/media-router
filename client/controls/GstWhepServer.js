@@ -16,6 +16,7 @@ class GstWhepServer extends _paAudioSinkBase {
         this.packetLoss = []; // Packet loss statistics for the WHEP server
         this._rttChart = undefined; // Chart instance for displaying stats
         this._packetLossChart = undefined; // Chart instance for displaying stats
+        this.clientCount = 0; // Number of clients connected to the WHEP server
     }
 
     get html() {
@@ -113,6 +114,7 @@ class GstWhepServer extends _paAudioSinkBase {
                 responsive: true,
                 scales: {
                     y: {
+                        min: 0,
                         beginAtZero: true,
                     },
                     x: {

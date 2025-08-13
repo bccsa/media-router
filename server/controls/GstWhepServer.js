@@ -21,6 +21,7 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
         this.packetLoss = []; // Packet loss statistics for the WHEP server
         this._statsInterval = 10000; // Interval for collecting statistics in milliseconds
         this._statsIntervalId = null; // Interval ID for statistics collection
+        this.clientCount = 0; // Number of clients connected to the WHEP server
     }
 
     Init() {
@@ -37,6 +38,11 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
             if (run) this.startPipeline();
             else this.stopPipeline();
         });
+
+        // clear stats on init
+        this.rtt = [];
+        this.packetLoss = [];
+        this.clientCount = 0;
     }
 
     startPipeline() {
@@ -112,6 +118,14 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
             if (resPacketLoss.status === 200) {
                 const data = resPacketLoss.data;
                 this.packetLoss = data;
+            }
+
+            const resClientCount = await axios.get(
+                `http://localhost:${this.port}/sessions/stats/sessionCount`
+            );
+            if (resClientCount.status === 200) {
+                const data = resClientCount.data;
+                this.clientCount = data.sessionCount || 0;
             }
         } catch (error) {
             this._parent._log(
