@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "chart.js": "^4.5.0",
     "showdown": "^2.1.0",
     "sortablejs": "^1.15.0",
     "tw-elements": "^1.0.0-alpha13"
