@@ -85,7 +85,7 @@ class GstWhepServer extends _paAudioSinkBase {
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
-        // this._loadHelpMD('controls/GstWhepServer.md');
+        this._loadHelpMD("controls/GstWhepServer.md");
         //----------------------Help Modal-----------------------------//
     }
 
