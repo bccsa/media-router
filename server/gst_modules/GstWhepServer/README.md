@@ -75,10 +75,11 @@ const settings: WhepServerSettings = {
 
 ### WHEP Server Endpoints
 
-| Method   | Endpoint           | Description                         |
-| -------- | ------------------ | ----------------------------------- |
-| `POST`   | `/whep`            | Create new WHEP session (SDP offer) |
-| `GET`    | `/whep/:sessionId` | Get session information             |
-| `DELETE` | `/whep/:sessionId` | Delete session                      |
-| `PATCH`  | `/whep/:sessionId` | Send ICE candidates                 |
-| `GET`    | `/sessions`        | List all active sessions            |
+| Method   | Endpoint                        | Description                                                                                                                                                                                                                                                  |
+| -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST`   | `/whep`                         | Create new WHEP session (SDP offer)                                                                                                                                                                                                                          |
+| `GET`    | `/whep/:sessionId`              | Get session information                                                                                                                                                                                                                                      |
+| `DELETE` | `/whep/:sessionId`              | Delete session                                                                                                                                                                                                                                               |
+| `PATCH`  | `/whep/:sessionId`              | Send ICE candidates                                                                                                                                                                                                                                          |
+| `GET`    | `/sessions`                     | List all active sessions                                                                                                                                                                                                                                     |
+| `GET`    | `/sessions/stats:type?count=10` | Return statistics of active sessions (Available types: rtt, packetsLost, packetsLostPercent, packetSent, sessionCount) (If count is present, it will not return more results that the current count, but will sample the data and return evenly spread data) |
