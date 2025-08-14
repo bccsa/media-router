@@ -159,8 +159,8 @@ export async function createSession(
         setupWebRTCSignals(session, sessions, basePipeline);
 
         // setup webrtc stats (Every 10 seconds)
-        whepBin.statsIntervalId = setInterval(() => {
-            const stats = getWebrtcBinStats(whepBin);
+        whepBin.statsIntervalId = setInterval(async () => {
+            const stats = await getWebrtcBinStats(whepBin);
             if (stats) {
                 whepBin.stats = stats;
 

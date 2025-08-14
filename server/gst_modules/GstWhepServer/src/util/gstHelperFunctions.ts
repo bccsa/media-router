@@ -2,7 +2,7 @@ const runningAvgSamples = 6; // Number of samples to use for running average
 
 import GObject from "@girs/node-gobject-2.0";
 import Gst from "@girs/node-gst-1.0";
-import { WhepBin } from "./index";
+import { WhepBin, log } from "./index";
 
 export type whepBinStats = {
     packetsLost: number;
@@ -30,24 +30,27 @@ export function getElementByName(
 ): Gst.Element | null {
     if (exactmatch) return parent.getChildByName(name) as Gst.Element;
 
-    const childCount = parent.getChildrenCount();
-
-    for (let i = 0; i < childCount; i++) {
-        let bestMatch: Gst.Element | null = null;
-        let bestScore = Infinity;
-
+    try {
+        const childCount = parent.getChildrenCount();
         for (let i = 0; i < childCount; i++) {
-            const child = parent.getChildByIndex(i) as Gst.Element;
-            if (child && child.name) {
-                const distance = levenshteinDistance(name, child.name);
-                if (distance < bestScore) {
-                    bestScore = distance;
-                    bestMatch = child;
+            let bestMatch: Gst.Element | null = null;
+            let bestScore = Infinity;
+
+            for (let i = 0; i < childCount; i++) {
+                const child = parent.getChildByIndex(i) as Gst.Element;
+                if (child && child.name) {
+                    const distance = levenshteinDistance(name, child.name);
+                    if (distance < bestScore) {
+                        bestScore = distance;
+                        bestMatch = child;
+                    }
                 }
             }
-        }
 
-        return bestMatch;
+            return bestMatch;
+        }
+    } catch (e) {
+        log.error("❌ Error getting element by name: " + e);
     }
 
     return null;

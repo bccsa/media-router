@@ -31,9 +31,6 @@ export function gstPromisifySignal(
         let isResolved = false;
         let timeoutId: NodeJS.Timeout;
 
-        // Create GStreamer promise
-        gstPromise = Gst.Promise.new();
-
         // Set up timeout
         timeoutId = setTimeout(() => {
             if (!isResolved) {
@@ -49,6 +46,18 @@ export function gstPromisifySignal(
             }
         }, options.timeout);
 
+        // Create GStreamer promise
+
+        if (options.waitForResult)
+            gstPromise = Gst.Promise.newWithChangeFunc((res) => {
+                if (!isResolved) {
+                    isResolved = true;
+                    clearTimeout(timeoutId);
+                    resolve(res);
+                }
+            });
+        if (!options.waitForResult) gstPromise = Gst.Promise.new();
+
         try {
             // Emit the signal with the promise
             if (signalData !== null) {
@@ -57,28 +66,7 @@ export function gstPromisifySignal(
                 element.emit(signalName, gstPromise);
             }
 
-            if (options.waitForResult) {
-                // Wait for the promise to complete
-                const result = gstPromise.wait();
-
-                if (!isResolved) {
-                    isResolved = true;
-                    clearTimeout(timeoutId);
-
-                    if (result === Gst.PromiseResult.REPLIED) {
-                        resolve(gstPromise);
-                    } else {
-                        log.error(
-                            `❌ GStreamer promise failed for signal '${signalName}', result: ${result}`
-                        );
-                        reject(
-                            new Error(
-                                `GStreamer promise failed: ${signalName}, result: ${result}`
-                            )
-                        );
-                    }
-                }
-            } else {
+            if (!options.waitForResult) {
                 clearTimeout(timeoutId);
                 gstPromise.interrupt();
                 resolve(gstPromise);

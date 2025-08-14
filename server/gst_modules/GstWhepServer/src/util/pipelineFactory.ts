@@ -151,7 +151,7 @@ export function createWhepBin(
 
         log.info(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
 
-        const queue = Gst.ElementFactory.make("queue", `queue-${sessionId}`);
+        const queue = Gst.ElementFactory.make("queue2", `queue-${sessionId}`);
         const capsfilter = Gst.ElementFactory.make(
             "capsfilter",
             `caps-${sessionId}`
@@ -361,16 +361,24 @@ export function enableRtpRed(
     enabled: boolean = false,
     distance: number = 2
 ) {
-    if (!enabled) return;
+    try {
+        if (!enabled) return;
 
-    let rtpredenc;
-    const _bin_webrtc = whepBin.webrtc as Gst.Bin;
-    const _bin = getElementByName(_bin_webrtc, "bin", false) as Gst.Bin;
-    if (_bin) rtpredenc = getElementByName(_bin, "rtpredenc", false);
-    else log.error("❌ Unable to set RED distance due to rtpbin not found");
-    if (rtpredenc) rtpredenc.setProperty("distance", distance);
-    if (rtpredenc) rtpredenc.setProperty("allow-no-red-blocks", false);
-    else log.error("❌ Unable to set RED distance due to rtpredenc not found");
+        let rtpredenc;
+        const _bin_webrtc = whepBin.webrtc as Gst.Bin;
+        const _bin = getElementByName(_bin_webrtc, "bin", false) as Gst.Bin;
+        if (_bin) rtpredenc = getElementByName(_bin, "rtpredenc", false);
+        else log.error("❌ Unable to set RED distance due to rtpbin not found");
+        if (rtpredenc) rtpredenc.setProperty("distance", distance);
+        if (rtpredenc) rtpredenc.setProperty("allow-no-red-blocks", false);
+        else
+            log.error(
+                "❌ Unable to set RED distance due to rtpredenc not found"
+            );
+    } catch (e) {
+        log.error("❌ Error enabling RTP RED: " + e);
+        return;
+    }
 }
 
 /**
