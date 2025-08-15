@@ -65,7 +65,7 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
                 `node ${path.dirname(
                     process.argv[1]
                 )}/child_processes/GstWhepServer_child.js --pulseDevice="${
-                    this.pulseDevice
+                    this.source
                 }" --port="${this.port}" --opusFec=${
                     this.opusFec
                 } --opusFecPacketLoss="${
