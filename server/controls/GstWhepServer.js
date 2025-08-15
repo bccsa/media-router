@@ -87,8 +87,8 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
         // clear statistics when the control is stopped
         this.rtt = [];
         this.packetLoss = [];
-        clearInterval(this.statsIntervalId);
-        this.statsIntervalId = null;
+        clearInterval(this._statsIntervalId);
+        this._statsIntervalId = null;
         // stop the child process
         this._stop_cmd();
         this._parent._log(
