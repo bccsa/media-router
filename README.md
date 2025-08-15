@@ -36,6 +36,21 @@ All changes should be merged into the main branch, and then it can be merged / c
 -   test: Adding missing tests or refactoring existing tests (no production code change).
 -   chore: Updating build tasks, dependencies, etc. (no production code change).
 
+## Issue naming standard
+
+Issue name: {type issue}:{A short description of the issue}
+Issue description: A detailed description of what is to be done / what needs to be fixed in the issue
+
+### Issue types
+
+-   feat: A new feature.
+-   fix: A bug fix.
+-   docs: Documentation changes.
+-   refactor: Refactoring production code
+-   style: Formatting, missing semicolons, etc. (no production code change).
+-   test: Adding missing tests or refactoring existing tests (no production code change).
+-   chore: Updating build tasks, dependencies, etc. (no production code change).
+
 ## Processes
 
 The following processes are part of the media-router project
