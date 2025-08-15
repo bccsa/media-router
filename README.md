@@ -22,6 +22,20 @@ After the branch is created tags will be used to tag the release on the branch, 
 
 All changes should be merged into the main branch, and then it can be merged / cherry picked into the version branch, and a new tag should be crated.
 
+## Commit naming standard
+
+{type of commit}:{A short description of what has changed / added}
+
+### Commit types
+
+-   feat: A new feature.
+-   fix: A bug fix.
+-   docs: Documentation changes.
+-   refactor: Refactoring production code
+-   style: Formatting, missing semicolons, etc. (no production code change).
+-   test: Adding missing tests or refactoring existing tests (no production code change).
+-   chore: Updating build tasks, dependencies, etc. (no production code change).
+
 ## Processes
 
 The following processes are part of the media-router project
@@ -56,6 +70,7 @@ This project has been tested on:
 -   WebRTCClient: WebRTC Client WebApp
 -   SrtToRist: Receive a SRT stream and outputs it over RIST
 -   RistToSrt: Receive a RIST stream and output it over SRT
+-   GstWhepServer: A gstreamer WHEP webrtc server
 
 ## Centralized management
 
@@ -68,10 +83,11 @@ The media-router process by default points to the locally installed manager but 
 A local operator web-interface is available on http://localhost:8081. This interface can be used for local control of volume controls, etc.
 
 ## WebRTC client configuration API
+
 A client config API is included in the WebRTCClient module, serving the configuration on http://[host]:2000/config.json
 This can be used to configure client applications to connect to the respective WHEP WebRTC endpoints configured in the module.
 
-*Note* Media Router does not include a built-in WebRTC server. A server like e.g. MediaMTX can be used as SRT to WebRTC bridge to serve streams as WebRTC to clients.
+_Note_ Media Router does not include a built-in WebRTC server. A server like e.g. MediaMTX can be used as SRT to WebRTC bridge to serve streams as WebRTC to clients.
 
 ## Development environment
 
