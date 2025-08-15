@@ -12,7 +12,6 @@ const express = require("express");
 const path = require("path");
 let { dmTopLevelContainer } = require("./modular-dm");
 const process = require("process");
-const io = require("socket.io-client");
 const { configManager } = require("./configManager");
 const fs = require("fs");
 const { Client } = require("./dgram-comms");

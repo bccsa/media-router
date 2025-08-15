@@ -10,6 +10,7 @@
     "express": "^4.17.1",
     "express-session": "^1.17.2",
     "hls-parser": "^0.13.5",
+    "minimist": "^1.2.8",
     "node-addon-api": "^7.0.0",
     "os-utils": "^0.0.14",
     "ps-tree": "^1.2.0",

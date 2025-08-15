@@ -1,9 +1,10 @@
 class WebRTCPlayer extends ui {
     constructor() {
         super();
-        this.url = '';
-        this.playerName = '';
-        this.flag = 'gb';
+        this.url = "";
+        this.playerName = "";
+        this.note = "";
+        this.flag = "gb";
     }
 
     get html() {
@@ -22,6 +23,13 @@ class WebRTCPlayer extends ui {
             title="WebRTC Player Name" placeholder="WebTRC Player Name" value="@{playerName}"/>
         </div>
 
+         <!-- WebRTC host -->
+        <div class="w-full mb-2">
+            <label for="@{_note}" class="form-label inline-block">Note:</label>
+                <textarea id="@{_note}" class="paAudioBase-text-area" type="text"
+                title="Note to display in the client" placeholder="Your Note" value="@{note}"></textarea>
+        </div>
+
         <!-- WebRTC host -->
         <div class="w-full mb-2">
             <label for="@{_url}" class="form-label inline-block">WebRTC WHEP URL:</label>
@@ -35,27 +43,29 @@ class WebRTCPlayer extends ui {
                 <input id="@{_flag}" class="paAudioBase-text-area" type="text"
                 title="Two letter ISO3166 country code" value="@{flag}"/>
         </div>
-        `
+        `;
     }
-
 
     Init() {
         // Delete control
-        this._btnDelete.addEventListener('click', (e) => {
+        this._btnDelete.addEventListener("click", (e) => {
             // Show message box
-            this.emit('messageBox',
-            {
-                buttons: ["Cancel", "Yes"],
-                title: `Delete ${this.playerName}?`,
-                text: 'Are you sure you want to delete the player?',
-                img: 'paAudioBase-modal-img-delete',
-                callback: function (data) {
-                    if (data == 'Yes') {
-                        this._notify({ remove: true });
-                        this.SetData({ remove: true });
-                    }
-                }.bind(this)
-            }, 'top');
-        });   
+            this.emit(
+                "messageBox",
+                {
+                    buttons: ["Cancel", "Yes"],
+                    title: `Delete ${this.playerName}?`,
+                    text: "Are you sure you want to delete the player?",
+                    img: "paAudioBase-modal-img-delete",
+                    callback: function (data) {
+                        if (data == "Yes") {
+                            this._notify({ remove: true });
+                            this.SetData({ remove: true });
+                        }
+                    }.bind(this),
+                },
+                "top"
+            );
+        });
     }
 }
