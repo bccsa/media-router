@@ -130,6 +130,30 @@ export function sdpMudgeIceCandidates(
     return lines.join("\n");
 }
 
+export function sdpMudgeInvalidLines(sdp: string): string {
+    // Parse the SDP to find the m= line
+    const lines = sdp.split("\n");
+    const mLineIndex = lines.findIndex((line) => line.startsWith("m="));
+    if (mLineIndex === -1) {
+        log.error("❌ No media line found in SDP");
+        return sdp;
+    }
+
+    // Remove invalid lines after the m= line
+    const validLines = lines.slice(0, mLineIndex + 1);
+    for (let i = mLineIndex + 1; i < lines.length; i++) {
+        const line = lines[i];
+        // Skip attribute lines with no value after '=' (e.g. 'a=' or 'm=   ')
+        const value = line.slice(2).trim();
+        if (value.length === 0 && line !== "") {
+            continue;
+        }
+        validLines.push(line);
+    }
+
+    return validLines.join("\n");
+}
+
 /**
  * Modifies the SDP to include audio RED encoding. (This function is not used, and can delete at a later time)
  * @param sdp - The input SDP string
@@ -232,7 +256,12 @@ export function createSdpAnswer(
             iceCandidates
         );
 
-        resolve(mudgedSdpWithCandidates);
+        // remove invalid lines from the SDP
+        const mudgedSdpWithCandidatesAndValidLines = sdpMudgeInvalidLines(
+            mudgedSdpWithCandidates
+        );
+
+        resolve(mudgedSdpWithCandidatesAndValidLines);
     });
 }
 
