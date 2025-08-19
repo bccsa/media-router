@@ -5,7 +5,7 @@ const axios = require("axios");
 
 const { Classes } = require("../modular-dm");
 
-class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
+class WhepAudioServer extends Classes(_paNullSinkBase, Spawn) {
     constructor() {
         super();
         this.port = 9090; // Default port for WHEP server
@@ -64,7 +64,7 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
             this._start_cmd(
                 `node ${path.dirname(
                     process.argv[1]
-                )}/child_processes/GstWhepServer_child.js --pulseDevice="${
+                )}/child_processes/WhepAudioServer_child.js --pulseDevice="${
                     this.source
                 }" --port="${this.port}" --opusFec=${
                     this.opusFec
@@ -136,4 +136,4 @@ class GstWhepServer extends Classes(_paNullSinkBase, Spawn) {
     }
 }
 
-module.exports = GstWhepServer;
+module.exports = WhepAudioServer;
