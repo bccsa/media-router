@@ -1,4 +1,4 @@
-# GstWhepServer
+# WhepAudioServer
 
 Simple webrtc whep server build on gstreamer
 

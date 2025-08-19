@@ -85,7 +85,7 @@ This project has been tested on:
 -   WebRTCClient: WebRTC Client WebApp
 -   SrtToRist: Receive a SRT stream and outputs it over RIST
 -   RistToSrt: Receive a RIST stream and output it over SRT
--   GstWhepServer: A gstreamer WHEP webrtc server
+-   WhepAudioServer: A audio streaming over webrtc (Whep) server
 
 ## Centralized management
 

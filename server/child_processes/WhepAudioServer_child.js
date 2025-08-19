@@ -1,4 +1,6 @@
-const { WHEPGStreamerServer } = require("../gst_modules/GstWhepServer/dist/index.js");
+const {
+    WHEPGStreamerServer,
+} = require("../gst_modules/WhepAudioServer/dist/index.js");
 const args = require("minimist")(process.argv.slice(2));
 
 const settings = {

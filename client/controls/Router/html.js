@@ -334,7 +334,7 @@ module.exports = {
                             <option value="Separator">Separator</option>
                             <option value="SrtToRist">SRT to RIST</option>
                             <option value="RistToSrt">RIST to SRT</option>
-                            <option value="GstWhepServer">Gstreamer WHEP Server</option>
+                            <option value="WhepAudioServer">WHEP Audio Server</option>
                             </select>
                         </div>
                     </div>
