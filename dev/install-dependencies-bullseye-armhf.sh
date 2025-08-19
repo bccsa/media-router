@@ -47,7 +47,7 @@ node-gyp configure
 npm i
 cd ../../..
 
-cd server/gst_modules/GstWhepServer
+cd server/gst_modules/WhepAudioServer
 npm ci && npm run build
 cd ../../..
 

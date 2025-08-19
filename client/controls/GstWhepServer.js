@@ -1,6 +1,6 @@
-const SVE = require("controls/GstWhepServer/html");
+const SVE = require("controls/WhepAudioServer/html");
 
-class GstWhepServer extends _paAudioSinkBase {
+class WhepAudioServer extends _paAudioSinkBase {
     constructor() {
         super();
         this.port = 9090; // Default port for WHEP server
@@ -85,7 +85,7 @@ class GstWhepServer extends _paAudioSinkBase {
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD
-        this._loadHelpMD("controls/GstWhepServer.md");
+        this._loadHelpMD("controls/WhepAudioServer.md");
         //----------------------Help Modal-----------------------------//
     }
 
