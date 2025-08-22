@@ -1,41 +1,44 @@
 {
-  "name": "audio-translation",
-  "version": "0.0.1",
-  "description": "Remote audio translation for live events",
-  "main": "router.js",
-  "dependencies": {
-    "axios": "^1.8.4",
-    "bindings": "^1.5.0",
-    "cookie-parser": "^1.4.6",
-    "express": "^4.17.1",
-    "express-session": "^1.17.2",
-    "hls-parser": "^0.13.5",
-    "minimist": "^1.2.8",
-    "node-addon-api": "^7.0.0",
-    "os-utils": "^0.0.14",
-    "ps-tree": "^1.2.0",
-    "readable-stream-clone": "^0.0.7",
-    "socket.io": "^4.6.2",
-    "socket.io-client": "^4.5.4",
-    "systeminformation": "^5.25.11",
-    "tw-elements": "^1.0.0-alpha13",
-    "uuid": "^11.1.0"
-  },
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/bccsa/audio-translation.git"
-  },
-  "author": "",
-  "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/bccsa/audio-translation/issues"
-  },
-  "homepage": "https://github.com/bccsa/audio-translation#readme",
-  "devDependencies": {
-    "tailwindcss": "^3.2.4"
-  },
-  "keywords": []
+    "name": "audio-translation",
+    "version": "0.0.1",
+    "description": "Remote audio translation for live events",
+    "main": "router.js",
+    "dependencies": {
+        "axios": "^1.8.4",
+        "bindings": "^1.5.0",
+        "cookie-parser": "^1.4.6",
+        "express": "^4.17.1",
+        "express-session": "^1.17.2",
+        "hls-parser": "^0.13.5",
+        "minimist": "^1.2.8",
+        "node-addon-api": "^7.0.0",
+        "os-utils": "^0.0.14",
+        "ps-tree": "^1.2.0",
+        "readable-stream-clone": "^0.0.7",
+        "socket.io": "^4.6.2",
+        "socket.io-client": "^4.5.4",
+        "systeminformation": "^5.25.11",
+        "tw-elements": "^1.0.0-alpha13",
+        "uuid": "^11.1.0"
+    },
+    "optionalDependencies": {
+        "node-gyp": "^10.0.0"
+    },
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/bccsa/audio-translation.git"
+    },
+    "author": "",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/bccsa/audio-translation/issues"
+    },
+    "homepage": "https://github.com/bccsa/audio-translation#readme",
+    "devDependencies": {
+        "tailwindcss": "^3.2.4"
+    },
+    "keywords": []
 }
