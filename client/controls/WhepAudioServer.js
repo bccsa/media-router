@@ -1,4 +1,4 @@
-const SVE = require("controls/WhepAudioServer/html");
+const WHEPHTML = require("controls/WhepAudioServer/html");
 
 class WhepAudioServer extends _paAudioSinkBase {
     constructor() {
@@ -24,10 +24,10 @@ class WhepAudioServer extends _paAudioSinkBase {
             .replace(
                 "%additionalHtml%",
                 `
-            ${SVE.html()}
+            ${WHEPHTML.html()}
         `
             )
-            .replace("<!--  %SrtStatsHtml%  -->", SVE.statsHtml());
+            .replace("<!--  %SrtStatsHtml%  -->", WHEPHTML.statsHtml());
     }
 
     Init() {
