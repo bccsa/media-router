@@ -23,11 +23,24 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.video_framerate = 30;
         this.audio_bitrate = 96;
         this._srtElementName = "srtserversink";
+        this._available_v4l2jpegdec = false;
+        this._available_v4l2h264enc = false;
+        this._available_openh264enc = false;
     }
 
-    Init() {
+    async Init() {
         super.Init();
         this._notify({ devices: this.devices });
+
+        this._available_v4l2jpegdec = await this.checkElementAvailability(
+            "v4l2jpegdec"
+        );
+        this._available_v4l2h264enc = await this.checkElementAvailability(
+            "v4l2h264enc"
+        );
+        this._available_openh264enc = await this.checkElementAvailability(
+            "openh264enc"
+        );
 
         const _interval = setInterval(() => {
             this._getV4l().then((res) => {
@@ -69,7 +82,6 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
 
     startPipeline() {
         if (this.ready && this.run) {
-            let _valid = true;
             this._parent._log(
                 "INFO",
                 `${this._controlName} (${this.displayName}): Starting srt video encoder (gstreamer)`
@@ -79,7 +91,9 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
             // capture format
             let gstVideoDecode = "";
             if (this.capture_format == "mjpeg") {
-                gstVideoDecode = `avdec_mjpeg ! `;
+                gstVideoDecode = `${
+                    this._available_v4l2jpegdec ? "v4l2jpegdec" : "jpegdec"
+                } ! `;
             }
 
             // deinterlace
@@ -92,25 +106,30 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
             // video bitrate
             let vb = this.calcBitrate();
             if (typeof vb != "number") {
-                _valid = false;
                 this._parent._log(
                     "FATAL",
                     `${this._controlName} (${this.displayName}): Invalid video bitrate, <b>pipeline NOT started</b>.`
                 );
+                return;
             }
 
             // ------------ Encoding ------------ //
             let gstEncoder = "";
-            if (this.encoder == "v4l2h264enc") {
+            if (this.encoder == "v4l2h264enc" && this._available_v4l2h264enc) {
                 gstEncoder = `v4l2h264enc extra-controls="encode,video_bitrate=${vb},video_bitrate_mode=0,h264_level=13,repeat_sequence_header=1,video_gop_size=${this.video_gop},h264_profile=0" ! video/x-h264,level=(string)4.2 ! `; // h264level 4.2 to support 50p (https://en.wikipedia.org/wiki/Advanced_Video_Coding)
-            } else if (this.encoder == "openh264enc") {
+            } else if (
+                (this.encoder == "openh264enc" ||
+                    (this.encoder == "v4l2h264enc" &&
+                        !this._available_v4l2h264enc)) &&
+                this._available_openh264enc
+            ) {
                 gstEncoder = `openh264enc multi-thread=4 bitrate=${vb} min-force-key-unit-interval=5000000000 rate-control=1 slice-mode=5 ! video/x-h264,profile=baseline ! `;
             } else {
-                _valid = false;
                 this._parent._log(
                     "FATAL",
-                    `${this._controlName} (${this.displayName}): Invalid encoder selected, <b>pipeline NOT started</b>.`
+                    `${this._controlName} (${this.displayName}): Invalid encoder selected or the selected encoder is not available, <b>pipeline NOT started</b>.`
                 );
+                return;
             }
 
             // ------------ Pipeline ------------ //
@@ -150,15 +169,14 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 } sync=false wait-for-connection=false uri="${this.uri()}"`;
 
             // ------------ start srt encoder ------------ //
-            if (_valid)
-                this._parent.PaCmdQueue(() => {
-                    this._start_srt(
-                        `node ${path.dirname(
-                            process.argv[1]
-                        )}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`,
-                        this._srtElementName
-                    );
-                });
+            this._parent.PaCmdQueue(() => {
+                this._start_srt(
+                    `node ${path.dirname(
+                        process.argv[1]
+                    )}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`,
+                    this._srtElementName
+                );
+            });
         }
     }
 
@@ -217,6 +235,33 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
                 .replace("k", "000")
                 .replace("M", "000000")
         );
+    }
+
+    /**
+     * Check weather an element is available on the system
+     * @param {String} elementName
+     * @returns {Boolean}
+     */
+    checkElementAvailability(elementName) {
+        return new Promise((resolve) => {
+            exec(`gst-inspect-1.0 | grep ${elementName}`, { silent: true })
+                .then((data) => {
+                    if (data.stderr)
+                        this._parent._log(
+                            "ERROR",
+                            `${this._controlName} (${this.displayName}): ${data.stderr}`
+                        );
+                    if (data.stdout.length) resolve(true);
+                    else resolve(false);
+                })
+                .catch((err) => {
+                    this._parent._log(
+                        "ERROR",
+                        `${this._controlName} (${this.displayName}): ${err.message}`
+                    );
+                    resolve(false);
+                });
+        });
     }
 }
 
