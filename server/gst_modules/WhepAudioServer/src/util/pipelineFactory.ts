@@ -1,17 +1,112 @@
 import { WhepServerSettings, WHEPSession } from "../whep-server-gstreamer";
 import Gst from "@girs/node-gst-1.0";
 import GstWebRTC from "@girs/node-gstwebrtc-1.0";
+import GObject from "@girs/node-gobject-2.0";
+import os from "os";
 import { getElementByName, whepBinStats, cleanupSession, log } from "./";
 
 export type WhepBin = {
-    queue: Gst.Element;
+    // Client-specific processing
     capsfilter: Gst.Element;
     webrtc: Gst.Element;
+    // Connection to selected per-core tee branch
     teeSrcpad: Gst.Pad;
-    tee: Gst.Element;
+    tee: Gst.Element; // The per-core tee this client is attached to
+    branchIndex: number; // Index in the per-core pool for load tracking
     stats?: whepBinStats;
     statsIntervalId?: NodeJS.Timeout;
 };
+
+// Internal: per-core branch pool
+type Branch = {
+    index: number;
+    mainTeePad: Gst.Pad; // pad requested from main tee feeding this branch
+    queue: Gst.Element; // shared queue per branch
+    tee: Gst.Element; // shared tee per branch to fan-out to clients
+    clients: number; // number of clients attached
+};
+
+let mainTee: Gst.Element | null = null;
+let branchPool: Branch[] = [];
+
+function initBranchPool(basePipeline: Gst.Pipeline, cores: number) {
+    mainTee = basePipeline.getByName("tee");
+    if (!mainTee) throw new Error("Tee element not found in base pipeline");
+
+    // Create N branches: main tee -> [queue_i] -> [tee_i] -> fakesink (keep flowing)
+    for (let i = 0; i < cores; i++) {
+        const srcPad = mainTee.getRequestPad("src_%u");
+        if (!srcPad) throw new Error("Failed to request src pad from main tee");
+
+        const q = Gst.ElementFactory.make("queue", `core-queue-${i}`);
+        const subTee = Gst.ElementFactory.make("tee", `core-tee-${i}`);
+        const fake = Gst.ElementFactory.make("fakesink", `core-fakesink-${i}`);
+        if (!q || !subTee || !fake)
+            throw new Error("Failed to create branch elements");
+
+        // Configure queue to be protective and low-latency
+        try {
+            (q as any).setProperty?.("leaky", 2); // downstream
+            (q as any).setProperty?.("max-size-buffers", 0);
+            (q as any).setProperty?.("max-size-bytes", 0);
+            (q as any).setProperty?.("max-size-time", 20000000); // 20ms
+        } catch (e) {
+            log.error("❌ Failed to set branch queue properties: " + e);
+        }
+
+        try {
+            (fake as any).setProperty?.("sync", false);
+            (fake as any).setProperty?.("async", false);
+        } catch {}
+
+        basePipeline.add(q);
+        basePipeline.add(subTee);
+        basePipeline.add(fake);
+
+        // Link main tee pad -> queue sink
+        const qSink = q.getStaticPad("sink");
+        if (!qSink) throw new Error("Failed to get branch queue sink pad");
+        if (srcPad.link(qSink) !== Gst.PadLinkReturn.OK)
+            throw new Error("Failed to link main tee to branch queue");
+
+        // Link queue -> subTee -> fakesink (keep flowing when no clients)
+        if (!q.link(subTee)) throw new Error("Failed to link queue to sub-tee");
+        const subPad = subTee.getRequestPad("src_%u");
+        if (!subPad) throw new Error("Failed to request sub-tee src pad");
+        const fakeSinkPad = fake.getStaticPad("sink");
+        if (!fakeSinkPad) throw new Error("Failed to get fakesink pad");
+        if (subPad.link(fakeSinkPad) !== Gst.PadLinkReturn.OK)
+            throw new Error("Failed to link sub-tee to fakesink");
+
+        // Set to PLAYING now so branches are ready
+        q.setState(Gst.State.PLAYING);
+        subTee.setState(Gst.State.PLAYING);
+        fake.setState(Gst.State.PLAYING);
+
+        branchPool.push({
+            index: i,
+            mainTeePad: srcPad,
+            queue: q,
+            tee: subTee,
+            clients: 0,
+        });
+    }
+}
+
+function acquireLeastLoadedBranch(): Branch | null {
+    if (!branchPool.length) return null;
+    let best = branchPool[0];
+    for (const b of branchPool) if (b.clients < best.clients) best = b;
+    best.clients += 1;
+    log.error(`🌐 Assigned to branch ${best.index} (load=${best.clients})`);
+    return best;
+}
+
+function releaseBranch(index: number) {
+    const b = branchPool.find((x) => x.index === index);
+    if (b && b.clients > 0) b.clients -= 1;
+    log.error(`🌐 Released branch ${index} (load=${b?.clients})`);
+}
 
 /**
  * Creates a base GStreamer.
@@ -118,6 +213,16 @@ export function creatBasePipeline(
             log.error("❌ Failed to set pipeline to PLAYING state");
             return null;
         }
+        // Build per-core branches pool
+        try {
+            const cores = Math.max(1, os.cpus()?.length || 1);
+            log.info(`🧩 Initializing per-core branches (count=${cores})...`);
+            initBranchPool(pipeline, cores);
+        } catch (e) {
+            log.error("❌ Failed to initialize per-core branches: " + e);
+            return null;
+        }
+
         log.info("✅ Base pipeline created successfully");
 
         return pipeline;
@@ -151,7 +256,6 @@ export function createWhepBin(
 
         log.info(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
 
-        const queue = Gst.ElementFactory.make("queue", `queue-${sessionId}`);
         const capsfilter = Gst.ElementFactory.make(
             "capsfilter",
             `caps-${sessionId}`
@@ -161,7 +265,7 @@ export function createWhepBin(
             `webrtc-${sessionId}`
         );
 
-        if (!queue || !capsfilter || !webrtc) {
+        if (!capsfilter || !webrtc) {
             log.error("❌ Failed to create pipeline elements");
             return null;
         }
@@ -179,28 +283,9 @@ export function createWhepBin(
             }
         );
 
-        // Make the branch queue non-blocking to protect the tee/base pipeline
-        try {
-            // 2 == downstream leak
-            (queue as any).setProperty?.("leaky", 2);
-            (queue as any).setProperty?.("max-size-buffers", 0);
-            (queue as any).setProperty?.("max-size-bytes", 0);
-            // 20ms worth of data
-            (queue as any).setProperty?.("max-size-time", 20000000);
-        } catch (e) {
-            log.error("❌ Failed to set queue properties: " + e);
-        }
-
         // Add elements to pipeline
-        basePipeline.add(queue);
         basePipeline.add(capsfilter);
         basePipeline.add(webrtc);
-
-        // Link queue → capsfilter → webrtc
-        if (!queue.link(capsfilter)) {
-            log.error("❌ Failed to link queue to capsfilter");
-            return null;
-        }
 
         const webrtcSinkpad = webrtc.requestPadSimple("sink_%u");
         if (!webrtcSinkpad) {
@@ -219,25 +304,27 @@ export function createWhepBin(
             return null;
         }
 
-        // Get tee and link to queue
-        const tee = basePipeline.getByName("tee");
-        if (!tee) {
-            log.error("❌ Tee element not found in base pipeline");
+        // Acquire least-loaded branch and request a src pad from its tee for this client
+        const branch = acquireLeastLoadedBranch();
+        if (!branch) {
+            log.error("❌ No available branches to attach client");
             return null;
         }
 
-        const teeSrcpad = tee.getRequestPad("src_%u");
+        const teeSrcpad = branch.tee.getRequestPad("src_%u");
         if (!teeSrcpad) {
-            log.error("❌ Tee src pad not found in base pipeline");
+            log.error("❌ Failed to request src pad from per-core tee");
+            // roll back client count
+            releaseBranch(branch.index);
             return null;
         }
 
         const whepBin: WhepBin = {
-            queue,
             capsfilter,
             webrtc,
             teeSrcpad,
-            tee,
+            tee: branch.tee,
+            branchIndex: branch.index,
         };
 
         return whepBin;
@@ -259,13 +346,6 @@ export function startBin(whepBin: WhepBin): boolean {
             return false;
         }
 
-        // Set the state of the queue to PLAYING
-        const ret1 = whepBin.queue.setState(Gst.State.PLAYING);
-        if (ret1 === Gst.StateChangeReturn.FAILURE) {
-            log.error("❌ Failed to set queue to PLAYING state");
-            return false;
-        }
-
         // Set the state of the capsfilter to PLAYING
         const ret2 = whepBin.capsfilter.setState(Gst.State.PLAYING);
         if (ret2 === Gst.StateChangeReturn.FAILURE) {
@@ -280,14 +360,15 @@ export function startBin(whepBin: WhepBin): boolean {
             return false;
         }
 
-        const queueSinkpad = whepBin.queue.getStaticPad("sink");
-        if (!queueSinkpad) {
-            log.error("❌ Failed to get queue sink pad");
+        // Link per-core tee src pad → capsfilter sink
+        const capsSinkPad = whepBin.capsfilter.getStaticPad("sink");
+        if (!capsSinkPad) {
+            log.error("❌ Failed to get capsfilter sink pad");
             return false;
         }
 
-        if (whepBin.teeSrcpad.link(queueSinkpad) !== Gst.PadLinkReturn.OK) {
-            log.error("❌ Failed to link tee to queue");
+        if (whepBin.teeSrcpad.link(capsSinkPad) !== Gst.PadLinkReturn.OK) {
+            log.error("❌ Failed to link per-core tee to capsfilter");
             return false;
         }
 
@@ -315,17 +396,19 @@ export function stopBin(
             return false;
         }
 
-        // unlink bin from tee
-        const queueSinkpad = whepBin.queue.getStaticPad("sink");
-        if (!queueSinkpad) {
-            log.error("❌ Failed to get queue sink pad");
+        // unlink bin from per-core tee
+        const capsSinkPad = whepBin.capsfilter.getStaticPad("sink");
+        if (!capsSinkPad) {
+            log.error("❌ Failed to get capsfilter sink pad");
             return false;
         }
 
-        whepBin.teeSrcpad.unlink(queueSinkpad);
+        whepBin.teeSrcpad.unlink(capsSinkPad);
 
         // release pad
         whepBin.tee.releaseRequestPad(whepBin.teeSrcpad);
+        // decrease load count for branch
+        releaseBranch(whepBin.branchIndex);
 
         // Set the state of the webrtc to NULL
         const ret3 = whepBin.webrtc.setState(Gst.State.NULL);
@@ -341,17 +424,9 @@ export function stopBin(
             return false;
         }
 
-        // Set the state of the queue to NULL
-        const ret1 = whepBin.queue.setState(Gst.State.NULL);
-        if (ret1 === Gst.StateChangeReturn.FAILURE) {
-            log.error("❌ Failed to set queue to NULL state");
-            return false;
-        }
-
         // Remove elements from the base pipeline
         basePipeline?.remove(whepBin.webrtc);
         basePipeline?.remove(whepBin.capsfilter);
-        basePipeline?.remove(whepBin.queue);
 
         log.info("✅ WHEP bin stopped successfully");
         return true;
