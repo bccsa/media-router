@@ -151,7 +151,7 @@ export function createWhepBin(
 
         log.info(`🔧 Creating GStreamer pipeline for session ${sessionId}`);
 
-        const queue = Gst.ElementFactory.make("queue2", `queue-${sessionId}`);
+        const queue = Gst.ElementFactory.make("queue", `queue-${sessionId}`);
         const capsfilter = Gst.ElementFactory.make(
             "capsfilter",
             `caps-${sessionId}`
@@ -178,6 +178,18 @@ export function createWhepBin(
                 transceiver.setProperty("do-nack", true);
             }
         );
+
+        // Make the branch queue non-blocking to protect the tee/base pipeline
+        try {
+            // 2 == downstream leak
+            (queue as any).setProperty?.("leaky", 2);
+            (queue as any).setProperty?.("max-size-buffers", 0);
+            (queue as any).setProperty?.("max-size-bytes", 0);
+            // 20ms worth of data
+            (queue as any).setProperty?.("max-size-time", 20000000);
+        } catch (e) {
+            log.error("❌ Failed to set queue properties: " + e);
+        }
 
         // Add elements to pipeline
         basePipeline.add(queue);
