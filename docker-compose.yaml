@@ -2,21 +2,23 @@ services:
   manager:
     image: media-router
     pull_policy: never
+    restart: unless-stopped
     build: .
     ports:
       - "8080:8080"   # WebApp
       - "3000:3000"   # router configuration
     volumes:
       - .:/app/
-      - /app/server/gst_modules # exclude gstreamer modules since GLIBCXX could mismatch between host and container
       - /app/server/node_modules # exclude node_modules
-    working_dir: /app
-    command: node server/manager
+    working_dir: /app/server/scripts
+    command: node ../manager
   router:
     image: media-router
     pull_policy: never
+    restart: unless-stopped
     ports:
       - "8890:8890"   # SRT
+      - "9090:9090"   # New WebRCT
       - "2000:2000"   # WebApp for WebRTC
       - "8081:8081"   # WebApp for Control
       - "8082:8082"   # WebApp for Profile Manager
@@ -27,12 +29,12 @@ services:
       - .:/app/
       - /app/server/gst_modules # exclude gstreamer modules since GLIBCXX could mismatch between host and container
       - /app/server/node_modules # exclude node_modules
-    working_dir: /app
+    working_dir: /app/server/scripts
     devices:
       - /dev/snd
     group_add:
       - audio
-    command: node server/router
+    command: node ../router
   mediamtx:
     image: bluenviron/mediamtx
     restart: unless-stopped
