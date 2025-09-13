@@ -722,6 +722,10 @@ pathDefaults:
 paths:
   de:
     source: srt://router:1234
+  nb:
+    source: srt://router:1235
+  ro:
+    source: srt://router:1236
   # example:
   # my_camera:
   #   source: rtsp://my_camera
