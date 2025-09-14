@@ -64,28 +64,52 @@ COPY . .
 # RUN git submodule update --init --recursive
 # Initialize git submodules (assumes the `.git` dir is copied as well)
 
+# ensure that the needed submodules are downloaded in the container
+RUN git submodule update --init --recursive --remote
+
 # Install node-gyp
 RUN npm install -g node-gyp
 
 # Install npm dependencies in each relevant directory
-RUN cd server && npm install && cd .. && \
-    cd client && npm install && cd .. && \
-    cd local-profileman && npm install && cd .. && \
-    cd tailwind && npm install && cd ..
+WORKDIR /app/server
+RUN npm install 
+
+WORKDIR /app/client
+RUN npm install
+
+WORKDIR /app/local-client
+RUN npm install
+
+WORKDIR /app/local-profileman
+RUN npm install
+
+WORKDIR /app/tailwind
+RUN npm install
+
+WORKDIR /app/webRTC-client
+RUN npm install
 
 # Build the Gstreamer modules
-RUN cd server/gst_modules/GstGeneric && \
-    node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install && cd ../../..
-RUN cd server/gst_modules/GstvuMeter && \
-    node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install && cd ../../..
-RUN cd server/gst_modules/SrtOpusInput && \
-    node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install && cd ../../..
-RUN cd server/gst_modules/SrtOpusOutput && \
-    node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install && cd ../../..
-RUN cd server/gst_modules/SrtVideoPlayer && \
-    node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install && cd ../../..
-RUN cd server/gst_modules/WhepAudioServer && \
-    npm install && npm run build
+WORKDIR /app/server/gst_modules/GstGeneric
+RUN node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install
+
+WORKDIR /app/server/gst_modules/GstvuMeter
+RUN node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install
+
+WORKDIR /app/server/gst_modules/SrtOpusInput
+RUN node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install
+
+WORKDIR /app/server/gst_modules/SrtOpusOutput
+RUN node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install
+
+WORKDIR /app/server/gst_modules/SrtVideoPlayer
+RUN node-gyp clean && rm -rf build node_modules && node-gyp configure && npm install
+
+WORKDIR /app/server/gst_modules/WhepAudioServer
+RUN rm -rf build node_modules && npm ci && npm run build
+
+#change back to app root
+WORKDIR /app
 
 RUN apt-get -y purge \
     git \
