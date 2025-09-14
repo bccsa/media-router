@@ -11,7 +11,6 @@ process.chdir(__dirname);
 class WebRTCClient extends dm {
     constructor() {
         super();
-        this.url = "http://localhost:8889/test";
         this.title = "name";
         this.displayName = "WebRTCClient";
         this.appPort = 2000;
@@ -22,9 +21,23 @@ class WebRTCClient extends dm {
         this.run = false; // Run command to be set by external code to request the control to start.
         this.SetAccess("run", { Get: "none", Set: "none" });
         this.moduleEnabled = true; // Enable or disable individual module
+        this._webRtcClientConfig = { displayName: "New audio streaming service", webRtcAudioStreams: [] };
     }
 
     Init() {
+        // Check if other WebRTCClient modules are already running
+        const m = Object.values(this._parent._controls)
+        .find((c) => c.controlType == this.constructor.name && c._controlName != this._controlName);
+
+        if (m) {
+            this._parent._log(
+                "FATAL",
+                `${this._controlName} (${this.displayName}) - Another WebRTCClient module is already active. Only one WebRTCClient module is supported.`
+            );
+            this.moduleEnabled = false; // Disable this module
+            return; // Prevent initialization of this module
+        }
+
         // Start external processes when the underlying pipe-source is ready (from extended class)
         this.on("reload", (reload) => {
             if (reload && this._parent.runCmd && this.moduleEnabled) {
@@ -53,7 +66,7 @@ class WebRTCClient extends dm {
             (run) => {
                 setTimeout(() => {
                     this.moduleEnabled && (this.run = run);
-                }); // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emited
+                }); // timeout added to give the subclasses a time to add their event subscribers to the run event before the event is emitted
             },
             { immediate: true, caller: this }
         );
@@ -74,6 +87,14 @@ class WebRTCClient extends dm {
                 this.run = false;
             }
         });
+
+        // Save WebRTC client configuration when the display name changes
+        this.on("title", () => {
+            this._setWebRtcClientConfig();
+        });
+
+        // Set initial configuration
+        this._setWebRtcClientConfig();
     }
 
     _start_webApp() {
@@ -85,7 +106,7 @@ class WebRTCClient extends dm {
                 this._http.listen(this.appPort, () => {
                     this._parent._log(
                         "INFO",
-                        `${this._controlName} (${this.displayName}) - WebRTC WebApp running on http://*: ${this.appPort}`
+                        `${this._controlName} (${this.displayName}) - WebRTC client API running on http://*: ${this.appPort}`
                     );
                 });
 
@@ -100,6 +121,11 @@ class WebRTCClient extends dm {
                 this._app.use(
                     express.static(path.join(__dirname, "/../../webRTC-client"))
                 );
+
+                // Serve the WebRTC client configuration
+                this._app.get("/config.json", (req, res) => {
+                    res.json(this._webRtcClientConfig);
+                });
 
                 // -------------------------------------
                 // Socket.io communication with WebRTC WebApp
@@ -140,6 +166,27 @@ class WebRTCClient extends dm {
             this._io = undefined;
             this._http = undefined;
         }
+    }
+
+
+    /**
+     * Extract the WebRTC client configuration and emit it to the top level parent control for saving to disk.
+     */
+    _setWebRtcClientConfig() {
+        const streams = Object.values(this._controls)
+            .filter((c) => c.controlType == "WebRTCPlayer")
+            .map((c) => ({
+                id: c._controlName,
+                name: c.playerName,
+                url: c.url,
+                countryCode: c.flag,
+                note: c.note,
+            }));
+
+        this._webRtcClientConfig = {
+            displayName: this.title,
+            webRtcAudioStreams: streams,
+        };
     }
 }
 
