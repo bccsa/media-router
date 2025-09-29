@@ -110,7 +110,7 @@ class PulseAudio {
             return new Promise((resolve, reject) => {
                 exec("pactl -fjson list " + type, { silent: true })
                     .then((data) => {
-                        if (data.stderr) reject(stderr);
+                        if (data.stderr && !data.stdout) reject(data.stderr);
                         let arr = [];
                         try {
                             arr = JSON.parse(data.stdout);
