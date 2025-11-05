@@ -216,8 +216,8 @@ export function creatBasePipeline(
         // Build per-core branches pool
         try {
             const cores = Math.max(1, os.cpus()?.length || 1);
-            log.info(`🧩 Initializing per-core branches (count=${cores})...`);
-            initBranchPool(pipeline, cores);
+            log.info(`🧩 Initializing 10x per-core branches (count=${cores})...`);
+            initBranchPool(pipeline, cores * 10);
         } catch (e) {
             log.error("❌ Failed to initialize per-core branches: " + e);
             return null;
