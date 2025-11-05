@@ -116,6 +116,8 @@ void _GstGeneric::th_Start(std::string _pipeline_) {
     /* Varaibles */
     GstBus *bus;
     guint bus_watch_id;
+    g_set_prgname("local.mr");
+    g_set_application_name("Media Router Gstreamer");
     /* Initialize GStreamer */
     gst_init (NULL, NULL);
 
