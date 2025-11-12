@@ -821,6 +821,7 @@ video {
 
 .separator_background table {
   height: 100%;
+  width: 40px;
   text-align: center;
 }
 
