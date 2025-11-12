@@ -94,15 +94,13 @@ class VuMeter extends ui {
         const blockHeight = (this._height - (this.numBlocks - 1) * this.blockGap) / this.numBlocks;
 
         for (let ch = 0; ch < levelArr.length; ch++) {
-            let p = levelArr[ch]; // level in dB
+            let p = levelArr[ch]; // level from 0 to 15
 
             let paintLeft = this._width / levelArr.length * ch;
             let paintWidth = this._width / levelArr.length;
 
-            // Convert dB to number of blocks (0-15)
-            // Range from -60dB (0 blocks) to 0dB (15 blocks)
-            let normalizedLevel = Math.min(Math.max((p + 60) / 60, 0), 1);
-            let numFilledBlocks = Math.round(normalizedLevel * this.numBlocks);
+            // Clamp value to valid range (0-15)
+            let numFilledBlocks = Math.min(Math.max(Math.round(p), 0), this.numBlocks);
 
             if (!this._prev[ch]) {
                 this._prev[ch] = {
