@@ -115,6 +115,8 @@ class _paAudioBase extends ui {
         setTimeout(() => {
             this._calcSliderRange();
             this._setVolume();
+            // Enable GPU acceleration hint
+            this._volume_slider.style.willChange = 'transform';
         }, 100);
 
     }
@@ -158,7 +160,8 @@ class _paAudioBase extends ui {
         if (this._sliderActive) {
             return;
         }
-        this._volume_slider.style.top = this._sliderTop + this._sliderRange - this._sliderRange * this.volume / this.maxVolume + "px";
+        const targetTop = this._sliderTop + this._sliderRange - this._sliderRange * this.volume / this.maxVolume;
+        this._applySliderPosition(targetTop);
     }
 
     _calcSliderRange() {
@@ -168,9 +171,28 @@ class _paAudioBase extends ui {
         this._sliderBottom = this._sliderTop + this._sliderRange;
     }
 
+    // Apply slider position using transform for better performance
+    _applySliderPosition(top) {
+        // Use transform instead of top for GPU acceleration
+        this._volume_slider.style.transform = `translateY(${top}px)`;
+        this._volume_slider.style.top = '0';
+    }
+
+    // Get current slider position accounting for transform
+    _getSliderPosition() {
+        const transform = this._volume_slider.style.transform;
+        if (transform) {
+            const match = transform.match(/translateY\(([-\d.]+)px\)/);
+            if (match) {
+                return parseFloat(match[1]);
+            }
+        }
+        return this._volume_slider.offsetTop;
+    }
+
     // Calculate volume from slider position
     _calcVolume(topOverride) {
-        const sliderTop = topOverride !== undefined ? topOverride : this._volume_slider.offsetTop;
+        const sliderTop = topOverride !== undefined ? topOverride : this._getSliderPosition();
         this.volume = this._volumeFromTop(sliderTop);
     }
 
@@ -186,7 +208,7 @@ class _paAudioBase extends ui {
     _scheduleSliderRender(top) {
         const hasRaf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function";
         if (!hasRaf) {
-            this._volume_slider.style.top = `${top}px`;
+            this._applySliderPosition(top);
             this._pendingSliderTop = null;
             return;
         }
@@ -196,7 +218,7 @@ class _paAudioBase extends ui {
             this._sliderRaf = window.requestAnimationFrame(() => {
                 this._sliderRaf = null;
                 if (this._pendingSliderTop !== null) {
-                    this._volume_slider.style.top = `${this._pendingSliderTop}px`;
+                    this._applySliderPosition(this._pendingSliderTop);
                     this._pendingSliderTop = null;
                 }
             });
@@ -210,7 +232,7 @@ class _paAudioBase extends ui {
         }
         this._sliderRaf = null;
         if (this._pendingSliderTop !== null) {
-            this._volume_slider.style.top = `${this._pendingSliderTop}px`;
+            this._applySliderPosition(this._pendingSliderTop);
             this._pendingSliderTop = null;
         }
     }
@@ -237,7 +259,7 @@ class _paAudioBase extends ui {
             }
 
             caller._calcSliderRange();
-            currentTop = elmnt.offsetTop;
+            currentTop = caller._getSliderPosition();
             caller._pendingSliderTop = currentTop;
             caller._lastDragUpdate = 0;
 
