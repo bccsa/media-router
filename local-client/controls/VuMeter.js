@@ -12,6 +12,8 @@ class VuMeter extends ui {
         this._prev = {};    // Previous values object
         this.borderRadius = "10px";
         this.title = "Vu Meter";
+        this.numBlocks = 15; // Number of discrete blocks
+        this.blockGap = 2;   // Gap between blocks in pixels
     }
 
     get html() {
@@ -88,73 +90,55 @@ class VuMeter extends ui {
             this._adjustSize = true
         }
 
+        // Calculate block dimensions
+        const blockHeight = (this._height - (this.numBlocks - 1) * this.blockGap) / this.numBlocks;
+
         for (let ch = 0; ch < levelArr.length; ch++) {
             let p = levelArr[ch]; // level in dB
 
-            // Logarithmic level in 50 steps
-            // let p = Math.round(20 * Math.log10(level) * 50) / 50;
-
             let paintLeft = this._width / levelArr.length * ch;
-            let paintWidth = this._width / levelArr.length + 1;
+            let paintWidth = this._width / levelArr.length;
 
-            let bar1 = Math.min(Math.max((p + 60), 0), 60 - 20) * this._height / 60;  // Start showing from -60dB. Max width at -20dB (40dB width)
-            let bar2 = Math.min(Math.max((p + 20), 0), 20 - 9) * this._height / 60;   // Start showing from -20dB. Max width at -9dB (11dB width)
-            let bar3 = Math.min(Math.max((p + 9), 0), 9 - 0) * this._height / 60;     // Start showing from -9dB. Max width at -0dB (9dB width)
+            // Convert dB to number of blocks (0-15)
+            // Range from -60dB (0 blocks) to 0dB (15 blocks)
+            let normalizedLevel = Math.min(Math.max((p + 60) / 60, 0), 1);
+            let numFilledBlocks = Math.round(normalizedLevel * this.numBlocks);
 
             if (!this._prev[ch]) {
                 this._prev[ch] = {
-                    bot1: 0,
-                    bot2: 0,
-                    bot3: 0,
-                    top1: 0,
-                    top2: 0,
-                    top3: 0,
-                    total: 0
+                    numFilledBlocks: 0
                 };
             }
 
-            let bot1 = this._height;
-            let top1 = this._height - bar1;
-            let bot2 = top1;
-            let top2 = bot2 - bar2;
-            let bot3 = top2;
-            let top3 = bot3 - bar3;
-            let total = bar1 + bar2 + bar3;
+            // Only redraw if the number of blocks changed
+            if (numFilledBlocks !== this._prev[ch].numFilledBlocks) {
+                // Clear the entire channel
+                this._ctx.clearRect(paintLeft, 0, paintWidth, this._height);
 
-            // Clear
-            if (p <= -60) {
-                this._ctx.clearRect(paintLeft, 0, this._height, paintWidth);
-            } else if (total < this._prev[ch].total) {
-                this._ctx.clearRect(paintLeft, this._prev[ch].top3 - 1, paintWidth + 1, top3 - this._prev[ch].top3, paintWidth);
-            }
-            // Draw
-            else if (total > this._prev[ch].total) {
-                if (top1 < this._prev[ch].top1) {
-                    this._ctx.fillStyle = "green";
-                    this._ctx.fillRect(paintLeft, top1, paintWidth, this._prev[ch].top1 - top1 + 1);
-                }
-                if (top2 < this._prev[ch].top2 && top2 < bot2) {
-                    let bot = this._prev[ch].top2;
-                    if (this._prev[ch].top2 > bot2) bot = bot2;
-                    this._ctx.fillStyle = "orange";
-                    this._ctx.fillRect(paintLeft, top2, paintWidth, bot - top2 + 1);
-                }
-                if (top3 < this._prev[ch].top3 && top3 < bot3) {
-                    let bot = this._prev[ch].top3;
-                    if (this._prev[ch].top3 > bot3) bot = bot3;
-                    this._ctx.fillStyle = "red";
-                    this._ctx.fillRect(paintLeft, top3, paintWidth, bot - top3 + 1);
-                }
-            }
+                // Draw blocks from bottom to top
+                for (let i = 0; i < this.numBlocks; i++) {
+                    let blockIndex = this.numBlocks - 1 - i; // Start from bottom
+                    let blockTop = i * (blockHeight + this.blockGap);
+                    
+                    // Determine block color based on position
+                    let color;
+                    if (blockIndex < 10) {
+                        color = "green";
+                    } else if (blockIndex < 13) {
+                        color = "orange";
+                    } else {
+                        color = "red";
+                    }
 
-            this._prev[ch].top1 = top1;
-            this._prev[ch].bot1 = bot1;
-            this._prev[ch].top2 = top2;
-            this._prev[ch].bot2 = bot2;
-            this._prev[ch].top3 = top3;
-            this._prev[ch].bot3 = bot3;
-            this._prev[ch].total = total;
+                    // Fill block if it should be lit
+                    if (blockIndex < numFilledBlocks) {
+                        this._ctx.fillStyle = color;
+                        this._ctx.fillRect(paintLeft + 1, blockTop, paintWidth - 2, blockHeight);
+                    }
+                }
+
+                this._prev[ch].numFilledBlocks = numFilledBlocks;
+            }
         }
-
     }
 }

@@ -20,6 +20,10 @@ class _paAudioBase extends ui {
         this._muteTimerActive = false;
         this._volumeTimerActive = false;
         this._sliderActive = false;
+        this._lastDragUpdate = 0;
+        this._sliderRaf = null;
+        this._pendingSliderTop = null;
+        this._dragEmitInterval = 150;
         this.displayOrder = 0;
     }
 
@@ -111,6 +115,8 @@ class _paAudioBase extends ui {
         setTimeout(() => {
             this._calcSliderRange();
             this._setVolume();
+            // Enable GPU acceleration hint
+            this._volume_slider.style.willChange = 'transform';
         }, 100);
 
     }
@@ -151,7 +157,11 @@ class _paAudioBase extends ui {
     }
 
     _setVolume() {
-        this._volume_slider.style.top = this._sliderTop + this._sliderRange - this._sliderRange * this.volume / this.maxVolume + "px";
+        if (this._sliderActive) {
+            return;
+        }
+        const targetTop = this._sliderTop + this._sliderRange - this._sliderRange * this.volume / this.maxVolume;
+        this._applySliderPosition(targetTop);
     }
 
     _calcSliderRange() {
@@ -161,15 +171,78 @@ class _paAudioBase extends ui {
         this._sliderBottom = this._sliderTop + this._sliderRange;
     }
 
+    // Apply slider position using transform for better performance
+    _applySliderPosition(top) {
+        // Use transform instead of top for GPU acceleration
+        this._volume_slider.style.transform = `translateY(${top}px)`;
+        this._volume_slider.style.top = '0';
+    }
+
+    // Get current slider position accounting for transform
+    _getSliderPosition() {
+        const transform = this._volume_slider.style.transform;
+        if (transform) {
+            const match = transform.match(/translateY\(([-\d.]+)px\)/);
+            if (match) {
+                return parseFloat(match[1]);
+            }
+        }
+        return this._volume_slider.offsetTop;
+    }
+
     // Calculate volume from slider position
-    _calcVolume() {
-        this.volume = this.maxVolume * (this._sliderRange - this._volume_slider.offsetTop + this._volume_slit.offsetTop) / this._sliderRange;
+    _calcVolume(topOverride) {
+        const sliderTop = topOverride !== undefined ? topOverride : this._getSliderPosition();
+        this.volume = this._volumeFromTop(sliderTop);
+    }
+
+    _volumeFromTop(top) {
+        if (!this._sliderRange) {
+            return this.volume;
+        }
+
+        const relative = Math.min(Math.max(top - this._sliderTop, 0), this._sliderRange);
+        return this.maxVolume * (this._sliderRange - relative) / this._sliderRange;
+    }
+
+    _scheduleSliderRender(top) {
+        const hasRaf = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function";
+        if (!hasRaf) {
+            this._applySliderPosition(top);
+            this._pendingSliderTop = null;
+            return;
+        }
+
+        this._pendingSliderTop = top;
+        if (!this._sliderRaf) {
+            this._sliderRaf = window.requestAnimationFrame(() => {
+                this._sliderRaf = null;
+                if (this._pendingSliderTop !== null) {
+                    this._applySliderPosition(this._pendingSliderTop);
+                    this._pendingSliderTop = null;
+                }
+            });
+        }
+    }
+
+    _flushSliderRender() {
+        const hasCancel = typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function";
+        if (this._sliderRaf && hasCancel) {
+            window.cancelAnimationFrame(this._sliderRaf);
+        }
+        this._sliderRaf = null;
+        if (this._pendingSliderTop !== null) {
+            this._applySliderPosition(this._pendingSliderTop);
+            this._pendingSliderTop = null;
+        }
     }
 
     // Enable dragging of slider
     // code adapted from https://www.w3schools.com/howto/howto_js_draggable.asp and https://www.kirupa.com/html5/drag.htm
     _dragElement(elmnt, caller) {
-        let pos1 = 0, pos2 = 0;
+        let lastClientY = 0;
+        let currentTop = 0;
+        const updateInterval = caller._dragEmitInterval;
 
         elmnt.addEventListener("touchstart", dragStart, false);
         elmnt.addEventListener("mousedown", dragStart, false);
@@ -180,10 +253,15 @@ class _paAudioBase extends ui {
             e.preventDefault();
             // get the mouse cursor position at startup:
             if (e.type === "touchstart") {
-                pos2 = e.touches[0].clientY;
+                lastClientY = e.touches[0].clientY;
             } else {
-                pos2 = e.clientY;
+                lastClientY = e.clientY;
             }
+
+            caller._calcSliderRange();
+            currentTop = caller._getSliderPosition();
+            caller._pendingSliderTop = currentTop;
+            caller._lastDragUpdate = 0;
 
             document.addEventListener("touchend", dragEnd, false);
             document.addEventListener("touchmove", drag, false);
@@ -196,23 +274,31 @@ class _paAudioBase extends ui {
             e = e || window.event;
             if (e.preventDefault) { e.preventDefault() };
             // calculate the new cursor position:
+            let clientY;
             if (e.type === "touchmove") {
-                pos1 = pos2 - e.touches[0].clientY;
-                pos2 = e.touches[0].clientY;
+                clientY = e.touches[0].clientY;
             } else {
-                pos1 = pos2 - e.clientY;
-                pos2 = e.clientY;
+                clientY = e.clientY;
             }
 
-            // set the element's new position:
-            let top = elmnt.offsetTop - pos1;
-            if (elmnt.offsetTop - pos1 < caller._sliderTop) { top = caller._sliderTop }
-            else if (elmnt.offsetTop - pos1 > caller._sliderBottom) { top = caller._sliderBottom }
-            elmnt.style.top = top + "px";
+            const deltaY = lastClientY - clientY;
+            lastClientY = clientY;
 
-            caller._calcVolume();
-            // caller._setVolume();
-            caller.NotifyProperty('volume');
+            // calculate the element's new position:
+            let top = currentTop - deltaY;
+            if (top < caller._sliderTop) { top = caller._sliderTop }
+            else if (top > caller._sliderBottom) { top = caller._sliderBottom }
+
+            if (top !== currentTop) {
+                currentTop = top;
+                caller._scheduleSliderRender(currentTop);
+            }
+
+            const now = window.performance && window.performance.now ? window.performance.now() : Date.now();
+            if (now - caller._lastDragUpdate >= updateInterval) {
+                caller._lastDragUpdate = now;
+                caller._calcVolume(currentTop);
+            }
         }
 
         function dragEnd() {
@@ -222,6 +308,13 @@ class _paAudioBase extends ui {
             document.removeEventListener("touchmove", drag, false);
             document.removeEventListener("mouseup", dragEnd, false);
             document.removeEventListener("mousemove", drag, false);
+            
+            // Always apply final position on drag end
+            caller._flushSliderRender();
+            if (currentTop < caller._sliderTop) { currentTop = caller._sliderTop; }
+            else if (currentTop > caller._sliderBottom) { currentTop = caller._sliderBottom; }
+            caller._calcVolume(currentTop);
+            caller._lastDragUpdate = 0;
         }
     }
 }
