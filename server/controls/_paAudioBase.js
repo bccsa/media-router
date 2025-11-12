@@ -174,9 +174,9 @@ class _paAudioBase extends Classes(_routerChildControlBase, vuMeter) {
             if (data && data.decay_dB) {
                 this._vu = [];
                 Object.values(data.decay_dB).forEach((val, i) => {
-                    this._vu[i] = Math.round(val);
-                    // Clamp at -60 db
-                    if (this._vu[i] < -60) this._vu[i] = -60;
+                    let _tempVu = Math.round(val);
+                    if (_tempVu < -60) _tempVu = -60;
+                    this._vu[i] = Math.round(0.25 * ( 60 + _tempVu));
                 });
 
                 if (JSON.stringify(this._vuPrev) != JSON.stringify(this._vu)) {
