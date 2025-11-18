@@ -99,10 +99,10 @@ module.exports = {
             <!-- Encoder -->
             <div class="w-1/3 flex flex-col">
                 <label for="@{_encoder}" class="form-label inline-block mb-2">Encoder:</label>
-                <select id="@{_encoder}" title="options (software: openh264enc, hardware: v4l2h264enc)" value="@{encoder}" 
+                <select id="@{_encoder}" title="options (software: x264enc, hardware: v4l2h264enc)" value="@{encoder}" 
                 class="paAudioBase-select" type="text">
                     <option value="v4l2h264enc">Hardware Encoder</option>
-                    <option value="openh264enc">Software Encoder</option>
+                    <option value="x264enc">Software Encoder</option>
                 </select>
             </div>
 
@@ -118,8 +118,22 @@ module.exports = {
                 >
             </div>
 
-            <!-- Place holder -->
+            <!-- x264 Speed Preset -->
             <div class="w-1/3 mr-4 flex flex-col">
+                <label for="@{_x264_speed_preset}" class="form-label inline-block mb-2">x264 Speed Preset:</label>
+                <select id="@{_x264_speed_preset}" title="x264enc speed/quality tradeoff preset" value="@{x264_speed_preset}" 
+                class="paAudioBase-select" type="text">
+                    <option value="ultrafast">ultrafast</option>
+                    <option value="superfast">superfast</option>
+                    <option value="veryfast">veryfast</option>
+                    <option value="faster">faster</option>
+                    <option value="fast">fast</option>
+                    <option value="medium">medium</option>
+                    <option value="slow">slow</option>
+                    <option value="slower">slower</option>
+                    <option value="veryslow">veryslow</option>
+                    <option value="placebo">placebo</option>
+                </select>
             </div>
 
             <!-- Place holder -->
