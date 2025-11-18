@@ -16,7 +16,8 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.capture_format = "raw";
         this.deinterlace = false;
         // encoder
-        this.encoder = "v4l2h264enc"; // options (software: openh264enc, hardware: v4l2h264enc)
+        this.encoder = "v4l2h264enc"; // options (software: x264enc, hardware: v4l2h264enc)
+        this.x264_speed_preset = "ultrafast"; // x264enc speed preset options
         this.video_bitrate = "2M";
         this.video_gop = 30; // amount of frame interval before a new full frame is sent
         this.video_quality = 720;
@@ -25,7 +26,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this._srtElementName = "srtserversink";
         this._available_v4l2jpegdec = false;
         this._available_v4l2h264enc = false;
-        this._available_openh264enc = false;
+        this._available_x264enc = false;
     }
 
     async Init() {
@@ -38,8 +39,8 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this._available_v4l2h264enc = await this.checkElementAvailability(
             "v4l2h264enc"
         );
-        this._available_openh264enc = await this.checkElementAvailability(
-            "openh264enc"
+        this._available_x264enc = await this.checkElementAvailability(
+            "x264enc"
         );
 
         const _interval = setInterval(() => {
@@ -118,12 +119,14 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
             if (this.encoder == "v4l2h264enc" && this._available_v4l2h264enc) {
                 gstEncoder = `v4l2h264enc extra-controls="encode,video_bitrate=${vb},video_bitrate_mode=0,h264_level=13,repeat_sequence_header=1,video_gop_size=${this.video_gop},h264_profile=0" ! video/x-h264,level=(string)4.2 ! `; // h264level 4.2 to support 50p (https://en.wikipedia.org/wiki/Advanced_Video_Coding)
             } else if (
-                (this.encoder == "openh264enc" ||
+                (this.encoder == "x264enc" ||
                     (this.encoder == "v4l2h264enc" &&
                         !this._available_v4l2h264enc)) &&
-                this._available_openh264enc
+                this._available_x264enc
             ) {
-                gstEncoder = `openh264enc multi-thread=4 bitrate=${vb} min-force-key-unit-interval=5000000000 rate-control=1 slice-mode=5 ! video/x-h264,profile=baseline ! `;
+                // x264enc expects bitrate in kbps, so convert from bits per second
+                let vb_kbps = Math.floor(vb / 1000);
+                gstEncoder = `x264enc threads=4 bitrate=${vb_kbps} key-int-max=${this.video_gop * 2} speed-preset=${this.x264_speed_preset} tune=zerolatency ! video/x-h264,profile=baseline ! `;
             } else {
                 this._parent._log(
                     "FATAL",

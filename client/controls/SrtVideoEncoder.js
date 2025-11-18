@@ -10,7 +10,8 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.capture_format = "raw";
         this.deinterlace = false;
         // encoder
-        this.encoder = "v4l2h264enc"; // options (software: openh264enc, hardware: v4l2h264enc)
+        this.encoder = "v4l2h264enc"; // options (software: x264enc, hardware: v4l2h264enc)
+        this.x264_speed_preset = "ultrafast"; // x264enc speed preset options
         this.video_bitrate = "2M";
         this.video_gop = 30; // amount of frame interval before a new full frame is sent
         this.video_quality = 720;
@@ -93,6 +94,23 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
                 (this.video_device_descr = this.devices.find(
                     (t) => t.device == this.video_device
                 ).name)
+        );
+
+        // Show/hide x264 speed preset based on encoder selection
+        this.on(
+            "encoder",
+            async () => {
+                // wait for element to be ready
+                while (!this._x264_speed_preset)
+                    await new Promise((res) => setTimeout(res, 100));
+
+                if (this.encoder === "x264enc") {
+                    this._x264_speed_preset.parentElement.style.display = "flex";
+                } else {
+                    this._x264_speed_preset.parentElement.style.display = "none";
+                }
+            },
+            { immediate: true }
         );
 
         //----------------------Help Modal-----------------------------//
