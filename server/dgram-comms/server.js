@@ -17,8 +17,9 @@ class Server extends ClientServerBase {
         port,
         encryptionKeys = {},
         enforceEncryption = false,
-        connectionTimeout = 1000,
+        connectionTimeout = 5000,
         retryTimeout = 500,
+        missedKeepaliveThreshold = 3,
     }) {
         super({ connectionTimeout, retryTimeout });
         this.sockets = {};
@@ -26,6 +27,7 @@ class Server extends ClientServerBase {
         this.port = port || 41234;
         this.encryptionKeys = encryptionKeys; // used to encrypt/decrypt messages format {[clientID]: key}
         this.enforceEncryption = enforceEncryption;
+        this.missedKeepaliveThreshold = missedKeepaliveThreshold;
 
         this.server.on("listening", () => {
             const address = this.server.address();
@@ -81,6 +83,7 @@ class Server extends ClientServerBase {
             encryptionKey: this.encryptionKeys[clientID],
             retryTimeout: this.retryTimeout,
             connectionTimeout: this.connectionTimeout,
+            missedKeepaliveThreshold: this.missedKeepaliveThreshold,
             parentDisconnect: this.disconnect.bind(this),
         });
 
