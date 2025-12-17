@@ -34,6 +34,7 @@ class messageFragmentation {
             if (!this.fragments.has(messageId)) {
                 this.fragments.set(messageId, {
                     fragments: new Array(totalFragments),
+                    totalFragments: totalFragments, // Store expected total
                     received: 0,
                     timer: setTimeout(() => {
                         this.fragments.delete(messageId);
@@ -45,18 +46,44 @@ class messageFragmentation {
             }
 
             const messageData = this.fragments.get(messageId);
+            
+            // Validate totalFragments matches - reject mismatched fragments
+            if (messageData.totalFragments !== totalFragments) {
+                console.error(
+                    `Fragment mismatch for message ${messageId}: expected ${messageData.totalFragments} fragments, got ${totalFragments}`
+                );
+                return;
+            }
+            
+            // Validate fragmentIndex is within bounds
+            if (fragmentIndex < 0 || fragmentIndex >= totalFragments) {
+                console.error(
+                    `Invalid fragment index ${fragmentIndex} for message ${messageId} (total: ${totalFragments})`
+                );
+                return;
+            }
+            
             if (!messageData.fragments[fragmentIndex]) {
                 // Avoid overwriting
                 messageData.fragments[fragmentIndex] = data;
                 messageData.received++;
             }
 
-            // Check if all fragments are received
-            if (messageData.received === totalFragments) {
+            // Check if all fragments are received (use stored totalFragments)
+            if (messageData.received === messageData.totalFragments) {
                 clearTimeout(messageData.timer); // Clear the timeout
-                const fullMessage = Buffer.concat(
-                    messageData.fragments
-                ).toString();
+                
+                // Safety check: ensure no undefined fragments before concat
+                const validFragments = messageData.fragments.filter(f => f !== undefined);
+                if (validFragments.length !== messageData.totalFragments) {
+                    console.error(
+                        `Fragment count mismatch for message ${messageId}: expected ${messageData.totalFragments}, got ${validFragments.length}`
+                    );
+                    this.fragments.delete(messageId);
+                    return;
+                }
+                
+                const fullMessage = Buffer.concat(validFragments).toString();
                 this.messageHandler(fullMessage, rinfo);
                 this.fragments.delete(messageId); // Clean up
             }

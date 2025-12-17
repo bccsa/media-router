@@ -17,6 +17,7 @@ class Client extends ClientServerBase {
         encryptionKey,
         connectionTimeout,
         retryTimeout,
+        missedKeepaliveThreshold,
     }) {
         super({ connectionTimeout, retryTimeout });
         this.socket = undefined;
@@ -24,7 +25,8 @@ class Client extends ClientServerBase {
         this.address = address || "localhost";
         this.clientID = clientID;
         this.encryptionKey = encryptionKey;
-        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
+        this.connectionTimeout = connectionTimeout || 5000; // 5 seconds (increased from 1s)
+        this.missedKeepaliveThreshold = missedKeepaliveThreshold || 3;
         this.connectionInterval = undefined;
 
         this.socket = new Socket({
@@ -36,6 +38,7 @@ class Client extends ClientServerBase {
             encryptionKey,
             retryTimeout: this.retryTimeout,
             connectionTimeout: this.connectionTimeout,
+            missedKeepaliveThreshold: this.missedKeepaliveThreshold,
             parentDisconnect: this.disconnect.bind(this),
         });
 

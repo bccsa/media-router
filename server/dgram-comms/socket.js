@@ -28,6 +28,7 @@ class Socket extends Events {
         encryptionKey = undefined,
         retryTimeout,
         connectionTimeout,
+        missedKeepaliveThreshold,
         parentDisconnect,
     }) {
         super();
@@ -43,12 +44,15 @@ class Socket extends Events {
         this.clientID = clientID; // used to identify client
         this.encryptionKey = encryptionKey; // used to encrypt/decrypt messages
         this.retryTimeout = retryTimeout || 500;
-        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
+        this.connectionTimeout = connectionTimeout || 5000; // 5 seconds (increased from 1s)
+        this.missedKeepaliveThreshold = missedKeepaliveThreshold || 3; // Allow 3 missed keepalives before disconnect
+        this.missedKeepalives = 0; // Counter for missed keepalives
         this.frag = new messageFragmentation(this.socket);
         this.parentDisconnect = parentDisconnect;
 
         this.on("connected", () => {
             this.connected = true;
+            this.missedKeepalives = 0; // Reset counter on connect
         });
         this.on("disconnected", () => {
             this.connected = false;
@@ -178,8 +182,23 @@ class Socket extends Events {
         this.emit(null, null, { type: "keepAlive" });
         // check if connection is alive
         if (new Date() - this.keepAliveTime > this.connectionTimeout) {
-            this.disconnect();
+            this.missedKeepalives++;
+            // Only disconnect after exceeding the missed keepalive threshold
+            if (this.missedKeepalives >= this.missedKeepaliveThreshold) {
+                this.disconnect();
+            }
+        } else {
+            // Reset counter when we receive a keepalive in time
+            this.missedKeepalives = 0;
         }
+    }
+
+    /**
+     * Reset keepalive timer - call this when a keepalive is received
+     */
+    resetKeepalive() {
+        this.keepAliveTime = new Date();
+        this.missedKeepalives = 0;
     }
 
     /**

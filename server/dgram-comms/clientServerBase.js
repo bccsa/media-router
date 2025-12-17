@@ -16,7 +16,7 @@ class ClientServerBase extends Events {
     constructor({ connectionTimeout, retryTimeout }) {
         super();
         this.server = dgram.createSocket("udp4");
-        this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
+        this.connectionTimeout = connectionTimeout || 5000; // 5 seconds (increased from 1s for stability under load)
         this.retryTimeout = retryTimeout || 500; // 500 ms
         this.frag = new messageFragmentation(
             this.server,
@@ -73,12 +73,11 @@ class ClientServerBase extends Events {
     }
 
     keepAlive({ data }) {
-        // update keepAliveTime
+        // update keepAliveTime and reset missed counter
         const socket = this.getSocket(data.socketID);
-        data &&
-            socket &&
-            socket.socketID == data.socketID &&
-            (socket.keepAliveTime = new Date());
+        if (data && socket && socket.socketID == data.socketID) {
+            socket.resetKeepalive();
+        }
     }
 
     data({ data }) {
