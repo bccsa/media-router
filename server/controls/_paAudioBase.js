@@ -24,6 +24,7 @@ class _paAudioBase extends Classes(_routerChildControlBase, vuMeter) {
         this.SetAccess("monitor", { Set: "none" });
         this._vu = []; // internal vu array
         this._vuPrev = []; // Previous vu values array
+        this._vuUpdateCount = 0; // Counter for periodic forced updates
         this._vuInterval; // VU indication interval timer
         this.vuInterval = 100; // VU meter indication interval in milliseconds
         this.SetAccess("vuData", { Set: "none" });
@@ -92,6 +93,7 @@ class _paAudioBase extends Classes(_routerChildControlBase, vuMeter) {
 
                         this._notify({ vuData: this._vu });
                         this._vuPrev = [...this._vu]; // create a shallow copy of the internal VU array
+                        this._vuUpdateCount = 0; // Reset for next start
                     })
                     .catch((err) => {
                         this._parent._log(
@@ -179,9 +181,13 @@ class _paAudioBase extends Classes(_routerChildControlBase, vuMeter) {
                     this._vu[i] = Math.round(0.25 * ( 60 + _tempVu));
                 });
 
-                if (JSON.stringify(this._vuPrev) != JSON.stringify(this._vu)) {
+                this._vuUpdateCount++;
+                const valueChanged = JSON.stringify(this._vuPrev) != JSON.stringify(this._vu);
+
+                if (valueChanged || this._vuUpdateCount >= 10) {
                     this._notify({ vuData: this._vu }); // Notifies with through _topLevelParent.on('data', data => {});
                     this._vuPrev = this._vu;
+                    this._vuUpdateCount = 0;
                 }
             }
         });
