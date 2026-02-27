@@ -16,8 +16,8 @@ class messageFragmentation {
         this.fragments = new Map();
         this.connectionTimeout = connectionTimeout || 1000; // 1 seconds
 
+        if (!messageHandler) return;
         this.server.on("message", (msg, rinfo) => {
-            if (!messageHandler) return;
             // Parse header (e.g., "12345:0:3:actualdata")
             const msgString = msg.toString();
             const headerMatch = msgString.match(/^(\d+):(\d+):(\d+):/);
@@ -98,7 +98,8 @@ class messageFragmentation {
      */
     sendFragmentedMessage(message, port, host) {
         const messageBuffer = Buffer.from(message);
-        const messageId = Math.floor(Math.random() * 1000000); // Unique ID
+        this._messageIdCounter = (this._messageIdCounter || 0) + 1;
+        const messageId = this._messageIdCounter;
         const totalFragments = Math.ceil(
             messageBuffer.length / MAX_PACKET_SIZE
         );

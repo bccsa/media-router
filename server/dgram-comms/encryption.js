@@ -41,11 +41,18 @@ function decrypt(encryptedData, iv, key) {
     });
 }
 
-// Return a 32-byte Buffer directly from SHA-256 hash
-const hashValue = (val) =>
-    crypto.subtle
-        .digest("SHA-256", new TextEncoder("utf-8").encode(val))
-        .then((hash) => Buffer.from(hash)); // Return raw Buffer (32 bytes)
+// Cache for hashed keys
+const hashCache = new Map();
+
+// Return a 32-byte Buffer directly from SHA-256 hash (cached)
+async function hashValue(val) {
+    if (hashCache.has(val)) return hashCache.get(val);
+    const hash = Buffer.from(
+        await crypto.subtle.digest("SHA-256", new TextEncoder("utf-8").encode(val))
+    );
+    hashCache.set(val, hash);
+    return hash;
+}
 
 module.exports = {
     encrypt,
