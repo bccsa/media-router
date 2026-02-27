@@ -28,6 +28,7 @@ class Client extends ClientServerBase {
         this.connectionTimeout = connectionTimeout || 5000; // 5 seconds (increased from 1s)
         this.missedKeepaliveThreshold = missedKeepaliveThreshold || 3;
         this.connectionInterval = undefined;
+        this._connectPending = false;
 
         this.socket = new Socket({
             port,
@@ -55,6 +56,8 @@ class Client extends ClientServerBase {
     }
 
     setupConnection() {
+        if (this._connectPending) return;
+        this._connectPending = true;
         // setup connection
         this.socket.emit(null, null, {
             type: "connect",
@@ -64,6 +67,7 @@ class Client extends ClientServerBase {
     }
 
     connected({ data }) {
+        this._connectPending = false;
         // start keepAlive
         this.socket._keepalive();
         // set socketID
@@ -81,8 +85,11 @@ class Client extends ClientServerBase {
      */
     connectionRetry() {
         this.connectionInterval = setInterval(() => {
-            // try to setupConnection as log as socket is disconnected
-            if (!this.socket.connected) this.setupConnection();
+            if (!this.socket.connected) {
+                // reset pending flag so a new attempt can be made
+                this._connectPending = false;
+                this.setupConnection();
+            }
         }, this.connectionTimeout);
     }
 

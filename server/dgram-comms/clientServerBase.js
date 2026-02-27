@@ -1,5 +1,5 @@
 const dgram = require("dgram");
-const { waitingAck } = require("./data");
+const { waitingAck, types } = require("./data");
 const Events = require("events").EventEmitter;
 const messageFragmentation = require("./messageFragmentation");
 
@@ -21,7 +21,7 @@ class ClientServerBase extends Events {
         this.frag = new messageFragmentation(
             this.server,
             this.messageHandler.bind(this),
-            connectionTimeout
+            this.connectionTimeout
         );
 
         this.server.on("error", (err) => {
@@ -69,7 +69,7 @@ class ClientServerBase extends Events {
                 ackID: data.ackID,
             });
 
-        this[type] && this[type]({ ...m, ...{ data }, ...{ rinfo } });
+        types[type] && this[type] && this[type]({ ...m, ...{ data }, ...{ rinfo } });
     }
 
     keepAlive({ data }) {

@@ -49,6 +49,7 @@ class Socket extends Events {
         this.missedKeepalives = 0; // Counter for missed keepalives
         this.frag = new messageFragmentation(this.socket);
         this.parentDisconnect = parentDisconnect;
+        this.pendingAcks = new Set();
 
         this.on("connected", () => {
             this.connected = true;
@@ -148,15 +149,25 @@ class Socket extends Events {
      * @param {Object} options - type (data (default), keepAlive, ack), guaranteeDelivery (used for guaranteed delivery), ackID (used for guaranteed delivery), socketID
      */
     waitForAck(_dgram, port, address, topic, message, options) {
+        options._retryCount = (options._retryCount || 0) + 1;
         waitingAck[options.ackID] = { ackID: options.ackID };
-        // wait for 2 seconds for ack
+        this.pendingAcks.add(options.ackID);
+        // wait for ack, retry if not received (max 10 attempts)
         setTimeout(() => {
             if (waitingAck[options.ackID] && !this.deleted) {
-                // re-emit message
-                this._emit(_dgram, port, address, topic, message, {
-                    ...options,
-                    socketID: this.socketID,
-                });
+                if (options._retryCount < 10) {
+                    // re-emit message
+                    this._emit(_dgram, port, address, topic, message, {
+                        ...options,
+                        socketID: this.socketID,
+                    });
+                } else {
+                    // max retries reached, give up on this message
+                    delete waitingAck[options.ackID];
+                    this.pendingAcks.delete(options.ackID);
+                }
+            } else {
+                this.pendingAcks.delete(options.ackID);
             }
         }, this.retryTimeout);
     }
@@ -173,6 +184,12 @@ class Socket extends Events {
         console.log("disconnecting socket: " + this.socketID);
         this.deleted = true;
         this.connected = false;
+
+        // Clean up orphaned waitingAck entries for this socket
+        for (const ackID of this.pendingAcks) {
+            delete waitingAck[ackID];
+        }
+        this.pendingAcks.clear();
     }
 
     /**
