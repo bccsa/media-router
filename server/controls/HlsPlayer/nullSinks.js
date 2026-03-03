@@ -6,29 +6,38 @@ class NullSinks {
         this.sinkspaModuleID = [];
         this.readyNullSinks = 0;
         this._enabledStreams = 0;
+        this._nullSinksReady = 0;
     }
 
     InitNullSinks() {
         // Start external processes when the underlying null-sink is ready (from extended class)
         this.on("ready", (ready) => {
             if (ready) {
-                // start null sinks
-                this._enabledStreams = 0;
-                this.readyNullSinks = -1; // Toggle to -1 that the event triggers if there is currently 0 ready null sinks and none is started
-                this.readyNullSinks = 0;
-                this.audioStreams.forEach((stream) => {
-                    if (
-                        stream.enabled &&
-                        stream.language != this.defaultLanguage
-                    ) {
-                        this._enabledStreams++;
-                        this._startHlsNullSink(stream.language, stream.comment);
-                    }
-                });
+                this._createNullSinks();
             }
 
             // reset hlsLoading
             this.hlsLoading = false;
+        });
+
+        // Recreate null sinks when audio streams change (user enables/disables a language)
+        this.on("audioStreams", () => {
+            if (!this.ready || !this.run) return;
+
+            // Stop running pipeline — it needs to be rebuilt with the new audio streams
+            if (this.runningSrt) {
+                this._stop_srt();
+            } else {
+                this.stop_gst();
+            }
+
+            // Remove all existing per-language null sinks
+            while (this.sinkspaModuleID.length > 0) {
+                this._stopHlsNullSink(this.sinkspaModuleID.pop());
+            }
+
+            // Recreate null sinks for the new set of enabled streams
+            this._createNullSinks();
         });
 
         // Stop external processes when the control is stopped (through setting this.run to false)
@@ -45,6 +54,49 @@ class NullSinks {
         );
     }
 
+    /**
+     * Create null sinks for all enabled non-default audio streams.
+     * Counts required sinks first, then creates them async.
+     * readyNullSinks event only fires once ALL sinks are created.
+     */
+    _createNullSinks() {
+        this._enabledStreams = 0;
+        this._nullSinksReady = 0;
+
+        // Count required sinks first (synchronous)
+        this.audioStreams.forEach((stream) => {
+            if (
+                stream.enabled &&
+                stream.language != this.defaultLanguage
+            ) {
+                this._enabledStreams++;
+            }
+        });
+
+        // No extra sinks needed — signal ready immediately
+        if (this._enabledStreams === 0) {
+            this.readyNullSinks = -1;
+            this.readyNullSinks = 0;
+            return;
+        }
+
+        // Reset readyNullSinks to -1 so the dm event fires when sinks complete
+        // (if the value was already equal to _enabledStreams from a previous run,
+        // setting it again wouldn't trigger the event without this reset)
+        this.readyNullSinks = -1;
+
+        // Start async creation — readyNullSinks fires inside _startHlsNullSink
+        // only when the last sink completes
+        this.audioStreams.forEach((stream) => {
+            if (
+                stream.enabled &&
+                stream.language != this.defaultLanguage
+            ) {
+                this._startHlsNullSink(stream.language, stream.comment);
+            }
+        });
+    }
+
     // Create a PulseAudio loopback-module linking the source to the sink
     _startHlsNullSink(i, comment) {
         this._parent.PaCmdQueue(() => {
@@ -57,16 +109,20 @@ class NullSinks {
                     }
 
                     if (data.stdout.length) {
-                        this.sinkspaModuleID.push(
-                            data.stdout.toString().trim()
-                        );
+                        const moduleId = data.stdout.toString().trim();
+                        this.sinkspaModuleID.push(moduleId);
                         // save module id's to clear old modules on startup
                         this.NotifyProperty("sinkspaModuleID");
-                        this.readyNullSinks++;
+                        this._nullSinksReady++;
                         this._parent._log(
                             "INFO",
-                            `${this._controlName} (${this.displayName}): Created null-sink; ID: ${this._paModuleID}  (sink_${i})`
+                            `${this._controlName} (${this.displayName}): Created null-sink; ID: ${moduleId}  (sink_${i})`
                         );
+
+                        // Only trigger pipeline start when ALL sinks are created
+                        if (this._nullSinksReady === this._enabledStreams) {
+                            this.readyNullSinks = this._enabledStreams;
+                        }
                     }
                 })
                 .catch((err) => {
