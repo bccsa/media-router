@@ -176,20 +176,10 @@ async function fetchSegmentList(stream) {
             continue;
         }
 
-        if (stream.playlist.segments.length > 0) {
-            // Create a shallow copy with only the needed segments to reduce memory usage
-            const p = {
-                ...stream.playlist,
-                segments: stream.playlist.segments.slice(
-                    stream.pointer,
-                    stream.pointer + stream.page
-                ),
-            };
-            stream.pointer += stream.page;
-
-            return p;
-        }
-
+        // For VOD, return the full playlist — streamAllSynchronized handles
+        // tracking which segments have already been processed via lastSeqNumbers.
+        // Previous paging approach (video page=3, audio page=36) caused sequence
+        // number divergence that froze playback after the first iteration.
         return stream.playlist;
     }
 
@@ -411,7 +401,7 @@ async function handleInitSegment(stream, playlist) {
  * @param {Array} streams - Array of stream objects
  */
 async function streamAllSynchronized(streams) {
-    let lastSeqNumbers = streams.map(() => 0);
+    let lastSeqNumbers = streams.map(() => -1);
     let running = true;
 
     do {
@@ -427,7 +417,7 @@ async function streamAllSynchronized(streams) {
         }
 
         // 2. For live streams starting up, pick a common starting point
-        if (!isVod && lastSeqNumbers.every((n) => n === 0)) {
+        if (!isVod && lastSeqNumbers.every((n) => n < 0)) {
             let startSeq = 0;
             for (let i = 0; i < playlists.length; i++) {
                 const segs = playlists[i].segments;
@@ -509,8 +499,6 @@ async function startStreams() {
     streams.push({
         index: 0,
         url: new URL(currentVariant.uri, hlsUrl).href,
-        pointer: 0,
-        page: 3,
         isVideo: true,
         pipe: videoPipe,
         isVod: false,
@@ -528,8 +516,6 @@ async function startStreams() {
         streams.push({
             index: count,
             url: new URL(track.uri, hlsUrl).href,
-            pointer: 0,
-            page: 36,
             isVideo: false,
             pipe: audioPipe,
             isVod: false,
@@ -548,8 +534,6 @@ async function startStreams() {
         streams.push({
             index: count,
             url: new URL(track.uri, hlsUrl).href,
-            pointer: 0,
-            page: 36,
             isVideo: false,
             pipe: subtitlePipe,
             isVod: false,
