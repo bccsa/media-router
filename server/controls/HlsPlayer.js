@@ -73,9 +73,8 @@ class HlsPlayer extends Classes(
         });
 
         // ================ HLS Demuxer ===================
-        let hlsDemuxer = `node ${path.dirname(
-            process.argv[1]
-        )}/hlsDemuxer/index.js "${this.hlsUrl}" '${JSON.stringify({
+        // Escape single quotes in JSON config to prevent shell injection
+        const configJson = JSON.stringify({
             languages: lang,
             maxQuality: this.videoQuality,
             subtitleLanguage: this.enableSrt
@@ -84,27 +83,37 @@ class HlsPlayer extends Classes(
                 ? ""
                 : this.subtitleLanguage,
             moduleIdentifier: this._controlName,
-        })}'`;
+        }).replace(/'/g, "'\\''");
+
+        // Escape shell metacharacters in URL
+        const safeUrl = this.hlsUrl
+            .replace(/\$/g, "\\$")
+            .replace(/`/g, "\\`");
+
+        const serverDir = path.dirname(process.argv[1]);
+        let hlsDemuxer = `node ${serverDir}/hlsDemuxer/index.js "${safeUrl}" '${configJson}'`;
+
+        // Wait up to 30 seconds for the demuxer to create pipes (marker file)
+        // instead of using a fixed sleep 3
+        const markerFile = `/tmp/${this._controlName}_hls_ready`;
+        const waitForReady = `i=0; while [ ! -f ${markerFile} ] && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done; rm -f ${markerFile}`;
 
         let _pipeline = `${this._video()} ${this._audio()} ${this._subtitles()}`;
 
         // ------------ start sound processor ------------ //
         if (!this.hlsUrl) return;
         this._parent.PaCmdQueue(() => {
+            const gstChild = `node ${serverDir}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`;
             if (this.enableSrt) {
                 this.runningSrt = true;
                 this._start_srt(
-                    `${hlsDemuxer} & sleep 3 && node ${path.dirname(
-                        process.argv[1]
-                    )}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`,
+                    `${hlsDemuxer} & ${waitForReady} && ${gstChild}`,
                     this._videoElementName
                 );
             } else {
                 this.runningSrt = false;
                 this.start_gst(
-                    `${hlsDemuxer} & sleep 3 && node ${path.dirname(
-                        process.argv[1]
-                    )}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`
+                    `${hlsDemuxer} & ${waitForReady} && ${gstChild}`
                 );
             }
         });
@@ -131,7 +140,7 @@ class HlsPlayer extends Classes(
             video = `${this._src(
                 `/tmp/${this._controlName}_videoPipe`,
                 true
-            )} ! h264parse ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=80000000 ! srtserversink name="${
+            )} ! h264parse config-interval=-1 ! mpegtsmux alignment=7 name=mux ! queue2 use-buffering=true max-size-time=80000000 ! srtserversink name="${
                 this._videoElementName
             }" wait-for-connection=false sync=true ts-offset=${
                 this.videoDelay * 1000000
