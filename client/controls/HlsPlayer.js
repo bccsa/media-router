@@ -1,4 +1,4 @@
-class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
+class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase, EncodingSettings) {
     constructor() {
         super();
         this.hlsUrl = "";
@@ -20,6 +20,13 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.hlsStartTime = 0;
         this.hlsCurrentTime = 0;
         this.hlsPaused = false;
+
+        // Re-encoding settings
+        this.srtReencode = false;
+        // Override mixin defaults for HLS use case
+        this.video_gop = 60;
+        this.video_framerate = 25;
+        this.audio_bitrate = 128;
     }
 
     get html() {
@@ -125,7 +132,17 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         </div>
 
         <div id=@{_srtDiv}>
-            <label><i>Subtitles is not yet supported on srt video</i></label> 
+
+            <!-- Re-encode toggle -->
+            <div class="w-full mb-2 flex">
+                <input id="@{_srtReencode}" class="mr-2 mt-1 h-4 w-4" type="checkbox" checked="@{srtReencode}"/>
+                <label for="@{_srtReencode}" title="Re-encode video before sending over SRT (allows bitrate reduction and subtitle burn-in)">Re-encode video for SRT</label>
+            </div>
+
+            <div id="@{_reencodingDiv}">
+                ${this.EncodingSettingsHtml()}
+            </div>
+
             ${this.SrtBaseHtml()}
         </div>
 
@@ -250,6 +267,18 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             },
             { immediate: true }
         );
+
+        // Show/hide re-encoding section
+        this.on(
+            "srtReencode",
+            (e) => {
+                this._reencodingDiv.style.display = e ? "block" : "none";
+            },
+            { immediate: true }
+        );
+
+        // Show/hide x264 speed preset based on encoder selection
+        this._EncodingSettingsInit();
 
         this.on(
             "runningSrt",

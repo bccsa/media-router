@@ -1,6 +1,7 @@
 const _paNullSinkBase = require("./_paNullSinkBase");
 const path = require("path");
 const SrtBase = require("./SrtBase");
+const EncodingSettings = require("./EncodingSettings");
 const { Classes } = require("../modular-dm");
 const HlsParser = require("./HlsPlayer/hlsParser");
 const NullSinks = require("./HlsPlayer/nullSinks");
@@ -9,7 +10,8 @@ class HlsPlayer extends Classes(
     _paNullSinkBase,
     SrtBase,
     HlsParser,
-    NullSinks
+    NullSinks,
+    EncodingSettings
 ) {
     constructor() {
         super();
@@ -21,12 +23,22 @@ class HlsPlayer extends Classes(
         this.enableSrt = false;
         this.runningSrt = false;
         this._videoElementName = "videoSink";
+
+        // Re-encoding settings (used when enableSrt + srtReencode)
+        this.srtReencode = false;
+        // Override mixin defaults for HLS use case
+        this.video_gop = 60;
+        this.video_framerate = 25;
+        this.audio_bitrate = 128;
     }
 
-    Init() {
+    async Init() {
         super.Init();
         this.InitHlsParser();
         this.InitNullSinks();
+
+        // Check encoder availability
+        await this.InitEncodingSettings();
 
         this.on("readyNullSinks", () => {
             this.startPipeline();
@@ -133,11 +145,10 @@ class HlsPlayer extends Classes(
         const configJson = JSON.stringify({
             languages: lang,
             maxQuality: this.videoQuality,
-            subtitleLanguage: this.enableSrt
-                ? ""
-                : this.subtitleLanguage == "off"
-                ? ""
-                : this.subtitleLanguage,
+            subtitleLanguage:
+                (!this.enableSrt || this.srtReencode)
+                    ? (this.subtitleLanguage === "off" ? "" : this.subtitleLanguage)
+                    : "",
             moduleIdentifier: this._controlName,
             startTime: this.hlsStartTime || 0,
         }).replace(/'/g, "'\\''");
@@ -209,15 +220,15 @@ class HlsPlayer extends Classes(
     _video() {
         let video = "";
 
-        if (!this.enableSrt)
-            // local payout
+        if (!this.enableSrt) {
+            // ---- Local playout (decode + display) ----
             video = `${this._src(
                 `/tmp/${this._controlName}_videoPipe`
             )} ! textoverlay wait-text=false valignment=${
                 this.subtitlePosition
             } name=ov ! kmssink sync=true`;
-        else if (this.enableSrt)
-            // srt without subtitles
+        } else if (this.enableSrt && !this.srtReencode) {
+            // ---- SRT passthrough (no decode, no encode) ----
             video = `${this._src(
                 `/tmp/${this._controlName}_videoPipe`,
                 true
@@ -226,6 +237,58 @@ class HlsPlayer extends Classes(
             }" wait-for-connection=false sync=true ts-offset=${
                 this.videoDelay * 1000000
             } uri="${this.uri()}"`;
+        } else if (this.enableSrt && this.srtReencode) {
+            // ---- SRT re-encode (decode → [subtitle burn] → scale → encode → mux → srt) ----
+            let vb = this.calcBitrate();
+            if (typeof vb !== "number" || isNaN(vb)) {
+                this._parent._log(
+                    "FATAL",
+                    `${this._controlName} (${this.displayName}): Invalid video bitrate, pipeline NOT started.`
+                );
+                return "";
+            }
+
+            // Encoder selection
+            let gstEncoder = "";
+            if (this.encoder === "v4l2h264enc" && this._available_v4l2h264enc) {
+                gstEncoder = `v4l2h264enc extra-controls="encode,video_bitrate=${vb},video_bitrate_mode=0,h264_level=13,repeat_sequence_header=1,video_gop_size=${this.video_gop},h264_profile=0" ! video/x-h264,level=(string)4.2 ! `;
+            } else if (this._available_x264enc) {
+                let vb_kbps = Math.floor(vb / 1000);
+                gstEncoder = `x264enc threads=4 bitrate=${vb_kbps} key-int-max=${this.video_gop * 2} speed-preset=${this.x264_speed_preset} tune=zerolatency ! video/x-h264,profile=baseline ! `;
+            } else {
+                this._parent._log(
+                    "FATAL",
+                    `${this._controlName} (${this.displayName}): No encoder available, pipeline NOT started.`
+                );
+                return "";
+            }
+
+            // Subtitle overlay (when a subtitle language is selected)
+            let subtitleOverlay = "";
+            if (
+                this.subtitleLanguage &&
+                this.subtitleLanguage !== "off"
+            ) {
+                subtitleOverlay = `textoverlay wait-text=false valignment=${this.subtitlePosition} name=ov ! `;
+            }
+
+            // Width calculated from quality (height) assuming 16:9
+            const width = Math.ceil((this.video_quality / 9) * 16);
+
+            const videoPipe = `/tmp/${this._controlName}_videoPipe`;
+            video =
+                `filesrc location="${videoPipe}" ! queue2 max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 max-size-time=60000000 ! ` +
+                subtitleOverlay +
+                `queue max-size-time=20000000 ! videoconvert ! ` +
+                `videorate ! video/x-raw,framerate=${this.video_framerate}/1 ! ` +
+                `videoscale n-threads=4 ! video/x-raw,width=${width},height=${this.video_quality} ! ` +
+                gstEncoder +
+                `mpegtsmux latency=1 name=mux ! queue2 max-size-time=60000000 ! ` +
+                `srtserversink name="${this._videoElementName}" wait-for-connection=false sync=true ts-offset=${
+                    this.videoDelay * 1000000
+                } uri="${this.uri()}"`;
+
+        }
 
         return video;
     }
@@ -237,25 +300,47 @@ class HlsPlayer extends Classes(
                 return;
 
             if (stream.language == this.defaultLanguage) {
-                if (this.enableSrt)
+                if (this.enableSrt && !this.srtReencode) {
+                    // ---- SRT passthrough: raw tee to mux + decoded branch to pulsesink ----
                     audio += ` ${this._src(
                         `/tmp/${this._controlName}_${stream.language}_audioPipe`,
                         true
-                    )} ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000  ! mux.`;
-                audio += ` ${
-                    !this.enableSrt
-                        ? this._src(
-                              `/tmp/${this._controlName}_${stream.language}_audioPipe`
-                          )
-                        : `tee. ! decodebin3 `
-                } ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
-                    this.videoDelay * 1000000
-                } device=${
-                    this.sink
-                } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
-                    this._parent.paLatency * 1000
-                } max-lateness=${this._parent.paLatency * 1000000}`;
-            } else
+                    )} ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000 ! mux.`;
+                    audio += ` tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
+                        this.videoDelay * 1000000
+                    } device=${
+                        this.sink
+                    } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
+                        this._parent.paLatency * 1000
+                    } max-lateness=${this._parent.paLatency * 1000000}`;
+                } else if (this.enableSrt && this.srtReencode) {
+                    // ---- SRT re-encode: audio passthrough to mux + decoded branch to pulsesink ----
+                    // Audio does not need re-encoding — pass raw to mux, decode only for local monitoring
+                    audio += ` ${this._src(
+                        `/tmp/${this._controlName}_${stream.language}_audioPipe`,
+                        true
+                    )} ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000 ! mux.`;
+                    audio += ` tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
+                        this.videoDelay * 1000000
+                    } device=${
+                        this.sink
+                    } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
+                        this._parent.paLatency * 1000
+                    } max-lateness=${this._parent.paLatency * 1000000}`;
+                } else {
+                    // ---- Local playout (no SRT): decode → pulsesink ----
+                    audio += ` ${this._src(
+                        `/tmp/${this._controlName}_${stream.language}_audioPipe`
+                    )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
+                        this.videoDelay * 1000000
+                    } device=${
+                        this.sink
+                    } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
+                        this._parent.paLatency * 1000
+                    } max-lateness=${this._parent.paLatency * 1000000}`;
+                }
+            } else {
+                // Non-default language streams always decode to their null sink
                 audio += ` ${this._src(
                     `/tmp/${this._controlName}_${stream.language}_audioPipe`
                 )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink device=${
@@ -265,6 +350,7 @@ class HlsPlayer extends Classes(
                 } sync=true slave-method=1 processing-deadline=60000000 buffer-time=${
                     this._parent.paLatency * 1000
                 } max-lateness=${this._parent.paLatency * 1000000}`;
+            }
         });
 
         return audio;
@@ -275,12 +361,12 @@ class HlsPlayer extends Classes(
         if (
             this.subtitleLanguage &&
             this.subtitleLanguage !== "off" &&
-            !this.enableSrt
+            (!this.enableSrt || this.srtReencode)
         )
-            // only enable subtitles if srt is disabled or the user explicity enables subtitles for srt
             subs = ` filesrc location="/tmp/${this._controlName}_${this.subtitleLanguage}_subtitlePipe" ! queue2 use-buffering=true max-size-time=60000000 ! parsebin ! decodebin3 ! queue2 use-buffering=true max-size-time=60000000 ! ov.text_sink`;
         return subs;
     }
+
 }
 
 module.exports = HlsPlayer;

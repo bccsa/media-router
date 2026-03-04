@@ -1,6 +1,6 @@
 const SVE = require("controls/SrtVideoEncoder/html");
 
-class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
+class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase, EncodingSettings) {
     constructor() {
         super();
         // capture
@@ -9,14 +9,8 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         this.video_device_descr = "Video0 (disconnected)";
         this.capture_format = "raw";
         this.deinterlace = false;
-        // encoder
-        this.encoder = "v4l2h264enc"; // options (software: x264enc, hardware: v4l2h264enc)
-        this.x264_speed_preset = "ultrafast"; // x264enc speed preset options
-        this.video_bitrate = "2M";
-        this.video_gop = 30; // amount of frame interval before a new full frame is sent
-        this.video_quality = 720;
-        this.video_framerate = 30;
-        this.audio_bitrate = 96;
+        // encoder defaults (override mixin)
+        this.encoder = "v4l2h264enc";
     }
 
     get html() {
@@ -25,6 +19,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
                 "%additionalHtml%",
                 `
                 ${SVE.html()}
+                ${this.EncodingSettingsHtml()}
                 ${this.SrtBaseHtml()}
                 `
             )
@@ -97,21 +92,7 @@ class SrtVideoEncoder extends _uiClasses(_paAudioSinkBase, SrtBase) {
         );
 
         // Show/hide x264 speed preset based on encoder selection
-        this.on(
-            "encoder",
-            async () => {
-                // wait for element to be ready
-                while (!this._x264_speed_preset)
-                    await new Promise((res) => setTimeout(res, 100));
-
-                if (this.encoder === "x264enc") {
-                    this._x264_speed_preset.parentElement.style.display = "flex";
-                } else {
-                    this._x264_speed_preset.parentElement.style.display = "none";
-                }
-            },
-            { immediate: true }
-        );
+        this._EncodingSettingsInit();
 
         //----------------------Help Modal-----------------------------//
         // Load help from MD

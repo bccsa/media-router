@@ -2,10 +2,11 @@ const _paNullSinkBase = require("./_paNullSinkBase");
 const util = require("util");
 const exec = util.promisify(require("child_process").exec);
 const SrtBase = require("./SrtBase");
+const EncodingSettings = require("./EncodingSettings");
 const path = require("path");
 const { Classes } = require("../modular-dm");
 
-class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
+class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase, EncodingSettings) {
     constructor() {
         super();
         // capture
@@ -15,18 +16,10 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this.video_device_desc = "Video0 (disconnected)";
         this.capture_format = "raw";
         this.deinterlace = false;
-        // encoder
-        this.encoder = "v4l2h264enc"; // options (software: x264enc, hardware: v4l2h264enc)
-        this.x264_speed_preset = "ultrafast"; // x264enc speed preset options
-        this.video_bitrate = "2M";
-        this.video_gop = 30; // amount of frame interval before a new full frame is sent
-        this.video_quality = 720;
-        this.video_framerate = 30;
-        this.audio_bitrate = 96;
+        // encoder defaults (override mixin)
+        this.encoder = "v4l2h264enc";
         this._srtElementName = "srtserversink";
         this._available_v4l2jpegdec = false;
-        this._available_v4l2h264enc = false;
-        this._available_x264enc = false;
     }
 
     async Init() {
@@ -36,12 +29,7 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         this._available_v4l2jpegdec = await this.checkElementAvailability(
             "v4l2jpegdec"
         );
-        this._available_v4l2h264enc = await this.checkElementAvailability(
-            "v4l2h264enc"
-        );
-        this._available_x264enc = await this.checkElementAvailability(
-            "x264enc"
-        );
+        await this.InitEncodingSettings();
 
         const _interval = setInterval(() => {
             this._getV4l().then((res) => {
@@ -228,44 +216,6 @@ class SrtVideoEncoder extends Classes(_paNullSinkBase, SrtBase) {
         });
     }
 
-    /**
-     * Calculate Module Video Bitrate (Used by SRT Base to have a standard format to calculate the MaxBandwidth)
-     */
-    calcBitrate() {
-        return parseInt(
-            this.video_bitrate
-                .toString()
-                .replace("k", "000")
-                .replace("M", "000000")
-        );
-    }
-
-    /**
-     * Check weather an element is available on the system
-     * @param {String} elementName
-     * @returns {Boolean}
-     */
-    checkElementAvailability(elementName) {
-        return new Promise((resolve) => {
-            exec(`gst-inspect-1.0 | grep ${elementName}`, { silent: true })
-                .then((data) => {
-                    if (data.stderr)
-                        this._parent._log(
-                            "ERROR",
-                            `${this._controlName} (${this.displayName}): ${data.stderr}`
-                        );
-                    if (data.stdout.length) resolve(true);
-                    else resolve(false);
-                })
-                .catch((err) => {
-                    this._parent._log(
-                        "ERROR",
-                        `${this._controlName} (${this.displayName}): ${err.message}`
-                    );
-                    resolve(false);
-                });
-        });
-    }
 }
 
 module.exports = SrtVideoEncoder;
