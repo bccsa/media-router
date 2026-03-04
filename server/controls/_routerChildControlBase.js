@@ -20,7 +20,7 @@ class _routerChildControlBase extends dm {
                     "INFO",
                     `${this._paModuleName} (${this.displayName}): Enabling module`
                 );
-                this.run = true;
+                this.run = this._parent.runCmd;
             } else {
                 this._parent._log(
                     "INFO",
