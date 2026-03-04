@@ -12,6 +12,7 @@ class Spawn {
     constructor() {
         this.stop_cmd = this._stop_cmd; // need to map that child class can access function
         this.start_cmd = this._start_cmd; // need to map that child class can access function
+        this._getRestartDelay = this._getRestartDelay; // need to map for mixin access
         this._cmd = undefined;
         // Setters
         this.stderrCallback = undefined;

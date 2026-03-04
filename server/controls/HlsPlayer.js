@@ -32,12 +32,68 @@ class HlsPlayer extends Classes(
             this.startPipeline();
         });
 
+        // Debounced restart when user moves the start time slider during playback
+        this._startTimeTimeout = null;
+        this._suppressStartTimeRestart = false;
+        this.on("hlsStartTime", () => {
+            if (this._suppressStartTimeRestart) return;
+            if (!this.run || !this.hlsIsVod || this.hlsPaused) return;
+            // Stop position reader and sync current time immediately
+            // so stale values don't cause the slider to jump back
+            this._stopPositionReader();
+            this.hlsCurrentTime = this.hlsStartTime;
+            this.NotifyProperty("hlsCurrentTime");
+            clearTimeout(this._startTimeTimeout);
+            this._startTimeTimeout = setTimeout(() => {
+                if (this.runningSrt) {
+                    this._stop_srt();
+                } else {
+                    this.stop_gst();
+                }
+                // Delay to let the pipeline fully stop before restarting
+                setTimeout(() => {
+                    this.startPipeline();
+                }, 1500);
+            }, 1000);
+        });
+
+        // Reset pause state on reload
+        this.on("reload", (reload) => {
+            if (reload && this.hlsPaused) {
+                this.hlsPaused = false;
+                this.NotifyProperty("hlsPaused");
+            }
+        });
+
+        // Pause/Play (VOD only)
+        this._positionInterval = null;
+        this.on("hlsPaused", (paused) => {
+            if (!this.hlsIsVod) return;
+            if (paused) {
+                this._stopPositionReader();
+                // Set start time to current position so resume starts here
+                this._suppressStartTimeRestart = true;
+                this.hlsStartTime = this.hlsCurrentTime;
+                this.NotifyProperty("hlsStartTime");
+                this._suppressStartTimeRestart = false;
+                if (this.runningSrt) {
+                    this._stop_srt();
+                } else {
+                    this.stop_gst();
+                }
+            } else {
+                this.startPipeline();
+            }
+        });
+
         // Stop external processes when the control is stopped (through setting this.run to false)
         this.on(
             "run",
             (run) => {
-                this.startPipeline(this.readyNullSinks);
+                this.startPipeline();
                 if (!run) {
+                    clearTimeout(this._startTimeTimeout);
+                    this._stopPositionReader();
                     if (this.runningSrt) {
                         this._stop_srt();
                     } else {
@@ -50,7 +106,7 @@ class HlsPlayer extends Classes(
     }
 
     startPipeline() {
-        if (!this.ready || !this.run) return;
+        if (!this.ready || !this.run || this.hlsPaused) return;
 
         // isEnabled (Allow pipeline to start if none of the sinks is enabled)
         let isEnabled = false;
@@ -83,6 +139,7 @@ class HlsPlayer extends Classes(
                 ? ""
                 : this.subtitleLanguage,
             moduleIdentifier: this._controlName,
+            startTime: this.hlsStartTime || 0,
         }).replace(/'/g, "'\\''");
 
         // Escape shell metacharacters in URL
@@ -102,6 +159,7 @@ class HlsPlayer extends Classes(
 
         // ------------ start sound processor ------------ //
         if (!this.hlsUrl) return;
+        this._startPositionReader();
         this._parent.PaCmdQueue(() => {
             const gstChild = `node ${serverDir}/child_processes/SrtGstGeneric_child.js '${_pipeline}'`;
             if (this.enableSrt) {
@@ -117,6 +175,29 @@ class HlsPlayer extends Classes(
                 );
             }
         });
+    }
+
+    _startPositionReader() {
+        this._stopPositionReader();
+        if (!this.hlsIsVod) return;
+        this._playbackStartedAt = Date.now();
+        this._playbackStartValue = this.hlsStartTime || 0;
+        this._positionInterval = setInterval(() => {
+            const elapsed = (Date.now() - this._playbackStartedAt) / 1000;
+            const pos = Math.min(
+                Math.floor(this._playbackStartValue + elapsed),
+                this.hlsDuration
+            );
+            if (pos !== this.hlsCurrentTime) {
+                this.hlsCurrentTime = pos;
+                this.NotifyProperty("hlsCurrentTime");
+            }
+        }, 1000);
+    }
+
+    _stopPositionReader() {
+        clearInterval(this._positionInterval);
+        this._positionInterval = null;
     }
 
     _src = (pipe, isSrt = false) => {
