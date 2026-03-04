@@ -15,6 +15,11 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
         this.enableSrt = false;
         this.runningSrt = false;
         this.hlsLoading = false;
+        this.hlsIsVod = false;
+        this.hlsDuration = 0;
+        this.hlsStartTime = 0;
+        this.hlsCurrentTime = 0;
+        this.hlsPaused = false;
     }
 
     get html() {
@@ -41,6 +46,20 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             <div class="w-full mb-2">
                 <label for="@{_hlsUrl}" class="form-label inline-block">Hls Url:</label>
                 <input id="@{_hlsUrl}" class="paAudioBase-select" type="text" title="Hls (m3u8) Url" placeholder="http://your.address.m3u8?some=params" value="@{hlsUrl}"></input>
+        </div>
+
+        <!-- Start Time (VOD only) -->
+        <div id="@{_startTimeDiv}" class="w-full mb-2">
+            <div class="flex flex-row items-center">
+                <button id="@{_pausePlayBtn}" class="mr-2 w-8 h-8 flex items-center justify-center rounded hover:bg-gray-200" title="Pause/Play">
+                    <div id="@{_pausePlayIcon}" class="icon-[ph--pause-bold] w-6 h-6 text-black"></div>
+                </button>
+                <input id="@{_startTimeSlider}" class="paAudioBase-slider" type="range"
+                    title="VOD start time" name="hlsStartTime" step="1" min="0" max="@{hlsDuration}" value="@{hlsStartTime}">
+                <div class="w-[80px] text-right">
+                    <label id="@{_startTimeLabel}" class="ml-2"></label>
+                </div>
+            </div>
         </div>
 
         <!-- Default Language  -->
@@ -254,6 +273,56 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
             },
             { immediate: true }
         );
+
+        //----------------------Start Time Slider (VOD only)-----------------------------//
+        this.on(
+            "hlsIsVod",
+            (v) => {
+                this._startTimeDiv.style.display = v ? "block" : "none";
+            },
+            { immediate: true }
+        );
+
+        //----------------------Pause/Play-----------------------------//
+        this._pausePlayBtn.addEventListener("click", () => {
+            this.hlsPaused = !this.hlsPaused;
+            this.NotifyProperty("hlsPaused");
+        });
+
+        this.on("hlsPaused", (v) => {
+            this._pausePlayIcon.className = v
+                ? "icon-[ph--play-bold] w-6 h-6 text-black"
+                : "icon-[ph--pause-bold] w-6 h-6 text-black";
+        }, { immediate: true });
+
+        this.on("hlsCurrentTime", (v) => {
+            this._startTimeSlider.value = v;
+            this._startTimeLabel.textContent = this._formatTime(v) +
+                " / " + this._formatTime(this.hlsDuration);
+        });
+        //----------------------Pause/Play-----------------------------//
+
+        this.on("hlsStartTime", (v) => {
+            this._startTimeLabel.textContent = this._formatTime(v) +
+                " / " + this._formatTime(this.hlsDuration);
+        });
+
+        this.on("hlsDuration", () => {
+            this._startTimeLabel.textContent = this._formatTime(this.hlsStartTime) +
+                " / " + this._formatTime(this.hlsDuration);
+        }, { immediate: true });
+    }
+
+    /**
+     * Format seconds as HH:MM:SS or MM:SS
+     */
+    _formatTime(totalSeconds) {
+        totalSeconds = Math.floor(totalSeconds || 0);
+        const h = Math.floor(totalSeconds / 3600);
+        const m = Math.floor((totalSeconds % 3600) / 60);
+        const s = totalSeconds % 60;
+        const pad = (n) => String(n).padStart(2, "0");
+        return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
     }
 
     /**

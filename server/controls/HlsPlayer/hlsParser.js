@@ -8,10 +8,23 @@ class HlsParser {
         this.subtitleLanguages = [];
         this.audioStreams = [];
         this.hlsLoading = false;
+        this.hlsIsVod = false;
+        this.hlsDuration = 0;
+        this.hlsStartTime = 0;
+        this.hlsCurrentTime = 0;
+        this.hlsPaused = false;
     }
 
     InitHlsParser() {
         this.on("hlsUrl", async (url) => {
+            this._suppressStartTimeRestart = true;
+            this.hlsStartTime = 0;
+            this.hlsCurrentTime = 0;
+            this.hlsPaused = false;
+            this.NotifyProperty("hlsStartTime");
+            this.NotifyProperty("hlsCurrentTime");
+            this.NotifyProperty("hlsPaused");
+            this._suppressStartTimeRestart = false;
             this.hlsLoading = true;
             const res = await this.parse_hls(url);
 
@@ -79,8 +92,68 @@ class HlsParser {
                 ].forEach((prop) => this.NotifyProperty(prop));
             }
 
+            // Detect VOD and calculate duration
+            await this._detectVod(url);
+
             this.hlsLoading = false;
         });
+    }
+
+    /**
+     * Fetch a variant playlist to detect VOD (endlist) and calculate total duration.
+     * @param {string} url - The master playlist URL.
+     */
+    async _detectVod(url) {
+        try {
+            const masterPlaylist = await this.fetchPlaylist(url);
+            if (!masterPlaylist.variants || !masterPlaylist.variants.length) {
+                this.hlsIsVod = false;
+                this.hlsDuration = 0;
+                return;
+            }
+
+            // Fetch the first variant playlist to check endlist and segment durations
+            const variantUrl = new URL(masterPlaylist.variants[0].uri, url).href;
+            const variantPlaylist = await this.fetchPlaylist(variantUrl);
+
+            if (!variantPlaylist || !variantPlaylist.segments) {
+                this.hlsIsVod = false;
+                this.hlsDuration = 0;
+                return;
+            }
+
+            this.hlsIsVod = variantPlaylist.endlist === true;
+
+            if (this.hlsIsVod) {
+                // Sum segment durations to get total duration in seconds
+                this.hlsDuration = Math.floor(
+                    variantPlaylist.segments.reduce(
+                        (sum, seg) => sum + (seg.duration || 0), 0
+                    )
+                );
+
+                // Clamp startTime if it exceeds new duration
+                if (this.hlsStartTime > this.hlsDuration) {
+                    this._suppressStartTimeRestart = true;
+                    this.hlsStartTime = 0;
+                    this._suppressStartTimeRestart = false;
+                }
+            } else {
+                this.hlsDuration = 0;
+                this.hlsStartTime = 0;
+            }
+
+            ["hlsIsVod", "hlsDuration", "hlsStartTime"].forEach(
+                (prop) => this.NotifyProperty(prop)
+            );
+        } catch (error) {
+            this._parent._log(
+                "ERROR",
+                `VOD detection failed: ${error.message}`
+            );
+            this.hlsIsVod = false;
+            this.hlsDuration = 0;
+        }
     }
 
     /**

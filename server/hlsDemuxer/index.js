@@ -127,6 +127,7 @@ if (!hlsUrl) {
 const preferredAudioLangs = Array.isArray(config.languages) ? config.languages : [];
 const subtitleLanguage = config.subtitleLanguage || "";
 const moduleIdentifier = config.moduleIdentifier || "";
+const startTime = Number(config.startTime) || 0;
 let currentVariant = null;    // Full variant object (has .uri, .audio, .subtitles, .bandwidth, .resolution)
 let masterPlaylist = null;
 let selectedAudioTracks = null;
@@ -388,9 +389,6 @@ async function handleInitSegment(stream, playlist) {
     if (initUrl !== stream.lastInitSegmentUrl) {
         stream.lastInitSegmentUrl = initUrl;
         await fetchSegment(initUrl, stream.pipe, stream.isVideo);
-        console.log(
-            `Init segment written for ${stream.language || "video"}: ${initUrl}`
-        );
     }
 }
 
@@ -403,7 +401,6 @@ async function handleInitSegment(stream, playlist) {
 async function streamAllSynchronized(streams) {
     let lastSeqNumbers = streams.map(() => -1);
     let running = true;
-
     do {
         // 1. Fetch all playlists in parallel
         const playlists = await Promise.all(
@@ -416,7 +413,30 @@ async function streamAllSynchronized(streams) {
             continue;
         }
 
-        // 2. For live streams starting up, pick a common starting point
+        // 2a. For VOD with startTime, skip segments before the start time
+        if (isVod && startTime > 0 && lastSeqNumbers.every((n) => n < 0)) {
+            // Use the video playlist (index 0) to calculate the skip point
+            const videoSegs = playlists[0].segments;
+            let cumulative = 0;
+            let skipSeq = -1;
+            for (const seg of videoSegs) {
+                cumulative += seg.duration || 0;
+                if (cumulative >= startTime) {
+                    // Start from one segment before this so the first fetched
+                    // segment is the one that contains the start time
+                    skipSeq = seg.mediaSequenceNumber - 1;
+                    break;
+                }
+            }
+            if (skipSeq >= 0) {
+                lastSeqNumbers = lastSeqNumbers.map(() => skipSeq);
+                console.log(
+                    `VOD startTime=${startTime}s: skipping to sequence ${skipSeq + 1}`
+                );
+            }
+        }
+
+        // 2b. For live streams starting up, pick a common starting point
         if (!isVod && lastSeqNumbers.every((n) => n < 0)) {
             let startSeq = 0;
             for (let i = 0; i < playlists.length; i++) {
@@ -470,6 +490,7 @@ async function streamAllSynchronized(streams) {
 
             // Update all sequence numbers together
             lastSeqNumbers = lastSeqNumbers.map(() => seq);
+
         }
 
         // 6. Wait before next poll
@@ -647,9 +668,7 @@ function cleanup() {
 
     // Remove readiness marker file
     const markerPath = `/tmp/${moduleIdentifier || "hls"}_hls_ready`;
-    try {
-        fs.unlinkSync(markerPath);
-    } catch (err) {}
+    try { fs.unlinkSync(markerPath); } catch (err) {}
 
     // Clear other references
     masterPlaylist = null;
