@@ -26,9 +26,11 @@ class HlsParser {
             this.NotifyProperty("hlsPaused");
             this._suppressStartTimeRestart = false;
             this.hlsLoading = true;
-            const res = await this.parse_hls(url);
 
-            if (res?.length) {
+            const masterPlaylist = await this.fetchPlaylist(url);
+            const res = this._parseStreams(masterPlaylist);
+
+            if (res.length) {
                 const availableAudio = res.filter((s) => s.type === "audio");
                 const availableSubs = res.filter((s) => s.type === "subtitle");
                 const availableVideo = res.filter(
@@ -92,8 +94,8 @@ class HlsParser {
                 ].forEach((prop) => this.NotifyProperty(prop));
             }
 
-            // Detect VOD and calculate duration
-            await this._detectVod(url);
+            // Detect VOD and calculate duration (reuses the already-fetched master playlist)
+            await this._detectVod(url, masterPlaylist);
 
             this.hlsLoading = false;
         });
@@ -102,11 +104,11 @@ class HlsParser {
     /**
      * Fetch a variant playlist to detect VOD (endlist) and calculate total duration.
      * @param {string} url - The master playlist URL.
+     * @param {object} masterPlaylist - The already-fetched master playlist.
      */
-    async _detectVod(url) {
+    async _detectVod(url, masterPlaylist) {
         try {
-            const masterPlaylist = await this.fetchPlaylist(url);
-            if (!masterPlaylist.variants || !masterPlaylist.variants.length) {
+            if (!masterPlaylist || !masterPlaylist.variants || !masterPlaylist.variants.length) {
                 this.hlsIsVod = false;
                 this.hlsDuration = 0;
                 return;
@@ -157,41 +159,37 @@ class HlsParser {
     }
 
     /**
-     * Parse hls url with ffprobe
-     * @param {String} url - hls url
-     * @returns
+     * Extract stream info from a parsed master playlist.
+     * @param {object} playlist - Parsed HLS master playlist.
+     * @returns {Array} - Array of stream descriptors.
      */
-    parse_hls(url) {
-        return new Promise(async (resolve, reject) => {
-            let playlist = await this.fetchPlaylist(url);
-            if (!playlist.variants) resolve({});
-            else {
-                let streams = [];
-                for (const v of playlist.variants) {
-                    streams.push({
-                        type: "video",
-                        height: v.resolution.height,
-                        codec: v.codecs,
-                    });
-                }
-                for (const a of playlist.variants[0].audio) {
-                    streams.push({
-                        type: "audio",
-                        language: a.language,
-                        name: a.name,
-                    });
-                }
-                for (const a of playlist.variants[0].subtitles) {
-                    streams.push({
-                        type: "subtitle",
-                        language: a.language,
-                        name: a.name,
-                    });
-                }
+    _parseStreams(playlist) {
+        if (!playlist || !playlist.variants) return [];
 
-                resolve(streams);
-            }
-        });
+        const streams = [];
+        for (const v of playlist.variants) {
+            streams.push({
+                type: "video",
+                height: v.resolution.height,
+                codec: v.codecs,
+            });
+        }
+        for (const a of playlist.variants[0].audio) {
+            streams.push({
+                type: "audio",
+                language: a.language,
+                name: a.name,
+            });
+        }
+        for (const a of playlist.variants[0].subtitles) {
+            streams.push({
+                type: "subtitle",
+                language: a.language,
+                name: a.name,
+            });
+        }
+
+        return streams;
     }
 
     /**

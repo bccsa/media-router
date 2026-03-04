@@ -90,8 +90,9 @@ class HlsPlayer extends Classes(
         this.on(
             "run",
             (run) => {
-                this.startPipeline(this.readyNullSinks);
+                this.startPipeline();
                 if (!run) {
+                    clearTimeout(this._startTimeTimeout);
                     this._stopPositionReader();
                     if (this.runningSrt) {
                         this._stop_srt();

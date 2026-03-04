@@ -327,11 +327,11 @@ async function selectSubtitleTracks() {
  */
 async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
     try {
-        const startTime = Date.now();
+        const downloadStart = Date.now();
         const response = await http.get(segmentUrl, {
             responseType: "arraybuffer",
         });
-        const downloadEndTime = Date.now();
+        const downloadEnd = Date.now();
         const buffer = Buffer.from(response.data);
 
         // Wait for drain if pipe buffer is full (backpressure)
@@ -355,7 +355,7 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
 
         // Feed bandwidth sample to ABR controller (video segments only)
         if (isVideo) {
-            const downloadTimeMs = downloadEndTime - startTime;
+            const downloadTimeMs = downloadEnd - downloadStart;
             abr.addSample(buffer.length, downloadTimeMs);
             await selectBestVariant();
         }
@@ -505,6 +505,7 @@ async function streamAllSynchronized(streams) {
 }
 
 let streams = [];
+let pipePaths = [];
 
 /**
  * Initializes and starts video, audio, and subtitle streams.
@@ -522,7 +523,6 @@ async function startStreams() {
         url: new URL(currentVariant.uri, hlsUrl).href,
         isVideo: true,
         pipe: videoPipe,
-        isVod: false,
         playlist: undefined,
         lastInitSegmentUrl: null,
     });
@@ -539,7 +539,6 @@ async function startStreams() {
             url: new URL(track.uri, hlsUrl).href,
             isVideo: false,
             pipe: audioPipe,
-            isVod: false,
             playlist: undefined,
             language: track.language,
             lastInitSegmentUrl: null,
@@ -557,7 +556,6 @@ async function startStreams() {
             url: new URL(track.uri, hlsUrl).href,
             isVideo: false,
             pipe: subtitlePipe,
-            isVod: false,
             playlist: undefined,
             language: track.language,
             isSub: true,
@@ -590,6 +588,7 @@ async function createPipe(pipeName) {
     } catch (err) {}
 
     await exec(`mkfifo ${pipePath}`);
+    pipePaths.push(pipePath);
 
     // Set system pipe-max-size once (doesn't need an open fd)
     if (!pipeMaxSizeSet) {
@@ -664,6 +663,14 @@ function cleanup() {
             stream.url = null;
         });
         streams = null;
+    }
+
+    // Remove FIFO pipe files
+    if (pipePaths) {
+        pipePaths.forEach((p) => {
+            try { fs.unlinkSync(p); } catch (err) {}
+        });
+        pipePaths = null;
     }
 
     // Remove readiness marker file

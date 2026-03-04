@@ -295,7 +295,15 @@ class HlsPlayer extends _uiClasses(_paAudioSourceBase, SrtBase) {
                 : "icon-[ph--pause-bold] w-6 h-6 text-black";
         }, { immediate: true });
 
+        // Track whether the user is actively dragging the slider
+        this._sliderDragging = false;
+        this._startTimeSlider.addEventListener("mousedown", () => { this._sliderDragging = true; });
+        this._startTimeSlider.addEventListener("touchstart", () => { this._sliderDragging = true; });
+        this._startTimeSlider.addEventListener("mouseup", () => { this._sliderDragging = false; });
+        this._startTimeSlider.addEventListener("touchend", () => { this._sliderDragging = false; });
+
         this.on("hlsCurrentTime", (v) => {
+            if (this._sliderDragging) return;
             this._startTimeSlider.value = v;
             this._startTimeLabel.textContent = this._formatTime(v) +
                 " / " + this._formatTime(this.hlsDuration);
