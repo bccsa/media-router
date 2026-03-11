@@ -306,7 +306,7 @@ class HlsPlayer extends Classes(
                         `/tmp/${this._controlName}_${stream.language}_audioPipe`,
                         true
                     )} ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000 ! mux.`;
-                    audio += ` tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
+                    audio += ` tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue leaky=2 max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
                         this.videoDelay * 1000000
                     } device=${
                         this.sink
@@ -320,7 +320,7 @@ class HlsPlayer extends Classes(
                         `/tmp/${this._controlName}_${stream.language}_audioPipe`,
                         true
                     )} ! tee name=tee ! queue2 use-buffering=true max-size-time=60000000 ! mux.`;
-                    audio += ` tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
+                    audio += ` tee. ! decodebin3 ! audioconvert ! audio/x-raw,channels=2 ! queue leaky=2 max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
                         this.videoDelay * 1000000
                     } device=${
                         this.sink
@@ -331,7 +331,7 @@ class HlsPlayer extends Classes(
                     // ---- Local playout (no SRT): decode → pulsesink ----
                     audio += ` ${this._src(
                         `/tmp/${this._controlName}_${stream.language}_audioPipe`
-                    )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
+                    )} ! audioconvert ! audio/x-raw,channels=2 ! queue leaky=2 max-size-time=60000000 ! pulsesink name=audioSink ts-offset=${
                         this.videoDelay * 1000000
                     } device=${
                         this.sink
@@ -343,7 +343,7 @@ class HlsPlayer extends Classes(
                 // Non-default language streams always decode to their null sink
                 audio += ` ${this._src(
                     `/tmp/${this._controlName}_${stream.language}_audioPipe`
-                )} ! audioconvert ! audio/x-raw,channels=2 ! queue2 use-buffering=true max-size-time=60000000 ! pulsesink device=${
+                )} ! audioconvert ! audio/x-raw,channels=2 ! queue leaky=2 max-size-time=60000000 ! pulsesink device=${
                     this._controlName
                 }_sink_${
                     stream.language

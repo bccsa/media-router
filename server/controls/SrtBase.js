@@ -66,8 +66,12 @@ class SrtBase extends GstBase {
     _start_srt(cmd, _srtElementName) {
         // clear old stats data
         this._clearStats();
+        // Remove previous listener to prevent accumulation across restarts
+        if (this._srtStatsListener) {
+            this.off("SrtStats", this._srtStatsListener);
+        }
         // Listen on srt stats
-        this.on("SrtStats", (data) => {
+        this._srtStatsListener = (data) => {
             if (this._controls && data) {
                 let _c = 0;
                 this.caller_count = Object.keys(data).length - 1;
@@ -88,7 +92,8 @@ class SrtBase extends GstBase {
                 }
                 this._prev_caller = this.caller_count;
             }
-        });
+        };
+        this.on("SrtStats", this._srtStatsListener);
 
         if (this.srtHost || this.srtMode == "listener") {
             this.start_gst(cmd);
@@ -111,6 +116,10 @@ class SrtBase extends GstBase {
      */
     _stop_srt() {
         clearInterval(this._statsInterval); // clear stats interval
+        if (this._srtStatsListener) {
+            this.off("SrtStats", this._srtStatsListener);
+            this._srtStatsListener = null;
+        }
         this.stop_gst();
         // set all child controls as disconnected
         this.caller_count = 0;
