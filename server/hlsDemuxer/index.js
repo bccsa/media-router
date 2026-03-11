@@ -334,20 +334,37 @@ async function fetchSegment(segmentUrl, pipe, isVideo, retryCount = 0) {
         const downloadEnd = Date.now();
         const buffer = Buffer.from(response.data);
 
-        // Wait for drain if pipe buffer is full (backpressure)
+        // Wait for drain if pipe buffer is full (backpressure), with timeout
+        // to prevent a stalled reader from freezing the entire demuxer
+        const DRAIN_TIMEOUT = 30000; // 30 seconds
+
         if (pipe.writableLength > pipe.writableHighWaterMark) {
             await new Promise((resolve, reject) => {
-                pipe.once("drain", resolve);
-                pipe.once("error", reject);
+                const timer = setTimeout(() => {
+                    pipe.removeListener("drain", onDrain);
+                    pipe.removeListener("error", onError);
+                    console.warn(`Drain timeout waiting for pipe (pre-write), skipping segment`);
+                    resolve();
+                }, DRAIN_TIMEOUT);
+                const onDrain = () => { clearTimeout(timer); pipe.removeListener("error", onError); resolve(); };
+                const onError = (err) => { clearTimeout(timer); pipe.removeListener("drain", onDrain); reject(err); };
+                pipe.once("drain", onDrain);
+                pipe.once("error", onError);
             });
         }
 
         const ok = pipe.write(buffer);
         if (!ok) {
-            // Buffer full — wait for drain before continuing
+            // Buffer full — wait for drain before continuing, with timeout
             await new Promise((resolve, reject) => {
-                const onDrain = () => { pipe.removeListener("error", onError); resolve(); };
-                const onError = (err) => { pipe.removeListener("drain", onDrain); reject(err); };
+                const timer = setTimeout(() => {
+                    pipe.removeListener("drain", onDrain);
+                    pipe.removeListener("error", onError);
+                    console.warn(`Drain timeout waiting for pipe (post-write), skipping segment`);
+                    resolve();
+                }, DRAIN_TIMEOUT);
+                const onDrain = () => { clearTimeout(timer); pipe.removeListener("error", onError); resolve(); };
+                const onError = (err) => { clearTimeout(timer); pipe.removeListener("drain", onDrain); reject(err); };
                 pipe.once("drain", onDrain);
                 pipe.once("error", onError);
             });
