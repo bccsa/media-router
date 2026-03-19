@@ -316,6 +316,27 @@ export class Manager {
                 }
             });
 
+            // UI-only metadata (focused, etc.) — stored on module root, not forwarded to engine
+            socket.on('module:meta', (payload: any) => {
+                if (!payload?.engineId || !payload?.moduleId || !payload?.meta) return;
+                const eng = this.configStore.getEngine(payload.engineId);
+                if (!eng?.active_profile) return;
+                this.configStore.modifyProfileConfig(payload.engineId, eng.active_profile as string, (config) => {
+                    const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
+                    if (modules[payload.moduleId]) {
+                        Object.assign(modules[payload.moduleId], payload.meta);
+                    }
+                    return config;
+                });
+                // Broadcast to all browsers
+                const patchOps = Object.entries(payload.meta as Record<string, unknown>).map(([key, value]) => ({
+                    op: 'replace',
+                    path: `/modules/${payload.moduleId}/${key}`,
+                    value,
+                }));
+                this.io.emit('engine:update', { engineId: payload.engineId, patch: patchOps });
+            });
+
             socket.on('module:rename', (payload: any) => {
                 if (!payload?.engineId || !payload?.moduleId || !payload?.displayName) return;
                 const engine = this.configStore.getEngine(payload.engineId);

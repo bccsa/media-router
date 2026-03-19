@@ -1,56 +1,70 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, provide } from 'vue';
-import { VueFlow, useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core';
+import { ref, computed, watch, onMounted, onUnmounted, provide } from 'vue';
+import { VueFlow } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import ModuleNode from './ModuleNode.vue';
 import ModuleSettingsPanel from './ModuleSettingsPanel.vue';
 import AddModulePanel from './AddModulePanel.vue';
-import MrContextMenu, { type MenuItem } from '@/components/common/MrContextMenu.vue';
+import MrContextMenu from '@/components/common/MrContextMenu.vue';
 import MrButton from '@/components/common/MrButton.vue';
 import LogViewer from './LogViewer.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
+import { useFocusMode } from '@/composables/useFocusMode';
+import { useContextMenu } from '@/composables/useContextMenu';
+import { useGraphSync } from '@/composables/useGraphSync';
 
 const props = defineProps<{ engineId: string }>();
 provide('engineId', props.engineId);
-const containerRef = ref<HTMLDivElement | null>(null);
 
-// Prevent browser zoom — let Vue Flow handle it
+const socket = useSocketStore();
+const engineStore = useEngineStore();
+const engine = computed(() => engineStore.getEngine(props.engineId));
+
+// --- Composables ---
+const { focusMode, focusedModules, setModuleFocused, isEdgeDimmed, provideToChildren } = useFocusMode(engine);
+provideToChildren();
+
+const {
+    contextMenu, edgeContextMenu, settingsPanel, contextMenuItems,
+    onNodeContextMenu, openContextMenuFromTouch, dismissContextMenus,
+    onContextAction, onEdgeClick, onEdgeContextMenu,
+} = useContextMenu(() => props.engineId, engine, focusedModules, setModuleFocused);
+
+const {
+    hasInitialFit, fitView, isValidConnection, onConnect,
+    onNodeDragStop, onEdgeDelete, onAddModule: graphAddModule, focusModule: graphFocusModule,
+} = useGraphSync(() => props.engineId, engine, focusMode, focusedModules, isEdgeDimmed);
+
+// --- Local UI state ---
+const containerRef = ref<HTMLDivElement | null>(null);
+const showAddPanel = ref(false);
+const showModuleList = ref(false);
+const showLogs = ref(false);
+const moduleListBtnRef = ref<any>(null);
+const moduleListPos = ref({ x: 0, y: 0 });
+const moduleSearch = ref('');
+
+// --- Browser zoom prevention ---
 function preventBrowserZoom(e: WheelEvent) { if (e.ctrlKey || e.metaKey) e.preventDefault(); }
 onMounted(() => {
     containerRef.value?.addEventListener('wheel', preventBrowserZoom, { passive: false });
-    // Tell manager to stream data for this engine only
     socket.emit('watch:engine', { engineId: props.engineId });
 });
 onUnmounted(() => {
     containerRef.value?.removeEventListener('wheel', preventBrowserZoom);
-    // Stop streaming data for this engine
     socket.emit('watch:engine', { engineId: '' });
 });
 
-const engineStore = useEngineStore();
-const socket = useSocketStore();
-
-// When engineId changes, tell manager to stream this engine's data and reset UI state
+// When engineId changes, reset UI state
 watch(() => props.engineId, (id) => {
     socket.emit('watch:engine', { engineId: id });
     focusMode.value = false;
-    focusedModules.value = new Set();
     hasInitialFit.value = false;
 });
-const { fitView, setNodes, setEdges, addEdges, removeEdges, zoomTo, setCenter, getNodes, getEdges } = useVueFlow();
 
-const hasInitialFit = ref(false);
-const focusMode = ref(false);
-const focusedModules = ref(new Set<string>());
-provide('focusMode', focusMode);
-provide('focusedModules', focusedModules);
-const showAddPanel = ref(false);
-const showModuleList = ref(false);
-const moduleListBtnRef = ref<any>(null);
-const moduleListPos = ref({ x: 0, y: 0 });
-const moduleSearch = ref('');
+// --- Module list dropdown ---
 function toggleModuleList() {
     showModuleList.value = !showModuleList.value;
     if (showModuleList.value) {
@@ -72,335 +86,32 @@ const filteredModules = computed(() => {
         m.instanceId?.toLowerCase().includes(q)
     );
 });
-const showLogs = ref(false);
-const contextMenu = ref<{ x: number; y: number; moduleId: string } | null>(null);
-const settingsPanel = ref<{ moduleId: string } | null>(null);
 
-const engine = computed(() => engineStore.getEngine(props.engineId));
-
-// --- Node sync (only when modules are added/removed) ---
-
-const moduleIds = computed(() => {
-    if (!engine.value?.modules) return '';
-    return Object.keys(engine.value.modules).sort().join(',');
-});
-
-watch(moduleIds, () => {
-    const modules = engine.value?.modules;
-    if (!modules) { setNodes([]); return; }
-
-    // Preserve Vue Flow's current positions
-    const currentPositions = new Map<string, { x: number; y: number }>();
-    for (const node of getNodes.value) {
-        currentPositions.set(node.id, { ...node.position });
-    }
-
-    const newNodes: Node[] = Object.values(modules).map((mod) => ({
-        id: mod.instanceId,
-        type: 'module',
-        position: currentPositions.get(mod.instanceId) ?? mod.position ?? { x: 100, y: 100 },
-        data: mod,
-    }));
-    setNodes(newNodes);
-
-    if (!hasInitialFit.value && newNodes.length > 0) {
-        hasInitialFit.value = true;
-        nextTick(() => fitView({ padding: 0.2 }));
-        setTimeout(() => fitView({ padding: 0.2 }), 200);
-    }
-}, { immediate: true });
-
-// Update node data in-place (doesn't trigger setNodes, preserves edges)
-watch(() => engine.value?.modules, (modules) => {
-    if (!modules) return;
-    for (const node of getNodes.value) {
-        const mod = modules[node.id];
-        if (!mod) continue;
-        node.data = mod;
-        // Sync position from store (multi-tab sync: another tab moved this module)
-        if (mod.position && (node.position.x !== mod.position.x || node.position.y !== mod.position.y)) {
-            node.position = { ...mod.position };
-        }
-    }
-}, { deep: true });
-
-// --- Edge sync (separate from nodes to avoid Vue Flow race) ---
-
-const connectionKey = computed(() => {
-    if (!engine.value?.connections) return '';
-    return engine.value.connections.map((c: any) => c.id).sort().join(',');
-});
-
-watch([connectionKey, focusMode, focusedModules], () => {
-    const connections = engine.value?.connections ?? [];
-    const fm = focusMode.value;
-    const focused = focusedModules.value;
-
-    // Build desired edge map
-    const desired = new Map<string, any>();
-    for (const conn of connections) {
-        const srcModule = engine.value?.modules[(conn as any).sourceModuleId];
-        const srcPort = srcModule?.ports?.find((p: any) => p.id === (conn as any).sourcePortId);
-        const color = edgeColor(srcPort?.streamType ?? (conn as any).streamType);
-        const edgeDimmed = fm && focused.size > 0 &&
-            !focused.has((conn as any).sourceModuleId) && !focused.has((conn as any).sinkModuleId);
-        desired.set((conn as any).id, {
-            id: (conn as any).id,
-            source: (conn as any).sourceModuleId,
-            sourceHandle: (conn as any).sourcePortId,
-            target: (conn as any).sinkModuleId,
-            targetHandle: (conn as any).sinkPortId,
-            animated: true,
-            interactionWidth: 20,
-            style: { stroke: color, opacity: edgeDimmed ? 0.1 : 1, transition: 'opacity 0.2s ease' },
-        });
-    }
-
-    // Diff against current Vue Flow edges
-    const currentEdgeIds = new Set(getEdges.value.map(e => e.id));
-    const desiredIds = new Set(desired.keys());
-
-    // Remove edges that shouldn't exist
-    const toRemove = [...currentEdgeIds].filter(id => !desiredIds.has(id));
-    if (toRemove.length > 0) removeEdges(toRemove);
-
-    // Add edges that are missing
-    const toAdd = [...desired.values()].filter(e => !currentEdgeIds.has(e.id));
-    if (toAdd.length > 0) addEdges(toAdd);
-
-    // Update style on existing edges (for focus mode changes)
-    for (const edge of getEdges.value) {
-        const d = desired.get(edge.id);
-        if (d) edge.style = d.style;
-    }
-}, { immediate: true });
-
-// --- Event handlers ---
-
-const edgeContextMenu = ref<{ x: number; y: number; edgeId: string } | null>(null);
-
-function onEdgeClick(payload: any) {
-    // On mobile (touch), show context menu on tap since there's no right-click
-    const e = payload.event;
-    const x = 'clientX' in e ? e.clientX : e.touches?.[0]?.clientX ?? 0;
-    const y = 'clientY' in e ? e.clientY : e.touches?.[0]?.clientY ?? 0;
-    edgeContextMenu.value = { x, y, edgeId: payload.edge.id };
-    contextMenuOpenedAt = Date.now();
-}
-
-function onEdgeContextMenu(payload: any) {
-    payload.event.preventDefault();
-    const e = payload.event;
-    const x = 'clientX' in e ? e.clientX : e.touches?.[0]?.clientX ?? 0;
-    const y = 'clientY' in e ? e.clientY : e.touches?.[0]?.clientY ?? 0;
-    edgeContextMenu.value = { x, y, edgeId: payload.edge.id };
-}
-
-function onEdgeContextAction(action: string) {
-    if (action === 'delete' && edgeContextMenu.value) {
-        const edgeId = edgeContextMenu.value.edgeId;
-        // Remove from Vue Flow (visual)
-        removeEdges([edgeId]);
-        // Remove from Pinia store (prevents re-add when connectionKey watch fires)
-        engineStore.removeConnection(props.engineId, edgeId);
-        // Tell server to persist
-        socket.emit('routing:disconnect', { engineId: props.engineId, connectionId: edgeId });
-    }
-    edgeContextMenu.value = null;
-}
-
-function edgeColor(streamType?: string): string {
-    switch (streamType) {
-        case 'audio/pcm': return '#3b82f6';
-        case 'muxed/mpegts': return '#f59e0b';
-        case 'video/raw': return '#10b981';
-        default: return '#6b7280';
-    }
-}
-
-/**
- * Validate connections: must be output→input of the same stream type.
- * Handles both drag directions (user can start drag from either side).
- */
-function isValidConnection(connection: Connection): boolean {
-    const srcModule = engine.value?.modules[connection.source!];
-    const tgtModule = engine.value?.modules[connection.target!];
-    const srcPort = srcModule?.ports?.find((p) => p.id === connection.sourceHandle);
-    const tgtPort = tgtModule?.ports?.find((p) => p.id === connection.targetHandle);
-    if (!srcPort || !tgtPort) return false;
-
-    // Must be one output and one input
-    const hasOutput = srcPort.direction === 'output' || tgtPort.direction === 'output';
-    const hasInput = srcPort.direction === 'input' || tgtPort.direction === 'input';
-    if (!hasOutput || !hasInput) return false;
-
-    // Stream types must match
-    if (srcPort.streamType !== tgtPort.streamType) return false;
-
-    // Check maxConnections (0 = disabled, -1 = unlimited)
-    const connections = engine.value?.connections ?? [];
-    for (const port of [srcPort, tgtPort]) {
-        const max = (port as any).maxConnections ?? -1;
-        if (max === 0) return false;
-        if (max > 0) {
-            const moduleId = port === srcPort ? connection.source! : connection.target!;
-            const count = connections.filter((c: any) =>
-                (c.sourceModuleId === moduleId && c.sourcePortId === port.id) ||
-                (c.sinkModuleId === moduleId && c.sinkPortId === port.id)
-            ).length;
-            if (count >= max) return false;
-        }
-    }
-
-    return true;
-}
-
-function onConnect(connection: Connection) {
-    if (!isValidConnection(connection)) return;
-
-    // Normalise: ensure source is the output port, target is the input port
-    const srcModule = engine.value?.modules[connection.source!];
-    const srcPort = srcModule?.ports?.find((p) => p.id === connection.sourceHandle);
-
-    let outModule = connection.source!;
-    let outPort = connection.sourceHandle!;
-    let inModule = connection.target!;
-    let inPort = connection.targetHandle!;
-
-    // If user dragged from input to output, swap
-    if (srcPort?.direction === 'input') {
-        outModule = connection.target!;
-        outPort = connection.targetHandle!;
-        inModule = connection.source!;
-        inPort = connection.sourceHandle!;
-    }
-
-    const edgeId = `${outModule}:${outPort}-${inModule}:${inPort}`;
-    const outMod = engine.value?.modules[outModule];
-    const outP = outMod?.ports?.find((p) => p.id === outPort);
-    const colour = edgeColor(outP?.streamType);
-
-    addEdges([{ id: edgeId, source: outModule, sourceHandle: outPort, target: inModule, targetHandle: inPort, animated: true, interactionWidth: 20, style: { stroke: colour } }]);
-    socket.emit('routing:connect', { engineId: props.engineId, sourceModuleId: outModule, sourcePortId: outPort, sinkModuleId: inModule, sinkPortId: inPort });
-}
-
-function onNodeDragStop(event: { node: Node }) {
-    socket.emit('module:position', { engineId: props.engineId, moduleId: event.node.id, position: event.node.position });
-}
-
+// --- Module add ---
 function onAddModule(plugin: { pluginId: string }, displayName: string) {
-    socket.emit('module:add', { engineId: props.engineId, pluginId: plugin.pluginId, displayName, position: { x: 200 + Math.random() * 200, y: 100 + Math.random() * 200 } });
+    graphAddModule(plugin, displayName);
     showAddPanel.value = false;
 }
 
-// Context menu — use @node-context-menu on VueFlow (NOT composable)
-let contextMenuOpenedAt = 0;
-function onNodeContextMenu(payload: { event: MouseEvent | TouchEvent; node: Node }) {
-    payload.event.preventDefault();
-    const e = payload.event;
-    const x = 'clientX' in e ? e.clientX : e.touches[0].clientX;
-    const y = 'clientY' in e ? e.clientY : e.touches[0].clientY;
-    contextMenu.value = { x, y, moduleId: payload.node.id };
-    contextMenuOpenedAt = Date.now();
-}
-function openContextMenuFromTouch(id: string, e: TouchEvent) {
-    const touch = e.touches[0] ?? e.changedTouches[0];
-    if (touch) {
-        contextMenu.value = { moduleId: id, x: touch.clientX, y: touch.clientY };
-        contextMenuOpenedAt = Date.now();
+// --- Edge delete (from edge context menu) ---
+function onEdgeContextAction(action: string) {
+    if (action === 'delete' && edgeContextMenu.value) {
+        onEdgeDelete(edgeContextMenu.value.edgeId);
     }
-}
-function dismissContextMenus() {
-    // Ignore pane clicks within 300ms of opening (prevents touch race)
-    if (Date.now() - contextMenuOpenedAt < 300) return;
-    contextMenu.value = null;
     edgeContextMenu.value = null;
-    showModuleList.value = false;
 }
 
-const contextMenuItems = computed<MenuItem[]>(() => {
-    const mod = contextMenu.value ? engine.value?.modules[contextMenu.value.moduleId] : null;
-    const isEnabled = mod?.enabled !== false;
-    const moduleId = contextMenu.value?.moduleId ?? '';
-    const isFocused = focusedModules.value.has(moduleId);
-    // SVG inner content for icons (stroke-based, 24x24 viewBox)
-    const iconRestart = '<polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />';
-    const iconSettings = '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>';
-    const iconClone = '<rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />';
-    const iconDisable = '<circle cx="12" cy="12" r="10" /><line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />';
-    const iconEnable = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />';
-    const iconFocus = '<circle cx="12" cy="12" r="10" /><circle cx="12" cy="12" r="6" /><circle cx="12" cy="12" r="2" />';
-    const iconDelete = '<polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />';
-
-    return [
-        { label: 'Restart', action: 'restart', icon: iconRestart },
-        { label: 'Settings', action: 'settings', icon: iconSettings },
-        { label: 'Clone', action: 'clone', icon: iconClone },
-        { label: '', action: '', divider: true },
-        isEnabled
-            ? { label: 'Disable', action: 'disable', icon: iconDisable }
-            : { label: 'Enable', action: 'enable', icon: iconEnable },
-        { label: '', action: '', divider: true },
-        isFocused
-            ? { label: 'Default', action: 'unfocus', icon: iconFocus }
-            : { label: 'Focus', action: 'focus', icon: iconFocus },
-        { label: '', action: '', divider: true },
-        { label: 'Delete', action: 'delete', danger: true, icon: iconDelete },
-    ];
-});
-
-function onContextAction(action: string) {
-    if (!contextMenu.value) return;
-    const moduleId = contextMenu.value.moduleId;
-    switch (action) {
-        case 'restart': socket.emit('module:restart', { engineId: props.engineId, moduleId }); break;
-        case 'settings': settingsPanel.value = { moduleId }; break;
-        case 'clone': {
-            const mod = engine.value?.modules[moduleId];
-            if (mod) {
-                socket.emit('module:add', {
-                    engineId: props.engineId,
-                    pluginId: mod.pluginId,
-                    displayName: mod.displayName + ' (copy)',
-                    position: { x: (mod.position?.x ?? 100) + 50, y: (mod.position?.y ?? 100) + 50 },
-                    settings: { ...mod.settings },
-                });
-            }
-            break;
-        }
-        case 'enable': socket.emit('module:toggle', { engineId: props.engineId, moduleId, enabled: true }); break;
-        case 'disable': socket.emit('module:toggle', { engineId: props.engineId, moduleId, enabled: false }); break;
-        case 'focus': {
-            const s = new Set(focusedModules.value);
-            s.add(moduleId);
-            focusedModules.value = s;
-            break;
-        }
-        case 'unfocus': {
-            const s = new Set(focusedModules.value);
-            s.delete(moduleId);
-            focusedModules.value = s;
-            // If no modules are focused, auto-disable focus mode
-            if (s.size === 0) focusMode.value = false;
-            break;
-        }
-        case 'delete': socket.emit('module:delete', { engineId: props.engineId, moduleId }); break;
-    }
-    contextMenu.value = null;
-}
-
+// --- Module list focus ---
 function focusModule(moduleId: string) {
-    const node = getNodes.value.find((n: Node) => n.id === moduleId);
-    if (node) { setCenter(node.position.x + 100, node.position.y + 40, { zoom: 1, duration: 300 }); }
-    else {
-        const mod = engine.value?.modules[moduleId];
-        if (mod?.position) setCenter(mod.position.x + 100, mod.position.y + 40, { zoom: 1, duration: 300 });
-        else fitView({ padding: 0.2 });
-    }
+    graphFocusModule(moduleId);
     showModuleList.value = false;
 }
 
-function resetView() { setCenter(0, 0, { zoom: 1 }); }
+// --- Dismiss all menus on pane click ---
+function dismissAll() {
+    dismissContextMenus();
+    showModuleList.value = false;
+}
 </script>
 
 <template>
@@ -433,7 +144,7 @@ function resetView() { setCenter(0, 0, { zoom: 1 }); }
             <MrButton size="sm" variant="secondary" @click="fitView({ padding: 0.2 })">Fit View</MrButton>
             <MrButton size="sm" variant="secondary" @click="showLogs = !showLogs">Logs</MrButton>
             <MrButton size="sm" :variant="focusMode ? 'primary' : 'secondary'" @click="focusMode = !focusMode">
-                {{ focusMode ? 'Focus' : 'Focus' }}
+                Focus
             </MrButton>
 
             <!-- Module finder -->
@@ -469,7 +180,7 @@ function resetView() { setCenter(0, 0, { zoom: 1 }); }
                  fit-view-on-init :is-valid-connection="isValidConnection"
                  @connect="onConnect" @edge-click="onEdgeClick" @edge-context-menu="onEdgeContextMenu"
                  @node-context-menu="onNodeContextMenu" @node-drag-stop="onNodeDragStop"
-                 @pane-click="dismissContextMenus">
+                 @pane-click="dismissAll">
             <template #node-module="{ data, id }">
                 <ModuleNode :data="data" @dblclick="settingsPanel = { moduleId: id }"
                             @longpress="(e: TouchEvent) => openContextMenuFromTouch(id, e)" />

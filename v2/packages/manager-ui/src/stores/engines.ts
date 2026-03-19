@@ -38,6 +38,7 @@ export interface ModuleState {
     configSchema?: Record<string, unknown>;
     statusSections?: StatusSectionDef[];
     statusData?: Record<string, Record<string, string | number | boolean>>;
+    focused?: boolean;
 }
 
 export interface ConnectionState {
@@ -99,6 +100,7 @@ export const useEngineStore = defineStore('engines', () => {
                 icon: mod.icon as string | undefined,
                 statusSections: mod.statusSections as StatusSectionDef[] | undefined,
                 statusData: mod.statusData as Record<string, Record<string, string | number | boolean>> | undefined,
+                focused: (mod.focused as boolean) ?? false,
             };
         }
 
