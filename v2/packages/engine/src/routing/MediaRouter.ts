@@ -1,4 +1,4 @@
-import type { ModulePort, StreamType } from '@media-router/shared-types';
+import type { ModulePort, StreamType, ChannelMapEntry } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
@@ -16,15 +16,19 @@ export interface Connection {
     sinkModuleId: string;
     sinkPortId: string;
     streamType: StreamType;
+    /** Per-channel routing rules (audio/pcm only). */
+    channelMap?: ChannelMapEntry[];
 }
 
 export interface ActiveHandle {
     connectionId: string;
-    type: 'loopback' | 'udp';
+    type: 'loopback' | 'udp' | 'pw-link';
     /** PulseAudio module ID for loopback connections. */
     paModuleId?: number;
     /** UDP port used for MPEG-TS multicast connections. */
     udpPort?: number;
+    /** pw-link IDs for per-channel connections. */
+    pwLinkIds?: number[];
 }
 
 export interface CompatibilityResult {
@@ -93,6 +97,7 @@ export class MediaRouter {
         sourcePortId: string,
         sinkModuleId: string,
         sinkPortId: string,
+        channelMap?: ChannelMapEntry[],
     ): Promise<string> {
         const sourcePort = this.getPort(sourceModuleId, sourcePortId);
         const sinkPort = this.getPort(sinkModuleId, sinkPortId);
@@ -143,6 +148,7 @@ export class MediaRouter {
             sinkModuleId,
             sinkPortId,
             streamType: sourcePort.streamType,
+            channelMap: channelMap?.length ? channelMap : undefined,
         };
         this.connections.set(connId, conn);
 
@@ -175,6 +181,42 @@ export class MediaRouter {
             this.handles.delete(connId);
         }
         return existed;
+    }
+
+    /**
+     * Update the channel map on an existing connection.
+     * Tears down the current audio link and re-creates it with the new map.
+     */
+    async updateChannelMap(connId: string, channelMap?: ChannelMapEntry[]): Promise<void> {
+        const conn = this.connections.get(connId);
+        if (!conn) {
+            log.warn({ connectionId: connId }, 'Cannot update channel map — connection not found');
+            return;
+        }
+        if (conn.streamType !== 'audio/pcm') {
+            log.warn({ connectionId: connId }, 'Channel map only applies to audio/pcm connections');
+            return;
+        }
+
+        // Tear down existing handle
+        const handle = this.handles.get(connId);
+        if (handle) {
+            await this.teardownConnection(handle, conn, true);
+            this.handles.delete(connId);
+        }
+
+        // Update the connection's channel map
+        conn.channelMap = channelMap?.length ? channelMap : undefined;
+
+        // Re-execute with new channel map
+        try {
+            const newHandle = await this.executeConnection(conn);
+            if (newHandle) {
+                this.handles.set(connId, newHandle);
+            }
+        } catch (err) {
+            log.error({ err, connectionId: connId }, 'Failed to re-execute connection with new channel map');
+        }
     }
 
     /** Remove all connections (used on engine stop). */
@@ -291,6 +333,12 @@ export class MediaRouter {
             return null;
         }
 
+        // If channel map is specified, use pw-link for per-channel routing
+        if (conn.channelMap?.length) {
+            return this.executePwLinkConnection(conn, sourceNodes.source, sinkNodes.sink);
+        }
+
+        // Default: use module-loopback (PipeWire handles channel matching)
         log.info({ source: sourceNodes.source, sink: sinkNodes.sink }, 'Creating audio loopback');
 
         const paModuleId = await this.pipeWire.loadLoopback(
@@ -305,6 +353,69 @@ export class MediaRouter {
             connectionId: conn.id,
             type: 'loopback',
             paModuleId,
+        };
+    }
+
+    /**
+     * Execute per-channel routing using pw-link.
+     * Each ChannelMapEntry creates a direct port-to-port link.
+     */
+    private async executePwLinkConnection(
+        conn: Connection,
+        sourcePwNode: string,
+        sinkPwNode: string,
+    ): Promise<ActiveHandle | null> {
+        if (!this.pipeWire) return null;
+
+        log.info({
+            connectionId: conn.id,
+            source: sourcePwNode,
+            sink: sinkPwNode,
+            mappings: conn.channelMap!.length,
+        }, 'Creating per-channel pw-link connections');
+
+        // First, remove any existing direct links between these nodes
+        // (from previous channel maps or stale connections)
+        this.pipeWire.pwUnlinkAllBetween(sourcePwNode, sinkPwNode);
+
+        // Discover actual port names from PipeWire
+        const srcPorts = this.pipeWire.listPorts(sourcePwNode, 'output');
+        const sinkPorts = this.pipeWire.listPorts(sinkPwNode, 'input');
+
+        log.info({ srcPorts, sinkPorts }, 'Discovered PipeWire ports');
+
+        const linkIds: number[] = [];
+
+        for (const entry of conn.channelMap!) {
+            if (entry.gain !== undefined && entry.gain !== 1.0) {
+                log.warn({ srcCh: entry.srcChannel, dstCh: entry.dstChannel, gain: entry.gain },
+                    'Per-channel gain is not supported with pw-link — gain ignored');
+            }
+            const srcPort = srcPorts[entry.srcChannel];
+            const sinkPort = sinkPorts[entry.dstChannel];
+
+            if (!srcPort) {
+                log.warn({ srcCh: entry.srcChannel, available: srcPorts.length }, 'Source channel out of range');
+                continue;
+            }
+            if (!sinkPort) {
+                log.warn({ dstCh: entry.dstChannel, available: sinkPorts.length }, 'Sink channel out of range');
+                continue;
+            }
+
+            try {
+                const linkId = this.pipeWire.pwLink(srcPort, sinkPort);
+                linkIds.push(linkId);
+                log.info({ src: srcPort, dst: sinkPort, linkId }, 'Created pw-link');
+            } catch (err) {
+                log.error({ err, src: srcPort, dst: sinkPort }, 'Failed to create pw-link');
+            }
+        }
+
+        return {
+            connectionId: conn.id,
+            type: 'pw-link',
+            pwLinkIds: linkIds,
         };
     }
 
@@ -378,6 +489,11 @@ export class MediaRouter {
         if (handle.type === 'loopback' && handle.paModuleId !== undefined && this.pipeWire) {
             log.info({ paModuleId: handle.paModuleId }, 'Removing loopback');
             await this.pipeWire.unloadModule(handle.paModuleId);
+        } else if (handle.type === 'pw-link' && handle.pwLinkIds?.length && this.pipeWire) {
+            log.info({ connectionId: handle.connectionId, links: handle.pwLinkIds.length }, 'Removing pw-link connections');
+            for (const linkId of handle.pwLinkIds) {
+                this.pipeWire.pwUnlink(linkId);
+            }
         } else if (handle.type === 'udp') {
             log.info({ connectionId: handle.connectionId, udpPort: handle.udpPort }, 'Removing UDP connection');
 

@@ -9,6 +9,8 @@ import AddModulePanel from './AddModulePanel.vue';
 import MrContextMenu from '@/components/common/MrContextMenu.vue';
 import MrButton from '@/components/common/MrButton.vue';
 import LogViewer from './LogViewer.vue';
+import ChannelMapEditor from './ChannelMapEditor.vue';
+import EdgeLabelEditor from './EdgeLabelEditor.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import { useFocusMode } from '@/composables/useFocusMode';
@@ -28,8 +30,10 @@ provideToChildren();
 
 const {
     contextMenu, edgeContextMenu, settingsPanel, contextMenuItems,
+    edgeMenuItems, editingEdgeLabel, channelMapEdge,
     onNodeContextMenu, openContextMenuFromTouch, dismissContextMenus,
     onContextAction, onEdgeClick, onEdgeContextMenu,
+    onEdgeContextAction, saveEdgeLabel,
 } = useContextMenu(() => props.engineId, engine, focusedModules, setModuleFocused);
 
 const {
@@ -93,12 +97,9 @@ function onAddModule(plugin: { pluginId: string }, displayName: string) {
     showAddPanel.value = false;
 }
 
-// --- Edge delete (from edge context menu) ---
-function onEdgeContextAction(action: string) {
-    if (action === 'delete' && edgeContextMenu.value) {
-        onEdgeDelete(edgeContextMenu.value.edgeId);
-    }
-    edgeContextMenu.value = null;
+// --- Edge context action wrapper (passes onEdgeDelete) ---
+function handleEdgeAction(action: string) {
+    onEdgeContextAction(action, onEdgeDelete);
 }
 
 // --- Module list focus ---
@@ -205,12 +206,24 @@ function dismissAll() {
                        @action="onContextAction" @close="contextMenu = null" />
 
         <MrContextMenu v-if="edgeContextMenu"
-                       :items="[{ label: 'Delete Connection', action: 'delete', danger: true, icon: '<polyline points=&quot;3 6 5 6 21 6&quot; /><path d=&quot;M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6&quot; /><path d=&quot;M10 11v6&quot; /><path d=&quot;M14 11v6&quot; />' }]"
+                       :items="edgeMenuItems"
                        :x="edgeContextMenu.x" :y="edgeContextMenu.y"
-                       @action="onEdgeContextAction" @close="edgeContextMenu = null" />
+                       @action="handleEdgeAction" @close="edgeContextMenu = null" />
+
+        <!-- Edge label editor -->
+        <EdgeLabelEditor v-if="editingEdgeLabel"
+                         :label="editingEdgeLabel.label"
+                         @save="(l: string) => { editingEdgeLabel!.label = l; saveEdgeLabel(); }"
+                         @close="editingEdgeLabel = null" />
 
         <ModuleSettingsPanel v-if="settingsPanel" :engine-id="engineId" :module-id="settingsPanel.moduleId"
                              @close="settingsPanel = null" />
+
+        <!-- Channel Map Editor -->
+        <ChannelMapEditor v-if="channelMapEdge"
+                          :engine-id="engineId"
+                          :connection-id="channelMapEdge"
+                          @close="channelMapEdge = null" />
     </div>
 </template>
 

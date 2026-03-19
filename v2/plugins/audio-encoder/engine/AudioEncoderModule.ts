@@ -117,7 +117,7 @@ export class AudioEncoderModule extends GstPluginBase {
         let tail: string;
         switch (codec) {
             case 'aac':
-                tail = `avenc_aac bitrate=${bitrate * 1000} ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`;
+                tail = `avenc_aac bitrate=${bitrate * 1000} aac-is=false aac-ms=false ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`;
                 break;
             case 'opus':
             default: {

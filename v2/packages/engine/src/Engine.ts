@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { ModuleRuntimeState } from '@media-router/shared-types';
+import type { ModuleRuntimeState, ChannelMapEntry } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 
 const log = createLogger('Engine');
@@ -193,8 +193,12 @@ export class Engine {
                     break;
                 }
                 case 'routingConnect': {
-                    const { sourceModuleId, sourcePortId, sinkModuleId, sinkPortId } = cmd as Record<string, string>;
-                    this.mediaRouter.createConnection(sourceModuleId, sourcePortId, sinkModuleId, sinkPortId)
+                    const { sourceModuleId, sourcePortId, sinkModuleId, sinkPortId, channelMap } = cmd as {
+                        sourceModuleId: string; sourcePortId: string;
+                        sinkModuleId: string; sinkPortId: string;
+                        channelMap?: ChannelMapEntry[];
+                    };
+                    this.mediaRouter.createConnection(sourceModuleId, sourcePortId, sinkModuleId, sinkPortId, channelMap)
                         .then((connId) => {
                             log.info({ connectionId: connId }, 'Live connect');
                             this.lcpServer.broadcastConfigUpdate([
@@ -202,6 +206,13 @@ export class Engine {
                             ]);
                         })
                         .catch((err) => log.error({ err }, 'Live connect failed'));
+                    break;
+                }
+                case 'routingUpdate': {
+                    const { connectionId, channelMap } = cmd as { connectionId: string; channelMap?: ChannelMapEntry[] };
+                    log.info({ connectionId, hasChannelMap: !!channelMap?.length }, 'Routing update');
+                    this.mediaRouter.updateChannelMap(connectionId, channelMap)
+                        .catch((err) => log.error({ err, connectionId }, 'Routing update failed'));
                     break;
                 }
                 case 'routingDisconnect': {
@@ -398,6 +409,7 @@ export class Engine {
             sourcePortId: string;
             sinkModuleId: string;
             sinkPortId: string;
+            channelMap?: ChannelMapEntry[];
         }>;
 
         if (connections.length > 0) {
@@ -424,6 +436,7 @@ export class Engine {
                     await this.mediaRouter.createConnection(
                         conn.sourceModuleId, conn.sourcePortId,
                         conn.sinkModuleId, conn.sinkPortId,
+                        conn.channelMap,
                     );
                     log.info({ source: `${conn.sourceModuleId}:${conn.sourcePortId}`, sink: `${conn.sinkModuleId}:${conn.sinkPortId}` }, 'Connected');
                 } catch (err) {
@@ -438,7 +451,6 @@ export class Engine {
 
             // Apply audio connections
             for (const conn of audioConns) {
-                // Only connect if both endpoints are running (or enabled — audio output is always running)
                 const src = this.moduleManager.get(conn.sourceModuleId);
                 const sink = this.moduleManager.get(conn.sinkModuleId);
                 if (!src?.running || !sink?.running) {
@@ -451,6 +463,7 @@ export class Engine {
                         conn.sourcePortId,
                         conn.sinkModuleId,
                         conn.sinkPortId,
+                        conn.channelMap,
                     );
                     log.info({ source: `${conn.sourceModuleId}:${conn.sourcePortId}`, sink: `${conn.sinkModuleId}:${conn.sinkPortId}` }, 'Connected');
                 } catch (err) {

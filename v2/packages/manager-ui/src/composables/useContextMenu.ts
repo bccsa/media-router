@@ -4,8 +4,10 @@ import type { EngineState } from '@/stores/engines';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { useSocketStore } from '@/stores/socket';
 
-// SVG icon paths (stroke-based, 24x24 viewBox)
+// SVG icon paths (stroke-based, 24×24 viewBox)
 const icons = {
+    editLabel: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
+    channelMap: '<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>',
     restart: '<polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
     clone: '<rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />',
@@ -130,16 +132,73 @@ export function useContextMenu(
         edgeContextMenu.value = { x, y, edgeId: payload.edge.id };
     }
 
+    // --- Edge context menu items ---
+    const editingEdgeLabel = ref<{ edgeId: string; label: string } | null>(null);
+    const channelMapEdge = ref<string | null>(null);
+
+    const edgeMenuItems = computed<MenuItem[]>(() => {
+        const conn = edgeContextMenu.value
+            ? engine.value?.connections.find((c) => c.id === edgeContextMenu.value!.edgeId)
+            : null;
+        const isAudio = conn ? engine.value?.modules[conn.sourceModuleId]?.ports
+            ?.find((p) => p.id === conn.sourcePortId)?.streamType === 'audio/pcm' : false;
+
+        const items: MenuItem[] = [
+            { label: 'Edit Label', action: 'editLabel', icon: icons.editLabel },
+        ];
+        if (isAudio) {
+            items.push({ label: 'Channel Map', action: 'channelMap', icon: icons.channelMap });
+        }
+        items.push({ label: '', action: '', divider: true });
+        items.push({ label: 'Delete Connection', action: 'delete', danger: true, icon: icons.delete });
+        return items;
+    });
+
+    function onEdgeContextAction(action: string, onDelete: (edgeId: string) => void) {
+        if (!edgeContextMenu.value) return;
+        const edgeId = edgeContextMenu.value.edgeId;
+
+        switch (action) {
+            case 'delete':
+                onDelete(edgeId);
+                break;
+            case 'editLabel': {
+                const conn = engine.value?.connections.find((c) => c.id === edgeId);
+                editingEdgeLabel.value = { edgeId, label: conn?.label ?? '' };
+                break;
+            }
+            case 'channelMap':
+                channelMapEdge.value = edgeId;
+                break;
+        }
+        edgeContextMenu.value = null;
+    }
+
+    function saveEdgeLabel() {
+        if (!editingEdgeLabel.value) return;
+        socket.emit('routing:update', {
+            engineId: engineId(),
+            connectionId: editingEdgeLabel.value.edgeId,
+            label: editingEdgeLabel.value.label || undefined,
+        });
+        editingEdgeLabel.value = null;
+    }
+
     return {
         contextMenu,
         edgeContextMenu,
         settingsPanel,
         contextMenuItems,
+        edgeMenuItems,
+        editingEdgeLabel,
+        channelMapEdge,
         onNodeContextMenu,
         openContextMenuFromTouch,
         dismissContextMenus,
         onContextAction,
         onEdgeClick,
         onEdgeContextMenu,
+        onEdgeContextAction,
+        saveEdgeLabel,
     };
 }

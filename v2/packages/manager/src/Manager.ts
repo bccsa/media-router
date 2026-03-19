@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { createLogger } from '@media-router/shared-types';
+import type { ChannelMapEntry } from '@media-router/shared-types';
 import { ConfigStore } from './config/ConfigStore.js';
 import { EngineConnectionManager } from './engines/EngineConnectionManager.js';
 
@@ -378,6 +379,10 @@ export class Manager {
                 if (!payload?.engineId || !payload?.connectionId) return;
                 this.handleRoutingDisconnect(payload);
             });
+            socket.on('routing:update', (payload: any) => {
+                if (!payload?.engineId || !payload?.connectionId) return;
+                this.handleRoutingUpdate(payload);
+            });
 
             socket.on('disconnect', () => {
                 log.info({ socketId: socket.id }, 'browser disconnected');
@@ -577,21 +582,27 @@ export class Manager {
         sourcePortId: string;
         sinkModuleId: string;
         sinkPortId: string;
+        label?: string;
+        channelMap?: ChannelMapEntry[];
     }): void {
         const engine = this.configStore.getEngine(payload.engineId);
         if (!engine?.active_profile) return;
 
         const connId = `${payload.sourceModuleId}:${payload.sourcePortId}-${payload.sinkModuleId}:${payload.sinkPortId}`;
 
+        const connData: Record<string, unknown> = {
+            id: connId,
+            sourceModuleId: payload.sourceModuleId,
+            sourcePortId: payload.sourcePortId,
+            sinkModuleId: payload.sinkModuleId,
+            sinkPortId: payload.sinkPortId,
+        };
+        if (payload.label) connData.label = payload.label;
+        if (payload.channelMap?.length) connData.channelMap = payload.channelMap;
+
         this.configStore.modifyProfileConfig(payload.engineId, engine.active_profile as string, (config) => {
             const connections = (config.connections ?? []) as Array<Record<string, unknown>>;
-            connections.push({
-                id: connId,
-                sourceModuleId: payload.sourceModuleId,
-                sourcePortId: payload.sourcePortId,
-                sinkModuleId: payload.sinkModuleId,
-                sinkPortId: payload.sinkPortId,
-            });
+            connections.push(connData);
             config.connections = connections;
             return config;
         });
@@ -604,6 +615,7 @@ export class Manager {
                 sourcePortId: payload.sourcePortId,
                 sinkModuleId: payload.sinkModuleId,
                 sinkPortId: payload.sinkPortId,
+                channelMap: payload.channelMap,
             }, { guaranteeDelivery: true });
         }
 
@@ -613,13 +625,7 @@ export class Manager {
                 {
                     op: 'add',
                     path: '/connections/-',
-                    value: {
-                        id: connId,
-                        sourceModuleId: payload.sourceModuleId,
-                        sourcePortId: payload.sourcePortId,
-                        sinkModuleId: payload.sinkModuleId,
-                        sinkPortId: payload.sinkPortId,
-                    },
+                    value: connData,
                 },
             ],
         });
@@ -651,6 +657,57 @@ export class Manager {
             engineId: payload.engineId,
             patch: [{ op: 'replace', path: '/connections', value: updatedConfig?.connections ?? [] }],
         });
+    }
+
+    /**
+     * Update metadata on an existing connection (label, channelMap) without
+     * disconnecting/reconnecting.
+     */
+    private handleRoutingUpdate(payload: {
+        engineId: string;
+        connectionId: string;
+        label?: string;
+        channelMap?: ChannelMapEntry[];
+    }): void {
+        const engine = this.configStore.getEngine(payload.engineId);
+        if (!engine?.active_profile) return;
+
+        const updatedConfig = this.configStore.modifyProfileConfig(payload.engineId, engine.active_profile as string, (config) => {
+            const connections = (config.connections ?? []) as Array<Record<string, unknown>>;
+            const conn = connections.find((c) => c.id === payload.connectionId);
+            if (!conn) return config;
+
+            if ('label' in payload) conn.label = payload.label;
+            if ('channelMap' in payload) conn.channelMap = payload.channelMap;
+
+            config.connections = connections;
+            return config;
+        });
+
+        // Forward channelMap to engine for live re-routing
+        if ('channelMap' in payload && this.engineManager.isEngineOnline(payload.engineId)) {
+            this.engineManager.sendToEngine(payload.engineId, 'command', {
+                command: 'routingUpdate',
+                connectionId: payload.connectionId,
+                channelMap: payload.channelMap,
+            }, { guaranteeDelivery: true });
+        }
+
+        // Broadcast patch to browsers — use the config returned from the atomic transaction
+        const patchOps: Array<{ op: string; path: string; value: unknown }> = [];
+        const connections = (updatedConfig?.connections ?? []) as Array<Record<string, unknown>>;
+        const idx = connections.findIndex((c) => c.id === payload.connectionId);
+        if (idx >= 0) {
+            if ('label' in payload) {
+                patchOps.push({ op: 'replace', path: `/connections/${idx}/label`, value: payload.label });
+            }
+            if ('channelMap' in payload) {
+                patchOps.push({ op: 'replace', path: `/connections/${idx}/channelMap`, value: payload.channelMap });
+            }
+        }
+        if (patchOps.length > 0) {
+            this.io.emit('engine:update', { engineId: payload.engineId, patch: patchOps });
+        }
     }
 
     // --- Plugin listing ---

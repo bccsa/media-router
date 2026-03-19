@@ -41,12 +41,21 @@ export interface ModuleState {
     focused?: boolean;
 }
 
+/** Mirrors @media-router/shared-types ChannelMapEntry (browser can't import Node packages). */
+export interface ChannelMapEntry {
+    srcChannel: number;
+    dstChannel: number;
+    gain?: number;
+}
+
 export interface ConnectionState {
     id: string;
     sourceModuleId: string;
     sourcePortId: string;
     sinkModuleId: string;
     sinkPortId: string;
+    label?: string;
+    channelMap?: ChannelMapEntry[];
 }
 
 export interface SystemStats {

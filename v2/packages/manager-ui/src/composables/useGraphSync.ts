@@ -85,7 +85,7 @@ export function useGraphSync(
             const srcPort = srcModule?.ports?.find((p: any) => p.id === (conn as any).sourcePortId);
             const color = edgeColor(srcPort?.streamType ?? (conn as any).streamType);
             const dimmed = isEdgeDimmed((conn as any).sourceModuleId, (conn as any).sinkModuleId);
-            desired.set((conn as any).id, {
+            const edgeData: any = {
                 id: (conn as any).id,
                 source: (conn as any).sourceModuleId,
                 sourceHandle: (conn as any).sourcePortId,
@@ -94,7 +94,16 @@ export function useGraphSync(
                 animated: true,
                 interactionWidth: 20,
                 style: { stroke: color, opacity: dimmed ? 0.1 : 1, transition: 'opacity 0.2s ease' },
-            });
+            };
+            // Add label if the connection has one
+            if (conn.label) {
+                edgeData.label = conn.label;
+                edgeData.labelStyle = { fill: 'var(--text-secondary)', fontSize: '10px' };
+                edgeData.labelBgStyle = { fill: 'var(--bg-card)', fillOpacity: 0.9 };
+                edgeData.labelBgPadding = [4, 2] as [number, number];
+                edgeData.labelBgBorderRadius = 4;
+            }
+            desired.set((conn as any).id, edgeData);
         }
 
         const currentEdgeIds = new Set(getEdges.value.map(e => e.id));
@@ -108,7 +117,12 @@ export function useGraphSync(
 
         for (const edge of getEdges.value) {
             const d = desired.get(edge.id);
-            if (d) edge.style = d.style;
+            if (d) {
+                edge.style = d.style;
+                edge.label = d.label ?? '';
+                if (d.labelStyle) edge.labelStyle = d.labelStyle;
+                if (d.labelBgStyle) edge.labelBgStyle = d.labelBgStyle;
+            }
         }
     }, { immediate: true });
 

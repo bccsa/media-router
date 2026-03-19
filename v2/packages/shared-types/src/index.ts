@@ -110,6 +110,19 @@ export interface ModulePort {
     userConfigurable?: boolean;
 }
 
+// --- Connections ------------------------------------------------------------
+
+/** A single channel mapping entry: source channel → destination channel. */
+export interface ChannelMapEntry {
+    /** 0-indexed source channel. */
+    srcChannel: number;
+    /** 0-indexed destination channel. */
+    dstChannel: number;
+    /** Optional per-channel gain (0.0–2.0, default 1.0). */
+    gain?: number;
+}
+
+
 // --- Module Runtime State ---------------------------------------------------
 
 /** Overall module health for the state icon. */

@@ -58,6 +58,7 @@ This plan builds Media Router v2.0 from scratch in 15 sequential phases. Each ph
 | 6 | Manager Web UI | Routing editor, engine dashboard, profiles, settings, component library | 4 weeks |
 | 7 | Protocol Plugins — SRT & RIST | SrtInput, SrtOutput, RistInput, RistOutput | 2 weeks |
 | 8 | Protocol Plugins — HLS & Stream Probing | HlsPlayer, fMP4 transmux, MPEG-TS probing | 2 weeks |
+| 8B | Audio Channel Mapping & Link Metadata | Per-channel routing, link labels, channel map editor | 3 weeks |
 | 9 | Audio Processing Plugins | N-1 Mixer, Sound Processor, Sound Ducking | 2 weeks |
 | 10 | Local Control Panel | Operator mixer with faders, VU meters, mute | 2 weeks |
 | 11 | Profile Manager App | Engine-side manager connection config (port 8082) | 1 week |
@@ -66,7 +67,7 @@ This plan builds Media Router v2.0 from scratch in 15 sequential phases. Each ph
 | 14 | Observability & Logging | Structured logging, Prometheus metrics, health checks | 2 weeks |
 | 15 | Hardening & Deployment | 72h soak tests, Debian packages, Docker, docs | 3 weeks |
 
-**Total estimated: 35 weeks**
+**Total estimated: 38 weeks**
 
 ---
 
@@ -429,6 +430,124 @@ v2/
 - [ ] SoundProcessor applies EQ + compressor + gate audibly
 - [ ] SoundDucking reduces main audio when sidechain is active
 - [ ] All processing params live-updatable without pipeline restart
+
+---
+
+### Phase 8B — Audio Channel Mapping & Link Metadata
+
+**Goal:** Per-connection channel remapping between modules, user-editable link labels, and a visual channel map editor. This enables routing individual channels from multi-channel sources (e.g. 16-ch audio interface → stereo encoder) and provides link documentation for complex routing setups.
+
+#### Architecture
+
+**Data model:**
+
+Each connection gets two new optional fields stored alongside existing `sourceModuleId`, `sinkModuleId`, etc. in the profile config:
+
+```typescript
+interface Connection {
+    id: string;
+    sourceModuleId: string;
+    sourcePortId: string;
+    sinkModuleId: string;
+    sinkPortId: string;
+    // NEW:
+    label?: string;                   // User-editable text displayed on the link
+    channelMap?: ChannelMapEntry[];   // Per-channel routing rules
+}
+
+interface ChannelMapEntry {
+    srcChannel: number;   // 0-indexed source channel
+    dstChannel: number;   // 0-indexed destination channel
+    gain?: number;        // Optional per-channel gain (0.0–2.0, default 1.0)
+}
+```
+
+**Channel map examples:**
+
+| Scenario | channelMap |
+|----------|-----------|
+| Stereo 1:1 (default, no map needed) | `undefined` or `[]` |
+| Mono from L channel only | `[{src:0, dst:0}]` |
+| Swap L/R | `[{src:0, dst:1}, {src:1, dst:0}]` |
+| 16ch → stereo (ch 15,16) | `[{src:14, dst:0}, {src:15, dst:1}]` |
+| Mono mix-down | `[{src:0, dst:0, gain:0.5}, {src:1, dst:0, gain:0.5}]` |
+
+**PipeWire implementation (audio/pcm links):**
+
+When a connection has a `channelMap`, replace the `module-loopback` with a GStreamer remix pipeline:
+
+```
+pulsesrc device=<source>.monitor
+  ! audioconvert
+  ! audio/x-raw,channels=<srcChannels>
+  ! deinterleave name=d
+  d.src_<N> ! queue ! interleave name=i .sink_<M>
+  ...
+  i.
+  ! audioconvert
+  ! pulsesink device=<sink>
+```
+
+For simple cases (just selecting channels without mixing), use `pw-link` to link individual ports:
+
+```bash
+# Link source channel 14 to sink channel 0
+pw-link "MR_PW_audio-input-abc:monitor_14" "MR_PW_audio-encoder-xyz:playback_0"
+```
+
+**MPEG-TS links:**
+
+Channel mapping on MPEG-TS connections is not applicable (the encoded stream is opaque). The `channelMap` field is only relevant for `audio/pcm` stream type connections.
+
+#### Tasks
+
+| # | Task | Details | URS | FDS |
+|---|------|---------|-----|-----|
+| **Data Layer** | | | | |
+| 8B.1 | Connection metadata schema | Add `label` and `channelMap` fields to Connection interface in shared-types. Update Manager's `handleRoutingConnect` to accept optional `label` and `channelMap` in payload. Store in SQLite profile config alongside existing connection fields | — | — |
+| 8B.2 | Connection update event | New Socket.IO event `routing:update` — updates `label` and/or `channelMap` on an existing connection without disconnecting/reconnecting. Manager stores changes and broadcasts JSON Patch to browsers. Also forwards `channelMap` to engine | — | — |
+| 8B.3 | Engine channel map handling | Engine's MediaRouter receives `channelMap` updates. When present: replace `module-loopback` with a channel-remapping pipeline or `pw-link` per-channel connections. When removed: revert to standard loopback | — | — |
+| **PipeWire Channel Routing** | | | | |
+| 8B.4 | Multi-channel null-sink | Update PipeWireManager.loadNullSink to support >2 channels (e.g. 8, 16, 32). Detect source device channel count and create matching null-sink | — | — |
+| 8B.5 | `pw-link` per-channel routing | New method `PipeWireManager.linkChannels(source, sink, channelMap)`. Uses `pw-link` CLI to create individual port-to-port links. Handles port name discovery via `pw-link --output --input` listing. Cleanup: `pw-link -d` to unlink | — | — |
+| 8B.6 | GStreamer remix pipeline (fallback) | For complex cases (gain adjustment, mixing multiple source channels into one dest): spawn a small GStreamer pipeline using `deinterleave`/`interleave`. Managed as a PipeWire resource with ownership tracking | — | — |
+| 8B.7 | Default behaviour | When `channelMap` is `undefined` or empty: use existing `module-loopback` (all channels, 1:1). No behaviour change for existing connections | — | — |
+| **UI — Link Labels** | | | | |
+| 8B.8 | Edge label rendering | Use Vue Flow's edge label API to display `connection.label` on the link line. Styled: small text, themed background pill, positioned at edge midpoint | — | — |
+| 8B.9 | Inline label editing | Double-click on an edge label → inline text input. On blur/Enter: emit `routing:update` with new label. Esc cancels | — | — |
+| 8B.10 | Label in connection creation | When drawing a new connection: optional label input in a small popover before confirming. Can be skipped (empty = no label) | — | — |
+| **UI — Channel Map Editor** | | | | |
+| 8B.11 | Channel map modal | New component `ChannelMapEditor.vue`. Opens from edge context menu → "Channel Map" action. Full-screen modal on mobile, centered modal on desktop | — | — |
+| 8B.12 | Source/dest channel display | Left column: source module name + channel list (CH 1, CH 2, ... CH N). Right column: dest module name + channel list. Channel count read from module's null-sink or device info. User-editable channel labels (e.g. "CH 1" → "Presenter Mic") | — | — |
+| 8B.13 | Drag-to-map interaction | Drag from a source channel dot to a dest channel dot to create a mapping. Visual: animated line follows cursor while dragging. Green line for valid connection, red for invalid | — | — |
+| 8B.14 | Channel map presets | Quick-select presets: "1:1 (pass-through)", "Mono from L", "Mono from R", "Swap L/R", "Mono mix-down". Custom presets saveable per-user | — | — |
+| 8B.15 | Per-channel gain | Each mapping line shows a small gain slider (0%–200%). Default 100%. When gain != 1.0: triggers GStreamer remix pipeline instead of pw-link | — | — |
+| 8B.16 | Apply/Cancel/Reset | Apply button sends `routing:update` with the new channelMap. Cancel reverts. Reset removes all mappings (back to default loopback). Live preview toggle: when on, changes apply immediately as you drag | — | — |
+| **Edge context menu** | | | | |
+| 8B.17 | Channel Map action | Add "Channel Map" to edge right-click menu (only for `audio/pcm` connections). Opens the ChannelMapEditor modal | — | — |
+| 8B.18 | Edit Label action | Add "Edit Label" to edge right-click menu. Opens inline editor on the label | — | — |
+
+#### Acceptance criteria
+
+- [ ] Connection `label` and `channelMap` stored in SQLite and survive browser refresh
+- [ ] Edge labels display on links in routing editor, editable via double-click
+- [ ] Channel map editor shows correct channel count for source and destination modules
+- [ ] Drag-to-map creates valid channel mappings
+- [ ] Stereo → mono mapping works (both channels mixed to one)
+- [ ] 16-channel source → stereo destination works (select any 2 channels)
+- [ ] Channel swap (L↔R) works
+- [ ] Per-channel gain applies correctly
+- [ ] Presets work for common scenarios
+- [ ] Removing channelMap reverts to standard PipeWire loopback
+- [ ] MPEG-TS connections don't show "Channel Map" option
+- [ ] No audio glitches when applying channel map changes live
+- [ ] `pw-link` connections cleaned up on module stop
+
+#### Dependencies
+
+- Phase 5 (Core Audio Plugins) — null-sinks and loopback infrastructure
+- Phase 8 (Audio Processing) — multi-channel pipeline patterns
+- Phase 9 (Manager Web UI) — Vue Flow edge rendering, context menus
 
 ---
 
