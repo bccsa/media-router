@@ -1,0 +1,84 @@
+{
+    "name": "@media-router/plugin-audio-input",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Audio input — captures audio from a PipeWire/PulseAudio source device",
+    "mediaRouter": {
+        "pluginId": "audio-input",
+        "displayName": "Audio Input",
+        "description": "Captures audio from a system audio source (microphone, line-in, or virtual device)",
+        "color": "#3b82f6",
+        "icon": "mic",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "audio-out",
+                "direction": "output",
+                "streamType": "audio/pcm",
+                "label": "Audio Out",
+                "maxConnections": -1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Select audio source device",
+                    "x-deviceType": "source"
+                },
+                "sampleRate": {
+                    "type": "number",
+                    "default": 48000,
+                    "description": "Sample rate (auto-detected from device)",
+                    "x-readOnly": true
+                },
+                "channels": {
+                    "type": "number",
+                    "default": 2,
+                    "description": "Channels (auto-detected from device)",
+                    "x-readOnly": true
+                },
+                "volumeMax": {
+                    "type": "number",
+                    "enum": [
+                        100,
+                        150,
+                        200,
+                        300,
+                        500
+                    ],
+                    "default": 150,
+                    "description": "Maximum volume slider range (%)"
+                },
+                "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 150,
+                    "default": 100,
+                    "description": "Input volume (%)",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-live": true,
+                    "x-maxFrom": "volumeMax"
+                }
+            }
+        },
+        "engine": "./engine/AudioInputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0"
+    }
+}

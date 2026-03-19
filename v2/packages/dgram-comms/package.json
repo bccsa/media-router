@@ -1,0 +1,18 @@
+{
+    "name": "@media-router/dgram-comms",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Encrypted, fragmented, multi-path UDP communication layer",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@media-router/shared-types": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0"
+    }
+}

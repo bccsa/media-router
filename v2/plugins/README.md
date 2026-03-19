@@ -1,0 +1,713 @@
+# Media Router — Plugin Development Guide
+
+Plugins extend Media Router with new media processing capabilities. Each plugin is a self-contained directory in `v2/plugins/` with a manifest, engine module, and optional UI components.
+
+## Directory Structure
+
+```
+v2/plugins/
+└── my-plugin/
+    ├── package.json          # Manifest + dependencies
+    ├── tsconfig.json         # TypeScript config
+    └── engine/
+        └── MyPluginModule.ts # Engine-side GStreamer pipeline logic
+```
+
+## Quick Start
+
+### 1. Create the plugin directory
+
+```bash
+mkdir -p v2/plugins/my-plugin/engine
+```
+
+### 2. Create `package.json` with manifest
+
+```json
+{
+    "name": "@media-router/plugin-my-plugin",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Short description of what this plugin does",
+    "mediaRouter": {
+        "pluginId": "my-plugin",
+        "displayName": "My Plugin",
+        "description": "Longer description shown in the Add Module panel",
+        "category": "protocol",
+        "color": "#3b82f6",
+        "icon": "radio",
+        "architectures": ["arm64", "x86_64"],
+        "ports": [],
+        "configSchema": {},
+        "engine": "./engine/MyPluginModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}
+```
+
+### 3. Create `tsconfig.json`
+
+```json
+{
+    "extends": "../tsconfig.plugin.json",
+    "compilerOptions": {
+        "outDir": "./dist",
+        "rootDir": "./engine"
+    },
+    "include": ["engine"]
+}
+```
+
+### 4. Create the engine module
+
+```typescript
+import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+
+export class MyPluginModule extends GstPluginBase {
+    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
+        await super.onInit(config, services);
+    }
+
+    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        // Return null if the module should be idle (e.g. no connection yet)
+        const pipeline = 'audiotestsrc ! fakesink';
+        return { pipeline };
+    }
+}
+```
+
+### 5. Install and run
+
+```bash
+cd v2
+pnpm install    # Creates workspace symlinks
+pnpm build      # Compiles everything
+```
+
+The plugin will automatically appear in the Manager UI's "Add Module" panel.
+
+---
+
+## Manifest Reference (`package.json` → `mediaRouter`)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pluginId` | `string` | Yes | Unique identifier (e.g. `"srt-input"`) |
+| `displayName` | `string` | Yes | UI display name |
+| `description` | `string` | Yes | Description for the Add Module panel |
+| `category` | `string` | Yes | One of: `"protocol"`, `"codec"`, `"processing"`, `"utility"` |
+| `color` | `string` | No | Hex color for module accent (left border + icon tint). E.g. `"#3b82f6"` |
+| `icon` | `string` | No | Lucide icon name in kebab-case. E.g. `"mic"`, `"volume-2"`, `"radio"` |
+| `architectures` | `string[]` | Yes | Supported platforms: `["arm64", "x86_64"]` |
+| `ports` | `Port[]` | Yes | Input/output port declarations |
+| `configSchema` | `object` | Yes | JSON Schema for module settings |
+| `statusSections` | `Section[]` | No | Status data sections (stats popup) |
+| `engine` | `string` | Yes | Path to engine module `.ts` file |
+
+### Color and Icon
+
+Each module on the routing canvas shows a colored accent bar and icon in the header.
+
+- **`color`**: Any CSS hex color. Used for the left border accent and icon tint.
+- **`icon`**: Any icon name from [Lucide Icons](https://lucide.dev/icons/) in kebab-case.
+
+Common icon examples:
+| Icon name | Description |
+|-----------|-------------|
+| `mic` | Microphone (audio input) |
+| `volume-2` | Speaker (audio output) |
+| `upload` | Upload/encode |
+| `download` | Download/decode |
+| `radio` | Radio/broadcast |
+| `wifi` | Wireless/streaming |
+| `cast` | Cast/multicast |
+| `tv` | TV/display |
+| `film` | Video |
+| `music` | Music/audio |
+| `activity` | Waveform/monitoring |
+| `gauge` | Meter/levels |
+| `shuffle` | Mixer/routing |
+| `git-merge` | Muxer |
+| `git-branch` | Demuxer/splitter |
+
+---
+
+## Ports
+
+Ports define what a module can connect to. Each port has a direction, stream type, and connection limits.
+
+```json
+"ports": [
+    {
+        "id": "audio-in",
+        "direction": "input",
+        "streamType": "audio/pcm",
+        "label": "Audio In",
+        "maxConnections": 1
+    },
+    {
+        "id": "mpegts-out",
+        "direction": "output",
+        "streamType": "muxed/mpegts",
+        "label": "MPEG-TS Out",
+        "maxConnections": -1
+    }
+]
+```
+
+### Port Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | `string` | Yes | Unique within module (e.g. `"audio-in"`) |
+| `direction` | `"input"` or `"output"` | Yes | Data flow direction |
+| `streamType` | `string` | Yes | Stream type — determines valid connections |
+| `label` | `string` | Yes | Display label on the module node |
+| `maxConnections` | `number` | No | Max connections: `-1` = unlimited (default), `0` = disabled/hidden, `1+` = fixed limit |
+| `userConfigurable` | `boolean` | No | If true, user can change `maxConnections` at runtime (e.g. N-1 mixer) |
+
+### Stream Types
+
+| Type | Routing | Description |
+|------|---------|-------------|
+| `audio/pcm` | PipeWire loopback | Raw audio between PipeWire nodes |
+| `audio/opus` | Reserved | Encoded Opus audio |
+| `audio/aac` | Reserved | Encoded AAC audio |
+| `muxed/mpegts` | UDP multicast on loopback | MPEG-TS container (audio, video, subs) |
+| `video/raw` | Reserved | Raw video frames |
+| `video/h264` | Reserved | Encoded H.264 video |
+| `video/h265` | Reserved | Encoded H.265/HEVC video |
+| `text/subtitle` | Reserved | Subtitle streams |
+| `data/generic` | Reserved | Generic data/metadata |
+
+### Connection Rules
+
+- Only `output` → `input` connections are allowed (but users can drag from either side)
+- Stream types must match (`audio/pcm` ↔ `audio/pcm`, `muxed/mpegts` ↔ `muxed/mpegts`)
+- Cross-type connections are blocked (use encoder/decoder to bridge)
+- `maxConnections` is enforced on both source and target ports
+
+### UI Indicators
+
+| `maxConnections` | Handle | Indicator |
+|------------------|--------|-----------|
+| `0` | Hidden | Port not shown |
+| `1` | Single dot | No indicator |
+| `2+` | Single dot | Number shown |
+| `-1` (unlimited) | Single dot | ∞ symbol |
+
+---
+
+## Config Schema
+
+Uses JSON Schema to define user-configurable settings. The Manager UI auto-generates a settings form.
+
+```json
+"configSchema": {
+    "type": "object",
+    "properties": {
+        "device": {
+            "type": "string",
+            "default": "",
+            "description": "Select audio source device",
+            "x-deviceType": "source"
+        },
+        "codec": {
+            "type": "string",
+            "enum": ["opus", "aac"],
+            "default": "opus",
+            "description": "Audio codec"
+        },
+        "bitrate": {
+            "type": "number",
+            "default": 128,
+            "description": "Bitrate in kbps",
+            "x-liveUpdatable": true,
+            "x-enumByCodec": {
+                "opus": [32, 64, 96, 128, 192, 256, 320, 510],
+                "aac": [32, 64, 96, 128, 160, 192, 256, 320]
+            }
+        },
+        "frameSize": {
+            "type": "number",
+            "enum": [2.5, 5, 10, 20, 40, 60],
+            "default": 20,
+            "description": "Opus frame size in ms",
+            "x-showWhen": "codec=opus"
+        },
+        "volumeMax": {
+            "type": "number",
+            "enum": [100, 150, 200, 300, 500],
+            "default": 150,
+            "description": "Maximum volume slider range (%)"
+        },
+        "volume": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 150,
+            "default": 100,
+            "description": "Volume (%)",
+            "x-widget": "slider",
+            "x-step": 1,
+            "x-live": true,
+            "x-maxFrom": "volumeMax"
+        }
+    }
+}
+```
+
+### Custom Schema Extensions
+
+| Extension | Type | Description |
+|-----------|------|-------------|
+| `x-deviceType` | `"source"` or `"sink"` | Shows a PipeWire device picker dropdown |
+| `x-widget` | `"slider"` | Renders a range slider instead of number input |
+| `x-step` | `number` | Step value for slider |
+| `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
+| `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |
+| `x-maxFrom` | `string` | Key of another setting that controls slider maximum |
+| `x-enumByCodec` | `Record<string, unknown[]>` | Codec-dependent dropdown options (key = codec value) |
+| `x-showWhen` | `string` | Only show field when condition matches (e.g. `"codec=opus"`) |
+
+---
+
+## Status Sections (Stats Popup)
+
+Declare sections that appear in a stats popup on the module node. The stats icon only appears when sections are declared AND the engine sends data.
+
+```json
+"statusSections": [
+    {
+        "id": "srt",
+        "label": "SRT Connection",
+        "fields": [
+            { "key": "bitrate", "label": "Bitrate", "unit": "kbps" },
+            { "key": "rtt", "label": "RTT", "unit": "ms" },
+            { "key": "clients", "label": "Clients" },
+            { "key": "loss", "label": "Packet Loss", "unit": "%" }
+        ]
+    },
+    {
+        "id": "rist",
+        "label": "RIST Output",
+        "fields": [
+            { "key": "bitrate", "label": "Bitrate", "unit": "kbps" },
+            { "key": "quality", "label": "Quality" }
+        ]
+    }
+]
+```
+
+---
+
+## Engine Module
+
+Your module class extends `GstPluginBase` which handles GStreamer child process management, VU metering, and lifecycle.
+
+### Lifecycle
+
+```
+onInit(config, services) → onStart() → [running] → onStop() → onDestroy()
+```
+
+### Required: `buildPipeline(config)`
+
+Returns a GStreamer pipeline string, or `null` if the module should be idle (e.g. decoder with no encoder connected).
+
+```typescript
+buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+    const pipeline = 'pulsesrc ! audioconvert ! opusenc ! mpegtsmux ! udpsink host=239.255.0.1 port=5000';
+    return { pipeline };
+}
+```
+
+### PipelineDescription
+
+```typescript
+interface PipelineDescription {
+    /** GStreamer pipeline string (gst-launch format). */
+    pipeline: string;
+    /** When true, stdin/stdout carry binary data (MPEG-TS), not bus messages. */
+    useStdioForData?: boolean;
+    /** Named elements with live-updatable properties. */
+    liveElements?: Record<string, string[]>;
+}
+```
+
+Return `null` to run the module without a GStreamer pipeline (idle state). The module's null-sink stays active but no audio processing runs. Useful for decoders waiting for an encoder connection.
+
+### Health Status
+
+Plugins can set their health status at any time using `setHealth()`:
+
+```typescript
+// Set warning (e.g. no source connected)
+this.setHealth('warning', 'No encoder connected');
+
+// Set error
+this.setHealth('error', 'Pipeline failed to start');
+
+// Clear (set back to ok)
+this.setHealth('ok');
+```
+
+Health values: `'ok'` (green dot), `'warning'` (amber dot), `'error'` (red dot), `'stopped'` (grey dot).
+
+The pipeline automatically sets health to `'ok'` when playing and `'stopped'` when null. Plugins override this for custom status (e.g. decoder with no connection → warning).
+
+### Interacting with the GStreamer Pipeline
+
+Media Router uses a **Python GStreamer runner** (`gst-pipeline-runner.py`) instead of `gst-launch`. This gives plugins programmatic access to the running pipeline via `GstPluginBase` methods.
+
+#### Architecture
+
+```
+Plugin (TypeScript)
+    │ this.setElementProperty('enc', 'bitrate', 256000)
+    ▼
+GstChildProcess (Node.js)
+    │ IPC request → gst-runner.ts
+    ▼
+gst-runner.ts (forked child)
+    │ JSON command → stdin/fd3
+    ▼
+gst-pipeline-runner.py (Python)
+    │ pipeline.get_by_name('enc').set_property('bitrate', 256000)
+    ▼
+GStreamer C library (live property change on running pipeline)
+```
+
+#### Element Naming
+
+GStreamer auto-names elements as `elementtype0`, `elementtype1`, etc. To target a specific element, use the `name=` property in your pipeline string:
+
+```typescript
+// In buildPipeline():
+const pipeline = 'pulsesrc ! opusenc name=enc bitrate=128000 ! mpegtsmux ! udpsink name=usink ...';
+```
+
+Now you can reference `enc` and `usink` by name.
+
+#### Set Element Property (Live, No Restart)
+
+Change a GStreamer element property on a running pipeline:
+
+```typescript
+// Change encoder bitrate without restarting
+await this.setElementProperty('enc', 'bitrate', 256000);
+
+// Change volume on a GStreamer volume element
+await this.setElementProperty('vol', 'volume', 0.5);
+```
+
+#### Get Element Property
+
+Read a property value from a running element:
+
+```typescript
+const bitrate = await this.getElementProperty('enc', 'bitrate');
+// Returns: 256000
+
+const bytesServed = await this.getElementProperty('usink', 'bytes-served');
+// Returns: 1234567 (for udpsink)
+```
+
+#### Get Element Stats (GstStructure)
+
+Some GStreamer elements expose a `stats` property as a GstStructure (e.g. `srtsrc`, `pulsesink`). This method reads it and converts to a JavaScript object:
+
+```typescript
+const stats = await this.getElementStats('srtsrc0');
+// Returns: { 'packets-sent': 1234, 'rtt-ms': 5.2, 'pkt-loss-total': 0, ... }
+
+const sinkStats = await this.getElementStats('pulsesink0');
+// Returns: { 'rendered': 5000, 'dropped': 0, 'average-rate': -1.0 }
+```
+
+#### Live Config Updates
+
+Override `onLiveConfigUpdate` to handle settings changes without pipeline restart. Declare which params are live-updatable:
+
+```typescript
+protected liveUpdatableParams = ['volume', 'bitrate'];
+
+async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+    // Volume: set on PipeWire null-sink (not GStreamer)
+    if ('volume' in changes && this.services?.pipeWire) {
+        await this.services.pipeWire.setSinkVolume(this.pwNodeName, changes.volume as number);
+    }
+    // Bitrate: set directly on the GStreamer encoder element
+    if ('bitrate' in changes) {
+        await this.setElementProperty('enc', 'bitrate', (changes.bitrate as number) * 1000);
+    }
+    Object.assign(this.config, changes);
+}
+```
+
+#### Status Data (Stats Popup)
+
+Plugins can send live data to the stats popup on the module node. First, declare `statusSections` in the manifest (see above). Then call `setStatusData()` to push values:
+
+```typescript
+// Set static config info
+this.setStatusData('encoder', {
+    codec: 'opus',
+    bitrate: 128,
+    sampleRate: 48000,
+});
+
+// Set UDP endpoint info
+this.setStatusData('udp', {
+    host: '239.255.0.1',
+    port: 40000,
+});
+```
+
+#### Polling Live Stats
+
+For live-updating stats (throughput, connection info), use a timer that polls element properties:
+
+```typescript
+private statsTimer: ReturnType<typeof setInterval> | null = null;
+private lastBytes = 0;
+private lastPollTime = 0;
+
+async onStart(): Promise<void> {
+    await super.onStart();
+
+    // Start polling every 2s
+    this.lastPollTime = Date.now();
+    this.statsTimer = setInterval(async () => {
+        try {
+            // Read bytes-served from a named udpsink
+            const bytes = await this.getElementProperty('usink', 'bytes-served') as number;
+            if (typeof bytes === 'number') {
+                const now = Date.now();
+                const elapsed = (now - this.lastPollTime) / 1000;
+                const delta = bytes - this.lastBytes;
+                const kbps = elapsed > 0 ? Math.round((delta * 8) / elapsed / 1000) : 0;
+                this.lastBytes = bytes;
+                this.lastPollTime = now;
+                this.setStatusData('throughput', {
+                    'Output Bitrate': `${kbps} kbps`,
+                    'Total Bytes': `${(bytes / 1024 / 1024).toFixed(1)} MB`,
+                });
+            }
+        } catch { /* ignore errors during polling */ }
+    }, 2000);
+}
+
+async onStop(): Promise<void> {
+    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+    await super.onStop();
+}
+```
+
+**Important:** The `key` in `setStatusData` must match the `key` field in the manifest's `statusSections.fields[]`. Mismatched keys will show "—" in the UI.
+
+#### SRT Stats Example (Future)
+
+When building an SRT plugin, the `srtsrc`/`srtsink` elements expose rich stats:
+
+```typescript
+// Poll SRT stats every 1s
+this.statsTimer = setInterval(async () => {
+    const stats = await this.getElementStats('srtsrc0');
+    this.setStatusData('srt', {
+        'RTT': `${stats['rtt-ms'] ?? 0} ms`,
+        'Packet Loss': stats['pkt-loss-total'] ?? 0,
+        'Bandwidth': `${((stats['mbps-bandwidth'] as number) ?? 0).toFixed(1)} Mbps`,
+        'Clients': stats['callers-count'] ?? 0,
+    });
+}, 1000);
+```
+
+### Stream Probing
+
+For modules that receive external streams (e.g. SRT input), probe the stream to detect the codec before building the pipeline:
+
+```typescript
+import { probeMpegTsStream, type ProbeResult } from '@media-router/engine';
+
+private probeResult: ProbeResult | null = null;
+
+async onStart(): Promise<void> {
+    // Probe the stream
+    this.probeResult = await probeMpegTsStream('239.255.0.1', 40000, 3000);
+    // probeResult = { codec: 'opus' | 'aac' | 'mp2' | 'ac3' | 'unknown', sampleRate, channels, rawCaps }
+
+    // Use the result in buildPipeline
+    await super.onStart();
+}
+
+buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+    let decoder: string;
+    switch (this.probeResult?.codec) {
+        case 'opus': decoder = 'opusdec'; break;
+        case 'aac': decoder = 'avdec_aac'; break;
+        case 'mp2': decoder = 'mpegaudioparse ! mpg123audiodec'; break;
+        default: decoder = 'decodebin'; break;
+    }
+    // ...
+}
+```
+
+For local connections where the encoder's codec is known, skip the probe:
+
+```typescript
+const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+if (udpSource?.codec) {
+    // Known codec — instant startup
+    this.probeResult = { codec: udpSource.codec as any, rawCaps: '' };
+} else if (udpSource) {
+    // Unknown source — probe the stream (~3s)
+    this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
+}
+```
+
+---
+
+## PipeWire Integration (Audio Modules)
+
+Audio modules create a named PipeWire null-sink for routing:
+
+```typescript
+export class MyAudioPlugin extends GstPluginBase {
+    async onStart(): Promise<void> {
+        if (this.services?.pipeWire) {
+            this.paModuleId = await this.services.pipeWire.loadNullSink(
+                this.services.instanceId, 2, 48000  // name, channels, rate
+            );
+        }
+        await super.onStart();
+    }
+
+    async onStop(): Promise<void> {
+        await super.onStop();
+        if (this.paModuleId !== null && this.services?.pipeWire) {
+            await this.services.pipeWire.unloadModule(this.paModuleId);
+            this.paModuleId = null;
+        }
+    }
+
+    getPipeWireNodes(): { source?: string; sink?: string } {
+        return { source: `${this.pwNodeName}.monitor` };
+    }
+}
+```
+
+### PipeWire Node Naming
+
+- Null-sink name: `MR_PW_{instanceId}` (e.g. `MR_PW_audio-input-abc123`)
+- Monitor source: `MR_PW_{instanceId}.monitor`
+- Access via `this.pwNodeName` (computed from `this.services.instanceId`)
+
+### Volume Control
+
+Set volume on PipeWire devices or null-sinks:
+
+```typescript
+// Set source volume (e.g. microphone)
+await this.services.pipeWire.setSourceVolume('alsa_input.usb-...', 120);
+
+// Set sink volume (e.g. null-sink for encoder/decoder)
+await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
+```
+
+Volume is in percentage (0-500+).
+
+---
+
+## UDP Multicast (MPEG-TS Modules)
+
+MPEG-TS connections use UDP multicast on loopback (`239.255.0.x`, ports 40000-50000). The `UdpPortManager` assigns ports per-encoder at startup.
+
+### Encoder Pattern
+
+Encoders always output to their assigned UDP port. Decoders subscribe when connected.
+
+```typescript
+buildPipeline(config: Record<string, unknown>): PipelineDescription {
+    const instanceId = this.services?.instanceId ?? '';
+    const endpoint = this.services?.mediaRouter?.assignEncoderPort(instanceId);
+    const udpSink = endpoint
+        ? `udpsink host=${endpoint.host} port=${endpoint.port} multicast-iface=lo auto-multicast=true sync=false`
+        : 'fakesink sync=false';
+
+    return { pipeline: `... ! mpegtsmux latency=0 alignment=7 ! ${udpSink}` };
+}
+```
+
+### Decoder Pattern
+
+Decoders return `null` from `buildPipeline` when no encoder is connected. The MediaRouter restarts them when a connection is made.
+
+```typescript
+buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+    const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+    if (!udpSource) {
+        this.setHealth('warning', 'No encoder connected');
+        return null;
+    }
+    const udpSrc = `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true`;
+    return { pipeline: `${udpSrc} ! tsdemux latency=0 ! opusdec ! ...` };
+}
+```
+
+---
+
+## Available Services (`this.services`)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks |
+| `mediaRouter` | `MediaRouter` | Query UDP endpoints, assign encoder ports, probe streams |
+| `instanceId` | `string` | Unique module instance ID |
+
+## Base Class Properties and Methods
+
+| Property/Method | Type | Description |
+|-----------------|------|-------------|
+| `this.config` | `Record<string, unknown>` | Current module configuration |
+| `this.services` | `ModuleServices \| null` | Injected engine services |
+| `this.childProcess` | `GstChildProcess \| null` | Running GStreamer child process |
+| `this.paModuleId` | `number \| null` | PulseAudio module ID for null-sink cleanup |
+| `this.pwNodeName` | `string` | PipeWire node name (`MR_PW_{instanceId}`) |
+| `this.running` | `boolean` | Whether the pipeline is running |
+| `this.health` | `ModuleHealth` | Current health status |
+| `setHealth(health, error?)` | method | Set module health + optional error message |
+| `setElementProperty(el, prop, val)` | method | Set GStreamer element property (live) |
+| `getElementProperty(el, prop)` | method | Get GStreamer element property |
+| `getElementStats(el)` | method | Read element `stats` GstStructure as dict |
+
+---
+
+## Network Ports Reference
+
+| Port | Service |
+|------|---------|
+| 3000 | dgram-comms (engine ↔ manager UDP) |
+| 3001 | Engine Local API (Fastify) |
+| 8080 | Manager HTTP + Socket.IO |
+| 8081 | Local Control Panel (Socket.IO) |
+| 8082 | Profile Manager |
+| 40000-50000 | UDP multicast (MPEG-TS inter-module routing) |
+
+---
+
+## Example Plugins
+
+See these directories for complete working examples:
+
+| Plugin | Path | Features |
+|--------|------|----------|
+| Audio Input | `v2/plugins/audio-input/` | Device picker, volume slider, PipeWire null-sink, VU metering |
+| Audio Output | `v2/plugins/audio-output/` | Device picker, VU monitoring loopback |
+| Audio Encoder | `v2/plugins/audio-encoder/` | Codec selection, frame size, live bitrate, UDP multicast output |
+| Audio Decoder | `v2/plugins/audio-decoder/` | Stream probing, auto-detect codec, idle state when disconnected |

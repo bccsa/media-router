@@ -1,0 +1,72 @@
+{
+    "name": "@media-router/plugin-audio-output",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Audio output — plays audio to a PipeWire/PulseAudio sink device",
+    "mediaRouter": {
+        "pluginId": "audio-output",
+        "displayName": "Audio Output",
+        "description": "Plays audio to a system audio sink (speakers, headphones, or virtual device)",
+        "color": "#10b981",
+        "icon": "volume-2",
+        "category": "protocol",
+        "architectures": ["arm64", "x86_64"],
+        "ports": [
+            {
+                "id": "audio-in",
+                "direction": "input",
+                "streamType": "audio/pcm",
+                "label": "Audio In",
+                "maxConnections": -1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Select audio output device",
+                    "x-deviceType": "sink"
+                },
+                "sampleRate": {
+                    "type": "number",
+                    "default": 48000,
+                    "description": "Sample rate (detected from device)",
+                    "x-readOnly": true
+                },
+                "channels": {
+                    "type": "number",
+                    "default": 2,
+                    "description": "Number of audio channels (detected from device)",
+                    "x-readOnly": true
+                },
+                "volumeMax": {
+                    "type": "number",
+                    "enum": [100, 150, 200, 300, 500],
+                    "default": 150,
+                    "description": "Maximum volume slider range (%)"
+                },
+                "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 150,
+                    "default": 100,
+                    "description": "Output volume (%)",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-live": true,
+                    "x-maxFrom": "volumeMax"
+                }
+            }
+        },
+        "engine": "./engine/AudioOutputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

@@ -1,0 +1,1 @@
+* Consider running Init() before calling Set(). This will reduce initialization code bu allowing logic to only subscribe to events (compared to having to set initial values etc. and subscribing to events to handle changes);

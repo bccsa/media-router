@@ -1,0 +1,24 @@
+{
+    "name": "@media-router/engine",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Media Router engine — plugin host, module manager, media routing",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc && cp src/child-process/gst-pipeline-runner.py dist/child-process/",
+        "typecheck": "tsc --noEmit",
+        "dev": "tsx watch --inspect=9230 examples/test-engine.ts"
+    },
+    "dependencies": {
+        "@fastify/cors": "^11.2.0",
+        "@media-router/dgram-comms": "workspace:*",
+        "@media-router/shared-types": "workspace:*",
+        "ajv": "^8.18.0",
+        "fastify": "^5.8.2",
+        "socket.io": "^4.8.3"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0"
+    }
+}

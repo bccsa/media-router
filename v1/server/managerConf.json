@@ -1,0 +1,5457 @@
+{
+  "router_defaultConf": {
+    "name": "router_defaultConf",
+    "controlType": "Router",
+    "displayName": "RIST",
+    "password": "MyPassword",
+    "online": false,
+    "fetchLog": true,
+    "parentElement": "_controlsDiv",
+    "hideData": false,
+    "cssText": "",
+    "cssClass": "",
+    "visible": true,
+    "visibleDisplayCss": "inherit",
+    "hiddenDisplayCss": "none",
+    "orderBy": "",
+    "orderAsc": true,
+    "cpuUsage": 0,
+    "cpuTemperature": 0,
+    "memoryUsage": 0,
+    "ipAddress": "10.9.1.214",
+    "buildNumber": "dev | 2025-02-11 00:00:00 am CAT",
+    "log": [
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: MR_PA_HlsPlayer_6564"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_5384"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_5212"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_7299"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: HlsPlayer_6564_sink_deu"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: HlsPlayer_6564_sink_nld"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: HlsPlayer_6564_sink_eng"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sinks detected: HlsPlayer_6564_sink_fra"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: alsa_input.usb-HYW-230304-WYZ_FHD_Camera_Microphone-02.mono-fallback"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_8586"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_7567"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_9050"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_5609"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_HlsPlayer_6564.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_5384.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_5212.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_7299.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: HlsPlayer_6564_sink_deu.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: HlsPlayer_6564_sink_nld.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: HlsPlayer_6564_sink_eng.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:18 | INFO: \tPulseAudio sources detected: HlsPlayer_6564_sink_fra.monitor"
+      ],
+      [
+        "ERROR",
+        "2026/03/04, 14:13:19 | ERROR: \tHlsPlayer_3129 (New HlsPlayer): Command failed: gst-inspect-1.0 | grep v4l2h264enc"
+      ],
+      [
+        "FATAL",
+        "2026/03/04, 14:13:19 | FATAL: \tHlsPlayer_3129 (New HlsPlayer):Command failed: pactl unload-module 536871030\nxcb_connection_has_error() returned true\nFailure: No such entity"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:19 | INFO: \tPulseAudio sources removed: MR_PA_HlsPlayer_6564.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:19 | INFO: \tPulseAudio sources removed: HlsPlayer_6564_sink_fra.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:19 | INFO: \tPulseAudio sinks removed: MR_PA_HlsPlayer_6564"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:19 | INFO: \tPulseAudio sinks removed: HlsPlayer_6564_sink_nld"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:19 | INFO: \tPulseAudio sinks removed: HlsPlayer_6564_sink_eng"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:19 | INFO: \tPulseAudio sinks removed: HlsPlayer_6564_sink_fra"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:20 | INFO: \tPulseAudio sources removed: HlsPlayer_6564_sink_deu.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:20 | INFO: \tPulseAudio sources removed: HlsPlayer_6564_sink_nld.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:20 | INFO: \tPulseAudio sources removed: HlsPlayer_6564_sink_eng.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:20 | INFO: \tPulseAudio sinks removed: HlsPlayer_6564_sink_deu"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:21 | INFO: \tPulseAudio sources removed: MR_PA_SrtOpusOutput_5384.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:21 | INFO: \tPulseAudio sources removed: MR_PA_SrtOpusOutput_5212.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:21 | INFO: \tPulseAudio sinks removed: MR_PA_SrtOpusOutput_5384"
+      ],
+      [
+        "INFO",
+        "2026/03/04, 14:13:21 | INFO: \tPulseAudio sinks removed: MR_PA_SrtOpusOutput_5212"
+      ]
+    ],
+    "logMessage": [
+      "INFO",
+      "2026/03/10, 15:46:15 | INFO: \tRistToSrt_9187 (New RistToSrt(copy)): Pipeline started\nError: Could not open resource for writing.\nReloading pipline"
+    ],
+    "logINFO": true,
+    "logERROR": true,
+    "logFATAL": true,
+    "logLimit": 100,
+    "deviceType": "Router",
+    "description": "",
+    "startupState": true,
+    "startupDelayTime": 3000,
+    "sources": [
+      {
+        "name": "alsa_input.usb-HYW-230304-WYZ_FHD_Camera_Microphone-02.mono-fallback",
+        "description": "FHD Camera Microphone Mono",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "mono"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_AudioInput_8586",
+        "description": "Remapped HlsPlayer_6564_sink_nor.monitor source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870927"
+      },
+      {
+        "name": "MR_PA_AudioInput_7567",
+        "description": "Remapped HlsPlayer_6564_sink_fra.monitor source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870928"
+      },
+      {
+        "name": "MR_PA_AudioInput_9050",
+        "description": "Remapped HlsPlayer_6564_sink_nld.monitor source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870929"
+      },
+      {
+        "name": "MR_PA_AudioInput_5609",
+        "description": "Remapped HlsPlayer_6564_sink_deu.monitor source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870930"
+      },
+      {
+        "name": "MR_PA_AudioInput_2334",
+        "description": "Remapped alsa_input.usb-HYW-230304-WYZ_FHD_Camera_Microphone-02.mono-fallback source",
+        "channels": 1,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870938"
+      },
+      {
+        "name": "auto_null.monitor",
+        "description": "Monitor of Dummy Output",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "auto_null",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": 4294967295
+      }
+    ],
+    "sinks": [
+      {
+        "name": "auto_null",
+        "description": "Dummy Output",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "auto_null.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": 4294967295
+      }
+    ],
+    "paLatency": 50,
+    "displayOrder": 1,
+    "height": 800,
+    "width": 1500,
+    "scale": 1,
+    "startLocalCTR": false,
+    "AudioInput_2334": {
+      "name": "AudioInput_2334",
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New AudioInput",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 52.81914062499999,
+      "top": 31.53203125,
+      "width": 250,
+      "height": 99.716796875,
+      "reload": false,
+      "Help_md": "# Base Audio Settings\n\n## Audio Settings\n* Channels - Audio channel number (default = 1)\n* Sample Rate - Audio sample rate (default = 48000)\n* Bit Depth - Audio bit depth (default = 16)\n* Max Volume - Maximum volume that the client WebApp can request\n* Show the volume control in the top bar - Show the volume control in the top bar\n\n## Local Client Control Settings \n* Volume - Audio volume (1 = unity gain)\n* Enable Local Client Volume - Allow local client to change the volume\n* Enable Local Client Mute - Allow the local client to mute / unmute\n* Enable VU meter - Enable or disable the VU meter\n\n---\n# Audio Input \n\n* Source - Audio Source\n* Channel Map - Enter channel map as a comma-separated list of channel numbers\n\n---\n\n# Audio Source\n\n## Routing\n\n* Destinations - Where the audio should route to\n\n---\n\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": true,
+      "mute": false,
+      "volume": 114,
+      "channels": 2,
+      "sampleRate": 44100,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "soloGroup": "",
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "showInTopBar": false,
+      "formatHideRW": true,
+      "formatHideRO": false,
+      "vuData": [
+        7
+      ],
+      "enableVU": true,
+      "destinations": [
+        "SrtOpusOutput_1703"
+      ],
+      "master": "alsa_input.usb-HYW-230304-WYZ_FHD_Camera_Microphone-02.mono-fallback",
+      "master_descr": "FHD Camera Microphone Mono",
+      "channelMap": "1",
+      "source": "MR_PA_AudioInput_2334",
+      "monitor": "MR_PA_AudioInput_2334",
+      "masterExists": true
+    },
+    "SrtOpusOutput_1703": {
+      "name": "SrtOpusOutput_1703",
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New SrtOpusOutput",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 459.701953125,
+      "top": 43.715625,
+      "width": 250,
+      "height": 99.716796875,
+      "reload": false,
+      "Help_md": "# Base Audio Settings\n\n## Audio Settings\n* Channels - Audio channel number (default = 1)\n* Sample Rate - Audio sample rate (default = 48000)\n* Bit Depth - Audio bit depth (default = 16)\n* Max Volume - Maximum volume that the client WebApp can request\n* Show the volume control in the top bar - Show the volume control in the top bar\n\n## Local Client Control Settings \n* Volume - Audio volume (1 = unity gain)\n* Enable Local Client Volume - Allow local client to change the volume\n* Enable Local Client Mute - Allow the local client to mute / unmute\n* Enable VU meter - Enable or disable the VU meter\n\n---\n# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# SrtOpusOutput\nEncodes PCM Audio to Opus and send it over SRT\n\n## Encoder Settings\n* Enable Opus FEC - Enable opus Forward Error Correction\n* Opus Frame Size - Opus frame size (Can decrease to improve latency / increse to reduce overall bandwidth)\n* FEC Packet Loss - Opus FEC packet loss percentage (preset value)\n* Complexity level - Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.\n* Bitrate - Opus encoding bitrate\n\n---\n\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": false,
+      "mute": false,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "soloGroup": "",
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "showInTopBar": false,
+      "formatHideRW": false,
+      "formatHideRO": true,
+      "vuData": [
+        -60,
+        -60
+      ],
+      "enableVU": true,
+      "sink": "MR_PA_SrtOpusOutput_1703",
+      "srtHost": "127.0.0.1",
+      "srtPort": 1234,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "",
+      "caller_count": 0,
+      "fec": false,
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_1703.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_1703.monitor",
+      "srcChannelMap": "1",
+      "SrtOpusOutput_1703_1": {
+        "packets_send_recieve": "1532",
+        "send_duration": "11s",
+        "MB_send_receive": 0.36,
+        "send_receive_rate": 0.16,
+        "available_bandwidth_rounded": 0.08,
+        "rtt_ms_rounded": 0.08,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput: 1",
+        "rtt_ms": "0.078000",
+        "available_bandwidth": "0.084000",
+        "bytes_sent": "355424",
+        "packets_sent": "1532",
+        "send_rate_mbps": "0.155251",
+        "send_duration_us": "11919968",
+        "status": "disconnected"
+      },
+      "SrtOpusOutput_1703_2": {
+        "packets_send_recieve": "1532",
+        "send_duration": "12s",
+        "MB_send_receive": 0.36,
+        "send_receive_rate": 0.16,
+        "available_bandwidth_rounded": 0.08,
+        "rtt_ms_rounded": 0.04,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput: 2",
+        "rtt_ms": "0.039000",
+        "available_bandwidth": "0.084000",
+        "bytes_sent": "355424",
+        "packets_sent": "1532",
+        "send_rate_mbps": "0.155058",
+        "send_duration_us": "12241714",
+        "status": "disconnected"
+      }
+    },
+    "SrtOpusInput_9912": {
+      "name": "SrtOpusInput_9912",
+      "controlType": "SrtOpusInput",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New SrtOpusInput",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 1227.5984375,
+      "top": 191.5046875,
+      "width": 250,
+      "height": 99.716796875,
+      "reload": false,
+      "Help_md": "# Base Audio Settings\n\n## Audio Settings\n* Channels - Audio channel number (default = 1)\n* Sample Rate - Audio sample rate (default = 48000)\n* Bit Depth - Audio bit depth (default = 16)\n* Max Volume - Maximum volume that the client WebApp can request\n* Show the volume control in the top bar - Show the volume control in the top bar\n\n## Local Client Control Settings \n* Volume - Audio volume (1 = unity gain)\n* Enable Local Client Volume - Allow local client to change the volume\n* Enable Local Client Mute - Allow the local client to mute / unmute\n* Enable VU meter - Enable or disable the VU meter\n\n---\n# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# Audio Source\n\n## Routing\n\n* Destinations - Where the audio should route to\n\n---\n\n# SrtOpusInput\n\n* Decodes Opus Audio received on SRT and plays out PCM\n\n---\n\n\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": false,
+      "mute": false,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "soloGroup": "",
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "showInTopBar": false,
+      "formatHideRW": false,
+      "formatHideRO": true,
+      "vuData": [
+        -60,
+        -60
+      ],
+      "enableVU": true,
+      "destinations": [
+        "SrtOpusOutput_8308"
+      ],
+      "srtHost": "127.0.0.1",
+      "srtPort": 1235,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "",
+      "caller_count": 0,
+      "source": "MR_PA_SrtOpusInput_9912.monitor",
+      "monitor": "MR_PA_SrtOpusInput_9912.monitor",
+      "sink": "MR_PA_SrtOpusInput_9912",
+      "SrtOpusInput_9912_1": {
+        "status": "disconnected",
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusInput: 1",
+        "rtt_ms": "0.174000",
+        "available_bandwidth": "0.084000",
+        "bytes_received": "345448",
+        "packets_received": "1489",
+        "receive_rate_mbps": "0.132240",
+        "send_duration": "0s",
+        "packets_send_recieve": "1489",
+        "MB_send_receive": 0.35,
+        "available_bandwidth_rounded": 0.08,
+        "rtt_ms_rounded": 0.17,
+        "send_receive_rate": 0.13
+      }
+    },
+    "startupDelay": false,
+    "AudioInput_defaultConf": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioOutput_defaultConf": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtToRist_8805": {
+      "height": 0,
+      "width": 0
+    },
+    "RistToSrt_4662": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SoundDucking_2710": {
+      "destinations": [],
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "destinations": [],
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtToRist_6695": {
+      "height": 77.236328125,
+      "width": 250,
+      "name": "SrtToRist_6695",
+      "controlType": "SrtToRist",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtToRist",
+      "showControl": true,
+      "left": 471.635546875,
+      "top": 201.635546875,
+      "moduleEnabled": true,
+      "srtPort": 1234,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "udpSocket": 40000,
+      "buffer": 75,
+      "srtHost": "127.0.0.1",
+      "rist__eb64e351c1b94a00a43911333df977e9": {
+        "name": "rist__eb64e351c1b94a00a43911333df977e9",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2000,
+        "mode": "listener",
+        "buffer": 50,
+        "type": "SrtToRist",
+        "cname": "1-1"
+      },
+      "rist__08c53da267b140c9b73115763cfc2782": {
+        "name": "rist__08c53da267b140c9b73115763cfc2782",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2001,
+        "mode": "listener",
+        "buffer": 50,
+        "type": "SrtToRist",
+        "cname": "1-2"
+      },
+      "rist__b2aef9b60e8c4d5fa676e1bd963e7692": {
+        "name": "rist__b2aef9b60e8c4d5fa676e1bd963e7692",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2002,
+        "mode": "listener",
+        "buffer": 50,
+        "type": "SrtToRist",
+        "cname": "1-3"
+      },
+      "rist__05f8de98e47646dbac8caed65b7476a7": {
+        "name": "rist__05f8de98e47646dbac8caed65b7476a7",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2003,
+        "mode": "listener",
+        "buffer": 50,
+        "type": "SrtToRist",
+        "cname": "1-4"
+      },
+      "caller_count": 0,
+      "SrtToRist_6695_RIST_1-2_5": {
+        "controlType": "RistStats",
+        "id": 5,
+        "cname": "RIST_1-2",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 9510,
+        "status": "running",
+        "timestamp": 1773150375715
+      },
+      "SrtToRist_6695_RIST_1-1_6": {
+        "controlType": "RistStats",
+        "id": 6,
+        "cname": "RIST_1-1",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 9510,
+        "status": "running",
+        "timestamp": 1773150375716
+      },
+      "SrtToRist_6695_RIST_1-4_7": {
+        "controlType": "RistStats",
+        "id": 7,
+        "cname": "RIST_1-4",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 9510,
+        "status": "running",
+        "timestamp": 1773150375716
+      },
+      "SrtToRist_6695_RIST_1-3_8": {
+        "controlType": "RistStats",
+        "id": 8,
+        "cname": "RIST_1-3",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 9511,
+        "status": "running",
+        "timestamp": 1773150375716
+      }
+    },
+    "RistToSrt_1927": {
+      "height": 77.236328125,
+      "width": 250,
+      "name": "RistToSrt_1927",
+      "controlType": "RistToSrt",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New RistToSrt",
+      "showControl": true,
+      "left": 779.819140625,
+      "top": 194.819140625,
+      "moduleEnabled": true,
+      "srtPort": 1235,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "udpSocket": 40001,
+      "buffer": 75,
+      "rist__2390423f6a29466fb147abe2b5db0520": {
+        "name": "rist__2390423f6a29466fb147abe2b5db0520",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2000,
+        "mode": "caller",
+        "buffer": 50,
+        "type": "RistToSrt",
+        "cname": "1-1",
+        "host": "127.0.0.1"
+      },
+      "rist__50223eca307148aba5e0dae1f7449040": {
+        "name": "rist__50223eca307148aba5e0dae1f7449040",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2001,
+        "mode": "caller",
+        "buffer": 50,
+        "type": "RistToSrt",
+        "host": "127.0.0.1",
+        "cname": "1-2"
+      },
+      "rist__1ca9167427d24fab8505b454a28cd1f2": {
+        "name": "rist__1ca9167427d24fab8505b454a28cd1f2",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2002,
+        "mode": "caller",
+        "buffer": 50,
+        "type": "RistToSrt",
+        "cname": "1-3",
+        "host": "127.0.0.1"
+      },
+      "rist__27799729c0d3481cbaf1d9f5a62f29c5": {
+        "name": "rist__27799729c0d3481cbaf1d9f5a62f29c5",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2003,
+        "mode": "caller",
+        "buffer": 50,
+        "type": "RistToSrt",
+        "cname": "1-4",
+        "host": "127.0.0.1"
+      },
+      "caller_count": 0,
+      "srtHost": "127.0.0.1"
+    },
+    "run": true,
+    "SrtOpusOutput_882": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "RistToSrt_9187": {
+      "controlType": "RistToSrt",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New RistToSrt(copy)",
+      "showControl": true,
+      "left": 779.63359375,
+      "top": 276.871875,
+      "width": 250,
+      "height": 77.236328125,
+      "moduleEnabled": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 1236,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "caller_count": 0,
+      "udpSocket": 40003,
+      "buffer": 75,
+      "rist__2390423f6a29466fb147abe2b5db0520": {
+        "name": "rist__2390423f6a29466fb147abe2b5db0520",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2004,
+        "mode": "caller",
+        "cname": "1-1",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "rist__50223eca307148aba5e0dae1f7449040": {
+        "name": "rist__50223eca307148aba5e0dae1f7449040",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2005,
+        "mode": "caller",
+        "cname": "1-2",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "rist__1ca9167427d24fab8505b454a28cd1f2": {
+        "name": "rist__1ca9167427d24fab8505b454a28cd1f2",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2006,
+        "mode": "caller",
+        "cname": "1-3",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "rist__27799729c0d3481cbaf1d9f5a62f29c5": {
+        "name": "rist__27799729c0d3481cbaf1d9f5a62f29c5",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2007,
+        "mode": "caller",
+        "cname": "1-4",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "reload": false
+    },
+    "SrtToRist_6489": {
+      "controlType": "SrtToRist",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtToRist(copy)",
+      "showControl": true,
+      "left": 471.635546875,
+      "top": 280.871875,
+      "width": 250,
+      "height": 77.236328125,
+      "moduleEnabled": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 1234,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "caller_count": 0,
+      "udpSocket": 40002,
+      "buffer": 75,
+      "rist__eb64e351c1b94a00a43911333df977e9": {
+        "name": "rist__eb64e351c1b94a00a43911333df977e9",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2004,
+        "mode": "listener",
+        "cname": "1-1",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "rist__08c53da267b140c9b73115763cfc2782": {
+        "name": "rist__08c53da267b140c9b73115763cfc2782",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2005,
+        "mode": "listener",
+        "cname": "1-2",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "rist__b2aef9b60e8c4d5fa676e1bd963e7692": {
+        "name": "rist__b2aef9b60e8c4d5fa676e1bd963e7692",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2006,
+        "mode": "listener",
+        "cname": "1-3",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "rist__05f8de98e47646dbac8caed65b7476a7": {
+        "name": "rist__05f8de98e47646dbac8caed65b7476a7",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2007,
+        "mode": "listener",
+        "cname": "1-4",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "reload": false,
+      "SrtToRist_6489_RIST_1-2_5": {
+        "controlType": "RistStats",
+        "id": 5,
+        "cname": "RIST_1-2",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 5,
+        "status": "running",
+        "timestamp": 1773150375330
+      },
+      "SrtToRist_6489_RIST_1-1_6": {
+        "controlType": "RistStats",
+        "id": 6,
+        "cname": "RIST_1-1",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 5,
+        "status": "running",
+        "timestamp": 1773150375330
+      },
+      "SrtToRist_6489_RIST_1-4_7": {
+        "controlType": "RistStats",
+        "id": 7,
+        "cname": "RIST_1-4",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 5,
+        "status": "running",
+        "timestamp": 1773150375330
+      },
+      "SrtToRist_6489_RIST_1-3_8": {
+        "controlType": "RistStats",
+        "id": 8,
+        "cname": "RIST_1-3",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 11,
+        "status": "running",
+        "timestamp": 1773150375330
+      }
+    },
+    "SrtOpusInput_2220": {
+      "controlType": "SrtOpusInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusInput(copy)",
+      "showControl": true,
+      "left": 1227.5984375,
+      "top": 293.221484375,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": false,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "vuData": [
+        -60,
+        -60
+      ],
+      "enableVU": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 1236,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "caller_count": 0,
+      "source": "MR_PA_SrtOpusInput_2220.monitor",
+      "monitor": "MR_PA_SrtOpusInput_2220.monitor",
+      "sink": "MR_PA_SrtOpusInput_2220",
+      "reload": false,
+      "SrtOpusInput_2220_0": {
+        "packets_send_recieve": "1473",
+        "MB_send_receive": 0.34,
+        "send_receive_rate": 0.11,
+        "available_bandwidth_rounded": 0.08,
+        "rtt_ms_rounded": 0.23,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusInput(copy)",
+        "rtt_ms": "0.230000",
+        "available_bandwidth": "0.084000",
+        "bytes_received": "341736",
+        "packets_received": "1473",
+        "receive_rate_mbps": "0.108710",
+        "send_duration": "0s",
+        "status": "disconnected"
+      }
+    },
+    "SrtToRist_8627": {
+      "controlType": "SrtToRist",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtToRist(copy)(copy)",
+      "showControl": true,
+      "left": 471.635546875,
+      "top": 360.108203125,
+      "width": 250,
+      "height": 77.236328125,
+      "moduleEnabled": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 1234,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "udpSocket": 40003,
+      "buffer": 75,
+      "rist__eb64e351c1b94a00a43911333df977e9": {
+        "name": "rist__eb64e351c1b94a00a43911333df977e9",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2008,
+        "mode": "listener",
+        "cname": "1-1",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "rist__08c53da267b140c9b73115763cfc2782": {
+        "name": "rist__08c53da267b140c9b73115763cfc2782",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2009,
+        "mode": "listener",
+        "cname": "1-2",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "rist__b2aef9b60e8c4d5fa676e1bd963e7692": {
+        "name": "rist__b2aef9b60e8c4d5fa676e1bd963e7692",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2010,
+        "mode": "listener",
+        "cname": "1-3",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "rist__05f8de98e47646dbac8caed65b7476a7": {
+        "name": "rist__05f8de98e47646dbac8caed65b7476a7",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "port": 2011,
+        "mode": "listener",
+        "cname": "1-4",
+        "buffer": 50,
+        "type": "SrtToRist"
+      },
+      "reload": false,
+      "SrtToRist_8627_RIST_1-2_5": {
+        "controlType": "RistStats",
+        "id": 5,
+        "cname": "RIST_1-2",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 5,
+        "status": "running",
+        "timestamp": 1773150375528
+      },
+      "SrtToRist_8627_RIST_1-1_6": {
+        "controlType": "RistStats",
+        "id": 6,
+        "cname": "RIST_1-1",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 5,
+        "status": "running",
+        "timestamp": 1773150375528
+      },
+      "SrtToRist_8627_RIST_1-4_7": {
+        "controlType": "RistStats",
+        "id": 7,
+        "cname": "RIST_1-4",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 6,
+        "status": "running",
+        "timestamp": 1773150375528
+      },
+      "SrtToRist_8627_RIST_1-3_8": {
+        "controlType": "RistStats",
+        "id": 8,
+        "cname": "RIST_1-3",
+        "bitrate": 0.01,
+        "quality": 100,
+        "rtt": 36133,
+        "status": "running",
+        "timestamp": 1773150375528
+      }
+    },
+    "RistToSrt_3606": {
+      "controlType": "RistToSrt",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New RistToSrt(copy)(copy)",
+      "showControl": true,
+      "left": 779.63359375,
+      "top": 356.108203125,
+      "width": 250,
+      "height": 77.236328125,
+      "moduleEnabled": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 1236,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "udpSocket": 40004,
+      "buffer": 75,
+      "rist__2390423f6a29466fb147abe2b5db0520": {
+        "name": "rist__2390423f6a29466fb147abe2b5db0520",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2008,
+        "mode": "caller",
+        "cname": "1-1",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "rist__50223eca307148aba5e0dae1f7449040": {
+        "name": "rist__50223eca307148aba5e0dae1f7449040",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2009,
+        "mode": "caller",
+        "cname": "1-2",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "rist__1ca9167427d24fab8505b454a28cd1f2": {
+        "name": "rist__1ca9167427d24fab8505b454a28cd1f2",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2010,
+        "mode": "caller",
+        "cname": "1-3",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "rist__27799729c0d3481cbaf1d9f5a62f29c5": {
+        "name": "rist__27799729c0d3481cbaf1d9f5a62f29c5",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderAsc": true,
+        "host": "127.0.0.1",
+        "port": 2011,
+        "mode": "caller",
+        "cname": "1-4",
+        "buffer": 50,
+        "type": "RistToSrt"
+      },
+      "reload": false
+    }
+  },
+  "build_number": "dev | 2025-02-11 00:00:00 am CAT",
+  "router_2178": {
+    "name": "router_2178",
+    "controlType": "Router",
+    "parentElement": "_controlsDiv",
+    "hideData": false,
+    "cssText": "",
+    "cssClass": "",
+    "visible": true,
+    "visibleDisplayCss": "inherit",
+    "hiddenDisplayCss": "none",
+    "orderBy": "",
+    "orderAsc": true,
+    "cpuUsage": 60,
+    "cpuTemperature": 54,
+    "memoryUsage": 21,
+    "ipAddress": "10.9.1.214",
+    "buildNumber": "dev | 2025-02-11 00:00:00 am CAT",
+    "log": [
+      [
+        "INFO",
+        "2026/03/12, 11:31:22 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_8586"
+      ],
+      [
+        "INFO",
+        "2026/03/12, 11:31:22 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_5609"
+      ],
+      [
+        "INFO",
+        "2026/03/12, 11:31:22 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_9050"
+      ],
+      [
+        "INFO",
+        "2026/03/12, 11:31:22 | INFO: \tPulseAudio sources detected: auto_null.monitor"
+      ],
+      [
+        "INFO",
+        "2026/03/12, 11:31:22 | INFO: \tPulseAudio sinks detected: auto_null"
+      ],
+      [
+        "ERROR",
+        "2026/03/12, 11:31:22 | ERROR: \tHlsPlayer_6564 (New HlsPlayer): Command failed: gst-inspect-1.0 | grep v4l2h264enc"
+      ],
+      [
+        "FATAL",
+        "2026/03/12, 11:31:22 | FATAL: \tHlsPlayer_6564 (New HlsPlayer):Command failed: pactl unload-module 536870921\nFailure: No such entity"
+      ],
+      [
+        "FATAL",
+        "2026/03/12, 11:31:22 | FATAL: \tHlsPlayer_6564 (New HlsPlayer):Command failed: pactl unload-module 536870931\nFailure: No such entity"
+      ]
+    ],
+    "logMessage": [
+      "ERROR",
+      "2026/03/12, 15:10:21 | ERROR: \tMR_PA_HlsPlayer_6564 (New HlsPlayer): xcb_connection_has_error() returned true"
+    ],
+    "fetchLog": false,
+    "logINFO": true,
+    "logERROR": true,
+    "logFATAL": true,
+    "logLimit": 100,
+    "deviceType": "Router",
+    "description": "",
+    "startupState": true,
+    "startupDelayTime": 3000,
+    "password": "MAN",
+    "displayName": "MAN",
+    "sources": [
+      {
+        "name": "MR_PA_HlsPlayer_6564.monitor",
+        "description": "New_HlsPlayer",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_HlsPlayer_6564",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870923"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_5384.monitor",
+        "description": "New_SrtOpusOutput",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_5384",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870930"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_5212.monitor",
+        "description": "New_SrtOpusOutput(copy)",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_5212",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870932"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_9533.monitor",
+        "description": "New_SrtOpusOutput(copy)(copy)(copy)",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_9533",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870922"
+      },
+      {
+        "name": "MR_PA_SrtOpusInput_7558.monitor",
+        "description": "New_SrtOpusInput",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusInput_7558",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870918"
+      },
+      {
+        "name": "HlsPlayer_6564_sink_kha.monitor",
+        "description": "Monitor of HlsPlayer_6564_sink_kha (Khasi)",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "HlsPlayer_6564_sink_kha",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870926"
+      },
+      {
+        "name": "HlsPlayer_6564_sink_deu.monitor",
+        "description": "Monitor of HlsPlayer_6564_sink_deu (Deutsch)",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "HlsPlayer_6564_sink_deu",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870920"
+      },
+      {
+        "name": "MR_PA_AudioInput_8586",
+        "description": "Remapped HlsPlayer_6564_sink_deu.monitor source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870919"
+      },
+      {
+        "name": "MR_PA_AudioInput_9050",
+        "description": "Remapped HlsPlayer_6564_sink_kha.monitor source",
+        "channels": 1,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left"
+        ],
+        "moduleID": "536870916"
+      }
+    ],
+    "sinks": [
+      {
+        "name": "MR_PA_HlsPlayer_6564",
+        "description": "New_HlsPlayer",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_HlsPlayer_6564.monitor",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870923"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_5384",
+        "description": "New_SrtOpusOutput",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_5384.monitor",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870930"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_5212",
+        "description": "New_SrtOpusOutput(copy)",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_5212.monitor",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870932"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_9533",
+        "description": "New_SrtOpusOutput(copy)(copy)(copy)",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_9533.monitor",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870922"
+      },
+      {
+        "name": "MR_PA_SrtOpusInput_7558",
+        "description": "New_SrtOpusInput",
+        "channels": 1,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusInput_7558.monitor",
+        "channelmap": [
+          "mono"
+        ],
+        "moduleID": "536870918"
+      },
+      {
+        "name": "HlsPlayer_6564_sink_kha",
+        "description": "HlsPlayer_6564_sink_kha (Khasi)",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "HlsPlayer_6564_sink_kha.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870926"
+      },
+      {
+        "name": "HlsPlayer_6564_sink_deu",
+        "description": "HlsPlayer_6564_sink_deu (Deutsch)",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "HlsPlayer_6564_sink_deu.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870920"
+      }
+    ],
+    "paLatency": 50,
+    "displayOrder": 0,
+    "height": 700,
+    "width": 1500,
+    "scale": 1,
+    "startLocalCTR": false,
+    "online": true,
+    "startupDelay": false,
+    "run": true,
+    "SrtOpusOutput_6547": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusOutput_6547_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtOpusInput_8370": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusInput_8370_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtVideoEncoder_3326": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_6296": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtOpusOutput_9306": {
+      "destinations": [],
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_9977": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtToRist_946": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtToRist_946_0": {
+        "status": "disconnected"
+      }
+    },
+    "SrtOpusInput_6733": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusInput_6733_1": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "RistToSrt_5802": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_6431": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SoundDucking_742": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtVideoEncoder_1294": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtOpusInput_4931": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioInput_486": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioInput_392": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SoundProcessor_8865": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtRelay_5528": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_6035": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": []
+    },
+    "AudioInput_1115": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtOpusOutput_5055": {
+      "height": 0,
+      "width": 0,
+      "SrtOpusOutput_5055_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "caller_count": 0,
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "WebRTCClient_5824": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_4350": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "AudioInput_7669": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "HlsPlayer_6552": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioInput_1400": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioInput_6334": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "GstWhepServer_3577": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "GstWhepServer_3577",
+      "controlType": "GstWhepServer",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New GstWhepServer",
+      "showControl": true,
+      "left": 410.248828125,
+      "top": 276.54765625,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "port": 9091,
+      "opusFecPacketLoss": 10,
+      "opusComplexity": 5,
+      "opusBitrate": 80,
+      "opusFrameSize": 10,
+      "rtpRedDistance": 6,
+      "source": "MR_PA_GstWhepServer_3577.monitor",
+      "monitor": "MR_PA_GstWhepServer_3577.monitor",
+      "sink": "MR_PA_GstWhepServer_3577",
+      "vuData": [
+        -27,
+        -27
+      ],
+      "rtpRed": true,
+      "opusFec": true,
+      "reload": false,
+      "srcChannelMap": "1",
+      "rtt": [],
+      "packetLoss": [],
+      "clientCount": 0,
+      "mute": false
+    },
+    "GstWhepServer_6739": {
+      "controlType": "GstWhepServer",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New GstWhepServer(copy)",
+      "showControl": true,
+      "left": 409.877734375,
+      "top": 382.89140625,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "vuData": [
+        -27,
+        -27
+      ],
+      "enableVU": true,
+      "sink": "MR_PA_GstWhepServer_6739",
+      "port": 9092,
+      "opusFec": true,
+      "opusFecPacketLoss": 10,
+      "opusComplexity": 5,
+      "opusBitrate": 80,
+      "opusFrameSize": 10,
+      "rtpRed": true,
+      "rtpRedDistance": 6,
+      "source": "MR_PA_GstWhepServer_6739.monitor",
+      "monitor": "MR_PA_GstWhepServer_6739.monitor",
+      "rtt": [],
+      "packetLoss": [],
+      "reload": false,
+      "srcChannelMap": "1",
+      "clientCount": 0
+    },
+    "WhepAudioServer_7808": {
+      "height": 0,
+      "width": 0,
+      "rtt": [],
+      "packetLoss": [],
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "SrtOpusOutput_6595": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "SrtOpusInput_5420": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusInput_5420_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "SrtOpusInput_5352": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusInput_5352_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "AudioInput_2246": {
+      "height": 0,
+      "width": 0
+    },
+    "WhepAudioServer_4459": {
+      "height": 0,
+      "width": 0,
+      "rtt": [],
+      "packetLoss": [],
+      "destinations": [],
+      "vuData": []
+    },
+    "SrtVideoEncoder_3961": {
+      "destinations": [],
+      "vuData": [],
+      "height": 0,
+      "width": 0
+    },
+    "WebRTCClient_7569": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtVideoPlayer_5716": {
+      "height": 0,
+      "width": 0
+    },
+    "Separator_549": {
+      "height": 295.72265625,
+      "width": 250,
+      "name": "Separator_549",
+      "controlType": "Separator",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "Test seperator ",
+      "showControl": true,
+      "left": 50,
+      "top": 50,
+      "moduleEnabled": true,
+      "description": "https://vod2.stream.brunstad.tv/out/v1/8c1f1d9418024f3baa6809835d480c49/ab9e7540a3e34bee86ec6af8c7cdc342/1467e3c2761c4947ae7dc7a6c162747f/index.m3u8?EncodedPolicy=Policy%3DeyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly92b2QyLnN0cmVhbS5icnVuc3RhZC50di9vdXQvdjEvOGMxZjFkOTQxODAyNGYzYmFhNjgwOTgzNWQ0ODBjNDkvYWI5ZTc1NDBhM2UzNGJlZTg2ZWM2YWY4YzdjZGMzNDIvKiIsIkNvbmRpdGlvbiI6eyJEYXRlTGVzc1RoYW4iOnsiQVdTOkVwb2NoVGltZSI6MTc3MjYyOTI1M319fV19%26Signature%3DaMPNP-7rBdXkoh-pwMTWKsF9NEcCstC-wqGyMjdn6yDiONCkpS9he36F~Bgj9UJCR-hQloB-I3GEjhi2YrzxCMtEoTFMP3K-F-vPxyP2sxuZ0BeFegYB9jk5ivmy6-SQs8tQa7xkBaswtwZbjnEqL0zk-0kiVRWRmJ~RHMlWvVVpZbWjt7-qOj140qtPWDVD9LQVCaKA3ijsg-gJXX12Eyutv95sy5hDvI-lcvchFqcdkneBnRafdPVuoJU6QEM8Yst04ea43vwGKQrQvV63nQo2BU297Oehzc5UwpzM~SRL1aKxLKjXvoMiq-9ycPBxcypJAvtbSZRr3Fa38QVZZg__%26Key-Pair-Id%3DKUAUGK7DA5ZYE"
+    },
+    "SrtOpusOutput_8933": {
+      "destinations": [],
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_1848": {
+      "destinations": [],
+      "height": 0,
+      "width": 0
+    },
+    "AudioOutput_1936": {
+      "height": 0,
+      "width": 0,
+      "vuData": [
+        -60
+      ]
+    },
+    "WhepAudioServer_7912": {
+      "height": 0,
+      "width": 0,
+      "rtt": [],
+      "packetLoss": [],
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "SrtVideoEncoder_4203": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtVideoPlayer_8773": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtVideoPlayer_8773_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "RistToSrt_4151": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtToRist_532": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtVideoEncoder_9267": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtOpusOutput_8270": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusOutput_8270_1": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtOpusInput_9661": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "AudioInput_4945": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioInput_6910": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "HlsPlayer_8024": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "AudioOutput_1994": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtToRist_2436": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtToRist_2436_0": {
+        "status": "disconnected"
+      }
+    },
+    "RistToSrt_5699": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "RistToSrt_5699_1": {
+        "status": "disconnected"
+      }
+    },
+    "SrtOpusOutput_7416": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusOutput_7416_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtOpusInput_9425": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SrtOpusOutput_9390": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "AudioInput_4022": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "HlsPlayer_6564": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "HlsPlayer_6564",
+      "controlType": "HlsPlayer",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New HlsPlayer",
+      "showControl": true,
+      "left": 411.401171875,
+      "top": 155.5125,
+      "moduleEnabled": true,
+      "volume": 119,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "subtitleLanguage": "eng",
+      "subtitlePosition": "top",
+      "source": "MR_PA_HlsPlayer_6564.monitor",
+      "monitor": "MR_PA_HlsPlayer_6564.monitor",
+      "sink": "MR_PA_HlsPlayer_6564",
+      "readyNullSinks": 2,
+      "vuData": [
+        0
+      ],
+      "enableSrt": true,
+      "srtHost": "127.0.0.1",
+      "hlsUrl": "https://liveoht.brunstad.tv/out/v1/oslofjord-streaming/live/cloudfront/index.m3u8?EncodedPolicy=Policy%3DeyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9saXZlb2h0LmJydW5zdGFkLnR2L291dC92MS9vc2xvZmpvcmQtc3RyZWFtaW5nL2xpdmUvY2xvdWRmcm9udC8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzczMzI4MTAyfX19XX0_%26Signature%3DBcSmar4Ruehnl5vcWKu-CXxbqwm45aY3BLwDCIt33JNU8h5S2Vxj7KUlad3C86VsH-sVC3hrbfDMUsOj603JloZku92GLYXiHVCM0--4ItwkRc22b0ncscm31kaOrNgghRUdFgnF5T-1dKOcN~eYx-rlJN4FzcxmqxUffBMdqSF1MRHpEgZbkFKCIAyj7QNBX8BrXU0G~thbsnOtgt8a313LffpVbmvO0ApPPT-Szj7VkMHFK2zBareHt9KEB~7LR~rOF5peyuZwVidX0lX89i3pKweIdVC6qo~cz6ic1g8CHFhTfkyznYXn6HWVkZAsMWSepNn6DA8z42P2kOtQUg__%26Key-Pair-Id%3DK1GSYT1GS8OW1X",
+      "hlsLoading": false,
+      "audioStreams": [
+        {
+          "language": "nor",
+          "comment": "Norsk",
+          "index": 0,
+          "enabled": false
+        },
+        {
+          "language": "kha",
+          "comment": "Khasi",
+          "index": 1,
+          "enabled": true
+        },
+        {
+          "language": "deu",
+          "comment": "Deutsch",
+          "index": 2,
+          "enabled": true
+        },
+        {
+          "language": "nld",
+          "comment": "Nederlands",
+          "index": 3,
+          "enabled": false
+        },
+        {
+          "language": "eng",
+          "comment": "English",
+          "index": 4,
+          "enabled": false
+        },
+        {
+          "language": "fra",
+          "comment": "Francais",
+          "index": 5,
+          "enabled": false
+        },
+        {
+          "language": "spa",
+          "comment": "Espanol",
+          "index": 6,
+          "enabled": false
+        },
+        {
+          "language": "por",
+          "comment": "Portugues",
+          "index": 7,
+          "enabled": false
+        },
+        {
+          "language": "cmn",
+          "comment": "国语",
+          "index": 8,
+          "enabled": false
+        },
+        {
+          "language": "fin",
+          "comment": "Finnish",
+          "index": 9,
+          "enabled": false
+        },
+        {
+          "language": "rus",
+          "comment": "Russian",
+          "index": 10,
+          "enabled": false
+        },
+        {
+          "language": "ron",
+          "comment": "Romanian",
+          "index": 11,
+          "enabled": false
+        },
+        {
+          "language": "tur",
+          "comment": "Turkish",
+          "index": 12,
+          "enabled": false
+        },
+        {
+          "language": "pol",
+          "comment": "Polish",
+          "index": 13,
+          "enabled": false
+        },
+        {
+          "language": "bul",
+          "comment": "Bulgarian",
+          "index": 14,
+          "enabled": false
+        },
+        {
+          "language": "hun",
+          "comment": "Hungarian",
+          "index": 15,
+          "enabled": false
+        },
+        {
+          "language": "ita",
+          "comment": "Italian",
+          "index": 16,
+          "enabled": false
+        },
+        {
+          "language": "slv",
+          "comment": "Slovenian",
+          "index": 17,
+          "enabled": false
+        },
+        {
+          "language": "hrv",
+          "comment": "Croatian",
+          "index": 18,
+          "enabled": false
+        },
+        {
+          "language": "tam",
+          "comment": "Tamil",
+          "index": 19,
+          "enabled": false
+        },
+        {
+          "language": "yue",
+          "comment": "粵語",
+          "index": 20,
+          "enabled": false
+        }
+      ],
+      "videoQualities": [
+        "540",
+        "126",
+        "360",
+        "480",
+        "720",
+        "1080"
+      ],
+      "subtitleLanguages": [
+        {
+          "language": "nor",
+          "comment": "Norwegian"
+        },
+        {
+          "language": "deu",
+          "comment": "German"
+        },
+        {
+          "language": "nld",
+          "comment": "Dutch"
+        },
+        {
+          "language": "eng",
+          "comment": "English"
+        },
+        {
+          "language": "fre",
+          "comment": "French"
+        },
+        {
+          "language": "spa",
+          "comment": "Spanish"
+        },
+        {
+          "language": "ron",
+          "comment": "Romanian"
+        },
+        {
+          "language": "pol",
+          "comment": "Polish"
+        }
+      ],
+      "defaultLanguage": "nor",
+      "videoQuality": "720",
+      "reload": false,
+      "runningSrt": true,
+      "caller_count": 21,
+      "sinkspaModuleID": [
+        "536870926",
+        "536870920"
+      ],
+      "destinations": [
+        "SrtOpusOutput_5384"
+      ],
+      "hlsIsVod": false,
+      "hlsDuration": 0,
+      "hlsStartTime": 0,
+      "hlsKeyExpired": false,
+      "hlsPaused": false,
+      "hlsCurrentTime": 0,
+      "srtReencode": true,
+      "encoder": "x264enc",
+      "video_bitrate": "4M",
+      "x264_speed_preset": "ultrafast",
+      "video_quality": 720,
+      "audio_bitrate": 96,
+      "video_gop": 50,
+      "videoDelay": 0,
+      "srtStreamID": "publish:video",
+      "HlsPlayer_6564_0": {
+        "packets_send_recieve": "1557996",
+        "send_duration": "1M 29s",
+        "MB_send_receive": 361.46,
+        "send_receive_rate": 5.3,
+        "available_bandwidth_rounded": 625.27,
+        "rtt_ms_rounded": 0.69,
+        "controlType": "SrtStats",
+        "StatsName": "New HlsPlayer",
+        "rtt_ms": "0.692000",
+        "available_bandwidth": "625.272000",
+        "bytes_sent": "361455072",
+        "packets_sent": "1557996",
+        "packets_sent_lost": "1733",
+        "send_rate_mbps": "5.303739",
+        "send_duration_us": "89442692",
+        "status": "running",
+        "packet_loss": 0
+      },
+      "mute": false
+    },
+    "AudioInput_8586": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "AudioInput_8586",
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioInput",
+      "showControl": true,
+      "left": 420.6375,
+      "top": 255.9734375,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "enableVU": true,
+      "channelMap": "1,2",
+      "source": "MR_PA_AudioInput_8586",
+      "monitor": "MR_PA_AudioInput_8586",
+      "masterExists": true,
+      "master": "HlsPlayer_6564_sink_deu.monitor",
+      "master_descr": "Monitor of HlsPlayer_6564_sink_deu (Deutsch)",
+      "reload": false,
+      "vuData": [
+        8,
+        9
+      ],
+      "destinations": [
+        "SrtOpusOutput_5212"
+      ]
+    },
+    "AudioInput_9050": {
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioInput(copy)(copy)",
+      "showControl": true,
+      "left": 418.6375,
+      "top": 459.40703125,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "vuData": [
+        8
+      ],
+      "enableVU": true,
+      "master": "HlsPlayer_6564_sink_kha.monitor",
+      "master_descr": "Monitor of HlsPlayer_6564_sink_kha (Khasi)",
+      "channelMap": "1",
+      "source": "MR_PA_AudioInput_9050",
+      "monitor": "MR_PA_AudioInput_9050",
+      "masterExists": true,
+      "reload": false,
+      "destinations": [
+        "SrtOpusOutput_9533"
+      ]
+    },
+    "AudioInput_7567": {
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioInput(copy)(copy)(copy)",
+      "showControl": true,
+      "left": 421.45,
+      "top": 561.123828125,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": false,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "vuData": [
+        -60,
+        -60
+      ],
+      "enableVU": true,
+      "master": "HlsPlayer_6564_sink_fra.monitor",
+      "master_descr": "Monitor of HlsPlayer_6564_sink_fra (Francais)",
+      "channelMap": "1,2",
+      "source": "MR_PA_AudioInput_7567",
+      "monitor": "MR_PA_AudioInput_7567",
+      "masterExists": true,
+      "reload": false,
+      "destinations": [
+        "SrtOpusOutput_9192"
+      ]
+    },
+    "SrtOpusOutput_5384": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "SrtOpusOutput_5384",
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput",
+      "showControl": true,
+      "left": 776.819140625,
+      "top": 140.819140625,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_5384.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_5384.monitor",
+      "sink": "MR_PA_SrtOpusOutput_5384",
+      "srcChannelMap": "1",
+      "vuData": [
+        0
+      ],
+      "srtHost": "127.0.0.1",
+      "srtStreamID": "publish:ENG",
+      "reload": false,
+      "caller_count": 21,
+      "SrtOpusOutput_5384_0": {
+        "packets_send_recieve": "50491",
+        "send_duration": "4M 16s",
+        "MB_send_receive": 11.71,
+        "send_receive_rate": 0.17,
+        "available_bandwidth_rounded": 311.54,
+        "rtt_ms_rounded": 0.38,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput",
+        "rtt_ms": "0.376000",
+        "available_bandwidth": "311.544000",
+        "bytes_sent": "11713912",
+        "packets_sent": "50491",
+        "send_rate_mbps": "0.170923",
+        "send_duration_us": "256071896",
+        "status": "running"
+      }
+    },
+    "SrtOpusOutput_5212": {
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput(copy)",
+      "showControl": true,
+      "left": 776.819140625,
+      "top": 242.5359375,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "vuData": [
+        10
+      ],
+      "enableVU": true,
+      "sink": "MR_PA_SrtOpusOutput_5212",
+      "srtHost": "127.0.0.1",
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtStreamID": "publish:NOR",
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_5212.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_5212.monitor",
+      "reload": false,
+      "srcChannelMap": "1",
+      "caller_count": 21,
+      "SrtOpusOutput_5212_0": {
+        "packets_send_recieve": "48996",
+        "send_duration": "4M 1s",
+        "MB_send_receive": 11.37,
+        "send_receive_rate": 0.17,
+        "available_bandwidth_rounded": 525.48,
+        "rtt_ms_rounded": 0.5,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput(copy)",
+        "rtt_ms": "0.501000",
+        "available_bandwidth": "525.480000",
+        "bytes_sent": "11367072",
+        "packets_sent": "48996",
+        "packets_sent_lost": "0",
+        "send_rate_mbps": "0.165843",
+        "send_duration_us": "241461979",
+        "status": "running"
+      }
+    },
+    "SrtOpusOutput_9533": {
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput(copy)(copy)(copy)",
+      "showControl": true,
+      "left": 776.819140625,
+      "top": 445.96953125,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "vuData": [
+        8
+      ],
+      "enableVU": true,
+      "sink": "MR_PA_SrtOpusOutput_9533",
+      "srtHost": "127.0.0.1",
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtStreamID": "publish:NED",
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_9533.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_9533.monitor",
+      "caller_count": 21,
+      "srcChannelMap": "1",
+      "reload": false,
+      "SrtOpusOutput_9533_0": {
+        "packets_send_recieve": "49532",
+        "send_duration": "3M 57s",
+        "MB_send_receive": 11.49,
+        "send_receive_rate": 0.17,
+        "available_bandwidth_rounded": 419.32,
+        "rtt_ms_rounded": 0.22,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput(copy)(copy)(copy)",
+        "rtt_ms": "0.223000",
+        "available_bandwidth": "419.316000",
+        "bytes_sent": "11491424",
+        "packets_sent": "49532",
+        "packets_sent_lost": "4",
+        "send_rate_mbps": "0.167628",
+        "send_duration_us": "237174760",
+        "status": "running",
+        "packet_loss": 0
+      }
+    },
+    "SrtOpusOutput_9192": {
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput(copy)(copy)(copy)(copy)",
+      "showControl": true,
+      "left": 776.819140625,
+      "top": 547.686328125,
+      "width": 250,
+      "height": 99.716796875,
+      "moduleEnabled": false,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "vuData": [
+        -60
+      ],
+      "enableVU": true,
+      "sink": "MR_PA_SrtOpusOutput_9192",
+      "srtHost": "127.0.0.1",
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtStreamID": "publish:FRA",
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_9192.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_9192.monitor",
+      "srcChannelMap": "1",
+      "reload": false,
+      "caller_count": 21,
+      "SrtOpusOutput_9192_0": {
+        "packets_send_recieve": "2023",
+        "send_duration": "11s",
+        "MB_send_receive": 0.47,
+        "send_receive_rate": 0.15,
+        "available_bandwidth_rounded": 232.97,
+        "rtt_ms_rounded": 0.48,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput(copy)(copy)(copy)(copy)",
+        "rtt_ms": "0.479000",
+        "available_bandwidth": "232.968000",
+        "bytes_sent": "469336",
+        "packets_sent": "2023",
+        "send_rate_mbps": "0.146229",
+        "send_duration_us": "11516715",
+        "status": "disconnected"
+      }
+    },
+    "Separator_5688": {
+      "controlType": "Separator",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "description": "https://liveoht.brunstad.tv/out/v1/oslofjord-streaming/live/cloudfront/index.m3u8?EncodedPolicy=Policy%3DeyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9saXZlb2h0LmJydW5zdGFkLnR2L291dC92MS9vc2xvZmpvcmQtc3RyZWFtaW5nL2xpdmUvY2xvdWRmcm9udC8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzcyNjMyNTg5fX19XX0_%26Signature%3DUZuQTGaX5IsIK9Ciw-xKJ2bGb68DNgVNA55n40TmMHAT5eibRkizAOGrksgiiWIYhf-GYJFVp55VKxA-7vSVR0UhnpbD-EqJ~E--x8zWKCp-vd-j65CYBHfzbd1OShW33hMi3OWuAzNxJHSLhVWNeRzkEMz8vKGV7VtGqAD8uLpoFgNFism8AnXFIHyQqqRtJO9GAj91KdhXQv1ZeUieQq5X5aAoDYrDc~04ru4DE7LAjM11bimNK1EXWj-uvhA4uW9EZLybFcfrDB1Wje6SZewrK3ou2qV41AtZMCubGwxOGMwrw6wUDbxIrT9RvBqLZdyEFjA13RfE84u2v~emxw__%26Key-Pair-Id%3DK1GSYT1GS8OW1X",
+      "displayName": "Test seperator (copy)",
+      "showControl": true,
+      "left": 50,
+      "top": 347.72265625,
+      "width": 250,
+      "height": 295.72265625,
+      "moduleEnabled": true
+    },
+    "SrtVideoEncoder_2913": {
+      "height": 0,
+      "width": 0,
+      "destinations": []
+    },
+    "SrtOpusInput_7558": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "SrtOpusInput_7558",
+      "controlType": "SrtOpusInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusInput",
+      "showControl": true,
+      "left": 1154.819140625,
+      "top": 130.819140625,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "source": "MR_PA_SrtOpusInput_7558.monitor",
+      "monitor": "MR_PA_SrtOpusInput_7558.monitor",
+      "sink": "MR_PA_SrtOpusInput_7558",
+      "vuData": [
+        0
+      ],
+      "srtHost": "127.0.0.1",
+      "srtStreamID": "read:ENG",
+      "reload": false,
+      "caller_count": 21,
+      "SrtOpusInput_7558_0": {
+        "packets_send_recieve": "27363",
+        "MB_send_receive": 18.95,
+        "send_receive_rate": 0.28,
+        "available_bandwidth_rounded": 0.24,
+        "rtt_ms_rounded": 0.1,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusInput",
+        "rtt_ms": "0.096000",
+        "available_bandwidth": "0.240000",
+        "bytes_received": "18953804",
+        "packets_received": "27363",
+        "receive_rate_mbps": "0.277063",
+        "send_duration": "0s",
+        "status": "running"
+      }
+    },
+    "AudioInput_5609": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "SrtOpusOutput_7299": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusOutput_7299_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    }
+  },
+  "router_4596": {
+    "name": "router_4596",
+    "controlType": "Router",
+    "parentElement": "_controlsDiv",
+    "hideData": false,
+    "cssText": "",
+    "cssClass": "",
+    "visible": true,
+    "visibleDisplayCss": "inherit",
+    "hiddenDisplayCss": "none",
+    "orderBy": "",
+    "orderAsc": true,
+    "cpuUsage": 0,
+    "cpuTemperature": 0,
+    "memoryUsage": 0,
+    "ipAddress": "10.9.1.126",
+    "buildNumber": "v1.1-beta | 2025-04-25 10:23 CAT",
+    "log": [
+      [
+        "INFO",
+        "2025/04/24, 13:59:39 | INFO: \tPulseAudio sources detected: alsa_output.platform-bcm2835_audio.stereo-fallback.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:40 | INFO: \tPulseAudio sources detected: alsa_output.platform-fef00700.hdmi.hdmi-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:40 | INFO: \tPulseAudio sinks detected: alsa_output.platform-bcm2835_audio.stereo-fallback"
+      ],
+      [
+        "FATAL",
+        "2025/04/24, 13:59:40 | FATAL: \tHlsPlayer_7714 (New HlsPlayer):Command failed: pactl unload-module 536870918\nFailure: No such entity"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:40 | INFO: \tPulseAudio sinks detected: alsa_output.platform-fef00700.hdmi.hdmi-stereo"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:42 | INFO: \tRistToSrt_5769 (New RistToSrt): Starting RistToSrt (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Created null-sink; ID: 536870914"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tSrtOpusOutput_8281 (New SrtOpusOutput): Created null-sink; ID: 536870918"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tPulseAudio sources detected: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_8281.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tPulseAudio sinks detected: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_8281"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:43 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Starting srt video decoder (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:44 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:44 | INFO: \tRistToSrt_5769 (New RistToSrt): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:44 | INFO: \tMR_PA_SrtOpusOutput_8281 (New SrtOpusOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:44 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:44 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Connected MR_PA_SrtVideoPlayer_3996.monitor to MR_PA_SrtOpusOutput_8281; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:45 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): GetSrtStats | Pipeline is not created yet, please try again later"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 13:59:45 | INFO: \tSrtOpusOutput_8281 (New SrtOpusOutput): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:13 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/04/24, 14:24:13 | FATAL: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:13 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Disconnected MR_PA_SrtVideoPlayer_3996.monitor from MR_PA_SrtOpusOutput_8281"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:13 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:14 | INFO: \tPulseAudio sources removed: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:14 | INFO: \tPulseAudio sinks removed: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:14 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Created null-sink; ID: 536870914"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:14 | INFO: \tPulseAudio sources detected: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:14 | INFO: \tPulseAudio sinks detected: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:15 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Starting srt video decoder (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:15 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:15 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Connected MR_PA_SrtVideoPlayer_3996.monitor to MR_PA_SrtOpusOutput_8281; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:24:16 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:53 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/04/24, 14:49:53 | FATAL: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:54 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Disconnected MR_PA_SrtVideoPlayer_3996.monitor from MR_PA_SrtOpusOutput_8281"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:54 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:54 | INFO: \tPulseAudio sources removed: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:54 | INFO: \tPulseAudio sinks removed: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:54 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Created null-sink; ID: 536870914"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:55 | INFO: \tPulseAudio sources detected: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:55 | INFO: \tPulseAudio sinks detected: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:55 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Starting srt video decoder (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:55 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:56 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Connected MR_PA_SrtVideoPlayer_3996.monitor to MR_PA_SrtOpusOutput_8281; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:56 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:49:56 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): GetSrtStats | Pipeline is not created yet, please try again later"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:07 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/04/24, 14:51:07 | FATAL: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:07 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Disconnected MR_PA_SrtVideoPlayer_3996.monitor from MR_PA_SrtOpusOutput_8281"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:08 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:08 | INFO: \tPulseAudio sources removed: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:08 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Starting srt video decoder (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:08 | INFO: \tPulseAudio sinks removed: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "FATAL",
+        "2025/04/24, 14:51:08 | FATAL: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Command failed: pactl set-source-volume MR_PA_SrtVideoPlayer_3996.monitor 94%\nFailed to get source information: No such entity"
+      ],
+      [
+        "FATAL",
+        "2025/04/24, 14:51:08 | FATAL: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Command failed: pactl set-source-mute MR_PA_SrtVideoPlayer_3996.monitor 0\nFailure: No such entity"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:08 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:09 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Created null-sink; ID: 536870914"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:09 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Connected MR_PA_SrtVideoPlayer_3996.monitor to MR_PA_SrtOpusOutput_8281; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:09 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Stopping VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:09 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Disconnected MR_PA_SrtVideoPlayer_3996.monitor from MR_PA_SrtOpusOutput_8281"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:10 | INFO: \tPulseAudio sources detected: MR_PA_SrtVideoPlayer_3996.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:10 | INFO: \tPulseAudio sinks detected: MR_PA_SrtVideoPlayer_3996"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:10 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Starting srt video decoder (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:10 | INFO: \tMR_PA_SrtVideoPlayer_3996 (New SrtVideoPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:11 | INFO: \tMR_PA_SrtVideoPlayer_3996_loopback_SrtOpusOutput_8281: Connected MR_PA_SrtVideoPlayer_3996.monitor to MR_PA_SrtOpusOutput_8281; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 14:51:11 | INFO: \tSrtVideoPlayer_3996 (New SrtVideoPlayer): Pipeline started"
+      ]
+    ],
+    "logMessage": [
+      "INFO",
+      "2025/04/25, 11:45:47 | INFO: \tPulseAudio sinks removed: alsa_output.platform-fef00700.hdmi.hdmi-stereo"
+    ],
+    "fetchLog": true,
+    "logINFO": true,
+    "logERROR": true,
+    "logFATAL": true,
+    "logLimit": 100,
+    "deviceType": "Router",
+    "description": "",
+    "startupState": true,
+    "startupDelayTime": 3000,
+    "password": "Man3",
+    "displayName": "Dev Port 1",
+    "sources": [
+      {
+        "name": "alsa_output.platform-bcm2835_audio.stereo-fallback.monitor",
+        "description": "Monitor of Built-in Audio Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.platform-bcm2835_audio.stereo-fallback",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_SrtVideoPlayer_3996.monitor",
+        "description": "New_SrtVideoPlayer",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtVideoPlayer_3996",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870918"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_8281.monitor",
+        "description": "New_SrtOpusOutput",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_8281",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870919"
+      }
+    ],
+    "sinks": [
+      {
+        "name": "alsa_output.platform-bcm2835_audio.stereo-fallback",
+        "description": "Built-in Audio Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.platform-bcm2835_audio.stereo-fallback.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_SrtVideoPlayer_3996",
+        "description": "New_SrtVideoPlayer",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtVideoPlayer_3996.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870918"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_8281",
+        "description": "New_SrtOpusOutput",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_8281.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870919"
+      }
+    ],
+    "paLatency": 50,
+    "displayOrder": 2,
+    "height": 700,
+    "width": 1500,
+    "scale": 1,
+    "startLocalCTR": false,
+    "RistToSrt_5769": {
+      "name": "RistToSrt_5769",
+      "controlType": "RistToSrt",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New RistToSrt",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 49.81914062499999,
+      "top": 143.158984375,
+      "width": 250,
+      "height": 77.236328125,
+      "reload": false,
+      "Help_md": "# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# SrtToRist / RistToSrt\n\nThis tool facilitates the conversion of SRT traffic to RIST or RIST traffic to SRT.\n\n## RIST Global Settings\n\n-   **UDP Socket Port**: The UDP port used for IPC between GStreamer and RIST tools. This port must be unique and not in use elsewhere.\n-   **Buffer (ms)**: Configurable buffer size ranging from 50 ms to 30 seconds.\n-   **Add Link**: Allows adding one or more RIST links.\n\n## RIST Link Settings\n\n-   **CNAME**: Identifier for the link on the sender side.\n-   **Host**: IP address or hostname of the sender/receiver.\n-   **Mode**: Specifies whether the link is in Caller or Listener mode.\n-   **Port**: UDP port used for the link.\n-   **Buffer Min**: Minimum buffer size for the link.\n-   **Buffer Max**: Maximum buffer size for the link.\n-   **Weight**: Determines the priority of the link. A higher value means more data will be sent over that link. Use `0` for all links to broadcast traffic equally.\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": true,
+      "srtHost": "0.0.0.0",
+      "srtPort": 1234,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "",
+      "caller_count": 0,
+      "udpSocket": 4001,
+      "buffer": 75,
+      "rist__d3e6f5ad377246c9a9906296c5900056": {
+        "name": "rist__d3e6f5ad377246c9a9906296c5900056",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "hideData": false,
+        "cssText": "",
+        "cssClass": "",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderBy": "",
+        "orderAsc": true,
+        "host": "10.9.1.103",
+        "port": 1235,
+        "mode": "caller",
+        "cname": "DEV01_link01",
+        "buffermin": 50,
+        "buffermax": 100,
+        "weight": 0
+      }
+    },
+    "SrtVideoPlayer_3996": {
+      "name": "SrtVideoPlayer_3996",
+      "controlType": "SrtVideoPlayer",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New SrtVideoPlayer",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 419.256640625,
+      "top": 125.264453125,
+      "width": 250,
+      "height": 99.716796875,
+      "reload": false,
+      "Help_md": "# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# Audio Source\n\n## Routing\n\n* Destinations - Where the audio should route to\n\n---\n\n# Base Audio Settings\n\n## Audio Settings\n* Channels - Audio channel number (default = 1)\n* Sample Rate - Audio sample rate (default = 48000)\n* Bit Depth - Audio bit depth (default = 16)\n* Max Volume - Maximum volume that the client WebApp can request\n* Show the volume control in the top bar - Show the volume control in the top bar\n\n## Local Client Control Settings \n* Volume - Audio volume (1 = unity gain)\n* Enable Local Client Volume - Allow local client to change the volume\n* Enable Local Client Mute - Allow the local client to mute / unmute\n* Enable VU meter - Enable or disable the VU meter\n\n---\n# SrtVideoPlayer\n\n***Important, video player only works on a desktopless environment, and \"Start local control panel\" need to be off***\n<b>Restart required after desktop environment has been disabled</b>\n\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": true,
+      "mute": false,
+      "volume": 94,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "soloGroup": "",
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "showInTopBar": false,
+      "formatHideRW": false,
+      "formatHideRO": true,
+      "vuData": [
+        -60,
+        -60
+      ],
+      "enableVU": true,
+      "destinations": [
+        "SrtOpusOutput_8281"
+      ],
+      "srtHost": "10.9.1.103",
+      "srtPort": 1241,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "",
+      "caller_count": 0,
+      "source": "MR_PA_SrtVideoPlayer_3996.monitor",
+      "monitor": "MR_PA_SrtVideoPlayer_3996.monitor",
+      "sink": "MR_PA_SrtVideoPlayer_3996",
+      "SrtVideoPlayer_3996_0": {
+        "packets_send_recieve": "844816",
+        "MB_send_receive": 196,
+        "send_receive_rate": 2.54,
+        "available_bandwidth_rounded": 141.98,
+        "rtt_ms_rounded": 0.67,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtVideoPlayer",
+        "rtt_ms": "0.671000",
+        "available_bandwidth": "141.984000",
+        "bytes_received": "195997312",
+        "packets_received": "844816",
+        "receive_rate_mbps": "2.541442",
+        "send_duration": "0s",
+        "status": "disconnected"
+      }
+    },
+    "online": false,
+    "run": true,
+    "startupDelay": false,
+    "SrtOpusInput_4936": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "SoundDucking_7919": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "AudioInput_4289": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "HlsPlayer_7714": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "HlsPlayer_7714",
+      "controlType": "HlsPlayer",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New HlsPlayer",
+      "showControl": true,
+      "left": 40.264453125,
+      "top": 239.26640625,
+      "moduleEnabled": false,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 1234,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "subtitleLanguage": "eng",
+      "subtitlePosition": "top",
+      "source": "MR_PA_HlsPlayer_7714.monitor",
+      "monitor": "MR_PA_HlsPlayer_7714.monitor",
+      "sink": "MR_PA_HlsPlayer_7714",
+      "readyNullSinks": 1,
+      "vuData": [
+        -60
+      ],
+      "hlsUrl": "https://liveoht.brunstad.tv/out/v1/oslofjord-streaming/live/cloudfront/index.m3u8?EncodedPolicy=Policy%3DeyJTdGF0ZW1lbnQiOlt7IlJlc291cmNlIjoiaHR0cHM6Ly9saXZlb2h0LmJydW5zdGFkLnR2L291dC92MS9vc2xvZmpvcmQtc3RyZWFtaW5nL2xpdmUvY2xvdWRmcm9udC8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzQ1NTAyMzA2fX19XX0_%26Signature%3Dp52adqZCEh53hNJJMeJDL6PXlNOUrcgLCVVJhfCD3~9pUeBawVtj4ggSX2Y93Ox-RWWm71qvMW-ErisUrLgxi5Z12jVizTixGoNGNngZqNyu0qxucjwV4VN~eo4MQrqHnOYajTPvX-OLdTnWoGCuWJzZuGAj-arYmXzMALdHW5Ndzc~9ehlhj2UhjqYKE5aui64C4oepK3KrspTkHDc57WO~ogYwSEsB-Se~RQxYChEzd39PgBW7bcdKXeRTOSHbM7FqGO3pSkZVFWxmQEYPEG7UwDYHntSPzywB2oKrXnBAlpnNWccx3GWoCRb~pHNUQgMPryT8ivFmDU5u4qb1ZA__%26Key-Pair-Id%3DK1GSYT1GS8OW1X",
+      "hlsLoading": false,
+      "audioStreams": [
+        {
+          "language": "nor",
+          "comment": "Norsk",
+          "index": 0,
+          "enabled": false
+        },
+        {
+          "language": "kha",
+          "comment": "Khasi",
+          "index": 1,
+          "enabled": false
+        },
+        {
+          "language": "deu",
+          "comment": "Deutsch",
+          "index": 2,
+          "enabled": false
+        },
+        {
+          "language": "nld",
+          "comment": "Nederlands",
+          "index": 3,
+          "enabled": false
+        },
+        {
+          "language": "eng",
+          "comment": "English",
+          "index": 4,
+          "enabled": false
+        },
+        {
+          "language": "fra",
+          "comment": "Francais",
+          "index": 5,
+          "enabled": false
+        },
+        {
+          "language": "spa",
+          "comment": "Espanol",
+          "index": 6,
+          "enabled": false
+        },
+        {
+          "language": "por",
+          "comment": "Portugues",
+          "index": 7,
+          "enabled": false
+        },
+        {
+          "language": "cmn",
+          "comment": "国语",
+          "index": 8,
+          "enabled": false
+        },
+        {
+          "language": "fin",
+          "comment": "Finnish",
+          "index": 9,
+          "enabled": false
+        },
+        {
+          "language": "rus",
+          "comment": "Russian",
+          "index": 10,
+          "enabled": false
+        },
+        {
+          "language": "ron",
+          "comment": "Romanian",
+          "index": 11,
+          "enabled": false
+        },
+        {
+          "language": "tur",
+          "comment": "Turkish",
+          "index": 12,
+          "enabled": false
+        },
+        {
+          "language": "pol",
+          "comment": "Polish",
+          "index": 13,
+          "enabled": true
+        },
+        {
+          "language": "bul",
+          "comment": "Bulgarian",
+          "index": 14,
+          "enabled": false
+        },
+        {
+          "language": "hun",
+          "comment": "Hungarian",
+          "index": 15,
+          "enabled": false
+        },
+        {
+          "language": "ita",
+          "comment": "Italian",
+          "index": 16,
+          "enabled": false
+        },
+        {
+          "language": "slv",
+          "comment": "Slovenian",
+          "index": 17,
+          "enabled": false
+        },
+        {
+          "language": "hrv",
+          "comment": "Croatian",
+          "index": 18,
+          "enabled": false
+        },
+        {
+          "language": "tam",
+          "comment": "Tamil",
+          "index": 19,
+          "enabled": false
+        },
+        {
+          "language": "yue",
+          "comment": "粵語",
+          "index": 20,
+          "enabled": false
+        }
+      ],
+      "videoQualities": [
+        "540",
+        "126",
+        "360",
+        "480",
+        "720",
+        "1080"
+      ],
+      "subtitleLanguages": [
+        {
+          "language": "nor",
+          "comment": "Norsk"
+        },
+        {
+          "language": "kha",
+          "comment": "Khasi"
+        },
+        {
+          "language": "deu",
+          "comment": "Deutsch"
+        },
+        {
+          "language": "nld",
+          "comment": "Nederlands"
+        },
+        {
+          "language": "eng",
+          "comment": "English"
+        },
+        {
+          "language": "fra",
+          "comment": "Francais"
+        },
+        {
+          "language": "spa",
+          "comment": "Espanol"
+        },
+        {
+          "language": "por",
+          "comment": "Portugues"
+        },
+        {
+          "language": "cmn",
+          "comment": "国语"
+        },
+        {
+          "language": "fin",
+          "comment": "Finnish"
+        },
+        {
+          "language": "rus",
+          "comment": "Russian"
+        },
+        {
+          "language": "ron",
+          "comment": "Romanian"
+        },
+        {
+          "language": "tur",
+          "comment": "Turkish"
+        },
+        {
+          "language": "pol",
+          "comment": "Polish"
+        },
+        {
+          "language": "bul",
+          "comment": "Bulgarian"
+        },
+        {
+          "language": "hun",
+          "comment": "Hungarian"
+        },
+        {
+          "language": "ita",
+          "comment": "Italian"
+        },
+        {
+          "language": "slv",
+          "comment": "Slovenian"
+        },
+        {
+          "language": "hrv",
+          "comment": "Croatian"
+        },
+        {
+          "language": "tam",
+          "comment": "Tamil"
+        },
+        {
+          "language": "yue",
+          "comment": "粵語"
+        }
+      ],
+      "defaultLanguage": "nor",
+      "videoQuality": "1080",
+      "reload": false,
+      "sinkspaModuleID": [
+        "536870918"
+      ]
+    },
+    "SrtOpusOutput_8281": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "SrtOpusOutput_8281",
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput",
+      "showControl": true,
+      "left": 929.631640625,
+      "top": 30,
+      "moduleEnabled": true,
+      "volume": 110,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 2000,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_8281.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_8281.monitor",
+      "sink": "MR_PA_SrtOpusOutput_8281",
+      "vuData": [
+        -60,
+        -60
+      ],
+      "srtHost": "127.0.0.1",
+      "srtStreamID": "",
+      "reload": false,
+      "srcChannelMap": "1,2",
+      "caller_count": 1,
+      "mute": false
+    }
+  },
+  "router_1147": {
+    "name": "router_1147",
+    "controlType": "Router",
+    "parentElement": "_controlsDiv",
+    "hideData": false,
+    "cssText": "",
+    "cssClass": "",
+    "visible": true,
+    "visibleDisplayCss": "inherit",
+    "hiddenDisplayCss": "none",
+    "orderBy": "",
+    "orderAsc": true,
+    "cpuUsage": 0,
+    "cpuTemperature": 0,
+    "memoryUsage": 0,
+    "ipAddress": "10.9.1.183",
+    "buildNumber": "v1.1-beta | 2025-04-24 17:06 CAT",
+    "log": [
+      [
+        "INFO",
+        "2025/04/24, 21:25:47 | INFO: \tPulseAudio sources detected: alsa_output.platform-bcm2835_audio.stereo-fallback.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 21:25:47 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusInput_3202.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 21:25:47 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_9704.monitor"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 21:25:47 | INFO: \tPulseAudio sinks detected: alsa_output.platform-bcm2835_audio.stereo-fallback"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 21:25:47 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusInput_3202"
+      ],
+      [
+        "INFO",
+        "2025/04/24, 21:25:47 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_9704"
+      ],
+      [
+        "INFO",
+        "2025/04/25, 09:09:45 | INFO: \tRistToSrt_8248 (New RistToSrt): Starting RistToSrt (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/25, 09:09:45 | INFO: \tRistToSrt_3732 (New RistToSrt(copy)): Starting RistToSrt (gstreamer)"
+      ],
+      [
+        "INFO",
+        "2025/04/25, 09:09:46 | INFO: \tSrtOpusInput_3202 (New SrtOpusInput): Removed null-sink"
+      ]
+    ],
+    "logMessage": [
+      "INFO",
+      "2025/04/25, 12:39:29 | INFO: \tSrtOpusOutput_9704 (New SrtOpusOutput): Pipeline started"
+    ],
+    "fetchLog": true,
+    "logINFO": true,
+    "logERROR": true,
+    "logFATAL": true,
+    "logLimit": 100,
+    "deviceType": "Router",
+    "description": "",
+    "startupState": true,
+    "startupDelayTime": 3000,
+    "password": "BADNET",
+    "displayName": "BADNET",
+    "sources": [
+      {
+        "name": "alsa_output.platform-bcm2835_audio.stereo-fallback.monitor",
+        "description": "Monitor of Built-in Audio Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.platform-bcm2835_audio.stereo-fallback",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.usb-Yealink_CP900_8800822049001385-00.analog-stereo.monitor",
+        "description": "Monitor of CP900 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.usb-Yealink_CP900_8800822049001385-00.analog-stereo",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "3",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_input.usb-Yealink_CP900_8800822049001385-00.analog-stereo",
+        "description": "CP900 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 32000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "3",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_AudioInput_5842",
+        "description": "Remapped alsa_input.usb-Yealink_CP900_8800822049001385-00.analog-stereo source",
+        "channels": 1,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left"
+        ],
+        "moduleID": "536870967"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_9704.monitor",
+        "description": "New_SrtOpusOutput",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_9704",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870965"
+      }
+    ],
+    "sinks": [
+      {
+        "name": "alsa_output.platform-bcm2835_audio.stereo-fallback",
+        "description": "Built-in Audio Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.platform-bcm2835_audio.stereo-fallback.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "alsa_output.usb-Yealink_CP900_8800822049001385-00.analog-stereo",
+        "description": "CP900 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "alsa_output.usb-Yealink_CP900_8800822049001385-00.analog-stereo.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "3",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_9704",
+        "description": "New_SrtOpusOutput",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_9704.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870965"
+      }
+    ],
+    "paLatency": 50,
+    "displayOrder": 3,
+    "height": 700,
+    "width": 1500,
+    "scale": 1,
+    "startLocalCTR": false,
+    "RistToSrt_8248": {
+      "name": "RistToSrt_8248",
+      "controlType": "RistToSrt",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New RistToSrt",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 48.45195312499999,
+      "top": 49.448046875,
+      "width": 250,
+      "height": 77.236328125,
+      "reload": false,
+      "Help_md": "# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# SrtToRist / RistToSrt\n\nThis tool facilitates the conversion of SRT traffic to RIST or RIST traffic to SRT.\n\n## RIST Global Settings\n\n-   **UDP Socket Port**: The UDP port used for IPC between GStreamer and RIST tools. This port must be unique and not in use elsewhere.\n-   **Buffer (ms)**: Configurable buffer size ranging from 50 ms to 30 seconds.\n-   **Add Link**: Allows adding one or more RIST links.\n\n## RIST Link Settings\n\n-   **CNAME**: Identifier for the link on the sender side.\n-   **Host**: IP address or hostname of the sender/receiver.\n-   **Mode**: Specifies whether the link is in Caller or Listener mode.\n-   **Port**: UDP port used for the link.\n-   **Buffer Min**: Minimum buffer size for the link.\n-   **Buffer Max**: Maximum buffer size for the link.\n-   **Weight**: Determines the priority of the link. A higher value means more data will be sent over that link. Use `0` for all links to broadcast traffic equally.\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 1234,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 50,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "",
+      "caller_count": 0,
+      "udpSocket": 4000,
+      "buffer": 2000,
+      "rist__e186d65ee44045e28c0a8f0bdd6de747": {
+        "name": "rist__e186d65ee44045e28c0a8f0bdd6de747",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "hideData": false,
+        "cssText": "",
+        "cssClass": "",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderBy": "",
+        "orderAsc": true,
+        "host": "10.9.1.103",
+        "port": 5000,
+        "mode": "caller",
+        "cname": "BADNET01",
+        "buffermin": 300,
+        "buffermax": 2000,
+        "weight": 5
+      },
+      "rist__c01dd2b59afe4edd92e8f203063b6a2a": {
+        "name": "rist__c01dd2b59afe4edd92e8f203063b6a2a",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "hideData": false,
+        "cssText": "",
+        "cssClass": "",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderBy": "",
+        "orderAsc": true,
+        "host": "10.9.254.254",
+        "port": 7000,
+        "mode": "caller",
+        "cname": "BADNET02",
+        "buffermin": 300,
+        "buffermax": 2000,
+        "weight": 10
+      }
+    },
+    "SrtOpusOutput_9704": {
+      "name": "SrtOpusOutput_9704",
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New SrtOpusOutput",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 979.705859375,
+      "top": 209.080859375,
+      "width": 250,
+      "height": 99.716796875,
+      "reload": true,
+      "Help_md": "# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# Base Audio Settings\n\n## Audio Settings\n* Channels - Audio channel number (default = 1)\n* Sample Rate - Audio sample rate (default = 48000)\n* Bit Depth - Audio bit depth (default = 16)\n* Max Volume - Maximum volume that the client WebApp can request\n* Show the volume control in the top bar - Show the volume control in the top bar\n\n## Local Client Control Settings \n* Volume - Audio volume (1 = unity gain)\n* Enable Local Client Volume - Allow local client to change the volume\n* Enable Local Client Mute - Allow the local client to mute / unmute\n* Enable VU meter - Enable or disable the VU meter\n\n---\n# SrtOpusOutput\nEncodes PCM Audio to Opus and send it over SRT\n\n## Encoder Settings\n* Enable Opus FEC - Enable opus Forward Error Correction\n* Opus Frame Size - Opus frame size (Can decrease to improve latency / increse to reduce overall bandwidth)\n* FEC Packet Loss - Opus FEC packet loss percentage (preset value)\n* Complexity level - Opus complexity level (0 - 10) where 0 is the lowest quality, and 10 is the highest quality.\n* Bitrate - Opus encoding bitrate\n\n---\n\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": true,
+      "mute": false,
+      "volume": 150,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "soloGroup": "",
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "showInTopBar": false,
+      "formatHideRW": false,
+      "formatHideRO": true,
+      "vuData": [
+        -60,
+        -60
+      ],
+      "enableVU": true,
+      "sink": "MR_PA_SrtOpusOutput_9704",
+      "srtHost": "10.9.1.103",
+      "srtPort": 10003,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "",
+      "caller_count": 1,
+      "fec": false,
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "source": "MR_PA_SrtOpusOutput_9704.monitor",
+      "monitor": "MR_PA_SrtOpusOutput_9704.monitor",
+      "srcChannelMap": "1",
+      "SrtOpusOutput_9704_1": {
+        "status": "running",
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput: 1",
+        "rtt_ms": "259.270000",
+        "available_bandwidth": "0.084000",
+        "bytes_sent": "874640",
+        "packets_sent": "3770",
+        "send_rate_mbps": "0.163792",
+        "send_duration_us": "42655134",
+        "send_duration": "42s",
+        "packets_send_recieve": "3770",
+        "MB_send_receive": 0.87,
+        "send_receive_rate": 0.16,
+        "rtt_ms_rounded": 259.27,
+        "available_bandwidth_rounded": 0.08
+      }
+    },
+    "RistToSrt_3732": {
+      "name": "RistToSrt_3732",
+      "controlType": "RistToSrt",
+      "parentElement": "_controlsDiv",
+      "hideData": false,
+      "cssText": "",
+      "cssClass": "",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderBy": "",
+      "orderAsc": true,
+      "description": "",
+      "displayName": "New RistToSrt(copy)",
+      "showControl": true,
+      "displayOrder": 0,
+      "left": 48.26640624999999,
+      "top": 128.50078125,
+      "width": 250,
+      "height": 77.236328125,
+      "reload": false,
+      "Help_md": "# Base SRT Settings\n\n***NB! If Module indicate red, it means that the module has no clients connected (Listener mode) or it is not connected to a endpoint (Caller mode)***\n\n## Srt Settings \n* Host - Srt hostname / ip address (<b>Do not include srt://</b>)\n* Port - Srt port \n* Latency - Srt latency (Make sure latency is atleast 4X the ping amount)\n* Max Bw - Max bandwidth (% of encoding Bitrate eg. 250%)\n* Mode - Srt mode (Caller / listener / Rendezvous)\n* Passphrase - Password for protected streams (if applicable)\n* Stream ID - Srt Stream id (if applicable)\n\n---\n# SrtToRist / RistToSrt\n\nThis tool facilitates the conversion of SRT traffic to RIST or RIST traffic to SRT.\n\n## RIST Global Settings\n\n-   **UDP Socket Port**: The UDP port used for IPC between GStreamer and RIST tools. This port must be unique and not in use elsewhere.\n-   **Buffer (ms)**: Configurable buffer size ranging from 50 ms to 30 seconds.\n-   **Add Link**: Allows adding one or more RIST links.\n\n## RIST Link Settings\n\n-   **CNAME**: Identifier for the link on the sender side.\n-   **Host**: IP address or hostname of the sender/receiver.\n-   **Mode**: Specifies whether the link is in Caller or Listener mode.\n-   **Port**: UDP port used for the link.\n-   **Buffer Min**: Minimum buffer size for the link.\n-   **Buffer Max**: Maximum buffer size for the link.\n-   **Weight**: Determines the priority of the link. A higher value means more data will be sent over that link. Use `0` for all links to broadcast traffic equally.\n\n\n\n",
+      "md_queue": [],
+      "moduleEnabled": true,
+      "srtHost": "127.0.0.1",
+      "srtPort": 8890,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtPassphrase": "",
+      "srtLatency": 50,
+      "srtMaxBw": 250,
+      "srtEnableMaxBW": false,
+      "srtStreamID": "publish:test",
+      "caller_count": 21,
+      "udpSocket": 4001,
+      "buffer": 600,
+      "rist__e186d65ee44045e28c0a8f0bdd6de747": {
+        "name": "rist__e186d65ee44045e28c0a8f0bdd6de747",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "hideData": false,
+        "cssText": "",
+        "cssClass": "",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderBy": "",
+        "orderAsc": true,
+        "host": "10.9.1.103",
+        "port": 5000,
+        "mode": "caller",
+        "cname": "BADNET003",
+        "buffermin": 300,
+        "buffermax": 600,
+        "weight": 5
+      },
+      "rist__c01dd2b59afe4edd92e8f203063b6a2a": {
+        "name": "rist__c01dd2b59afe4edd92e8f203063b6a2a",
+        "controlType": "RISTConfig",
+        "parentElement": "_controlsDiv",
+        "hideData": false,
+        "cssText": "",
+        "cssClass": "",
+        "visible": true,
+        "visibleDisplayCss": "inherit",
+        "hiddenDisplayCss": "none",
+        "orderBy": "",
+        "orderAsc": true,
+        "host": "10.9.254.254",
+        "port": 7000,
+        "mode": "caller",
+        "cname": "BADNET004",
+        "buffermin": 300,
+        "buffermax": 600,
+        "weight": 2
+      },
+      "RistToSrt_3732_0": {
+        "controlType": "SrtStats",
+        "StatsName": "New RistToSrt(copy)",
+        "rtt_ms": "100.000000",
+        "rtt_ms_rounded": 100,
+        "available_bandwidth": "12.000000",
+        "available_bandwidth_rounded": 12,
+        "send_duration": "0s",
+        "packet_loss": "null",
+        "MB_send_receive": 11.8,
+        "send_receive_rate": 0.08,
+        "status": "running"
+      }
+    },
+    "online": false,
+    "startupDelay": false,
+    "run": true,
+    "AudioInput_5842": {
+      "top": 212.371875,
+      "height": 99.716796875,
+      "width": 250,
+      "name": "AudioInput_5842",
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioInput",
+      "showControl": true,
+      "left": 524.63359375,
+      "moduleEnabled": true,
+      "volume": 291,
+      "channels": 2,
+      "sampleRate": 32000,
+      "bitDepth": 16,
+      "maxVolume": 300,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "enableVU": true,
+      "channelMap": "1,2",
+      "source": "MR_PA_AudioInput_5842",
+      "monitor": "MR_PA_AudioInput_5842",
+      "masterExists": true,
+      "master": "alsa_input.usb-Yealink_CP900_8800822049001385-00.analog-stereo",
+      "master_descr": "CP900 Analog Stereo",
+      "reload": false,
+      "vuData": [
+        0,
+        -60
+      ],
+      "destinations": [
+        "SrtOpusOutput_9704"
+      ]
+    },
+    "SrtOpusInput_3202": {
+      "height": 0,
+      "width": 0,
+      "caller_count": 0,
+      "SrtOpusInput_3202_0": {
+        "status": "disconnected"
+      },
+      "destinations": [],
+      "vuData": [
+        -60,
+        -60
+      ]
+    }
+  },
+  "router_defaultConf_backup_91": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_7": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_3": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_90": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_98": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_57": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_45": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_76": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_41": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_23": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_defaultConf_backup_91_backup_49": {
+    "AudioInput_2334": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_1703": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_9912": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8308": {
+      "height": 0,
+      "width": 0
+    },
+    "SoundDucking_2710": {
+      "height": 0,
+      "width": 0
+    },
+    "HlsPlayer_3129": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioInput_8854": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8461": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusOutput_8921": {
+      "height": 0,
+      "width": 0
+    },
+    "SrtOpusInput_3231": {
+      "height": 0,
+      "width": 0
+    },
+    "online": false
+  },
+  "router_4830": {
+    "fetchLog": true,
+    "name": "router_4830",
+    "controlType": "Router",
+    "parentElement": "_controlsDiv",
+    "visible": true,
+    "visibleDisplayCss": "inherit",
+    "hiddenDisplayCss": "none",
+    "orderAsc": true,
+    "ipAddress": "10.9.1.234",
+    "buildNumber": "dev | 2025-02-11 00:00:00 am CAT",
+    "logFATAL": true,
+    "logLimit": 100,
+    "deviceType": "Router",
+    "startupState": true,
+    "startupDelayTime": 3000,
+    "displayName": "1234",
+    "paLatency": 50,
+    "displayOrder": 4,
+    "height": 700,
+    "width": 1500,
+    "scale": 1,
+    "online": false,
+    "password": "12312",
+    "sources": [
+      {
+        "name": "alsa_input.usb-046d_HD_Pro_Webcam_C920_31CEAB2F-02.analog-stereo",
+        "description": "HD Pro Webcam C920 Analog Stereo",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 32000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "cardId": "2",
+        "moduleID": 4294967295
+      },
+      {
+        "name": "MR_PA_AudioInput_2302",
+        "description": "Remapped alsa_input.usb-046d_HD_Pro_Webcam_C920_31CEAB2F-02.analog-stereo source",
+        "channels": 2,
+        "bitDepth": 32,
+        "sampleRate": 48000,
+        "monitorsource": "",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870917"
+      },
+      {
+        "name": "MR_PA_SrtOpusInput_1914.monitor",
+        "description": "New_SrtOpusInput",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusInput_1914",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870916"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_4704.monitor",
+        "description": "New_SrtOpusOutput",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_4704",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870914"
+      }
+    ],
+    "sinks": [
+      {
+        "name": "MR_PA_SrtOpusInput_1914",
+        "description": "New_SrtOpusInput",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusInput_1914.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870916"
+      },
+      {
+        "name": "MR_PA_SrtOpusOutput_4704",
+        "description": "New_SrtOpusOutput",
+        "channels": 2,
+        "bitDepth": 16,
+        "sampleRate": 48000,
+        "monitorsource": "MR_PA_SrtOpusOutput_4704.monitor",
+        "channelmap": [
+          "front-left",
+          "front-right"
+        ],
+        "moduleID": "536870914"
+      }
+    ],
+    "log": [
+      [
+        "INFO",
+        "2025/05/29, 18:48:59 | INFO: \tPulseAudio sources detected: alsa_output.platform-fef00700.hdmi.hdmi-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:00 | INFO: \tPulseAudio sinks detected: alsa_output.platform-fef00700.hdmi.hdmi-stereo"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:00 | INFO: \tAudioOutput_320 (New AudioOutput): Created remap-sink; ID: 536870913"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:00 | INFO: \tPulseAudio sources detected: alsa_input.usb-046d_HD_Pro_Webcam_C920_31CEAB2F-02.analog-stereo"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:00 | INFO: \tSrtOpusInput_1914 (New SrtOpusInput): Created null-sink; ID: 536870914"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:01 | INFO: \tSrtOpusOutput_4704 (New SrtOpusOutput): Created null-sink; ID: 536870915"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Created null-sink; ID: 536870916"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sources detected: MR_PA_AudioOutput_320.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusInput_1914.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_4704.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sources detected: MR_PA_HlsPlayer_7693.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sinks detected: MR_PA_AudioOutput_320"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusInput_1914"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_4704"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:02 | INFO: \tPulseAudio sinks detected: MR_PA_HlsPlayer_7693"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:03 | INFO: \tAudioInput_2302 (New AudioInput): Created remap-source; ID: 536870917"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:03 | INFO: \tPulseAudio sources detected: MR_PA_AudioInput_2302"
+      ],
+      [
+        "ERROR",
+        "2025/05/29, 18:49:04 | ERROR: \tAudioInput_2302 (New AudioInput): Unable to create remap-source: Invalid channel map"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:04 | INFO: \tMR_PA_AudioOutput_320 (New AudioOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:04 | INFO: \tMR_PA_SrtOpusInput_1914 (New SrtOpusInput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:05 | INFO: \tMR_PA_SrtOpusOutput_4704 (New SrtOpusOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:05 | INFO: \tSrtOpusInput_1914 (New SrtOpusInput): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:05 | INFO: \tMR_PA_HlsPlayer_7693 (New HlsPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:06 | INFO: \tSrtOpusOutput_4704 (New SrtOpusOutput): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:06 | INFO: \tMR_PA_AudioInput_2302 (New AudioInput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:06 | INFO: \tMR_PA_AudioInput_2302_loopback_AudioOutput_320: Connected MR_PA_AudioInput_2302 to MR_PA_AudioOutput_320; ID: 536870918"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:07 | INFO: \tMR_PA_AudioInput_2302_loopback_SrtOpusOutput_4704: Connected MR_PA_AudioInput_2302 to MR_PA_SrtOpusOutput_4704; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:07 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Error fetching playlist: certificate is not yet valid"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:07 | INFO: \tHlsPlayer_7693 (New HlsPlayer): TypeError: Cannot convert undefined or null to object\n    at Function.values (<anonymous>)\n    at startStreams (/opt/media-router/server/hlsDemuxer/index.js:313:32) Promise {\n  <rejected> TypeError: Cannot convert undefined or null to object\n      at Function.values (<anonymous>)\n      at startStreams (/opt/media-router/server/hlsDemuxer/index.js:313:32)\n}"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:09 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:17 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Error: Command failed: echo 33554432 | sudo tee /proc/sys/fs/pipe-max-size\n\nWe trust you have received the usual lecture from the local System\nAdministrator. It usually boils down to these three things:\n\n    #1) Respect the privacy of others.\n    #2) Think before you type.\n    #3) With great power comes great responsibility.\n\nFor security reasons, the password you type will not be visible.\n\nsudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper\nsudo: a password is required\n\n    at genericNodeError (node:internal/errors:984:15)\n    at wrappedFn (node:internal/errors:538:14)\n    at ChildProcess.exithandler (node:child_process:422:12)\n    at ChildProcess.emit (node:events:518:28)\n    at maybeClose (node:internal/child_process:1104:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:304:5) {\n  code: 1,\n  killed: false,\n  signal: null,\n  cmd: 'echo 33554432 | sudo tee /proc/sys/fs/pipe-max-size',\n  stdout: '',\n  stderr: '\\n' +\n    'We trust you have received the usual lecture from the local System\\n' +\n    'Administrator. It usually boils down to these three things:\\n' +\n    '\\n' +\n    '    #1) Respect the privacy of others.\\n' +\n    '    #2) Think before you type.\\n' +\n    '    #3) With great power comes great responsibility.\\n' +\n    '\\n' +\n    'For security reasons, the password you type will not be visible.\\n' +\n    '\\n' +\n    'sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper\\n' +\n    'sudo: a password is required\\n'\n} Promise {\n  <rejected> Error: Command failed: echo 33554432 | sudo tee /proc/sys/fs/pipe-max-size\n  \n  We trust you have received the usual lecture from the local System\n  Administrator. It usually boils down to these three things:\n  \n      #1) Respect the privacy of others.\n      #2) Think before you type.\n      #3) With great power comes great responsibility.\n  \n  For security reasons, the password you type will not be visible.\n  \n  sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper\n  sudo: a password is required\n  \n      at genericNodeError (node:internal/errors:984:15)\n      at wrappedFn (node:internal/errors:538:14)\n      at ChildProcess.exithandler (node:child_process:422:12)\n      at ChildProcess.emit (node:events:518:28)\n      at maybeClose (node:internal/child_process:1104:16)\n      at ChildProcess._handle.onexit (node:internal/child_process:304:5) {\n    code: 1,\n    killed: false,\n    signal: null,\n    cmd: 'echo 33554432 | sudo tee /proc/sys/fs/pipe-max-size',\n    stdout: '',\n    stderr: '\\n' +\n      'We trust you have received the usual lecture from the local System\\n' +\n      'Administrator. It usually boils down to these three things:\\n' +\n      '\\n' +\n      '    #1) Respect the privacy of others.\\n' +\n      '    #2) Think before you type.\\n' +\n      '    #3) With great power comes great responsibility.\\n' +\n      '\\n' +\n      'For security reasons, the password you type will not be visible.\\n' +\n      '\\n' +\n      'sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper\\n' +\n      'sudo: a password is required\\n'\n  }\n}"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:17 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Error: Stream doesn't contain enough data."
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:17 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Reloading pipline"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 18:49:18 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:42 | INFO: \tMR_PA_AudioOutput_320 (New AudioOutput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:42 | FATAL: \tAudioOutput_320 (New AudioOutput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:42 | INFO: \tMR_PA_AudioInput_2302_loopback_AudioOutput_320: Disconnected MR_PA_AudioInput_2302 from MR_PA_AudioOutput_320"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:43 | INFO: \tMR_PA_SrtOpusInput_1914 (New SrtOpusInput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:43 | FATAL: \tSrtOpusInput_1914 (New SrtOpusInput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:43 | INFO: \tSrtOpusInput_1914 (New SrtOpusInput): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:43 | INFO: \tMR_PA_AudioInput_2302 (New AudioInput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:43 | FATAL: \tAudioInput_2302 (New AudioInput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:43 | INFO: \tMR_PA_AudioInput_2302_loopback_SrtOpusOutput_4704: Disconnected MR_PA_AudioInput_2302 from MR_PA_SrtOpusOutput_4704"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tMR_PA_SrtOpusOutput_4704 (New SrtOpusOutput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:44 | FATAL: \tSrtOpusOutput_4704 (New SrtOpusOutput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tSrtOpusOutput_4704 (New SrtOpusOutput): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tMR_PA_HlsPlayer_7693 (New HlsPlayer): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:44 | FATAL: \tHlsPlayer_7693 (New HlsPlayer): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tPulseAudio sources removed: MR_PA_SrtOpusInput_1914.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tPulseAudio sources removed: MR_PA_SrtOpusOutput_4704.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:44 | INFO: \tPulseAudio sources removed: MR_PA_HlsPlayer_7693.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:45 | INFO: \tPulseAudio sinks removed: MR_PA_SrtOpusInput_1914"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:45 | INFO: \tPulseAudio sinks removed: MR_PA_SrtOpusOutput_4704"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:45 | INFO: \tPulseAudio sinks removed: MR_PA_HlsPlayer_7693"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:45 | INFO: \tMR_PA_AudioOutput_320 (New AudioOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:45 | INFO: \tMR_PA_SrtOpusInput_1914 (New SrtOpusInput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:45 | INFO: \tSrtOpusInput_1914 (New SrtOpusInput): Created null-sink; ID: 536870916"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:46 | INFO: \tMR_PA_AudioInput_2302 (New AudioInput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:46 | INFO: \tAudioInput_2302 (New AudioInput): Created remap-source; ID: 536870915"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:46 | INFO: \tMR_PA_AudioInput_2302_loopback_AudioOutput_320: Connected MR_PA_AudioInput_2302 to MR_PA_AudioOutput_320; ID: 536870919"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:46 | INFO: \tMR_PA_SrtOpusOutput_4704 (New SrtOpusOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:46 | INFO: \tSrtOpusOutput_4704 (New SrtOpusOutput): Created null-sink; ID: 536870914"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:47 | INFO: \tMR_PA_AudioInput_2302_loopback_SrtOpusOutput_4704: Connected MR_PA_AudioInput_2302 to MR_PA_SrtOpusOutput_4704; ID: 536870918"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:47 | INFO: \tMR_PA_HlsPlayer_7693 (New HlsPlayer): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:47 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Created null-sink; ID: 536870920"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tMR_PA_HlsPlayer_7693 (New HlsPlayer): Disabling module"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusInput_1914.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tPulseAudio sources detected: MR_PA_SrtOpusOutput_4704.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tPulseAudio sources detected: MR_PA_HlsPlayer_7693.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusInput_1914"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tPulseAudio sinks detected: MR_PA_SrtOpusOutput_4704"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:48 | INFO: \tPulseAudio sinks detected: MR_PA_HlsPlayer_7693"
+      ],
+      [
+        "ERROR",
+        "2025/05/29, 19:46:48 | ERROR: \tAudioInput_2302 (New AudioInput): Unable to create remap-source: Invalid channel map"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:49 | INFO: \tAudioInput_2302 (New AudioInput): Created remap-source; ID: 536870921"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:49 | INFO: \tMR_PA_SrtOpusInput_1914 (New SrtOpusInput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:49 | FATAL: \tSrtOpusInput_1914 (New SrtOpusInput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:49 | INFO: \tMR_PA_SrtOpusOutput_4704 (New SrtOpusOutput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:49 | FATAL: \tSrtOpusOutput_4704 (New SrtOpusOutput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:50 | INFO: \tMR_PA_AudioInput_2302_loopback_SrtOpusOutput_4704: Disconnected MR_PA_AudioInput_2302 from MR_PA_SrtOpusOutput_4704"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:50 | INFO: \tMR_PA_HlsPlayer_7693 (New HlsPlayer): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 19:46:50 | FATAL: \tHlsPlayer_7693 (New HlsPlayer): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:52 | INFO: \tHlsPlayer_7693 (New HlsPlayer): Removed null-sink"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:52 | INFO: \tMR_PA_SrtOpusInput_1914 (New SrtOpusInput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:53 | INFO: \tMR_PA_SrtOpusOutput_4704 (New SrtOpusOutput): Starting VU"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:53 | INFO: \tSrtOpusInput_1914 (New SrtOpusInput): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:53 | INFO: \tMR_PA_AudioInput_2302_loopback_SrtOpusOutput_4704: Connected MR_PA_AudioInput_2302 to MR_PA_SrtOpusOutput_4704; ID: 536870920"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:53 | INFO: \tPulseAudio sources removed: MR_PA_HlsPlayer_7693.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:53 | INFO: \tSrtOpusOutput_4704 (New SrtOpusOutput): Pipeline started"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 19:46:53 | INFO: \tPulseAudio sinks removed: MR_PA_HlsPlayer_7693"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:54 | INFO: \tPulseAudio sinks removed: alsa_output.platform-fef00700.hdmi.hdmi-stereo"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:54 | INFO: \tAudioOutput_320 (New AudioOutput): Removed remap-sink"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:54 | INFO: \tPulseAudio sources removed: alsa_output.platform-fef00700.hdmi.hdmi-stereo.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:54 | INFO: \tPulseAudio sources removed: MR_PA_AudioOutput_320.monitor"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:54 | INFO: \tPulseAudio sinks removed: MR_PA_AudioOutput_320"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:55 | INFO: \tMR_PA_AudioOutput_320 (New AudioOutput): Stopping VU"
+      ],
+      [
+        "FATAL",
+        "2025/05/29, 22:15:55 | FATAL: \tAudioOutput_320 (New AudioOutput): Got exit code, restarting in 500ms"
+      ],
+      [
+        "INFO",
+        "2025/05/29, 22:15:55 | INFO: \tMR_PA_AudioInput_2302_loopback_AudioOutput_320: Disconnected MR_PA_AudioInput_2302 from MR_PA_AudioOutput_320"
+      ]
+    ],
+    "cpuUsage": 0,
+    "cpuTemperature": 0,
+    "memoryUsage": 0,
+    "logMessage": [
+      "INFO",
+      "2025/05/29, 22:15:55 | INFO: \tMR_PA_AudioInput_2302_loopback_AudioOutput_320: Disconnected MR_PA_AudioInput_2302 from MR_PA_AudioOutput_320"
+    ],
+    "startupDelay": false,
+    "logERROR": true,
+    "logINFO": true,
+    "run": true,
+    "AudioInput_5220": {
+      "height": 0,
+      "width": 0
+    },
+    "AudioOutput_320": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "AudioOutput_320",
+      "controlType": "AudioOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioOutput",
+      "showControl": true,
+      "left": 680.98125,
+      "top": 257.98125,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 32,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "enableVU": true,
+      "channelMap": "1,2",
+      "monitor": "MR_PA_AudioOutput_320.monitor",
+      "sink": "MR_PA_AudioOutput_320",
+      "master": "alsa_output.platform-fef00700.hdmi.hdmi-stereo",
+      "master_descr": "Built-in Audio Digital Stereo (HDMI)",
+      "reload": false,
+      "srcChannelMap": "1,2",
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "SrtOpusOutput_3084": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": []
+    },
+    "SrtOpusInput_1914": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "SrtOpusInput_1914",
+      "controlType": "SrtOpusInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusInput",
+      "showControl": true,
+      "left": 661.7859375,
+      "top": 30,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 1234,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "source": "MR_PA_SrtOpusInput_1914.monitor",
+      "monitor": "MR_PA_SrtOpusInput_1914.monitor",
+      "sink": "MR_PA_SrtOpusInput_1914",
+      "srtStreamID": "read:eng",
+      "srtHost": "127.0.0.1",
+      "reload": false,
+      "vuData": [
+        -42,
+        -42
+      ],
+      "caller_count": 21,
+      "SrtOpusInput_1914_0": {
+        "packets_send_recieve": "976920",
+        "MB_send_receive": 226.65,
+        "send_receive_rate": 0.16,
+        "available_bandwidth_rounded": 0.08,
+        "rtt_ms_rounded": 0.17,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusInput",
+        "rtt_ms": "0.169000",
+        "available_bandwidth": "0.084000",
+        "bytes_received": "226645440",
+        "packets_received": "976920",
+        "receive_rate_mbps": "0.160112",
+        "send_duration": "0s",
+        "status": "running"
+      }
+    },
+    "AudioInput_6206": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": []
+    },
+    "AudioInput_2302": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "AudioInput_2302",
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioInput",
+      "showControl": true,
+      "left": 247.3953125,
+      "top": 256.3953125,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 32000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "enableVU": true,
+      "channelMap": "1,2",
+      "source": "MR_PA_AudioInput_2302",
+      "monitor": "MR_PA_AudioInput_2302",
+      "masterExists": true,
+      "master": "alsa_input.usb-046d_HD_Pro_Webcam_C920_31CEAB2F-02.analog-stereo",
+      "master_descr": "HD Pro Webcam C920 Analog Stereo",
+      "reload": false,
+      "destinations": [
+        "AudioOutput_320",
+        "SrtOpusOutput_4704"
+      ],
+      "vuData": [
+        -40,
+        -40
+      ]
+    },
+    "SrtOpusOutput_4704": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "SrtOpusOutput_4704",
+      "controlType": "SrtOpusOutput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtOpusOutput",
+      "showControl": true,
+      "left": 673.3953125,
+      "top": 145.3953125,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 1234,
+      "srtMode": "listener",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "fecPacketLoss": 5,
+      "complexity": 10,
+      "bitrate": 64,
+      "opusFrameSize": 20,
+      "monitor": "MR_PA_SrtOpusOutput_4704.monitor",
+      "source": "MR_PA_SrtOpusOutput_4704.monitor",
+      "sink": "MR_PA_SrtOpusOutput_4704",
+      "vuData": [
+        -42,
+        -40
+      ],
+      "srtHost": "0.0.0.0",
+      "reload": false,
+      "srcChannelMap": "1,2",
+      "caller_count": 1,
+      "SrtOpusOutput_4704_1": {
+        "packets_send_recieve": "976947",
+        "send_duration": "2H 12M 29s",
+        "MB_send_receive": 226.65,
+        "send_receive_rate": 0.16,
+        "available_bandwidth_rounded": 1.1,
+        "rtt_ms_rounded": 0.17,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtOpusOutput: 1",
+        "rtt_ms": "0.207000",
+        "available_bandwidth": "0.084000",
+        "bytes_sent": "226104416",
+        "packets_sent": "974588",
+        "send_rate_mbps": "0.160118",
+        "send_duration_us": "7930811103",
+        "status": "running"
+      }
+    },
+    "SrtVideoPlayer_9863": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "SrtVideoPlayer_9863",
+      "controlType": "SrtVideoPlayer",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New SrtVideoPlayer",
+      "showControl": true,
+      "left": 96.19999999999999,
+      "top": 50.2,
+      "moduleEnabled": false,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 2000,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "source": "MR_PA_SrtVideoPlayer_9863.monitor",
+      "monitor": "MR_PA_SrtVideoPlayer_9863.monitor",
+      "sink": "MR_PA_SrtVideoPlayer_9863",
+      "vuData": [
+        -60,
+        -60
+      ],
+      "srtHost": "10.9.1.44",
+      "srtStreamID": "play/scc/ret",
+      "reload": false,
+      "caller_count": 0,
+      "SrtVideoPlayer_9863_0": {
+        "packets_send_recieve": "648",
+        "MB_send_receive": 0.88,
+        "send_receive_rate": 0.38,
+        "available_bandwidth_rounded": 3.08,
+        "rtt_ms_rounded": 0.51,
+        "controlType": "SrtStats",
+        "StatsName": "New SrtVideoPlayer",
+        "rtt_ms": "0.505000",
+        "available_bandwidth": "3.084000",
+        "bytes_received": "881280",
+        "packets_received": "648",
+        "packets_received_lost": "0",
+        "receive_rate_mbps": "0.376188",
+        "send_duration": "0s",
+        "status": "disconnected"
+      }
+    },
+    "AudioInput_4917": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "AudioInput_4917",
+      "controlType": "AudioInput",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New AudioInput",
+      "showControl": true,
+      "left": 240.3953125,
+      "top": 367.3953125,
+      "moduleEnabled": true,
+      "volume": 100,
+      "channels": 2,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRW": true,
+      "enableVU": true,
+      "channelMap": "1,2",
+      "source": "MR_PA_AudioInput_4917",
+      "monitor": "MR_PA_AudioInput_4917",
+      "masterExists": true,
+      "master": "HlsPlayer_3820_sink_eng.monitor",
+      "master_descr": "Monitor of HlsPlayer_3820_sink_eng (English)",
+      "destinations": [
+        "SrtOpusOutput_4704",
+        "AudioOutput_320"
+      ],
+      "reload": false,
+      "vuData": [
+        -60,
+        -60
+      ]
+    },
+    "HlsPlayer_3820": {
+      "height": 0,
+      "width": 0,
+      "destinations": [],
+      "vuData": [
+        -60
+      ]
+    },
+    "HlsPlayer_7693": {
+      "height": 99.716796875,
+      "width": 250,
+      "name": "HlsPlayer_7693",
+      "controlType": "HlsPlayer",
+      "parentElement": "_controlsDiv",
+      "visible": true,
+      "visibleDisplayCss": "inherit",
+      "hiddenDisplayCss": "none",
+      "orderAsc": true,
+      "displayName": "New HlsPlayer",
+      "showControl": true,
+      "left": 103.19999999999999,
+      "top": 152.7,
+      "moduleEnabled": false,
+      "volume": 100,
+      "channels": 1,
+      "sampleRate": 48000,
+      "bitDepth": 16,
+      "maxVolume": 150,
+      "showVolumeControl": true,
+      "showMuteControl": true,
+      "formatHideRO": true,
+      "enableVU": true,
+      "srtPort": 1234,
+      "srtMode": "caller",
+      "srtPbKeyLen": 16,
+      "srtLatency": 10,
+      "srtMaxBw": 250,
+      "subtitleLanguage": "off",
+      "subtitlePosition": "baseline",
+      "source": "MR_PA_HlsPlayer_7693.monitor",
+      "monitor": "MR_PA_HlsPlayer_7693.monitor",
+      "sink": "MR_PA_HlsPlayer_7693",
+      "readyNullSinks": 0,
+      "vuData": [
+        -60
+      ],
+      "hlsUrl": "https://stream.cdn.bcc.africa/toplevelmanifest.m3u8",
+      "hlsLoading": false
+    }
+  }
+}

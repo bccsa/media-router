@@ -33,5 +33,47 @@
                "./test.js"
             ]
         },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "v2: Manager (dev)",
+            "skipFiles": ["<node_internals>/**"],
+            "runtimeExecutable": "pnpm",
+            "runtimeArgs": ["--filter", "@media-router/manager", "dev"],
+            "cwd": "${workspaceFolder}/v2",
+            "console": "integratedTerminal"
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "v2: Engine (dev)",
+            "skipFiles": ["<node_internals>/**"],
+            "runtimeExecutable": "pnpm",
+            "runtimeArgs": ["--filter", "@media-router/engine", "dev"],
+            "cwd": "${workspaceFolder}/v2",
+            "console": "integratedTerminal"
+        },
+        {
+            "type": "node",
+            "request": "attach",
+            "name": "v2: Attach Manager (9229)",
+            "port": 9229,
+            "skipFiles": ["<node_internals>/**"],
+            "restart": true
+        },
+        {
+            "type": "node",
+            "request": "attach",
+            "name": "v2: Attach Engine (9230)",
+            "port": 9230,
+            "skipFiles": ["<node_internals>/**"],
+            "restart": true
+        },
+    ],
+    "compounds": [
+        {
+            "name": "v2: Manager + Engine",
+            "configurations": ["v2: Manager (dev)", "v2: Engine (dev)"]
+        }
     ]
 }

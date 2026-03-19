@@ -1,0 +1,27 @@
+{
+    "name": "@media-router/manager",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Media Router manager — central config store, engine orchestration, web UI server",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit",
+        "dev": "tsx watch --inspect=9229 examples/test-manager.ts"
+    },
+    "dependencies": {
+        "@media-router/dgram-comms": "workspace:*",
+        "@media-router/shared-types": "workspace:*",
+        "better-sqlite3": "^12.8.0",
+        "cors": "^2.8.6",
+        "express": "^5.2.1",
+        "socket.io": "^4.8.3"
+    },
+    "devDependencies": {
+        "@types/better-sqlite3": "^7.6.13",
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "@types/node": "^25.5.0"
+    }
+}

@@ -1,0 +1,31 @@
+{
+  "envFile": "",
+  "envFileErr": "",
+  "undefined": {
+    "managerHost": "127.0.0.1",
+    "username": "sdfgh",
+    "password": "ddfgf",
+    "selected": false,
+    "managerPort": 3000
+  },
+  "a9fcea02-1a86-46d0-b222-062243953e8f": {
+    "managerHost": "127.0.0.1",
+    "username": "MAN",
+    "password": "MAN",
+    "selected": true,
+    "managerPort": 3000,
+    "controlType": "managerPanel",
+    "remove": false,
+    "startupDelayTime": 3000
+  },
+  "fd019aad-133e-4eb3-858a-a19f5e565c59": {
+    "managerHost": "127.0.0.1",
+    "username": "RIST",
+    "password": "MyPassword",
+    "selected": false,
+    "managerPort": 3000,
+    "controlType": "managerPanel",
+    "remove": false,
+    "startupDelayTime": 3000
+  }
+}
