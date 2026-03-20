@@ -71,7 +71,7 @@ export class AudioDecoderModule extends GstPluginBase {
             return null;
         }
 
-        const udpSrc = `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true`;
+        const udpSrc = `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=2097152`;
 
         // Plugin decides decoder based on probe result
         let decoder: string;
