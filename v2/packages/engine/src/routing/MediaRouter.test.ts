@@ -17,7 +17,7 @@ describe('MediaRouter', () => {
         expect(router.getPort('mod-1', 'audio-out')).toEqual(ports[0]);
     });
 
-    it('creates a valid connection', () => {
+    it('creates a valid connection', async () => {
         router.registerPorts('encoder', [
             { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'Out' },
         ]);
@@ -25,12 +25,12 @@ describe('MediaRouter', () => {
             { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
         ]);
 
-        const connId = router.createConnection('encoder', 'mpegts-out', 'srt-output', 'mpegts-in');
+        const connId = await router.createConnection('encoder', 'mpegts-out', 'srt-output', 'mpegts-in');
         expect(connId).toBe('encoder:mpegts-out-srt-output:mpegts-in');
         expect(router.getConnections()).toHaveLength(1);
     });
 
-    it('rejects incompatible stream types', () => {
+    it('rejects incompatible stream types', async () => {
         router.registerPorts('audio', [
             { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
         ]);
@@ -38,10 +38,10 @@ describe('MediaRouter', () => {
             { id: 'in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
         ]);
 
-        expect(() => router.createConnection('audio', 'out', 'srt', 'in')).toThrow('Stream type mismatch');
+        await expect(router.createConnection('audio', 'out', 'srt', 'in')).rejects.toThrow('Stream type mismatch');
     });
 
-    it('rejects wrong port direction', () => {
+    it('rejects wrong port direction', async () => {
         router.registerPorts('mod-a', [
             { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
         ]);
@@ -49,10 +49,10 @@ describe('MediaRouter', () => {
             { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
         ]);
 
-        expect(() => router.createConnection('mod-a', 'in', 'mod-b', 'in')).toThrow('not an output');
+        await expect(router.createConnection('mod-a', 'in', 'mod-b', 'in')).rejects.toThrow('not an output');
     });
 
-    it('removes a connection', () => {
+    it('removes a connection', async () => {
         router.registerPorts('a', [
             { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
         ]);
@@ -60,23 +60,23 @@ describe('MediaRouter', () => {
             { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
         ]);
 
-        const connId = router.createConnection('a', 'out', 'b', 'in');
+        const connId = await router.createConnection('a', 'out', 'b', 'in');
         expect(router.getConnections()).toHaveLength(1);
 
-        router.removeConnection(connId);
+        await router.removeConnection(connId);
         expect(router.getConnections()).toHaveLength(0);
     });
 
-    it('unregisters ports and removes related connections', () => {
+    it('unregisters ports and removes related connections', async () => {
         router.registerPorts('a', [
             { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
         ]);
         router.registerPorts('b', [
             { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
         ]);
-        router.createConnection('a', 'out', 'b', 'in');
+        await router.createConnection('a', 'out', 'b', 'in');
 
-        router.unregisterPorts('a');
+        await router.unregisterPorts('a');
         expect(router.getConnections()).toHaveLength(0);
         expect(router.getPort('a', 'out')).toBeUndefined();
     });
@@ -91,7 +91,7 @@ describe('MediaRouter', () => {
             channelConfig: { channels: 6 }, label: '5.1 In',
         };
 
-        const result = router.validateCompatibility(src, sink);
+        const result = router.portRegistry.validateCompatibility(src, sink);
         expect(result.compatible).toBe(false);
         expect(result.reason).toContain('Channel mismatch');
     });

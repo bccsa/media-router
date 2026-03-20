@@ -1,0 +1,133 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { PortRegistry } from './PortRegistry.js';
+import type { ModulePort } from '@media-router/shared-types';
+
+describe('PortRegistry', () => {
+    let registry: PortRegistry;
+
+    beforeEach(() => {
+        registry = new PortRegistry();
+    });
+
+    describe('register / unregister', () => {
+        it('registers ports for a module', () => {
+            const ports: ModulePort[] = [
+                { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+            ];
+            registry.register('mod-1', ports);
+            expect(registry.get('mod-1', 'out')).toEqual(ports[0]);
+        });
+
+        it('returns undefined for unregistered module', () => {
+            expect(registry.get('missing', 'out')).toBeUndefined();
+        });
+
+        it('returns undefined for unregistered port', () => {
+            registry.register('mod-1', [
+                { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+            ]);
+            expect(registry.get('mod-1', 'missing')).toBeUndefined();
+        });
+
+        it('unregisters a module', () => {
+            registry.register('mod-1', [
+                { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+            ]);
+            registry.unregister('mod-1');
+            expect(registry.get('mod-1', 'out')).toBeUndefined();
+        });
+
+        it('unregisterAll clears all modules', () => {
+            registry.register('a', [{ id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' }]);
+            registry.register('b', [{ id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' }]);
+            registry.unregisterAll();
+            expect(registry.get('a', 'out')).toBeUndefined();
+            expect(registry.get('b', 'in')).toBeUndefined();
+        });
+
+        it('getAll returns all ports for a module', () => {
+            const ports: ModulePort[] = [
+                { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+                { id: 'in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
+            ];
+            registry.register('mod-1', ports);
+            expect(registry.getAll('mod-1')).toHaveLength(2);
+        });
+
+        it('getAll returns empty for unknown module', () => {
+            expect(registry.getAll('missing')).toEqual([]);
+        });
+    });
+
+    describe('getConnectionCount', () => {
+        it('counts connections on a specific output port', () => {
+            const connections = [
+                { sourceModuleId: 'enc', sourcePortId: 'mpegts-out', sinkModuleId: 'dec-1', sinkPortId: 'mpegts-in' },
+                { sourceModuleId: 'enc', sourcePortId: 'mpegts-out', sinkModuleId: 'dec-2', sinkPortId: 'mpegts-in' },
+                { sourceModuleId: 'other', sourcePortId: 'out', sinkModuleId: 'enc', sinkPortId: 'audio-in' },
+            ];
+            expect(registry.getConnectionCount('enc', 'mpegts-out', connections)).toBe(2);
+        });
+
+        it('counts connections on a specific input port', () => {
+            const connections = [
+                { sourceModuleId: 'enc-1', sourcePortId: 'out', sinkModuleId: 'dec', sinkPortId: 'in' },
+                { sourceModuleId: 'enc-2', sourcePortId: 'out', sinkModuleId: 'dec', sinkPortId: 'in' },
+            ];
+            expect(registry.getConnectionCount('dec', 'in', connections)).toBe(2);
+        });
+
+        it('returns 0 for port with no connections', () => {
+            const connections = [
+                { sourceModuleId: 'a', sourcePortId: 'out', sinkModuleId: 'b', sinkPortId: 'in' },
+            ];
+            expect(registry.getConnectionCount('c', 'out', connections)).toBe(0);
+        });
+
+        it('returns 0 for empty connections', () => {
+            expect(registry.getConnectionCount('a', 'out', [])).toBe(0);
+        });
+    });
+
+    describe('validateCompatibility', () => {
+        it('allows same stream type', () => {
+            const src: ModulePort = { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' };
+            const sink: ModulePort = { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' };
+            expect(registry.validateCompatibility(src, sink).compatible).toBe(true);
+        });
+
+        it('rejects different stream types', () => {
+            const src: ModulePort = { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' };
+            const sink: ModulePort = { id: 'in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' };
+            const result = registry.validateCompatibility(src, sink);
+            expect(result.compatible).toBe(false);
+            expect(result.reason).toContain('Stream type mismatch');
+        });
+
+        it('rejects audio channel mismatch', () => {
+            const src: ModulePort = { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out', channelConfig: { channels: 2 } };
+            const sink: ModulePort = { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In', channelConfig: { channels: 6 } };
+            const result = registry.validateCompatibility(src, sink);
+            expect(result.compatible).toBe(false);
+            expect(result.reason).toContain('Channel mismatch');
+        });
+
+        it('allows audio when channel counts match', () => {
+            const src: ModulePort = { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out', channelConfig: { channels: 2 } };
+            const sink: ModulePort = { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In', channelConfig: { channels: 2 } };
+            expect(registry.validateCompatibility(src, sink).compatible).toBe(true);
+        });
+
+        it('allows audio when channel config is missing (no restriction)', () => {
+            const src: ModulePort = { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out' };
+            const sink: ModulePort = { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' };
+            expect(registry.validateCompatibility(src, sink).compatible).toBe(true);
+        });
+
+        it('allows mpegts connections without channel check', () => {
+            const src: ModulePort = { id: 'out', direction: 'output', streamType: 'muxed/mpegts', label: 'Out' };
+            const sink: ModulePort = { id: 'in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' };
+            expect(registry.validateCompatibility(src, sink).compatible).toBe(true);
+        });
+    });
+});

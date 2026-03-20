@@ -5,7 +5,7 @@ describe('ConfigStore', () => {
     let store: ConfigStore;
 
     beforeEach(() => {
-        store = new ConfigStore(); // in-memory SQLite
+        store = new ConfigStore(':memory:');
     });
 
     afterEach(() => {

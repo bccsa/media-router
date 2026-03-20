@@ -10,4 +10,4 @@
 [x] - Revamp engine.ts (668 → 230 lines, extracted CommandDispatcher + ModuleLifecycle + SystemStatsCollector)
 [x] - Logging does not log per plugin, but only as core functions (fixed: per-instance logger as Plugin:<instanceId>)
 [x] - Engine stop start is not reliable, some times i stop the engine, and when i want to start again, the engine doesn ot receive te command, so i need to try muiltiple time to get it going
-[ ] - Make sure unit tests is full coverage as specified in the URS and FDS
+[x] - Unit tests: 134 tests across 14 files, all passing. Coverage: dgram-comms 92%, engine/modules 55%, engine/plugins 29%, engine/routing 35%, engine/comms 22%, engine/api (new), manager/config 63%, manager/handlers (new). Remaining: audio (PipeWire-dependent), UI packages (needs Vue Test Utils)
