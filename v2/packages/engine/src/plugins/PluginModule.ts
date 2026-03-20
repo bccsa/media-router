@@ -5,7 +5,7 @@ import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 
-const log = createLogger('GstPluginBase');
+const defaultLog = createLogger('GstPluginBase');
 
 /**
  * Services injected into plugins on init.
@@ -79,6 +79,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     private vuProcess: GstChildProcess | null = null;
     /** PulseAudio module ID for the null-sink created on start. */
     protected paModuleId: number | null = null;
+    /** Per-instance logger — initialized in onInit with the instance ID. */
+    protected log: ReturnType<typeof createLogger> = defaultLog;
 
     /** Subclasses define their GStreamer pipeline here. Return null to skip pipeline (idle module). */
     abstract buildPipeline(config: Record<string, unknown>): PipelineDescription | null;
@@ -86,6 +88,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         this.config = config;
         this.services = services ?? null;
+        if (services?.instanceId) {
+            this.log = createLogger(`Plugin:${services.instanceId}`);
+        }
     }
 
     /** Return the GStreamer child process (for MPEG-TS piping). */
@@ -103,7 +108,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.paModuleId !== null && this.services?.pipeWire) {
             const ready = await this.services.pipeWire.waitForSink(this.pwNodeName);
             if (!ready) {
-                log.warn({ pwNodeName: this.pwNodeName }, 'Null-sink not confirmed — proceeding anyway');
+                this.log.warn({ pwNodeName: this.pwNodeName }, 'Null-sink not confirmed — proceeding anyway');
             }
         }
 
@@ -168,7 +173,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             const vuPipeline = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000 ! audioconvert ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=66000000 ! fakesink sync=false`;
             await this.vuProcess.start({ pipeline: vuPipeline });
         } catch (err) {
-            log.warn({ err }, 'VU process failed to start');
+            this.log.warn({ err }, 'VU process failed to start');
             this.vuProcess = null;
         }
     }
@@ -193,7 +198,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // Each step is guarded so a failure doesn't prevent subsequent cleanup
         if (this.running) {
             try { await this.onStop(); } catch (err) {
-                log.error({ err }, 'onStop failed during destroy');
+                this.log.error({ err }, 'onStop failed during destroy');
             }
         }
         if (this.vuProcess) {

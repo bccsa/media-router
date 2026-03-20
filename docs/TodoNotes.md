@@ -8,5 +8,6 @@
 [x] - revamp media-router file (518 → 225 lines, extracted PortRegistry + ConnectionExecutor)
 [ ] - Plugins should be able to spawn their own services, for example the rist plugin, will need to spwan the rist cli on order to work
 [x] - Revamp engine.ts (668 → 230 lines, extracted CommandDispatcher + ModuleLifecycle + SystemStatsCollector)
-[ ] - Logging does not log per plugin, but only as core functions
-
+[x] - Logging does not log per plugin, but only as core functions (fixed: per-instance logger as Plugin:<instanceId>)
+[x] - Engine stop start is not reliable, some times i stop the engine, and when i want to start again, the engine doesn ot receive te command, so i need to try muiltiple time to get it going
+[ ] - Make sure unit tests is full coverage as specified in the URS and FDS

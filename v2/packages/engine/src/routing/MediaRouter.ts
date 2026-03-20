@@ -51,6 +51,7 @@ export class MediaRouter {
     setDependencies(
         pipeWire: PipeWireManager,
         moduleGetter: (id: string) => ModuleInstance | undefined,
+        displayNameResolver?: (id: string) => string,
     ): void {
         this.moduleGetter = moduleGetter;
         this.executor = new ConnectionExecutor(
@@ -58,6 +59,7 @@ export class MediaRouter {
             moduleGetter,
             (moduleId) => this.udpPorts.get(moduleId),
             MULTICAST_ADDR,
+            displayNameResolver,
         );
     }
 

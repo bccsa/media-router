@@ -6,6 +6,12 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 
 const log = createLogger('ModuleLifecycle');
 
+/** Create a log label like "Encoder 1 (audio-encoder-abc)" for readable logs. */
+function moduleLabel(modConfig: Record<string, unknown>): string {
+    const name = modConfig.displayName as string | undefined;
+    return name ? `[${name}]` : '';
+}
+
 interface StoredConnection {
     id: string;
     sourceModuleId: string;
@@ -34,11 +40,13 @@ export class ModuleLifecycle {
             return;
         }
 
-        // Stop any running modules first
+        // Destroy any existing modules first (stop + clear)
         if (this.moduleManager.size > 0) {
             log.info('Stopping all modules...');
             await this.mediaRouter.removeAllConnections(true);
-            await this.moduleManager.stopAll();
+            this.mediaRouter.unregisterAll();
+            await this.moduleManager.destroyAll();
+            await this.pipeWire.cleanupOrphans();
             log.info('All modules stopped');
         }
 
@@ -49,8 +57,9 @@ export class ModuleLifecycle {
         log.info({ count: moduleEntries.length }, 'Starting modules');
 
         for (const [instanceId, modConfig] of moduleEntries) {
+            const label = moduleLabel(modConfig);
             if (modConfig.enabled === false) {
-                log.info({ instanceId }, 'Module disabled, skipping');
+                log.info({ instanceId, module: label }, 'Module disabled, skipping');
                 continue;
             }
 
@@ -69,9 +78,10 @@ export class ModuleLifecycle {
                 })));
 
                 await this.moduleManager.startModule(instanceId);
-                log.info({ instanceId }, 'Started module');
+                log.info({ instanceId, module: label }, 'Started module');
             } catch (err) {
-                log.error({ err, instanceId }, 'Failed to start module');
+                const errMsg = err instanceof Error ? err.message : String(err);
+                log.error({ instanceId, module: label }, `Failed to start module: ${errMsg}`);
             }
         }
 
@@ -109,7 +119,9 @@ export class ModuleLifecycle {
     }
 
     async disable(moduleId: string): Promise<void> {
-        log.info({ moduleId }, 'Module disabled');
+        const config = this.getConfig();
+        const modName = (config?.modules as any)?.[moduleId]?.displayName ?? moduleId;
+        log.info({ moduleId, module: `[${modName}]` }, 'Module disabled');
 
         const connections = this.mediaRouter.getModuleConnections(moduleId);
         for (const conn of connections) {
@@ -122,7 +134,6 @@ export class ModuleLifecycle {
         }
 
         // Mark as disabled in current config
-        const config = this.getConfig();
         if (config) {
             const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
             if (modules[moduleId]) modules[moduleId].enabled = false;
@@ -130,7 +141,6 @@ export class ModuleLifecycle {
     }
 
     async enable(moduleId: string): Promise<void> {
-        log.info({ moduleId }, 'Module enabled');
         const config = this.getConfig();
         if (!config) return;
 
@@ -139,13 +149,16 @@ export class ModuleLifecycle {
         if (!modConfig) return;
         modConfig.enabled = true;
 
+        const label = moduleLabel(modConfig);
+        log.info({ moduleId, module: label }, 'Module enabled');
+
         const pluginId = modConfig.pluginId as string;
         try {
             this.moduleManager.createModule(moduleId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
             await this.moduleManager.startModule(moduleId);
-            log.info({ moduleId }, 'Module started');
+            log.info({ moduleId, module: label }, 'Module started');
         } catch (err) {
-            log.error({ err, moduleId }, 'Failed to start module');
+            log.error({ err, moduleId, module: label }, 'Failed to start module');
             return;
         }
 
@@ -177,7 +190,7 @@ export class ModuleLifecycle {
                 );
                 log.info({ source: `${conn.sourceModuleId}:${conn.sourcePortId}`, sink: `${conn.sinkModuleId}:${conn.sinkPortId}` }, 'Connected');
             } catch (err) {
-                log.error({ err: err instanceof Error ? err.message : err, connectionId: conn.id }, 'Failed to connect');
+                log.error({ connectionId: conn.id }, `Failed to connect: ${err instanceof Error ? err.message : err}`);
             }
         }
 
@@ -200,7 +213,7 @@ export class ModuleLifecycle {
                 );
                 log.info({ source: `${conn.sourceModuleId}:${conn.sourcePortId}`, sink: `${conn.sinkModuleId}:${conn.sinkPortId}` }, 'Connected');
             } catch (err) {
-                log.error({ err: err instanceof Error ? err.message : err, connectionId: conn.id }, 'Failed to connect');
+                log.error({ connectionId: conn.id }, `Failed to connect: ${err instanceof Error ? err.message : err}`);
             }
         }
     }

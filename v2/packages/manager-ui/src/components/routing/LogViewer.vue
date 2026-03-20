@@ -33,13 +33,6 @@ const allSources = computed(() => {
     for (const e of entries) {
         if (e.name) names.add(e.name);
     }
-    // Also add module display names
-    const engine = engineStore.getEngine(props.engineId);
-    if (engine?.modules) {
-        for (const mod of Object.values(engine.modules)) {
-            names.add(mod.instanceId);
-        }
-    }
     return Array.from(names).sort();
 });
 
@@ -70,12 +63,7 @@ const filteredEntries = computed(() => {
 
     // Filter by source
     if (hiddenSources.value.size > 0) {
-        entries = entries.filter((e) => {
-            // Check both name and instanceId against hidden list
-            if (e.name && hiddenSources.value.has(e.name)) return false;
-            if (e.instanceId && hiddenSources.value.has(e.instanceId as string)) return false;
-            return true;
-        });
+        entries = entries.filter((e) => !e.name || !hiddenSources.value.has(e.name));
     }
 
     // Filter by level
@@ -84,12 +72,16 @@ const filteredEntries = computed(() => {
     // Filter by search
     if (searchQuery.value) {
         const q = searchQuery.value.toLowerCase();
-        entries = entries.filter((e) =>
-            e.msg?.toLowerCase().includes(q) ||
-            e.name?.toLowerCase().includes(q) ||
-            (e.instanceId as string | undefined)?.toLowerCase().includes(q) ||
-            false
-        );
+        entries = entries.filter((e) => {
+            const hay = [
+                e.msg,
+                e.name,
+                e.instanceId as string | undefined,
+                (e as any).module as string | undefined,
+                (e as any).moduleId as string | undefined,
+            ].filter(Boolean).join(' ').toLowerCase();
+            return hay.includes(q);
+        });
     }
 
     return entries;
@@ -170,6 +162,7 @@ const levels = [
 
             <!-- Search -->
             <input v-model="searchQuery" placeholder="Search..."
+                   @keydown.stop
                    class="flex-1 px-2 py-0.5 text-xs rounded-md min-w-0"
                    :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }" />
 

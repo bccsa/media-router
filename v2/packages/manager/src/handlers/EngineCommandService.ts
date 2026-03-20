@@ -6,8 +6,12 @@ const log = createLogger('EngineCommandService');
 
 /**
  * Manages engine start/stop commands with retry logic and persisted running state.
+ * Cancels any pending retry when a new command arrives for the same engine.
  */
 export class EngineCommandService {
+    /** Pending retry timers per engine — ensures only one command chain runs at a time. */
+    private pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
     constructor(
         private configStore: ConfigStore,
         private engineManager: EngineConnectionManager,
@@ -33,15 +37,26 @@ export class EngineCommandService {
 
     /**
      * Send a start/stop command to an engine with retry.
-     * If the engine is offline, retries every 2s up to 5 times.
+     * Cancels any pending command for this engine before starting.
      */
     sendCommand(engineId: string, command: 'start' | 'stop'): void {
+        // Cancel any pending retry for this engine
+        const existing = this.pendingTimers.get(engineId);
+        if (existing) {
+            clearTimeout(existing);
+            this.pendingTimers.delete(engineId);
+            log.info({ engineId, command }, 'Cancelled previous pending command');
+        }
+
         const maxRetries = 5;
         const retryInterval = 2000;
         let attempt = 0;
 
         const trySend = () => {
             attempt++;
+            this.pendingTimers.delete(engineId);
+
+            // Check if the desired state still matches — abort if someone changed it
             const shouldBeRunning = this.isRunning(engineId);
             if ((command === 'start' && !shouldBeRunning) || (command === 'stop' && shouldBeRunning)) {
                 log.info({ engineId, command }, 'Command cancelled — running state changed');
@@ -51,7 +66,7 @@ export class EngineCommandService {
             if (!this.engineManager.isEngineOnline(engineId)) {
                 if (attempt < maxRetries) {
                     log.warn({ engineId, command, attempt }, 'Engine offline — retrying');
-                    setTimeout(trySend, retryInterval);
+                    this.pendingTimers.set(engineId, setTimeout(trySend, retryInterval));
                 } else {
                     log.error({ engineId, command }, 'Engine offline — giving up after retries');
                 }
@@ -73,5 +88,13 @@ export class EngineCommandService {
         };
 
         trySend();
+    }
+
+    /** Cancel all pending retries (e.g. on shutdown). */
+    cancelAll(): void {
+        for (const timer of this.pendingTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.pendingTimers.clear();
     }
 }

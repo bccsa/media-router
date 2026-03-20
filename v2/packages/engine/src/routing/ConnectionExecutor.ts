@@ -20,7 +20,16 @@ export class ConnectionExecutor {
         private moduleGetter: (id: string) => ModuleInstance | undefined,
         private getUdpPort: (moduleId: string) => number | undefined,
         private multicastAddr: string,
+        /** Optional: resolve moduleId → display name for logging. */
+        private displayNameResolver?: (id: string) => string,
     ) {}
+
+    /** Short label for logging: "[Mic 1 → Encoder 1]" or "[audio-input-xxx → audio-encoder-yyy]". */
+    private connLabel(conn: Connection): string {
+        const src = this.displayNameResolver?.(conn.sourceModuleId) ?? conn.sourceModuleId;
+        const dst = this.displayNameResolver?.(conn.sinkModuleId) ?? conn.sinkModuleId;
+        return `[${src} → ${dst}]`;
+    }
 
     async execute(conn: Connection): Promise<ActiveHandle | null> {
         if (conn.streamType === 'audio/pcm') {
@@ -85,7 +94,7 @@ export class ConnectionExecutor {
         }
 
         // Default: use module-loopback
-        log.info({ source: sourceNodes.source, sink: sinkNodes.sink }, 'Creating audio loopback');
+        log.info({ source: sourceNodes.source, sink: sinkNodes.sink }, `Creating audio loopback ${this.connLabel(conn)}`);
 
         const paModuleId = await this.pipeWire.loadLoopback(
             conn.id,
@@ -112,7 +121,7 @@ export class ConnectionExecutor {
             source: sourcePwNode,
             sink: sinkPwNode,
             mappings: conn.channelMap!.length,
-        }, 'Creating per-channel pw-link connections');
+        }, `Creating per-channel pw-link connections ${this.connLabel(conn)}`);
 
         // Remove any existing direct links between these nodes
         this.pipeWire.pwUnlinkAllBetween(sourcePwNode, sinkPwNode);
@@ -121,7 +130,7 @@ export class ConnectionExecutor {
         const srcPorts = this.pipeWire.listPorts(sourcePwNode, 'output');
         const sinkPorts = this.pipeWire.listPorts(sinkPwNode, 'input');
 
-        log.info({ srcPorts, sinkPorts }, 'Discovered PipeWire ports');
+        log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);
 
         const linkIds: number[] = [];
 
@@ -145,7 +154,7 @@ export class ConnectionExecutor {
             try {
                 const linkId = this.pipeWire.pwLink(srcPort, sinkPort);
                 linkIds.push(linkId);
-                log.info({ src: srcPort, dst: sinkPort, linkId }, 'Created pw-link');
+                log.info({ src: srcPort, dst: sinkPort, linkId }, `Created pw-link ${this.connLabel(conn)}`);
             } catch (err) {
                 log.error({ err, src: srcPort, dst: sinkPort }, 'Failed to create pw-link');
             }
@@ -173,7 +182,7 @@ export class ConnectionExecutor {
             return null;
         }
 
-        log.info({ source: conn.sourceModuleId, sink: conn.sinkModuleId, host: this.multicastAddr, udpPort }, 'UDP MPEG-TS connection');
+        log.info({ host: this.multicastAddr, udpPort }, `UDP MPEG-TS connection ${this.connLabel(conn)}`);
 
         // Start/restart the decoder so it subscribes to the encoder's multicast
         try {
@@ -181,7 +190,7 @@ export class ConnectionExecutor {
                 await sinkModule.stop();
             }
             await sinkModule.start();
-            log.info({ udpPort }, 'Restarted decoder with udpsrc');
+            log.info({ udpPort }, `Restarted decoder with udpsrc ${this.connLabel(conn)}`);
         } catch (err) {
             log.error({ err }, 'Failed to start decoder');
         }

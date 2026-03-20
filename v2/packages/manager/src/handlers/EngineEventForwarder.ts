@@ -31,16 +31,7 @@ export class EngineEventForwarder {
 
             if (this.engineCommands.isRunning(engineId)) {
                 log.info({ engineId }, 'engine reconnected — auto-sending start');
-                const engine = this.configStore.getEngine(engineId);
-                if (engine?.active_profile) {
-                    const config = this.configStore.getProfile(engineId, engine.active_profile as string);
-                    if (config) {
-                        this.engineManager.sendToEngine(engineId, 'config', config, { guaranteeDelivery: true });
-                    }
-                }
-                setTimeout(() => {
-                    this.engineManager.sendToEngine(engineId, 'command', { command: 'start' }, { guaranteeDelivery: true });
-                }, 500);
+                this.engineCommands.sendCommand(engineId, 'start');
             }
         });
 

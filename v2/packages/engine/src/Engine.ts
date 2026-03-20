@@ -76,7 +76,14 @@ export class Engine {
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
         this.profileStore = new ProfileStore(config.profilesPath);
 
-        this.mediaRouter.setDependencies(this.pipeWire, (id) => this.moduleManager.get(id));
+        this.mediaRouter.setDependencies(
+            this.pipeWire,
+            (id) => this.moduleManager.get(id),
+            (id) => {
+                const modules = (this.currentConfig?.modules ?? {}) as Record<string, Record<string, unknown>>;
+                return (modules[id]?.displayName as string) ?? id;
+            },
+        );
 
         // Command dispatcher
         this.commandDispatcher = new CommandDispatcher({
