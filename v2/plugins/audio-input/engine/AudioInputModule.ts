@@ -40,7 +40,9 @@ export class AudioInputModule extends GstPluginBase {
 
             // Set initial volume on the real device
             const vol = (this.config.volume as number) ?? 100;
-            await this.services.pipeWire.setSourceVolume(this.deviceName, vol);
+            if (this.deviceName) {
+                await this.services.pipeWire.setSourceVolume(this.deviceName, vol);
+            }
         }
 
         await super.onStart();

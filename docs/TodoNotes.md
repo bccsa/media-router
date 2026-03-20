@@ -7,4 +7,6 @@
 [ ] - add reset button, that kills the service and restarts pipewire service (pipewire should try, but if it does not have permission it should give error, but continue with resetting the service)
 [ ] - revamp media-router file, way too long
 [ ] - Plugins should be able to spawn their own services, for example the rist plugin, will need to spwan the rist cli on order to work
-[ ] - Revamp engine.ts (File is way to long)
+[x] - Revamp engine.ts (668 → 230 lines, extracted CommandDispatcher + ModuleLifecycle + SystemStatsCollector)
+[ ] - Logging does not log per plugin, but only as core functions
+

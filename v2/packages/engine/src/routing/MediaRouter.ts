@@ -83,6 +83,11 @@ export class MediaRouter {
         }
     }
 
+    /** Unregister all ports (used during full stop). */
+    unregisterAll(): void {
+        this.ports.clear();
+    }
+
     /** Look up a specific port on a module. */
     getPort(moduleId: string, portId: string): ModulePort | undefined {
         return this.ports.get(moduleId)?.find((p) => p.id === portId);
