@@ -91,4 +91,35 @@ describe('ModuleLifecycle', () => {
         await lifecycle.startAll();
         expect(moduleManager.size).toBe(0);
     });
+
+    describe('reset flow (stopAll → cleanupOrphans → startAll)', () => {
+        it('full reset cycle works: stop → cleanup → start', async () => {
+            // Start modules
+            await lifecycle.startAll();
+            expect(moduleManager.size).toBe(2);
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+
+            // Stop all (simulates first half of reset)
+            await lifecycle.stopAll();
+            expect(moduleManager.get('mod-a')?.running).toBe(false);
+
+            // Cleanup orphans (simulates PipeWire restart cleanup)
+            await mockPipeWire.cleanupOrphans();
+            expect(mockPipeWire.cleanupOrphans).toHaveBeenCalled();
+
+            // Start all again (simulates second half of reset)
+            await lifecycle.startAll();
+            expect(moduleManager.size).toBe(2);
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+            expect(moduleManager.get('mod-b')?.running).toBe(true);
+        });
+
+        it('rapid stop→start does not cause "already exists" error', async () => {
+            await lifecycle.startAll();
+            await lifecycle.stopAll();
+            // Immediately start again — should destroy old modules and create fresh ones
+            await lifecycle.startAll();
+            expect(moduleManager.size).toBe(2);
+        });
+    });
 });
