@@ -49,19 +49,19 @@ export function useContextMenu(
         const isFocused = focusedModules.value.has(moduleId);
 
         return [
-            { label: 'Restart', action: 'restart', icon: icons.restart },
-            { label: 'Settings', action: 'settings', icon: icons.settings },
-            { label: 'Clone', action: 'clone', icon: icons.clone },
+            { label: 'Restart', action: 'restart', icon: icons.restart, tooltip: 'Stop and restart the module pipeline' },
+            { label: 'Settings', action: 'settings', icon: icons.settings, tooltip: 'Open module configuration panel' },
+            { label: 'Clone', action: 'clone', icon: icons.clone, tooltip: 'Create a copy of this module with the same settings' },
             { label: '', action: '', divider: true },
             isEnabled
-                ? { label: 'Disable', action: 'disable', icon: icons.disable }
-                : { label: 'Enable', action: 'enable', icon: icons.enable },
+                ? { label: 'Disable', action: 'disable', icon: icons.disable, tooltip: 'Stop the module and disconnect all links' }
+                : { label: 'Enable', action: 'enable', icon: icons.enable, tooltip: 'Start the module and reconnect links' },
             { label: '', action: '', divider: true },
             isFocused
-                ? { label: 'Default', action: 'unfocus', icon: icons.focus }
-                : { label: 'Focus', action: 'focus', icon: icons.focus },
+                ? { label: 'Default', action: 'unfocus', icon: icons.focus, tooltip: 'Remove from focus group' }
+                : { label: 'Focus', action: 'focus', icon: icons.focus, tooltip: 'Highlight this module in focus mode' },
             { label: '', action: '', divider: true },
-            { label: 'Delete', action: 'delete', danger: true, icon: icons.delete },
+            { label: 'Delete', action: 'delete', danger: true, icon: icons.delete, tooltip: 'Permanently remove this module and its connections' },
         ];
     });
 
@@ -144,13 +144,13 @@ export function useContextMenu(
             ?.find((p) => p.id === conn.sourcePortId)?.streamType === 'audio/pcm' : false;
 
         const items: MenuItem[] = [
-            { label: 'Edit Label', action: 'editLabel', icon: icons.editLabel },
+            { label: 'Edit Label', action: 'editLabel', icon: icons.editLabel, tooltip: 'Add or edit a text label on this connection' },
         ];
         if (isAudio) {
-            items.push({ label: 'Channel Map', action: 'channelMap', icon: icons.channelMap });
+            items.push({ label: 'Channel Map', action: 'channelMap', icon: icons.channelMap, tooltip: 'Configure per-channel audio routing between modules' });
         }
         items.push({ label: '', action: '', divider: true });
-        items.push({ label: 'Delete Connection', action: 'delete', danger: true, icon: icons.delete });
+        items.push({ label: 'Delete Connection', action: 'delete', danger: true, icon: icons.delete, tooltip: 'Remove this connection' });
         return items;
     });
 

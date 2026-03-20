@@ -8,6 +8,7 @@ export interface MenuItem {
     danger?: boolean;
     divider?: boolean;
     icon?: string;
+    tooltip?: string;
 }
 
 const props = defineProps<{ items: MenuItem[]; x: number; y: number }>();
@@ -62,10 +63,16 @@ onUnmounted(() => {
             <template v-for="(item, i) in items" :key="i">
                 <div v-if="item.divider" class="my-1" :style="{ borderTop: '1px solid var(--border-secondary)' }" />
                 <button v-else @click="onAction(item)" :disabled="item.disabled"
-                        class="w-full text-left px-3 py-1.5 disabled:opacity-40 hover:brightness-125 transition-colors flex items-center gap-2"
+                        class="group/tip relative w-full text-left px-3 py-1.5 disabled:opacity-40 hover:brightness-125 transition-colors flex items-center gap-2"
                         :style="{ color: item.danger ? '#f87171' : 'var(--text-primary)' }">
                     <svg v-if="item.icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="item.icon" />
                     <span>{{ item.label }}</span>
+                    <div v-if="item.tooltip"
+                         class="hidden group-hover/tip:block absolute left-full top-0 ml-2 w-44 p-2 rounded-md shadow-lg text-[10px] leading-relaxed pointer-events-none"
+                         style="z-index: 9999"
+                         :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }">
+                        {{ item.tooltip }}
+                    </div>
                 </button>
             </template>
         </div>
