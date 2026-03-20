@@ -12,6 +12,7 @@ export interface CommandContext {
     lcpServer: LcpServer;
     startModules: () => Promise<void>;
     stopModules: () => Promise<void>;
+    resetEngine: () => Promise<void>;
     restartModule: (moduleId: string) => Promise<void>;
     disableModule: (moduleId: string) => Promise<void>;
     enableModule: (moduleId: string) => Promise<void>;
@@ -39,6 +40,12 @@ export class CommandDispatcher {
                 this.commandLock = this.commandLock
                     .then(() => this.ctx.stopModules())
                     .catch((err) => log.error({ err }, 'Stop failed'));
+                break;
+
+            case 'reset':
+                this.commandLock = this.commandLock
+                    .then(() => this.ctx.resetEngine())
+                    .catch((err) => log.error({ err }, 'Reset failed'));
                 break;
 
             case 'moduleConfig': {

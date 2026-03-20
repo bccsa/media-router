@@ -92,6 +92,7 @@ export class Engine {
             lcpServer: this.lcpServer,
             startModules: () => this.lifecycle.startAll(),
             stopModules: () => this.lifecycle.stopAll(),
+            resetEngine: () => this.resetEngine(),
             restartModule: (id) => this.lifecycle.restart(id),
             disableModule: (id) => this.lifecycle.disable(id),
             enableModule: (id) => this.lifecycle.enable(id),
@@ -229,6 +230,33 @@ export class Engine {
     /** Stop all modules. Public for API server. */
     async stopModules(): Promise<void> {
         return this.lifecycle.stopAll();
+    }
+
+    /** Full reset: stop modules, restart PipeWire, restart modules. */
+    async resetEngine(): Promise<void> {
+        log.info('Resetting engine...');
+
+        // 1. Stop all modules and clean up
+        await this.lifecycle.stopAll();
+
+        // 2. Try to restart PipeWire
+        try {
+            const { execFileSync } = await import('child_process');
+            execFileSync('systemctl', ['--user', 'restart', 'pipewire'], { timeout: 10000 });
+            log.info('PipeWire restarted successfully');
+            // Wait for PipeWire to come back up
+            await new Promise((r) => setTimeout(r, 2000));
+        } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) },
+                'Could not restart PipeWire (permission denied or not available) — continuing with cleanup');
+        }
+
+        // 3. Clean up any orphan PipeWire modules
+        await this.pipeWire.cleanupOrphans();
+
+        // 4. Restart modules
+        await this.lifecycle.startAll();
+        log.info('Engine reset complete');
     }
 
     async reconnectManager(): Promise<void> {

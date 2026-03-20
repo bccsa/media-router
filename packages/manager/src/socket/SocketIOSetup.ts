@@ -126,6 +126,13 @@ export function setupSocketIO(deps: SocketDeps): void {
             io.emit('engine:running', { engineId: p.engineId, running: false });
         });
 
+        socket.on('engine:reset', (p: any) => {
+            if (!p?.engineId) return;
+            if (engineManager.isEngineOnline(p.engineId)) {
+                engineManager.sendToEngine(p.engineId, 'command', { command: 'reset' }, { guaranteeDelivery: true });
+            }
+        });
+
         // --- Routing ---
         socket.on('routing:connect', (p: any) => {
             if (p?.engineId && p?.sourceModuleId && p?.sourcePortId && p?.sinkModuleId && p?.sinkPortId) routingHandlers.connect(p);

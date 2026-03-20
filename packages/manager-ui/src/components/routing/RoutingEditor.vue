@@ -8,6 +8,7 @@ import ModuleSettingsPanel from './ModuleSettingsPanel.vue';
 import AddModulePanel from './AddModulePanel.vue';
 import MrContextMenu from '@/components/common/MrContextMenu.vue';
 import MrButton from '@/components/common/MrButton.vue';
+import MrTooltip from '@/components/common/MrTooltip.vue';
 import LogViewer from './LogViewer.vue';
 import ChannelMapEditor from './ChannelMapEditor.vue';
 import EdgeLabelEditor from './EdgeLabelEditor.vue';
@@ -46,6 +47,12 @@ const containerRef = ref<HTMLDivElement | null>(null);
 const showAddPanel = ref(false);
 const showModuleList = ref(false);
 const showLogs = ref(false);
+const showResetConfirm = ref(false);
+
+function confirmReset() {
+    showResetConfirm.value = false;
+    socket.emit('engine:reset', { engineId: props.engineId });
+}
 const moduleListBtnRef = ref<any>(null);
 const moduleListPos = ref({ x: 0, y: 0 });
 const moduleSearch = ref('');
@@ -118,38 +125,53 @@ function dismissAll() {
 <template>
     <div ref="containerRef" class="w-full h-full relative flex flex-col">
         <!-- Toolbar -->
-        <div class="absolute top-3 left-3 right-3 z-10 flex items-center gap-2 overflow-x-auto no-scrollbar toolbar-h">
+        <div class="absolute top-3 left-3 right-3 z-10 flex items-center gap-2 flex-wrap no-scrollbar toolbar-h">
             <!-- Engine start/stop -->
-            <MrButton v-if="engine?.running" size="sm" variant="danger"
-                      @click="socket.emit('engine:stop', { engineId: props.engineId })">
-                Stop
-            </MrButton>
-            <MrButton v-else size="sm"
-                      @click="socket.emit('engine:start', { engineId: props.engineId })">
-                Start
-            </MrButton>
+            <MrTooltip :text="engine?.running ? 'Stop all running modules' : 'Start all modules on this engine'">
+                <MrButton v-if="engine?.running" size="sm" variant="danger"
+                          @click="socket.emit('engine:stop', { engineId: props.engineId })">
+                    Stop
+                </MrButton>
+                <MrButton v-else size="sm"
+                          @click="socket.emit('engine:start', { engineId: props.engineId })">
+                    Start
+                </MrButton>
+            </MrTooltip>
 
-            <!-- Engine name + settings link -->
-            <RouterLink :to="`/engines/${props.engineId}`"
-                        class="flex items-center justify-center rounded-md transition-colors"
-                        :style="{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', width: '32px' }"
-                        title="Engine settings">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-                </svg>
-            </RouterLink>
+            <MrTooltip text="Stop all modules, restart PipeWire, and restart modules" width="w-52">
+                <MrButton size="sm" variant="secondary" @click="showResetConfirm = true">Reset</MrButton>
+            </MrTooltip>
+
+            <!-- Engine settings link -->
+            <MrTooltip text="Engine settings and profiles" width="w-44">
+                <RouterLink :to="`/engines/${props.engineId}`"
+                            class="flex items-center justify-center rounded-md transition-colors"
+                            :style="{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', width: '32px', height: '32px' }">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                </RouterLink>
+            </MrTooltip>
 
             <div class="w-px h-5" :style="{ backgroundColor: 'var(--border-primary)' }" />
 
-            <MrButton size="sm" @click="showAddPanel = !showAddPanel">+ Add Module</MrButton>
-            <MrButton size="sm" variant="secondary" @click="fitView({ padding: 0.2 })">Fit View</MrButton>
-            <MrButton size="sm" variant="secondary" @click="showLogs = !showLogs">Logs</MrButton>
-            <MrButton size="sm" :variant="focusMode ? 'primary' : 'secondary'" @click="focusMode = !focusMode">
-                Focus
-            </MrButton>
+            <MrTooltip text="Add a new module (encoder, decoder, input, output)" width="w-52">
+                <MrButton size="sm" @click="showAddPanel = !showAddPanel">+ Add Module</MrButton>
+            </MrTooltip>
+            <MrTooltip text="Zoom to fit all modules in view" width="w-44">
+                <MrButton size="sm" variant="secondary" @click="fitView({ padding: 0.2 })">Fit View</MrButton>
+            </MrTooltip>
+            <MrTooltip :text="showLogs ? 'Hide engine log viewer' : 'Show engine log viewer'" width="w-44">
+                <MrButton size="sm" variant="secondary" @click="showLogs = !showLogs">Logs</MrButton>
+            </MrTooltip>
+            <MrTooltip :text="focusMode ? 'Exit focus mode — show all modules' : 'Enter focus mode — dim non-focused modules'" width="w-52">
+                <MrButton size="sm" :variant="focusMode ? 'primary' : 'secondary'" @click="focusMode = !focusMode">
+                    Focus
+                </MrButton>
+            </MrTooltip>
 
             <!-- Module finder -->
-            <div class="relative">
+            <MrTooltip text="Click to list all modules — click a module to jump to it">
                 <MrButton ref="moduleListBtnRef" size="sm" variant="secondary" @click="toggleModuleList">
                     Modules ({{ Object.keys(engine?.modules || {}).length }})
                 </MrButton>
@@ -174,7 +196,7 @@ function dismissAll() {
                         </div>
                     </div>
                 </Teleport>
-            </div>
+            </MrTooltip>
         </div>
 
         <VueFlow class="flex-1" :snap-to-grid="true" :snap-grid="[16, 16]" :min-zoom="0.2" :max-zoom="2" :default-zoom="1"
@@ -224,6 +246,23 @@ function dismissAll() {
                           :engine-id="engineId"
                           :connection-id="channelMapEdge"
                           @close="channelMapEdge = null" />
+
+        <!-- Reset confirmation -->
+        <Teleport to="body">
+            <div v-if="showResetConfirm" class="fixed inset-0 z-50 flex items-center justify-center" style="background: rgba(0,0,0,0.5)">
+                <div class="rounded-lg shadow-xl p-5 max-w-sm w-full mx-4"
+                     :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
+                    <h3 class="text-base font-semibold mb-2" :style="{ color: 'var(--text-primary)' }">Reset Engine?</h3>
+                    <p class="text-sm mb-4" :style="{ color: 'var(--text-secondary)' }">
+                        This will stop all modules, restart PipeWire, and restart all modules. Audio will be interrupted for a few seconds.
+                    </p>
+                    <div class="flex justify-end gap-2">
+                        <MrButton size="sm" variant="secondary" @click="showResetConfirm = false">Cancel</MrButton>
+                        <MrButton size="sm" variant="danger" @click="confirmReset">Reset</MrButton>
+                    </div>
+                </div>
+            </div>
+        </Teleport>
     </div>
 </template>
 
