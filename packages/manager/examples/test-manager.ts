@@ -1,7 +1,7 @@
 /**
  * Manual test: start the Manager and test with curl.
  *
- *   cd v2/packages/manager
+ *   cd packages/manager
  *   npx tsx examples/test-manager.ts
  *
  * Then in another terminal:

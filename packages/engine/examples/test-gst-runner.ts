@@ -1,7 +1,7 @@
 /**
  * Manual test: spawn a GStreamer pipeline via GstChildProcess.
  *
- *   cd v2/packages/engine
+ *   cd packages/engine
  *   npx tsx examples/test-gst-runner.ts
  *
  * You should see:

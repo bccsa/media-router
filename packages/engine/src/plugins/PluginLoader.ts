@@ -23,8 +23,8 @@ export class PluginLoader {
     private pluginsDir: string;
 
     constructor(pluginsDir?: string) {
-        // Default: v2/plugins/ relative to engine src or dist
-        // From src/plugins/ or dist/plugins/: ../../../../plugins = v2/plugins/
+        // Default: <root>/plugins/ relative to engine src or dist
+        // From packages/engine/src/plugins/: ../../../../plugins = <root>/plugins/
         this.pluginsDir = pluginsDir ?? path.resolve(__dirname, '../../../../plugins');
     }
 

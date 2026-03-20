@@ -1,7 +1,7 @@
 /**
  * Manual test: start the engine and test the Local API.
  *
- *   cd v2/packages/engine
+ *   cd packages/engine
  *   npx tsx examples/test-engine.ts
  *
  * Then in another terminal:

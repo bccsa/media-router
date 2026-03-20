@@ -1,7 +1,7 @@
 /**
  * Manual test: AudioEncoder plugin.
  *
- *   cd v2/packages/engine
+ *   cd packages/engine
  *   npx tsx examples/test-audio-plugins.ts
  *
  * Tests that the AudioEncoder plugin builds a valid GStreamer pipeline

@@ -1,11 +1,11 @@
 # Media Router — Plugin Development Guide
 
-Plugins extend Media Router with new media processing capabilities. Each plugin is a self-contained directory in `v2/plugins/` with a manifest, engine module, and optional UI components.
+Plugins extend Media Router with new media processing capabilities. Each plugin is a self-contained directory in `plugins/` with a manifest, engine module, and optional UI components.
 
 ## Directory Structure
 
 ```
-v2/plugins/
+plugins/
 └── my-plugin/
     ├── package.json          # Manifest + dependencies
     ├── tsconfig.json         # TypeScript config
@@ -18,7 +18,7 @@ v2/plugins/
 ### 1. Create the plugin directory
 
 ```bash
-mkdir -p v2/plugins/my-plugin/engine
+mkdir -p plugins/my-plugin/engine
 ```
 
 ### 2. Create `package.json` with manifest
@@ -707,7 +707,7 @@ See these directories for complete working examples:
 
 | Plugin | Path | Features |
 |--------|------|----------|
-| Audio Input | `v2/plugins/audio-input/` | Device picker, volume slider, PipeWire null-sink, VU metering |
-| Audio Output | `v2/plugins/audio-output/` | Device picker, VU monitoring loopback |
-| Audio Encoder | `v2/plugins/audio-encoder/` | Codec selection, frame size, live bitrate, UDP multicast output |
-| Audio Decoder | `v2/plugins/audio-decoder/` | Stream probing, auto-detect codec, idle state when disconnected |
+| Audio Input | `plugins/audio-input/` | Device picker, volume slider, PipeWire null-sink, VU metering |
+| Audio Output | `plugins/audio-output/` | Device picker, VU monitoring loopback |
+| Audio Encoder | `plugins/audio-encoder/` | Codec selection, frame size, live bitrate, UDP multicast output |
+| Audio Decoder | `plugins/audio-decoder/` | Stream probing, auto-detect codec, idle state when disconnected |
