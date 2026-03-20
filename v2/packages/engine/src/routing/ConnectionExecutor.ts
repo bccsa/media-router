@@ -45,10 +45,21 @@ export class ConnectionExecutor {
         if (handle.type === 'loopback' && handle.paModuleId !== undefined) {
             log.info({ paModuleId: handle.paModuleId }, 'Removing loopback');
             await this.pipeWire.unloadModule(handle.paModuleId);
-        } else if (handle.type === 'pw-link' && handle.pwLinkIds?.length) {
-            log.info({ connectionId: handle.connectionId, links: handle.pwLinkIds.length }, 'Removing pw-link connections');
-            for (const linkId of handle.pwLinkIds) {
-                this.pipeWire.pwUnlink(linkId);
+        } else if (handle.type === 'pw-link') {
+            // Try by link ID first, fall back to port name pairs
+            const removedByName = new Set<string>();
+            if (handle.pwLinkPairs?.length) {
+                log.info({ connectionId: handle.connectionId, links: handle.pwLinkPairs.length }, 'Removing pw-link connections by name');
+                for (const pair of handle.pwLinkPairs) {
+                    this.pipeWire.pwUnlinkByName(pair.src, pair.dst);
+                    removedByName.add(`${pair.src}→${pair.dst}`);
+                }
+            }
+            // Also try by ID for any that weren't covered by name
+            if (handle.pwLinkIds?.length) {
+                for (const linkId of handle.pwLinkIds) {
+                    if (linkId > 0) this.pipeWire.pwUnlink(linkId);
+                }
             }
         } else if (handle.type === 'udp') {
             log.info({ connectionId: handle.connectionId, udpPort: handle.udpPort }, 'Removing UDP connection');
@@ -133,6 +144,7 @@ export class ConnectionExecutor {
         log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);
 
         const linkIds: number[] = [];
+        const linkPairs: Array<{ src: string; dst: string }> = [];
 
         for (const entry of conn.channelMap!) {
             if (entry.gain !== undefined && entry.gain !== 1.0) {
@@ -154,6 +166,7 @@ export class ConnectionExecutor {
             try {
                 const linkId = this.pipeWire.pwLink(srcPort, sinkPort);
                 linkIds.push(linkId);
+                linkPairs.push({ src: srcPort, dst: sinkPort });
                 log.info({ src: srcPort, dst: sinkPort, linkId }, `Created pw-link ${this.connLabel(conn)}`);
             } catch (err) {
                 log.error({ err, src: srcPort, dst: sinkPort }, 'Failed to create pw-link');
@@ -164,6 +177,7 @@ export class ConnectionExecutor {
             connectionId: conn.id,
             type: 'pw-link',
             pwLinkIds: linkIds,
+            pwLinkPairs: linkPairs,
         };
     }
 

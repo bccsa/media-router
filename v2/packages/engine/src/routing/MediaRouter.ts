@@ -27,6 +27,8 @@ export interface ActiveHandle {
     paModuleId?: number;
     udpPort?: number;
     pwLinkIds?: number[];
+    /** Port name pairs for pw-link teardown (fallback when link IDs are 0). */
+    pwLinkPairs?: Array<{ src: string; dst: string }>;
 }
 
 /**

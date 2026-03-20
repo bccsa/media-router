@@ -1,6 +1,6 @@
 # TODO Notes 
 
-[ ] - Latency grows over time from 50 ms to 200 ms over time.
+[TESTING] - Latency grows over time from 50 ms to 200 ms over time.
 [x] - Tool tip for rightclick menu / small description for each function (native title tooltips on all node + edge context menu items)
 [ ] - Module settings displayable in the right click menu, by sepecifying it in the package.json that it shoould display there
 [x] - revamp manager file (1071 → 105 lines, extracted into 6 handler files)
