@@ -118,6 +118,12 @@ export class ModuleInstance extends EventEmitter {
                 await this.services.pipeWire.releaseAll(this.instanceId);
             } catch { /* best effort */ }
         }
+        // Auto-cleanup spawned processes owned by this module
+        if (this.services?.processManager) {
+            try {
+                await this.services.processManager.releaseAll(this.instanceId);
+            } catch { /* best effort */ }
+        }
         this.emitStateChange();
     }
 

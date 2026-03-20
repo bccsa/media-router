@@ -9,6 +9,7 @@ import { ManagerConnection } from './comms/ManagerConnection.js';
 import { LcpServer } from './comms/LcpServer.js';
 import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
+import { ProcessManager } from './child-process/ProcessManager.js';
 import { PaCommandQueue } from './audio/PaCommandQueue.js';
 import { createApiServer } from './api/server.js';
 import { LogForwarder } from './logging/LogForwarder.js';
@@ -43,6 +44,7 @@ export class Engine {
     readonly lcpServer: LcpServer;
     readonly profileStore: ProfileStore;
     readonly pipeWire: PipeWireManager;
+    readonly processManager: ProcessManager;
     readonly paQueue: PaCommandQueue;
 
     private apiServer: FastifyInstance | null = null;
@@ -68,10 +70,11 @@ export class Engine {
         // Audio subsystem
         this.paQueue = new PaCommandQueue();
         this.pipeWire = new PipeWireManager(this.paQueue);
+        this.processManager = new ProcessManager();
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
-        this.moduleManager = new ModuleManager(this.pluginLoader, this.pipeWire, this.mediaRouter);
+        this.moduleManager = new ModuleManager(this.pluginLoader, this.pipeWire, this.mediaRouter, this.processManager);
         this.managerConnection = new ManagerConnection();
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
         this.profileStore = new ProfileStore(config.profilesPath);
@@ -208,6 +211,7 @@ export class Engine {
     async stop(): Promise<void> {
         this.systemStats.stop();
         await this.lifecycle.stopAll();
+        await this.processManager.killAll();
         this.managerConnection.disconnect();
         this.managerConnection.removeAllListeners();
         this.moduleManager.removeAllListeners();

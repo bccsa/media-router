@@ -668,7 +668,76 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 |----------|------|-------------|
 | `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks |
 | `mediaRouter` | `MediaRouter` | Query UDP endpoints, assign encoder ports, probe streams |
+| `processManager` | `ProcessManager` | Spawn and manage external CLI tools (see below) |
 | `instanceId` | `string` | Unique module instance ID |
+
+### ProcessManager — Spawning External Processes
+
+Plugins can spawn arbitrary external processes (CLI tools like `ristreceiver`, `srt-live-transmit`, `ffmpeg`, etc.) via the `ProcessManager` service. Processes are automatically killed when the module stops — no manual cleanup needed.
+
+**Basic usage:**
+
+```typescript
+import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+
+export class RistReceiverModule extends GstPluginBase {
+    private receiver?: ManagedProcess;
+
+    async onStart(): Promise<void> {
+        // Spawn an external process owned by this module
+        this.receiver = this.services!.processManager.spawn(
+            this.services!.instanceId,
+            {
+                label: 'ristreceiver',
+                command: 'ristreceiver',
+                args: ['-p', '2088:2089', '-o', 'udp://127.0.0.1:5000'],
+                autoRestart: true,    // auto-restart on crash
+                onStdout: (line) => this.log.info(line),
+                onStderr: (line) => this.parseRistStats(line),
+            },
+        );
+
+        // Listen for health changes
+        this.receiver.on('error', (msg) => this.setHealth('error', msg));
+        this.receiver.on('started', () => this.setHealth('ok'));
+
+        await super.onStart();
+    }
+
+    // No need to override onStop() — ProcessManager auto-kills on module stop
+}
+```
+
+**ManagedProcessOptions:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `label` | `string` | required | Name for logs (e.g. `'ristreceiver'`) |
+| `command` | `string` | required | Executable path or command |
+| `args` | `string[]` | `[]` | Arguments |
+| `env` | `Record<string, string>` | inherited | Extra environment variables |
+| `cwd` | `string` | inherited | Working directory |
+| `autoRestart` | `boolean` | `true` | Restart on non-zero exit |
+| `onStdout` | `(line: string) => void` | — | Called per stdout line |
+| `onStderr` | `(line: string) => void` | — | Called per stderr line |
+
+**ManagedProcess handle:**
+
+| Property/Method | Type | Description |
+|-----------------|------|-------------|
+| `pid` | `number \| undefined` | OS process ID |
+| `isRunning` | `boolean` | Whether process is alive |
+| `uptime` | `number` | Milliseconds since start |
+| `exitCode` | `number \| null` | Last exit code |
+| `stop()` | `Promise<void>` | Graceful SIGTERM → SIGKILL |
+| `destroy()` | `Promise<void>` | Stop + prevent restarts |
+
+**Events:** `'started'`, `'stopped'`, `'error'`, `'restarting'`
+
+**Cleanup:** All processes are automatically killed when:
+- The module stops (disable, delete, engine stop)
+- The engine shuts down
+- No plugin code needed for cleanup
 
 ## Base Class Properties and Methods
 

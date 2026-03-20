@@ -4,6 +4,7 @@ import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
+import type { ProcessManager } from '../child-process/ProcessManager.js';
 
 const defaultLog = createLogger('GstPluginBase');
 
@@ -16,6 +17,8 @@ export interface ModuleServices {
     pipeWire: PipeWireManager;
     /** Media router for querying UDP endpoints. */
     mediaRouter: MediaRouter;
+    /** Process manager for spawning external CLI tools (RIST, SRT, etc.). */
+    processManager: ProcessManager;
     /** The module's instance ID (unique per module instance). */
     instanceId: string;
 }
