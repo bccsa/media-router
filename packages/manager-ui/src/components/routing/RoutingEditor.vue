@@ -53,6 +53,27 @@ function confirmReset() {
     showResetConfirm.value = false;
     socket.emit('engine:reset', { engineId: props.engineId });
 }
+
+// Throttled slider change from context menu (volume, etc.)
+let ctxSliderTimer: ReturnType<typeof setTimeout> | null = null;
+let ctxSliderPending: { action: string; value: number } | null = null;
+function onContextSliderChange(action: string, value: number) {
+    if (!contextMenu.value || !action.startsWith('setting:')) return;
+    const key = action.replace('setting:', '');
+    const moduleId = contextMenu.value.moduleId;
+    ctxSliderPending = { action, value };
+    if (!ctxSliderTimer) {
+        socket.emit('module:config', { engineId: props.engineId, moduleId, changes: { [key]: value } });
+        ctxSliderTimer = setTimeout(() => {
+            ctxSliderTimer = null;
+            if (ctxSliderPending) {
+                const k = ctxSliderPending.action.replace('setting:', '');
+                socket.emit('module:config', { engineId: props.engineId, moduleId, changes: { [k]: ctxSliderPending.value } });
+                ctxSliderPending = null;
+            }
+        }, 50);
+    }
+}
 const moduleListBtnRef = ref<any>(null);
 const moduleListPos = ref({ x: 0, y: 0 });
 const moduleSearch = ref('');
@@ -225,7 +246,7 @@ function dismissAll() {
         <AddModulePanel v-if="showAddPanel" @close="showAddPanel = false" @add="onAddModule" />
 
         <MrContextMenu v-if="contextMenu" :items="contextMenuItems" :x="contextMenu.x" :y="contextMenu.y"
-                       @action="onContextAction" @close="contextMenu = null" />
+                       @action="onContextAction" @slider-change="onContextSliderChange" @close="contextMenu = null" />
 
         <MrContextMenu v-if="edgeContextMenu"
                        :items="edgeMenuItems"

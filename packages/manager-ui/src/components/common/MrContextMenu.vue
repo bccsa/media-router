@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted } from 'vue';
+import { ref, reactive, nextTick, onMounted, onUnmounted } from 'vue';
+import MrSlider from './MrSlider.vue';
 
 export interface MenuItem {
     label: string;
@@ -9,14 +10,35 @@ export interface MenuItem {
     divider?: boolean;
     icon?: string;
     tooltip?: string;
+    /** Slider widget: renders an inline range slider instead of a button. */
+    slider?: {
+        min: number;
+        max: number;
+        step: number;
+        value: number;
+        unit?: string;
+    };
 }
 
 const props = defineProps<{ items: MenuItem[]; x: number; y: number }>();
-const emit = defineEmits<{ action: [action: string]; close: [] }>();
+const emit = defineEmits<{ action: [action: string]; close: []; sliderChange: [action: string, value: number] }>();
 
 const menu = ref<HTMLDivElement | null>(null);
 const adjustedX = ref(0);
 const adjustedY = ref(0);
+
+// Track local slider values to prevent snap-back during server round-trip
+const localSliderValues = reactive<Record<string, number>>({});
+
+function getSliderValue(item: MenuItem): number {
+    if (item.action in localSliderValues) return localSliderValues[item.action];
+    return item.slider?.value ?? 0;
+}
+
+function onSliderInput(item: MenuItem, value: number) {
+    localSliderValues[item.action] = value;
+    emit('sliderChange', item.action, value);
+}
 
 function onAction(item: MenuItem) {
     if (item.disabled) return;
@@ -62,6 +84,18 @@ onUnmounted(() => {
              :style="{ left: adjustedX + 'px', top: adjustedY + 'px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
             <template v-for="(item, i) in items" :key="i">
                 <div v-if="item.divider" class="my-1" :style="{ borderTop: '1px solid var(--border-secondary)' }" />
+                <!-- Slider widget -->
+                <div v-else-if="item.slider" class="px-3 py-1.5" @click.stop @mousedown.stop @touchstart.stop>
+                    <div class="flex items-center justify-between text-[11px] mb-1" :style="{ color: 'var(--text-muted)' }">
+                        <span>{{ item.label }}</span>
+                        <span :style="{ color: 'var(--text-primary)' }">{{ getSliderValue(item) }}{{ item.slider.unit ?? '' }}</span>
+                    </div>
+                    <MrSlider
+                        :model-value="getSliderValue(item)"
+                        :min="item.slider.min" :max="item.slider.max" :step="item.slider.step"
+                        @update:model-value="onSliderInput(item, $event)" />
+                </div>
+                <!-- Regular button -->
                 <button v-else @click="onAction(item)" :disabled="item.disabled"
                         class="group/tip relative w-full text-left px-3 py-1.5 disabled:opacity-40 hover:brightness-125 transition-colors flex items-center gap-2"
                         :style="{ color: item.danger ? '#f87171' : 'var(--text-primary)' }">

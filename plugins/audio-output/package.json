@@ -56,7 +56,9 @@
                     "x-widget": "slider",
                     "x-step": 1,
                     "x-live": true,
-                    "x-maxFrom": "volumeMax"
+                    "x-maxFrom": "volumeMax",
+                    "x-contextMenu": true,
+                    "x-unit": "%"
                 }
             }
         },

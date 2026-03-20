@@ -274,6 +274,31 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 | `x-maxFrom` | `string` | Key of another setting that controls slider maximum |
 | `x-enumByCodec` | `Record<string, unknown[]>` | Codec-dependent dropdown options (key = codec value) |
 | `x-showWhen` | `string` | Only show field when condition matches (e.g. `"codec=opus"`) |
+| `x-contextMenu` | `boolean` | Show this setting in the module's right-click context menu |
+| `x-unit` | `string` | Unit label displayed next to the value (e.g. `"%"`, `"kbps"`, `"ms"`) |
+| `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable) |
+
+#### Context Menu Settings
+
+Add `"x-contextMenu": true` to any numeric/slider setting to display it directly in the module's right-click context menu. This is useful for frequently adjusted settings like volume — users can change them without opening the full settings panel.
+
+```json
+"volume": {
+    "type": "number",
+    "minimum": 0,
+    "maximum": 150,
+    "default": 100,
+    "description": "Volume (%)",
+    "x-widget": "slider",
+    "x-step": 1,
+    "x-live": true,
+    "x-maxFrom": "volumeMax",
+    "x-contextMenu": true,
+    "x-unit": "%"
+}
+```
+
+The slider appears at the top of the context menu with a live value display. Changes are sent immediately via throttled `module:config` events (50ms throttle) — same as the settings panel's live update mechanism.
 
 ---
 

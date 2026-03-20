@@ -116,4 +116,62 @@ describe('MrContextMenu', () => {
         const tooltipDivs = wrapper.findAll('.pointer-events-none');
         expect(tooltipDivs).toHaveLength(0);
     });
+
+    describe('slider items', () => {
+        const sliderItems = [
+            {
+                label: 'Volume',
+                action: 'setting:volume',
+                slider: { min: 0, max: 150, step: 1, value: 100, unit: '%' },
+            },
+            { label: '', action: '', divider: true },
+            { label: 'Settings', action: 'settings' },
+        ];
+
+        it('renders slider with label and value', () => {
+            const wrapper = mount(MrContextMenu, {
+                props: { items: sliderItems, x: 100, y: 100 },
+                global: { stubs: { Teleport: true } },
+            });
+            expect(wrapper.text()).toContain('Volume');
+            expect(wrapper.text()).toContain('100%');
+        });
+
+        it('renders range input for slider items', () => {
+            const wrapper = mount(MrContextMenu, {
+                props: { items: sliderItems, x: 100, y: 100 },
+                global: { stubs: { Teleport: true } },
+            });
+            const range = wrapper.find('input[type="range"]');
+            expect(range.exists()).toBe(true);
+            expect(range.attributes('min')).toBe('0');
+            expect(range.attributes('max')).toBe('150');
+            expect(range.attributes('step')).toBe('1');
+        });
+
+        it('emits sliderChange on input', async () => {
+            const wrapper = mount(MrContextMenu, {
+                props: { items: sliderItems, x: 100, y: 100 },
+                global: { stubs: { Teleport: true } },
+            });
+            const range = wrapper.find('input[type="range"]');
+            await range.setValue(75);
+            await range.trigger('input');
+
+            const emitted = wrapper.emitted('sliderChange');
+            expect(emitted).toBeTruthy();
+            expect(emitted![0][0]).toBe('setting:volume');
+        });
+
+        it('does not render slider as a button', () => {
+            const wrapper = mount(MrContextMenu, {
+                props: { items: sliderItems, x: 100, y: 100 },
+                global: { stubs: { Teleport: true } },
+            });
+            // Only "Settings" should be a button, not "Volume"
+            const buttons = wrapper.findAll('button');
+            expect(buttons).toHaveLength(1);
+            expect(buttons[0].text()).toContain('Settings');
+        });
+    });
 });

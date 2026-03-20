@@ -48,7 +48,39 @@ export function useContextMenu(
         const moduleId = contextMenu.value?.moduleId ?? '';
         const isFocused = focusedModules.value.has(moduleId);
 
-        return [
+        // Build context settings (sliders, etc.) from configSchema fields with x-contextMenu: true
+        const contextSettings: MenuItem[] = [];
+        if (mod?.configSchema) {
+            const props = ((mod.configSchema as any).properties ?? {}) as Record<string, any>;
+            for (const [key, schema] of Object.entries(props)) {
+                if (!schema['x-contextMenu']) continue;
+                if (schema['x-widget'] === 'slider' || schema.type === 'number') {
+                    const maxFrom = schema['x-maxFrom'];
+                    const maxVal = maxFrom && mod.settings?.[maxFrom] != null
+                        ? Number(mod.settings[maxFrom])
+                        : (schema.maximum ?? 100);
+                    contextSettings.push({
+                        label: schema.description?.replace(/\s*\(.*\)/, '') || key,
+                        action: `setting:${key}`,
+                        slider: {
+                            min: schema.minimum ?? 0,
+                            max: maxVal,
+                            step: schema['x-step'] ?? 1,
+                            value: Number(mod.settings?.[key] ?? schema.default ?? 0),
+                            unit: schema['x-unit'] as string | undefined,
+                        },
+                    });
+                }
+            }
+        }
+
+        const items: MenuItem[] = [];
+        if (contextSettings.length > 0) {
+            items.push(...contextSettings);
+            items.push({ label: '', action: '', divider: true });
+        }
+
+        items.push(
             { label: 'Restart', action: 'restart', icon: icons.restart, tooltip: 'Stop and restart the module pipeline' },
             { label: 'Settings', action: 'settings', icon: icons.settings, tooltip: 'Open module configuration panel' },
             { label: 'Clone', action: 'clone', icon: icons.clone, tooltip: 'Create a copy of this module with the same settings' },
@@ -62,7 +94,8 @@ export function useContextMenu(
                 : { label: 'Focus', action: 'focus', icon: icons.focus, tooltip: 'Highlight this module in focus mode' },
             { label: '', action: '', divider: true },
             { label: 'Delete', action: 'delete', danger: true, icon: icons.delete, tooltip: 'Permanently remove this module and its connections' },
-        ];
+        );
+        return items;
     });
 
     function onNodeContextMenu(payload: { event: MouseEvent | TouchEvent; node: Node }) {

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
+import MrInput from '@/components/common/MrInput.vue';
+import MrSelect from '@/components/common/MrSelect.vue';
+import MrSlider from '@/components/common/MrSlider.vue';
+import MrToggle from '@/components/common/MrToggle.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 
@@ -232,49 +236,45 @@ function applyAll() {
                 </div>
                 <!-- Device picker (for x-deviceType fields) -->
                 <template v-else>
-                <select v-if="field.deviceType" :value="localSettings[field.key]"
-                        @change="(e) => updateSetting(field.key, (e.target as HTMLSelectElement).value)"
-                        class="w-full px-2 py-1.5 text-sm rounded-md"
-                        :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }">
-                    <option value="">Default device</option>
-                    <option v-for="dev in audioDevices.filter(d => d.direction === field.deviceType)" :key="dev.name" :value="dev.name">
-                        {{ dev.description || dev.name }} ({{ dev.channels }}ch, {{ dev.sampleRate }}Hz)
-                    </option>
-                </select>
+                <MrSelect v-if="field.deviceType"
+                          :model-value="localSettings[field.key] as string ?? ''"
+                          :options="[
+                              { value: '', label: 'Default device' },
+                              ...audioDevices.filter(d => d.direction === field.deviceType).map(d => ({
+                                  value: d.name,
+                                  label: `${d.description || d.name} (${d.channels}ch, ${d.sampleRate}Hz)`,
+                              })),
+                          ]"
+                          @update:model-value="updateSetting(field.key, $event)" />
                 <!-- Enum select (supports codec-dependent options via x-enumByCodec) -->
-                <select v-else-if="getFieldEnum(field)" :value="localSettings[field.key]"
-                        @change="(e) => updateSetting(field.key, field.type === 'number' ? Number((e.target as HTMLSelectElement).value) : (e.target as HTMLSelectElement).value)"
-                        class="w-full px-2 py-1.5 text-sm rounded-md"
-                        :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }">
-                    <option v-for="opt in getFieldEnum(field)" :key="String(opt)" :value="opt">{{ opt }}</option>
-                </select>
-                <button v-else-if="field.type === 'boolean'" @click="updateSetting(field.key, !localSettings[field.key])"
-                        class="relative inline-flex h-5 w-9 rounded-full transition-colors"
-                        :style="{ backgroundColor: localSettings[field.key] ? 'var(--accent)' : 'var(--border-primary)' }">
-                    <span class="inline-block h-4 w-4 rounded-full bg-white shadow mt-0.5 transition-transform" :class="localSettings[field.key] ? 'translate-x-4 ml-0.5' : 'translate-x-0.5'" />
-                </button>
+                <MrSelect v-else-if="getFieldEnum(field)"
+                          :model-value="localSettings[field.key] as string | number"
+                          :options="getFieldEnum(field)!.map(opt => ({ value: (field.type === 'number' ? Number(opt) : String(opt)) as string | number, label: String(opt) }))"
+                          @update:model-value="updateSetting(field.key, $event)" />
+                <!-- Boolean toggle -->
+                <MrToggle v-else-if="field.type === 'boolean'"
+                          :model-value="!!localSettings[field.key]"
+                          @update:model-value="updateSetting(field.key, $event)" />
                 <!-- Slider for volume/gain controls -->
                 <div v-else-if="field.widget === 'slider'" class="flex items-center gap-2">
-                    <input type="range"
-                           :min="field.minimum ?? 0"
-                           :max="field.maxFrom ? Number(localSettings[field.maxFrom] ?? field.maximum ?? 2) : (field.maximum ?? 2)"
-                           :step="field.step ?? 0.01"
-                           :value="localSettings[field.key] ?? field.defaultValue ?? 1"
-                           @input="(e) => updateSetting(field.key, Number((e.target as HTMLInputElement).value))"
-                           class="flex-1 h-1.5 accent-emerald-500 cursor-pointer" />
+                    <MrSlider class="flex-1"
+                              :model-value="Number(localSettings[field.key] ?? field.defaultValue ?? 1)"
+                              :min="field.minimum ?? 0"
+                              :max="field.maxFrom ? Number(localSettings[field.maxFrom] ?? field.maximum ?? 2) : (field.maximum ?? 2)"
+                              :step="field.step ?? 0.01"
+                              @update:model-value="updateSetting(field.key, $event)" />
                     <span class="text-xs w-12 text-right tabular-nums" :style="{ color: 'var(--text-secondary)' }">
                         {{ Math.round(Number(localSettings[field.key] ?? field.defaultValue ?? 100)) }}%
                     </span>
                 </div>
-                <!-- Plain number input for other numbers -->
-                <input v-else-if="field.type === 'number'" type="number" :value="localSettings[field.key]"
-                       @change="(e) => updateSetting(field.key, Number((e.target as HTMLInputElement).value))"
-                       class="w-full px-2 py-1.5 text-sm rounded-md"
-                       :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }" />
-                <input v-else type="text" :value="localSettings[field.key]"
-                       @change="(e) => updateSetting(field.key, (e.target as HTMLInputElement).value)"
-                       class="w-full px-2 py-1.5 text-sm rounded-md"
-                       :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }" />
+                <!-- Plain number input -->
+                <MrInput v-else-if="field.type === 'number'" type="number"
+                         :model-value="localSettings[field.key] as number"
+                         @update:model-value="updateSetting(field.key, $event)" />
+                <!-- Text input (default) -->
+                <MrInput v-else type="text"
+                         :model-value="localSettings[field.key] as string"
+                         @update:model-value="updateSetting(field.key, $event)" />
                 </template>
             </div>
         </div>
