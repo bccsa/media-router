@@ -12,7 +12,7 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
  * Volume is controlled via PipeWire sink volume (pactl).
  */
 export class AudioOutputModule extends GstPluginBase {
-    protected liveUpdatableParams = ['volume'];
+    protected liveUpdatableParams = ['volume', 'audioEnabled'];
     private deviceName = '';
     private detectedChannels: number | null = null;
     private detectedSampleRate: number | null = null;
@@ -73,16 +73,16 @@ export class AudioOutputModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        if ('volume' in changes) {
-            const vol = (changes.volume as number) / 100;
-            // Update GStreamer volume element in VU pipeline (so VU reflects the change)
-            await this.setElementProperty('vol', 'volume', vol).catch(() => {});
-            // Also update PipeWire device volume
+        Object.assign(this.config, changes);
+        if ('volume' in changes || 'audioEnabled' in changes) {
+            const audioOff = (this.config.audioEnabled as boolean) === false;
+            const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
+            const gstVol = volumePct / 100;
+            await this.setElementProperty('vol', 'volume', gstVol).catch(() => {});
             if (this.services?.pipeWire && this.deviceName) {
-                await this.services.pipeWire.setSinkVolume(this.deviceName, changes.volume as number);
+                await this.services.pipeWire.setSinkVolume(this.deviceName, volumePct);
             }
         }
-        Object.assign(this.config, changes);
     }
 
     /** Audio output routes directly to the real device — no null-sink in the audio path. */

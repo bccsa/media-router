@@ -8,7 +8,7 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices, probeMpeg
  * decode pipeline. Outputs PCM to a named null-sink.
  */
 export class AudioDecoderModule extends GstPluginBase {
-    protected liveUpdatableParams = ['volume'];
+    protected liveUpdatableParams = ['volume', 'audioEnabled'];
     /** Probed stream info — plugin decides what to do with it. */
     private probeResult: ProbeResult | null = null;
 
@@ -47,16 +47,16 @@ export class AudioDecoderModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        if ('volume' in changes) {
-            const vol = (changes.volume as number) / 100;
-            // Update GStreamer volume element (so VU meter reflects the change)
-            await this.setElementProperty('vol', 'volume', vol).catch(() => {});
-            // Also update PipeWire sink volume
+        Object.assign(this.config, changes);
+        if ('volume' in changes || 'audioEnabled' in changes) {
+            const audioOff = (this.config.audioEnabled as boolean) === false;
+            const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
+            const gstVol = volumePct / 100;
+            await this.setElementProperty('vol', 'volume', gstVol).catch(() => {});
             if (this.services?.pipeWire) {
-                await this.services.pipeWire.setSinkVolume(this.pwNodeName, changes.volume as number);
+                await this.services.pipeWire.setSinkVolume(this.pwNodeName, volumePct);
             }
         }
-        Object.assign(this.config, changes);
     }
 
     getPipeWireNodes(): { source?: string; sink?: string } {

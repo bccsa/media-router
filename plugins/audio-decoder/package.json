@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-audio-decoder",
     "version": "2.0.0",
     "private": true,
-    "description": "Audio decoder — MPEG-TS input to PCM audio output",
+    "description": "Audio decoder \u2014 MPEG-TS input to PCM audio output",
     "mediaRouter": {
         "pluginId": "audio-decoder",
         "displayName": "Audio Decoder",
@@ -10,7 +10,10 @@
         "color": "#8b5cf6",
         "icon": "download",
         "category": "codec",
-        "architectures": ["arm64", "x86_64"],
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
         "ports": [
             {
                 "id": "mpegts-in",
@@ -32,7 +35,13 @@
             "properties": {
                 "volumeMax": {
                     "type": "number",
-                    "enum": [100, 150, 200, 300, 500],
+                    "enum": [
+                        100,
+                        150,
+                        200,
+                        300,
+                        500
+                    ],
                     "default": 150,
                     "description": "Maximum volume slider range (%)"
                 },
@@ -48,6 +57,13 @@
                     "x-maxFrom": "volumeMax",
                     "x-contextMenu": true,
                     "x-unit": "%"
+                },
+                "audioEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Audio enabled",
+                    "x-live": true,
+                    "x-contextMenu": true
                 }
             }
         },

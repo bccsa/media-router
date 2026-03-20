@@ -8,7 +8,7 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
  * and writes to stdout (fd 1) for piping to other modules (RIST, SRT, etc.).
  */
 export class AudioEncoderModule extends GstPluginBase {
-    protected liveUpdatableParams = ['bitrate', 'volume'];
+    protected liveUpdatableParams = ['bitrate', 'volume', 'audioEnabled'];
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -76,13 +76,14 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        if ('volume' in changes) {
-            const vol = (changes.volume as number) / 100;
-            // Update GStreamer volume element (so VU meter reflects the change)
-            await this.setElementProperty('vol', 'volume', vol).catch(() => {});
-            // Also update PipeWire sink volume
+        Object.assign(this.config, changes);
+        if ('volume' in changes || 'audioEnabled' in changes) {
+            const audioOff = (this.config.audioEnabled as boolean) === false;
+            const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
+            const gstVol = volumePct / 100;
+            await this.setElementProperty('vol', 'volume', gstVol).catch(() => {});
             if (this.services?.pipeWire) {
-                await this.services.pipeWire.setSinkVolume(this.pwNodeName, changes.volume as number);
+                await this.services.pipeWire.setSinkVolume(this.pwNodeName, volumePct);
             }
         }
         if ('bitrate' in changes) {
@@ -90,7 +91,6 @@ export class AudioEncoderModule extends GstPluginBase {
             const elementName = codec === 'aac' ? 'avenc_aac0' : 'opusenc0';
             await this.setElementProperty(elementName, 'bitrate', (changes.bitrate as number) * 1000);
         }
-        Object.assign(this.config, changes);
         this.updateStatusData();
     }
 

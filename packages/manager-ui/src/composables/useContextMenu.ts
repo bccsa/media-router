@@ -54,7 +54,15 @@ export function useContextMenu(
             const props = ((mod.configSchema as any).properties ?? {}) as Record<string, any>;
             for (const [key, schema] of Object.entries(props)) {
                 if (!schema['x-contextMenu']) continue;
-                if (schema['x-widget'] === 'slider' || schema.type === 'number') {
+                if (schema.type === 'boolean') {
+                    contextSettings.push({
+                        label: schema.description?.replace(/\s*\(.*\)/, '') || key,
+                        action: `setting:${key}`,
+                        toggle: {
+                            value: !!(mod.settings?.[key] ?? schema.default ?? false),
+                        },
+                    });
+                } else if (schema['x-widget'] === 'slider' || schema.type === 'number') {
                     const maxFrom = schema['x-maxFrom'];
                     const maxVal = maxFrom && mod.settings?.[maxFrom] != null
                         ? Number(mod.settings[maxFrom])

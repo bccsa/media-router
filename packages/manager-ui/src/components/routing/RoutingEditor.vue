@@ -74,6 +74,14 @@ function onContextSliderChange(action: string, value: number) {
         }, 50);
     }
 }
+
+function onContextToggleChange(action: string, value: boolean) {
+    if (!contextMenu.value || !action.startsWith('setting:')) return;
+    const key = action.replace('setting:', '');
+    const moduleId = contextMenu.value.moduleId;
+    socket.emit('module:config', { engineId: props.engineId, moduleId, changes: { [key]: value } });
+}
+
 const moduleListBtnRef = ref<any>(null);
 const moduleListPos = ref({ x: 0, y: 0 });
 const moduleSearch = ref('');
@@ -246,7 +254,7 @@ function dismissAll() {
         <AddModulePanel v-if="showAddPanel" @close="showAddPanel = false" @add="onAddModule" />
 
         <MrContextMenu v-if="contextMenu" :items="contextMenuItems" :x="contextMenu.x" :y="contextMenu.y"
-                       @action="onContextAction" @slider-change="onContextSliderChange" @close="contextMenu = null" />
+                       @action="onContextAction" @slider-change="onContextSliderChange" @toggle-change="onContextToggleChange" @close="contextMenu = null" />
 
         <MrContextMenu v-if="edgeContextMenu"
                        :items="edgeMenuItems"

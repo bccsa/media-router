@@ -18,10 +18,14 @@ export interface MenuItem {
         value: number;
         unit?: string;
     };
+    /** Toggle widget: renders an inline on/off switch. */
+    toggle?: {
+        value: boolean;
+    };
 }
 
 const props = defineProps<{ items: MenuItem[]; x: number; y: number }>();
-const emit = defineEmits<{ action: [action: string]; close: []; sliderChange: [action: string, value: number] }>();
+const emit = defineEmits<{ action: [action: string]; close: []; sliderChange: [action: string, value: number]; toggleChange: [action: string, value: boolean] }>();
 
 const menu = ref<HTMLDivElement | null>(null);
 const adjustedX = ref(0);
@@ -84,6 +88,18 @@ onUnmounted(() => {
              :style="{ left: adjustedX + 'px', top: adjustedY + 'px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
             <template v-for="(item, i) in items" :key="i">
                 <div v-if="item.divider" class="my-1" :style="{ borderTop: '1px solid var(--border-secondary)' }" />
+                <!-- Toggle widget -->
+                <button v-else-if="item.toggle" @click.stop="emit('toggleChange', item.action, !item.toggle.value)"
+                        class="w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors hover:brightness-125"
+                        :style="{ color: 'var(--text-primary)' }">
+                    <span class="text-[11px]">{{ item.label }}</span>
+                    <div class="relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors"
+                         :style="{ backgroundColor: item.toggle.value ? 'var(--accent)' : 'var(--border-primary)' }">
+                        <span class="inline-block h-3 w-3 rounded-full bg-white shadow transition-transform"
+                              :class="item.toggle.value ? 'translate-x-3.5' : 'translate-x-0.5'"
+                              style="margin-top: 2px" />
+                    </div>
+                </button>
                 <!-- Slider widget -->
                 <div v-else-if="item.slider" class="px-3 py-1.5" @click.stop @mousedown.stop @touchstart.stop>
                     <div class="flex items-center justify-between text-[11px] mb-1" :style="{ color: 'var(--text-muted)' }">

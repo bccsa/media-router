@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-audio-input",
     "version": "2.0.0",
     "private": true,
-    "description": "Audio input — captures audio from a PipeWire/PulseAudio source device",
+    "description": "Audio input \u2014 captures audio from a PipeWire/PulseAudio source device",
     "mediaRouter": {
         "pluginId": "audio-input",
         "displayName": "Audio Input",
@@ -68,6 +68,13 @@
                     "x-maxFrom": "volumeMax",
                     "x-contextMenu": true,
                     "x-unit": "%"
+                },
+                "audioEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Audio enabled",
+                    "x-live": true,
+                    "x-contextMenu": true
                 }
             }
         },

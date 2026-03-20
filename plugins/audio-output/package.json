@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-audio-output",
     "version": "2.0.0",
     "private": true,
-    "description": "Audio output — plays audio to a PipeWire/PulseAudio sink device",
+    "description": "Audio output \u2014 plays audio to a PipeWire/PulseAudio sink device",
     "mediaRouter": {
         "pluginId": "audio-output",
         "displayName": "Audio Output",
@@ -10,7 +10,10 @@
         "color": "#10b981",
         "icon": "volume-2",
         "category": "protocol",
-        "architectures": ["arm64", "x86_64"],
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
         "ports": [
             {
                 "id": "audio-in",
@@ -43,7 +46,13 @@
                 },
                 "volumeMax": {
                     "type": "number",
-                    "enum": [100, 150, 200, 300, 500],
+                    "enum": [
+                        100,
+                        150,
+                        200,
+                        300,
+                        500
+                    ],
                     "default": 150,
                     "description": "Maximum volume slider range (%)"
                 },
@@ -59,6 +68,13 @@
                     "x-maxFrom": "volumeMax",
                     "x-contextMenu": true,
                     "x-unit": "%"
+                },
+                "audioEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Audio enabled",
+                    "x-live": true,
+                    "x-contextMenu": true
                 }
             }
         },
