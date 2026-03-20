@@ -54,8 +54,14 @@ export class AudioInputModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        if ('volume' in changes && this.services?.pipeWire) {
-            await this.services.pipeWire.setSourceVolume(this.deviceName, changes.volume as number);
+        if ('volume' in changes) {
+            const vol = (changes.volume as number) / 100;
+            // Update GStreamer volume element (so VU meter reflects the change)
+            await this.setElementProperty('vol', 'volume', vol).catch(() => {});
+            // Also update PipeWire source volume
+            if (this.services?.pipeWire) {
+                await this.services.pipeWire.setSourceVolume(this.deviceName, changes.volume as number);
+            }
         }
         Object.assign(this.config, changes);
     }
@@ -71,16 +77,22 @@ export class AudioInputModule extends GstPluginBase {
         const sampleRate = this.detectedSampleRate ?? (config.sampleRate as number) ?? 48000;
         const channels = this.detectedChannels ?? (config.channels as number) ?? 2;
 
+        const volumePct = (config.volume as number) ?? 100;
+        const gstVolume = (volumePct / 100).toFixed(2);
         const deviceProp = device ? `device="${device}"` : '';
         const source = `pulsesrc ${deviceProp} buffer-time=20000 latency-time=10000`.trim();
         const format = `audioconvert ! audioresample ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
+        const vol = `volume name=vol volume=${gstVolume}`;
         const level = 'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
 
         // Output to our named null-sink (other modules connect via loopback to its .monitor)
         const sink = `pulsesink device=${this.pwNodeName} buffer-time=20000 latency-time=10000 sync=false`;
 
-        const pipeline = `${source} ! ${format} ! ${level} ! ${sink}`;
+        const pipeline = `${source} ! ${format} ! ${vol} ! ${level} ! ${sink}`;
 
-        return { pipeline };
+        return {
+            pipeline,
+            liveElements: { vol: ['volume'] },
+        };
     }
 }

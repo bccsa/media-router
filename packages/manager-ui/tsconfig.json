@@ -1,15 +1,6 @@
 {
+    "extends": "../tsconfig.vue-base.json",
     "compilerOptions": {
-        "target": "ES2022",
-        "module": "ESNext",
-        "moduleResolution": "bundler",
-        "strict": true,
-        "jsx": "preserve",
-        "resolveJsonModule": true,
-        "isolatedModules": true,
-        "esModuleInterop": true,
-        "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true,
         "baseUrl": ".",
         "paths": {
             "@/*": ["./src/*"]

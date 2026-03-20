@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
 import { ModuleManager } from './modules/ModuleManager.js';
@@ -251,7 +251,7 @@ export class Engine {
             // Wait for PipeWire to come back up
             await new Promise((r) => setTimeout(r, 2000));
         } catch (err) {
-            log.warn({ err: err instanceof Error ? err.message : String(err) },
+            log.warn({ err: formatError(err) },
                 'Could not restart PipeWire (permission denied or not available) — continuing with cleanup');
         }
 

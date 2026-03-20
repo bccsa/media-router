@@ -12,6 +12,6 @@
 [x] - Engine stop start is not reliable, some times i stop the engine, and when i want to start again, the engine doesn ot receive te command, so i need to try muiltiple time to get it going
 [x] - Unit tests: 134 tests across 14 files, all passing. Coverage: dgram-comms 92%, engine/modules 55%, engine/plugins 29%, engine/routing 35%, engine/comms 22%, engine/api (new), manager/config 63%, manager/handlers (new). Remaining: audio (PipeWire-dependent), UI packages (needs Vue Test Utils)
 [x] - Write Readme on the project, how to setup, dependancies, how to install etc (README.md + DEPENDENCIES.md)
-[ ] - When i move a module so i start to drag and hold the modue a while, it jumps back to the starting position, instead of keeping my position on hovering, just feels a bit buggy
+[x] - When i move a module so i start to drag and hold the modue a while, it jumps back to the starting position (fixed: 3s drag lock prevents server position overwrite)
 [ ] - Add mute / unmute setting on Plugins with audio / should be able to mute their null sink / thier source / dest
 [ ] - With modules that play audio into a null sink (like audio decoder / Audio output) the vumeter is mesuerd before the null sink, so if the user drops the volume on that module, the vu meter does not reflect the volume change, event though the voloume change is applied directly. (consider spawning seperate process for vu menter?)

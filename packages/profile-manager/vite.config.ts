@@ -1,14 +1,11 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
-import tailwindcss from '@tailwindcss/vite';
+import { defineConfig, mergeConfig } from 'vite';
+import baseConfig from '../shared-vite.config.js';
 
-export default defineConfig({
-    plugins: [vue(), tailwindcss()],
+export default mergeConfig(baseConfig, defineConfig({
     server: {
         port: 8082,
-        host: true,
         proxy: {
             '/api': 'http://localhost:3001',
         },
     },
-});
+}));

@@ -76,8 +76,14 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        if ('volume' in changes && this.services?.pipeWire) {
-            await this.services.pipeWire.setSinkVolume(this.pwNodeName, changes.volume as number);
+        if ('volume' in changes) {
+            const vol = (changes.volume as number) / 100;
+            // Update GStreamer volume element (so VU meter reflects the change)
+            await this.setElementProperty('vol', 'volume', vol).catch(() => {});
+            // Also update PipeWire sink volume
+            if (this.services?.pipeWire) {
+                await this.services.pipeWire.setSinkVolume(this.pwNodeName, changes.volume as number);
+            }
         }
         if ('bitrate' in changes) {
             const codec = (this.config.codec as string) ?? 'opus';

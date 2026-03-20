@@ -22,6 +22,13 @@ export interface HttpRouteDeps {
 export function registerHttpRoutes(deps: HttpRouteDeps): void {
     const { app, configStore, engineManager, pluginRegistry, io } = deps;
 
+    /** Return engine or send 404. Caller must `return` if result is null. */
+    function requireEngine(id: string, res: express.Response) {
+        const engine = configStore.getEngine(id);
+        if (!engine) res.status(404).json({ error: 'Engine not found' });
+        return engine;
+    }
+
     // Health
     app.get('/health', (_req, res) => {
         res.json({ status: 'ok', uptime: process.uptime() });
@@ -106,8 +113,8 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
     });
 
     app.put('/api/v1/engines/:id', (req, res) => {
-        const engine = configStore.getEngine(req.params.id);
-        if (!engine) { res.status(404).json({ error: 'Engine not found' }); return; }
+        const engine = requireEngine(req.params.id, res);
+        if (!engine) return;
         const { displayName, password } = req.body;
         if (!displayName) { res.status(400).json({ error: 'displayName is required' }); return; }
         configStore.updateEngine(req.params.id, displayName, password || undefined);
@@ -124,9 +131,7 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
     });
 
     app.delete('/api/v1/engines/:id', (req, res) => {
-        if (!configStore.getEngine(req.params.id)) {
-            res.status(404).json({ error: 'Engine not found' }); return;
-        }
+        if (!requireEngine(req.params.id, res)) return;
         configStore.deleteEngine(req.params.id);
         engineManager.refreshEncryptionKeys();
         io.emit('engine:removed', { engineId: req.params.id });
@@ -139,8 +144,8 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
     });
 
     app.post('/api/v1/engines/:id/profiles', (req, res) => {
-        const engine = configStore.getEngine(req.params.id);
-        if (!engine) { res.status(404).json({ error: 'Engine not found' }); return; }
+        const engine = requireEngine(req.params.id, res);
+        if (!engine) return;
         const { profileName, config } = req.body;
         if (!profileName) { res.status(400).json({ error: 'profileName is required' }); return; }
         configStore.createProfile(req.params.id, profileName, config ?? {});
@@ -148,8 +153,8 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
     });
 
     app.delete('/api/v1/engines/:id/profiles/:profile', (req, res) => {
-        const engine = configStore.getEngine(req.params.id);
-        if (!engine) { res.status(404).json({ error: 'Engine not found' }); return; }
+        const engine = requireEngine(req.params.id, res);
+        if (!engine) return;
         if (engine.active_profile === req.params.profile) {
             res.status(400).json({ error: 'Cannot delete the active profile' }); return;
         }
@@ -158,8 +163,7 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
     });
 
     app.post('/api/v1/engines/:id/profiles/:profile/activate', (req, res) => {
-        const engine = configStore.getEngine(req.params.id);
-        if (!engine) { res.status(404).json({ error: 'Engine not found' }); return; }
+        if (!requireEngine(req.params.id, res)) return;
         const profile = configStore.getProfile(req.params.id, req.params.profile);
         if (!profile) { res.status(404).json({ error: 'Profile not found' }); return; }
         configStore.setActiveProfile(req.params.id, req.params.profile);

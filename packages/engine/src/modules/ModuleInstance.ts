@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, formatError } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 
@@ -95,7 +95,7 @@ export class ModuleInstance extends EventEmitter {
             this._running = true;
             this._pendingRestart = false;
         } catch (err) {
-            log.error({ err: err instanceof Error ? err.message : String(err), instanceId: this.instanceId }, 'Module start failed');
+            log.error({ err: formatError(err), instanceId: this.instanceId }, 'Module start failed');
             // Attempt cleanup so the module doesn't get stuck in a half-initialised state
             try { await this.plugin.onStop(); } catch { /* best effort */ }
             throw err;

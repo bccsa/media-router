@@ -1,10 +1,8 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
-import tailwindcss from '@tailwindcss/vite';
+import { defineConfig, mergeConfig } from 'vite';
+import baseConfig from '../shared-vite.config.js';
 import { resolve } from 'path';
 
-export default defineConfig({
-    plugins: [vue(), tailwindcss()],
+export default mergeConfig(baseConfig, defineConfig({
     resolve: {
         alias: {
             '@': resolve(__dirname, 'src'),
@@ -12,7 +10,6 @@ export default defineConfig({
     },
     server: {
         port: 5173,
-        host: true,
         proxy: {
             '/api': 'http://localhost:8080',
             '/health': 'http://localhost:8080',
@@ -22,4 +19,4 @@ export default defineConfig({
             },
         },
     },
-});
+}));

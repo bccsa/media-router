@@ -67,6 +67,13 @@ export class AudioRoutingError extends MediaRouterError {
     }
 }
 
+// --- Utilities --------------------------------------------------------------
+
+/** Convert an unknown caught value to a human-readable error string. */
+export function formatError(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
+
 // --- Stream Types -----------------------------------------------------------
 
 /** Media stream type — determines routing domain and port compatibility. */

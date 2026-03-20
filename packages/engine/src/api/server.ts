@@ -2,7 +2,6 @@ import Fastify, { type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import { createLogger } from '@media-router/shared-types';
 import type { Engine } from '../Engine.js';
-import { PipeWireManager } from '../audio/PipeWireManager.js';
 
 const log = createLogger('ApiServer');
 
@@ -133,8 +132,8 @@ function registerProfileRoutes(app: ReturnType<typeof Fastify>, engine: Engine):
     });
 }
 
-function registerAudioRoutes(app: ReturnType<typeof Fastify>, _engine: Engine): void {
-    const pwManager = new PipeWireManager();
+function registerAudioRoutes(app: ReturnType<typeof Fastify>, engine: Engine): void {
+    const pwManager = engine.pipeWire;
 
     app.get('/api/v1/audio/devices', async () => {
         return pwManager.listDevices();

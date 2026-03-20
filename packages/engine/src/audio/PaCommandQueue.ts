@@ -1,4 +1,5 @@
 import { execFileSync, execFile } from 'child_process';
+import { formatError } from '@media-router/shared-types';
 
 /**
  * Rate-limited command queue for PulseAudio/PipeWire `pactl` commands.
@@ -53,8 +54,7 @@ export class PaCommandQueue {
                 env: { ...process.env, DISPLAY: '' },
             }).trim();
         } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            throw new Error(`pactl command failed: pactl ${args.join(' ')}\n${msg}`);
+            throw new Error(`pactl command failed: pactl ${args.join(' ')}\n${formatError(err)}`);
         }
     }
 

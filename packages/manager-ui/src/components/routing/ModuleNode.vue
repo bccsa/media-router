@@ -45,7 +45,6 @@ const hasAudio = computed(() =>
 const vuChannels = computed(() => {
     const live = vuStore.get(engineId, props.data.instanceId);
     if (live && live.length > 0) return live;
-    // Don't assume channel count — wait for real VU data
     return [];
 });
 

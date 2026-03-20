@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { decrypt } from './encryption.js';
@@ -151,8 +152,8 @@ export class Client extends EventEmitter {
 
         // Forward data events (deduped)
         socket.on('data', (topic: string, message: unknown) => {
-            // Dedup across paths — use topic + JSON hash
-            const dedupKey = `${topic}:${JSON.stringify(message)}`.slice(0, 200);
+            // Dedup across paths — use topic + content hash
+            const dedupKey = crypto.createHash('md5').update(`${topic}:${JSON.stringify(message)}`).digest('hex');
             if (this.seenMessages.has(dedupKey)) return;
             this.seenMessages.add(dedupKey);
             this.emit('data', topic, message);

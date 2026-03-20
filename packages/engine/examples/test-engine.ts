@@ -28,12 +28,24 @@ engine.start().then(() => {
     console.log('\nPress Ctrl+C to stop.\n');
 });
 
-process.on('SIGINT', async () => {
+async function gracefulShutdown() {
     await engine.stop();
     process.exit(0);
-});
+}
 
-process.on('SIGTERM', async () => {
-    await engine.stop();
-    process.exit(0);
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
+// Emergency cleanup: kill all descendant processes when this process exits
+// This catches tsx --watch restarts where graceful shutdown may not complete
+process.on('exit', () => {
+    try {
+        // Kill entire process group (includes gst-runner + python grandchildren)
+        process.kill(-process.pid, 'SIGTERM');
+    } catch { /* best effort — may fail if not process group leader */ }
+    try {
+        // Fallback: kill known child PIDs recursively
+        const { execFileSync } = require('child_process');
+        execFileSync('pkill', ['-TERM', '-P', String(process.pid)], { timeout: 1000 });
+    } catch { /* best effort */ }
 });

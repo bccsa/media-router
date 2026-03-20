@@ -56,13 +56,21 @@ export function useGraphSync(
         }
     }, { immediate: true });
 
+    // Track which modules the user recently dragged — ignore server position for these
+    const recentDrags = new Map<string, number>(); // moduleId → timestamp
+    const DRAG_IGNORE_MS = 3000; // ignore server position updates for 3s after drag
+
     // Update node data in-place (doesn't trigger setNodes, preserves edges)
     watch(() => engine.value?.modules, (modules) => {
         if (!modules) return;
+        const now = Date.now();
         for (const node of getNodes.value) {
             const mod = modules[node.id];
             if (!mod) continue;
             node.data = mod;
+            // Only update position from server if user hasn't dragged this node recently
+            const lastDrag = recentDrags.get(node.id);
+            if (lastDrag && now - lastDrag < DRAG_IGNORE_MS) continue;
             if (mod.position && (node.position.x !== mod.position.x || node.position.y !== mod.position.y)) {
                 node.position = { ...mod.position };
             }
@@ -73,24 +81,24 @@ export function useGraphSync(
 
     const connectionKey = computed(() => {
         if (!engine.value?.connections) return '';
-        return engine.value.connections.map((c: any) => c.id).sort().join(',');
+        return engine.value.connections.map((c) => c.id).sort().join(',');
     });
 
     watch([connectionKey, focusMode, focusedModules], () => {
         const connections = engine.value?.connections ?? [];
 
-        const desired = new Map<string, any>();
+        const desired = new Map<string, Edge>();
         for (const conn of connections) {
-            const srcModule = engine.value?.modules[(conn as any).sourceModuleId];
-            const srcPort = srcModule?.ports?.find((p: any) => p.id === (conn as any).sourcePortId);
-            const color = edgeColor(srcPort?.streamType ?? (conn as any).streamType);
-            const dimmed = isEdgeDimmed((conn as any).sourceModuleId, (conn as any).sinkModuleId);
-            const edgeData: any = {
-                id: (conn as any).id,
-                source: (conn as any).sourceModuleId,
-                sourceHandle: (conn as any).sourcePortId,
-                target: (conn as any).sinkModuleId,
-                targetHandle: (conn as any).sinkPortId,
+            const srcModule = engine.value?.modules[conn.sourceModuleId];
+            const srcPort = srcModule?.ports?.find((p) => p.id === conn.sourcePortId);
+            const color = edgeColor(srcPort?.streamType);
+            const dimmed = isEdgeDimmed(conn.sourceModuleId, conn.sinkModuleId);
+            const edgeData: Edge = {
+                id: conn.id,
+                source: conn.sourceModuleId,
+                sourceHandle: conn.sourcePortId,
+                target: conn.sinkModuleId,
+                targetHandle: conn.sinkPortId,
                 animated: true,
                 interactionWidth: 20,
                 style: { stroke: color, opacity: dimmed ? 0.1 : 1, transition: 'opacity 0.2s ease' },
@@ -103,7 +111,7 @@ export function useGraphSync(
                 edgeData.labelBgPadding = [4, 2] as [number, number];
                 edgeData.labelBgBorderRadius = 4;
             }
-            desired.set((conn as any).id, edgeData);
+            desired.set(conn.id, edgeData);
         }
 
         const currentEdgeIds = new Set(getEdges.value.map(e => e.id));
@@ -143,11 +151,11 @@ export function useGraphSync(
 
         const connections = engine.value?.connections ?? [];
         for (const port of [srcPort, tgtPort]) {
-            const max = (port as any).maxConnections ?? -1;
+            const max = port.maxConnections ?? -1;
             if (max === 0) return false;
             if (max > 0) {
                 const moduleId = port === srcPort ? connection.source! : connection.target!;
-                const count = connections.filter((c: any) =>
+                const count = connections.filter((c) =>
                     (c.sourceModuleId === moduleId && c.sourcePortId === port.id) ||
                     (c.sinkModuleId === moduleId && c.sinkPortId === port.id)
                 ).length;
@@ -186,6 +194,7 @@ export function useGraphSync(
     }
 
     function onNodeDragStop(event: { node: Node }) {
+        recentDrags.set(event.node.id, Date.now());
         socket.emit('module:position', { engineId: engineId(), moduleId: event.node.id, position: event.node.position });
     }
 

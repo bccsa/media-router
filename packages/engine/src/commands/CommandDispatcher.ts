@@ -55,32 +55,42 @@ export class CommandDispatcher {
                     log.warn({ moduleId }, 'moduleConfig: module not running');
                     break;
                 }
-                this.ctx.moduleManager.applyConfigUpdate(moduleId, changes).catch((err) =>
-                    log.error({ err, moduleId }, 'Config update failed'),
-                );
-                for (const [key, value] of Object.entries(changes)) {
-                    this.ctx.lcpServer.broadcastConfigUpdate([
-                        { op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value },
-                    ]);
-                }
+                this.commandLock = this.commandLock
+                    .then(async () => {
+                        await this.ctx.moduleManager.applyConfigUpdate(moduleId, changes);
+                        for (const [key, value] of Object.entries(changes)) {
+                            this.ctx.lcpServer.broadcastConfigUpdate([
+                                { op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value },
+                            ]);
+                        }
+                    })
+                    .catch((err) => log.error({ err, moduleId }, 'Config update failed'));
                 break;
             }
 
             case 'moduleDisable': {
                 const moduleId = cmd.moduleId as string;
-                this.ctx.disableModule(moduleId).catch((err) => log.error({ err, moduleId }, 'Module disable failed'));
-                this.ctx.lcpServer.broadcastConfigUpdate([
-                    { op: 'replace', path: `/modules/${moduleId}/enabled`, value: false },
-                ]);
+                this.commandLock = this.commandLock
+                    .then(async () => {
+                        await this.ctx.disableModule(moduleId);
+                        this.ctx.lcpServer.broadcastConfigUpdate([
+                            { op: 'replace', path: `/modules/${moduleId}/enabled`, value: false },
+                        ]);
+                    })
+                    .catch((err) => log.error({ err, moduleId }, 'Module disable failed'));
                 break;
             }
 
             case 'moduleEnable': {
                 const moduleId = cmd.moduleId as string;
-                this.ctx.enableModule(moduleId).catch((err) => log.error({ err, moduleId }, 'Module enable failed'));
-                this.ctx.lcpServer.broadcastConfigUpdate([
-                    { op: 'replace', path: `/modules/${moduleId}/enabled`, value: true },
-                ]);
+                this.commandLock = this.commandLock
+                    .then(async () => {
+                        await this.ctx.enableModule(moduleId);
+                        this.ctx.lcpServer.broadcastConfigUpdate([
+                            { op: 'replace', path: `/modules/${moduleId}/enabled`, value: true },
+                        ]);
+                    })
+                    .catch((err) => log.error({ err, moduleId }, 'Module enable failed'));
                 break;
             }
 
@@ -90,7 +100,9 @@ export class CommandDispatcher {
                     log.warn({ moduleId }, 'moduleRestart: module not running');
                     break;
                 }
-                this.ctx.restartModule(moduleId).catch((err) => log.error({ err, moduleId }, 'Module restart failed'));
+                this.commandLock = this.commandLock
+                    .then(() => this.ctx.restartModule(moduleId))
+                    .catch((err) => log.error({ err, moduleId }, 'Module restart failed'));
                 break;
             }
 

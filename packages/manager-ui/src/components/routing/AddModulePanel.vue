@@ -20,7 +20,9 @@ onMounted(async () => {
     try {
         const res = await fetch('/api/v1/plugins');
         if (res.ok) plugins.value = await res.json();
-    } catch {} finally { loading.value = false; }
+    } catch (err) {
+        console.warn('[AddModulePanel] Failed to load plugins', err);
+    } finally { loading.value = false; }
 });
 
 const categories = ['protocol', 'codec', 'processing', 'utility'];

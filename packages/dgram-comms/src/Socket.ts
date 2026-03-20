@@ -1,10 +1,9 @@
+import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { encrypt, decrypt } from './encryption.js';
 import { fragment, Reassembler } from './fragmentation.js';
 import type { DgramMessage } from '@media-router/shared-types';
-
-let ackCounter = 0;
 
 export interface SocketOptions {
     /** Remote port. */
@@ -59,6 +58,7 @@ export class Socket extends EventEmitter {
 
     /** Pending guaranteed-delivery messages awaiting ACK. */
     private waitingAck = new Map<number, ReturnType<typeof setTimeout>>();
+    private ackCounter = 0;
 
     constructor(options: SocketOptions) {
         super();
@@ -114,8 +114,8 @@ export class Socket extends EventEmitter {
     ): Promise<void> {
         // Assign ackID for guaranteed delivery
         if (!options.ackID && options.guaranteeDelivery) {
-            ackCounter++;
-            options.ackID = ackCounter;
+            this.ackCounter++;
+            options.ackID = this.ackCounter;
         }
 
         const data: DgramMessage['data'] = {
@@ -171,6 +171,7 @@ export class Socket extends EventEmitter {
             } else {
                 // Max retries — give up
                 this.waitingAck.delete(options.ackID);
+                this.emit('ackTimeout', { topic, ackID: options.ackID });
             }
         }
     }

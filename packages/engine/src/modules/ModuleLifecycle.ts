@@ -1,5 +1,5 @@
 import type { ChannelMapEntry } from '@media-router/shared-types';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, formatError } from '@media-router/shared-types';
 import type { ModuleManager } from './ModuleManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -80,8 +80,7 @@ export class ModuleLifecycle {
                 await this.moduleManager.startModule(instanceId);
                 log.info({ instanceId, module: label }, 'Started module');
             } catch (err) {
-                const errMsg = err instanceof Error ? err.message : String(err);
-                log.error({ instanceId, module: label }, `Failed to start module: ${errMsg}`);
+                log.error({ instanceId, module: label }, `Failed to start module: ${formatError(err)}`);
             }
         }
 

@@ -360,15 +360,29 @@ process.on('message', (msg: ControlIpcMessage) => {
 
 function shutdown(reason: string): void {
     console.error(`[gst-runner] Shutting down: ${reason}`);
-    stopPipeline();
-    setTimeout(() => {
-        if (pyProcess) killProcess(pyProcess, 'SIGKILL');
-        process.exit(0);
-    }, 2500);
+    // Kill Python immediately — don't rely on timers that may not fire
+    if (pyProcess) {
+        sendToPython({ cmd: 'stop' });
+        killProcess(pyProcess, 'SIGTERM');
+        // Schedule SIGKILL as fallback
+        const py = pyProcess;
+        setTimeout(() => {
+            try { killProcess(py, 'SIGKILL'); } catch {}
+        }, 1000);
+    }
+    setTimeout(() => process.exit(0), 1500);
 }
 
 process.on('disconnect', () => shutdown('parent disconnected'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Emergency cleanup: if this process exits for any reason, kill Python
+process.on('exit', () => {
+    if (pyProcess && pyProcess.pid) {
+        try { process.kill(pyProcess.pid, 'SIGKILL'); } catch {}
+        try { process.kill(-pyProcess.pid, 'SIGKILL'); } catch {}
+    }
+});
 
 console.error('[gst-runner] Ready v3, waiting for pipeline...');

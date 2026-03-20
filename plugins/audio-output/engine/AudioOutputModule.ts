@@ -73,8 +73,14 @@ export class AudioOutputModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        if ('volume' in changes && this.services?.pipeWire && this.deviceName) {
-            await this.services.pipeWire.setSinkVolume(this.deviceName, changes.volume as number);
+        if ('volume' in changes) {
+            const vol = (changes.volume as number) / 100;
+            // Update GStreamer volume element in VU pipeline (so VU reflects the change)
+            await this.setElementProperty('vol', 'volume', vol).catch(() => {});
+            // Also update PipeWire device volume
+            if (this.services?.pipeWire && this.deviceName) {
+                await this.services.pipeWire.setSinkVolume(this.deviceName, changes.volume as number);
+            }
         }
         Object.assign(this.config, changes);
     }
@@ -88,12 +94,18 @@ export class AudioOutputModule extends GstPluginBase {
         const sampleRate = this.detectedSampleRate ?? (config.sampleRate as number) ?? 48000;
         const channels = this.detectedChannels ?? (config.channels as number) ?? 2;
 
-        // VU-only pipeline: reads from null-sink monitor, outputs to fakesink
+        // VU-only pipeline: reads from null-sink monitor, applies volume, then measures level
+        const volumePct = (config.volume as number) ?? 100;
+        const gstVolume = (volumePct / 100).toFixed(2);
         const source = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000`;
         const format = `audioconvert`;
+        const vol = `volume name=vol volume=${gstVolume}`;
         const level = 'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
-        const pipeline = `${source} ! ${format} ! ${level} ! fakesink sync=false`;
+        const pipeline = `${source} ! ${format} ! ${vol} ! ${level} ! fakesink sync=false`;
 
-        return { pipeline };
+        return {
+            pipeline,
+            liveElements: { vol: ['volume'] },
+        };
     }
 }

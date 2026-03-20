@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
 import { useEngineStore, type ChannelMapEntry } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
@@ -90,6 +90,9 @@ function getDstDotPos(ch: number) {
 // --- Drag interaction ---
 const dragging = ref<{ srcChannel: number; x: number; y: number } | null>(null);
 const dragTarget = ref<number | null>(null);
+let dragCleanup: (() => void) | null = null;
+
+onUnmounted(() => { dragCleanup?.(); });
 
 function clientToSvg(clientX: number, clientY: number): { x: number; y: number } {
     if (!svgRef.value) return { x: 0, y: 0 };
@@ -137,12 +140,19 @@ function startDrag(srcChannel: number, event: MouseEvent | TouchEvent) {
         window.removeEventListener('mouseup', onUp);
         window.removeEventListener('touchmove', onMove);
         window.removeEventListener('touchend', onUp);
+        dragCleanup = null;
     };
 
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
     window.addEventListener('touchmove', onMove, { passive: false });
     window.addEventListener('touchend', onUp);
+    dragCleanup = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        window.removeEventListener('touchmove', onMove);
+        window.removeEventListener('touchend', onUp);
+    };
 }
 
 // --- Mapping management ---

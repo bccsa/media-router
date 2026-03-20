@@ -58,26 +58,44 @@ onMounted(async () => {
     }
 });
 
+/** JSON Schema property shape with media-router extensions. */
+interface SchemaProperty {
+    type?: string;
+    description?: string;
+    default?: unknown;
+    enum?: unknown[];
+    minimum?: number;
+    maximum?: number;
+    'x-live'?: boolean;
+    'x-liveUpdatable'?: boolean;
+    'x-deviceType'?: string;
+    'x-widget'?: string;
+    'x-step'?: number;
+    'x-maxFrom'?: string;
+    'x-enumByCodec'?: Record<string, unknown[]>;
+    'x-readOnly'?: boolean;
+}
+
 const formFields = computed<FormField[]>(() => {
     const schema = module.value?.configSchema;
     if (!schema?.properties) return [];
-    const schemaProps = schema.properties as Record<string, Record<string, unknown>>;
+    const schemaProps = schema.properties as Record<string, SchemaProperty>;
     return Object.entries(schemaProps).map(([key, prop]) => ({
         key,
-        type: (prop.type as string) ?? 'string',
+        type: prop.type ?? 'string',
         label: key.replace(/([A-Z])/g, ' $1').replace(/^./, (s: string) => s.toUpperCase()),
-        description: (prop.description as string) ?? '',
+        description: prop.description ?? '',
         defaultValue: prop.default,
-        enumValues: prop.enum as unknown[] | undefined,
-        liveUpdatable: !!(prop as any)['x-live'] || !!(prop as any)['x-liveUpdatable'],
-        deviceType: (prop as any)['x-deviceType'] as string | undefined,
-        widget: (prop as any)['x-widget'] as string | undefined,
-        minimum: (prop as any).minimum as number | undefined,
-        maximum: (prop as any).maximum as number | undefined,
-        step: (prop as any)['x-step'] as number | undefined,
-        maxFrom: (prop as any)['x-maxFrom'] as string | undefined,
-        enumByCodec: (prop as any)['x-enumByCodec'] as Record<string, unknown[]> | undefined,
-        readOnly: !!(prop as any)['x-readOnly'],
+        enumValues: prop.enum,
+        liveUpdatable: !!prop['x-live'] || !!prop['x-liveUpdatable'],
+        deviceType: prop['x-deviceType'],
+        widget: prop['x-widget'],
+        minimum: prop.minimum,
+        maximum: prop.maximum,
+        step: prop['x-step'],
+        maxFrom: prop['x-maxFrom'],
+        enumByCodec: prop['x-enumByCodec'],
+        readOnly: !!prop['x-readOnly'],
     }));
 });
 
@@ -108,6 +126,10 @@ let pendingLiveUpdate: { key: string; value: unknown } | null = null;
 
 onUnmounted(() => {
     if (liveThrottleTimer) { clearTimeout(liveThrottleTimer); liveThrottleTimer = null; }
+    if (pendingLiveUpdate) {
+        sendLiveUpdate(pendingLiveUpdate.key, pendingLiveUpdate.value);
+        pendingLiveUpdate = null;
+    }
 });
 
 function sendLiveUpdate(key: string, value: unknown) {

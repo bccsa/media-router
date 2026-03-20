@@ -8,7 +8,7 @@ const log = createLogger('PluginLoader');
 
 export interface LoadedPlugin {
     manifest: PluginManifest;
-    ModuleClass: new () => PluginModule;
+    ModuleClass: (new () => PluginModule) | null;
 }
 
 /**
@@ -100,7 +100,7 @@ export class PluginLoader {
 
                 this.plugins.set(manifest.pluginId, {
                     manifest,
-                    ModuleClass: ModuleClass as new () => PluginModule,
+                    ModuleClass,
                 });
 
                 log.info({ pluginId: manifest.pluginId, displayName: manifest.displayName, hasEngineClass: !!ModuleClass }, 'Loaded plugin');

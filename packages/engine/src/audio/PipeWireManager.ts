@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, formatError } from '@media-router/shared-types';
 import { PaCommandQueue } from './PaCommandQueue.js';
 
 const log = createLogger('PipeWireManager');
@@ -214,8 +214,7 @@ export class PipeWireManager {
         try {
             execFileSync('pw-link', [outputPort, inputPort], { timeout: 5000 });
         } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : String(err);
-            throw new Error(`pw-link failed: ${outputPort} → ${inputPort}: ${msg}`);
+            throw new Error(`pw-link failed: ${outputPort} → ${inputPort}: ${formatError(err)}`);
         }
 
         // Get the link ID so we can remove it later
@@ -361,8 +360,8 @@ export class PipeWireManager {
                     name,
                     description: descMatch?.[1]?.trim() ?? name,
                     direction: 'source',
-                    channels: specMatch ? parseInt(specMatch[1], 10) : undefined,
-                    sampleRate: specMatch ? parseInt(specMatch[2], 10) : undefined,
+                    channels: specMatch?.[1] ? parseInt(specMatch[1], 10) || undefined : undefined,
+                    sampleRate: specMatch?.[2] ? parseInt(specMatch[2], 10) || undefined : undefined,
                 });
             }
 
@@ -384,8 +383,8 @@ export class PipeWireManager {
                     name,
                     description: descMatch?.[1]?.trim() ?? name,
                     direction: 'sink',
-                    channels: specMatch ? parseInt(specMatch[1], 10) : undefined,
-                    sampleRate: specMatch ? parseInt(specMatch[2], 10) : undefined,
+                    channels: specMatch?.[1] ? parseInt(specMatch[1], 10) || undefined : undefined,
+                    sampleRate: specMatch?.[2] ? parseInt(specMatch[2], 10) || undefined : undefined,
                 });
             }
         } catch (err) {
