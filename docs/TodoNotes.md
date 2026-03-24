@@ -21,7 +21,7 @@
 [x] - module being addid far of from the other modules (fixed: new modules placed at center of current viewport)
 [ ] - tace and warn debugging 
 [x] - When moving modules, the modules jump back to the original position if i do not keep moving the mouse (fixed: track active drags via dragStart/dragStop, block server position updates during entire drag + 2s after)
-[ ] - Some times i need to refresh the page, if i was away from it for a while to see live data again, as if the socket conenction does not auto reconnect or smt (seems like it is only vu meter but not sure)
+[x] - Some times i need to refresh the page, if i was away from it for a while to see live data again, as if the socket conenction does not auto reconnect or smt (fixed: re-emit watch:engine on Socket.IO reconnect so VU/logs resume)
 [x] - when clicking outside the stats page, the page does not close (fixed: click handler moved to backdrop overlay)
 [x] - When i enable a module, i need to restart it before it stats up, it does not auto start
 [x] - Mute control has a debounce, so when i mute i have to wait a while before i can unmute, this is a issue and should not be like that (fixed: optimistic local store update on toggle, no round-trip delay)
@@ -43,4 +43,5 @@
 
 ## Featrues 
 [ ] - Mpegts compiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
+[x] - Seed db with dummy data on first start (manager: 'local' engine with Audio Input → Audio Output profile; engine: 'local' profile connecting to 127.0.0.1:3000)
 

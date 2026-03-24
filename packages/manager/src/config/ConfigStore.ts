@@ -26,6 +26,7 @@ export class ConfigStore {
         this.db = new Database(dbPath);
         this.db.pragma('journal_mode = WAL');
         this.createTables();
+        this.seedDefaults();
         log.info({ dbPath }, 'database opened');
     }
 
@@ -56,6 +57,59 @@ export class ConfigStore {
                 saved_at TEXT DEFAULT (datetime('now'))
             );
         `);
+    }
+
+    /** Seed database with a default engine + profile on first start. Skips in-memory DBs (tests). */
+    private seedDefaults(): void {
+        if (this.db.name === ':memory:' || this.db.name === '') return; // Skip for tests
+        const count = (this.db.prepare('SELECT COUNT(*) as c FROM engines').get() as { c: number }).c;
+        if (count > 0) return; // Already has data
+
+        log.info('First start — seeding default engine and profile');
+
+        const engineId = 'local';
+        const password = 'media-router';
+
+        // Create default engine
+        this.db.prepare(
+            'INSERT INTO engines (engine_id, display_name, password, active_profile) VALUES (?, ?, ?, ?)'
+        ).run(engineId, 'Local Engine', password, 'default');
+
+        // Create default profile with Audio Input → Audio Output
+        const inputId = `audio-input-${Date.now().toString(36)}`;
+        const outputId = `audio-output-${Date.now().toString(36)}a`;
+
+        const config = {
+            modules: {
+                [inputId]: {
+                    pluginId: 'audio-input',
+                    displayName: 'Audio Input',
+                    enabled: true,
+                    position: { x: 100, y: 200 },
+                    settings: { device: '', sampleRate: 48000, channels: 2, volume: 100, volumeMax: 150 },
+                },
+                [outputId]: {
+                    pluginId: 'audio-output',
+                    displayName: 'Audio Output',
+                    enabled: true,
+                    position: { x: 500, y: 200 },
+                    settings: { device: '', sampleRate: 48000, channels: 2, volume: 100, volumeMax: 150 },
+                },
+            },
+            connections: [
+                {
+                    id: `${inputId}:audio-out-${outputId}:audio-in`,
+                    sourceModuleId: inputId,
+                    sourcePortId: 'audio-out',
+                    sinkModuleId: outputId,
+                    sinkPortId: 'audio-in',
+                },
+            ],
+        };
+
+        this.db.prepare(
+            'INSERT INTO engine_profiles (engine_id, profile_name, config) VALUES (?, ?, ?)'
+        ).run(engineId, 'default', JSON.stringify(config));
     }
 
     // --- Engine CRUD ---

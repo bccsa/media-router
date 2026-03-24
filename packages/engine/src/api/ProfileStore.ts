@@ -23,6 +23,19 @@ export class ProfileStore {
 
         this.filePath = filePath ?? path.join(configDir, 'profiles.json');
         this.loadFromDisk();
+        this.seedDefaults();
+    }
+
+    /** Seed a default profile on first start so the engine auto-connects to localhost. */
+    private seedDefaults(): void {
+        if (Object.keys(this.profiles).length > 0) return;
+        this.profiles['local'] = {
+            name: 'local',
+            paths: [{ host: '127.0.0.1', port: 3000 }],
+            encryptionKey: 'media-router',
+        };
+        this.activeProfile = 'local';
+        this.saveToDisk();
     }
 
     private loadFromDisk(): void {

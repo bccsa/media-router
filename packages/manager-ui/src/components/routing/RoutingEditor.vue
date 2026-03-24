@@ -104,6 +104,13 @@ watch(() => props.engineId, (id) => {
     hasInitialFit.value = false;
 });
 
+// Re-subscribe on Socket.IO reconnect (VU/logs stop without this)
+watch(() => socket.connected, (isConnected) => {
+    if (isConnected && props.engineId) {
+        socket.emit('watch:engine', { engineId: props.engineId });
+    }
+});
+
 // --- Module list dropdown ---
 function toggleModuleList() {
     showModuleList.value = !showModuleList.value;
