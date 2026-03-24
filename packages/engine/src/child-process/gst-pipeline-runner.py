@@ -72,21 +72,32 @@ def emit_event(obj):
 # ---------------------------------------------------------------------------
 # GstStructure → dict converter
 # ---------------------------------------------------------------------------
+def _safe_value(value):
+    """Convert a GStreamer value to a JSON-safe Python type."""
+    if value is None:
+        return None
+    if isinstance(value, Gst.Structure):
+        return gst_structure_to_dict(value)
+    if isinstance(value, (int, float, bool, str)):
+        return value
+    if hasattr(value, '__len__') and not isinstance(value, (str, bytes)):
+        # GValueArray or list-like
+        return [_safe_value(v) for v in value]
+    # Fallback: convert unknown GObject types to string
+    return str(value)
+
 def gst_structure_to_dict(structure):
-    """Recursively convert a GstStructure to a Python dict."""
+    """Recursively convert a GstStructure to a JSON-safe Python dict."""
     if structure is None:
         return {}
     result = {}
     for i in range(structure.n_fields()):
         name = structure.nth_field_name(i)
-        value = structure.get_value(name)
-        if isinstance(value, Gst.Structure):
-            result[name] = gst_structure_to_dict(value)
-        elif hasattr(value, '__len__') and not isinstance(value, str):
-            # GValueArray or list-like
-            result[name] = [v for v in value]
-        else:
-            result[name] = value
+        try:
+            value = structure.get_value(name)
+            result[name] = _safe_value(value)
+        except Exception:
+            result[name] = "?"
     return result
 
 # ---------------------------------------------------------------------------

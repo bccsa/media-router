@@ -115,8 +115,12 @@ export class ManagedProcess extends EventEmitter {
                 buffer = lines.pop() ?? '';
                 for (const line of lines) {
                     if (line.trim()) {
-                        this.log.warn({ stream: 'stderr' }, line);
-                        this.options.onStderr?.(line);
+                        // Only log stderr if no callback handles it
+                        if (this.options.onStderr) {
+                            this.options.onStderr(line);
+                        } else {
+                            this.log.warn({ stream: 'stderr' }, line);
+                        }
                     }
                 }
             });

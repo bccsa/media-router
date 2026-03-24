@@ -181,6 +181,7 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
                 mod.ports = manifest.ports ?? [];
                 mod.configSchema = manifest.configSchema ?? {};
                 mod.statusSections = manifest.statusSections;
+                mod.faceWidgets = manifest.faceWidgets;
                 mod.color = manifest.color;
                 mod.icon = manifest.icon;
             }

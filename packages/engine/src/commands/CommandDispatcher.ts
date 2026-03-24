@@ -14,6 +14,8 @@ export interface CommandContext {
     stopModules: () => Promise<void>;
     resetEngine: () => Promise<void>;
     restartModule: (moduleId: string) => Promise<void>;
+    startSingleModule: (moduleId: string) => Promise<void>;
+    deleteSingleModule: (moduleId: string) => Promise<void>;
     disableModule: (moduleId: string) => Promise<void>;
     enableModule: (moduleId: string) => Promise<void>;
 }
@@ -103,6 +105,26 @@ export class CommandDispatcher {
                 this.commandLock = this.commandLock
                     .then(() => this.ctx.restartModule(moduleId))
                     .catch((err) => log.error({ err, moduleId }, 'Module restart failed'));
+                break;
+            }
+
+            case 'moduleDelete': {
+                const moduleId = cmd.moduleId as string;
+                this.commandLock = this.commandLock
+                    .then(() => this.ctx.deleteSingleModule(moduleId))
+                    .catch((err) => log.error({ err, moduleId }, 'Module delete failed'));
+                break;
+            }
+
+            case 'moduleStart': {
+                const moduleId = cmd.moduleId as string;
+                if (this.ctx.moduleManager.get(moduleId)) {
+                    log.warn({ moduleId }, 'moduleStart: module already running');
+                    break;
+                }
+                this.commandLock = this.commandLock
+                    .then(() => this.ctx.startSingleModule(moduleId))
+                    .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
                 break;
             }
 

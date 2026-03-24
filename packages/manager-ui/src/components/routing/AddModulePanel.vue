@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
+import { icons } from 'lucide-vue-next';
 
 interface PluginInfo {
     pluginId: string; displayName: string; description: string;
     category: string; ports: Array<{ id: string; direction: string; streamType: string; label: string }>;
     configSchema: Record<string, unknown>;
+    icon?: string; color?: string;
+}
+
+function getLucideIcon(name?: string) {
+    if (!name) return null;
+    const pascal = name.replace(/(^|-)(\w)/g, (_: string, __: string, c: string) => c.toUpperCase());
+    return (icons as Record<string, unknown>)[pascal] ?? null;
 }
 
 const emit = defineEmits<{ close: []; add: [plugin: PluginInfo, displayName: string] }>();
@@ -72,9 +80,12 @@ function portColor(st: string) { return st === 'audio/pcm' ? 'var(--port-audio-p
                     ← Back
                 </button>
                 <div class="space-y-3">
-                    <div>
-                        <div class="text-sm font-medium" :style="{ color: 'var(--text-primary)' }">{{ selectedPlugin.displayName }}</div>
-                        <div class="text-xs mt-0.5" :style="{ color: 'var(--text-muted)' }">{{ selectedPlugin.description }}</div>
+                    <div class="flex items-center gap-2">
+                        <component v-if="getLucideIcon(selectedPlugin.icon)" :is="getLucideIcon(selectedPlugin.icon)" :size="18" :style="{ color: selectedPlugin.color || 'var(--text-muted)' }" />
+                        <div>
+                            <div class="text-sm font-medium" :style="{ color: 'var(--text-primary)' }">{{ selectedPlugin.displayName }}</div>
+                            <div class="text-xs mt-0.5" :style="{ color: 'var(--text-muted)' }">{{ selectedPlugin.description }}</div>
+                        </div>
                     </div>
                     <div v-if="selectedPlugin.ports.length > 0">
                         <div class="text-[10px] font-semibold uppercase tracking-wider mb-1.5" :style="{ color: 'var(--text-muted)' }">Ports</div>
@@ -100,9 +111,12 @@ function portColor(st: string) { return st === 'audio/pcm' ? 'var(--port-audio-p
                         {{ categoryLabels[category] || category }}
                     </div>
                     <button v-for="plugin in items" :key="plugin.pluginId" @click="selectPlugin(plugin)"
-                            class="w-full text-left px-3 py-2 rounded-md text-sm transition-colors" :style="{ color: 'var(--text-secondary)' }">
-                        <div class="font-medium text-xs" :style="{ color: 'var(--text-primary)' }">{{ plugin.displayName }}</div>
-                        <div class="text-[11px] mt-0.5" :style="{ color: 'var(--text-muted)' }">{{ plugin.description }}</div>
+                            class="w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-start gap-2.5" :style="{ color: 'var(--text-secondary)' }">
+                        <component v-if="getLucideIcon(plugin.icon)" :is="getLucideIcon(plugin.icon)" :size="16" class="mt-0.5 shrink-0" :style="{ color: plugin.color || 'var(--text-muted)' }" />
+                        <div>
+                            <div class="font-medium text-xs" :style="{ color: 'var(--text-primary)' }">{{ plugin.displayName }}</div>
+                            <div class="text-[11px] mt-0.5" :style="{ color: 'var(--text-muted)' }">{{ plugin.description }}</div>
+                        </div>
                     </button>
                 </div>
                 <div v-if="Object.keys(groupedPlugins).length === 0" class="text-center py-8 text-sm" :style="{ color: 'var(--text-muted)' }">No plugins found.</div>

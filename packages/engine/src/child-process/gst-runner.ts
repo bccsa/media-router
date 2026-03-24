@@ -18,6 +18,11 @@ import type { ControlIpcMessage } from '@media-router/shared-types';
 let pyProcess: ChildProcess | null = null;
 let currentState: 'stopped' | 'playing' | 'error' = 'stopped';
 let useStdioForData = false;
+let restartOnError = false;
+let lastPipelineString = '';
+let restartTimer: ReturnType<typeof setTimeout> | null = null;
+let restartAttempts = 0;
+const MAX_RESTART_ATTEMPTS = 10;
 
 // Pending get_property/get_stats requests waiting for response from Python
 const pendingRequests = new Map<string, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
@@ -56,6 +61,7 @@ function handlePythonEvent(eventJson: Record<string, unknown>): void {
             const state = eventJson.state as string;
             if (state === 'playing' && currentState !== 'playing') {
                 currentState = 'playing';
+                restartAttempts = 0; // Reset on successful play
                 sendEvent('stateChange', { state: 'playing' });
             } else if (state === 'paused') {
                 sendEvent('stateChange', { state: 'paused' });
@@ -74,11 +80,13 @@ function handlePythonEvent(eventJson: Record<string, unknown>): void {
             currentState = 'error';
             sendEvent('error', { message: eventJson.message });
             sendEvent('stateChange', { state: 'error' });
+            if (restartOnError) scheduleRestart();
             break;
 
         case 'eos':
             currentState = 'stopped';
             sendEvent('stateChange', { state: 'stopped' });
+            if (restartOnError) scheduleRestart();
             break;
 
         case 'property':
@@ -173,11 +181,31 @@ function sendToPython(cmd: Record<string, unknown>): void {
 
 // --- Pipeline management ---
 
+function scheduleRestart(): void {
+    if (restartTimer) return;
+    if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+        console.error(`[gst-runner] Max restart attempts (${MAX_RESTART_ATTEMPTS}) reached — giving up`);
+        sendEvent('error', { message: `Pipeline failed after ${MAX_RESTART_ATTEMPTS} restart attempts` });
+        return;
+    }
+    restartAttempts++;
+    const delay = Math.min(1000 * restartAttempts, 5000); // 1s, 2s, 3s... max 5s
+    console.error(`[gst-runner] Restarting pipeline in ${delay}ms (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})`);
+    restartTimer = setTimeout(() => {
+        restartTimer = null;
+        if (lastPipelineString) {
+            startPipeline(lastPipelineString, `restart-${restartAttempts}`, useStdioForData);
+        }
+    }, delay);
+}
+
 function startPipeline(pipeline: string, requestId: string, stdioForData = false): void {
+    if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
     if (pyProcess) {
         stopPipeline();
     }
 
+    lastPipelineString = pipeline;
     useStdioForData = stdioForData;
     const mode = stdioForData ? 'data-pipe' : 'bus-messages';
     console.error(`[gst-runner] Starting pipeline (${mode}): ${pipeline.substring(0, 100)}...`);
@@ -280,12 +308,16 @@ function stopPipeline(): void {
 process.on('message', (msg: ControlIpcMessage) => {
     switch (msg.action) {
         case 'startPipeline': {
-            const d = msg.data as { pipeline: string; useStdioForData?: boolean };
+            const d = msg.data as { pipeline: string; useStdioForData?: boolean; restartOnError?: boolean };
+            restartOnError = d.restartOnError ?? false;
+            restartAttempts = 0;
             startPipeline(d.pipeline, msg.id, d.useStdioForData);
             break;
         }
 
         case 'stopPipeline':
+            restartOnError = false; // Cancel any pending restarts
+            if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
             stopPipeline();
             sendResponse(msg.id, { ok: true });
             setTimeout(() => process.exit(0), 3000);

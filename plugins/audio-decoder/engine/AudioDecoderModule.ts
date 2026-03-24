@@ -77,7 +77,11 @@ export class AudioDecoderModule extends GstPluginBase {
             return null;
         }
 
-        const udpSrc = `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=2097152`;
+        // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port binding
+        const isMulticast = udpSource.host.startsWith('239.');
+        const udpSrc = isMulticast
+            ? `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=2097152`
+            : `udpsrc port=${udpSource.port} buffer-size=2097152`;
 
         // Plugin decides decoder based on probe result
         let decoder: string;
@@ -89,18 +93,23 @@ export class AudioDecoderModule extends GstPluginBase {
             default: decoder = 'decodebin'; break; // fallback for unknown
         }
 
+        // pulsesink slave-method: 0=resample (absorbs clock drift), 1=skew (adjusts timestamps)
+        // Resample prevents latency buildup over hours — proven stable in v1 over 12+ hour sessions.
+        const slaveMethod = (config.slaveMethod as number) ?? 0;
+
         const parts = [
             `${udpSrc} ! tsdemux latency=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            `pulsesink device=${this.pwNodeName} sync=false`,
+            `pulsesink device=${this.pwNodeName} sync=false slave-method=${slaveMethod} processing-deadline=40000000 buffer-time=50000 max-lateness=40000000`,
         ];
         const pipeline = parts.join(' ! ');
 
         return {
             pipeline,
             liveElements: { vol: ['volume'] },
+            restartOnError: true,
         };
     }
 }

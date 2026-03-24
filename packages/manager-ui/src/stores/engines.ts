@@ -38,6 +38,9 @@ export interface ModuleState {
     configSchema?: Record<string, unknown>;
     statusSections?: StatusSectionDef[];
     statusData?: Record<string, Record<string, string | number | boolean>>;
+    dynamicStatusSections?: StatusSectionDef[];
+    badges?: Array<{ id: string; icon?: string; text: string; color?: string }>;
+    faceWidgets?: Array<Record<string, unknown>>;
     focused?: boolean;
 }
 

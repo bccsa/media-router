@@ -30,8 +30,37 @@ watch(showStats, (open) => {
     else document.removeEventListener('keydown', onStatsKeydown);
 });
 onUnmounted(() => document.removeEventListener('keydown', onStatsKeydown));
+// Merge static sections (from plugin manifest) with dynamic sections (from runtime)
+const allStatusSections = computed(() => {
+    const staticSections = props.data.statusSections ?? [];
+    const dynamicSections = props.data.dynamicStatusSections ?? [];
+    return [...staticSections, ...dynamicSections];
+});
+
+const moduleBadges = computed(() => props.data.badges ?? []);
+const faceWidgets = computed(() => props.data.faceWidgets ?? []);
+
+/** Interpolate a status-line template: "{key}" replaced with statusData values. */
+function interpolateFaceWidget(widget: Record<string, unknown>): string {
+    const template = (widget.template as string) ?? '';
+    const sectionId = (widget.section as string) ?? 'stats';
+    const sectionData = props.data.statusData?.[sectionId] ?? {};
+    return template.replace(/\{(\w+)\}/g, (_, key) => {
+        const val = sectionData[key as string];
+        return val !== undefined && val !== null ? String(val) : '—';
+    });
+}
+
+/** Get a numeric value from statusData for a meter widget. */
+function getFaceWidgetValue(widget: Record<string, unknown>): number {
+    const sectionId = (widget.section as string) ?? 'stats';
+    const key = (widget.key as string) ?? '';
+    const val = props.data.statusData?.[sectionId]?.[key];
+    return typeof val === 'number' ? val : Number(val) || 0;
+}
+
 const hasStats = computed(() =>
-    (props.data.statusSections?.length ?? 0) > 0
+    allStatusSections.value.length > 0
 );
 
 const inputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'input') ?? []);
@@ -108,6 +137,7 @@ const portColorMap: Record<string, string> = {
 
 function formatStatusValue(value: unknown, unit?: string): string {
     if (value === undefined || value === null) return '—';
+    if (typeof value === 'object') return JSON.stringify(value);
     const str = typeof value === 'number' ? value.toLocaleString() : String(value);
     return unit ? `${str} ${unit}` : str;
 }
@@ -181,9 +211,9 @@ function formatStatusValue(value: unknown, unit?: string): string {
                             </svg>
                         </button>
                     </div>
-                    <!-- Sections -->
+                    <!-- Sections (static from manifest + dynamic from runtime) -->
                     <div class="p-5 space-y-4">
-                        <div v-for="section in data.statusSections" :key="section.id">
+                        <div v-for="section in allStatusSections" :key="section.id">
                             <h3 class="text-xs font-semibold uppercase tracking-wide mb-2"
                                 :style="{ color: 'var(--text-muted)' }">
                                 {{ section.label }}
@@ -201,6 +231,36 @@ function formatStatusValue(value: unknown, unit?: string): string {
                 </div>
             </div>
         </Teleport>
+
+        <!-- Badges -->
+        <div v-if="moduleBadges.length > 0" class="px-3 py-0.5 flex flex-wrap gap-1">
+            <span v-for="badge in moduleBadges" :key="badge.id"
+                  class="inline-flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded"
+                  :style="{ color: badge.color ?? 'var(--text-muted)', backgroundColor: 'var(--bg-secondary)' }">
+                <component v-if="badge.icon && resolveLucideIcon(badge.icon)" :is="resolveLucideIcon(badge.icon)" :size="9" />
+                <span>{{ badge.text }}</span>
+            </span>
+        </div>
+
+        <!-- Face widgets (declarative from manifest) -->
+        <div v-if="faceWidgets.length > 0" class="px-3 space-y-0.5">
+            <template v-for="widget in faceWidgets" :key="widget.id">
+                <!-- Status line: interpolated text from statusData -->
+                <div v-if="widget.type === 'status-line'" class="text-[9px] truncate"
+                     :style="{ color: (widget.color as string) ?? 'var(--text-muted)' }">
+                    {{ interpolateFaceWidget(widget) }}
+                </div>
+                <!-- Meter: horizontal progress bar from statusData -->
+                <div v-else-if="widget.type === 'meter'" class="h-1.5 rounded-full overflow-hidden"
+                     :style="{ backgroundColor: 'var(--bg-secondary)' }">
+                    <div class="h-full rounded-full transition-all duration-300"
+                         :style="{
+                             width: Math.min(100, Math.max(0, getFaceWidgetValue(widget))) + '%',
+                             backgroundColor: (widget.color as string) ?? 'var(--accent)',
+                         }" />
+                </div>
+            </template>
+        </div>
 
         <!-- Port labels -->
         <div class="px-3 py-1 flex justify-between">

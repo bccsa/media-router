@@ -97,6 +97,8 @@ export class Engine {
             stopModules: () => this.lifecycle.stopAll(),
             resetEngine: () => this.resetEngine(),
             restartModule: (id) => this.lifecycle.restart(id),
+            startSingleModule: (id) => this.lifecycle.startSingle(id),
+            deleteSingleModule: (id) => this.lifecycle.deleteSingle(id),
             disableModule: (id) => this.lifecycle.disable(id),
             enableModule: (id) => this.lifecycle.enable(id),
         });

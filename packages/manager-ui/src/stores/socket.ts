@@ -80,6 +80,8 @@ export const useSocketStore = defineStore('socket', () => {
                     if ('running' in s) mod.running = s.running as boolean;
                     if ('error' in s) mod.error = s.error as string | undefined;
                     if ('statusData' in s) mod.statusData = s.statusData as any;
+                    if ('dynamicStatusSections' in s) mod.dynamicStatusSections = s.dynamicStatusSections as any;
+                    if ('badges' in s) mod.badges = s.badges as any;
                 }
             }
             // Trigger reactivity

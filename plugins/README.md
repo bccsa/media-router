@@ -300,6 +300,104 @@ Add `"x-contextMenu": true` to any numeric/slider setting to display it directly
 
 The slider appears at the top of the context menu with a live value display. Changes are sent immediately via throttled `module:config` events (50ms throttle) — same as the settings panel's live update mechanism.
 
+#### Array Fields (Dynamic Lists)
+
+Use `type: "array"` with an `items` schema for settings that need add/remove lists (e.g. RIST bonding links, mixer inputs):
+
+```json
+"links": {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "address": { "type": "string", "default": "0.0.0.0", "description": "Host / IP" },
+            "port": { "type": "number", "default": 5004, "description": "Port" },
+            "weight": { "type": "number", "default": 50, "description": "Weight (0-100)" },
+            "cname": { "type": "string", "default": "", "description": "CNAME" }
+        }
+    },
+    "default": [{ "address": "0.0.0.0", "port": 5004, "weight": 50, "cname": "link1" }],
+    "description": "Connection links"
+}
+```
+
+The settings panel renders an add/remove list with nested form fields per item. Each item shows all properties defined in `items.properties`.
+
+---
+
+## Status Badges (Module Face)
+
+Plugins can show small icon+text indicators on the module card face using `setBadge()`:
+
+```typescript
+// Show a badge (updates live, appears on the module card)
+this.setBadge('callers', { icon: 'users', text: '2', color: '#10b981' });
+this.setBadge('encrypted', { icon: 'lock', text: 'AES', color: '#8b5cf6' });
+
+// Remove a badge
+this.clearBadge('callers');
+```
+
+Parameters:
+- `id` — unique badge identifier (replaces if same ID)
+- `icon` — Lucide icon name in kebab-case (e.g. `'users'`, `'lock'`, `'radio'`, `'wifi'`)
+- `text` — short text (1-4 chars works best)
+- `color` — CSS color string (defaults to `var(--text-muted)`)
+
+Badges auto-clear when the module stops. Use them for:
+- Connection status (SRT caller count, RIST link status)
+- Encryption indicators
+- Stream health warnings
+- Any quick-glance module state
+
+---
+
+## Custom Vue Components (Future)
+
+Plugins can optionally provide custom Vue components for the module face and settings panel. Declare them in the manifest:
+
+```json
+"mediaRouter": {
+    "ui": {
+        "faceWidget": "./ui/FaceWidget.vue",
+        "settingsComponent": "./ui/Settings.vue"
+    }
+}
+```
+
+### Face Widget
+
+A Vue component rendered inside the module card, between the header and port labels. Receives:
+
+```typescript
+interface FaceWidgetProps {
+    engineId: string;
+    moduleId: string;
+    module: ModuleState;    // Full module state from Pinia store
+}
+```
+
+Use for: custom meters, animated indicators, mini-graphs, connection visualizations.
+
+### Settings Component
+
+A Vue component that replaces the default settings form. Receives:
+
+```typescript
+interface SettingsComponentProps {
+    engineId: string;
+    moduleId: string;
+    module: ModuleState;
+    settings: Record<string, unknown>;
+}
+// Emits: 'update:setting' with { key: string, value: unknown }
+// Emits: 'apply-all' with Record<string, unknown>
+```
+
+Use for: complex configuration UIs that can't be expressed with JSON Schema (e.g. audio ducker with gain reduction curves, N-1 mixer matrix).
+
+**Note:** Custom Vue components require the plugin's `ui/` directory to be accessible to the Vite build. This feature requires additional Vite configuration and will be implemented when a plugin needs it. For now, use the declarative JSON Schema approach for settings and `setBadge()` for module face indicators.
+
 ---
 
 ## Status Sections (Stats Popup)

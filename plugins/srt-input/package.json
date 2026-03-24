@@ -1,0 +1,138 @@
+{
+    "name": "@media-router/plugin-srt-input",
+    "version": "2.0.0",
+    "private": true,
+    "description": "SRT input \u2014 receives MPEG-TS stream over SRT protocol",
+    "mediaRouter": {
+        "pluginId": "srt-input",
+        "displayName": "SRT Input",
+        "description": "Receives MPEG-TS stream over SRT (Secure Reliable Transport). Supports listener, caller, and rendezvous modes with optional encryption.",
+        "color": "#ef4444",
+        "icon": "arrow-down-to-line",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "mpegts-out",
+                "direction": "output",
+                "streamType": "muxed/mpegts",
+                "label": "MPEG-TS Out",
+                "maxConnections": -1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "default": "0.0.0.0",
+                    "description": "Listen/connect address"
+                },
+                "port": {
+                    "type": "number",
+                    "default": 9000,
+                    "description": "SRT port"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": [
+                        "listener",
+                        "caller",
+                        "rendezvous"
+                    ],
+                    "default": "listener",
+                    "description": "Connection mode"
+                },
+                "latency": {
+                    "type": "number",
+                    "default": 125,
+                    "description": "SRT latency (ms)"
+                },
+                "streamId": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Stream ID for access control"
+                },
+                "passphrase": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Encryption passphrase"
+                },
+                "pbKeyLen": {
+                    "type": "number",
+                    "enum": [
+                        0,
+                        16,
+                        24,
+                        32
+                    ],
+                    "default": 0,
+                    "description": "Encryption key length (0 = none)"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "connection",
+                "label": "Connection",
+                "fields": [
+                    {
+                        "key": "mode",
+                        "label": "Mode"
+                    },
+                    {
+                        "key": "host",
+                        "label": "Host"
+                    },
+                    {
+                        "key": "port",
+                        "label": "Port"
+                    },
+                    {
+                        "key": "encrypted",
+                        "label": "Encrypted"
+                    }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "Mbps"
+                    },
+                    {
+                        "key": "rtt",
+                        "label": "RTT",
+                        "unit": "ms"
+                    },
+                    {
+                        "key": "packetLoss",
+                        "label": "Packet Loss"
+                    },
+                    {
+                        "key": "bytesReceived",
+                        "label": "Bytes Received"
+                    },
+                    {
+                        "key": "callers",
+                        "label": "Callers"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/SrtInputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

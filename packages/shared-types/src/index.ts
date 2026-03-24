@@ -155,10 +155,25 @@ export interface ModuleRuntimeState {
     ristStats?: RistStatistics;
     /** Generic status data — keyed by section ID, values are key-value pairs. */
     statusData?: Record<string, Record<string, string | number | boolean>>;
+    /** Dynamic status sections added at runtime (e.g. per-caller SRT stats). */
+    dynamicStatusSections?: Array<{ id: string; label: string; fields: Array<{ key: string; label: string; unit?: string }> }>;
+    /** Small icon+text indicators shown on the module face. */
+    badges?: ModuleBadge[];
     /** Error message if health is "error". */
     error?: string;
     /** Non-fatal warnings (e.g. stream layout mismatches). */
     warnings?: string[];
+}
+
+/** A small icon+text badge displayed on the module card face. */
+export interface ModuleBadge {
+    id: string;
+    /** Lucide icon name (kebab-case). Optional. */
+    icon?: string;
+    /** Short text displayed next to the icon. */
+    text: string;
+    /** CSS color for the badge. Defaults to text-muted. */
+    color?: string;
 }
 
 /** A status section declared in the plugin manifest. */

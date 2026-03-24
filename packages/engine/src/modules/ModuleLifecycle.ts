@@ -12,6 +12,19 @@ function moduleLabel(modConfig: Record<string, unknown>): string {
     return name ? `[${name}]` : '';
 }
 
+type RawPort = { id: string; direction: string; streamType: string; label?: string; maxConnections?: number };
+
+/** Map raw port config to typed ModulePort for MediaRouter registration. */
+function mapPorts(raw: RawPort[]) {
+    return raw.map((p) => ({
+        id: p.id,
+        direction: p.direction as 'input' | 'output',
+        streamType: p.streamType as any,
+        label: p.label ?? p.id,
+        maxConnections: p.maxConnections ?? -1,
+    }));
+}
+
 interface StoredConnection {
     id: string;
     sourceModuleId: string;
@@ -68,14 +81,7 @@ export class ModuleLifecycle {
                 this.moduleManager.createModule(instanceId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
 
                 // Register ports with MediaRouter so connections can find them
-                const ports = (modConfig.ports ?? []) as Array<{ id: string; direction: string; streamType: string; label?: string; maxConnections?: number }>;
-                this.mediaRouter.registerPorts(instanceId, ports.map((p) => ({
-                    id: p.id,
-                    direction: p.direction as 'input' | 'output',
-                    streamType: p.streamType as any,
-                    label: p.label ?? p.id,
-                    maxConnections: p.maxConnections ?? -1,
-                })));
+                this.mediaRouter.registerPorts(instanceId, mapPorts((modConfig.ports ?? []) as RawPort[]));
 
                 await this.moduleManager.startModule(instanceId);
                 log.info({ instanceId, module: label }, 'Started module');
@@ -98,6 +104,65 @@ export class ModuleLifecycle {
         await this.moduleManager.stopAll();
         await this.pipeWire.cleanupOrphans();
         log.info('All modules stopped');
+    }
+
+    /** Delete a single module — tear down connections, stop, unregister, remove. */
+    async deleteSingle(moduleId: string): Promise<void> {
+        const instance = this.moduleManager.get(moduleId);
+        const label = instance ? `[${(instance as any).config?.displayName ?? moduleId}]` : `[${moduleId}]`;
+        log.info({ moduleId, module: label }, 'Deleting module');
+
+        // Tear down all connections involving this module
+        const connections = this.mediaRouter.getModuleConnections(moduleId);
+        for (const conn of connections) {
+            try {
+                await this.mediaRouter.removeConnection(conn.id, true);
+            } catch { /* best effort */ }
+        }
+
+        // Stop the module
+        if (instance) {
+            try { await instance.stop(); } catch { /* best effort */ }
+        }
+
+        // Unregister ports and delete
+        await this.mediaRouter.unregisterPorts(moduleId);
+        this.moduleManager.deleteModule(moduleId);
+        log.info({ moduleId, module: label }, 'Module deleted');
+    }
+
+    /** Start a single module from the current config (used when adding a module while engine is running). */
+    async startSingle(moduleId: string): Promise<void> {
+        const config = this.getConfig();
+        if (!config) { log.warn({ moduleId }, 'No config — cannot start module'); return; }
+        const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
+        const modConfig = modules[moduleId];
+        if (!modConfig) { log.warn({ moduleId }, 'Module not in config'); return; }
+
+        const pluginId = modConfig.pluginId as string;
+        const label = `[${modConfig.displayName ?? moduleId}]`;
+
+        if (modConfig.enabled === false) {
+            log.info({ moduleId, module: label }, 'Module disabled, skipping');
+            return;
+        }
+
+        try {
+            const instance = this.moduleManager.createModule(moduleId, pluginId, modConfig.settings as Record<string, unknown>);
+
+            // Register ports
+            this.mediaRouter.registerPorts(moduleId, mapPorts((modConfig.ports ?? []) as RawPort[]));
+
+            await this.moduleManager.startModule(moduleId);
+            log.info({ moduleId, module: label }, 'Started module');
+        } catch (err) {
+            log.error({ err: formatError(err), moduleId, module: label }, 'Failed to start module');
+            return;
+        }
+
+        // Wait for PipeWire to settle, then reapply any stored connections
+        await new Promise((r) => setTimeout(r, 300));
+        await this.reapplyModuleConnections(moduleId);
     }
 
     async restart(moduleId: string): Promise<void> {
@@ -151,16 +216,33 @@ export class ModuleLifecycle {
         const label = moduleLabel(modConfig);
         log.info({ moduleId, module: label }, 'Module enabled');
 
-        const pluginId = modConfig.pluginId as string;
         try {
-            this.moduleManager.createModule(moduleId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
-            await this.moduleManager.startModule(moduleId);
+            // If instance exists (was disabled, not deleted), just restart it
+            const existing = this.moduleManager.get(moduleId);
+            if (existing) {
+                if (!existing.running) {
+                    await this.moduleManager.startModule(moduleId);
+                }
+            } else {
+                const pluginId = modConfig.pluginId as string;
+                this.moduleManager.createModule(moduleId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
+
+                // Register ports
+                const ports = (modConfig.ports ?? []) as RawPort[];
+                if (ports.length > 0) {
+                    this.mediaRouter.registerPorts(moduleId, mapPorts(ports));
+                }
+
+                await this.moduleManager.startModule(moduleId);
+            }
             log.info({ moduleId, module: label }, 'Module started');
         } catch (err) {
-            log.error({ err, moduleId, module: label }, 'Failed to start module');
+            log.error({ err: formatError(err), moduleId, module: label }, 'Failed to start module');
             return;
         }
 
+        // Wait for PipeWire to settle, then reapply connections
+        await new Promise((r) => setTimeout(r, 300));
         await this.reapplyModuleConnections(moduleId);
     }
 

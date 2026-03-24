@@ -68,6 +68,10 @@ export class ModuleHandlers {
 
         if (updatedConfig && this.engineManager.isEngineOnline(payload.engineId)) {
             this.engineManager.sendToEngine(payload.engineId, 'config', updatedConfig, { guaranteeDelivery: true });
+            // Start the new module immediately without requiring full engine restart
+            this.engineManager.sendToEngine(payload.engineId, 'command', {
+                command: 'moduleStart', moduleId: instanceId,
+            }, { guaranteeDelivery: true });
         }
 
         this.io.emit('engine:update', {
@@ -109,8 +113,15 @@ export class ModuleHandlers {
             return config;
         });
 
-        if (updatedConfig && this.engineManager.isEngineOnline(payload.engineId)) {
-            this.engineManager.sendToEngine(payload.engineId, 'config', updatedConfig, { guaranteeDelivery: true });
+        if (this.engineManager.isEngineOnline(payload.engineId)) {
+            // Stop and remove the module on the engine first
+            this.engineManager.sendToEngine(payload.engineId, 'command', {
+                command: 'moduleDelete', moduleId: payload.moduleId,
+            }, { guaranteeDelivery: true });
+            // Then send updated config
+            if (updatedConfig) {
+                this.engineManager.sendToEngine(payload.engineId, 'config', updatedConfig, { guaranteeDelivery: true });
+            }
         }
 
         this.io.emit('engine:update', {

@@ -1,6 +1,6 @@
 # TODO Notes 
 
-[TESTING] - Latency grows over time from 50 ms to 200 ms over time.
+[x] - Latency grows over time from 50 ms to 200 ms over time (fixed: pulsesink slave-method=0 + processing-deadline/buffer-time/max-lateness from v1)
 [x] - Tool tip for rightclick menu / small description for each function (native title tooltips on all node + edge context menu items)
 [x] - Module settings displayable in the right click menu via x-contextMenu in package.json (volume slider with throttled live updates)
 [x] - revamp manager file (1071 → 105 lines, extracted into 6 handler files)
@@ -10,8 +10,33 @@
 [x] - Revamp engine.ts (668 → 230 lines, extracted CommandDispatcher + ModuleLifecycle + SystemStatsCollector)
 [x] - Logging does not log per plugin, but only as core functions (fixed: per-instance logger as Plugin:<instanceId>)
 [x] - Engine stop start is not reliable, some times i stop the engine, and when i want to start again, the engine doesn ot receive te command, so i need to try muiltiple time to get it going
-[x] - Unit tests: 134 tests across 14 files, all passing. Coverage: dgram-comms 92%, engine/modules 55%, engine/plugins 29%, engine/routing 35%, engine/comms 22%, engine/api (new), manager/config 63%, manager/handlers (new). Remaining: audio (PipeWire-dependent), UI packages (needs Vue Test Utils)
+[x] - Unit tests: 212 tests across 21 files, all passing
 [x] - Write Readme on the project, how to setup, dependancies, how to install etc (README.md + DEPENDENCIES.md)
 [x] - When i move a module so i start to drag and hold the modue a while, it jumps back to the starting position (fixed: 3s drag lock prevents server position overwrite)
 [x] - Add mute / unmute setting on Plugins with audio / should be able to mute their null sink / thier source / dest
 [x] - With modules that play audio into a null sink (like audio decoder / Audio output) the vumeter is mesuerd before the null sink, so if the user drops the volume on that module, the vu meter does not reflect the volume change, event though the voloume change is applied directly. (consider spawning seperate process for vu menter?)
+[ ] - Mpegts compiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
+[x] - issue, when adding a moduel can get it started, until i stop and start the engine, then only i can get it started 
+[ ] - !!!!!! Issue that orpahne process stil lrun, so my audio outpu hsa audio on it, even though there in not connection to it, i need to stop and start the engine to fix this, this only hapeps ocationaly (Might have been with the deleted modules that does not get stopped, but need to test)
+[ ] - module being addid far of from the other modules 
+[ ] - tace and warn debugging 
+[ ] - When moving modules, the modules jump back to the original position if i do not keep moving the mouse
+[ ] - Some times i need to refresh the page, if i was away from it for a while to see live data again, as if the socket conenction does not auto reconnect or smt
+[ ] - when clicking outside the stats page, the page does not close 
+[ ] - When i enable a module, i need to restart it before it stats up, it does not auto start
+[ ] - Mute control has a debounce, so when i mute i have to wait a while before i can unmute, this is a issue and should not be like that
+[ ] - When module does not receive audio anymore, the vu meter displays the last vu meter data instead of going back to 0 (-60db) 
+
+# Srt & Rist 
+[x] test rist 
+[x] fix srt stats
+[ ] latency test srt & rits 
+[x] Muilticonenction rist 
+[x] issue, when adding a moduel can get it started, until i stop and start the engine, then only i can get it started 
+[x] [object Object] on rist link, not user friendy at all 
+[x] srt uses same icons as encoders 
+[x] conenction indicator - for srt and rist 
+[x] convert Bytes Received to easy readable stats
+[x] Audio decoder after rist input does some times stops after a while (fixed: decoder now has restartOnError: true — auto-restarts pipeline on tsdemux error/EOS + fixed undefined vars in RIST input parseStats)
+
+

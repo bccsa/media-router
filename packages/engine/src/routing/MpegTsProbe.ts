@@ -26,10 +26,14 @@ export function probeMpegTsStream(
     timeoutMs = 3000,
 ): Promise<ProbeResult> {
     return new Promise((resolve) => {
+        // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port
+        const isMulticast = host.startsWith('239.');
+        const udpSrcArgs = isMulticast
+            ? ['udpsrc', `multicast-group=${host}`, `port=${port}`, 'multicast-iface=lo', 'auto-multicast=true', 'num-buffers=50']
+            : ['udpsrc', `port=${port}`, 'num-buffers=50'];
         const args = [
             '-v',
-            'udpsrc', `multicast-group=${host}`, `port=${port}`,
-            'multicast-iface=lo', 'auto-multicast=true', 'num-buffers=50',
+            ...udpSrcArgs,
             '!', 'tsdemux', 'latency=0',
             '!', 'fakesink',
         ];

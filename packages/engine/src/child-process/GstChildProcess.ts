@@ -117,6 +117,7 @@ export class GstChildProcess extends EventEmitter {
             await this.ipc.sendRequest('startPipeline', {
                 pipeline: this.pipelineDesc.pipeline,
                 useStdioForData: this.pipelineDesc.useStdioForData ?? false,
+                restartOnError: this.pipelineDesc.restartOnError ?? false,
             });
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });

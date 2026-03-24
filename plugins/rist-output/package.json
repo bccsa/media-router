@@ -1,0 +1,190 @@
+{
+    "name": "@media-router/plugin-rist-output",
+    "version": "2.0.0",
+    "private": true,
+    "description": "RIST output \u2014 sends MPEG-TS stream over RIST protocol with bonding support",
+    "mediaRouter": {
+        "pluginId": "rist-output",
+        "displayName": "RIST Output",
+        "description": "Sends MPEG-TS stream over RIST (Reliable Internet Stream Transport). Supports multi-link bonding with per-link weight, cname, and encryption.",
+        "color": "#0ea5e9",
+        "icon": "radio-tower",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "mpegts-in",
+                "direction": "input",
+                "streamType": "muxed/mpegts",
+                "label": "MPEG-TS In",
+                "maxConnections": 1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "links": {
+                    "type": "array",
+                    "default": [
+                        {
+                            "mode": "caller",
+                            "address": "localhost",
+                            "port": 5004,
+                            "weight": 50,
+                            "cname": "link1"
+                        }
+                    ],
+                    "description": "RIST output links",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {
+                                "type": "string",
+                                "enum": [
+                                    "listener",
+                                    "caller"
+                                ],
+                                "default": "caller",
+                                "description": "Connection mode"
+                            },
+                            "address": {
+                                "type": "string",
+                                "default": "localhost",
+                                "description": "Host / IP address"
+                            },
+                            "port": {
+                                "type": "number",
+                                "default": 5004,
+                                "description": "Port"
+                            },
+                            "weight": {
+                                "type": "number",
+                                "default": 50,
+                                "description": "Weight (0=backup, 1-100=load balance)"
+                            },
+                            "cname": {
+                                "type": "string",
+                                "default": "",
+                                "description": "CNAME identifier"
+                            }
+                        }
+                    }
+                },
+                "profile": {
+                    "type": "number",
+                    "enum": [
+                        0,
+                        1,
+                        2
+                    ],
+                    "default": 1,
+                    "description": "RIST profile (0=simple, 1=main, 2=advanced)"
+                },
+                "buffer": {
+                    "type": "number",
+                    "default": 1000,
+                    "description": "Retransmission buffer (ms)"
+                },
+                "secret": {
+                    "type": "string",
+                    "default": "",
+                    "description": "PSK encryption passphrase"
+                },
+                "encryptionType": {
+                    "type": "number",
+                    "enum": [
+                        0,
+                        128,
+                        256
+                    ],
+                    "default": 0,
+                    "description": "Encryption (0=none, 128=AES-128, 256=AES-256)"
+                },
+                "statsInterval": {
+                    "type": "number",
+                    "default": 1000,
+                    "description": "Stats interval (ms)"
+                },
+                "nullPacketDeletion": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable NPD (receiver must support)"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "connection",
+                "label": "Connection",
+                "fields": [
+                    {
+                        "key": "profile",
+                        "label": "Profile"
+                    },
+                    {
+                        "key": "linkCount",
+                        "label": "Links"
+                    },
+                    {
+                        "key": "encrypted",
+                        "label": "Encrypted"
+                    }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    {
+                        "key": "quality",
+                        "label": "Quality",
+                        "unit": "%"
+                    },
+                    {
+                        "key": "sent",
+                        "label": "Packets Sent"
+                    },
+                    {
+                        "key": "retransmitted",
+                        "label": "Retransmitted"
+                    },
+                    {
+                        "key": "bandwidth",
+                        "label": "Bandwidth"
+                    },
+                    {
+                        "key": "rtt",
+                        "label": "RTT",
+                        "unit": "ms"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/RistOutputModule.ts",
+        "faceWidgets": [
+            {
+                "id": "quality-meter",
+                "type": "meter",
+                "section": "stats",
+                "key": "quality",
+                "color": "#10b981"
+            },
+            {
+                "id": "status-line",
+                "type": "status-line",
+                "section": "stats",
+                "template": "Q: {quality} | BW: {bandwidth}"
+            }
+        ]
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

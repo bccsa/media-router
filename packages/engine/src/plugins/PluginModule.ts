@@ -60,6 +60,8 @@ export interface PipelineDescription {
     liveElements?: Record<string, string[]>;
     /** When true, gst-runner pipes stdin/stdout for data (MPEG-TS) instead of bus messages. */
     useStdioForData?: boolean;
+    /** When true, pipeline auto-restarts on GStreamer bus error or EOS (like v1 reload behaviour). */
+    restartOnError?: boolean;
 }
 
 /**
@@ -193,6 +195,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.running = false;
         this.ready = false;
         this.health = 'stopped';
+        this.badges.clear();
+        this.statusData = {};
+        this.dynamicStatusSections = [];
         this.emit('stateChange', this.getState());
     }
 
@@ -217,6 +222,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** Status data for stats popup — plugins override to provide live data. */
     protected statusData: Record<string, Record<string, string | number | boolean>> = {};
+    /** Dynamic status sections — plugins can add/remove sections at runtime (e.g. per-caller stats). */
+    protected dynamicStatusSections: Array<{ id: string; label: string; fields: Array<{ key: string; label: string; unit?: string }> }> = [];
+    /** Badges shown on the module face — small icon+text indicators. */
+    private badges = new Map<string, { id: string; icon?: string; text: string; color?: string }>();
 
     getState(): ModuleRuntimeState {
         return {
@@ -227,14 +236,35 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             liveUpdatableParams: this.liveUpdatableParams,
             vuData: this.vuData,
             error: this.error,
-            statusData: Object.keys(this.statusData).length > 0 ? this.statusData : undefined,
+            statusData: this.statusData,
+            dynamicStatusSections: this.dynamicStatusSections,
+            badges: Array.from(this.badges.values()),
         };
     }
 
-    /** Update status data for a section and emit state change. */
-    protected setStatusData(sectionId: string, data: Record<string, string | number | boolean>): void {
-        this.statusData[sectionId] = data;
+    /** Update status data for a section and emit state change. Values are coerced to primitives. */
+    protected setStatusData(sectionId: string, data: Record<string, unknown>): void {
+        const clean: Record<string, string | number | boolean> = {};
+        for (const [k, v] of Object.entries(data)) {
+            if (v === null || v === undefined) clean[k] = '—';
+            else if (typeof v === 'object') clean[k] = JSON.stringify(v);
+            else clean[k] = v as string | number | boolean;
+        }
+        this.statusData[sectionId] = clean;
         this.emit('stateChange', this.getState());
+    }
+
+    /** Set a badge on the module face. Badges are small icon+text indicators. */
+    protected setBadge(id: string, badge: { icon?: string; text: string; color?: string }): void {
+        this.badges.set(id, { id, ...badge });
+        this.emit('stateChange', this.getState());
+    }
+
+    /** Remove a badge from the module face. */
+    protected clearBadge(id: string): void {
+        if (this.badges.delete(id)) {
+            this.emit('stateChange', this.getState());
+        }
     }
 
     getLiveUpdatableParams(): string[] {

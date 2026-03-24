@@ -125,6 +125,13 @@ export class MediaRouter {
         }
 
         const connId = `${sourceModuleId}:${sourcePortId}-${sinkModuleId}:${sinkPortId}`;
+
+        // If this exact connection already exists, skip (idempotent)
+        if (this.connections.has(connId)) {
+            log.info({ connectionId: connId }, 'Connection already exists — skipping');
+            return connId;
+        }
+
         const conn: Connection = {
             id: connId,
             sourceModuleId, sourcePortId,

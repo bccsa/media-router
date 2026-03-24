@@ -62,6 +62,7 @@ export function setupSocketIO(deps: SocketDeps): void {
                         m.color = manifest.color;
                         m.icon = manifest.icon;
                         m.statusSections = manifest.statusSections;
+                        m.faceWidgets = manifest.faceWidgets;
                     }
                     const cached = cachedStates[id] as Record<string, unknown> | undefined;
                     if (cached) {

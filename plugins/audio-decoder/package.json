@@ -64,6 +64,12 @@
                     "description": "Audio enabled",
                     "x-live": true,
                     "x-contextMenu": true
+                },
+                "slaveMethod": {
+                    "type": "number",
+                    "enum": [0, 1],
+                    "default": 0,
+                    "description": "PulseAudio sync mode (0 = resample — prevents latency drift, 1 = skew)"
                 }
             }
         },

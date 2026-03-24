@@ -5,6 +5,7 @@ import MrInput from '@/components/common/MrInput.vue';
 import MrSelect from '@/components/common/MrSelect.vue';
 import MrSlider from '@/components/common/MrSlider.vue';
 import MrToggle from '@/components/common/MrToggle.vue';
+import MrArrayField from '@/components/common/MrArrayField.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 
@@ -45,6 +46,7 @@ interface FormField {
     maxFrom?: string; // key of another setting that controls slider max
     enumByCodec?: Record<string, unknown[]>; // codec → valid enum values
     readOnly?: boolean; // x-readOnly — show value but greyed out
+    items?: { type?: string; properties?: Record<string, unknown> }; // array item schema
 }
 
 // Fetch audio devices for device picker fields
@@ -74,6 +76,7 @@ interface SchemaProperty {
     'x-maxFrom'?: string;
     'x-enumByCodec'?: Record<string, unknown[]>;
     'x-readOnly'?: boolean;
+    items?: { type?: string; properties?: Record<string, unknown> };
 }
 
 const formFields = computed<FormField[]>(() => {
@@ -96,6 +99,7 @@ const formFields = computed<FormField[]>(() => {
         maxFrom: prop['x-maxFrom'],
         enumByCodec: prop['x-enumByCodec'],
         readOnly: !!prop['x-readOnly'],
+        items: prop.items as FormField['items'],
     }));
 });
 
@@ -109,9 +113,10 @@ function getFieldEnum(field: FormField): unknown[] | undefined {
 }
 
 const localSettings = ref<Record<string, unknown>>({});
+let hasLocalEdits = false;
 
 watch(module, (m) => {
-    if (m) {
+    if (m && !hasLocalEdits) {
         const defaults: Record<string, unknown> = {};
         for (const f of formFields.value) {
             if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
@@ -119,6 +124,9 @@ watch(module, (m) => {
         localSettings.value = { ...defaults, ...m.settings };
     }
 }, { immediate: true });
+
+// Reset edit flag when panel opens for a different module
+watch(() => props.moduleId, () => { hasLocalEdits = false; });
 
 // Throttle live updates (sliders) to max once per 50ms, with a final send on release
 let liveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,6 +146,7 @@ function sendLiveUpdate(key: string, value: unknown) {
 
 function updateSetting(key: string, value: unknown) {
     localSettings.value = { ...localSettings.value, [key]: value };
+    hasLocalEdits = true;
     const field = formFields.value.find((f) => f.key === key);
     if (field?.liveUpdatable) {
         pendingLiveUpdate = { key, value };
@@ -186,6 +195,7 @@ const saved = ref(false);
 
 function applyAll() {
     socket.emit('module:config', { engineId: props.engineId, moduleId: props.moduleId, changes: localSettings.value });
+    hasLocalEdits = false;
     saved.value = true;
     setTimeout(() => { saved.value = false; }, 2000);
 }
@@ -273,6 +283,12 @@ function applyAll() {
                           :model-value="localSettings[field.key] as string | number"
                           :options="getFieldEnum(field)!.map(opt => ({ value: (field.type === 'number' ? Number(opt) : String(opt)) as string | number, label: String(opt) }))"
                           @update:model-value="updateSetting(field.key, $event)" />
+                <!-- Array field -->
+                <MrArrayField v-else-if="field.type === 'array' && field.items"
+                              :model-value="(localSettings[field.key] as unknown[]) ?? field.defaultValue ?? []"
+                              :schema="field.items"
+                              :disabled="field.readOnly"
+                              @update:model-value="updateSetting(field.key, $event)" />
                 <!-- Boolean toggle -->
                 <MrToggle v-else-if="field.type === 'boolean'"
                           :model-value="!!localSettings[field.key]"

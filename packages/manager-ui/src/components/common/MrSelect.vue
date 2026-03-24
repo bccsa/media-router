@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 
 const props = defineProps<{
     modelValue?: string | number;
@@ -11,12 +11,13 @@ const props = defineProps<{
     disabled?: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
     'update:modelValue': [value: string | number];
 }>();
 
 const open = ref(false);
 const search = ref('');
+const rootRef = ref<HTMLElement | null>(null);
 
 const filtered = computed(() => {
     if (!search.value) return props.options;
@@ -29,14 +30,37 @@ const selectedLabel = computed(() => {
     return opt?.label ?? props.placeholder ?? 'Select...';
 });
 
-function select(value: string | number) {
+function selectOption(value: string | number) {
+    emit('update:modelValue', value);
     open.value = false;
     search.value = '';
 }
+
+// Close on click outside — uses document listener instead of Teleport overlay
+// to avoid z-index stacking context issues
+function onDocumentClick(e: MouseEvent) {
+    if (rootRef.value && !rootRef.value.contains(e.target as Node)) {
+        open.value = false;
+        search.value = '';
+    }
+}
+
+watch(open, (isOpen) => {
+    if (isOpen) {
+        // Use setTimeout to avoid the opening click from immediately closing
+        setTimeout(() => document.addEventListener('mousedown', onDocumentClick), 0);
+    } else {
+        document.removeEventListener('mousedown', onDocumentClick);
+    }
+});
+
+onBeforeUnmount(() => {
+    document.removeEventListener('mousedown', onDocumentClick);
+});
 </script>
 
 <template>
-    <div class="space-y-1 relative">
+    <div ref="rootRef" class="space-y-1 relative">
         <label v-if="label" class="block text-xs font-medium" :style="{ color: 'var(--text-primary)' }">
             {{ label }}
         </label>
@@ -62,7 +86,7 @@ function select(value: string | number) {
         </button>
 
         <!-- Dropdown -->
-        <div v-if="open" class="absolute z-50 w-full mt-1 rounded-md shadow-lg max-h-48 overflow-auto"
+        <div v-if="open" class="absolute z-[999] w-full mt-1 rounded-md shadow-lg max-h-48 overflow-auto"
              :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
             <!-- Search -->
             <div v-if="searchable" class="p-1.5">
@@ -74,7 +98,7 @@ function select(value: string | number) {
 
             <!-- Options -->
             <div v-for="opt in filtered" :key="String(opt.value)"
-                 @click="$emit('update:modelValue', opt.value); open = false; search = ''"
+                 @click="selectOption(opt.value)"
                  class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors"
                  :style="{
                      color: opt.value === modelValue ? 'var(--accent)' : 'var(--text-primary)',
@@ -89,10 +113,5 @@ function select(value: string | number) {
                 No results
             </div>
         </div>
-
-        <!-- Click outside to close -->
-        <Teleport to="body">
-            <div v-if="open" class="fixed inset-0 z-40" @click="open = false" />
-        </Teleport>
     </div>
 </template>

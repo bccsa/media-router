@@ -11,6 +11,7 @@ export interface PluginManifest {
     ports: Array<Record<string, unknown>>;
     configSchema: Record<string, unknown>;
     statusSections?: Array<Record<string, unknown>>;
+    faceWidgets?: Array<Record<string, unknown>>;
 }
 
 /**
@@ -66,6 +67,7 @@ export class PluginRegistry {
                         ports: pkg.mediaRouter.ports ?? [],
                         configSchema: pkg.mediaRouter.configSchema ?? {},
                         statusSections: pkg.mediaRouter.statusSections,
+                        faceWidgets: pkg.mediaRouter.faceWidgets,
                     });
                 }
             } catch {
