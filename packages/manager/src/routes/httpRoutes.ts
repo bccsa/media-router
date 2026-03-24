@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
+import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
 
 export interface HttpRouteDeps {
     app: Application;
@@ -14,13 +15,14 @@ export interface HttpRouteDeps {
     engineManager: EngineConnectionManager;
     pluginRegistry: PluginRegistry;
     io: SocketIOServer;
+    eventForwarder: EngineEventForwarder;
 }
 
 /**
  * Register all HTTP REST routes on the Express app.
  */
 export function registerHttpRoutes(deps: HttpRouteDeps): void {
-    const { app, configStore, engineManager, pluginRegistry, io } = deps;
+    const { app, configStore, engineManager, pluginRegistry, io, eventForwarder } = deps;
 
     /** Return engine or send 404. Caller must `return` if result is null. */
     function requireEngine(id: string, res: express.Response) {
@@ -75,6 +77,20 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
             parseDevices(execFileSync('pactl', ['list', 'sources'], { encoding: 'utf-8' }), 'source');
         } catch {}
         res.json(devices);
+    });
+
+    // Per-engine data (cached from engine reports — audio devices, etc.)
+    app.get('/api/v1/engines/:id/data/:topic', (req, res) => {
+        if (!requireEngine(req.params.id, res)) return;
+        const data = eventForwarder.getEngineData(req.params.id, req.params.topic);
+        res.json(data ?? []);
+    });
+
+    // Shortcut: per-engine audio devices
+    app.get('/api/v1/engines/:id/audio/devices', (req, res) => {
+        if (!requireEngine(req.params.id, res)) return;
+        const devices = eventForwarder.getEngineData(req.params.id, 'audioDevices');
+        res.json(devices ?? []);
     });
 
     // Engine CRUD

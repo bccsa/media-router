@@ -185,6 +185,10 @@ export class RistInputModule extends GstPluginBase {
 
             const quality = Number(s.quality ?? 0);
             this.setBadge('quality', { icon: 'signal', text: `${quality}%`, color: quality >= 90 ? '#10b981' : quality >= 50 ? '#f59e0b' : '#ef4444' });
+
+            // Connection badge — show peer count
+            const peerCount = peers?.length ?? 0;
+            this.setBadge('connections', { icon: 'link', text: `${peerCount}`, color: peerCount > 0 ? '#10b981' : '#6b7280' });
         } catch { /* not a stats line */ }
     }
 }

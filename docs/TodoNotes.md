@@ -38,7 +38,7 @@
 [x] conenction indicator - for srt and rist 
 [x] convert Bytes Received to easy readable stats
 [x] Audio decoder after rist input does some times stops after a while (fixed: decoder now has restartOnError: true — auto-restarts pipeline on tsdemux error/EOS + fixed undefined vars in RIST input parseStats)
-[ ] - Rist modules does not have a conenction badge (i like the connection quality badge, but need a connection badge)
+[x] - Rist modules does not have a conenction badge (fixed: RIST input shows peer count badge, RIST output shows Connected/No link badge)
 [ ] - SRT and rist latnecy is still growing. 
 
 ## Featrues 

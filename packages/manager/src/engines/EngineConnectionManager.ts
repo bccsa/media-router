@@ -72,6 +72,10 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineConfigUpdated', clientId, data);
             });
 
+            socket.on('audioDevices', (data: unknown) => {
+                this.emit('engineAudioDevices', clientId, data);
+            });
+
             socket.on('disconnected', () => {
                 log.info({ engineId: clientId }, 'engine disconnected');
                 this.onlineEngines.delete(clientId);

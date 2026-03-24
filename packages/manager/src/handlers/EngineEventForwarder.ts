@@ -15,6 +15,8 @@ export class EngineEventForwarder {
     private logBuffers = new Map<string, unknown[]>();
     /** Cached module runtime states per engine. */
     private cachedModuleStates = new Map<string, Record<string, unknown>>();
+    /** Generic per-engine data cache — keyed by topic (e.g. 'audioDevices', 'networkInterfaces'). */
+    private engineData = new Map<string, Map<string, unknown>>();
     private readonly LOG_BUFFER_MAX = 1000;
 
     constructor(
@@ -37,6 +39,7 @@ export class EngineEventForwarder {
 
         this.engineManager.on('engineOffline', (engineId: string) => {
             this.cachedModuleStates.delete(engineId);
+            this.engineData.delete(engineId);
             this.io.emit('engine:offline', { engineId });
         });
 
@@ -96,6 +99,21 @@ export class EngineEventForwarder {
 
             this.io.to(`watch:${engineId}`).volatile.emit('engine:logs', { engineId, entries: batch });
         });
+
+        this.engineManager.on('engineAudioDevices', (engineId: string, devices: unknown) => {
+            this.setEngineData(engineId, 'audioDevices', devices);
+        });
+    }
+
+    /** Store arbitrary data for an engine (keyed by topic). */
+    setEngineData(engineId: string, topic: string, data: unknown): void {
+        if (!this.engineData.has(engineId)) this.engineData.set(engineId, new Map());
+        this.engineData.get(engineId)!.set(topic, data);
+    }
+
+    /** Retrieve cached engine data by topic. */
+    getEngineData(engineId: string, topic: string): unknown {
+        return this.engineData.get(engineId)?.get(topic);
     }
 
     /** Get cached runtime states for an engine (used when browser connects). */
@@ -107,4 +125,5 @@ export class EngineEventForwarder {
     getLogBuffer(engineId: string): unknown[] {
         return this.logBuffers.get(engineId) ?? [];
     }
+
 }

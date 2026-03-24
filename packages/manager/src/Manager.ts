@@ -66,7 +66,7 @@ export class Manager {
         // Wire everything
         eventForwarder.setup();
         setupSocketIO({ io: this.io, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, moduleHandlers, routingHandlers, engineCommands, eventForwarder });
-        registerHttpRoutes({ app, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, io: this.io });
+        registerHttpRoutes({ app, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, io: this.io, eventForwarder });
 
         log.info({ httpPort: this.config.httpPort, dgramPort: this.config.dgramPort }, 'Manager configured');
     }

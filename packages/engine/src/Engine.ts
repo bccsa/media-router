@@ -178,6 +178,11 @@ export class Engine {
             if (Object.keys(states).length > 0) {
                 this.managerConnection.sendState(states);
             }
+            // Send audio device list so the manager can serve it to browsers
+            try {
+                const devices = this.pipeWire.listDevices();
+                this.managerConnection.send('audioDevices', devices);
+            } catch { /* best effort */ }
         });
         this.managerConnection.on('disconnected', () => {
             this.systemStats.stop();

@@ -49,11 +49,11 @@ interface FormField {
     items?: { type?: string; properties?: Record<string, unknown> }; // array item schema
 }
 
-// Fetch audio devices for device picker fields
+// Fetch audio devices from the engine (not the manager — devices differ per engine)
 const audioDevices = ref<Array<{ name: string; description: string; direction: string; channels: number; sampleRate: number }>>([]);
 onMounted(async () => {
     try {
-        const res = await fetch('/api/v1/audio/devices');
+        const res = await fetch(`/api/v1/engines/${props.engineId}/audio/devices`);
         if (res.ok) audioDevices.value = await res.json();
     } catch (err) {
         console.warn('[ModuleSettings] Failed to load audio devices:', err);

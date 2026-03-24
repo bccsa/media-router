@@ -22,6 +22,8 @@ interface RistLink {
 export class RistOutputModule extends GstPluginBase {
     private sender: ManagedProcess | null = null;
     private lastStats: Record<string, string | number> = {};
+    private peerLastSeen = new Map<number, number>(); // peerId → timestamp
+    private peerCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
     async onStart(): Promise<void> {
         // Get the UDP source from the connected encoder/srt-input
@@ -96,18 +98,42 @@ export class RistOutputModule extends GstPluginBase {
             encrypted: secret ? 'Yes' : 'No',
         });
 
+        // Periodic cleanup of stale peers (detect disconnects even when no new stats arrive)
+        this.peerCleanupTimer = setInterval(() => this.cleanupStalePeers(), 2000);
+
         // Don't call super.onStart() — no GStreamer pipeline needed
     }
 
     async onStop(): Promise<void> {
+        if (this.peerCleanupTimer) { clearInterval(this.peerCleanupTimer); this.peerCleanupTimer = null; }
         this.sender = null;
         this.lastStats = {};
+        this.peerLastSeen.clear();
         await super.onStop();
     }
 
     buildPipeline(_config: Record<string, unknown>): PipelineDescription | null {
         // No GStreamer pipeline — ristsender CLI handles the UDP → RIST conversion
         return null;
+    }
+
+    private cleanupStalePeers(): void {
+        const now = Date.now();
+        let changed = false;
+        for (const [id, ts] of this.peerLastSeen) {
+            if (now - ts > 3000) {
+                this.peerLastSeen.delete(id);
+                this.dynamicStatusSections = this.dynamicStatusSections.filter((sec) => sec.id !== `peer-${id}`);
+                changed = true;
+            }
+        }
+        if (changed) {
+            const peerCount = this.peerLastSeen.size;
+            this.setBadge('connections', { icon: 'link', text: `${peerCount}`, color: peerCount > 0 ? '#10b981' : '#6b7280' });
+            if (peerCount === 0) {
+                this.clearBadge('quality');
+            }
+        }
     }
 
     private parseStats(line: string): void {
@@ -151,8 +177,14 @@ export class RistOutputModule extends GstPluginBase {
                 ];
             }
 
-            // Update badge with total quality (use last peer's quality as aggregate)
+            // Track connected peers with timestamp
+            this.peerLastSeen.set(peerId, Date.now());
+            this.cleanupStalePeers();
+
+            // Update badges
             this.setBadge('quality', { icon: 'signal', text: `${s.quality ?? 0}%`, color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444' });
+            const peerCount = this.peerLastSeen.size;
+            this.setBadge('connections', { icon: 'link', text: `${peerCount}`, color: peerCount > 0 ? '#10b981' : '#6b7280' });
         } catch { /* not a stats line */ }
     }
 }
