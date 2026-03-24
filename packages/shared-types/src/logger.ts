@@ -37,7 +37,8 @@ export function createLogger(name: string): pino.Logger {
     return pino(
         {
             name,
-            level: process.env.LOG_LEVEL ?? 'info',
+            // Default to 'debug' for development — set LOG_LEVEL=info for production
+            level: process.env.LOG_LEVEL ?? 'debug',
             timestamp: pino.stdTimeFunctions.isoTime,
         },
         tee,

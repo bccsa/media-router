@@ -28,6 +28,18 @@ const props = defineProps<{ items: MenuItem[]; x: number; y: number }>();
 const emit = defineEmits<{ action: [action: string]; close: []; sliderChange: [action: string, value: number]; toggleChange: [action: string, value: boolean] }>();
 
 const menu = ref<HTMLDivElement | null>(null);
+
+// Local toggle overrides — tracks clicks so repeated toggles work without waiting for server round-trip
+const toggleOverrides = reactive<Record<string, boolean>>({});
+function getToggleValue(item: MenuItem): boolean {
+    if (item.action in toggleOverrides) return toggleOverrides[item.action];
+    return item.toggle?.value ?? false;
+}
+function onToggleClick(item: MenuItem) {
+    const newVal = !getToggleValue(item);
+    toggleOverrides[item.action] = newVal;
+    emit('toggleChange', item.action, newVal);
+}
 const adjustedX = ref(0);
 const adjustedY = ref(0);
 
@@ -89,14 +101,14 @@ onUnmounted(() => {
             <template v-for="(item, i) in items" :key="i">
                 <div v-if="item.divider" class="my-1" :style="{ borderTop: '1px solid var(--border-secondary)' }" />
                 <!-- Toggle widget -->
-                <button v-else-if="item.toggle" @click.stop="emit('toggleChange', item.action, !item.toggle.value)"
+                <button v-else-if="item.toggle" @click.stop="onToggleClick(item)"
                         class="w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors hover:brightness-125"
                         :style="{ color: 'var(--text-primary)' }">
                     <span class="text-[11px]">{{ item.label }}</span>
                     <div class="relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors"
-                         :style="{ backgroundColor: item.toggle.value ? 'var(--accent)' : 'var(--border-primary)' }">
+                         :style="{ backgroundColor: getToggleValue(item) ? 'var(--accent)' : 'var(--border-primary)' }">
                         <span class="inline-block h-3 w-3 rounded-full bg-white shadow transition-transform"
-                              :class="item.toggle.value ? 'translate-x-3.5' : 'translate-x-0.5'"
+                              :class="getToggleValue(item) ? 'translate-x-3.5' : 'translate-x-0.5'"
                               style="margin-top: 2px" />
                     </div>
                 </button>

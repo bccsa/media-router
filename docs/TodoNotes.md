@@ -1,5 +1,6 @@
 # TODO Notes 
 
+## General 
 [x] - Latency grows over time from 50 ms to 200 ms over time (fixed: pulsesink slave-method=0 + processing-deadline/buffer-time/max-lateness from v1)
 [x] - Tool tip for rightclick menu / small description for each function (native title tooltips on all node + edge context menu items)
 [x] - Module settings displayable in the right click menu via x-contextMenu in package.json (volume slider with throttled live updates)
@@ -15,19 +16,18 @@
 [x] - When i move a module so i start to drag and hold the modue a while, it jumps back to the starting position (fixed: 3s drag lock prevents server position overwrite)
 [x] - Add mute / unmute setting on Plugins with audio / should be able to mute their null sink / thier source / dest
 [x] - With modules that play audio into a null sink (like audio decoder / Audio output) the vumeter is mesuerd before the null sink, so if the user drops the volume on that module, the vu meter does not reflect the volume change, event though the voloume change is applied directly. (consider spawning seperate process for vu menter?)
-[ ] - Mpegts compiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
 [x] - issue, when adding a moduel can get it started, until i stop and start the engine, then only i can get it started 
 [ ] - !!!!!! Issue that orpahne process stil lrun, so my audio outpu hsa audio on it, even though there in not connection to it, i need to stop and start the engine to fix this, this only hapeps ocationaly (Might have been with the deleted modules that does not get stopped, but need to test)
-[ ] - module being addid far of from the other modules 
+[x] - module being addid far of from the other modules (fixed: new modules placed at center of current viewport)
 [ ] - tace and warn debugging 
-[ ] - When moving modules, the modules jump back to the original position if i do not keep moving the mouse
-[ ] - Some times i need to refresh the page, if i was away from it for a while to see live data again, as if the socket conenction does not auto reconnect or smt
-[ ] - when clicking outside the stats page, the page does not close 
-[ ] - When i enable a module, i need to restart it before it stats up, it does not auto start
-[ ] - Mute control has a debounce, so when i mute i have to wait a while before i can unmute, this is a issue and should not be like that
-[ ] - When module does not receive audio anymore, the vu meter displays the last vu meter data instead of going back to 0 (-60db) 
+[x] - When moving modules, the modules jump back to the original position if i do not keep moving the mouse (fixed: track active drags via dragStart/dragStop, block server position updates during entire drag + 2s after)
+[ ] - Some times i need to refresh the page, if i was away from it for a while to see live data again, as if the socket conenction does not auto reconnect or smt (seems like it is only vu meter but not sure)
+[x] - when clicking outside the stats page, the page does not close (fixed: click handler moved to backdrop overlay)
+[x] - When i enable a module, i need to restart it before it stats up, it does not auto start
+[x] - Mute control has a debounce, so when i mute i have to wait a while before i can unmute, this is a issue and should not be like that (fixed: optimistic local store update on toggle, no round-trip delay)
+[x] - When module does not receive audio anymore, the vu meter displays the last vu meter data instead of going back to 0 (-60db) (fixed: VU store auto-resets to zero after 600ms of no updates)
 
-# Srt & Rist 
+## Srt & Rist 
 [x] test rist 
 [x] fix srt stats
 [ ] latency test srt & rits 
@@ -38,5 +38,9 @@
 [x] conenction indicator - for srt and rist 
 [x] convert Bytes Received to easy readable stats
 [x] Audio decoder after rist input does some times stops after a while (fixed: decoder now has restartOnError: true — auto-restarts pipeline on tsdemux error/EOS + fixed undefined vars in RIST input parseStats)
+[ ] - Rist modules does not have a conenction badge (i like the connection quality badge, but need a connection badge)
+[ ] - SRT and rist latnecy is still growing. 
 
+## Featrues 
+[ ] - Mpegts compiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
 

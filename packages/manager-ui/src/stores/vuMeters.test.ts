@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { useVuStore } from './vuMeters';
 
@@ -66,5 +66,34 @@ describe('useVuStore', () => {
     it('clear on empty store is safe', () => {
         const store = useVuStore();
         expect(() => store.clear('eng-1')).not.toThrow();
+    });
+
+    it('resets stale VU data to zero after timeout', async () => {
+        vi.useFakeTimers();
+        const store = useVuStore();
+        store.update('eng-1', 'mod-1', [8, 8]);
+        expect(store.get('eng-1', 'mod-1')).toEqual([8, 8]);
+
+        // Advance past staleness threshold (1500ms) + cleanup interval (500ms)
+        vi.advanceTimersByTime(2100);
+
+        expect(store.get('eng-1', 'mod-1')).toEqual([0, 0]);
+        vi.useRealTimers();
+    });
+
+    it('does not reset VU data that is still being updated', async () => {
+        vi.useFakeTimers();
+        const store = useVuStore();
+        store.update('eng-1', 'mod-1', [5, 5]);
+
+        // Update again before staleness
+        vi.advanceTimersByTime(400);
+        store.update('eng-1', 'mod-1', [6, 6]);
+
+        // Advance another 400ms (total 800 from first, 400 from last update)
+        vi.advanceTimersByTime(400);
+        expect(store.get('eng-1', 'mod-1')).toEqual([6, 6]); // still fresh
+
+        vi.useRealTimers();
     });
 });

@@ -39,7 +39,7 @@ const {
 
 const {
     hasInitialFit, fitView, isValidConnection, onConnect,
-    onNodeDragStop, onEdgeDelete, onAddModule: graphAddModule, focusModule: graphFocusModule,
+    onNodeDragStart, onNodeDragStop, onEdgeDelete, onAddModule: graphAddModule, focusModule: graphFocusModule,
 } = useGraphSync(() => props.engineId, engine, focusMode, focusedModules, isEdgeDimmed);
 
 // --- Local UI state ---
@@ -231,7 +231,7 @@ function dismissAll() {
         <VueFlow class="flex-1" :snap-to-grid="true" :snap-grid="[16, 16]" :min-zoom="0.2" :max-zoom="2" :default-zoom="1"
                  fit-view-on-init :is-valid-connection="isValidConnection"
                  @connect="onConnect" @edge-click="onEdgeClick" @edge-context-menu="onEdgeContextMenu"
-                 @node-context-menu="onNodeContextMenu" @node-drag-stop="onNodeDragStop"
+                 @node-context-menu="onNodeContextMenu" @node-drag-start="onNodeDragStart" @node-drag-stop="onNodeDragStop"
                  @pane-click="dismissAll">
             <template #node-module="{ data, id }">
                 <ModuleNode :data="data" @dblclick="settingsPanel = { moduleId: id }"

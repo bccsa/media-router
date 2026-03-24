@@ -102,10 +102,16 @@ export class Server extends EventEmitter {
         options: { guaranteeDelivery?: boolean } = {},
     ): void {
         const socketId = this.clientToSocket.get(clientId);
-        if (socketId) {
-            const socket = this.sockets.get(socketId);
-            socket?.send(topic, message, options);
+        if (!socketId) {
+            console.warn(`[dgram-comms Server] sendTo: no socket for client ${clientId}`);
+            return;
         }
+        const socket = this.sockets.get(socketId);
+        if (!socket) {
+            console.warn(`[dgram-comms Server] sendTo: socket ${socketId} not found for client ${clientId}`);
+            return;
+        }
+        socket.send(topic, message, options);
     }
 
     /** Check if a client is currently connected. */

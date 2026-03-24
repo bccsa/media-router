@@ -71,10 +71,10 @@ export class Client extends EventEmitter {
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
 
-        // Prune seen messages periodically
+        // Prune seen messages periodically (5s — dedup windows are 500ms so this is plenty)
         this.seenCleanupTimer = setInterval(() => {
             this.seenMessages.clear();
-        }, 30000);
+        }, 5000);
 
         // Set up each path
         for (const path of options.paths) {
@@ -150,10 +150,13 @@ export class Client extends EventEmitter {
             this.emit('connected');
         });
 
-        // Forward data events (deduped)
+        // Forward data events (deduped within a short window)
         socket.on('data', (topic: string, message: unknown) => {
-            // Dedup across paths — use topic + content hash
-            const dedupKey = crypto.createHash('md5').update(`${topic}:${JSON.stringify(message)}`).digest('hex');
+            // Dedup across paths — use topic + content hash + timestamp bucket (500ms windows)
+            // This prevents duplicate delivery from multi-path bonding while allowing
+            // repeated identical messages (e.g. mute→unmute→mute) to get through
+            const timeBucket = Math.floor(Date.now() / 500);
+            const dedupKey = crypto.createHash('md5').update(`${timeBucket}:${topic}:${JSON.stringify(message)}`).digest('hex');
             if (this.seenMessages.has(dedupKey)) return;
             this.seenMessages.add(dedupKey);
             this.emit('data', topic, message);

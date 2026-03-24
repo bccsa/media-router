@@ -53,20 +53,22 @@ export class CommandDispatcher {
             case 'moduleConfig': {
                 const moduleId = cmd.moduleId as string;
                 const changes = cmd.changes as Record<string, unknown>;
+                log.debug({ moduleId, keys: Object.keys(changes) }, 'moduleConfig: processing');
                 if (!this.ctx.moduleManager.get(moduleId)) {
                     log.warn({ moduleId }, 'moduleConfig: module not running');
                     break;
                 }
-                this.commandLock = this.commandLock
-                    .then(async () => {
-                        await this.ctx.moduleManager.applyConfigUpdate(moduleId, changes);
+                // Config updates run outside commandLock — they shouldn't block start/stop
+                this.ctx.moduleManager.applyConfigUpdate(moduleId, changes)
+                    .then(() => {
+                        log.debug({ moduleId }, 'moduleConfig: applied');
                         for (const [key, value] of Object.entries(changes)) {
                             this.ctx.lcpServer.broadcastConfigUpdate([
                                 { op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value },
                             ]);
                         }
                     })
-                    .catch((err) => log.error({ err, moduleId }, 'Config update failed'));
+                    .catch((err) => log.error({ err: err instanceof Error ? err.message : err, moduleId }, 'Config update failed'));
                 break;
             }
 

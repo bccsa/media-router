@@ -196,7 +196,7 @@ export class GstChildProcess extends EventEmitter {
     /** Set a property on a named GStreamer element (live, no restart). */
     async setProperty(element: string, property: string, value: unknown): Promise<void> {
         if (!this.ipc || !this.running) return;
-        await this.ipc.sendRequest('setProperty', { element, property, value });
+        await this.ipc.sendRequest('setProperty', { element, property, value }, 2000);
     }
 
     /** Get a property from a named GStreamer element. */

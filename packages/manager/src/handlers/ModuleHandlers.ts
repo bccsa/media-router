@@ -1,7 +1,10 @@
 import type { Server as SocketIOServer } from 'socket.io';
+import { createLogger } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
+
+const log = createLogger('ModuleHandlers');
 
 /**
  * Handles all module CRUD operations: add, delete, config, toggle,
@@ -13,6 +16,8 @@ import type { PluginRegistry } from '../plugins/PluginRegistry.js';
  * 3. Broadcast JSON Patch to browsers via Socket.IO
  */
 export class ModuleHandlers {
+    private configDebounce = new Map<string, ReturnType<typeof setTimeout>>();
+
     constructor(
         private configStore: ConfigStore,
         private engineManager: EngineConnectionManager,
@@ -150,8 +155,12 @@ export class ModuleHandlers {
     }
 
     config(payload: { engineId: string; moduleId: string; changes: Record<string, unknown> }): void {
+        log.debug({ moduleId: payload.moduleId, changes: Object.keys(payload.changes) }, 'moduleConfig received');
         const engine = this.configStore.getEngine(payload.engineId);
-        if (!engine?.active_profile) return;
+        if (!engine?.active_profile) {
+            log.warn({ engineId: payload.engineId }, 'moduleConfig: no active profile');
+            return;
+        }
 
         this.configStore.modifyProfileConfig(payload.engineId, engine.active_profile as string, (config) => {
             const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
@@ -165,11 +174,19 @@ export class ModuleHandlers {
         });
 
         if (this.engineManager.isEngineOnline(payload.engineId)) {
-            this.engineManager.sendToEngine(payload.engineId, 'command', {
-                command: 'moduleConfig',
-                moduleId: payload.moduleId,
-                changes: payload.changes,
-            }, { guaranteeDelivery: true });
+            // Debounce config sends per module — cancel pending send, schedule new one.
+            // This prevents guaranteeDelivery retry storms from rapid toggles while
+            // still ensuring the LAST value reaches the engine reliably.
+            const debounceKey = `config:${payload.engineId}:${payload.moduleId}`;
+            if (this.configDebounce.has(debounceKey)) clearTimeout(this.configDebounce.get(debounceKey));
+            this.configDebounce.set(debounceKey, setTimeout(() => {
+                this.configDebounce.delete(debounceKey);
+                this.engineManager.sendToEngine(payload.engineId, 'command', {
+                    command: 'moduleConfig',
+                    moduleId: payload.moduleId,
+                    changes: payload.changes,
+                }, { guaranteeDelivery: true });
+            }, 100));
         }
 
         const patchOps = Object.entries(payload.changes).map(([key, value]) => ({

@@ -98,7 +98,10 @@ export class Socket extends EventEmitter {
         message: unknown,
         options: { type?: DgramMessage['type']; guaranteeDelivery?: boolean; ackID?: number } = {},
     ): void {
-        if (this.destroyed) return;
+        if (this.destroyed) {
+            console.warn(`[dgram-comms Socket] send: socket destroyed, dropping message topic=${topic}`);
+            return;
+        }
         this._send(topic, message, options);
     }
 

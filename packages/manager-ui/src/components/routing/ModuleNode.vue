@@ -190,9 +190,8 @@ function formatStatusValue(value: unknown, unit?: string): string {
 
         <!-- Stats modal (full overlay) -->
         <Teleport to="body">
-            <div v-if="showStats && hasStats" class="fixed inset-0 flex items-center justify-center" style="z-index:10000"
-                 @click.self="showStats = false">
-                <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+            <div v-if="showStats && hasStats" class="fixed inset-0 flex items-center justify-center" style="z-index:10000">
+                <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="showStats = false" />
                 <div class="relative w-full max-w-lg max-h-[80vh] overflow-auto rounded-xl shadow-2xl mx-4"
                      :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
                     <!-- Header -->

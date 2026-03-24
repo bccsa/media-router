@@ -22,7 +22,7 @@ export function useGraphSync(
 ) {
     const socket = useSocketStore();
     const engineStore = useEngineStore();
-    const { fitView, setNodes, setEdges, addEdges, removeEdges, zoomTo, setCenter, getNodes, getEdges } = useVueFlow();
+    const { fitView, setNodes, setEdges, addEdges, removeEdges, zoomTo, setCenter, getNodes, getEdges, getViewport, screenToFlowCoordinate } = useVueFlow();
     const hasInitialFit = ref(false);
 
     // --- Node sync ---
@@ -56,9 +56,10 @@ export function useGraphSync(
         }
     }, { immediate: true });
 
-    // Track which modules the user recently dragged — ignore server position for these
-    const recentDrags = new Map<string, number>(); // moduleId → timestamp
-    const DRAG_IGNORE_MS = 3000; // ignore server position updates for 3s after drag
+    // Track which modules the user is dragging or recently dragged — ignore server position
+    const activeDrags = new Set<string>(); // currently being dragged
+    const recentDrags = new Map<string, number>(); // moduleId → timestamp of drag end
+    const DRAG_IGNORE_MS = 2000; // ignore server position updates for 2s after drag end
 
     // Update node data in-place (doesn't trigger setNodes, preserves edges)
     watch(() => engine.value?.modules, (modules) => {
@@ -68,7 +69,8 @@ export function useGraphSync(
             const mod = modules[node.id];
             if (!mod) continue;
             node.data = mod;
-            // Only update position from server if user hasn't dragged this node recently
+            // Skip position update if user is dragging or recently dragged this node
+            if (activeDrags.has(node.id)) continue;
             const lastDrag = recentDrags.get(node.id);
             if (lastDrag && now - lastDrag < DRAG_IGNORE_MS) continue;
             if (mod.position && (node.position.x !== mod.position.x || node.position.y !== mod.position.y)) {
@@ -193,7 +195,12 @@ export function useGraphSync(
         socket.emit('routing:connect', { engineId: engineId(), sourceModuleId: outModule, sourcePortId: outPort, sinkModuleId: inModule, sinkPortId: inPort });
     }
 
+    function onNodeDragStart(event: { node: Node }) {
+        activeDrags.add(event.node.id);
+    }
+
     function onNodeDragStop(event: { node: Node }) {
+        activeDrags.delete(event.node.id);
         recentDrags.set(event.node.id, Date.now());
         socket.emit('module:position', { engineId: engineId(), moduleId: event.node.id, position: event.node.position });
     }
@@ -205,7 +212,16 @@ export function useGraphSync(
     }
 
     function onAddModule(plugin: { pluginId: string }, displayName: string) {
-        socket.emit('module:add', { engineId: engineId(), pluginId: plugin.pluginId, displayName, position: { x: 200 + Math.random() * 200, y: 100 + Math.random() * 200 } });
+        // Place new module at center of current viewport with small random offset
+        const el = document.querySelector('.vue-flow') as HTMLElement | null;
+        let x = 300, y = 200;
+        if (el) {
+            const rect = el.getBoundingClientRect();
+            const center = screenToFlowCoordinate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+            x = center.x - 100 + Math.random() * 40 - 20; // -100 for half module width, ±20 random
+            y = center.y - 50 + Math.random() * 40 - 20;  // -50 for half module height, ±20 random
+        }
+        socket.emit('module:add', { engineId: engineId(), pluginId: plugin.pluginId, displayName, position: { x, y } });
     }
 
     function focusModule(moduleId: string) {
@@ -224,6 +240,7 @@ export function useGraphSync(
         fitView,
         isValidConnection,
         onConnect,
+        onNodeDragStart,
         onNodeDragStop,
         onEdgeDelete,
         onAddModule,

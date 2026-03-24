@@ -79,9 +79,11 @@ export class AudioDecoderModule extends GstPluginBase {
 
         // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port binding
         const isMulticast = udpSource.host.startsWith('239.');
+        // Small kernel buffer (64KB) — prevents stale data accumulation on startup.
+        // The leaky queue after tsdemux handles flow control.
         const udpSrc = isMulticast
-            ? `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=2097152`
-            : `udpsrc port=${udpSource.port} buffer-size=2097152`;
+            ? `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=65536`
+            : `udpsrc port=${udpSource.port} buffer-size=65536`;
 
         // Plugin decides decoder based on probe result
         let decoder: string;
@@ -98,7 +100,8 @@ export class AudioDecoderModule extends GstPluginBase {
         const slaveMethod = (config.slaveMethod as number) ?? 0;
 
         const parts = [
-            `${udpSrc} ! tsdemux latency=0 ! ${decoder}`,
+            // queue after tsdemux: drop oldest if decoder can't keep up — prevents latency accumulation
+            `${udpSrc} ! tsdemux latency=0 ! queue leaky=2 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',

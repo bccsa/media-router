@@ -160,14 +160,40 @@ describe('ModuleHandlers', () => {
             expect(mod.settings.sampleRate).toBe(48000); // unchanged
         });
 
-        it('forwards moduleConfig command to engine', () => {
+        it('forwards moduleConfig command to engine (debounced)', async () => {
+            vi.useFakeTimers();
             mockEngineManager.isEngineOnline.mockReturnValue(true);
             handlers.config({ engineId: 'eng-1', moduleId: 'mod-1', changes: { device: 'mic-2' } });
+            // Not sent immediately (debounced 100ms)
+            expect(mockEngineManager.sendToEngine).not.toHaveBeenCalledWith(
+                'eng-1', 'command',
+                expect.objectContaining({ command: 'moduleConfig' }),
+                expect.anything(),
+            );
+            vi.advanceTimersByTime(150);
             expect(mockEngineManager.sendToEngine).toHaveBeenCalledWith(
                 'eng-1', 'command',
                 expect.objectContaining({ command: 'moduleConfig', moduleId: 'mod-1', changes: { device: 'mic-2' } }),
                 { guaranteeDelivery: true },
             );
+            vi.useRealTimers();
+        });
+
+        it('deduplicates rapid config changes — only sends last value', async () => {
+            vi.useFakeTimers();
+            mockEngineManager.isEngineOnline.mockReturnValue(true);
+            // Rapid toggle: false, true, false
+            handlers.config({ engineId: 'eng-1', moduleId: 'mod-1', changes: { audioEnabled: false } });
+            handlers.config({ engineId: 'eng-1', moduleId: 'mod-1', changes: { audioEnabled: true } });
+            handlers.config({ engineId: 'eng-1', moduleId: 'mod-1', changes: { audioEnabled: false } });
+            vi.advanceTimersByTime(150);
+            // Only 1 call to engine (the last value)
+            const configCalls = mockEngineManager.sendToEngine.mock.calls.filter(
+                (c: unknown[]) => (c[2] as Record<string, unknown>)?.command === 'moduleConfig'
+            );
+            expect(configCalls).toHaveLength(1);
+            expect((configCalls[0][2] as Record<string, unknown>).changes).toEqual({ audioEnabled: false });
+            vi.useRealTimers();
         });
     });
 
