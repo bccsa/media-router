@@ -48,7 +48,7 @@
 ## LCP
 [x] - Modules width should be fixed 
 [x] - Sort order should be small to large  (not large to small)
-[ ] - Bigger slider knobs in the lpc
+[x] - Bigger slider knobs in the LCP (28px thumb with border + shadow, custom track styling)
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 

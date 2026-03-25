@@ -156,11 +156,48 @@ function toggleMute() {
 .vertical-fader {
     writing-mode: vertical-lr;
     direction: rtl;
-    appearance: slider-vertical;
+    -webkit-appearance: none;
+    appearance: none;
     width: 44px;
     height: 100%;
     cursor: pointer;
-    accent-color: var(--accent, #10b981);
+    background: transparent;
+}
+
+.vertical-fader::-webkit-slider-runnable-track {
+    width: 6px;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--border-primary, #2d3348);
+}
+
+.vertical-fader::-moz-range-track {
+    width: 6px;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--border-primary, #2d3348);
+}
+
+.vertical-fader::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--accent, #10b981);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    margin-left: -17px;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.vertical-fader::-moz-range-thumb {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--accent, #10b981);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 .volume-display {
