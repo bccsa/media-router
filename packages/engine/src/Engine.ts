@@ -7,6 +7,7 @@ import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
 import { LcpServer } from './comms/LcpServer.js';
+import { LcpControlHandler } from './comms/LcpControlHandler.js';
 import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
 import { ProcessManager } from './child-process/ProcessManager.js';
@@ -57,6 +58,7 @@ export class Engine {
 
     /** Last config received from manager. */
     private currentConfig: Record<string, unknown> | null = null;
+    private lcpControlHandler: LcpControlHandler | null = null;
 
     get running(): boolean {
         return this._running;
@@ -77,6 +79,7 @@ export class Engine {
         this.moduleManager = new ModuleManager(this.pluginLoader, this.pipeWire, this.mediaRouter, this.processManager);
         this.managerConnection = new ManagerConnection();
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
+        this.lcpServer._getInitData = () => this.getLcpInitData();
         this.profileStore = new ProfileStore(config.profilesPath);
 
         this.mediaRouter.setDependencies(
@@ -93,8 +96,14 @@ export class Engine {
             moduleManager: this.moduleManager,
             mediaRouter: this.mediaRouter,
             lcpServer: this.lcpServer,
-            startModules: () => this.lifecycle.startAll(),
-            stopModules: () => this.lifecycle.stopAll(),
+            startModules: async () => {
+                await this.lifecycle.startAll();
+                this.lcpServer.broadcastEngineRunning(true);
+            },
+            stopModules: async () => {
+                await this.lifecycle.stopAll();
+                this.lcpServer.broadcastEngineRunning(false);
+            },
             resetEngine: () => this.resetEngine(),
             restartModule: (id) => this.lifecycle.restart(id),
             startSingleModule: (id) => this.lifecycle.startSingle(id),
@@ -148,6 +157,7 @@ export class Engine {
                 lastVu.set(instanceId, key);
                 lastVuSent.set(instanceId, now);
                 this.managerConnection.sendVu(instanceId, data);
+                this.lcpServer.broadcastVuData(instanceId, data);
             }
         });
 
@@ -161,16 +171,15 @@ export class Engine {
             this.commandDispatcher.dispatch(command as Record<string, unknown>);
         });
 
-        this.lcpServer.on('control', (command: unknown) => {
-            log.info({ command }, 'Received control from LCP');
-            this.managerConnection.send('control', command);
+        // LCP control commands handled by dedicated class
+        this.lcpControlHandler = new LcpControlHandler({
+            lcpServer: this.lcpServer,
+            managerConnection: this.managerConnection,
+            moduleManager: this.moduleManager,
+            commandDispatcher: this.commandDispatcher,
         });
 
-        this.lcpServer.on('configRequested', (socketId: string) => {
-            if (this.currentConfig) {
-                this.lcpServer.sendConfigToSocket(socketId, this.currentConfig);
-            }
-        });
+        // configRequested removed — replaced by 'init' event on connect
 
         this.managerConnection.on('connected', () => {
             this.systemStats.start();
@@ -212,6 +221,7 @@ export class Engine {
         }
 
         this._running = true;
+        this.lcpServer.broadcastEngineRunning(true);
         log.info('Started');
     }
 
@@ -226,10 +236,12 @@ export class Engine {
             await this.apiServer.close();
             this.apiServer = null;
         }
+        this._running = false;
+        this.lcpControlHandler?.destroy();
+        this.lcpServer.broadcastEngineRunning(false);
         await this.lcpServer.stop();
         this.lcpServer.removeAllListeners();
         this.logForwarder.destroy();
-        this._running = false;
         log.info('Stopped');
     }
 
@@ -277,4 +289,30 @@ export class Engine {
             this.managerConnection.connect(active);
         }
     }
+
+    /** Build combined init payload for LCP clients (config + runtime state + lcpType + engineRunning). */
+    private getLcpInitData(): Record<string, unknown> {
+        const config = this.currentConfig ?? {};
+        const modules = (config as Record<string, unknown>).modules as Record<string, Record<string, unknown>> | undefined;
+        // Merge runtime state + lcpType from plugin manifest into config modules
+        const mergedModules: Record<string, unknown> = {};
+        if (modules) {
+            for (const [id, mod] of Object.entries(modules)) {
+                const instance = this.moduleManager.get(id);
+                const state = instance ? instance.getState() : {};
+                const pluginId = mod.pluginId as string;
+                const pluginManifest = this.pluginLoader.get(pluginId)?.manifest;
+                mergedModules[id] = {
+                    ...mod,
+                    ...(state as Record<string, unknown>),
+                    lcpType: pluginManifest?.lcpType ?? undefined,
+                };
+            }
+        }
+        return {
+            engineRunning: this._running,
+            config: { ...config, modules: mergedModules },
+        };
+    }
+
 }

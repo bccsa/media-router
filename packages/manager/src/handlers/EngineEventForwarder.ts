@@ -103,6 +103,40 @@ export class EngineEventForwarder {
         this.engineManager.on('engineAudioDevices', (engineId: string, devices: unknown) => {
             this.setEngineData(engineId, 'audioDevices', devices);
         });
+
+        // LCP config updates — persist to SQLite without sending config back to engine
+        this.engineManager.on('engineLcpConfig', (engineId: string, data: unknown) => {
+            const { moduleId, changes } = data as { moduleId: string; changes: Record<string, unknown> };
+            if (!moduleId || !changes) return;
+            // 1. Save to SQLite
+            const engine = this.configStore.getEngine(engineId);
+            if (!engine?.active_profile) return;
+            this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
+                const modules = config.modules as Record<string, Record<string, unknown>> | undefined;
+                const mod = modules?.[moduleId];
+                if (mod?.settings) {
+                    Object.assign(mod.settings as Record<string, unknown>, changes);
+                }
+                return config;
+            });
+            // 2. Broadcast to all browser clients (manager-ui)
+            // DO NOT send moduleConfig back to engine — source was LCP via engine, loop stops here
+            const patch = Object.entries(changes).map(([key, value]) => ({
+                op: 'replace' as const,
+                path: `/modules/${moduleId}/settings/${key}`,
+                value,
+            }));
+            this.io.emit('engine:update', { engineId, patch });
+        });
+
+        // LCP start/stop commands — update running state + broadcast to browsers
+        this.engineManager.on('engineLcpCommand', (engineId: string, data: unknown) => {
+            const { command } = data as { command: 'start' | 'stop' };
+            if (!command) return;
+            const running = command === 'start';
+            this.engineCommands.setRunning(engineId, running);
+            this.io.emit('engine:running', { engineId, running });
+        });
     }
 
     /** Store arbitrary data for an engine (keyed by topic). */

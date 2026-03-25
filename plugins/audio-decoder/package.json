@@ -67,13 +67,38 @@
                 },
                 "slaveMethod": {
                     "type": "number",
-                    "enum": [0, 1],
+                    "enum": [
+                        0,
+                        1
+                    ],
                     "default": 0,
-                    "description": "PulseAudio sync mode (0 = resample — prevents latency drift, 1 = skew)"
+                    "description": "PulseAudio sync mode (0 = resample \u2014 prevents latency drift, 1 = skew)"
+                },
+                "lcpVisible": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show on Local Control Panel",
+                    "x-contextMenu": true
+                },
+                "lcpSortOrder": {
+                    "type": "number",
+                    "default": 0,
+                    "description": "Display order on LCP (lower = left)"
+                },
+                "lcpVolumeEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Allow volume control on LCP"
+                },
+                "lcpMuteEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Allow mute control on LCP"
                 }
             }
         },
-        "engine": "./engine/AudioDecoderModule.ts"
+        "engine": "./engine/AudioDecoderModule.ts",
+        "lcpType": "mixer-strip"
     },
     "dependencies": {
         "@media-router/engine": "workspace:*"

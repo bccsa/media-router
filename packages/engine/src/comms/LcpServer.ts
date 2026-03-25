@@ -18,7 +18,10 @@ const log = createLogger('LcpServer');
 export class LcpServer extends EventEmitter {
     private httpServer: HttpServer;
     private io: SocketIOServer;
+    /** Callback to get combined init data (config + states + running). Set by Engine. */
+    _getInitData: (() => Record<string, unknown>) | null = null;
     private port: number;
+    private _engineRunning = false;
 
     constructor(port = 8081) {
         super();
@@ -31,30 +34,31 @@ export class LcpServer extends EventEmitter {
         this.io.on('connection', (socket) => {
             log.info({ socketId: socket.id }, 'Client connected');
 
+            // Send combined init payload — config + runtime states + engineRunning in one event
+            // The getInitData callback is set by Engine.ts
+            if (this._getInitData) {
+                socket.emit('init', this._getInitData());
+            }
+
             // LCP sends control commands
             socket.on('control', (command: unknown) => {
                 this.emit('control', command);
             });
 
             socket.on('volume', (data: unknown) => {
-                this.emit('control', { action: 'volume', ...(data as Record<string, unknown>) });
+                this.emit('control', { action: 'volume', ...(data as Record<string, unknown>), _socketId: socket.id });
             });
 
             socket.on('mute', (data: unknown) => {
-                this.emit('control', { action: 'mute', ...(data as Record<string, unknown>) });
+                this.emit('control', { action: 'mute', ...(data as Record<string, unknown>), _socketId: socket.id });
             });
 
             socket.on('start', (data: unknown) => {
-                this.emit('control', { action: 'start', ...(data as Record<string, unknown>) });
+                this.emit('control', { action: 'start', ...(data as Record<string, unknown>), _socketId: socket.id });
             });
 
             socket.on('stop', (data: unknown) => {
-                this.emit('control', { action: 'stop', ...(data as Record<string, unknown>) });
-            });
-
-            // LCP client requests full config (initial sync)
-            socket.on('requestConfig', () => {
-                this.emit('configRequested', socket.id);
+                this.emit('control', { action: 'stop', ...(data as Record<string, unknown>), _socketId: socket.id });
             });
 
             socket.on('disconnect', () => {
@@ -101,12 +105,31 @@ export class LcpServer extends EventEmitter {
         this.broadcastAllStates(states);
     }
 
+    /** Broadcast VU meter data to all LCP clients. */
+    broadcastVuData(instanceId: string, vuData: number[]): void {
+        this.io.volatile.emit('vuData', { instanceId, vuData });
+    }
+
+    /** Broadcast engine running state to all LCP clients. */
+    broadcastEngineRunning(running: boolean): void {
+        this._engineRunning = running;
+        this.io.emit('engineRunning', running);
+    }
+
     /**
      * Broadcast config/routing changes to all LCP clients (JSON Patch format).
      * Used when the engine receives config updates from the manager.
      */
     broadcastConfigUpdate(patch: unknown[]): void {
         this.io.emit('configUpdate', patch);
+    }
+
+    /**
+     * Broadcast config update to all LCP clients EXCEPT the sender.
+     * Used when a LCP client changes config — skip the originator.
+     */
+    broadcastConfigUpdateExcept(excludeSocketId: string, patch: unknown[]): void {
+        this.io.except(excludeSocketId).emit('configUpdate', patch);
     }
 
     /**

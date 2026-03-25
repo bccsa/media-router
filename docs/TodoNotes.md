@@ -39,9 +39,15 @@
 [x] convert Bytes Received to easy readable stats
 [x] Audio decoder after rist input does some times stops after a while (fixed: decoder now has restartOnError: true — auto-restarts pipeline on tsdemux error/EOS + fixed undefined vars in RIST input parseStats)
 [x] - Rist modules does not have a conenction badge (fixed: RIST input shows peer count badge, RIST output shows Connected/No link badge)
-[ ] - SRT and rist latnecy is still growing. 
+[ ] - SRT and rist latnecy is still growing. (to be tested now)
 
 ## Featrues 
 [ ] - Mpegts compiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
 [x] - Seed db with dummy data on first start (manager: 'local' engine with Audio Input → Audio Output profile; engine: 'local' profile connecting to 127.0.0.1:3000)
 
+## LCP
+[x] - Modules width should be fixed 
+[ ] - Sort order should be small to large  (not large to small)
+
+## Audio issues 
+[ ] - On my yocto devices i am not able to start audio inputs, see logs for erros 

@@ -367,4 +367,6 @@ export interface PluginManifest {
     ui?: string;
     /** Optional path to LCP control component. */
     lcp?: string;
+    /** LCP display type: "mixer-strip", "meter-only", "video-monitor", etc. */
+    lcpType?: string;
 }

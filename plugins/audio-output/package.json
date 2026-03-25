@@ -75,10 +75,32 @@
                     "description": "Audio enabled",
                     "x-live": true,
                     "x-contextMenu": true
+                },
+                "lcpVisible": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show on Local Control Panel",
+                    "x-contextMenu": true
+                },
+                "lcpSortOrder": {
+                    "type": "number",
+                    "default": 0,
+                    "description": "Display order on LCP (lower = left)"
+                },
+                "lcpVolumeEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Allow volume control on LCP"
+                },
+                "lcpMuteEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Allow mute control on LCP"
                 }
             }
         },
-        "engine": "./engine/AudioOutputModule.ts"
+        "engine": "./engine/AudioOutputModule.ts",
+        "lcpType": "mixer-strip"
     },
     "dependencies": {
         "@media-router/engine": "workspace:*"

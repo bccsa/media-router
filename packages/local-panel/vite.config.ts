@@ -1,8 +1,23 @@
-import { defineConfig, mergeConfig } from 'vite';
-import baseConfig from '../shared-vite.config.js';
+import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import tailwindcss from '@tailwindcss/vite';
+import { fileURLToPath, URL } from 'node:url';
 
-export default mergeConfig(baseConfig, defineConfig({
-    server: {
-        port: 8081,
+export default defineConfig({
+    plugins: [vue(), tailwindcss()],
+    resolve: {
+        alias: {
+            '@': fileURLToPath(new URL('./src', import.meta.url)),
+        },
     },
-}));
+    server: {
+        port: 5174, // Dev server on 5174, proxies to engine's LcpServer on 8081
+        host: true,
+        proxy: {
+            '/socket.io': {
+                target: 'http://localhost:8081',
+                ws: true,
+            },
+        },
+    },
+});

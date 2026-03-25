@@ -76,6 +76,16 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineAudioDevices', clientId, data);
             });
 
+            // LCP config updates (persist without feedback loop)
+            socket.on('lcpConfig', (data: unknown) => {
+                this.emit('engineLcpConfig', clientId, data);
+            });
+
+            // LCP engine start/stop (forward running state to browsers)
+            socket.on('lcpEngineCommand', (data: unknown) => {
+                this.emit('engineLcpCommand', clientId, data);
+            });
+
             socket.on('disconnected', () => {
                 log.info({ engineId: clientId }, 'engine disconnected');
                 this.onlineEngines.delete(clientId);
