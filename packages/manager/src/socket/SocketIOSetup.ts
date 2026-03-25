@@ -77,6 +77,9 @@ export function setupSocketIO(deps: SocketDeps): void {
                     ...e,
                     online: engineManager.isEngineOnline(e.engine_id as string),
                     running: engineCommands.isRunning(e.engine_id as string),
+                    ip: eventForwarder.getEngineData(e.engine_id as string, 'ip'),
+                    hostname: eventForwarder.getEngineData(e.engine_id as string, 'hostname'),
+                    buildNumber: eventForwarder.getEngineData(e.engine_id as string, 'buildNumber'),
                     modules,
                     connections,
                 };

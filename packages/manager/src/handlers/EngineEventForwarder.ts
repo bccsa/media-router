@@ -56,7 +56,12 @@ export class EngineEventForwarder {
         });
 
         this.engineManager.on('engineSystem', (engineId: string, data: unknown) => {
-            this.io.volatile.emit('engine:system', { engineId, ...(data as Record<string, unknown>) });
+            const d = data as Record<string, unknown>;
+            // Cache IP + hostname + build when engine reports them
+            if (d.ip) this.setEngineData(engineId, 'ip', d.ip);
+            if (d.hostname) this.setEngineData(engineId, 'hostname', d.hostname);
+            if (d.buildNumber) this.setEngineData(engineId, 'buildNumber', d.buildNumber);
+            this.io.volatile.emit('engine:system', { engineId, ...d });
         });
 
         this.engineManager.on('engineConfigUpdated', (engineId: string, data: unknown) => {

@@ -76,6 +76,9 @@ export interface EngineState {
     modules: Record<string, ModuleState>;
     connections: ConnectionState[];
     system?: SystemStats;
+    ip?: string;
+    hostname?: string;
+    buildNumber?: string;
 }
 
 // --- Store ---
@@ -124,6 +127,9 @@ export const useEngineStore = defineStore('engines', () => {
             activeProfile: (data.active_profile as string) ?? null,
             modules,
             connections: (data.connections ?? []) as ConnectionState[],
+            ip: data.ip as string | undefined,
+            hostname: data.hostname as string | undefined,
+            buildNumber: data.buildNumber as string | undefined,
         });
     }
 
@@ -236,6 +242,16 @@ export const useEngineStore = defineStore('engines', () => {
         }
     }
 
+    function setEngineInfo(engineId: string, info: { ip?: string; hostname?: string; buildNumber?: string }) {
+        const engine = engines.value.get(engineId);
+        if (!engine) return;
+        let changed = false;
+        if (info.ip && engine.ip !== info.ip) { engine.ip = info.ip; changed = true; }
+        if (info.hostname && engine.hostname !== info.hostname) { engine.hostname = info.hostname; changed = true; }
+        if (info.buildNumber && engine.buildNumber !== info.buildNumber) { engine.buildNumber = info.buildNumber; changed = true; }
+        if (changed) engines.value = new Map(engines.value);
+    }
+
     /** Force Vue reactivity trigger for an engine (after in-place module mutations). */
     function touchEngine(engineId: string) {
         engines.value = new Map(engines.value);
@@ -253,6 +269,7 @@ export const useEngineStore = defineStore('engines', () => {
         removeEngine,
         removeConnection,
         setSystemStats,
+        setEngineInfo,
         touchEngine,
     };
 });

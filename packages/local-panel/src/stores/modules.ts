@@ -22,6 +22,9 @@ export interface LcpModuleState {
 export const useModuleStore = defineStore('modules', () => {
     const modules = ref<Record<string, LcpModuleState>>({});
     const engineRunning = ref(false);
+    const engineIp = ref('');
+    const engineHostname = ref('');
+    const buildNumber = ref('');
 
     /** Modules visible on the LCP, sorted by lcpSortOrder. */
     const visibleModules = computed(() => {
@@ -145,5 +148,5 @@ export const useModuleStore = defineStore('modules', () => {
         modules.value = { ...modules.value };
     }
 
-    return { modules, engineRunning, visibleModules, setAll, updateState, applyConfig, applyPatch, updateSetting, remove };
+    return { modules, engineRunning, engineIp, engineHostname, buildNumber, visibleModules, setAll, updateState, applyConfig, applyPatch, updateSetting, remove };
 });

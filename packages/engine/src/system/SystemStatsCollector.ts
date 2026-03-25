@@ -1,10 +1,14 @@
 import * as os from 'os';
 import * as fs from 'fs';
+import { getPrimaryIp, findBuildNumber, getHostname } from './deviceInfo.js';
 
 export interface SystemStats {
     cpu: number;
     mem: number;
     temp: number | null;
+    ip?: string;
+    hostname?: string;
+    buildNumber?: string;
 }
 
 /**
@@ -15,6 +19,8 @@ export class SystemStatsCollector {
     private timer: ReturnType<typeof setInterval> | null = null;
     private prevCpuTotal = 0;
     private prevCpuIdle = 0;
+    private sampleCount = 0;
+    private cachedBuildNumber: string | null = null;
 
     constructor(
         private onStats: (stats: SystemStats) => void,
@@ -48,7 +54,20 @@ export class SystemStatsCollector {
                     cpuTemp = Math.round(parseInt(temp, 10) / 1000);
                 } catch { /* not available */ }
 
-                this.onStats({ cpu: cpuPercent, mem: memPercent, temp: cpuTemp });
+                const stats: SystemStats = { cpu: cpuPercent, mem: memPercent, temp: cpuTemp };
+
+                // Include IP + hostname + build on first sample and every 30 samples (~60s)
+                if (this.sampleCount % 30 === 0) {
+                    stats.ip = getPrimaryIp();
+                    stats.hostname = getHostname();
+                    if (this.cachedBuildNumber === null) {
+                        this.cachedBuildNumber = findBuildNumber();
+                    }
+                    if (this.cachedBuildNumber) stats.buildNumber = this.cachedBuildNumber;
+                }
+                this.sampleCount++;
+
+                this.onStats(stats);
             } catch { /* ignore */ }
         }, this.intervalMs);
     }

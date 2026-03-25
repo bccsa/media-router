@@ -42,6 +42,8 @@ function stopEngine() {
                 <div class="status-dot" :style="{ backgroundColor: socketStore.connected ? '#10b981' : '#6b7280' }"></div>
                 <h1 class="header-title">Media Router</h1>
                 <span class="header-subtitle">Local Control Panel</span>
+                <span v-if="moduleStore.engineIp" class="header-ip">{{ moduleStore.engineIp }}</span>
+                <span v-if="moduleStore.buildNumber" class="header-build">{{ moduleStore.buildNumber }}</span>
             </div>
             <div class="header-right">
                 <button v-if="moduleStore.engineRunning" class="engine-btn stop" @click="stopEngine">Stop</button>
@@ -127,6 +129,20 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: s
 .header-subtitle {
     font-size: 12px;
     color: var(--text-muted);
+}
+
+.header-ip {
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+}
+
+.header-build {
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.7;
 }
 
 .header-right {

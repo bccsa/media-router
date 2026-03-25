@@ -133,6 +133,20 @@ node packages/engine/dist/index.js
 5. Click the engine -> Add Module -> choose Audio Input, Encoder, Decoder, etc.
 6. Draw connections between module ports to route audio
 
+### Build Number Display
+
+To display a version/build number on each engine device (shown in the Manager UI engine detail page and the LCP header), create a `build-number.txt` file in the media-router root directory:
+
+```bash
+echo "v2.0.1" > build-number.txt
+```
+
+The engine searches for this file in its working directory and up to 3 parent directories. The build number is displayed in:
+- **Manager UI** — Engine list, engine detail page
+- **LCP** — Header bar (next to IP address)
+
+If the file doesn't exist, no build number is shown. The file is read once at startup — restart the engine to pick up changes.
+
 ## Testing
 
 ```bash

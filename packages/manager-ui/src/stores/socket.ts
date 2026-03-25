@@ -93,9 +93,13 @@ export const useSocketStore = defineStore('socket', () => {
             useVuStore().update(data.engineId, data.instanceId, data.vuData);
         });
 
-        // System stats (CPU, memory, temp)
-        s.on('engine:system', (data: { engineId: string; cpu: number; mem: number; temp: number | null }) => {
-            useEngineStore().setSystemStats(data.engineId, { cpu: data.cpu, mem: data.mem, temp: data.temp });
+        // System stats (CPU, memory, temp, IP, build)
+        s.on('engine:system', (data: { engineId: string; cpu: number; mem: number; temp: number | null; ip?: string; hostname?: string; buildNumber?: string }) => {
+            const store = useEngineStore();
+            store.setSystemStats(data.engineId, { cpu: data.cpu, mem: data.mem, temp: data.temp });
+            if (data.ip || data.hostname || data.buildNumber) {
+                store.setEngineInfo(data.engineId, { ip: data.ip, hostname: data.hostname, buildNumber: data.buildNumber });
+            }
         });
 
         // Log streaming
