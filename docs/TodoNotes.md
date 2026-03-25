@@ -47,7 +47,8 @@
 
 ## LCP
 [x] - Modules width should be fixed 
-[ ] - Sort order should be small to large  (not large to small)
+[x] - Sort order should be small to large  (not large to small)
+[ ] - Bigger slider knobs in the lpc
 
 ## Audio issues 
-[ ] - On my yocto devices i am not able to start audio inputs, see logs for erros 
+[x] - On my yocto devices i am not able to start audio inputs, see logs for erros 

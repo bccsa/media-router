@@ -3,6 +3,7 @@ import { createLogger, formatError } from '@media-router/shared-types';
 import type { ModuleManager } from './ModuleManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
+import type { PluginLoader } from '../plugins/PluginLoader.js';
 
 const log = createLogger('ModuleLifecycle');
 
@@ -44,7 +45,15 @@ export class ModuleLifecycle {
         private mediaRouter: MediaRouter,
         private pipeWire: PipeWireManager,
         private getConfig: () => Record<string, unknown> | null,
+        private pluginLoader?: PluginLoader,
     ) {}
+
+    /** Resolve ports for a module: config ports take precedence, fall back to plugin manifest. */
+    private resolvePorts(modConfig: Record<string, unknown>, pluginId: string): RawPort[] {
+        const configPorts = (modConfig.ports ?? []) as RawPort[];
+        if (configPorts.length > 0) return configPorts;
+        return (this.pluginLoader?.get(pluginId)?.manifest?.ports as RawPort[] | undefined) ?? [];
+    }
 
     async startAll(): Promise<void> {
         const config = this.getConfig();
@@ -80,8 +89,7 @@ export class ModuleLifecycle {
             try {
                 this.moduleManager.createModule(instanceId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
 
-                // Register ports with MediaRouter so connections can find them
-                this.mediaRouter.registerPorts(instanceId, mapPorts((modConfig.ports ?? []) as RawPort[]));
+                this.mediaRouter.registerPorts(instanceId, mapPorts(this.resolvePorts(modConfig, pluginId)));
 
                 await this.moduleManager.startModule(instanceId);
                 log.info({ instanceId, module: label }, 'Started module');
@@ -150,8 +158,7 @@ export class ModuleLifecycle {
         try {
             const instance = this.moduleManager.createModule(moduleId, pluginId, modConfig.settings as Record<string, unknown>);
 
-            // Register ports
-            this.mediaRouter.registerPorts(moduleId, mapPorts((modConfig.ports ?? []) as RawPort[]));
+            this.mediaRouter.registerPorts(moduleId, mapPorts(this.resolvePorts(modConfig, pluginId)));
 
             await this.moduleManager.startModule(moduleId);
             log.info({ moduleId, module: label }, 'Started module');
@@ -227,8 +234,7 @@ export class ModuleLifecycle {
                 const pluginId = modConfig.pluginId as string;
                 this.moduleManager.createModule(moduleId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
 
-                // Register ports
-                const ports = (modConfig.ports ?? []) as RawPort[];
+                const ports = this.resolvePorts(modConfig, pluginId);
                 if (ports.length > 0) {
                     this.mediaRouter.registerPorts(moduleId, mapPorts(ports));
                 }
@@ -257,7 +263,8 @@ export class ModuleLifecycle {
         // MPEG-TS first (may restart decoder pipelines)
         const mpegtsConns = connections.filter((c) => {
             const srcMod = modules[c.sourceModuleId];
-            const ports = (srcMod?.ports ?? []) as Array<{ id: string; streamType: string }>;
+            const pluginId = srcMod?.pluginId as string | undefined;
+            const ports = pluginId ? this.resolvePorts(srcMod!, pluginId) : [];
             return ports.find((p) => p.id === c.sourcePortId)?.streamType === 'muxed/mpegts';
         });
         const audioConns = connections.filter((c) => !mpegtsConns.includes(c));

@@ -116,6 +116,7 @@ export class Engine {
         this.lifecycle = new ModuleLifecycle(
             this.moduleManager, this.mediaRouter, this.pipeWire,
             () => this.currentConfig,
+            this.pluginLoader,
         );
 
         // System stats

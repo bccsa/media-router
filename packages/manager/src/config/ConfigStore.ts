@@ -87,6 +87,7 @@ export class ConfigStore {
                     enabled: true,
                     position: { x: 100, y: 200 },
                     settings: { device: '', sampleRate: 48000, channels: 2, volume: 100, volumeMax: 150 },
+                    ports: [{ id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Audio Out', maxConnections: -1 }],
                 },
                 [outputId]: {
                     pluginId: 'audio-output',
@@ -94,6 +95,7 @@ export class ConfigStore {
                     enabled: true,
                     position: { x: 500, y: 200 },
                     settings: { device: '', sampleRate: 48000, channels: 2, volume: 100, volumeMax: 150 },
+                    ports: [{ id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'Audio In', maxConnections: -1 }],
                 },
             },
             connections: [
