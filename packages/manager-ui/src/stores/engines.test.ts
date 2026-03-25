@@ -196,6 +196,89 @@ describe('useEngineStore', () => {
         });
     });
 
+    describe('addEngine — IP, hostname, buildNumber', () => {
+        it('stores ip, hostname, and buildNumber from server data', () => {
+            const store = useEngineStore();
+            store.addEngine({
+                engine_id: 'eng-1',
+                display_name: 'Pi5',
+                online: true,
+                modules: {},
+                connections: [],
+                ip: '10.9.1.214',
+                hostname: 'mrstation',
+                buildNumber: 'v2.0.0.42',
+            });
+
+            const engine = store.getEngine('eng-1')!;
+            expect(engine.ip).toBe('10.9.1.214');
+            expect(engine.hostname).toBe('mrstation');
+            expect(engine.buildNumber).toBe('v2.0.0.42');
+        });
+
+        it('handles missing ip/hostname/buildNumber gracefully', () => {
+            const store = useEngineStore();
+            store.addEngine({
+                engine_id: 'eng-1',
+                display_name: 'Pi5',
+                modules: {},
+                connections: [],
+            });
+
+            const engine = store.getEngine('eng-1')!;
+            expect(engine.ip).toBeUndefined();
+            expect(engine.hostname).toBeUndefined();
+            expect(engine.buildNumber).toBeUndefined();
+        });
+    });
+
+    describe('setEngineInfo', () => {
+        beforeEach(() => {
+            const store = useEngineStore();
+            store.addEngine({
+                engine_id: 'eng-1',
+                display_name: 'Pi5',
+                online: true,
+                modules: {},
+                connections: [],
+            });
+        });
+
+        it('updates ip, hostname, and buildNumber', () => {
+            const store = useEngineStore();
+            store.setEngineInfo('eng-1', { ip: '192.168.1.100', hostname: 'pi5', buildNumber: 'v2.0.1' });
+
+            const engine = store.getEngine('eng-1')!;
+            expect(engine.ip).toBe('192.168.1.100');
+            expect(engine.hostname).toBe('pi5');
+            expect(engine.buildNumber).toBe('v2.0.1');
+        });
+
+        it('only updates provided fields', () => {
+            const store = useEngineStore();
+            store.setEngineInfo('eng-1', { ip: '10.0.0.1' });
+
+            const engine = store.getEngine('eng-1')!;
+            expect(engine.ip).toBe('10.0.0.1');
+            expect(engine.hostname).toBeUndefined();
+        });
+
+        it('ignores unknown engine', () => {
+            const store = useEngineStore();
+            store.setEngineInfo('nonexistent', { ip: '1.2.3.4' });
+            // Should not throw
+        });
+
+        it('does not trigger reactivity if nothing changed', () => {
+            const store = useEngineStore();
+            store.setEngineInfo('eng-1', { ip: '10.0.0.1' });
+            const map1 = store.engines;
+            store.setEngineInfo('eng-1', { ip: '10.0.0.1' }); // same value
+            // Map reference should be the same (no unnecessary reactivity trigger)
+            expect(store.engines).toBe(map1);
+        });
+    });
+
     describe('engineList', () => {
         it('returns all engines as array', () => {
             const store = useEngineStore();
