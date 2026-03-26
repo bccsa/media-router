@@ -48,7 +48,8 @@
 ## LCP
 [x] - Modules width should be fixed 
 [x] - Sort order should be small to large  (not large to small)
-[x] - Bigger slider knobs in the LCP (28px thumb with border + shadow, custom track styling)
+[x] - Bigger slider knobs in the LCP (44px thumb, 48px interaction width, touch-friendly)
+[x] - Tablet landscape/portrait support (responsive layout, compact landscape mode, safe area insets for notched devices)
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 

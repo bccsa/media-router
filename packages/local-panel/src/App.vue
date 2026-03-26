@@ -191,5 +191,40 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: s
     gap: 8px;
     height: 100%;
     align-items: stretch;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Landscape: compact header, more space for faders */
+@media (orientation: landscape) and (max-height: 500px) {
+    .lcp-header {
+        padding: 4px 12px;
+    }
+    .header-title { font-size: 14px; }
+    .header-subtitle { display: none; }
+    .mixer-area { padding: 6px; }
+    .mixer-row { gap: 4px; }
+}
+
+/* Portrait small phones: tighter padding */
+@media (orientation: portrait) and (max-width: 500px) {
+    .lcp-header {
+        padding: 8px 10px;
+    }
+    .mixer-area { padding: 8px; }
+    .mixer-row { gap: 4px; }
+}
+
+/* Safe area insets for notched devices / iOS */
+@supports (padding: env(safe-area-inset-top)) {
+    .lcp-header {
+        padding-top: max(10px, env(safe-area-inset-top));
+        padding-left: max(16px, env(safe-area-inset-left));
+        padding-right: max(16px, env(safe-area-inset-right));
+    }
+    .mixer-area {
+        padding-bottom: max(12px, env(safe-area-inset-bottom));
+        padding-left: max(12px, env(safe-area-inset-left));
+        padding-right: max(12px, env(safe-area-inset-right));
+    }
 }
 </style>

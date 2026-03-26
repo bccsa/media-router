@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { LcpModuleState } from '@/stores/modules';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
@@ -16,11 +16,18 @@ const emit = defineEmits<{
 const vuStore = useVuStore();
 
 const vuLevels = computed(() => vuStore.get(props.module.instanceId));
-const volume = computed(() => (props.module.settings?.volume as number) ?? 100);
+const storeVolume = computed(() => (props.module.settings?.volume as number) ?? 100);
 const volumeMax = computed(() => (props.module.settings?.volumeMax as number) ?? 150);
 const volumeEnabled = computed(() => props.module.settings?.lcpVolumeEnabled !== false);
 const muteEnabled = computed(() => props.module.settings?.lcpMuteEnabled !== false);
 const isMuted = computed(() => props.module.settings?.audioEnabled === false);
+
+// Local volume tracks the fader during drag — prevents snap-back between throttled emits
+const localVolume = ref(storeVolume.value);
+const dragging = ref(false);
+
+// Sync from store when NOT dragging (e.g. another LCP client changed it)
+watch(storeVolume, (v) => { if (!dragging.value) localVolume.value = v; });
 
 const healthColor = computed(() => {
     switch (props.module.health) {
@@ -31,22 +38,34 @@ const healthColor = computed(() => {
     }
 });
 
-// Fader: throttled emit, no local state tracking
 let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingValue: number | null = null;
 
 function onFaderInput(e: Event) {
     const val = Number((e.target as HTMLInputElement).value);
+    localVolume.value = val;
+    dragging.value = true;
+    pendingValue = val;
     if (!throttleTimer) {
+        emit('volume', props.module.instanceId, val);
         throttleTimer = setTimeout(() => {
             throttleTimer = null;
+            // Send any pending value that was buffered during cooldown
+            if (pendingValue !== null) {
+                emit('volume', props.module.instanceId, pendingValue);
+                pendingValue = null;
+            }
         }, 50);
-        emit('volume', props.module.instanceId, val);
     }
 }
 
 function onFaderEnd(e: Event) {
     const val = Number((e.target as HTMLInputElement).value);
+    localVolume.value = val;
+    dragging.value = false;
     emit('volume', props.module.instanceId, val);
+    if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
+    pendingValue = null;
 }
 
 function toggleMute() {
@@ -74,7 +93,7 @@ function toggleMute() {
                 class="vertical-fader"
                 :min="0"
                 :max="volumeMax"
-                :value="volume"
+                :value="localVolume"
                 @input="onFaderInput"
                 @mouseup="onFaderEnd"
                 @touchend="onFaderEnd"
@@ -82,7 +101,7 @@ function toggleMute() {
         </div>
 
         <!-- Volume display -->
-        <div v-if="volumeEnabled" class="volume-display">{{ Math.round(volume) }}%</div>
+        <div v-if="volumeEnabled" class="volume-display">{{ Math.round(localVolume) }}%</div>
 
         <!-- Mute button -->
         <button
@@ -158,7 +177,7 @@ function toggleMute() {
     direction: rtl;
     -webkit-appearance: none;
     appearance: none;
-    width: 44px;
+    width: 48px;
     height: 100%;
     cursor: pointer;
     background: transparent;
@@ -180,19 +199,19 @@ function toggleMute() {
 
 .vertical-fader::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     background: var(--accent, #10b981);
     border: 2px solid rgba(255, 255, 255, 0.2);
-    margin-left: -17px;
+    margin-left: -19px;
     cursor: pointer;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 .vertical-fader::-moz-range-thumb {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     background: var(--accent, #10b981);
     border: 2px solid rgba(255, 255, 255, 0.2);
@@ -236,5 +255,40 @@ function toggleMute() {
 .mute-btn.disabled {
     opacity: 0.3;
     cursor: not-allowed;
+}
+
+/* Landscape: shorter strips, smaller VU, compact layout */
+@media (orientation: landscape) and (max-height: 500px) {
+    .mixer-strip {
+        padding: 4px 4px;
+        gap: 2px;
+    }
+    .vu-container {
+        height: 60px;
+    }
+    .fader-container {
+        min-height: 60px;
+    }
+    .volume-display {
+        font-size: 11px;
+    }
+    .mute-btn {
+        padding: 4px 4px;
+        font-size: 10px;
+    }
+}
+
+/* Tablet landscape: more breathing room */
+@media (orientation: landscape) and (min-height: 501px) {
+    .vu-container {
+        height: 100px;
+    }
+}
+
+/* Portrait on small screens: narrower strips */
+@media (orientation: portrait) and (max-width: 500px) {
+    .mixer-strip {
+        width: 100px;
+    }
 }
 </style>
