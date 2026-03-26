@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import type { LcpModuleState } from '@/stores/modules';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
+
+// Fader container ref — used to size the rotated slider to match container height
+const faderContainerRef = ref<HTMLElement | null>(null);
+const faderWidth = ref(200); // px — will be set to container height
+let faderResizeObserver: ResizeObserver | null = null;
 
 const props = defineProps<{
     module: LcpModuleState;
@@ -71,6 +76,20 @@ function onFaderEnd(e: Event) {
 function toggleMute() {
     emit('mute', props.module.instanceId, !isMuted.value);
 }
+
+onMounted(() => {
+    if (faderContainerRef.value) {
+        faderWidth.value = faderContainerRef.value.clientHeight || 200;
+        faderResizeObserver = new ResizeObserver((entries) => {
+            faderWidth.value = entries[0]?.contentRect.height || 200;
+        });
+        faderResizeObserver.observe(faderContainerRef.value);
+    }
+});
+
+onUnmounted(() => {
+    faderResizeObserver?.disconnect();
+});
 </script>
 
 <template>
@@ -86,11 +105,12 @@ function toggleMute() {
             <MrVuMeter :levels="vuLevels" orientation="vertical" :num-blocks="15" :block-gap="2" />
         </div>
 
-        <!-- Volume fader (vertical) -->
-        <div v-if="volumeEnabled" class="fader-container">
+        <!-- Volume fader (horizontal input rotated -90deg for vertical appearance) -->
+        <div v-if="volumeEnabled" ref="faderContainerRef" class="fader-container">
             <input
                 type="range"
                 class="vertical-fader"
+                :style="{ width: faderWidth + 'px' }"
                 :min="0"
                 :max="volumeMax"
                 :value="localVolume"
@@ -170,29 +190,34 @@ function toggleMute() {
     justify-content: center;
     min-height: 100px;
     width: 100%;
+    position: relative;
 }
 
 .vertical-fader {
-    writing-mode: vertical-lr;
-    direction: rtl;
     -webkit-appearance: none;
     appearance: none;
-    width: 48px;
-    height: 100%;
+    /* Horizontal slider rotated -90deg — touch input stays on native X axis.
+       Width (which becomes visual height) set via inline style to match container height. */
+    position: absolute;
+    transform: rotate(-90deg);
+    transform-origin: center center;
+    width: 200px; /* overridden by inline style */
+    height: 48px;
     cursor: pointer;
     background: transparent;
+    touch-action: pan-x;
 }
 
 .vertical-fader::-webkit-slider-runnable-track {
-    width: 6px;
-    height: 100%;
+    height: 6px;
+    width: 100%;
     border-radius: 3px;
     background: var(--border-primary, #2d3348);
 }
 
 .vertical-fader::-moz-range-track {
-    width: 6px;
-    height: 100%;
+    height: 6px;
+    width: 100%;
     border-radius: 3px;
     background: var(--border-primary, #2d3348);
 }
@@ -204,7 +229,7 @@ function toggleMute() {
     border-radius: 50%;
     background: var(--accent, #10b981);
     border: 2px solid rgba(255, 255, 255, 0.2);
-    margin-left: -19px;
+    margin-top: -19px;
     cursor: pointer;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
