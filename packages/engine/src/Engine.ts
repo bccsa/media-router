@@ -210,7 +210,7 @@ export class Engine {
         log.info('Starting...');
         await this.pipeWire.cleanupOrphans();
 
-        const pluginCount = this.pluginLoader.load();
+        const pluginCount = await this.pluginLoader.load();
         log.info({ pluginCount }, 'Loaded plugins');
 
         this.apiServer = await createApiServer(this, this.config.apiPort ?? 3001);

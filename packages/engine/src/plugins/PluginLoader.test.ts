@@ -30,24 +30,24 @@ describe('PluginLoader', () => {
         }
     }
 
-    it('returns 0 for nonexistent plugins directory', () => {
+    it('returns 0 for nonexistent plugins directory', async () => {
         const loader = new PluginLoader('/nonexistent/path');
-        expect(loader.load()).toBe(0);
+        expect(await loader.load()).toBe(0);
         expect(loader.size).toBe(0);
     });
 
-    it('returns 0 for empty directory', () => {
+    it('returns 0 for empty directory', async () => {
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(0);
+        expect(await loader.load()).toBe(0);
     });
 
-    it('skips directories without package.json', () => {
+    it('skips directories without package.json', async () => {
         fs.mkdirSync(path.join(tmpDir, 'no-pkg'));
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(0);
+        expect(await loader.load()).toBe(0);
     });
 
-    it('skips packages without mediaRouter manifest', () => {
+    it('skips packages without mediaRouter manifest', async () => {
         createPlugin('no-manifest', undefined as any);
         // Write a package.json without mediaRouter
         fs.writeFileSync(
@@ -55,16 +55,16 @@ describe('PluginLoader', () => {
             JSON.stringify({ name: 'test', version: '1.0.0' }),
         );
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(0);
+        expect(await loader.load()).toBe(0);
     });
 
-    it('skips manifests missing required fields', () => {
+    it('skips manifests missing required fields', async () => {
         createPlugin('bad-manifest', { pluginId: 'test' }); // missing displayName and engine
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(0);
+        expect(await loader.load()).toBe(0);
     });
 
-    it('loads a valid plugin manifest', () => {
+    it('loads a valid plugin manifest', async () => {
         createPlugin('good', {
             pluginId: 'test-plugin',
             displayName: 'Test Plugin',
@@ -73,7 +73,7 @@ describe('PluginLoader', () => {
         });
 
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(1);
+        expect(await loader.load()).toBe(1);
         expect(loader.size).toBe(1);
 
         const plugin = loader.get('test-plugin');
@@ -82,7 +82,7 @@ describe('PluginLoader', () => {
         expect(plugin!.manifest.displayName).toBe('Test Plugin');
     });
 
-    it('loads multiple plugins', () => {
+    it('loads multiple plugins', async () => {
         createPlugin('plugin-a', {
             pluginId: 'a',
             displayName: 'Plugin A',
@@ -95,43 +95,43 @@ describe('PluginLoader', () => {
         });
 
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(2);
+        expect(await loader.load()).toBe(2);
         expect(loader.get('a')).toBeDefined();
         expect(loader.get('b')).toBeDefined();
     });
 
-    it('returns undefined for unknown plugin', () => {
+    it('returns undefined for unknown plugin', async () => {
         const loader = new PluginLoader(tmpDir);
-        loader.load();
+        await loader.load();
         expect(loader.get('nonexistent')).toBeUndefined();
     });
 
-    it('getManifests returns all loaded manifests', () => {
+    it('getManifests returns all loaded manifests', async () => {
         createPlugin('p1', { pluginId: 'p1', displayName: 'P1', engine: './engine/T.js' });
         createPlugin('p2', { pluginId: 'p2', displayName: 'P2', engine: './engine/T.js' });
 
         const loader = new PluginLoader(tmpDir);
-        loader.load();
+        await loader.load();
 
         const manifests = loader.getManifests();
         expect(manifests).toHaveLength(2);
         expect(manifests.map((m) => m.pluginId).sort()).toEqual(['p1', 'p2']);
     });
 
-    it('clears previous plugins on reload', () => {
+    it('clears previous plugins on reload', async () => {
         createPlugin('first', { pluginId: 'first', displayName: 'First', engine: './engine/T.js' });
 
         const loader = new PluginLoader(tmpDir);
-        loader.load();
+        await loader.load();
         expect(loader.size).toBe(1);
 
         // Remove the plugin and reload
         fs.rmSync(path.join(tmpDir, 'first'), { recursive: true });
-        loader.load();
+        await loader.load();
         expect(loader.size).toBe(0);
     });
 
-    it('defaults missing ports and configSchema', () => {
+    it('defaults missing ports and configSchema', async () => {
         createPlugin('minimal', {
             pluginId: 'min',
             displayName: 'Minimal',
@@ -140,21 +140,21 @@ describe('PluginLoader', () => {
         });
 
         const loader = new PluginLoader(tmpDir);
-        loader.load();
+        await loader.load();
 
         const plugin = loader.get('min');
         expect(plugin!.manifest.ports).toEqual([]);
         expect(plugin!.manifest.configSchema).toEqual({});
     });
 
-    it('loads engine module class when JS file exists', () => {
+    it('loads engine module class when JS file exists', async () => {
+        // ESM export — import() requires ESM syntax
         const engineCode = `
-            class TestModule {
+            export class TestModule {
                 onInit() {}
                 onStart() {}
                 onStop() {}
             }
-            module.exports = { TestModule };
         `;
         createPlugin('with-class', {
             pluginId: 'with-class',
@@ -163,7 +163,7 @@ describe('PluginLoader', () => {
         }, engineCode);
 
         const loader = new PluginLoader(tmpDir);
-        loader.load();
+        await loader.load();
 
         const plugin = loader.get('with-class');
         expect(plugin).toBeDefined();
@@ -171,7 +171,7 @@ describe('PluginLoader', () => {
         expect(typeof plugin!.ModuleClass).toBe('function');
     });
 
-    it('skips unsupported architecture', () => {
+    it('skips unsupported architecture', async () => {
         createPlugin('wrong-arch', {
             pluginId: 'wrong-arch',
             displayName: 'Wrong Arch',
@@ -180,6 +180,6 @@ describe('PluginLoader', () => {
         });
 
         const loader = new PluginLoader(tmpDir);
-        expect(loader.load()).toBe(0);
+        expect(await loader.load()).toBe(0);
     });
 });

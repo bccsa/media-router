@@ -29,7 +29,7 @@ export class PluginLoader {
     }
 
     /** Discover and load all valid plugins. Returns count of loaded plugins. */
-    load(): number {
+    async load(): Promise<number> {
         this.plugins.clear();
 
         if (!fs.existsSync(this.pluginsDir)) {
@@ -70,11 +70,11 @@ export class PluginLoader {
                 if (!manifest.ports) manifest.ports = [];
                 if (!manifest.configSchema) manifest.configSchema = {};
 
-                // Try to load the engine module class
+                // Try to load the engine module class via dynamic import()
                 let ModuleClass: (new () => PluginModule) | null = null;
                 try {
                     const enginePath = path.resolve(pluginDir, manifest.engine);
-                    // Try .ts first (tsx dev mode), then .js (compiled)
+                    // Try .ts first (tsx dev mode), then .js (compiled), then dist/ .js
                     const tsPath = enginePath;
                     const jsPath = enginePath.replace(/\.ts$/, '.js');
                     const distJsPath = path.join(pluginDir, 'dist', path.basename(manifest.engine).replace(/\.ts$/, '.js'));
@@ -82,7 +82,7 @@ export class PluginLoader {
                     let mod: any;
                     for (const tryPath of [tsPath, jsPath, distJsPath]) {
                         if (fs.existsSync(tryPath)) {
-                            mod = require(tryPath);
+                            mod = await import(tryPath);
                             break;
                         }
                     }
