@@ -1,10 +1,25 @@
-import { Server as HttpServer, createServer } from 'http';
+import { Server as HttpServer, createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 
 const log = createLogger('LcpServer');
+
+/** MIME types for static file serving. */
+const MIME_TYPES: Record<string, string> = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+};
 
 /**
  * Socket.IO server for the Local Control Panel (LCP).
@@ -23,10 +38,14 @@ export class LcpServer extends EventEmitter {
     private port: number;
     private _engineRunning = false;
 
+    /** Resolved path to local-panel/dist for static serving. Null if not found. */
+    private staticDir: string | null = null;
+
     constructor(port = 8081) {
         super();
         this.port = port;
-        this.httpServer = createServer();
+        this.staticDir = this.findStaticDir();
+        this.httpServer = createServer((req, res) => this.handleHttpRequest(req, res));
         this.io = new SocketIOServer(this.httpServer, {
             cors: { origin: '*' },
         });
@@ -137,5 +156,70 @@ export class LcpServer extends EventEmitter {
      */
     sendConfigToSocket(socketId: string, config: Record<string, unknown>): void {
         this.io.to(socketId).emit('config', config);
+    }
+
+    // --- Static file serving for LCP UI ---
+
+    /** Find the local-panel/dist directory by walking up from engine package. */
+    private findStaticDir(): string | null {
+        // Try common locations relative to this file / cwd
+        const candidates = [
+            path.resolve(__dirname, '../../../local-panel/dist'),         // dev: packages/engine/src → packages/local-panel/dist
+            path.resolve(__dirname, '../../../../local-panel/dist'),      // dev: packages/engine/dist → packages/local-panel/dist
+            path.resolve(process.cwd(), '../local-panel/dist'),          // packages/engine cwd
+            path.resolve(process.cwd(), 'local-panel/dist'),             // repo root cwd (Yocto)
+            path.resolve(process.cwd(), 'packages/local-panel/dist'),    // repo root cwd
+        ];
+        for (const dir of candidates) {
+            if (fs.existsSync(path.join(dir, 'index.html'))) {
+                log.info({ path: dir }, 'Found LCP static files');
+                return dir;
+            }
+        }
+        log.warn('LCP static files not found — port 8081 will only serve Socket.IO');
+        return null;
+    }
+
+    /** Handle HTTP requests — serve static files or 404. */
+    private handleHttpRequest(req: IncomingMessage, res: ServerResponse): void {
+        if (!this.staticDir) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('LCP UI not built');
+            return;
+        }
+
+        let urlPath = (req.url ?? '/').split('?')[0];
+        if (urlPath === '/') urlPath = '/index.html';
+
+        const filePath = path.join(this.staticDir, urlPath);
+
+        // Security: prevent directory traversal
+        if (!filePath.startsWith(this.staticDir)) {
+            res.writeHead(403);
+            res.end();
+            return;
+        }
+
+        fs.readFile(filePath, (err, data) => {
+            if (err) {
+                // SPA fallback — serve index.html for non-file routes
+                if (urlPath.indexOf('.') === -1) {
+                    fs.readFile(path.join(this.staticDir!, 'index.html'), (err2, html) => {
+                        if (err2) { res.writeHead(404); res.end('Not found'); return; }
+                        res.writeHead(200, { 'Content-Type': 'text/html' });
+                        res.end(html);
+                    });
+                    return;
+                }
+                res.writeHead(404);
+                res.end('Not found');
+                return;
+            }
+
+            const ext = path.extname(filePath);
+            const mime = MIME_TYPES[ext] ?? 'application/octet-stream';
+            res.writeHead(200, { 'Content-Type': mime });
+            res.end(data);
+        });
     }
 }
