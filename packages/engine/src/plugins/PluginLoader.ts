@@ -74,13 +74,13 @@ export class PluginLoader {
                 let ModuleClass: (new () => PluginModule) | null = null;
                 try {
                     const enginePath = path.resolve(pluginDir, manifest.engine);
-                    // Try .ts first (tsx dev mode), then .js (compiled), then dist/ .js
+                    // Try compiled JS first (prod), then .ts (tsx dev mode)
                     const tsPath = enginePath;
                     const jsPath = enginePath.replace(/\.ts$/, '.js');
                     const distJsPath = path.join(pluginDir, 'dist', path.basename(manifest.engine).replace(/\.ts$/, '.js'));
 
                     let mod: any;
-                    for (const tryPath of [tsPath, jsPath, distJsPath]) {
+                    for (const tryPath of [distJsPath, jsPath, tsPath]) {
                         if (fs.existsSync(tryPath)) {
                             mod = await import(tryPath);
                             break;
