@@ -23,6 +23,7 @@ export const useModuleStore = defineStore('modules', () => {
     const modules = ref<Record<string, LcpModuleState>>({});
     const engineRunning = ref(false);
     const engineIp = ref('');
+    const engineIps = ref<string[]>([]);
     const engineHostname = ref('');
     const buildNumber = ref('');
 
@@ -148,5 +149,5 @@ export const useModuleStore = defineStore('modules', () => {
         modules.value = { ...modules.value };
     }
 
-    return { modules, engineRunning, engineIp, engineHostname, buildNumber, visibleModules, setAll, updateState, applyConfig, applyPatch, updateSetting, remove };
+    return { modules, engineRunning, engineIp, engineIps, engineHostname, buildNumber, visibleModules, setAll, updateState, applyConfig, applyPatch, updateSetting, remove };
 });

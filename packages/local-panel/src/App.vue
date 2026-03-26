@@ -42,7 +42,7 @@ function stopEngine() {
                 <div class="status-dot" :style="{ backgroundColor: socketStore.connected ? '#10b981' : '#6b7280' }"></div>
                 <h1 class="header-title">Media Router</h1>
                 <span class="header-subtitle">Local Control Panel</span>
-                <span v-if="moduleStore.engineIp" class="header-ip">{{ moduleStore.engineIp }}</span>
+                <span v-if="moduleStore.engineIps.length > 0" class="header-ip">{{ moduleStore.engineIps.join(', ') }}</span>
                 <span v-if="moduleStore.buildNumber" class="header-build">{{ moduleStore.buildNumber }}</span>
             </div>
             <div class="header-right">
@@ -87,7 +87,7 @@ function stopEngine() {
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
-body { background: var(--bg-primary); color: var(--text-primary); font-family: system-ui, -apple-system, sans-serif; }
+body { background: var(--bg-primary); color: var(--text-primary); font-family: system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
 #app { height: 100%; }
 </style>
 
@@ -191,7 +191,6 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: s
     gap: 8px;
     height: 100%;
     align-items: stretch;
-    -webkit-overflow-scrolling: touch;
 }
 
 /* Landscape: compact header, more space for faders */

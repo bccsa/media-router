@@ -39,9 +39,10 @@ export const useSocketStore = defineStore('socket', () => {
         });
 
         // Combined init event — config + runtime states + engineRunning in one payload
-        socket.on('init', (data: { engineRunning: boolean; ip?: string; hostname?: string; buildNumber?: string; config: Record<string, unknown> }) => {
+        socket.on('init', (data: { engineRunning: boolean; ip?: string; ips?: string[]; hostname?: string; buildNumber?: string; config: Record<string, unknown> }) => {
             moduleStore.engineRunning = data.engineRunning;
             if (data.ip) moduleStore.engineIp = data.ip;
+            if (data.ips) moduleStore.engineIps = data.ips;
             if (data.hostname) moduleStore.engineHostname = data.hostname;
             if (data.buildNumber) moduleStore.buildNumber = data.buildNumber;
             moduleStore.applyConfig(data.config);

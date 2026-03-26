@@ -75,7 +75,7 @@ async function register() {
                 </div>
                 <div class="text-xs space-y-1" :style="{ color: 'var(--text-muted)' }">
                     <div>ID: {{ engine.engineId }}</div>
-                    <div v-if="engine.ip">{{ engine.ip }}</div>
+                    <div v-if="engine.ips?.length">{{ engine.ips.join(', ') }}</div>
                     <div v-if="engine.buildNumber" style="opacity: 0.7">{{ engine.buildNumber }}</div>
                     <div>Profile: {{ engine.activeProfile ?? 'None' }}</div>
                     <div>Modules: {{ Object.keys(engine.modules).length }}</div>

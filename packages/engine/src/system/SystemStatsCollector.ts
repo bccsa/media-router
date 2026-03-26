@@ -1,12 +1,13 @@
 import * as os from 'os';
 import * as fs from 'fs';
-import { getPrimaryIp, findBuildNumber, getHostname } from './deviceInfo.js';
+import { getAllIps, findBuildNumber, getHostname } from './deviceInfo.js';
 
 export interface SystemStats {
     cpu: number;
     mem: number;
     temp: number | null;
     ip?: string;
+    ips?: string[];
     hostname?: string;
     buildNumber?: string;
 }
@@ -58,7 +59,9 @@ export class SystemStatsCollector {
 
                 // Include IP + hostname + build on first sample and every 30 samples (~60s)
                 if (this.sampleCount % 30 === 0) {
-                    stats.ip = getPrimaryIp();
+                    const ips = getAllIps();
+                    stats.ip = ips[0] ?? '127.0.0.1';
+                    stats.ips = ips;
                     stats.hostname = getHostname();
                     if (this.cachedBuildNumber === null) {
                         this.cachedBuildNumber = findBuildNumber();

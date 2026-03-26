@@ -77,6 +77,7 @@ export interface EngineState {
     connections: ConnectionState[];
     system?: SystemStats;
     ip?: string;
+    ips?: string[];
     hostname?: string;
     buildNumber?: string;
 }
@@ -128,6 +129,7 @@ export const useEngineStore = defineStore('engines', () => {
             modules,
             connections: (data.connections ?? []) as ConnectionState[],
             ip: data.ip as string | undefined,
+            ips: data.ips as string[] | undefined,
             hostname: data.hostname as string | undefined,
             buildNumber: data.buildNumber as string | undefined,
         });
@@ -242,11 +244,12 @@ export const useEngineStore = defineStore('engines', () => {
         }
     }
 
-    function setEngineInfo(engineId: string, info: { ip?: string; hostname?: string; buildNumber?: string }) {
+    function setEngineInfo(engineId: string, info: { ip?: string; ips?: string[]; hostname?: string; buildNumber?: string }) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
         let changed = false;
         if (info.ip && engine.ip !== info.ip) { engine.ip = info.ip; changed = true; }
+        if (info.ips && JSON.stringify(info.ips) !== JSON.stringify(engine.ips)) { engine.ips = info.ips; changed = true; }
         if (info.hostname && engine.hostname !== info.hostname) { engine.hostname = info.hostname; changed = true; }
         if (info.buildNumber && engine.buildNumber !== info.buildNumber) { engine.buildNumber = info.buildNumber; changed = true; }
         if (changed) engines.value = new Map(engines.value);

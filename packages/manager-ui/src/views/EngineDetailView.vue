@@ -30,7 +30,7 @@ const infoRows = computed(() => {
     const rows = [
         { label: 'Engine ID', value: engine.value.engineId },
         { label: 'Status', value: engine.value.online ? 'Online' : 'Offline', accent: engine.value.online },
-        { label: 'IP Address', value: engine.value.ip ?? (engine.value.online ? 'Detecting...' : 'Unknown') },
+        { label: 'IP Address', value: engine.value.ips?.length ? engine.value.ips.join(', ') : (engine.value.online ? 'Detecting...' : 'Unknown') },
         { label: 'Hostname', value: engine.value.hostname ?? '—' },
         ...(engine.value.buildNumber ? [{ label: 'Build', value: engine.value.buildNumber }] : []),
         { label: 'Active Profile', value: engine.value.activeProfile ?? 'None' },

@@ -4,14 +4,21 @@ import * as path from 'path';
 
 /** Get the primary non-loopback IPv4 address. */
 export function getPrimaryIp(): string {
+    const ips = getAllIps();
+    return ips.length > 0 ? ips[0] : '127.0.0.1';
+}
+
+/** Get all non-loopback IPv4 addresses. */
+export function getAllIps(): string[] {
     const interfaces = os.networkInterfaces();
+    const ips: string[] = [];
     for (const addrs of Object.values(interfaces)) {
         if (!addrs) continue;
         for (const addr of addrs) {
-            if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+            if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address);
         }
     }
-    return '127.0.0.1';
+    return ips;
 }
 
 /**

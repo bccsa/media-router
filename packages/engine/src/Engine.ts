@@ -16,7 +16,7 @@ import { createApiServer } from './api/server.js';
 import { LogForwarder } from './logging/LogForwarder.js';
 import { CommandDispatcher } from './commands/CommandDispatcher.js';
 import { SystemStatsCollector } from './system/SystemStatsCollector.js';
-import { getPrimaryIp, findBuildNumber, getHostname } from './system/deviceInfo.js';
+import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle } from './modules/ModuleLifecycle.js';
 
 const log = createLogger('Engine');
@@ -61,7 +61,7 @@ export class Engine {
     private currentConfig: Record<string, unknown> | null = null;
     private lcpControlHandler: LcpControlHandler | null = null;
     /** Cached device info — computed once at construction. */
-    private readonly deviceIp = getPrimaryIp();
+    private readonly deviceIps = getAllIps();
     private readonly deviceHostname = getHostname();
     private readonly deviceBuildNumber = findBuildNumber() || undefined;
 
@@ -326,7 +326,8 @@ export class Engine {
         }
         return {
             engineRunning: this._running,
-            ip: this.deviceIp,
+            ip: this.deviceIps[0] ?? '127.0.0.1',
+            ips: this.deviceIps,
             hostname: this.deviceHostname,
             buildNumber: this.deviceBuildNumber,
             config,
