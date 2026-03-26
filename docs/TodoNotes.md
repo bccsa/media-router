@@ -42,7 +42,7 @@
 [ ] - SRT and rist latnecy is still growing. (to be tested now)
 
 ## Featrues 
-[ ] - Mpegts compiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
+[ ] - Mpegts combiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
 [x] - Seed db with dummy data on first start (manager: 'local' engine with Audio Input → Audio Output profile; engine: 'local' profile connecting to 127.0.0.1:3000)
 
 ## LCP

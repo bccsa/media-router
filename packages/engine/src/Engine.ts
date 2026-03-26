@@ -170,7 +170,9 @@ export class Engine {
         this.managerConnection.on('config', (config: unknown) => {
             log.info('Received config from manager');
             this.currentConfig = config as Record<string, unknown>;
-            this.lcpServer.broadcastConfigUpdate([{ op: 'replace', path: '/', value: config }]);
+            // Enrich with lcpType before broadcasting to LCP clients
+            const enriched = this.enrichConfigForLcp(this.currentConfig);
+            this.lcpServer.broadcastConfigUpdate([{ op: 'replace', path: '/', value: enriched }]);
         });
 
         this.managerConnection.on('command', (command: unknown) => {
@@ -296,23 +298,30 @@ export class Engine {
         }
     }
 
+    /** Enrich config modules with lcpType from plugin manifests. */
+    private enrichConfigForLcp(config: Record<string, unknown>): Record<string, unknown> {
+        const modules = config.modules as Record<string, Record<string, unknown>> | undefined;
+        if (!modules) return config;
+        const enriched: Record<string, unknown> = {};
+        for (const [id, mod] of Object.entries(modules)) {
+            const pluginId = mod.pluginId as string;
+            const lcpType = this.pluginLoader.get(pluginId)?.manifest?.lcpType;
+            enriched[id] = { ...mod, lcpType: lcpType ?? undefined };
+        }
+        return { ...config, modules: enriched };
+    }
+
     /** Build combined init payload for LCP clients (config + runtime state + lcpType + engineRunning). */
     private getLcpInitData(): Record<string, unknown> {
-        const config = this.currentConfig ?? {};
-        const modules = (config as Record<string, unknown>).modules as Record<string, Record<string, unknown>> | undefined;
-        // Merge runtime state + lcpType from plugin manifest into config modules
-        const mergedModules: Record<string, unknown> = {};
+        const config = this.enrichConfigForLcp(this.currentConfig ?? {});
+        // Also merge runtime state into modules
+        const modules = config.modules as Record<string, Record<string, unknown>> | undefined;
         if (modules) {
             for (const [id, mod] of Object.entries(modules)) {
                 const instance = this.moduleManager.get(id);
-                const state = instance ? instance.getState() : {};
-                const pluginId = mod.pluginId as string;
-                const pluginManifest = this.pluginLoader.get(pluginId)?.manifest;
-                mergedModules[id] = {
-                    ...mod,
-                    ...(state as Record<string, unknown>),
-                    lcpType: pluginManifest?.lcpType ?? undefined,
-                };
+                if (instance) {
+                    Object.assign(mod, instance.getState());
+                }
             }
         }
         return {
@@ -320,7 +329,7 @@ export class Engine {
             ip: this.deviceIp,
             hostname: this.deviceHostname,
             buildNumber: this.deviceBuildNumber,
-            config: { ...config, modules: mergedModules },
+            config,
         };
     }
 
