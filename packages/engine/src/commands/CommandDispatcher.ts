@@ -10,6 +10,7 @@ export interface CommandContext {
     moduleManager: ModuleManager;
     mediaRouter: MediaRouter;
     lcpServer: LcpServer;
+    currentConfig: Record<string, unknown> | null;
     startModules: () => Promise<void>;
     stopModules: () => Promise<void>;
     resetEngine: () => Promise<void>;
@@ -18,6 +19,42 @@ export interface CommandContext {
     deleteSingleModule: (moduleId: string) => Promise<void>;
     disableModule: (moduleId: string) => Promise<void>;
     enableModule: (moduleId: string) => Promise<void>;
+}
+
+/** Apply JSON Patch operations to a nested object (supports replace, add, remove). */
+export function applyJsonPatch(obj: Record<string, unknown> | null, ops: Array<{ op: string; path: string; value?: unknown }>): void {
+    if (!obj) return;
+    for (const op of ops) {
+        const parts = op.path.split('/').filter(Boolean);
+        const last = parts.pop();
+        if (!last) continue;
+
+        let target: Record<string, unknown> = obj;
+        let valid = true;
+        for (const part of parts) {
+            if (target[part] == null || typeof target[part] !== 'object') {
+                if (op.op === 'add') { target[part] = {}; }
+                else { valid = false; break; }
+            }
+            target = target[part] as Record<string, unknown>;
+        }
+        if (!valid) continue;
+
+        switch (op.op) {
+            case 'add':
+            case 'replace':
+                // Array append: /connections/-
+                if (last === '-' && Array.isArray(target)) {
+                    (target as unknown[]).push(op.value);
+                } else {
+                    target[last] = op.value;
+                }
+                break;
+            case 'remove':
+                delete target[last];
+                break;
+        }
+    }
 }
 
 /**
@@ -127,6 +164,13 @@ export class CommandDispatcher {
                 this.commandLock = this.commandLock
                     .then(() => this.ctx.startSingleModule(moduleId))
                     .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
+                break;
+            }
+
+            case 'configPatch': {
+                const ops = cmd.ops as Array<{ op: string; path: string; value?: unknown }>;
+                applyJsonPatch(this.ctx.currentConfig, ops);
+                this.ctx.lcpServer.broadcastConfigUpdate(ops);
                 break;
             }
 

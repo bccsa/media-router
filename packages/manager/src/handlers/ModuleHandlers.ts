@@ -309,9 +309,15 @@ export class ModuleHandlers {
             return config;
         });
 
-        this.io.emit('engine:update', {
-            engineId: payload.engineId,
-            patch: [{ op: 'replace', path: `/modules/${payload.moduleId}/displayName`, value: payload.displayName }],
-        });
+        const patch = [{ op: 'replace', path: `/modules/${payload.moduleId}/displayName`, value: payload.displayName }];
+
+        if (this.engineManager.isEngineOnline(payload.engineId)) {
+            this.engineManager.sendToEngine(payload.engineId, 'command', {
+                command: 'configPatch',
+                ops: patch,
+            }, { guaranteeDelivery: true });
+        }
+
+        this.io.emit('engine:update', { engineId: payload.engineId, patch });
     }
 }

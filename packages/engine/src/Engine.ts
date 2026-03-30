@@ -71,6 +71,7 @@ export class Engine {
 
     constructor(config: EngineConfig = {}) {
         this.config = config;
+        const engine = this;
 
         this.logForwarder = new LogForwarder();
 
@@ -101,6 +102,7 @@ export class Engine {
             moduleManager: this.moduleManager,
             mediaRouter: this.mediaRouter,
             lcpServer: this.lcpServer,
+            get currentConfig() { return engine.currentConfig; },
             startModules: async () => {
                 await this.lifecycle.startAll();
                 this.lcpServer.broadcastEngineRunning(true);

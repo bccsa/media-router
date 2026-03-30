@@ -62,3 +62,4 @@
 
 ## Engine 
 [x] - When the engine reconnects to the manager, it restarts, instead of keeping its running state
+[ ] - Need to stop and start the engine,  after the engine restarted 
