@@ -87,8 +87,11 @@ export class ConnectionExecutor {
             return null;
         }
 
-        const sourceNodes = sourceModule.getPipeWireNodes();
-        const sinkNodes = sinkModule.getPipeWireNodes();
+        // Try port-specific lookup first (multi-port modules), fall back to module-level
+        const sourceNodes = sourceModule.getPipeWireNodeForPort(conn.sourcePortId)
+            ?? sourceModule.getPipeWireNodes();
+        const sinkNodes = sinkModule.getPipeWireNodeForPort(conn.sinkPortId)
+            ?? sinkModule.getPipeWireNodes();
 
         if (!sourceNodes?.source) {
             log.warn({ moduleId: conn.sourceModuleId }, 'Source module has no PipeWire source');

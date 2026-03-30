@@ -41,8 +41,12 @@ export interface PluginModule {
     getLiveUpdatableParams(): string[];
     /** Apply live config changes (only for params in getLiveUpdatableParams). */
     onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void>;
-    /** Return PipeWire node names for audio routing. */
+    /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
+    /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
+    getPipeWireNodeForPort?(portId: string): { source?: string; sink?: string };
+    /** Return dynamic ports based on config (overrides manifest ports). */
+    getDynamicPorts?(): Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections?: number }>;
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess?(): GstChildProcess | null;
 }

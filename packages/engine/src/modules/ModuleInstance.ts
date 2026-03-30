@@ -173,9 +173,19 @@ export class ModuleInstance extends EventEmitter {
         this.emitStateChange();
     }
 
-    /** Get PipeWire node names for audio routing. */
+    /** Get PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes(): { source?: string; sink?: string } | undefined {
         return this.plugin.getPipeWireNodes?.();
+    }
+
+    /** Get PipeWire node names for a specific port (multi-port modules). */
+    getPipeWireNodeForPort(portId: string): { source?: string; sink?: string } | undefined {
+        return this.plugin.getPipeWireNodeForPort?.(portId);
+    }
+
+    /** Get dynamic ports from the plugin (overrides config/manifest ports). */
+    getDynamicPorts(): Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections?: number }> | undefined {
+        return this.plugin.getDynamicPorts?.();
     }
 
     /** Get the GStreamer child process for MPEG-TS piping. */

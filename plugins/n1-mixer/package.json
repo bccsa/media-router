@@ -1,0 +1,50 @@
+{
+    "name": "@media-router/plugin-n1-mixer",
+    "version": "2.0.0",
+    "private": true,
+    "description": "N-1 mix-minus audio mixer — each output gets all inputs except its own paired input",
+    "mediaRouter": {
+        "pluginId": "n1-mixer",
+        "displayName": "N-1 Mixer",
+        "description": "Broadcast mix-minus: each output hears all inputs except its own return",
+        "color": "#a855f7",
+        "icon": "shuffle",
+        "category": "processing",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "pairCount": {
+                    "type": "number",
+                    "minimum": 2,
+                    "maximum": 16,
+                    "default": 4,
+                    "description": "Number of input/output pairs"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "routing",
+                "label": "N-1 Routing",
+                "fields": [
+                    { "key": "pairCount", "label": "Pairs" },
+                    { "key": "loopbacks", "label": "Internal Loopbacks" },
+                    { "key": "status", "label": "Status" }
+                ]
+            }
+        ],
+        "engine": "./engine/N1MixerModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

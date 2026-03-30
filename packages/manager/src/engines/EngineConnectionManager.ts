@@ -86,6 +86,11 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineLcpCommand', clientId, data);
             });
 
+            // Dynamic ports update (modules with configurable port count)
+            socket.on('dynamicPorts', (data: unknown) => {
+                this.emit('engineDynamicPorts', clientId, data);
+            });
+
             socket.on('disconnected', () => {
                 log.info({ engineId: clientId }, 'engine disconnected');
                 this.onlineEngines.delete(clientId);

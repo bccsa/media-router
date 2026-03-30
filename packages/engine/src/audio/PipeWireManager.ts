@@ -147,6 +147,7 @@ export class PipeWireManager {
         channels = 2,
         rate = 48000,
         ownerId?: string,
+        latencyMs = 20,
     ): Promise<number> {
         const loopbackName = `${MR_PW_PREFIX}CONN_${connId}`;
         const output = await this.paQueue.exec([
@@ -156,7 +157,7 @@ export class PipeWireManager {
             `sink=${sink}`,
             `channels=${channels}`,
             `rate=${rate}`,
-            'latency_msec=20',
+            `latency_msec=${latencyMs}`,
             'source_dont_move=true',
             'sink_dont_move=true',
         ]);

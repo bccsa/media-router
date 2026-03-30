@@ -40,6 +40,9 @@ interface StoredConnection {
  * enable, disable. Handles connection teardown/re-application.
  */
 export class ModuleLifecycle {
+    /** Called when a module's dynamic ports are resolved — allows the engine to push updates to the manager. */
+    onDynamicPortsResolved?: (moduleId: string, ports: RawPort[]) => void;
+
     constructor(
         private moduleManager: ModuleManager,
         private mediaRouter: MediaRouter,
@@ -48,8 +51,23 @@ export class ModuleLifecycle {
         private pluginLoader?: PluginLoader,
     ) {}
 
-    /** Resolve ports for a module: config ports take precedence, fall back to plugin manifest. */
-    private resolvePorts(modConfig: Record<string, unknown>, pluginId: string): RawPort[] {
+    /**
+     * Resolve ports for a module. Priority:
+     * 1. Dynamic ports from plugin (getDynamicPorts) — for modules with configurable port count
+     * 2. Config ports (modConfig.ports) — stored in profile
+     * 3. Plugin manifest ports — fallback
+     */
+    private resolvePortsForInstance(instanceId: string, modConfig: Record<string, unknown>, pluginId: string): RawPort[] {
+        // Check if the module instance provides dynamic ports
+        const instance = this.moduleManager.get(instanceId);
+        const dynamicPorts = instance?.getDynamicPorts();
+        if (dynamicPorts && dynamicPorts.length > 0) {
+            // Update the config so the manager gets the correct ports on next sync
+            modConfig.ports = dynamicPorts;
+            this.onDynamicPortsResolved?.(instanceId, dynamicPorts as RawPort[]);
+            return dynamicPorts as RawPort[];
+        }
+        // Fall back to config or manifest
         const configPorts = (modConfig.ports ?? []) as RawPort[];
         if (configPorts.length > 0) return configPorts;
         return (this.pluginLoader?.get(pluginId)?.manifest?.ports as RawPort[] | undefined) ?? [];
@@ -89,7 +107,7 @@ export class ModuleLifecycle {
             try {
                 this.moduleManager.createModule(instanceId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
 
-                this.mediaRouter.registerPorts(instanceId, mapPorts(this.resolvePorts(modConfig, pluginId)));
+                this.mediaRouter.registerPorts(instanceId, mapPorts(this.resolvePortsForInstance(instanceId, modConfig, pluginId)));
 
                 await this.moduleManager.startModule(instanceId);
                 log.info({ instanceId, module: label }, 'Started module');
@@ -158,7 +176,7 @@ export class ModuleLifecycle {
         try {
             const instance = this.moduleManager.createModule(moduleId, pluginId, modConfig.settings as Record<string, unknown>);
 
-            this.mediaRouter.registerPorts(moduleId, mapPorts(this.resolvePorts(modConfig, pluginId)));
+            this.mediaRouter.registerPorts(moduleId, mapPorts(this.resolvePortsForInstance(moduleId, modConfig, pluginId)));
 
             await this.moduleManager.startModule(moduleId);
             log.info({ moduleId, module: label }, 'Started module');
@@ -182,10 +200,26 @@ export class ModuleLifecycle {
             await this.mediaRouter.removeConnection(conn.id, true);
         }
 
+        // Unregister old ports before stop
+        await this.mediaRouter.unregisterPorts(moduleId);
+
         await instance.stop();
         await instance.start();
 
-        // Re-apply connections from stored config
+        // Re-register ports (may have changed if module has dynamic ports)
+        const config = this.getConfig();
+        const modules = (config?.modules ?? {}) as Record<string, Record<string, unknown>>;
+        const modConfig = modules[moduleId];
+        if (modConfig) {
+            const pluginId = modConfig.pluginId as string;
+            const ports = this.resolvePortsForInstance(moduleId, modConfig, pluginId);
+            if (ports.length > 0) {
+                this.mediaRouter.registerPorts(moduleId, mapPorts(ports));
+            }
+        }
+
+        // Wait for PipeWire to settle, then re-apply connections
+        await new Promise((r) => setTimeout(r, 300));
         await this.reapplyModuleConnections(moduleId);
     }
 
@@ -234,7 +268,7 @@ export class ModuleLifecycle {
                 const pluginId = modConfig.pluginId as string;
                 this.moduleManager.createModule(moduleId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
 
-                const ports = this.resolvePorts(modConfig, pluginId);
+                const ports = this.resolvePortsForInstance(moduleId, modConfig, pluginId);
                 if (ports.length > 0) {
                     this.mediaRouter.registerPorts(moduleId, mapPorts(ports));
                 }
@@ -264,7 +298,7 @@ export class ModuleLifecycle {
         const mpegtsConns = connections.filter((c) => {
             const srcMod = modules[c.sourceModuleId];
             const pluginId = srcMod?.pluginId as string | undefined;
-            const ports = pluginId ? this.resolvePorts(srcMod!, pluginId) : [];
+            const ports = pluginId ? this.resolvePortsForInstance(c.sourceModuleId, srcMod!, pluginId) : [];
             return ports.find((p) => p.id === c.sourcePortId)?.streamType === 'muxed/mpegts';
         });
         const audioConns = connections.filter((c) => !mpegtsConns.includes(c));

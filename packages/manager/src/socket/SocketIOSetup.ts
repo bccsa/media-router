@@ -57,7 +57,11 @@ export function setupSocketIO(deps: SocketDeps): void {
                     const m = mod as Record<string, unknown>;
                     const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
                     if (manifest) {
-                        m.ports = manifest.ports ?? [];
+                        // Use stored ports if available (dynamic ports from engine),
+                        // otherwise fall back to manifest ports
+                        if (!m.ports || (m.ports as unknown[]).length === 0) {
+                            m.ports = manifest.ports ?? [];
+                        }
                         m.configSchema = manifest.configSchema ?? {};
                         m.color = manifest.color;
                         m.icon = manifest.icon;

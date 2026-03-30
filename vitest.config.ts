@@ -11,7 +11,7 @@ export default defineConfig({
     },
     test: {
         globals: true,
-        include: ['packages/*/src/**/*.test.ts'],
+        include: ['packages/*/src/**/*.test.ts', 'plugins/*/engine/**/*.test.ts'],
         // Ensure Vue/Pinia resolve from manager-ui's node_modules
         deps: {
             optimizer: {

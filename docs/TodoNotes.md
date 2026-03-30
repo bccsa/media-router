@@ -53,3 +53,8 @@
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 
+[ ] - opus has some kind of noice gate build in, see how to disable
+
+## Manager-ui
+[ ] - Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
+[ ] - Cant remove labels on links

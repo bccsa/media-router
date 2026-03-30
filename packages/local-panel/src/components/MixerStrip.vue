@@ -1,13 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { LcpModuleState } from '@/stores/modules';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
-
-// Fader container ref — used to size the rotated slider to match container height
-const faderContainerRef = ref<HTMLElement | null>(null);
-const faderWidth = ref(200); // px — will be set to container height
-let faderResizeObserver: ResizeObserver | null = null;
+import VerticalFader from './VerticalFader.vue';
 
 const props = defineProps<{
     module: LcpModuleState;
@@ -46,8 +42,7 @@ const healthColor = computed(() => {
 let throttleTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingValue: number | null = null;
 
-function onFaderInput(e: Event) {
-    const val = Number((e.target as HTMLInputElement).value);
+function onFaderInput(val: number) {
     localVolume.value = val;
     dragging.value = true;
     pendingValue = val;
@@ -55,7 +50,6 @@ function onFaderInput(e: Event) {
         emit('volume', props.module.instanceId, val);
         throttleTimer = setTimeout(() => {
             throttleTimer = null;
-            // Send any pending value that was buffered during cooldown
             if (pendingValue !== null) {
                 emit('volume', props.module.instanceId, pendingValue);
                 pendingValue = null;
@@ -64,8 +58,7 @@ function onFaderInput(e: Event) {
     }
 }
 
-function onFaderEnd(e: Event) {
-    const val = Number((e.target as HTMLInputElement).value);
+function onFaderEnd(val: number) {
     localVolume.value = val;
     dragging.value = false;
     emit('volume', props.module.instanceId, val);
@@ -76,20 +69,6 @@ function onFaderEnd(e: Event) {
 function toggleMute() {
     emit('mute', props.module.instanceId, !isMuted.value);
 }
-
-onMounted(() => {
-    if (faderContainerRef.value) {
-        faderWidth.value = faderContainerRef.value.clientHeight || 200;
-        faderResizeObserver = new ResizeObserver((entries) => {
-            faderWidth.value = entries[0]?.contentRect.height || 200;
-        });
-        faderResizeObserver.observe(faderContainerRef.value);
-    }
-});
-
-onUnmounted(() => {
-    faderResizeObserver?.disconnect();
-});
 </script>
 
 <template>
@@ -105,18 +84,14 @@ onUnmounted(() => {
             <MrVuMeter :levels="vuLevels" orientation="vertical" :num-blocks="15" :block-gap="2" />
         </div>
 
-        <!-- Volume fader (horizontal input rotated -90deg for vertical appearance) -->
-        <div v-if="volumeEnabled" ref="faderContainerRef" class="fader-container">
-            <input
-                type="range"
-                class="vertical-fader"
-                :style="{ width: faderWidth + 'px' }"
+        <!-- Volume fader -->
+        <div v-if="volumeEnabled" class="fader-container">
+            <VerticalFader
+                :value="localVolume"
                 :min="0"
                 :max="volumeMax"
-                :value="localVolume"
                 @input="onFaderInput"
-                @mouseup="onFaderEnd"
-                @touchend="onFaderEnd"
+                @end="onFaderEnd"
             />
         </div>
 
@@ -190,58 +165,6 @@ onUnmounted(() => {
     justify-content: center;
     min-height: 100px;
     width: 100%;
-    position: relative;
-}
-
-.vertical-fader {
-    -webkit-appearance: none;
-    appearance: none;
-    /* Horizontal slider rotated -90deg — touch input stays on native X axis.
-       Width (which becomes visual height) set via inline style to match container height. */
-    position: absolute;
-    transform: rotate(-90deg);
-    transform-origin: center center;
-    width: 200px; /* overridden by inline style */
-    height: 48px;
-    cursor: pointer;
-    background: transparent;
-    touch-action: pan-x;
-}
-
-.vertical-fader::-webkit-slider-runnable-track {
-    height: 6px;
-    width: 100%;
-    border-radius: 3px;
-    background: var(--border-primary, #2d3348);
-}
-
-.vertical-fader::-moz-range-track {
-    height: 6px;
-    width: 100%;
-    border-radius: 3px;
-    background: var(--border-primary, #2d3348);
-}
-
-.vertical-fader::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: var(--accent, #10b981);
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    margin-top: -19px;
-    cursor: pointer;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-}
-
-.vertical-fader::-moz-range-thumb {
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: var(--accent, #10b981);
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    cursor: pointer;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 .volume-display {

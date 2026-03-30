@@ -189,12 +189,53 @@ export class ModuleHandlers {
             }, 100));
         }
 
-        const patchOps = Object.entries(payload.changes).map(([key, value]) => ({
+        const patchOps: Array<{ op: 'replace'; path: string; value: unknown }> = Object.entries(payload.changes).map(([key, value]) => ({
             op: 'replace' as const,
             path: `/modules/${payload.moduleId}/settings/${key}`,
             value,
         }));
+
+        // If pairCount changed on a module with dynamic ports, regenerate ports immediately
+        if ('pairCount' in payload.changes) {
+            const pairCount = payload.changes.pairCount as number;
+            const ports = this.generateDynamicPorts(payload.engineId, payload.moduleId, pairCount);
+            if (ports) {
+                patchOps.push({ op: 'replace', path: `/modules/${payload.moduleId}/ports`, value: ports });
+            }
+        }
+
         this.io.emit('engine:update', { engineId: payload.engineId, patch: patchOps });
+    }
+
+    /** Generate dynamic ports for modules that support them (e.g. N-1 mixer). */
+    private generateDynamicPorts(engineId: string, moduleId: string, pairCount: number): unknown[] | null {
+        const engine = this.configStore.getEngine(engineId);
+        if (!engine?.active_profile) return null;
+        const config = this.configStore.getProfile(engineId, engine.active_profile as string);
+        const modules = (config?.modules ?? {}) as Record<string, Record<string, unknown>>;
+        const mod = modules[moduleId];
+        if (!mod) return null;
+
+        const pluginId = mod.pluginId as string;
+        const manifest = this.pluginRegistry.find(pluginId);
+        // Only generate for plugins with empty manifest ports (dynamic port plugins)
+        if (manifest && manifest.ports.length === 0) {
+            const ports: unknown[] = [];
+            for (let i = 0; i < pairCount; i++) {
+                ports.push({ id: `in-${i}`, direction: 'input', streamType: 'audio/pcm', label: `In ${i + 1}`, maxConnections: -1 });
+            }
+            for (let i = 0; i < pairCount; i++) {
+                ports.push({ id: `out-${i}`, direction: 'output', streamType: 'audio/pcm', label: `Out ${i + 1}`, maxConnections: -1 });
+            }
+            // Persist to config
+            this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (cfg) => {
+                const mods = (cfg.modules ?? {}) as Record<string, Record<string, unknown>>;
+                if (mods[moduleId]) mods[moduleId].ports = ports;
+                return cfg;
+            });
+            return ports;
+        }
+        return null;
     }
 
     toggle(payload: { engineId: string; moduleId: string }): void {

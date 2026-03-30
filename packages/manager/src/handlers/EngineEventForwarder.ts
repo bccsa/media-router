@@ -143,6 +143,28 @@ export class EngineEventForwarder {
             this.engineCommands.setRunning(engineId, running);
             this.io.emit('engine:running', { engineId, running });
         });
+
+        // Dynamic port updates — persist to config + broadcast to browsers
+        this.engineManager.on('engineDynamicPorts', (engineId: string, data: unknown) => {
+            const { moduleId, ports } = data as { moduleId: string; ports: unknown[] };
+            if (!moduleId || !ports) return;
+            // 1. Update stored config
+            const engine = this.configStore.getEngine(engineId);
+            if (engine?.active_profile) {
+                this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
+                    const modules = config.modules as Record<string, Record<string, unknown>> | undefined;
+                    if (modules?.[moduleId]) {
+                        modules[moduleId].ports = ports;
+                    }
+                    return config;
+                });
+            }
+            // 2. Broadcast to browsers
+            this.io.emit('engine:update', {
+                engineId,
+                patch: [{ op: 'replace', path: `/modules/${moduleId}/ports`, value: ports }],
+            });
+        });
     }
 
     /** Store arbitrary data for an engine (keyed by topic). */

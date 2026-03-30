@@ -124,6 +124,15 @@ export class Engine {
             this.pluginLoader,
         );
 
+        // When a module generates dynamic ports, push them to the manager + LCP
+        this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {
+            log.info({ moduleId, portCount: ports.length }, 'Dynamic ports resolved — pushing to manager');
+            this.managerConnection.send('dynamicPorts', { moduleId, ports });
+            this.lcpServer.broadcastConfigUpdate([
+                { op: 'replace', path: `/modules/${moduleId}/ports`, value: ports },
+            ]);
+        };
+
         // System stats
         this.systemStats = new SystemStatsCollector((stats) => {
             this.managerConnection.send('system', stats);
