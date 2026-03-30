@@ -202,8 +202,10 @@ export class Engine {
 
         this.managerConnection.on('connected', () => {
             this.systemStats.start();
-            // Tell the manager whether the engine is already running
-            this.managerConnection.send('engineRunningState', { running: this._running });
+            // Tell the manager whether modules are actually running (not just the engine process).
+            // moduleManager.size > 0 means modules were started and are active.
+            const modulesRunning = this.moduleManager.size > 0;
+            this.managerConnection.send('engineRunningState', { running: modulesRunning });
             const states = this.moduleManager.getAllStates();
             if (Object.keys(states).length > 0) {
                 this.managerConnection.sendState(states);
