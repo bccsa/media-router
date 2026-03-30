@@ -3,15 +3,18 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
 /**
  * Audio Input plugin.
  *
- * Captures audio from a PipeWire/PulseAudio source device. Creates a named
- * null-sink so other modules can read from its `.monitor` source via loopback.
- * Volume is controlled via PipeWire source volume (pactl).
+ * Captures audio from a PipeWire/PulseAudio source device using a native
+ * module-remap-source (no GStreamer in the audio path). A separate lightweight
+ * GStreamer process reads from the remap source's monitor for VU metering only.
+ *
+ * Volume is controlled via PipeWire source volume (pactl set-source-volume).
  */
 export class AudioInputModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
     private deviceName = '';
     private detectedChannels: number | null = null;
     private detectedSampleRate: number | null = null;
+    private remapModuleId: number | null = null;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -28,29 +31,54 @@ export class AudioInputModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
-        // Use detected values, fall back to config
+        if (!this.deviceName) {
+            throw new Error('No audio device configured');
+        }
+
         const channels = this.detectedChannels ?? (this.config.channels as number) ?? 2;
         const rate = this.detectedSampleRate ?? (this.config.sampleRate as number) ?? 48000;
 
-        // Create a named null-sink before starting the pipeline
+        // Create a native remap-source instead of null-sink + GStreamer pipeline.
+        // Audio stays entirely in PipeWire — no GStreamer buffering in the signal path.
         if (this.services?.pipeWire) {
-            this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId, channels, rate, this.services.instanceId,
+            this.remapModuleId = await this.services.pipeWire.loadRemapSource(
+                this.services.instanceId, this.deviceName, channels, rate, this.services.instanceId,
             );
 
-            // Set initial volume on the real device
-            const vol = (this.config.volume as number) ?? 100;
-            if (this.deviceName) {
-                await this.services.pipeWire.setSourceVolume(this.deviceName, vol);
+            // Wait for the remap source to appear before starting VU pipeline
+            const ready = await this.services.pipeWire.waitForSource(this.pwNodeName);
+            if (!ready) {
+                this.log.warn({ pwNodeName: this.pwNodeName }, 'Remap source not confirmed — proceeding anyway');
             }
+
+            // Set initial volume on the remap source
+            const vol = (this.config.volume as number) ?? 100;
+            await this.services.pipeWire.setSourceVolume(this.pwNodeName, vol);
+
+            // Create a null-sink to tap the remap source for VU metering.
+            // pulsesrc reads from the null-sink's monitor (passive tap), avoiding
+            // interference with downstream loopback connections on the remap source.
+            this.paModuleId = await this.services.pipeWire.loadNullSink(
+                `${this.services.instanceId}_vu`, channels, rate, this.services.instanceId,
+            );
+            await this.services.pipeWire.waitForSink(`${this.pwNodeName}_vu`);
+
+            // Loopback from remap source into the VU null-sink
+            await this.services.pipeWire.loadLoopback(
+                `vu-${this.services.instanceId}`,
+                this.pwNodeName,
+                `${this.pwNodeName}_vu`,
+                channels, rate,
+                this.services.instanceId,
+            );
         }
 
         await super.onStart();
     }
 
     async onStop(): Promise<void> {
+        this.remapModuleId = null;
         await super.onStop();
-        // PipeWire cleanup is automatic via ownership tracking
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -58,41 +86,26 @@ export class AudioInputModule extends GstPluginBase {
         if ('volume' in changes || 'audioEnabled' in changes) {
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            const gstVol = volumePct / 100;
-            await this.setElementProperty('vol', 'volume', gstVol).catch(() => {});
             if (this.services?.pipeWire) {
-                await this.services.pipeWire.setSourceVolume(this.deviceName, volumePct);
+                await this.services.pipeWire.setSourceVolume(this.pwNodeName, volumePct);
             }
         }
     }
 
     getPipeWireNodes(): { source?: string; sink?: string } {
-        // Other modules read from our null-sink's monitor
-        return { source: `${this.pwNodeName}.monitor` };
+        // Remap-source IS a source — no .monitor needed
+        return { source: this.pwNodeName };
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription {
-        const device = (config.device as string) ?? '';
-        // Use detected values from PipeWire, fall back to config
-        const sampleRate = this.detectedSampleRate ?? (config.sampleRate as number) ?? 48000;
-        const channels = this.detectedChannels ?? (config.channels as number) ?? 2;
+    buildPipeline(_config: Record<string, unknown>): PipelineDescription {
+        // VU metering only — reads from the VU null-sink monitor (passive tap of remap source).
+        const pipeline = [
+            `pulsesrc device=${this.pwNodeName}_vu.monitor buffer-time=20000 latency-time=10000`,
+            'audioconvert',
+            'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
+            'fakesink sync=false',
+        ].join(' ! ');
 
-        const volumePct = (config.volume as number) ?? 100;
-        const gstVolume = (volumePct / 100).toFixed(2);
-        const deviceProp = device ? `device="${device}"` : '';
-        const source = `pulsesrc ${deviceProp} buffer-time=20000 latency-time=10000`.trim();
-        const format = `audioconvert ! audioresample ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
-        const vol = `volume name=vol volume=${gstVolume}`;
-        const level = 'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
-
-        // Output to our named null-sink (other modules connect via loopback to its .monitor)
-        const sink = `pulsesink device=${this.pwNodeName} buffer-time=20000 latency-time=10000 sync=false`;
-
-        const pipeline = `${source} ! ${format} ! ${vol} ! ${level} ! ${sink}`;
-
-        return {
-            pipeline,
-            liveElements: { vol: ['volume'] },
-        };
+        return { pipeline };
     }
 }

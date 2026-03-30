@@ -93,6 +93,52 @@ export class PipeWireManager {
     }
 
     /**
+     * Create a PipeWire remap-source from a hardware source.
+     * No GStreamer in the audio path — PipeWire handles remapping natively.
+     */
+    async loadRemapSource(name: string, master: string, channels = 2, rate = 48000, ownerId?: string): Promise<number> {
+        const sourceName = `${MR_PW_PREFIX}${name}`;
+        const output = await this.paQueue.exec([
+            'load-module', 'module-remap-source',
+            `master=${master}`,
+            `source_name=${sourceName}`,
+            `channels=${channels}`,
+            `rate=${rate}`,
+            `source_properties=device.description='${sourceName}'`,
+        ]);
+        const moduleId = parseInt(output, 10);
+        if (isNaN(moduleId)) {
+            throw new Error(`Failed to parse remap-source module ID from: ${output}`);
+        }
+        if (ownerId) this.trackOwnership(ownerId, moduleId);
+        log.info({ sourceName, master, moduleId }, 'Created remap-source');
+        return moduleId;
+    }
+
+    /**
+     * Create a PipeWire remap-sink mapping to a hardware sink.
+     * No GStreamer in the audio path — PipeWire handles remapping natively.
+     */
+    async loadRemapSink(name: string, master: string, channels = 2, rate = 48000, ownerId?: string): Promise<number> {
+        const sinkName = `${MR_PW_PREFIX}${name}`;
+        const output = await this.paQueue.exec([
+            'load-module', 'module-remap-sink',
+            `master=${master}`,
+            `sink_name=${sinkName}`,
+            `channels=${channels}`,
+            `rate=${rate}`,
+            `sink_properties=device.description='${sinkName}'`,
+        ]);
+        const moduleId = parseInt(output, 10);
+        if (isNaN(moduleId)) {
+            throw new Error(`Failed to parse remap-sink module ID from: ${output}`);
+        }
+        if (ownerId) this.trackOwnership(ownerId, moduleId);
+        log.info({ sinkName, master, moduleId }, 'Created remap-sink');
+        return moduleId;
+    }
+
+    /**
      * Unload a PulseAudio module by ID.
      */
     async unloadModule(moduleId: number): Promise<void> {
@@ -127,6 +173,23 @@ export class PipeWireManager {
             await new Promise((r) => setTimeout(r, intervalMs));
         }
         log.warn({ sinkName, timeoutMs }, 'Timed out waiting for sink to appear');
+        return false;
+    }
+
+    /**
+     * Wait until a source is visible in PipeWire/PulseAudio.
+     * Polls `pactl list short sources` until the source name appears or timeout.
+     */
+    async waitForSource(sourceName: string, timeoutMs = 2000, intervalMs = 50): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            try {
+                const output = this.paQueue.execImmediate(['list', 'short', 'sources']);
+                if (output.includes(sourceName)) return true;
+            } catch { /* retry */ }
+            await new Promise((r) => setTimeout(r, intervalMs));
+        }
+        log.warn({ sourceName, timeoutMs }, 'Timed out waiting for source to appear');
         return false;
     }
 

@@ -3,21 +3,19 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
 /**
  * Audio Output plugin.
  *
- * Routing connections target the REAL output device directly (not a null-sink).
- * This avoids the issue of pulsesrc not detecting new loopback audio.
+ * Creates a native module-remap-sink that maps to the real hardware device.
+ * Routing connections target the remap-sink (no GStreamer in the audio path).
  *
- * A separate null-sink + GStreamer pipeline is used only for VU metering:
- * a loopback from the real device's monitor feeds VU data.
+ * A separate lightweight GStreamer process reads from the remap-sink's monitor
+ * for VU metering only.
  *
- * Volume is controlled via PipeWire sink volume (pactl).
+ * Volume is controlled via PipeWire sink volume (pactl set-sink-volume).
  */
 export class AudioOutputModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
     private deviceName = '';
     private detectedChannels: number | null = null;
     private detectedSampleRate: number | null = null;
-    /** PA module ID for the VU metering loopback (device.monitor → null-sink). */
-    private vuLoopbackId: number | null = null;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -34,42 +32,31 @@ export class AudioOutputModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
+        if (!this.deviceName) {
+            throw new Error('No audio device configured');
+        }
+
         const channels = this.detectedChannels ?? (this.config.channels as number) ?? 2;
         const rate = this.detectedSampleRate ?? (this.config.sampleRate as number) ?? 48000;
 
         if (this.services?.pipeWire) {
-            // Create null-sink for VU metering only
-            this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId, channels, rate, this.services.instanceId,
+            // Create a native remap-sink instead of null-sink.
+            // Audio stays entirely in PipeWire — no GStreamer buffering in the signal path.
+            this.paModuleId = await this.services.pipeWire.loadRemapSink(
+                this.services.instanceId, this.deviceName, channels, rate, this.services.instanceId,
             );
 
-            // Set initial volume on the real output device
+            // Set initial volume on the remap sink
             const vol = (this.config.volume as number) ?? 100;
-            if (this.deviceName) {
-                await this.services.pipeWire.setSinkVolume(this.deviceName, vol);
-            }
+            await this.services.pipeWire.setSinkVolume(this.pwNodeName, vol);
         }
 
-        // Start the VU metering pipeline (reads from null-sink monitor)
+        // Start VU metering pipeline (reads from remap-sink monitor directly — no loopback needed)
         await super.onStart();
-
-        // Create a loopback from the real device's monitor to our null-sink for VU metering
-        if (this.services?.pipeWire && this.deviceName) {
-            try {
-                this.vuLoopbackId = await this.services.pipeWire.loadLoopback(
-                    `vu-${this.services.instanceId}`,
-                    `${this.deviceName}.monitor`,
-                    this.pwNodeName,
-                    channels, rate,
-                    this.services.instanceId,
-                );
-            } catch { /* VU loopback is optional */ }
-        }
     }
 
     async onStop(): Promise<void> {
         await super.onStop();
-        // PipeWire cleanup is automatic via ownership tracking
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -77,35 +64,28 @@ export class AudioOutputModule extends GstPluginBase {
         if ('volume' in changes || 'audioEnabled' in changes) {
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            const gstVol = volumePct / 100;
-            await this.setElementProperty('vol', 'volume', gstVol).catch(() => {});
-            if (this.services?.pipeWire && this.deviceName) {
-                await this.services.pipeWire.setSinkVolume(this.deviceName, volumePct);
+            // Volume controlled natively via PipeWire — no GStreamer element needed
+            if (this.services?.pipeWire) {
+                await this.services.pipeWire.setSinkVolume(this.pwNodeName, volumePct);
             }
         }
     }
 
-    /** Audio output routes directly to the real device — no null-sink in the audio path. */
+    /** Routing connections target the remap-sink. */
     getPipeWireNodes(): { source?: string; sink?: string } {
-        return { sink: this.deviceName };
+        return { sink: this.pwNodeName };
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription {
-        const sampleRate = this.detectedSampleRate ?? (config.sampleRate as number) ?? 48000;
-        const channels = this.detectedChannels ?? (config.channels as number) ?? 2;
+    buildPipeline(_config: Record<string, unknown>): PipelineDescription {
+        // VU metering only — reads from remap-sink monitor, measures level, discards audio.
+        // No volume element needed (volume is controlled natively via PipeWire).
+        const pipeline = [
+            `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000`,
+            'audioconvert',
+            'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
+            'fakesink sync=false',
+        ].join(' ! ');
 
-        // VU-only pipeline: reads from null-sink monitor, applies volume, then measures level
-        const volumePct = (config.volume as number) ?? 100;
-        const gstVolume = (volumePct / 100).toFixed(2);
-        const source = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000`;
-        const format = `audioconvert`;
-        const vol = `volume name=vol volume=${gstVolume}`;
-        const level = 'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
-        const pipeline = `${source} ! ${format} ! ${vol} ! ${level} ! fakesink sync=false`;
-
-        return {
-            pipeline,
-            liveElements: { vol: ['volume'] },
-        };
+        return { pipeline };
     }
 }

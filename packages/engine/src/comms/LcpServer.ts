@@ -194,7 +194,7 @@ export class LcpServer extends EventEmitter {
         const filePath = path.join(this.staticDir, urlPath);
 
         // Security: prevent directory traversal
-        if (!filePath.startsWith(this.staticDir)) {
+        if (!filePath.startsWith(this.staticDir + path.sep) && filePath !== this.staticDir) {
             res.writeHead(403);
             res.end();
             return;
@@ -202,8 +202,8 @@ export class LcpServer extends EventEmitter {
 
         fs.readFile(filePath, (err, data) => {
             if (err) {
-                // SPA fallback — serve index.html for non-file routes
-                if (urlPath.indexOf('.') === -1) {
+                // SPA fallback — serve index.html for non-asset routes
+                if (!/\.(js|css|png|svg|ico|json|woff2?)$/.test(urlPath)) {
                     fs.readFile(path.join(this.staticDir!, 'index.html'), (err2, html) => {
                         if (err2) { res.writeHead(404); res.end('Not found'); return; }
                         res.writeHead(200, { 'Content-Type': 'text/html' });
