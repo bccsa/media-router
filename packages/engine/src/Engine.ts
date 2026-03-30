@@ -200,6 +200,8 @@ export class Engine {
 
         this.managerConnection.on('connected', () => {
             this.systemStats.start();
+            // Tell the manager whether the engine is already running
+            this.managerConnection.send('engineRunningState', { running: this._running });
             const states = this.moduleManager.getAllStates();
             if (Object.keys(states).length > 0) {
                 this.managerConnection.sendState(states);

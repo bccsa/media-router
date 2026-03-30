@@ -30,6 +30,8 @@ export class EngineConnectionManager extends EventEmitter {
         this.server = new Server({
             port,
             encryptionKeys: this.buildEncryptionKeys(),
+            connectionTimeout: 2000,
+            missedKeepaliveThreshold: 2,
         });
 
         this.server.on('connection', (socket: any, clientId: string) => {
@@ -91,6 +93,11 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineDynamicPorts', clientId, data);
             });
 
+            // Engine reports its running state on connect
+            socket.on('engineRunningState', (data: unknown) => {
+                this.emit('engineRunningState', clientId, data);
+            });
+
             socket.on('disconnected', () => {
                 log.info({ engineId: clientId }, 'engine disconnected');
                 this.onlineEngines.delete(clientId);
@@ -100,6 +107,7 @@ export class EngineConnectionManager extends EventEmitter {
         });
 
         this.server.on('disconnection', (clientId: string) => {
+            log.info({ engineId: clientId }, 'engine disconnected');
             this.onlineEngines.delete(clientId);
             this.engineSockets.delete(clientId);
             this.emit('engineOffline', clientId);

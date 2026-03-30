@@ -220,7 +220,7 @@ export function useContextMenu(
         socket.emit('routing:update', {
             engineId: engineId(),
             connectionId: editingEdgeLabel.value.edgeId,
-            label: editingEdgeLabel.value.label || undefined,
+            label: editingEdgeLabel.value.label || '',
         });
         editingEdgeLabel.value = null;
     }

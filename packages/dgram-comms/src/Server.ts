@@ -242,6 +242,7 @@ export class Server extends EventEmitter {
         });
 
         socket.connected = true;
+        socket.markConnected();
         this.emit('connection', socket, clientID);
     }
 

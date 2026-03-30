@@ -98,7 +98,7 @@ export class RoutingHandlers {
             const conn = connections.find((c) => c.id === payload.connectionId);
             if (!conn) return config;
 
-            if ('label' in payload) conn.label = payload.label;
+            if ('label' in payload) conn.label = payload.label || undefined;
             if ('channelMap' in payload) conn.channelMap = payload.channelMap;
 
             config.connections = connections;
@@ -118,7 +118,7 @@ export class RoutingHandlers {
         const idx = connections.findIndex((c) => c.id === payload.connectionId);
         if (idx >= 0) {
             if ('label' in payload) {
-                patchOps.push({ op: 'replace', path: `/connections/${idx}/label`, value: payload.label });
+                patchOps.push({ op: 'replace', path: `/connections/${idx}/label`, value: payload.label || '' });
             }
             if ('channelMap' in payload) {
                 patchOps.push({ op: 'replace', path: `/connections/${idx}/channelMap`, value: payload.channelMap });

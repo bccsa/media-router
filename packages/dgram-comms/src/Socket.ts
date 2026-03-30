@@ -251,13 +251,11 @@ export class Socket extends EventEmitter {
     private connectionWatchdog(): void {
         if (this.destroyed) return;
 
-        // Only send keepalive if we've connected at least once
+        // Send keepalive
         if (this.connected || this.hasEverConnected) {
             this._send(null, null, { type: 'keepAlive' });
         }
 
-        // Only check timeout after we've connected at least once
-        // (don't disconnect a client that's still trying to connect)
         if (!this.hasEverConnected) return;
 
         if (Date.now() - this.keepAliveTime > this.connectionTimeout) {
@@ -273,6 +271,12 @@ export class Socket extends EventEmitter {
     resetKeepalive(): void {
         this.keepAliveTime = Date.now();
         this.missedKeepalives = 0;
+    }
+
+    /** Mark this socket as having established a connection (enables disconnect detection). */
+    markConnected(): void {
+        this.hasEverConnected = true;
+        this.keepAliveTime = Date.now();
     }
 
     // ---- Lifecycle -----------------------------------------------------------

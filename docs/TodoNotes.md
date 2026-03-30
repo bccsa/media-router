@@ -53,8 +53,12 @@
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 
-[ ] - opus has some kind of noice gate build in, see how to disable
+[x] - opus has some kind of noice gate build in, see how to disable (fixed: dtx=false disables silence detection/gating, inband-fec=true adds error correction)
+[ ] - Make inband-fec configurable in encoder settings — adds ~5-10% bitrate overhead, could matter with many streams over constrained links (Should aslos add % option as a configurable)
 
 ## Manager-ui
-[ ] - Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
+[x] - Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
 [ ] - Cant remove labels on links
+
+## Engine 
+[x] - When the engine reconnects to the manager, it restarts, instead of keeping its running state

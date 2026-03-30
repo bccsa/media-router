@@ -30,11 +30,34 @@ export class EngineEventForwarder {
     setup(): void {
         this.engineManager.on('engineOnline', (engineId: string) => {
             this.io.emit('engine:online', { engineId });
+            // Don't auto-send start here — wait for engine to report its running state
+        });
 
-            if (this.engineCommands.isRunning(engineId)) {
-                log.info({ engineId }, 'engine reconnected — auto-sending start');
+        // Engine reports its running state on connect. Manager state is authoritative.
+        this.engineManager.on('engineRunningState', (engineId: string, data: unknown) => {
+            const { running: engineRunning } = data as { running: boolean };
+            const managerWantsRunning = this.engineCommands.isRunning(engineId);
+
+            if (managerWantsRunning && !engineRunning) {
+                // Manager=run, Engine=stopped → start engine
+                log.info({ engineId }, 'Engine connected stopped — sending start');
                 this.engineCommands.sendCommand(engineId, 'start');
+            } else if (managerWantsRunning && engineRunning) {
+                // Manager=run, Engine=running → push config, no restart
+                log.info({ engineId }, 'Engine already running — pushing config');
+                const engine = this.configStore.getEngine(engineId);
+                if (engine?.active_profile) {
+                    const config = this.configStore.getProfile(engineId, engine.active_profile as string);
+                    if (config) {
+                        this.engineManager.sendToEngine(engineId, 'config', config, { guaranteeDelivery: true });
+                    }
+                }
+            } else if (!managerWantsRunning && engineRunning) {
+                // Manager=stop, Engine=running → stop engine
+                log.info({ engineId }, 'Manager wants stopped — sending stop');
+                this.engineCommands.sendCommand(engineId, 'stop');
             }
+            // Manager=stop, Engine=stopped → do nothing
         });
 
         this.engineManager.on('engineOffline', (engineId: string) => {
