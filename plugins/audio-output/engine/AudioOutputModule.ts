@@ -46,7 +46,6 @@ export class AudioOutputModule extends GstPluginBase {
                 this.services.instanceId, this.deviceName, channels, rate, this.services.instanceId,
             );
 
-            // Set initial volume on the remap sink
             const vol = (this.config.volume as number) ?? 100;
             await this.services.pipeWire.setSinkVolume(this.pwNodeName, vol);
         }
@@ -64,7 +63,6 @@ export class AudioOutputModule extends GstPluginBase {
         if ('volume' in changes || 'audioEnabled' in changes) {
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            // Volume controlled natively via PipeWire — no GStreamer element needed
             if (this.services?.pipeWire) {
                 await this.services.pipeWire.setSinkVolume(this.pwNodeName, volumePct);
             }
@@ -77,10 +75,10 @@ export class AudioOutputModule extends GstPluginBase {
     }
 
     buildPipeline(_config: Record<string, unknown>): PipelineDescription {
-        // VU metering only — reads from remap-sink monitor, measures level, discards audio.
-        // No volume element needed (volume is controlled natively via PipeWire).
+        // VU metering only — reads from the real device's monitor (post-volume).
+        // The remap-sink monitor shows pre-volume audio, so we tap the master device instead.
         const pipeline = [
-            `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000`,
+            `pulsesrc device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000`,
             'audioconvert',
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
             'fakesink sync=false',
