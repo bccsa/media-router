@@ -80,7 +80,7 @@ function toggleMute() {
         </div>
 
         <!-- VU Meter (vertical) -->
-        <div class="vu-container">
+        <div class="vu-container" :style="{ width: Math.min(Math.max(vuLevels.length, 2) * 10, 110) + 'px' }">
             <MrVuMeter :levels="vuLevels" orientation="vertical" :num-blocks="15" :block-gap="2" />
         </div>
 
@@ -142,20 +142,20 @@ function toggleMute() {
 }
 
 .module-name {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-primary, #f1f5f9);
+    font-size: 18px;
+    font-weight: 700;
+    color: #ffffff;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-align: center;
+    width: 100%;
 }
 
 .vu-container {
     flex: 0 0 auto;
     height: 120px;
-    width: 100%;
-    display: flex;
-    justify-content: center;
+    align-self: center;
 }
 
 .fader-container {
