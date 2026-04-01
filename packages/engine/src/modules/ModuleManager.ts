@@ -156,6 +156,15 @@ export class ModuleManager extends EventEmitter {
         return this.modules.size;
     }
 
+    /** Count of all running GStreamer processes across all modules. */
+    get gstProcessCount(): number {
+        let count = 0;
+        for (const mod of this.modules.values()) {
+            count += mod.getProcessCount();
+        }
+        return count;
+    }
+
     /** Apply config update to a module. */
     async applyConfigUpdate(instanceId: string, changes: Record<string, unknown>): Promise<void> {
         const mod = this.modules.get(instanceId);

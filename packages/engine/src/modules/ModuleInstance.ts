@@ -193,6 +193,11 @@ export class ModuleInstance extends EventEmitter {
         return this.plugin.getChildProcess?.() ?? null;
     }
 
+    /** Count of running child processes owned by this module. */
+    getProcessCount(): number {
+        return this.plugin.getProcessCount?.() ?? 0;
+    }
+
     /** Get the underlying plugin. */
     getPlugin(): PluginModule {
         return this.plugin;

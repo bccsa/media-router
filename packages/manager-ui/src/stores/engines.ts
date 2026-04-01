@@ -65,6 +65,7 @@ export interface SystemStats {
     cpu: number;    // CPU usage %
     mem: number;    // Memory usage %
     temp: number | null;  // CPU temperature °C
+    processCount?: number;  // Spawned child processes
 }
 
 export interface EngineState {

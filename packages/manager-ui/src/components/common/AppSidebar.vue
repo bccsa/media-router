@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useEngineStore } from '@/stores/engines';
+import { statColorClass } from '@/composables/useStatColor';
 
 const route = useRoute();
 const engineStore = useEngineStore();
@@ -9,12 +10,6 @@ const open = ref(false);
 
 // Close sidebar on route change (mobile)
 watch(() => route.path, () => { open.value = false; });
-
-function statColorClass(value: number, warn: number, crit: number): string {
-    if (value >= crit) return 'text-error';
-    if (value >= warn) return 'text-warning';
-    return 'text-muted';
-}
 </script>
 
 <template>

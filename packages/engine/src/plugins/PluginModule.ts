@@ -49,6 +49,8 @@ export interface PluginModule {
     getDynamicPorts?(): Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections?: number }>;
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess?(): GstChildProcess | null;
+    /** Count of running child processes owned by this module. */
+    getProcessCount?(): number;
 }
 
 /**
@@ -105,6 +107,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess(): GstChildProcess | null {
         return this.childProcess;
+    }
+
+    /** Count of running child processes owned by this module. */
+    getProcessCount(): number {
+        return (this.childProcess?.isRunning ? 1 : 0) + (this.vuProcess?.isRunning ? 1 : 0);
     }
 
     /** PipeWire node name for this module instance. */

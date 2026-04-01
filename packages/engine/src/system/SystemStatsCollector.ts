@@ -6,6 +6,7 @@ export interface SystemStats {
     cpu: number;
     mem: number;
     temp: number | null;
+    processCount?: number;
     ip?: string;
     ips?: string[];
     hostname?: string;

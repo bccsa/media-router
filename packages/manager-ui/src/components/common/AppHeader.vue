@@ -1,9 +1,20 @@
 <script setup lang="ts">
+import { computed } from 'vue';
+import { useRoute } from 'vue-router';
 import { useSocketStore } from '@/stores/socket';
 import { useThemeStore } from '@/stores/theme';
+import { useEngineStore } from '@/stores/engines';
+import { statColorClass } from '@/composables/useStatColor';
 
+const route = useRoute();
 const socket = useSocketStore();
 const theme = useThemeStore();
+const engineStore = useEngineStore();
+
+const activeEngine = computed(() => {
+    const id = route.params.engineId as string | undefined;
+    return id ? engineStore.getEngine(id) : undefined;
+});
 </script>
 
 <template>
@@ -12,6 +23,29 @@ const theme = useThemeStore();
             <div class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold text-white bg-accent">MR</div>
             <span class="text-sm font-semibold text-foreground">Media Router</span>
         </div>
+
+        <!-- Engine info strip — visible only when viewing a specific online engine -->
+        <div v-if="activeEngine?.online && activeEngine.system" class="hidden lg:flex items-center gap-0 text-xs tabular-nums">
+            <!-- Engine name -->
+            <span class="text-foreground font-medium">{{ activeEngine.name }}</span>
+
+            <!-- System stats -->
+            <div class="flex items-center gap-2 border-l border-border pl-3 ml-3">
+                <span :class="statColorClass(activeEngine.system.cpu, 70, 90)">CPU {{ activeEngine.system.cpu }}%</span>
+                <span :class="statColorClass(activeEngine.system.mem, 80, 95)">MEM {{ activeEngine.system.mem }}%</span>
+                <span v-if="activeEngine.system.temp !== null" :class="statColorClass(activeEngine.system.temp, 70, 80)">{{ activeEngine.system.temp }}°C</span>
+            </div>
+
+            <!-- IP -->
+            <span v-if="activeEngine.ip" class="text-muted border-l border-border pl-3 ml-3">{{ activeEngine.ips?.join(', ') ?? activeEngine.ip }}</span>
+
+            <!-- Build -->
+            <span v-if="activeEngine.buildNumber" class="text-muted border-l border-border pl-3 ml-3">Build {{ activeEngine.buildNumber }}</span>
+
+            <!-- Process count -->
+            <span v-if="activeEngine.system.processCount != null" class="text-muted border-l border-border pl-3 ml-3">Procs {{ activeEngine.system.processCount }}</span>
+        </div>
+
         <div class="flex items-center gap-3">
             <div class="flex items-center gap-1.5">
                 <div class="w-2 h-2 rounded-full" :class="socket.connected ? 'bg-ok' : 'bg-error'" />

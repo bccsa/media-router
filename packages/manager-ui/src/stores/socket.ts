@@ -94,9 +94,9 @@ export const useSocketStore = defineStore('socket', () => {
         });
 
         // System stats (CPU, memory, temp, IP, build)
-        s.on('engine:system', (data: { engineId: string; cpu: number; mem: number; temp: number | null; ip?: string; ips?: string[]; hostname?: string; buildNumber?: string }) => {
+        s.on('engine:system', (data: { engineId: string; cpu: number; mem: number; temp: number | null; processCount?: number; ip?: string; ips?: string[]; hostname?: string; buildNumber?: string }) => {
             const store = useEngineStore();
-            store.setSystemStats(data.engineId, { cpu: data.cpu, mem: data.mem, temp: data.temp });
+            store.setSystemStats(data.engineId, { cpu: data.cpu, mem: data.mem, temp: data.temp, processCount: data.processCount });
             if (data.ip || data.ips || data.hostname || data.buildNumber) {
                 store.setEngineInfo(data.engineId, { ip: data.ip, ips: data.ips, hostname: data.hostname, buildNumber: data.buildNumber });
             }

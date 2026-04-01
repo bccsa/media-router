@@ -136,6 +136,7 @@ export class Engine {
 
         // System stats
         this.systemStats = new SystemStatsCollector((stats) => {
+            stats.processCount = this.moduleManager.gstProcessCount + this.processManager.activeCount;
             this.managerConnection.send('system', stats);
         });
 
