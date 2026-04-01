@@ -149,52 +149,50 @@ export const useEngineStore = defineStore('engines', () => {
         };
 
         for (const op of patch as Array<{ op: string; path: string; value?: unknown }>) {
-            applyPatchOperation(updated as unknown as Record<string, unknown>, op);
+            applyOp(updated as unknown as Record<string, unknown>, op);
         }
 
         engines.value.set(engineId, updated);
         engines.value = new Map(engines.value);
     }
 
-    function applyPatchOperation(
-        obj: Record<string, unknown>,
-        op: { op: string; path: string; value?: unknown },
-    ) {
+    /**
+     * Apply a single JSON Patch op to a nested object.
+     * Handles: objects, arrays (by numeric index or by .id lookup), append via '-'.
+     */
+    function applyOp(obj: Record<string, unknown>, op: { op: string; path: string; value?: unknown }) {
         const parts = op.path.split('/').filter(Boolean);
         const last = parts.pop();
         if (!last) return;
 
-        let target: Record<string, unknown> = obj;
+        // Walk to the parent of the target field
+        let target: any = obj;
         for (const part of parts) {
-            if (target[part] === undefined || target[part] === null) {
-                if (op.op === 'add') {
-                    target[part] = {};
-                } else {
-                    return;
-                }
-            }
-            target = target[part] as Record<string, unknown>;
+            target = Array.isArray(target) ? target[arrIdx(target, part)] : target?.[part];
+            if (target == null) return;
         }
+
+        const idx = Array.isArray(target) ? arrIdx(target, last) : -1;
 
         switch (op.op) {
             case 'add':
             case 'replace':
-                // Handle JSON Patch `-` (append to array)
-                if (last === '-' && Array.isArray(target)) {
-                    (target as unknown[]).push(op.value);
-                } else {
-                    target[last] = op.value;
-                }
+                if (last === '-' && Array.isArray(target)) target.push(op.value);
+                else if (Array.isArray(target) && idx >= 0) target[idx] = op.value;
+                else target[last] = op.value;
                 break;
             case 'remove':
-                if (Array.isArray(target)) {
-                    const idx = parseInt(last, 10);
-                    if (!isNaN(idx)) target.splice(idx, 1);
-                } else {
-                    delete target[last];
-                }
+                if (Array.isArray(target) && idx >= 0) target.splice(idx, 1);
+                else delete target[last];
                 break;
         }
+    }
+
+    /** Resolve array key: numeric index or .id lookup. */
+    function arrIdx(arr: unknown[], key: string): number {
+        const n = parseInt(key, 10);
+        if (!isNaN(n)) return n;
+        return arr.findIndex((item) => (item as any)?.id === key);
     }
 
     function setOnline(engineId: string, online: boolean) {
