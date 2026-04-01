@@ -128,9 +128,11 @@ export class AudioEncoderModule extends GstPluginBase {
             case 'opus':
             default: {
                 const frameSize = (config.frameSize as number) ?? 20;
+                const inbandFec = (config.inbandFec as boolean) ?? true;
+                const packetLoss = (config.packetLoss as number) ?? 10;
                 // Use restricted-lowdelay for frame sizes <= 5ms
                 const audioType = frameSize <= 5 ? 'audio-type=restricted-lowdelay' : '';
-                tail = `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=true ${audioType} ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`.replace(/  +/g, ' ');
+                tail = `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} ${audioType} ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`.replace(/  +/g, ' ');
                 break;
             }
         }

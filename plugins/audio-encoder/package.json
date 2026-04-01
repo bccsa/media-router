@@ -84,6 +84,28 @@
                     "description": "Opus frame size in ms (lower = less latency, more CPU/bandwidth)",
                     "x-showWhen": "codec=opus"
                 },
+                "inbandFec": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable in-band forward error correction (adds ~5-10% bitrate overhead)",
+                    "x-showWhen": "codec=opus"
+                },
+                "packetLoss": {
+                    "type": "number",
+                    "enum": [
+                        0,
+                        5,
+                        10,
+                        15,
+                        20,
+                        25,
+                        30,
+                        50
+                    ],
+                    "default": 10,
+                    "description": "Expected packet loss % — encoder adds more redundancy at higher values",
+                    "x-showWhen": "codec=opus"
+                },
                 "sampleRate": {
                     "type": "number",
                     "enum": [

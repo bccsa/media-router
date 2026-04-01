@@ -55,7 +55,7 @@
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 
 [x] - opus has some kind of noice gate build in, see how to disable (fixed: dtx=false disables silence detection/gating, inband-fec=true adds error correction)
-[ ] - Make inband-fec configurable in encoder settings — adds ~5-10% bitrate overhead, could matter with many streams over constrained links (Should aslos add % option as a configurable)
+[x] - Make inband-fec configurable in encoder settings — adds ~5-10% bitrate overhead, could matter with many streams over constrained links (Should aslos add % option as a configurable) (added inbandFec toggle + packetLoss % dropdown, both opus-only via x-showWhen, live-updatable)
 
 ## Manager-ui
 [x] - Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
@@ -65,7 +65,7 @@
 ## Engine 
 [x] - When the engine reconnects to the manager, it restarts, instead of keeping its running state
 [x] - Need to stop and start the engine, after the engine restarted (fixed: moduleManager.size > 0 reports actual running state)
-[ ] - Add a spawnd process counter, that can be displayed in the manager top bar
+[x] - Add a spawnd process counter, that can be displayed in the manager top bar
 
 ## Data Flow revamp 
 [x] - when i move a module, after 2 seconds, it jumps back to original position (fixed: optimistic local store update on drag end)

@@ -52,6 +52,7 @@ interface FormField {
     enumByCodec?: Record<string, unknown[]>; // codec → valid enum values
     readOnly?: boolean; // x-readOnly — show value but greyed out
     items?: { type?: string; properties?: Record<string, unknown> }; // array item schema
+    showWhen?: string; // x-showWhen — "key=value" conditional visibility
 }
 
 // Fetch audio devices from the engine (not the manager — devices differ per engine)
@@ -81,6 +82,7 @@ interface SchemaProperty {
     'x-maxFrom'?: string;
     'x-enumByCodec'?: Record<string, unknown[]>;
     'x-readOnly'?: boolean;
+    'x-showWhen'?: string;
     items?: { type?: string; properties?: Record<string, unknown> };
 }
 
@@ -104,9 +106,17 @@ const formFields = computed<FormField[]>(() => {
         maxFrom: prop['x-maxFrom'],
         enumByCodec: prop['x-enumByCodec'],
         readOnly: !!prop['x-readOnly'],
+        showWhen: prop['x-showWhen'],
         items: prop.items as FormField['items'],
     }));
 });
+
+/** Check if a field should be visible based on x-showWhen condition ("key=value"). */
+function isFieldVisible(field: FormField): boolean {
+    if (!field.showWhen) return true;
+    const [key, value] = field.showWhen.split('=');
+    return String(localSettings.value[key] ?? '') === value;
+}
 
 /** Resolve effective enum values for a field — checks enumByCodec first. */
 function getFieldEnum(field: FormField): unknown[] | undefined {
@@ -244,7 +254,7 @@ function applyAll() {
 
         <div class="flex-1 overflow-y-auto p-4 space-y-4">
             <div v-if="formFields.length === 0" class="text-sm py-4 text-center text-muted">No configurable settings.</div>
-            <div v-for="field in formFields" :key="field.key" class="space-y-1.5">
+            <div v-for="field in formFields" :key="field.key" v-show="isFieldVisible(field)" class="space-y-1.5">
                 <label class="flex items-center gap-1 text-xs font-medium text-subtle">
                     {{ field.label }}
                     <span v-if="field.liveUpdatable" class="text-amber-500 text-[10px] cursor-help relative group">&#9889;
