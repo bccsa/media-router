@@ -50,6 +50,7 @@
 [x] - Sort order should be small to large  (not large to small)
 [x] - Bigger slider knobs in the LCP (44px thumb, 48px interaction width, touch-friendly)
 [x] - Tablet landscape/portrait support (responsive layout, compact landscape mode, safe area insets for notched devices)
+[ ] - Change to tailwind css
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 
@@ -58,8 +59,20 @@
 
 ## Manager-ui
 [x] - Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
-[ ] - Cant remove labels on links
+[x] - Cant remove labels on links (fixed: send empty string instead of undefined)
+[ ] - settins does not live update between rightclick menu and setting pane, if i make the change in the one, i first need to close and open the other ot see the change
 
 ## Engine 
 [x] - When the engine reconnects to the manager, it restarts, instead of keeping its running state
-[ ] - Need to stop and start the engine,  after the engine restarted 
+[x] - Need to stop and start the engine, after the engine restarted (fixed: moduleManager.size > 0 reports actual running state)
+[ ] - Add a spawnd process counter, that can be displayed in the manager top bar
+
+## Data Flow revamp 
+[x] - when i move a module, after 2 seconds, it jumps back to original position (fixed: optimistic local store update on drag end)
+[x] - when i click stop / start on the lcp it has no effect (fixed: re-added control event listener)
+[x] - Stop start state does not sync to the lcp (works — just takes a moment for modules to start)
+[x] - Name does not live update between manager-ui and lcp (fixed: LCP applyPatch now handles all module fields)
+[x] - LCP controls in modules does not live update between manager-ui and lcp (this should follow the same patch path.)
+[x] - ALL Config should follow the same patch flow (verified: all config changes use patch, only lifecycle commands remain as direct events)
+[x] - When i change a module name, it does not reflect on the module on the same page (fixed: optimistic local store update on rename)
+[x] - When module settings pane is open and switching to new module, name stays on old module (fixed: reset editName on moduleId change)

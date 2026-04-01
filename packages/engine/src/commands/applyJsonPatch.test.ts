@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyJsonPatch } from './CommandDispatcher.js';
+import { applyJsonPatch } from '@media-router/shared-types';
 
 describe('applyJsonPatch', () => {
     it('replaces a top-level field', () => {

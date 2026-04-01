@@ -88,30 +88,7 @@ export class EngineEventForwarder {
             this.io.volatile.emit('engine:system', { engineId, ...d });
         });
 
-        this.engineManager.on('engineConfigUpdated', (engineId: string, data: unknown) => {
-            const d = data as { instanceId: string; changes: Record<string, unknown> };
-            if (!d?.instanceId || !d?.changes) return;
-
-            const engine = this.configStore.getEngine(engineId);
-            if (engine?.active_profile) {
-                const config = this.configStore.getProfile(engineId, engine.active_profile as string) ?? {};
-                const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
-                const mod = modules[d.instanceId];
-                if (mod) {
-                    const settings = (mod.settings ?? {}) as Record<string, unknown>;
-                    Object.assign(settings, d.changes);
-                    mod.settings = settings;
-                    this.configStore.updateProfileConfig(engineId, engine.active_profile as string, config);
-                }
-            }
-
-            const patches = Object.entries(d.changes).map(([key, value]) => ({
-                op: 'replace' as const,
-                path: `/modules/${d.instanceId}/settings/${key}`,
-                value,
-            }));
-            this.io.emit('engine:update', { engineId, patch: patches });
-        });
+        // engineConfigUpdated, engineLcpConfig, engineDynamicPorts now handled by enginePatch → PatchRouter
 
         this.engineManager.on('engineLogs', (engineId: string, batch: unknown) => {
             if (!Array.isArray(batch)) return;
@@ -131,31 +108,6 @@ export class EngineEventForwarder {
 
         this.engineManager.on('engineAudioDevices', (engineId: string, devices: unknown) => {
             this.setEngineData(engineId, 'audioDevices', devices);
-        });
-
-        // LCP config updates — persist to SQLite without sending config back to engine
-        this.engineManager.on('engineLcpConfig', (engineId: string, data: unknown) => {
-            const { moduleId, changes } = data as { moduleId: string; changes: Record<string, unknown> };
-            if (!moduleId || !changes) return;
-            // 1. Save to SQLite
-            const engine = this.configStore.getEngine(engineId);
-            if (!engine?.active_profile) return;
-            this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
-                const modules = config.modules as Record<string, Record<string, unknown>> | undefined;
-                const mod = modules?.[moduleId];
-                if (mod?.settings) {
-                    Object.assign(mod.settings as Record<string, unknown>, changes);
-                }
-                return config;
-            });
-            // 2. Broadcast to all browser clients (manager-ui)
-            // DO NOT send moduleConfig back to engine — source was LCP via engine, loop stops here
-            const patch = Object.entries(changes).map(([key, value]) => ({
-                op: 'replace' as const,
-                path: `/modules/${moduleId}/settings/${key}`,
-                value,
-            }));
-            this.io.emit('engine:update', { engineId, patch });
         });
 
         // LCP start/stop commands — update running state + broadcast to browsers

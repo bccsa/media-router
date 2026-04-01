@@ -17,6 +17,7 @@ import { useSocketStore } from '@/stores/socket';
 import { useFocusMode } from '@/composables/useFocusMode';
 import { useContextMenu } from '@/composables/useContextMenu';
 import { useGraphSync } from '@/composables/useGraphSync';
+import { patch } from '@/composables/usePatch';
 
 const props = defineProps<{ engineId: string }>();
 provide('engineId', props.engineId);
@@ -63,15 +64,15 @@ function onContextSliderChange(action: string, value: number) {
     const moduleId = contextMenu.value.moduleId;
     ctxSliderPending = { action, value };
     if (!ctxSliderTimer) {
-        socket.emit('module:config', { engineId: props.engineId, moduleId, changes: { [key]: value } });
+        patch.moduleSetting(props.engineId, moduleId, key, value);
         ctxSliderTimer = setTimeout(() => {
             ctxSliderTimer = null;
             if (ctxSliderPending) {
                 const k = ctxSliderPending.action.replace('setting:', '');
-                socket.emit('module:config', { engineId: props.engineId, moduleId, changes: { [k]: ctxSliderPending.value } });
+                patch.moduleSetting(props.engineId, moduleId, k, ctxSliderPending.value);
                 ctxSliderPending = null;
             }
-        }, 50);
+        }, 100);
     }
 }
 
@@ -79,7 +80,7 @@ function onContextToggleChange(action: string, value: boolean) {
     if (!contextMenu.value || !action.startsWith('setting:')) return;
     const key = action.replace('setting:', '');
     const moduleId = contextMenu.value.moduleId;
-    socket.emit('module:config', { engineId: props.engineId, moduleId, changes: { [key]: value } });
+    patch.moduleSetting(props.engineId, moduleId, key, value);
 }
 
 const moduleListBtnRef = ref<any>(null);

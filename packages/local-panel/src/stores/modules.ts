@@ -109,14 +109,31 @@ export const useModuleStore = defineStore('modules', () => {
         for (const op of patch) {
             if (op.path === '/') {
                 applyConfig(op.value as Record<string, unknown>);
-                return; // Full replace — done
+                return;
             }
-            // /modules/{moduleId}/settings/{key}
             const parts = op.path.split('/').filter(Boolean);
-            if (parts[0] === 'modules' && parts[2] === 'settings' && parts[1] && parts[3]) {
-                const mod = modules.value[parts[1]];
-                if (mod) {
-                    mod.settings = { ...mod.settings, [parts[3]]: op.value };
+            if (parts[0] !== 'modules' || !parts[1]) continue;
+
+            const moduleId = parts[1];
+            const mod = modules.value[moduleId];
+
+            // /modules/{id}/settings/{key}
+            if (mod && parts[2] === 'settings' && parts[3]) {
+                mod.settings = { ...mod.settings, [parts[3]]: op.value };
+                changed = true;
+            }
+            // /modules/{id}/{field} (displayName, enabled, position, ports, etc.)
+            else if (mod && parts[2] && !parts[3]) {
+                (mod as any)[parts[2]] = op.value;
+                changed = true;
+            }
+            // /modules/{id} (add/remove entire module)
+            else if (!parts[2]) {
+                if (op.op === 'add' && op.value) {
+                    modules.value[moduleId] = normalizeState(moduleId, op.value);
+                    changed = true;
+                } else if (op.op === 'remove') {
+                    delete modules.value[moduleId];
                     changed = true;
                 }
             }

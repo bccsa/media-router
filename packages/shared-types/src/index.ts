@@ -67,11 +67,63 @@ export class AudioRoutingError extends MediaRouterError {
     }
 }
 
+// --- Patch System -----------------------------------------------------------
+
+/** JSON Patch operation (RFC 6902 subset). */
+export interface PatchOp {
+    op: 'add' | 'replace' | 'remove';
+    path: string;
+    value?: unknown;
+}
+
 // --- Utilities --------------------------------------------------------------
 
 /** Convert an unknown caught value to a human-readable error string. */
 export function formatError(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Apply JSON Patch operations to a nested object.
+ * Supports: replace, add (with intermediate creation + array append via '-'), remove.
+ */
+export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp[]): void {
+    if (!obj) return;
+    for (const op of ops) {
+        const parts = op.path.split('/').filter(Boolean);
+        const last = parts.pop();
+        if (!last) continue;
+
+        let target: Record<string, unknown> = obj;
+        let valid = true;
+        for (const part of parts) {
+            if (target[part] == null || typeof target[part] !== 'object') {
+                if (op.op === 'add') { target[part] = {}; }
+                else { valid = false; break; }
+            }
+            target = target[part] as Record<string, unknown>;
+        }
+        if (!valid) continue;
+
+        switch (op.op) {
+            case 'add':
+            case 'replace':
+                if (last === '-' && Array.isArray(target)) {
+                    (target as unknown[]).push(op.value);
+                } else {
+                    target[last] = op.value;
+                }
+                break;
+            case 'remove':
+                if (Array.isArray(target)) {
+                    const idx = parseInt(last, 10);
+                    if (!isNaN(idx)) target.splice(idx, 1);
+                } else {
+                    delete target[last];
+                }
+                break;
+        }
+    }
 }
 
 // --- Stream Types -----------------------------------------------------------

@@ -54,7 +54,7 @@ function onFaderInput(val: number) {
                 emit('volume', props.module.instanceId, pendingValue);
                 pendingValue = null;
             }
-        }, 50);
+        }, 100);
     }
 }
 

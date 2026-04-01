@@ -59,25 +59,21 @@ export class LcpServer extends EventEmitter {
                 socket.emit('init', this._getInitData());
             }
 
-            // LCP sends control commands
-            socket.on('control', (command: unknown) => {
-                this.emit('control', command);
+            // LCP lifecycle commands (stay as direct events)
+            socket.on('start', () => {
+                this.emit('control', { action: 'start' });
             });
 
-            socket.on('volume', (data: unknown) => {
-                this.emit('control', { action: 'volume', ...(data as Record<string, unknown>), _socketId: socket.id });
+            socket.on('stop', () => {
+                this.emit('control', { action: 'stop' });
             });
 
-            socket.on('mute', (data: unknown) => {
-                this.emit('control', { action: 'mute', ...(data as Record<string, unknown>), _socketId: socket.id });
-            });
-
-            socket.on('start', (data: unknown) => {
-                this.emit('control', { action: 'start', ...(data as Record<string, unknown>), _socketId: socket.id });
-            });
-
-            socket.on('stop', (data: unknown) => {
-                this.emit('control', { action: 'stop', ...(data as Record<string, unknown>), _socketId: socket.id });
+            // Unified patch from LCP (N-1 router)
+            socket.on('patch', (data: unknown) => {
+                const d = data as { ops?: unknown[] };
+                if (Array.isArray(d?.ops) && d.ops.length > 0) {
+                    this.emit('patch', { ops: d.ops, _socketId: socket.id });
+                }
             });
 
             socket.on('disconnect', () => {

@@ -3,6 +3,7 @@ import type { Node } from '@vue-flow/core';
 import type { EngineState } from '@/stores/engines';
 import type { MenuItem } from '@/components/common/MrContextMenu.vue';
 import { useSocketStore } from '@/stores/socket';
+import { patch } from '@/composables/usePatch';
 
 // SVG icon paths (stroke-based, 24×24 viewBox)
 const icons = {
@@ -18,15 +19,9 @@ const icons = {
 };
 
 /** Map context menu actions to Socket.IO events + extra payload */
-const moduleActions: Record<string, { event: string; data?: Record<string, unknown> } | null> = {
-    restart: { event: 'module:restart' },
-    enable:  { event: 'module:toggle', data: { enabled: true } },
-    disable: { event: 'module:toggle', data: { enabled: false } },
-    delete:  { event: 'module:delete' },
-    focus:   null,
-    unfocus: null,
-    settings: null,
-    clone: null,
+// Actions that stay as commands (lifecycle operations)
+const commandActions: Record<string, string> = {
+    restart: 'module:restart',
 };
 
 export function useContextMenu(
@@ -132,27 +127,29 @@ export function useContextMenu(
     function onContextAction(action: string) {
         if (!contextMenu.value) return;
         const moduleId = contextMenu.value.moduleId;
+        const eid = engineId();
 
         if (action === 'settings') {
             settingsPanel.value = { moduleId };
         } else if (action === 'focus' || action === 'unfocus') {
-            setModuleFocused(engineId(), moduleId, action === 'focus');
+            setModuleFocused(eid, moduleId, action === 'focus');
         } else if (action === 'clone') {
             const mod = engine.value?.modules[moduleId];
             if (mod) {
-                socket.emit('module:add', {
-                    engineId: engineId(),
+                const instanceId = `${mod.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+                patch.addModule(eid, instanceId, {
                     pluginId: mod.pluginId,
                     displayName: mod.displayName + ' (copy)',
                     position: { x: (mod.position?.x ?? 100) + 50, y: (mod.position?.y ?? 100) + 50 },
                     settings: { ...mod.settings },
                 });
             }
-        } else {
-            const entry = moduleActions[action];
-            if (entry) {
-                socket.emit(entry.event, { engineId: engineId(), moduleId, ...entry.data });
-            }
+        } else if (action === 'enable' || action === 'disable') {
+            patch.moduleToggle(eid, moduleId, action === 'enable');
+        } else if (action === 'delete') {
+            patch.removeModule(eid, moduleId);
+        } else if (commandActions[action]) {
+            socket.emit(commandActions[action], { engineId: eid, moduleId });
         }
         contextMenu.value = null;
     }
@@ -217,11 +214,7 @@ export function useContextMenu(
 
     function saveEdgeLabel() {
         if (!editingEdgeLabel.value) return;
-        socket.emit('routing:update', {
-            engineId: engineId(),
-            connectionId: editingEdgeLabel.value.edgeId,
-            label: editingEdgeLabel.value.label || '',
-        });
+        patch.connectionField(engineId(), editingEdgeLabel.value.edgeId, 'label', editingEdgeLabel.value.label || '');
         editingEdgeLabel.value = null;
     }
 

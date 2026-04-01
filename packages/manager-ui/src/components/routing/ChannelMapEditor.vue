@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
 import { useEngineStore, type ChannelMapEntry } from '@/stores/engines';
-import { useSocketStore } from '@/stores/socket';
+import { patch } from '@/composables/usePatch';
 
 const props = defineProps<{
     engineId: string;
@@ -14,7 +14,6 @@ const emit = defineEmits<{
 }>();
 
 const engineStore = useEngineStore();
-const socket = useSocketStore();
 
 // Look up connection and modules from store
 const engine = computed(() => engineStore.getEngine(props.engineId));
@@ -267,11 +266,7 @@ function save() {
         dstChannel: m.dstChannel,
         ...(m.gain !== 1.0 ? { gain: m.gain } : {}),
     }));
-    socket.emit('routing:update', {
-        engineId: props.engineId,
-        connectionId: props.connectionId,
-        channelMap: map.length > 0 ? map : undefined,
-    });
+    patch.connectionField(props.engineId, props.connectionId, 'channelMap', map.length > 0 ? map : undefined);
     emit('close');
 }
 </script>

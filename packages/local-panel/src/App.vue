@@ -2,6 +2,7 @@
 import { onMounted } from 'vue';
 import { useSocketStore } from '@/stores/socket';
 import { useModuleStore } from '@/stores/modules';
+import { patch } from '@/composables/usePatch';
 import MixerStrip from '@/components/MixerStrip.vue';
 
 const socketStore = useSocketStore();
@@ -12,15 +13,13 @@ onMounted(() => {
 });
 
 function onVolume(moduleId: string, volume: number) {
-    // Update local store immediately (server won't echo back to sender)
     moduleStore.updateSetting(moduleId, 'volume', volume);
-    socketStore.emit('volume', { moduleId, volume });
+    patch.moduleSetting(moduleId, 'volume', volume);
 }
 
 function onMute(moduleId: string, muted: boolean) {
-    // Update local store immediately (server won't echo back to sender)
     moduleStore.updateSetting(moduleId, 'audioEnabled', !muted);
-    socketStore.emit('mute', { moduleId, muted });
+    patch.moduleSetting(moduleId, 'audioEnabled', !muted);
 }
 
 function startEngine() {

@@ -7,7 +7,6 @@ import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
 import { LcpServer } from './comms/LcpServer.js';
-import { LcpControlHandler } from './comms/LcpControlHandler.js';
 import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
 import { ProcessManager } from './child-process/ProcessManager.js';
@@ -15,6 +14,7 @@ import { PaCommandQueue } from './audio/PaCommandQueue.js';
 import { createApiServer } from './api/server.js';
 import { LogForwarder } from './logging/LogForwarder.js';
 import { CommandDispatcher } from './commands/CommandDispatcher.js';
+import { EnginePatchRouter } from './EnginePatchRouter.js';
 import { SystemStatsCollector } from './system/SystemStatsCollector.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle } from './modules/ModuleLifecycle.js';
@@ -59,7 +59,7 @@ export class Engine {
 
     /** Last config received from manager. */
     private currentConfig: Record<string, unknown> | null = null;
-    private lcpControlHandler: LcpControlHandler | null = null;
+    private enginePatchRouter: EnginePatchRouter | null = null;
     /** Cached device info — computed once at construction. */
     private readonly deviceIps = getAllIps();
     private readonly deviceHostname = getHostname();
@@ -126,13 +126,12 @@ export class Engine {
             this.pluginLoader,
         );
 
-        // When a module generates dynamic ports, push them to the manager + LCP
+        // When a module generates dynamic ports, push as patch to manager + LCP
         this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {
             log.info({ moduleId, portCount: ports.length }, 'Dynamic ports resolved — pushing to manager');
-            this.managerConnection.send('dynamicPorts', { moduleId, ports });
-            this.lcpServer.broadcastConfigUpdate([
-                { op: 'replace', path: `/modules/${moduleId}/ports`, value: ports },
-            ]);
+            const ops = [{ op: 'replace' as const, path: `/modules/${moduleId}/ports`, value: ports }];
+            this.managerConnection.send('patch', { ops });
+            this.lcpServer.broadcastConfigUpdate(ops);
         };
 
         // System stats
@@ -159,7 +158,10 @@ export class Engine {
 
         this.moduleManager.on('configUpdated', (instanceId: string, changes: Record<string, unknown>) => {
             log.trace({ instanceId, changes }, 'Plugin auto-detected config');
-            this.managerConnection.send('configUpdated', { instanceId, changes });
+            const ops = Object.entries(changes).map(([key, value]) => ({
+                op: 'replace' as const, path: `/modules/${instanceId}/settings/${key}`, value,
+            }));
+            this.managerConnection.send('patch', { ops });
         });
 
         // VU data with dedup + heartbeat
@@ -190,12 +192,35 @@ export class Engine {
             this.commandDispatcher.dispatch(command as Record<string, unknown>);
         });
 
-        // LCP control commands handled by dedicated class
-        this.lcpControlHandler = new LcpControlHandler({
-            lcpServer: this.lcpServer,
-            managerConnection: this.managerConnection,
-            moduleManager: this.moduleManager,
-            commandDispatcher: this.commandDispatcher,
+        // LCP lifecycle commands (start/stop)
+        this.lcpServer.on('control', (command: unknown) => {
+            const cmd = command as Record<string, unknown>;
+            if (cmd.action === 'start') {
+                this.commandDispatcher.dispatch({ command: 'start' });
+                this.managerConnection.send('lcpEngineCommand', { command: 'start' });
+            } else if (cmd.action === 'stop') {
+                this.commandDispatcher.dispatch({ command: 'stop' });
+                this.managerConnection.send('lcpEngineCommand', { command: 'stop' });
+            }
+        });
+
+        // Unified patch router (N-1)
+        this.enginePatchRouter = new EnginePatchRouter(
+            this.moduleManager, this.mediaRouter, this.lcpServer,
+            this.managerConnection, this.lifecycle,
+            () => this.currentConfig,
+        );
+
+        // Handle patches from manager
+        this.managerConnection.on('patch', (data: unknown) => {
+            const { ops } = data as { ops: Array<{ op: string; path: string; value?: unknown }> };
+            if (ops?.length > 0) this.enginePatchRouter!.onPatch('manager', 'manager', ops as any);
+        });
+
+        // Handle patches from LCP
+        this.lcpServer.on('patch', (data: unknown) => {
+            const { ops, _socketId } = data as { ops: Array<{ op: string; path: string; value?: unknown }>; _socketId: string };
+            if (ops?.length > 0) this.enginePatchRouter!.onPatch(_socketId, 'lcp', ops as any);
         });
 
         // configRequested removed — replaced by 'init' event on connect
@@ -260,7 +285,7 @@ export class Engine {
             this.apiServer = null;
         }
         this._running = false;
-        this.lcpControlHandler?.destroy();
+        this.enginePatchRouter?.destroy();
         this.lcpServer.broadcastEngineRunning(false);
         await this.lcpServer.stop();
         this.lcpServer.removeAllListeners();

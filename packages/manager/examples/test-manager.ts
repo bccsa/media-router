@@ -31,11 +31,11 @@ manager.start().then(() => {
 });
 
 process.on('SIGINT', async () => {
-    await manager.shutdown();
+    await manager.stop();
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-    await manager.shutdown();
+    await manager.stop();
     process.exit(0);
 });

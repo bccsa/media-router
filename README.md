@@ -8,49 +8,55 @@ Media Router follows a **Manager + Engine** architecture:
 
 - **Manager** — Central configuration authority. Stores routing state in SQLite, serves the web UI, and communicates with engines over encrypted UDP.
 - **Engine** — Runs on each media device (e.g. Raspberry Pi). Executes GStreamer pipelines, manages PipeWire audio routing, and reports status back to the manager.
-- **Plugins** — Self-contained modules that add media capabilities (audio input/output, encoding, decoding, SRT, RIST, etc.).
+- **Plugins** — Self-contained modules that add media capabilities (audio input/output, encoding, decoding, SRT, RIST, N-1 mixing, etc.).
 
 ```
-                    Browser (Vue 3)
-                        |
-                   Socket.IO + REST
-                        |
-                    +---------+
-                    | Manager |  ← SQLite config store
-                    +---------+
-                        |
-                  dgram-comms (encrypted UDP)
-                        |
-            +-----------+-----------+
-            |                       |
-        +--------+             +--------+
-        | Engine |             | Engine |
-        +--------+             +--------+
-            |                       |
-       GStreamer +             GStreamer +
-       PipeWire                PipeWire
+Browser (Vue 3)                              LCP (Vue 3)
+     |                                           |
+Socket.IO                                   Socket.IO
+     |                                           |
+ +---------+         dgram-comms          +--------+
+ | Manager | ◄──── encrypted UDP ────►    | Engine |
+ +---------+         (port 3000)          +--------+
+  SQLite DB                                GStreamer +
+                                           PipeWire
 ```
+
+### Data Flow
+
+All config changes (settings, rename, position, connections, etc.) flow through a unified **N-1 Patch Router** system:
+
+- **One `patch` event** carries JSON Patch ops for any config change
+- Each router receives from any client, persists/applies, forwards to all **other** clients (skip sender)
+- Browser → Manager Router → Engine Router → LCP (and vice versa)
+- Lifecycle commands (start/stop/reset/restart) remain as separate events
+- Streams (VU meters, system stats, logs) remain as separate high-frequency events
 
 ## Architecture
 
 | Component | Package | Description |
 |-----------|---------|-------------|
-| **Shared Types** | `packages/shared-types` | TypeScript interfaces, logging, utilities shared across all packages |
+| **Shared Types** | `packages/shared-types` | TypeScript interfaces, logging, `PatchOp`, `applyJsonPatch` utility |
 | **dgram-comms** | `packages/dgram-comms` | Encrypted UDP protocol with AES-256-GCM, fragmentation, and keepalives |
-| **Engine** | `packages/engine` | GStreamer pipeline management, PipeWire audio routing, plugin host |
-| **Manager** | `packages/manager` | Express v5 HTTP server, Socket.IO, SQLite config store, engine orchestration |
+| **Engine** | `packages/engine` | GStreamer pipeline management, PipeWire audio routing, plugin host, N-1 patch router |
+| **Manager** | `packages/manager` | Express HTTP server, Socket.IO, SQLite config store, N-1 patch router |
 | **Manager UI** | `packages/manager-ui` | Vue 3 + Vue Flow routing editor, Pinia stores, Tailwind CSS dark theme |
-| **Local Panel** | `packages/local-panel` | Operator control interface (faders, VU meters, mute buttons) |
+| **Local Panel** | `packages/local-panel` | Operator control interface (vertical faders, VU meters, mute buttons) |
 | **Profile Manager** | `packages/profile-manager` | Engine-side app for configuring which manager to connect to |
 
 ### Plugins
 
 | Plugin | Directory | Description |
 |--------|-----------|-------------|
-| Audio Input | `plugins/audio-input` | Captures from PipeWire/PulseAudio source devices |
-| Audio Output | `plugins/audio-output` | Plays to PipeWire/PulseAudio sink devices |
+| Audio Input | `plugins/audio-input` | Captures from PipeWire source devices via native `module-remap-source` |
+| Audio Output | `plugins/audio-output` | Plays to PipeWire sink devices via native `module-remap-sink` |
 | Audio Encoder | `plugins/audio-encoder` | Encodes PCM to Opus/AAC in MPEG-TS, outputs via UDP multicast |
 | Audio Decoder | `plugins/audio-decoder` | Decodes MPEG-TS audio with auto-detection (Opus, AAC, MP2) |
+| SRT Input | `plugins/srt-input` | Receives SRT streams (listener mode) |
+| SRT Output | `plugins/srt-output` | Sends SRT streams (caller mode) |
+| RIST Input | `plugins/rist-input` | Receives RIST streams via `ristreceiver` CLI |
+| RIST Output | `plugins/rist-output` | Sends RIST streams via `ristsender` CLI |
+| N-1 Mixer | `plugins/n1-mixer` | Mix-minus routing — each output gets all inputs except its own |
 | Example Plugin | `plugins/example-plugin` | Template for creating new plugins |
 
 See [plugins/README.md](plugins/README.md) for the full plugin development guide.
@@ -59,11 +65,12 @@ See [plugins/README.md](plugins/README.md) for the full plugin development guide
 
 | Port | Service |
 |------|---------|
-| 3000 | dgram-comms (engine <-> manager encrypted UDP) |
+| 3000 | dgram-comms (engine ↔ manager encrypted UDP) |
 | 3001 | Engine Local API (Fastify REST) |
 | 5173 | Manager UI dev server (Vite) |
+| 5174 | Local Panel dev server (Vite) |
 | 8080 | Manager HTTP + Socket.IO |
-| 8081 | Local Control Panel |
+| 8081 | Local Control Panel (Socket.IO + static files) |
 | 8082 | Profile Manager |
 
 ## Quick Start
@@ -75,7 +82,7 @@ Install system dependencies first — see [DEPENDENCIES.md](DEPENDENCIES.md) for
 **Required:**
 - Node.js >= 20
 - pnpm >= 10
-- Python 3 (with GStreamer bindings)
+- Python 3 (with GStreamer GI bindings)
 - GStreamer 1.22+
 - PipeWire 1.0+
 
@@ -117,10 +124,12 @@ node packages/manager/dist/index.js
 node packages/engine/dist/index.js
 ```
 
+The LCP is served automatically by the engine on port 8081.
+
 ### First-time Setup
 
 1. Open the Manager UI at `http://localhost:5173` (dev) or `http://localhost:8080` (production)
-2. Register an engine: sidebar -> Settings -> Register Engine (set an ID and password)
+2. Register an engine: sidebar → Settings → Register Engine (set an ID and password)
 3. On the engine device, create a connection profile:
    ```bash
    curl -X POST http://localhost:3001/api/v1/profiles \
@@ -129,28 +138,24 @@ node packages/engine/dist/index.js
 
    curl -X POST http://localhost:3001/api/v1/profiles/<engine-id>/activate
    ```
-4. The engine should appear as "online" in the sidebar
-5. Click the engine -> Add Module -> choose Audio Input, Encoder, Decoder, etc.
+4. The engine should appear as "online" in the sidebar within ~5 seconds
+5. Click the engine → Open Routing Editor → Add Module → choose Audio Input, Encoder, etc.
 6. Draw connections between module ports to route audio
 
-### Build Number Display
+### Build Number
 
-To display a version/build number on each engine device (shown in the Manager UI engine detail page and the LCP header), create a `build-number.txt` file in the media-router root directory:
+To display a version/build number on each engine (shown in Manager UI and LCP header):
 
 ```bash
 echo "v2.0.1" > build-number.txt
 ```
 
-The engine searches for this file in its working directory and up to 3 parent directories. The build number is displayed in:
-- **Manager UI** — Engine list, engine detail page
-- **LCP** — Header bar (next to IP address)
-
-If the file doesn't exist, no build number is shown. The file is read once at startup — restart the engine to pick up changes.
+The engine searches for this file in its working directory and up to 3 parent directories. Restart the engine to pick up changes.
 
 ## Testing
 
 ```bash
-# Run all tests (166 tests across 17 files)
+# Run all tests (280 tests across 27 files)
 pnpm test
 
 # Run with coverage
@@ -158,9 +163,6 @@ pnpm test -- --coverage
 
 # Run a specific test file
 pnpm test -- packages/engine/src/routing/PortRegistry.test.ts
-
-# Watch mode
-pnpm test:watch
 ```
 
 ## Project Structure
@@ -168,18 +170,23 @@ pnpm test:watch
 ```
 media-router/
   packages/
-    shared-types/     # TypeScript types, logger, utilities
+    shared-types/     # TypeScript types, PatchOp, applyJsonPatch, logger
     dgram-comms/      # Encrypted UDP transport
-    engine/           # Media engine (GStreamer + PipeWire)
-    manager/          # Central manager (Express + SQLite)
+    engine/           # Media engine (GStreamer + PipeWire + EnginePatchRouter)
+    manager/          # Central manager (Express + SQLite + PatchRouter)
     manager-ui/       # Web UI (Vue 3 + Vue Flow)
-    local-panel/      # Operator control panel
+    local-panel/      # Operator control panel (faders, VU, mute)
     profile-manager/  # Engine connection config
   plugins/
-    audio-input/      # Mic/line capture
-    audio-output/     # Speaker/headphone playout
+    audio-input/      # Mic/line capture (PipeWire remap-source)
+    audio-output/     # Speaker/headphone playout (PipeWire remap-sink)
     audio-encoder/    # Opus/AAC encoding
     audio-decoder/    # Auto-detect decoding
+    srt-input/        # SRT receiver
+    srt-output/       # SRT sender
+    rist-input/       # RIST receiver
+    rist-output/      # RIST sender
+    n1-mixer/         # N-1 mix-minus (dynamic pair count)
     example-plugin/   # Plugin template
   docs/
     URS-v2.0.md       # User Requirements Specification
@@ -190,27 +197,25 @@ media-router/
 
 ## Roadmap
 
-The project follows a phased implementation plan. Current status:
-
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Project Foundation | Done |
 | 1 | Communication Layer (dgram-comms) | Done |
 | 2 | Engine Core | Done |
 | 3 | GStreamer Child Process Runtime | Done |
-| 4 | Manager Core | Done |
-| 5 | Core Audio Plugins | Done |
-| 6 | Protocol Plugins: SRT & RIST | Planned |
-| 7 | Protocol Plugins: HLS & Stream Probing | Planned |
-| 8 | Audio Processing Plugins | Planned |
-| 8B | Audio Channel Mapping & Link Metadata | In Progress |
-| 9 | Manager Web UI | In Progress |
-| 10 | Local Control Panel | Planned |
-| 11 | Profile Manager App | Planned |
-| 12 | Video Modules & Advanced Features | Planned |
-| 13 | Security & Authentication | Planned |
-| 14 | Observability & Logging | In Progress |
-| 15 | Hardening & Deployment | Planned |
+| 4 | Core Audio Plugins | Done |
+| 5 | Manager Core | Done |
+| 6 | Manager Web UI | Done |
+| 7 | Protocol Plugins: SRT & RIST | Done |
+| 8 | Protocol Plugins: HLS & Stream Probing | Partial (probing done, HLS not started) |
+| 8B | Audio Channel Mapping | Partial (designed, pw-link implemented) |
+| 9 | Audio Processing Plugins | Partial (N-1 mixer done, sound processor/ducking not started) |
+| 10 | Local Control Panel | Done |
+| 11 | Profile Manager App | Partial (API done, UI scaffold) |
+| 12 | Video Modules | Not started |
+| 13 | Security & Auth | Not started |
+| 14 | Observability & Logging | Partial (structured logging done) |
+| 15 | Hardening & Deployment | Not started |
 
 See [docs/implementation-plan-v2.0.md](docs/implementation-plan-v2.0.md) for full details.
 

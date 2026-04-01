@@ -6,10 +6,9 @@ import { createLogger } from '@media-router/shared-types';
 import { ConfigStore } from './config/ConfigStore.js';
 import { EngineConnectionManager } from './engines/EngineConnectionManager.js';
 import { PluginRegistry } from './plugins/PluginRegistry.js';
-import { ModuleHandlers } from './handlers/ModuleHandlers.js';
-import { RoutingHandlers } from './handlers/RoutingHandlers.js';
 import { EngineCommandService } from './handlers/EngineCommandService.js';
 import { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
+import { PatchRouter } from './PatchRouter.js';
 import { setupSocketIO } from './socket/SocketIOSetup.js';
 import { registerHttpRoutes } from './routes/httpRoutes.js';
 
@@ -25,14 +24,12 @@ export interface ManagerConfig {
  * Central manager — stores engine configs, manages engine connections,
  * serves Web UI and proxies state between engines and browsers.
  *
- * This class is a thin orchestrator. Business logic lives in:
- * - handlers/ModuleHandlers.ts    — module CRUD
- * - handlers/RoutingHandlers.ts   — routing connect/disconnect/update
+ * Business logic:
+ * - PatchRouter.ts                — unified N-1 config patch routing
  * - handlers/EngineCommandService — engine start/stop with retry
  * - handlers/EngineEventForwarder — engine→browser event streaming
  * - plugins/PluginRegistry.ts     — plugin manifest scanning
  * - routes/httpRoutes.ts          — REST API endpoints
- * - socket/SocketIOSetup.ts       — Socket.IO event wiring
  */
 export class Manager {
     private readonly config: Required<ManagerConfig>;
@@ -56,16 +53,22 @@ export class Manager {
         this.httpServer = createServer(app);
         this.io = new SocketIOServer(this.httpServer, { cors: { origin: '*' } });
 
-        // Handler classes
+        // Services
         const pluginRegistry = new PluginRegistry();
         const engineCommands = new EngineCommandService(this.configStore, this.engineManager);
-        const moduleHandlers = new ModuleHandlers(this.configStore, this.engineManager, this.io, pluginRegistry);
-        const routingHandlers = new RoutingHandlers(this.configStore, this.engineManager, this.io);
         const eventForwarder = new EngineEventForwarder(this.configStore, this.engineManager, engineCommands, this.io);
+        const patchRouter = new PatchRouter(this.configStore, this.engineManager, this.io, pluginRegistry);
 
         // Wire everything
         eventForwarder.setup();
-        setupSocketIO({ io: this.io, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, moduleHandlers, routingHandlers, engineCommands, eventForwarder });
+
+        // Handle patches from engine (N-1 router)
+        this.engineManager.on('enginePatch', (engineId: string, data: unknown) => {
+            const { ops } = data as { ops: Array<{ op: string; path: string; value?: unknown }> };
+            if (ops?.length > 0) patchRouter.onPatch('engine', 'engine', engineId, ops as any);
+        });
+
+        setupSocketIO({ io: this.io, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, engineCommands, eventForwarder, patchRouter });
         registerHttpRoutes({ app, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, io: this.io, eventForwarder });
 
         log.info({ httpPort: this.config.httpPort, dgramPort: this.config.dgramPort }, 'Manager configured');
@@ -77,29 +80,20 @@ export class Manager {
         log.info({ port: this.config.dgramPort }, 'dgram-comms listening');
 
         await new Promise<void>((resolve) => {
-            this.httpServer.listen(this.config.httpPort, () => resolve());
+            this.httpServer.listen(this.config.httpPort, () => {
+                log.info({ port: this.config.httpPort }, 'HTTP + Socket.IO listening');
+                resolve();
+            });
         });
         this.running = true;
-        log.info({ port: this.config.httpPort }, 'HTTP + Socket.IO listening');
     }
 
-    async shutdown(): Promise<void> {
+    async stop(): Promise<void> {
         if (!this.running) return;
+        this.running = false;
         await this.engineManager.stop();
         this.io.close();
-        await new Promise<void>((resolve) => {
-            this.httpServer.close(() => resolve());
-        });
+        this.httpServer.close();
         this.configStore.close();
-        this.running = false;
-        log.info('shutdown complete');
-    }
-
-    getConfigStore(): ConfigStore {
-        return this.configStore;
-    }
-
-    getEngineManager(): EngineConnectionManager {
-        return this.engineManager;
     }
 }

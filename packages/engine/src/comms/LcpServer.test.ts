@@ -90,24 +90,15 @@ describe('LcpServer', () => {
         client2.disconnect();
     });
 
-    it('forwards volume control from LCP', async () => {
-        const controlPromise = new Promise<unknown>((resolve) => {
-            lcpServer.on('control', resolve);
+    it('forwards patch from LCP with socket ID', async () => {
+        const patchPromise = new Promise<unknown>((resolve) => {
+            lcpServer.on('patch', resolve);
         });
-        client.emit('volume', { moduleId: 'mic-1', volume: 75 });
-        const received = await controlPromise;
-        expect(received).toEqual(expect.objectContaining({ action: 'volume', moduleId: 'mic-1', volume: 75 }));
-        expect((received as Record<string, unknown>)._socketId).toBeTruthy();
-    });
-
-    it('forwards mute control from LCP', async () => {
-        const controlPromise = new Promise<unknown>((resolve) => {
-            lcpServer.on('control', resolve);
-        });
-        client.emit('mute', { moduleId: 'mic-1', muted: true });
-        const received = await controlPromise;
-        expect(received).toEqual(expect.objectContaining({ action: 'mute', moduleId: 'mic-1', muted: true }));
-        expect((received as Record<string, unknown>)._socketId).toBeTruthy();
+        client.emit('patch', { ops: [{ op: 'replace', path: '/modules/mic-1/settings/volume', value: 75 }] });
+        const received = await patchPromise;
+        const d = received as { ops: unknown[]; _socketId: string };
+        expect(d.ops).toHaveLength(1);
+        expect(d._socketId).toBeTruthy();
     });
 
     it('multiple clients all receive broadcasts', async () => {
@@ -154,16 +145,12 @@ describe('LcpServer', () => {
         client2.disconnect();
     });
 
-    it('volume event includes sender socket ID', async () => {
-        const controlPromise = new Promise<Record<string, unknown>>((resolve) => {
-            lcpServer.on('control', (cmd: unknown) => resolve(cmd as Record<string, unknown>));
+    it('forwards start/stop lifecycle commands', async () => {
+        const controlPromise = new Promise<unknown>((resolve) => {
+            lcpServer.on('control', resolve);
         });
-        client.emit('volume', { moduleId: 'mic-1', volume: 80 });
+        client.emit('start');
         const received = await controlPromise;
-
-        expect(received.action).toBe('volume');
-        expect(received.moduleId).toBe('mic-1');
-        expect(received.volume).toBe(80);
-        expect(received._socketId).toBe(client.id);
+        expect(received).toEqual({ action: 'start' });
     });
 });

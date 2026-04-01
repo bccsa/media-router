@@ -70,17 +70,8 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineLogs', clientId, data);
             });
 
-            socket.on('configUpdated', (data: unknown) => {
-                this.emit('engineConfigUpdated', clientId, data);
-            });
-
             socket.on('audioDevices', (data: unknown) => {
                 this.emit('engineAudioDevices', clientId, data);
-            });
-
-            // LCP config updates (persist without feedback loop)
-            socket.on('lcpConfig', (data: unknown) => {
-                this.emit('engineLcpConfig', clientId, data);
             });
 
             // LCP engine start/stop (forward running state to browsers)
@@ -88,14 +79,14 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineLcpCommand', clientId, data);
             });
 
-            // Dynamic ports update (modules with configurable port count)
-            socket.on('dynamicPorts', (data: unknown) => {
-                this.emit('engineDynamicPorts', clientId, data);
-            });
-
             // Engine reports its running state on connect
             socket.on('engineRunningState', (data: unknown) => {
                 this.emit('engineRunningState', clientId, data);
+            });
+
+            // Unified patch from engine (N-1 router)
+            socket.on('patch', (data: unknown) => {
+                this.emit('enginePatch', clientId, data);
             });
 
             socket.on('disconnected', () => {

@@ -1,6 +1,6 @@
 import { ref, computed, watch, provide, type Ref, type ComputedRef } from 'vue';
 import type { EngineState, ModuleState } from '@/stores/engines';
-import { useSocketStore } from '@/stores/socket';
+import { patch } from '@/composables/usePatch';
 
 export interface FocusModeReturn {
     /** Whether focus mode is active (toolbar toggle) */
@@ -18,7 +18,6 @@ export interface FocusModeReturn {
 }
 
 export function useFocusMode(engine: ComputedRef<EngineState | undefined>): FocusModeReturn {
-    const socket = useSocketStore();
     const focusMode = ref(false);
 
     const focusedModules = computed(() => {
@@ -37,11 +36,7 @@ export function useFocusMode(engine: ComputedRef<EngineState | undefined>): Focu
     });
 
     function setModuleFocused(engineId: string, moduleId: string, focused: boolean) {
-        socket.emit('module:meta', {
-            engineId,
-            moduleId,
-            meta: { focused },
-        });
+        patch.moduleField(engineId, moduleId, 'focused', focused);
     }
 
     function isModuleDimmed(moduleId: string): boolean {

@@ -8,6 +8,7 @@ import MrToggle from '@/components/common/MrToggle.vue';
 import MrArrayField from '@/components/common/MrArrayField.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
+import { patch } from '@/composables/usePatch';
 
 const props = defineProps<{ engineId: string; moduleId: string }>();
 const emit = defineEmits<{ close: [] }>();
@@ -27,13 +28,17 @@ const module = computed(() => engineStore.getEngine(props.engineId)?.modules[pro
 // Rename
 const editName = ref('');
 watch(() => module.value?.displayName, (name) => {
-    if (name && !editName.value) editName.value = name;
+    if (name) editName.value = name;
 }, { immediate: true });
+// Reset name when switching modules
+watch(() => props.moduleId, () => {
+    editName.value = module.value?.displayName ?? '';
+});
 
 function saveName() {
     const trimmed = editName.value.trim();
     if (trimmed && trimmed !== module.value?.displayName) {
-        socket.emit('module:rename', { engineId: props.engineId, moduleId: props.moduleId, displayName: trimmed });
+        patch.moduleRename(props.engineId, props.moduleId, trimmed);
     }
 }
 
@@ -141,7 +146,7 @@ onUnmounted(() => {
 });
 
 function sendLiveUpdate(key: string, value: unknown) {
-    socket.emit('module:config', { engineId: props.engineId, moduleId: props.moduleId, changes: { [key]: value } });
+    patch.moduleSetting(props.engineId, props.moduleId, key, value);
 }
 
 function updateSetting(key: string, value: unknown) {
@@ -167,16 +172,17 @@ function updateSetting(key: string, value: unknown) {
 const isEnabled = computed(() => module.value?.enabled !== false);
 
 function doRestart() {
+    // Restart stays as a command (lifecycle operation)
     socket.emit('module:restart', { engineId: props.engineId, moduleId: props.moduleId });
 }
 function doToggle() {
-    socket.emit('module:toggle', { engineId: props.engineId, moduleId: props.moduleId, enabled: !isEnabled.value });
+    patch.moduleToggle(props.engineId, props.moduleId, !isEnabled.value);
 }
 function doClone() {
     const mod = module.value;
     if (mod) {
-        socket.emit('module:add', {
-            engineId: props.engineId,
+        const instanceId = `${mod.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        patch.addModule(props.engineId, instanceId, {
             pluginId: mod.pluginId,
             displayName: mod.displayName + ' (copy)',
             position: { x: (mod.position?.x ?? 100) + 50, y: (mod.position?.y ?? 100) + 50 },
@@ -186,7 +192,7 @@ function doClone() {
 }
 function doDelete() {
     if (confirm(`Delete "${module.value?.displayName}"?`)) {
-        socket.emit('module:delete', { engineId: props.engineId, moduleId: props.moduleId });
+        patch.removeModule(props.engineId, props.moduleId);
         emit('close');
     }
 }
@@ -194,7 +200,7 @@ function doDelete() {
 const saved = ref(false);
 
 function applyAll() {
-    socket.emit('module:config', { engineId: props.engineId, moduleId: props.moduleId, changes: localSettings.value });
+    patch.moduleSettings(props.engineId, props.moduleId, localSettings.value);
     hasLocalEdits = false;
     saved.value = true;
     setTimeout(() => { saved.value = false; }, 2000);

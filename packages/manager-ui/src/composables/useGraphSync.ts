@@ -3,6 +3,7 @@ import { useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/cor
 import type { EngineState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
+import { patch } from '@/composables/usePatch';
 
 function edgeColor(streamType?: string): string {
     switch (streamType) {
@@ -192,7 +193,7 @@ export function useGraphSync(
         const colour = edgeColor(outP?.streamType);
 
         addEdges([{ id: edgeId, source: outModule, sourceHandle: outPort, target: inModule, targetHandle: inPort, animated: true, interactionWidth: 20, style: { stroke: colour } }]);
-        socket.emit('routing:connect', { engineId: engineId(), sourceModuleId: outModule, sourcePortId: outPort, sinkModuleId: inModule, sinkPortId: inPort });
+        patch.addConnection(engineId(), { id: edgeId, sourceModuleId: outModule, sourcePortId: outPort, sinkModuleId: inModule, sinkPortId: inPort });
     }
 
     function onNodeDragStart(event: { node: Node }) {
@@ -202,26 +203,26 @@ export function useGraphSync(
     function onNodeDragStop(event: { node: Node }) {
         activeDrags.delete(event.node.id);
         recentDrags.set(event.node.id, Date.now());
-        socket.emit('module:position', { engineId: engineId(), moduleId: event.node.id, position: event.node.position });
+        patch.modulePosition(engineId(), event.node.id, event.node.position);
     }
 
     function onEdgeDelete(edgeId: string) {
         removeEdges([edgeId]);
         engineStore.removeConnection(engineId(), edgeId);
-        socket.emit('routing:disconnect', { engineId: engineId(), connectionId: edgeId });
+        patch.removeConnection(engineId(), edgeId);
     }
 
     function onAddModule(plugin: { pluginId: string }, displayName: string) {
-        // Place new module at center of current viewport with small random offset
+        const instanceId = `${plugin.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
         const el = document.querySelector('.vue-flow') as HTMLElement | null;
         let x = 300, y = 200;
         if (el) {
             const rect = el.getBoundingClientRect();
             const center = screenToFlowCoordinate({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
-            x = center.x - 100 + Math.random() * 40 - 20; // -100 for half module width, ±20 random
-            y = center.y - 50 + Math.random() * 40 - 20;  // -50 for half module height, ±20 random
+            x = center.x - 100 + Math.random() * 40 - 20;
+            y = center.y - 50 + Math.random() * 40 - 20;
         }
-        socket.emit('module:add', { engineId: engineId(), pluginId: plugin.pluginId, displayName, position: { x, y } });
+        patch.addModule(engineId(), instanceId, { pluginId: plugin.pluginId, displayName, position: { x, y } });
     }
 
     function focusModule(moduleId: string) {

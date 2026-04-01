@@ -3,10 +3,9 @@ import { createLogger } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
-import type { ModuleHandlers } from '../handlers/ModuleHandlers.js';
-import type { RoutingHandlers } from '../handlers/RoutingHandlers.js';
 import type { EngineCommandService } from '../handlers/EngineCommandService.js';
 import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
+import type { PatchRouter } from '../PatchRouter.js';
 
 const log = createLogger('SocketIO');
 
@@ -15,18 +14,19 @@ export interface SocketDeps {
     configStore: ConfigStore;
     engineManager: EngineConnectionManager;
     pluginRegistry: PluginRegistry;
-    moduleHandlers: ModuleHandlers;
-    routingHandlers: RoutingHandlers;
     engineCommands: EngineCommandService;
     eventForwarder: EngineEventForwarder;
+    patchRouter: PatchRouter;
 }
 
 /**
  * Register all Socket.IO event handlers.
- * This is a thin wiring layer — all business logic lives in handler classes.
+ * Config changes go through 'patch' (N-1 router).
+ * Lifecycle commands (start/stop/reset/restart) stay as direct events.
+ * Streams (VU/logs/system/state) are handled by EngineEventForwarder.
  */
 export function setupSocketIO(deps: SocketDeps): void {
-    const { io, configStore, engineManager, pluginRegistry, moduleHandlers, routingHandlers, engineCommands, eventForwarder } = deps;
+    const { io, configStore, engineManager, pluginRegistry, engineCommands, eventForwarder, patchRouter } = deps;
 
     io.on('connection', (socket: IOSocket) => {
         log.info({ socketId: socket.id }, 'browser connected');
@@ -57,8 +57,6 @@ export function setupSocketIO(deps: SocketDeps): void {
                     const m = mod as Record<string, unknown>;
                     const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
                     if (manifest) {
-                        // Use stored ports if available (dynamic ports from engine),
-                        // otherwise fall back to manifest ports
                         if (!m.ports || (m.ports as unknown[]).length === 0) {
                             m.ports = manifest.ports ?? [];
                         }
@@ -111,17 +109,7 @@ export function setupSocketIO(deps: SocketDeps): void {
             }
         });
 
-        // --- Module management ---
-        socket.on('module:add', (p: any) => { if (p?.engineId && p?.pluginId && p?.displayName) moduleHandlers.add(p); });
-        socket.on('module:delete', (p: any) => { if (p?.engineId && p?.moduleId) moduleHandlers.delete(p); });
-        socket.on('module:position', (p: any) => { if (p?.engineId && p?.moduleId && p?.position) moduleHandlers.position(p); });
-        socket.on('module:config', (p: any) => { if (p?.engineId && p?.moduleId && p?.changes) moduleHandlers.config(p); });
-        socket.on('module:toggle', (p: any) => { if (p?.engineId && p?.moduleId) moduleHandlers.toggle(p); });
-        socket.on('module:restart', (p: any) => { if (p?.engineId && p?.moduleId) moduleHandlers.restart(p); });
-        socket.on('module:meta', (p: any) => { if (p?.engineId && p?.moduleId && p?.meta) moduleHandlers.meta(p); });
-        socket.on('module:rename', (p: any) => { if (p?.engineId && p?.moduleId && p?.displayName) moduleHandlers.rename(p); });
-
-        // --- Engine start/stop ---
+        // --- Lifecycle commands (not patches) ---
         socket.on('engine:start', (p: any) => {
             if (!p?.engineId) return;
             engineCommands.setRunning(p.engineId, true);
@@ -134,20 +122,27 @@ export function setupSocketIO(deps: SocketDeps): void {
             engineCommands.sendCommand(p.engineId, 'stop');
             io.emit('engine:running', { engineId: p.engineId, running: false });
         });
-
         socket.on('engine:reset', (p: any) => {
             if (!p?.engineId) return;
             if (engineManager.isEngineOnline(p.engineId)) {
                 engineManager.sendToEngine(p.engineId, 'command', { command: 'reset' }, { guaranteeDelivery: true });
             }
         });
-
-        // --- Routing ---
-        socket.on('routing:connect', (p: any) => {
-            if (p?.engineId && p?.sourceModuleId && p?.sourcePortId && p?.sinkModuleId && p?.sinkPortId) routingHandlers.connect(p);
+        socket.on('module:restart', (p: any) => {
+            if (!p?.engineId || !p?.moduleId) return;
+            if (engineManager.isEngineOnline(p.engineId)) {
+                engineManager.sendToEngine(p.engineId, 'command', {
+                    command: 'moduleRestart', moduleId: p.moduleId,
+                }, { guaranteeDelivery: true });
+            }
         });
-        socket.on('routing:disconnect', (p: any) => { if (p?.engineId && p?.connectionId) routingHandlers.disconnect(p); });
-        socket.on('routing:update', (p: any) => { if (p?.engineId && p?.connectionId) routingHandlers.update(p); });
+
+        // --- Unified patch (N-1 router) ---
+        socket.on('patch', (p: any) => {
+            if (p?.engineId && Array.isArray(p?.ops) && p.ops.length > 0) {
+                patchRouter.onPatch(socket.id, 'browser', p.engineId, p.ops);
+            }
+        });
 
         socket.on('disconnect', () => {
             log.info({ socketId: socket.id }, 'browser disconnected');
