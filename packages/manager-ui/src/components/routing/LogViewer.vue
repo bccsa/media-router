@@ -130,17 +130,13 @@ const levels = [
 <template>
     <div class="flex flex-col h-full">
         <!-- Toolbar -->
-        <div class="flex items-center gap-2 px-3 py-1.5 shrink-0 overflow-x-auto"
-             :style="{ borderBottom: '1px solid var(--border-primary)', backgroundColor: 'var(--bg-card)' }">
+        <div class="flex items-center gap-2 px-3 py-1.5 shrink-0 overflow-x-auto border-b border-border bg-card">
             <!-- Level filter -->
             <div class="flex items-center gap-0.5 shrink-0">
                 <button v-for="lvl in levels" :key="lvl.value"
                         @click="minLevel = lvl.value"
                         class="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
-                        :style="{
-                            backgroundColor: minLevel <= lvl.value ? 'var(--accent-muted)' : 'transparent',
-                            color: minLevel <= lvl.value ? 'var(--accent-text)' : 'var(--text-muted)',
-                        }">
+                        :class="minLevel <= lvl.value ? 'bg-accent-muted text-accent-fg' : 'bg-transparent text-muted'">
                     {{ lvl.label }}
                 </button>
             </div>
@@ -149,10 +145,7 @@ const levels = [
             <div class="shrink-0">
                 <button ref="filterBtnRef" @click="toggleSourceFilter"
                         class="px-1.5 py-0.5 rounded text-[10px] font-medium flex items-center gap-1"
-                        :style="{
-                            backgroundColor: hiddenSources.size > 0 ? 'var(--accent-muted)' : 'transparent',
-                            color: hiddenSources.size > 0 ? 'var(--accent-text)' : 'var(--text-muted)',
-                        }">
+                        :class="hiddenSources.size > 0 ? 'bg-accent-muted text-accent-fg' : 'bg-transparent text-muted'">
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
                     </svg>
@@ -163,35 +156,29 @@ const levels = [
             <!-- Search -->
             <input v-model="searchQuery" placeholder="Search..."
                    @keydown.stop
-                   class="flex-1 px-2 py-0.5 text-xs rounded-md min-w-0"
-                   :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }" />
+                   class="flex-1 px-2 py-0.5 text-xs rounded-md min-w-0 bg-input border border-border text-foreground" />
 
             <!-- Auto-scroll toggle -->
             <button @click="autoScroll = !autoScroll"
                     class="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
-                    :style="{
-                        backgroundColor: autoScroll ? 'var(--accent-muted)' : 'transparent',
-                        color: autoScroll ? 'var(--accent-text)' : 'var(--text-muted)',
-                    }">
+                    :class="autoScroll ? 'bg-accent-muted text-accent-fg' : 'bg-transparent text-muted'">
                 Auto
             </button>
 
             <!-- Clear -->
             <button @click="logStore.clear(props.engineId)"
-                    class="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
-                    :style="{ color: 'var(--text-muted)' }">
+                    class="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 text-muted">
                 Clear
             </button>
 
             <!-- Count -->
-            <span class="text-[10px] tabular-nums shrink-0" :style="{ color: 'var(--text-muted)' }">
+            <span class="text-[10px] tabular-nums shrink-0 text-muted">
                 {{ filteredEntries.length }}
             </span>
         </div>
 
         <!-- Log entries -->
-        <div ref="scrollEl" class="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed"
-             :style="{ backgroundColor: 'var(--bg-primary)' }"
+        <div ref="scrollEl" class="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed bg-surface"
              @scroll="() => {
                  if (scrollEl) {
                      const atBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 50;
@@ -199,18 +186,18 @@ const levels = [
                      else autoScroll = true;
                  }
              }">
-            <div v-if="filteredEntries.length === 0" class="p-4 text-center text-xs" :style="{ color: 'var(--text-muted)' }">
+            <div v-if="filteredEntries.length === 0" class="p-4 text-center text-xs text-muted">
                 No log entries
             </div>
             <div v-for="(entry, i) in filteredEntries" :key="i"
                  class="flex gap-2 px-3 py-px hover:bg-white/5 whitespace-nowrap">
-                <span class="shrink-0 tabular-nums" :style="{ color: 'var(--text-muted)' }">{{ formatTime(entry.time) }}</span>
+                <span class="shrink-0 tabular-nums text-muted">{{ formatTime(entry.time) }}</span>
                 <span class="shrink-0 w-10" :style="{ color: levelColor(entry.level) }">{{ levelLabel(entry.level) }}</span>
-                <span class="shrink-0 max-w-[120px] truncate" :style="{ color: 'var(--text-muted)' }">{{ entry.name }}</span>
-                <span class="break-all whitespace-normal" :style="{ color: 'var(--text-primary)' }">
+                <span class="shrink-0 max-w-[120px] truncate text-muted">{{ entry.name }}</span>
+                <span class="break-all whitespace-normal text-foreground">
                     {{ entry.msg }}
                     <template v-if="entry.instanceId">
-                        <span :style="{ color: 'var(--text-muted)' }"> [{{ getModuleName(entry.instanceId as string) || entry.instanceId }}]</span>
+                        <span class="text-muted"> [{{ getModuleName(entry.instanceId as string) || entry.instanceId }}]</span>
                     </template>
                 </span>
             </div>
@@ -220,21 +207,18 @@ const levels = [
         <Teleport to="body">
             <div v-if="showSourceFilter" class="fixed inset-0 z-[998]" @click="showSourceFilter = false" />
             <div v-if="showSourceFilter"
-                 class="fixed w-56 rounded-lg shadow-xl py-1 max-h-60 overflow-y-auto z-[999]"
+                 class="fixed w-56 rounded-lg shadow-xl py-1 max-h-60 overflow-y-auto z-[999] bg-card border border-border"
                  :style="{
                      left: filterPos.x + 'px',
                      top: (filterPos.y - 4) + 'px',
                      transform: 'translateY(-100%)',
-                     backgroundColor: 'var(--bg-card)',
-                     border: '1px solid var(--border-primary)',
                  }">
-                <div class="flex gap-2 px-3 py-1 mb-1" :style="{ borderBottom: '1px solid var(--border-secondary)' }">
-                    <button @click="selectAll" class="text-[10px]" :style="{ color: 'var(--accent-text)' }">All</button>
-                    <button @click="deselectAll" class="text-[10px]" :style="{ color: 'var(--text-muted)' }">None</button>
+                <div class="flex gap-2 px-3 py-1 mb-1 border-b border-border-alt">
+                    <button @click="selectAll" class="text-[10px] text-accent-fg">All</button>
+                    <button @click="deselectAll" class="text-[10px] text-muted">None</button>
                 </div>
                 <label v-for="source in allSources" :key="source"
-                       class="flex items-center gap-2 px-3 py-0.5 text-[11px] cursor-pointer hover:bg-white/5"
-                       :style="{ color: 'var(--text-primary)' }">
+                       class="flex items-center gap-2 px-3 py-0.5 text-[11px] cursor-pointer hover:bg-white/5 text-foreground">
                     <input type="checkbox" :checked="!hiddenSources.has(source)"
                            @change="toggleSource(source)"
                            class="w-3 h-3 rounded accent-emerald-500" />

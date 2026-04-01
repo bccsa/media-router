@@ -30,12 +30,12 @@ const dragging = ref(false);
 // Sync from store when NOT dragging (e.g. another LCP client changed it)
 watch(storeVolume, (v) => { if (!dragging.value) localVolume.value = v; });
 
-const healthColor = computed(() => {
+const healthClass = computed(() => {
     switch (props.module.health) {
-        case 'ok': return '#10b981';
-        case 'warning': return '#f59e0b';
-        case 'error': return '#ef4444';
-        default: return '#6b7280';
+        case 'ok': return 'bg-ok';
+        case 'warning': return 'bg-warning';
+        case 'error': return 'bg-error';
+        default: return 'bg-stopped';
     }
 });
 
@@ -75,7 +75,7 @@ function toggleMute() {
     <div class="mixer-strip">
         <!-- Module name + health dot -->
         <div class="strip-header">
-            <div class="health-dot" :style="{ backgroundColor: healthColor }"></div>
+            <div class="health-dot" :class="healthClass"></div>
             <div class="module-name">{{ module.displayName }}</div>
         </div>
 

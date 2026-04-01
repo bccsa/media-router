@@ -1,6 +1,38 @@
 @import "tailwindcss";
 
 /* ============================================================================
+   Tailwind Theme — maps CSS variables to utility classes
+   ============================================================================
+   Usage:  bg-surface, bg-card, text-foreground, text-subtle, border-border, etc.
+   ============================================================================ */
+@theme inline {
+    --color-surface: var(--bg-primary);
+    --color-surface-alt: var(--bg-secondary);
+    --color-sidebar: var(--bg-sidebar);
+    --color-card: var(--bg-card);
+    --color-input: var(--bg-input);
+    --color-border: var(--border-primary);
+    --color-border-alt: var(--border-secondary);
+    --color-foreground: var(--text-primary);
+    --color-subtle: var(--text-secondary);
+    --color-muted: var(--text-muted);
+    --color-accent: var(--accent);
+    --color-accent-hover: var(--accent-hover);
+    --color-accent-muted: var(--accent-muted);
+    --color-accent-fg: var(--accent-text);
+    --color-ok: var(--health-ok);
+    --color-warning: var(--health-warning);
+    --color-error: var(--health-error);
+    --color-stopped: var(--health-stopped);
+    --color-vu-green: var(--vu-green);
+    --color-vu-yellow: var(--vu-yellow);
+    --color-vu-red: var(--vu-red);
+    --color-port-audio: var(--port-audio-pcm);
+    --color-port-muxed: var(--port-muxed-mpegts);
+    --color-port-video: var(--port-video-raw);
+}
+
+/* ============================================================================
    Media Router v2.0 — Protocol-style Theme (FDS §5.5.1)
    ============================================================================ */
 

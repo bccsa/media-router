@@ -11,18 +11,10 @@ defineProps<{
         class="inline-flex items-center justify-center rounded-md font-medium transition-colors disabled:opacity-50"
         :class="[
             size === 'sm' ? 'px-3 text-xs h-8' : 'px-4 py-2 text-sm',
+            variant === 'danger' ? 'bg-red-500 text-white' :
+            variant === 'secondary' ? 'bg-transparent text-foreground border border-border' :
+            'bg-accent text-white',
         ]"
-        :style="{
-            backgroundColor:
-                variant === 'danger' ? '#ef4444' :
-                variant === 'secondary' ? 'transparent' :
-                'var(--accent)',
-            color:
-                variant === 'danger' ? '#fff' :
-                variant === 'secondary' ? 'var(--text-primary)' :
-                '#fff',
-            border: variant === 'secondary' ? '1px solid var(--border-primary)' : 'none',
-        }"
         :disabled="loading"
     >
         <svg v-if="loading" class="animate-spin -ml-1 mr-2 h-3 w-3" fill="none" viewBox="0 0 24 24">

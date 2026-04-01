@@ -43,33 +43,34 @@ const infoRows = computed(() => {
 
 <template>
     <div class="p-6 max-w-3xl">
-        <div v-if="!engine" class="text-center py-16" :style="{ color: 'var(--text-muted)' }">Engine not found.</div>
+        <div v-if="!engine" class="text-center py-16 text-muted">Engine not found.</div>
         <template v-else>
             <div class="flex items-center justify-between mb-5">
                 <div class="flex items-center gap-3">
-                    <h2 class="text-xl font-semibold" :style="{ color: 'var(--text-primary)' }">{{ engine.name }}</h2>
+                    <h2 class="text-xl font-semibold text-foreground">{{ engine.name }}</h2>
                     <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs"
-                         :style="{ backgroundColor: engine.online ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)', color: engine.online ? 'var(--health-ok)' : 'var(--health-stopped)' }">
-                        <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: engine.online ? 'var(--health-ok)' : 'var(--health-stopped)' }" />
+                         :class="engine.online ? 'text-ok' : 'text-stopped'"
+                         :style="{ backgroundColor: engine.online ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)' }">
+                        <div class="w-2 h-2 rounded-full" :class="engine.online ? 'bg-ok' : 'bg-stopped'" />
                         {{ engine.online ? 'Online' : 'Offline' }}
                     </div>
                 </div>
                 <MrButton size="sm" variant="danger" @click="showDelete = true">Delete</MrButton>
             </div>
 
-            <div class="rounded-lg overflow-hidden" :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
+            <div class="rounded-lg overflow-hidden bg-card border border-border">
                 <div v-for="(row, i) in infoRows" :key="row.label" class="px-5 py-3.5 flex justify-between"
-                     :style="i > 0 ? { borderTop: '1px solid var(--border-secondary)' } : {}">
-                    <span class="text-sm" :style="{ color: 'var(--text-muted)' }">{{ row.label }}</span>
-                    <span class="text-sm" :style="{ color: row.accent ? 'var(--accent-text)' : 'var(--text-primary)' }">{{ row.value }}</span>
+                     :class="i > 0 ? 'border-t border-border-alt' : ''">
+                    <span class="text-sm text-muted">{{ row.label }}</span>
+                    <span class="text-sm" :class="row.accent ? 'text-accent-fg' : 'text-foreground'">{{ row.value }}</span>
                 </div>
             </div>
 
             <div class="mt-5 flex gap-4">
-                <RouterLink :to="`/routing/${engine.engineId}`" class="text-sm hover:underline" :style="{ color: 'var(--accent-text)' }">
+                <RouterLink :to="`/routing/${engine.engineId}`" class="text-sm hover:underline text-accent-fg">
                     Open Routing Editor
                 </RouterLink>
-                <RouterLink :to="`/profiles/${engine.engineId}`" class="text-sm hover:underline" :style="{ color: 'var(--accent-text)' }">
+                <RouterLink :to="`/profiles/${engine.engineId}`" class="text-sm hover:underline text-accent-fg">
                     Manage Profiles
                 </RouterLink>
             </div>
@@ -77,8 +78,8 @@ const infoRows = computed(() => {
     </div>
 
     <MrModal v-if="showDelete" title="Delete Engine" @close="showDelete = false">
-        <p class="text-sm" :style="{ color: 'var(--text-secondary)' }">
-            Are you sure you want to delete <strong :style="{ color: 'var(--text-primary)' }">{{ engine?.name }}</strong>? This cannot be undone.
+        <p class="text-sm text-subtle">
+            Are you sure you want to delete <strong class="text-foreground">{{ engine?.name }}</strong>? This cannot be undone.
         </p>
         <template #footer>
             <MrButton variant="secondary" @click="showDelete = false">Cancel</MrButton>

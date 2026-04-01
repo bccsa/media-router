@@ -175,10 +175,10 @@ onMounted(loadProfiles);
     <div class="p-6 max-w-2xl">
         <div class="flex items-center justify-between mb-5">
             <div>
-                <h1 class="text-xl font-semibold" :style="{ color: 'var(--text-primary)' }">
+                <h1 class="text-xl font-semibold text-foreground">
                     Profiles
                 </h1>
-                <p class="text-xs mt-0.5" :style="{ color: 'var(--text-muted)' }">
+                <p class="text-xs mt-0.5 text-muted">
                     {{ engine?.name ?? props.engineId }}
                 </p>
             </div>
@@ -198,24 +198,16 @@ onMounted(loadProfiles);
         <!-- Profile list -->
         <div class="space-y-2">
             <div v-for="p in profiles" :key="p.profile_name">
-            <div class="flex items-center justify-between px-4 py-3 rounded-lg"
-                 :style="{
-                     backgroundColor: 'var(--bg-card)',
-                     border: engine?.activeProfile === p.profile_name
-                         ? '1px solid var(--accent)'
-                         : '1px solid var(--border-primary)',
-                 }">
+            <div class="flex items-center justify-between px-4 py-3 rounded-lg bg-card border"
+                 :class="engine?.activeProfile === p.profile_name ? 'border-accent' : 'border-border'">
                 <div class="flex items-center gap-2.5">
                     <div class="w-2 h-2 rounded-full shrink-0"
-                         :style="{
-                             backgroundColor: engine?.activeProfile === p.profile_name ? 'var(--accent)' : 'var(--border-primary)',
-                         }" />
-                    <span class="text-sm font-medium" :style="{ color: 'var(--text-primary)' }">
+                         :class="engine?.activeProfile === p.profile_name ? 'bg-accent' : 'bg-border'" />
+                    <span class="text-sm font-medium text-foreground">
                         {{ p.profile_name }}
                     </span>
                     <span v-if="engine?.activeProfile === p.profile_name"
-                          class="text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase"
-                          :style="{ backgroundColor: 'var(--accent-muted)', color: 'var(--accent)' }">
+                          class="text-[10px] px-1.5 py-0.5 rounded font-semibold uppercase bg-accent-muted text-accent">
                         Live
                     </span>
                 </div>
@@ -239,39 +231,34 @@ onMounted(loadProfiles);
 
             <!-- Version history (expandable) -->
             <div v-if="showHistory === p.profile_name && history.length > 0"
-                 class="px-4 py-2 space-y-1 -mt-1 rounded-b-lg"
-                 :style="{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-primary)', borderTop: 'none' }">
-                <div class="text-[10px] font-semibold uppercase tracking-wider mb-1"
-                     :style="{ color: 'var(--text-muted)' }">
+                 class="px-4 py-2 space-y-1 -mt-1 rounded-b-lg bg-surface-alt border border-border border-t-0">
+                <div class="text-[10px] font-semibold uppercase tracking-wider mb-1 text-muted">
                     Version History
                 </div>
                 <div v-for="v in history" :key="v.id"
-                     class="flex items-center justify-between py-1.5 text-xs"
-                     :style="{ borderBottom: '1px solid var(--border-secondary)' }">
+                     class="flex items-center justify-between py-1.5 text-xs border-b border-border-alt">
                     <div>
-                        <span :style="{ color: 'var(--text-secondary)' }">{{ new Date(v.saved_at).toLocaleString() }}</span>
+                        <span class="text-subtle">{{ new Date(v.saved_at).toLocaleString() }}</span>
                     </div>
                     <div class="flex gap-1.5">
                         <button @click="previewVersion = { id: v.id, config: v.config }"
-                                class="text-[10px] px-1.5 py-0.5 rounded transition-colors"
-                                :style="{ color: 'var(--accent)', backgroundColor: 'var(--accent-muted)' }">
+                                class="text-[10px] px-1.5 py-0.5 rounded transition-colors text-accent bg-accent-muted">
                             Preview
                         </button>
                         <button @click="showRollbackConfirm = v.id"
-                                class="text-[10px] px-1.5 py-0.5 rounded transition-colors"
-                                :style="{ color: 'var(--health-warning)' }">
+                                class="text-[10px] px-1.5 py-0.5 rounded transition-colors text-warning">
                             Rollback
                         </button>
                     </div>
                 </div>
-                <div v-if="history.length === 0" class="text-xs py-2" :style="{ color: 'var(--text-muted)' }">
+                <div v-if="history.length === 0" class="text-xs py-2 text-muted">
                     No version history
                 </div>
             </div>
         </div> <!-- close wrapper per profile -->
         </div>
 
-        <div v-if="profiles.length === 0" class="text-center py-16" :style="{ color: 'var(--text-muted)' }">
+        <div v-if="profiles.length === 0" class="text-center py-16 text-muted">
             <p class="text-sm">No profiles yet</p>
             <MrButton size="sm" class="mt-3" @click="showCreate = true">Create your first profile</MrButton>
         </div>
@@ -289,11 +276,10 @@ onMounted(loadProfiles);
 
     <!-- Switch confirmation -->
     <MrModal v-if="showSwitchConfirm" title="Activate Profile" @close="showSwitchConfirm = null">
-        <p class="text-sm" :style="{ color: 'var(--text-secondary)' }">
-            Switch to profile <strong :style="{ color: 'var(--text-primary)' }">{{ showSwitchConfirm }}</strong>?
+        <p class="text-sm text-subtle">
+            Switch to profile <strong class="text-foreground">{{ showSwitchConfirm }}</strong>?
         </p>
-        <p v-if="engine?.running" class="text-xs mt-2 px-3 py-2 rounded"
-           :style="{ backgroundColor: 'var(--health-warning)', color: '#000' }">
+        <p v-if="engine?.running" class="text-xs mt-2 px-3 py-2 rounded bg-warning text-black">
             The engine is running and will be stopped before switching.
         </p>
         <template #footer>
@@ -304,8 +290,8 @@ onMounted(loadProfiles);
 
     <!-- Delete confirmation -->
     <MrModal v-if="showDeleteConfirm" title="Delete Profile" @close="showDeleteConfirm = null">
-        <p class="text-sm" :style="{ color: 'var(--text-secondary)' }">
-            Delete profile <strong :style="{ color: 'var(--text-primary)' }">{{ showDeleteConfirm }}</strong>?
+        <p class="text-sm text-subtle">
+            Delete profile <strong class="text-foreground">{{ showDeleteConfirm }}</strong>?
             This cannot be undone.
         </p>
         <template #footer>
@@ -316,8 +302,7 @@ onMounted(loadProfiles);
 
     <!-- Version preview modal -->
     <MrModal v-if="previewVersion" title="Version Preview" @close="previewVersion = null">
-        <pre class="text-[10px] p-3 rounded max-h-64 overflow-auto"
-             :style="{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }">{{ typeof previewVersion.config === 'string' ? previewVersion.config : JSON.stringify(JSON.parse(previewVersion.config), null, 2) }}</pre>
+        <pre class="text-[10px] p-3 rounded max-h-64 overflow-auto bg-surface-alt text-muted">{{ typeof previewVersion.config === 'string' ? previewVersion.config : JSON.stringify(JSON.parse(previewVersion.config), null, 2) }}</pre>
         <template #footer>
             <MrButton variant="secondary" @click="previewVersion = null">Close</MrButton>
             <MrButton @click="showRollbackConfirm = previewVersion.id">Rollback to this version</MrButton>
@@ -326,7 +311,7 @@ onMounted(loadProfiles);
 
     <!-- Rollback confirmation -->
     <MrModal v-if="showRollbackConfirm" title="Rollback Config" @close="showRollbackConfirm = null">
-        <p class="text-sm" :style="{ color: 'var(--text-secondary)' }">
+        <p class="text-sm text-subtle">
             Restore this version? The current config will be overwritten.
         </p>
         <template #footer>
@@ -340,16 +325,15 @@ onMounted(loadProfiles);
         <div class="space-y-3">
             <MrInput v-model="importName" label="Profile Name" placeholder="e.g. Imported Config" />
             <div>
-                <label class="block text-xs font-medium mb-1" :style="{ color: 'var(--text-primary)' }">
+                <label class="block text-xs font-medium mb-1 text-foreground">
                     Upload JSON file
                 </label>
                 <input type="file" accept=".json" @change="handleFileImport"
-                       class="text-xs" :style="{ color: 'var(--text-secondary)' }" />
+                       class="text-xs text-subtle" />
             </div>
             <div v-if="importData">
-                <label class="block text-xs font-medium mb-1" :style="{ color: 'var(--text-primary)' }">Preview</label>
-                <pre class="text-[10px] p-2 rounded max-h-32 overflow-auto"
-                     :style="{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }">{{ importData.substring(0, 500) }}{{ importData.length > 500 ? '...' : '' }}</pre>
+                <label class="block text-xs font-medium mb-1 text-foreground">Preview</label>
+                <pre class="text-[10px] p-2 rounded max-h-32 overflow-auto bg-surface-alt text-muted">{{ importData.substring(0, 500) }}{{ importData.length > 500 ? '...' : '' }}</pre>
             </div>
         </div>
         <template #footer>

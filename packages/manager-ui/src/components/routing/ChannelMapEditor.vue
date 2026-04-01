@@ -273,30 +273,23 @@ function save() {
 
 <template>
     <div class="fixed inset-0 z-[1000] flex items-center justify-center" @click.self="emit('close')">
-        <div class="rounded-xl shadow-2xl overflow-hidden flex flex-col"
-             :style="{
-                 backgroundColor: 'var(--bg-card)',
-                 border: '1px solid var(--border-primary)',
-                 width: 'min(90vw, 520px)',
-                 maxHeight: '90vh',
-             }">
+        <div class="rounded-xl shadow-2xl overflow-hidden flex flex-col bg-card border border-border"
+             style="width: min(90vw, 520px); max-height: 90vh">
             <!-- Header -->
-            <div class="flex items-center justify-between px-4 py-3"
-                 :style="{ borderBottom: '1px solid var(--border-secondary)' }">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-border-alt">
                 <div class="flex items-center gap-2">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :style="{ color: 'var(--accent)' }">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent">
                         <path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>
                     </svg>
-                    <span class="font-semibold text-sm" :style="{ color: 'var(--text-primary)' }">Channel Map</span>
+                    <span class="font-semibold text-sm text-foreground">Channel Map</span>
                 </div>
-                <button @click="emit('close')" class="p-1 rounded" :style="{ color: 'var(--text-muted)' }">
+                <button @click="emit('close')" class="p-1 rounded text-muted">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                 </button>
             </div>
 
             <!-- Source → Dest header -->
-            <div class="flex items-center justify-between px-4 py-2 text-xs"
-                 :style="{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }">
+            <div class="flex items-center justify-between px-4 py-2 text-xs bg-surface-alt text-subtle">
                 <div class="flex items-center gap-1">
                     <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: srcModule?.color ?? '#3b82f6' }" />
                     {{ srcModule?.displayName ?? 'Source' }}
@@ -311,13 +304,11 @@ function save() {
             </div>
 
             <!-- Presets -->
-            <div class="flex items-center gap-1 px-4 py-2 overflow-x-auto no-scrollbar"
-                 :style="{ borderBottom: '1px solid var(--border-secondary)' }">
-                <span class="text-[10px] shrink-0 mr-1" :style="{ color: 'var(--text-muted)' }">Presets:</span>
+            <div class="flex items-center gap-1 px-4 py-2 overflow-x-auto no-scrollbar border-b border-border-alt">
+                <span class="text-[10px] shrink-0 mr-1 text-muted">Presets:</span>
                 <button v-for="p in availablePresets" :key="p.id"
                     @click="applyPreset(p.id)"
-                    class="text-[10px] px-2 py-0.5 rounded shrink-0 transition-colors"
-                    :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-secondary)' }">
+                    class="text-[10px] px-2 py-0.5 rounded shrink-0 transition-colors bg-input border border-border text-subtle">
                     {{ p.label }}
                 </button>
             </div>
@@ -363,27 +354,24 @@ function save() {
             </div>
 
             <!-- Mappings list -->
-            <div v-if="mappings.length > 0" class="px-4 pb-2 max-h-32 overflow-auto"
-                 :style="{ borderTop: '1px solid var(--border-secondary)' }">
-                <div class="text-[10px] font-semibold uppercase tracking-wider py-1" :style="{ color: 'var(--text-muted)' }">
+            <div v-if="mappings.length > 0" class="px-4 pb-2 max-h-32 overflow-auto border-t border-border-alt">
+                <div class="text-[10px] font-semibold uppercase tracking-wider py-1 text-muted">
                     Mappings ({{ mappings.length }})
                 </div>
                 <div v-for="(m, i) in mappings" :key="`map-${m.srcChannel}-${m.dstChannel}`"
-                     class="flex items-center gap-2 py-0.5 text-xs" :style="{ color: 'var(--text-secondary)' }">
+                     class="flex items-center gap-2 py-0.5 text-xs text-subtle">
                     <span class="w-12 shrink-0">{{ srcLabels[m.srcChannel] }}</span>
                     <span class="opacity-40">→</span>
                     <span class="flex-1">{{ dstLabels[m.dstChannel] }}</span>
-                    <button @click="removeMapping(i)" class="p-0.5 rounded opacity-50 hover:opacity-100"
-                            :style="{ color: 'var(--health-error)' }">
+                    <button @click="removeMapping(i)" class="p-0.5 rounded opacity-50 hover:opacity-100 text-error">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                     </button>
                 </div>
             </div>
 
             <!-- Footer -->
-            <div class="flex items-center justify-between px-4 py-3"
-                 :style="{ borderTop: '1px solid var(--border-secondary)' }">
-                <span class="text-[10px]" :style="{ color: 'var(--text-muted)' }">
+            <div class="flex items-center justify-between px-4 py-3 border-t border-border-alt">
+                <span class="text-[10px] text-muted">
                     Drag source → dest to map. Click line to remove.
                 </span>
                 <div class="flex gap-2">

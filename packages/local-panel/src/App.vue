@@ -38,7 +38,7 @@ function stopEngine() {
         <!-- Header -->
         <header class="lcp-header">
             <div class="header-left">
-                <div class="status-dot" :style="{ backgroundColor: socketStore.connected ? '#10b981' : '#6b7280' }"></div>
+                <div class="status-dot" :class="socketStore.connected ? 'bg-accent' : 'bg-stopped'"></div>
                 <h1 class="header-title">Media Router</h1>
                 <span class="header-subtitle">Local Control Panel</span>
                 <span v-if="moduleStore.engineIps.length > 0" class="header-ip">{{ moduleStore.engineIps.join(', ') }}</span>

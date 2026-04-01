@@ -77,28 +77,26 @@ function updateField(index: number, key: string, value: unknown) {
     <div class="space-y-2">
         <div class="flex items-center justify-between">
             <div>
-                <span v-if="label" class="text-xs font-medium" :style="{ color: 'var(--text-primary)' }">{{ label }}</span>
-                <p v-if="description" class="text-[10px]" :style="{ color: 'var(--text-muted)' }">{{ description }}</p>
+                <span v-if="label" class="text-xs font-medium text-foreground">{{ label }}</span>
+                <p v-if="description" class="text-[10px] text-muted">{{ description }}</p>
             </div>
             <MrButton size="sm" variant="secondary" :disabled="disabled" @click="addItem">+ Add</MrButton>
         </div>
 
         <div v-for="(item, idx) in items" :key="idx"
-             class="rounded-md p-2 space-y-1.5"
-             :style="{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-secondary)' }">
+             class="rounded-md p-2 space-y-1.5 bg-surface-alt border border-border-alt">
             <div class="flex items-center justify-between mb-1">
-                <span class="text-[10px] font-medium" :style="{ color: 'var(--text-muted)' }">
+                <span class="text-[10px] font-medium text-muted">
                     Item {{ idx + 1 }}
                 </span>
                 <button @click="removeItem(idx)" :disabled="disabled"
-                        class="text-[10px] px-1 rounded hover:bg-red-500/20 transition-colors"
-                        :style="{ color: '#f87171' }">
+                        class="text-[10px] px-1 rounded hover:bg-red-500/20 transition-colors text-red-400">
                     Remove
                 </button>
             </div>
 
             <div v-for="field in fields" :key="field.key" class="space-y-0.5">
-                <label class="text-[10px]" :style="{ color: 'var(--text-muted)' }">{{ field.description }}</label>
+                <label class="text-[10px] text-muted">{{ field.description }}</label>
 
                 <MrSelect v-if="field.enumValues"
                           :model-value="(item as Record<string, unknown>)[field.key] as string | number"
@@ -114,8 +112,7 @@ function updateField(index: number, key: string, value: unknown) {
             </div>
         </div>
 
-        <div v-if="items.length === 0" class="text-center py-3 text-[11px] rounded-md"
-             :style="{ color: 'var(--text-muted)', border: '1px dashed var(--border-secondary)' }">
+        <div v-if="items.length === 0" class="text-center py-3 text-[11px] rounded-md text-muted border border-dashed border-border-alt">
             No items. Click "+ Add" to create one.
         </div>
     </div>

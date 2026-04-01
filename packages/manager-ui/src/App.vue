@@ -14,11 +14,11 @@ onMounted(() => {
 </script>
 
 <template>
-    <div class="h-screen flex flex-col" :style="{ backgroundColor: 'var(--bg-primary)' }">
+    <div class="h-screen flex flex-col bg-surface">
         <AppHeader />
         <div class="flex flex-1 overflow-hidden">
             <AppSidebar />
-            <main class="flex-1 overflow-auto" :style="{ backgroundColor: 'var(--bg-secondary)' }">
+            <main class="flex-1 overflow-auto bg-surface-alt">
                 <RouterView />
             </main>
         </div>

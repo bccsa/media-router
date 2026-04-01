@@ -118,20 +118,15 @@ function getFieldEnum(field: FormField): unknown[] | undefined {
 }
 
 const localSettings = ref<Record<string, unknown>>({});
-let hasLocalEdits = false;
 
-watch(module, (m) => {
-    if (m && !hasLocalEdits) {
-        const defaults: Record<string, unknown> = {};
-        for (const f of formFields.value) {
-            if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
-        }
-        localSettings.value = { ...defaults, ...m.settings };
+watch(() => module.value?.settings, (settings) => {
+    if (!settings) return;
+    const defaults: Record<string, unknown> = {};
+    for (const f of formFields.value) {
+        if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
     }
-}, { immediate: true });
-
-// Reset edit flag when panel opens for a different module
-watch(() => props.moduleId, () => { hasLocalEdits = false; });
+    localSettings.value = { ...defaults, ...settings };
+}, { immediate: true, deep: true });
 
 // Throttle live updates (sliders) to max once per 50ms, with a final send on release
 let liveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -151,7 +146,6 @@ function sendLiveUpdate(key: string, value: unknown) {
 
 function updateSetting(key: string, value: unknown) {
     localSettings.value = { ...localSettings.value, [key]: value };
-    hasLocalEdits = true;
     const field = formFields.value.find((f) => f.key === key);
     if (field?.liveUpdatable) {
         pendingLiveUpdate = { key, value };
@@ -201,35 +195,31 @@ const saved = ref(false);
 
 function applyAll() {
     patch.moduleSettings(props.engineId, props.moduleId, localSettings.value);
-    hasLocalEdits = false;
     saved.value = true;
     setTimeout(() => { saved.value = false; }, 2000);
 }
 </script>
 
 <template>
-    <div class="fixed right-0 top-0 h-screen w-80 z-30 flex flex-col shadow-xl"
-         :style="{ backgroundColor: 'var(--bg-card)', borderLeft: '1px solid var(--border-primary)' }">
-        <div class="flex items-center justify-between px-4 py-3" :style="{ borderBottom: '1px solid var(--border-primary)' }">
-            <input v-model="editName" class="text-sm font-semibold bg-transparent border-b outline-none flex-1 mr-2"
-                   :style="{ color: 'var(--text-primary)', borderColor: 'var(--border-primary)' }"
+    <div class="fixed right-0 top-0 h-screen w-80 z-30 flex flex-col shadow-xl bg-card border-l border-border">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-border">
+            <input v-model="editName" class="text-sm font-semibold bg-transparent border-b outline-none flex-1 mr-2 text-foreground border-border"
                    @keydown.enter="($event.target as HTMLInputElement).blur()" @blur="saveName" />
-            <button @click="$emit('close')" class="p-1 rounded-md" :style="{ color: 'var(--text-muted)' }">
+            <button @click="$emit('close')" class="p-1 rounded-md text-muted">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
         </div>
 
         <!-- Quick actions -->
-        <div class="flex items-center justify-around px-3 py-2" :style="{ borderBottom: '1px solid var(--border-primary)' }">
-            <button @click="doRestart" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80"
-                    :style="{ color: 'var(--text-secondary)' }">
+        <div class="flex items-center justify-around px-3 py-2 border-b border-border">
+            <button @click="doRestart" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-subtle">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                 </svg>
                 <span class="text-[9px]">Restart</span>
             </button>
             <button @click="doToggle" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80"
-                    :style="{ color: isEnabled ? 'var(--text-secondary)' : 'var(--health-ok)' }">
+                    :class="isEnabled ? 'text-subtle' : 'text-ok'">
                 <svg v-if="isEnabled" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M18.36 6.64A9 9 0 0 1 20.77 15M2 12a10 10 0 0 0 18.77 3" /><line x1="1" y1="1" x2="23" y2="23" />
                 </svg>
@@ -238,15 +228,13 @@ function applyAll() {
                 </svg>
                 <span class="text-[9px]">{{ isEnabled ? 'Disable' : 'Enable' }}</span>
             </button>
-            <button @click="doClone" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80"
-                    :style="{ color: 'var(--text-secondary)' }">
+            <button @click="doClone" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-subtle">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>
                 <span class="text-[9px]">Clone</span>
             </button>
-            <button @click="doDelete" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80"
-                    :style="{ color: 'var(--health-error)' }">
+            <button @click="doDelete" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-error">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
                 </svg>
@@ -255,21 +243,19 @@ function applyAll() {
         </div>
 
         <div class="flex-1 overflow-y-auto p-4 space-y-4">
-            <div v-if="formFields.length === 0" class="text-sm py-4 text-center" :style="{ color: 'var(--text-muted)' }">No configurable settings.</div>
+            <div v-if="formFields.length === 0" class="text-sm py-4 text-center text-muted">No configurable settings.</div>
             <div v-for="field in formFields" :key="field.key" class="space-y-1.5">
-                <label class="flex items-center gap-1 text-xs font-medium" :style="{ color: 'var(--text-secondary)' }">
+                <label class="flex items-center gap-1 text-xs font-medium text-subtle">
                     {{ field.label }}
                     <span v-if="field.liveUpdatable" class="text-amber-500 text-[10px] cursor-help relative group">&#9889;
-                        <span class="hidden group-hover:block absolute left-4 -top-1 w-40 p-2 rounded-md shadow-lg text-[9px] leading-relaxed" style="z-index:9999"
-                              :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }">
+                        <span class="hidden group-hover:block absolute left-4 -top-1 w-40 p-2 rounded-md shadow-lg text-[9px] leading-relaxed bg-card border border-border text-foreground" style="z-index:9999">
                             Live update — changes apply instantly without restarting the module
                         </span>
                     </span>
                 </label>
-                <p v-if="field.description" class="text-[10px]" :style="{ color: 'var(--text-muted)' }">{{ field.description }}</p>
+                <p v-if="field.description" class="text-[10px] text-muted">{{ field.description }}</p>
                 <!-- Read-only field (auto-detected values) -->
-                <div v-if="field.readOnly" class="w-full px-2 py-1.5 text-sm rounded-md opacity-60"
-                     :style="{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-secondary)', color: 'var(--text-muted)' }">
+                <div v-if="field.readOnly" class="w-full px-2 py-1.5 text-sm rounded-md opacity-60 bg-surface-alt border border-border-alt text-muted">
                     {{ localSettings[field.key] ?? '—' }}
                 </div>
                 <!-- Device picker (for x-deviceType fields) -->
@@ -307,7 +293,7 @@ function applyAll() {
                               :max="field.maxFrom ? Number(localSettings[field.maxFrom] ?? field.maximum ?? 2) : (field.maximum ?? 2)"
                               :step="field.step ?? 0.01"
                               @update:model-value="updateSetting(field.key, $event)" />
-                    <span class="text-xs w-12 text-right tabular-nums" :style="{ color: 'var(--text-secondary)' }">
+                    <span class="text-xs w-12 text-right tabular-nums text-subtle">
                         {{ Math.round(Number(localSettings[field.key] ?? field.defaultValue ?? 100)) }}%
                     </span>
                 </div>
@@ -323,10 +309,10 @@ function applyAll() {
             </div>
         </div>
 
-        <div class="px-4 pt-3 pb-16 md:pb-3 flex items-center gap-2" :style="{ borderTop: '1px solid var(--border-primary)' }">
+        <div class="px-4 pt-3 pb-16 md:pb-3 flex items-center gap-2 border-t border-border">
             <MrButton size="sm" @click="applyAll">Apply All</MrButton>
             <MrButton variant="secondary" size="sm" @click="$emit('close')">Close</MrButton>
-            <span v-if="saved" class="text-xs ml-auto flex items-center gap-1" :style="{ color: 'var(--health-ok)' }">
+            <span v-if="saved" class="text-xs ml-auto flex items-center gap-1 text-ok">
                 <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>
                 Saved
             </span>

@@ -61,23 +61,21 @@ onBeforeUnmount(() => {
 
 <template>
     <div ref="rootRef" class="space-y-1 relative">
-        <label v-if="label" class="block text-xs font-medium" :style="{ color: 'var(--text-primary)' }">
+        <label v-if="label" class="block text-xs font-medium text-foreground">
             {{ label }}
         </label>
-        <p v-if="description" class="text-[11px]" :style="{ color: 'var(--text-muted)' }">{{ description }}</p>
+        <p v-if="description" class="text-[11px] text-muted">{{ description }}</p>
 
         <!-- Trigger -->
         <button
             type="button"
             :disabled="disabled"
             @click="open = !open"
-            class="w-full px-2.5 py-1.5 text-sm rounded-md text-left flex items-center justify-between outline-none transition-colors"
-            :class="{ 'opacity-50 cursor-not-allowed': disabled }"
-            :style="{
-                backgroundColor: 'var(--bg-input)',
-                border: '1px solid var(--border-primary)',
-                color: modelValue !== undefined ? 'var(--text-primary)' : 'var(--text-muted)',
-            }">
+            class="w-full px-2.5 py-1.5 text-sm rounded-md text-left flex items-center justify-between outline-none transition-colors bg-input border border-border"
+            :class="[
+                disabled ? 'opacity-50 cursor-not-allowed' : '',
+                modelValue !== undefined ? 'text-foreground' : 'text-muted',
+            ]">
             <span class="truncate">{{ selectedLabel }}</span>
             <svg class="w-3 h-3 shrink-0 ml-1 transition-transform" :class="{ 'rotate-180': open }"
                  fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -86,30 +84,25 @@ onBeforeUnmount(() => {
         </button>
 
         <!-- Dropdown -->
-        <div v-if="open" class="absolute z-[999] w-full mt-1 rounded-md shadow-lg max-h-48 overflow-auto"
-             :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
+        <div v-if="open" class="absolute z-[999] w-full mt-1 rounded-md shadow-lg max-h-48 overflow-auto bg-card border border-border">
             <!-- Search -->
             <div v-if="searchable" class="p-1.5">
                 <input v-model="search" type="text" placeholder="Search..."
-                       class="w-full px-2 py-1 text-xs rounded outline-none"
-                       :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-secondary)', color: 'var(--text-primary)' }"
+                       class="w-full px-2 py-1 text-xs rounded outline-none bg-input border border-border-alt text-foreground"
                        @click.stop />
             </div>
 
             <!-- Options -->
             <div v-for="opt in filtered" :key="String(opt.value)"
                  @click="selectOption(opt.value)"
-                 class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors"
-                 :style="{
-                     color: opt.value === modelValue ? 'var(--accent)' : 'var(--text-primary)',
-                     backgroundColor: opt.value === modelValue ? 'var(--bg-secondary)' : 'transparent',
-                 }"
-                 @mouseenter="($event.target as HTMLElement).style.backgroundColor = 'var(--bg-secondary)'"
-                 @mouseleave="($event.target as HTMLElement).style.backgroundColor = opt.value === modelValue ? 'var(--bg-secondary)' : 'transparent'">
+                 class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors hover:bg-surface-alt"
+                 :class="[
+                     opt.value === modelValue ? 'text-accent bg-surface-alt' : 'text-foreground',
+                 ]">
                 {{ opt.label }}
             </div>
 
-            <div v-if="filtered.length === 0" class="px-2.5 py-2 text-xs" :style="{ color: 'var(--text-muted)' }">
+            <div v-if="filtered.length === 0" class="px-2.5 py-2 text-xs text-muted">
                 No results
             </div>
         </div>

@@ -50,7 +50,7 @@
 [x] - Sort order should be small to large  (not large to small)
 [x] - Bigger slider knobs in the LCP (44px thumb, 48px interaction width, touch-friendly)
 [x] - Tablet landscape/portrait support (responsive layout, compact landscape mode, safe area insets for notched devices)
-[ ] - Change to tailwind css
+[x] - Change to tailwind css (added @theme inline mapping CSS vars to Tailwind tokens; converted 262 :style bindings across 28 files to utility classes)
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 
@@ -60,7 +60,7 @@
 ## Manager-ui
 [x] - Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
 [x] - Cant remove labels on links (fixed: send empty string instead of undefined)
-[ ] - settins does not live update between rightclick menu and setting pane, if i make the change in the one, i first need to close and open the other ot see the change
+[x] - settins does not live update between rightclick menu and setting pane, if i make the change in the one, i first need to close and open the other ot see the change (fixed: removed localSettings snapshot guard, panel now watches store deeply and always syncs)
 
 ## Engine 
 [x] - When the engine reconnects to the manager, it restarts, instead of keeping its running state

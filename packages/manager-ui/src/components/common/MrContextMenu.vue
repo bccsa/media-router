@@ -96,17 +96,16 @@ onUnmounted(() => {
 
 <template>
     <Teleport to="body">
-        <div ref="menu" class="fixed z-50 min-w-[160px] rounded-lg shadow-xl py-1 text-sm"
-             :style="{ left: adjustedX + 'px', top: adjustedY + 'px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
+        <div ref="menu" class="fixed z-50 min-w-[160px] rounded-lg shadow-xl py-1 text-sm bg-card border border-border"
+             :style="{ left: adjustedX + 'px', top: adjustedY + 'px' }">
             <template v-for="(item, i) in items" :key="i">
-                <div v-if="item.divider" class="my-1" :style="{ borderTop: '1px solid var(--border-secondary)' }" />
+                <div v-if="item.divider" class="my-1 border-t border-border-alt" />
                 <!-- Toggle widget -->
                 <button v-else-if="item.toggle" @click.stop="onToggleClick(item)"
-                        class="w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors hover:brightness-125"
-                        :style="{ color: 'var(--text-primary)' }">
+                        class="w-full text-left px-3 py-1.5 flex items-center justify-between transition-colors hover:brightness-125 text-foreground">
                     <span class="text-[11px]">{{ item.label }}</span>
                     <div class="relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors"
-                         :style="{ backgroundColor: getToggleValue(item) ? 'var(--accent)' : 'var(--border-primary)' }">
+                         :class="getToggleValue(item) ? 'bg-accent' : 'bg-border'">
                         <span class="inline-block h-3 w-3 rounded-full bg-white shadow transition-transform"
                               :class="getToggleValue(item) ? 'translate-x-3.5' : 'translate-x-0.5'"
                               style="margin-top: 2px" />
@@ -114,9 +113,9 @@ onUnmounted(() => {
                 </button>
                 <!-- Slider widget -->
                 <div v-else-if="item.slider" class="px-3 py-1.5" @click.stop @mousedown.stop @touchstart.stop>
-                    <div class="flex items-center justify-between text-[11px] mb-1" :style="{ color: 'var(--text-muted)' }">
+                    <div class="flex items-center justify-between text-[11px] mb-1 text-muted">
                         <span>{{ item.label }}</span>
-                        <span :style="{ color: 'var(--text-primary)' }">{{ getSliderValue(item) }}{{ item.slider.unit ?? '' }}</span>
+                        <span class="text-foreground">{{ getSliderValue(item) }}{{ item.slider.unit ?? '' }}</span>
                     </div>
                     <MrSlider
                         :model-value="getSliderValue(item)"
@@ -126,13 +125,11 @@ onUnmounted(() => {
                 <!-- Regular button -->
                 <button v-else @click="onAction(item)" :disabled="item.disabled"
                         class="group/tip relative w-full text-left px-3 py-1.5 disabled:opacity-40 hover:brightness-125 transition-colors flex items-center gap-2"
-                        :style="{ color: item.danger ? '#f87171' : 'var(--text-primary)' }">
+                        :class="item.danger ? 'text-red-400' : 'text-foreground'">
                     <svg v-if="item.icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="item.icon" />
                     <span>{{ item.label }}</span>
                     <div v-if="item.tooltip"
-                         class="hidden group-hover/tip:block absolute left-full top-0 ml-2 w-44 p-2 rounded-md shadow-lg text-[10px] leading-relaxed pointer-events-none"
-                         style="z-index: 9999"
-                         :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }">
+                         class="hidden group-hover/tip:block absolute left-full top-0 ml-2 w-44 p-2 rounded-md shadow-lg text-[10px] leading-relaxed pointer-events-none z-[9999] bg-card border border-border text-foreground">
                         {{ item.tooltip }}
                     </div>
                 </button>

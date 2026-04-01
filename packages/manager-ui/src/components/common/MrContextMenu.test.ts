@@ -27,8 +27,8 @@ describe('MrContextMenu', () => {
             props: { items, x: 100, y: 100 },
             global: { stubs: { Teleport: true } },
         });
-        // Dividers have borderTop style
-        const dividers = wrapper.findAll('div').filter((d) => d.attributes('style')?.includes('border-top'));
+        // Dividers have border-t class
+        const dividers = wrapper.findAll('div').filter((d) => d.classes().includes('border-t'));
         expect(dividers.length).toBeGreaterThanOrEqual(1);
     });
 

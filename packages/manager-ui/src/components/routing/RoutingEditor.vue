@@ -182,15 +182,14 @@ function dismissAll() {
             <!-- Engine settings link -->
             <MrTooltip text="Engine settings and profiles" width="w-44">
                 <RouterLink :to="`/engines/${props.engineId}`"
-                            class="flex items-center justify-center rounded-md transition-colors"
-                            :style="{ color: 'var(--text-muted)', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', width: '32px', height: '32px' }">
+                            class="flex items-center justify-center rounded-md transition-colors text-muted bg-card border border-border w-8 h-8">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                     </svg>
                 </RouterLink>
             </MrTooltip>
 
-            <div class="w-px h-5" :style="{ backgroundColor: 'var(--border-primary)' }" />
+            <div class="w-px h-5 bg-border" />
 
             <MrTooltip text="Add a new module (encoder, decoder, input, output)" width="w-52">
                 <MrButton size="sm" @click="showAddPanel = !showAddPanel">+ Add Module</MrButton>
@@ -214,21 +213,20 @@ function dismissAll() {
                 </MrButton>
                 <Teleport to="body">
                     <div v-if="showModuleList" class="fixed inset-0 z-[998]" @click="showModuleList = false" />
-                    <div v-if="showModuleList" class="fixed w-56 rounded-lg shadow-xl z-[999] flex flex-col"
-                         :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)', top: moduleListPos.y + 'px', left: moduleListPos.x + 'px', maxHeight: '280px' }">
-                        <div class="px-2 py-1.5 shrink-0" :style="{ borderBottom: '1px solid var(--border-secondary)' }">
+                    <div v-if="showModuleList" class="fixed w-56 rounded-lg shadow-xl z-[999] flex flex-col bg-card border border-border"
+                         :style="{ top: moduleListPos.y + 'px', left: moduleListPos.x + 'px', maxHeight: '280px' }">
+                        <div class="px-2 py-1.5 shrink-0 border-b border-border-alt">
                             <input v-model="moduleSearch" placeholder="Search modules..."
-                                   class="w-full px-2 py-1 text-xs rounded-md"
-                                   :style="{ backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-primary)', color: 'var(--text-primary)' }" />
+                                   class="w-full px-2 py-1 text-xs rounded-md bg-input border border-border text-foreground" />
                         </div>
                         <div class="overflow-y-auto py-1">
-                            <div v-if="filteredModules.length === 0" class="px-3 py-2 text-xs" :style="{ color: 'var(--text-muted)' }">No modules found</div>
+                            <div v-if="filteredModules.length === 0" class="px-3 py-2 text-xs text-muted">No modules found</div>
                             <button v-for="mod in filteredModules" :key="mod.instanceId"
                                     @click="focusModule(mod.instanceId)"
-                                    class="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2" :style="{ color: 'var(--text-primary)' }">
-                                <div class="w-2 h-2 rounded-full shrink-0" :style="{ backgroundColor: mod.health === 'ok' ? 'var(--health-ok)' : mod.health === 'error' ? 'var(--health-error)' : 'var(--health-stopped)' }" />
+                                    class="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 text-foreground">
+                                <div class="w-2 h-2 rounded-full shrink-0" :class="mod.health === 'ok' ? 'bg-ok' : mod.health === 'error' ? 'bg-error' : 'bg-stopped'" />
                                 {{ mod.displayName }}
-                                <span class="text-[10px] ml-auto" :style="{ color: 'var(--text-muted)' }">{{ mod.pluginId }}</span>
+                                <span class="text-[10px] ml-auto text-muted">{{ mod.pluginId }}</span>
                             </button>
                         </div>
                     </div>
@@ -248,11 +246,10 @@ function dismissAll() {
         </VueFlow>
 
         <!-- Log drawer -->
-        <div v-if="showLogs" class="shrink-0 border-t"
-             :style="{ height: '250px', borderColor: 'var(--border-primary)', backgroundColor: 'var(--bg-card)' }">
-            <div class="flex items-center justify-between px-3 py-1" :style="{ borderBottom: '1px solid var(--border-secondary)' }">
-                <span class="text-[10px] font-semibold uppercase tracking-wider" :style="{ color: 'var(--text-muted)' }">Engine Logs</span>
-                <button @click="showLogs = false" class="p-0.5 rounded" :style="{ color: 'var(--text-muted)' }">
+        <div v-if="showLogs" class="shrink-0 border-t border-border bg-card" style="height: 250px">
+            <div class="flex items-center justify-between px-3 py-1 border-b border-border-alt">
+                <span class="text-[10px] font-semibold uppercase tracking-wider text-muted">Engine Logs</span>
+                <button @click="showLogs = false" class="p-0.5 rounded text-muted">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
             </div>
@@ -287,10 +284,9 @@ function dismissAll() {
         <!-- Reset confirmation -->
         <Teleport to="body">
             <div v-if="showResetConfirm" class="fixed inset-0 z-50 flex items-center justify-center" style="background: rgba(0,0,0,0.5)">
-                <div class="rounded-lg shadow-xl p-5 max-w-sm w-full mx-4"
-                     :style="{ backgroundColor: 'var(--bg-card)', border: '1px solid var(--border-primary)' }">
-                    <h3 class="text-base font-semibold mb-2" :style="{ color: 'var(--text-primary)' }">Reset Engine?</h3>
-                    <p class="text-sm mb-4" :style="{ color: 'var(--text-secondary)' }">
+                <div class="rounded-lg shadow-xl p-5 max-w-sm w-full mx-4 bg-card border border-border">
+                    <h3 class="text-base font-semibold mb-2 text-foreground">Reset Engine?</h3>
+                    <p class="text-sm mb-4 text-subtle">
                         This will stop all modules, restart PipeWire, and restart all modules. Audio will be interrupted for a few seconds.
                     </p>
                     <div class="flex justify-end gap-2">
