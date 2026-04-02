@@ -76,8 +76,8 @@
 - [x] Need to stop and start the engine, after the engine restarted (fixed: moduleManager.size > 0 reports actual running state)
 - [x] Add a spawnd process counter, that can be displayed in the manager top bar
 - [x] Resetting automatically starts engine even when in stopped state — to recreate: stop engine → press reset (fixed: resetEngine checks wasRunning + stopRequested flag aborts restart if stop arrives during reset)
-- [ ] Engine shows stopped (start button showing) but modules are still running (state sync issue)
-- [x] PWLink delete is buggy — creating and deleting a PWLink leaves it in the engine; incorrect links reappear until stop/start (fixed: teardown now uses 3-step cleanup: unlink by name → unlink by ID → pwUnlinkAllBetween sweep)
+- [x] Engine shows stopped (start button showing) but modules are still running (state sync issue)
+- [x] PWLink delete is buggy — creating and deleting a PWLink leaves it in the engine; incorrect links reappear until stop/start (fixed: PatchRouter was sending ID-based paths to engine instead of index-based — engine couldn't resolve _connId. Also added 3-step teardown cleanup: unlink by name → unlink by ID → pwUnlinkAllBetween sweep)
 - [ ] Disconnected Audio encoder shows signal after deleting default audio input and switching output to HDMI — persists after restart
 - [ ] N-1 mixer stopped giving output after reboot
 - [ ] "Source channel out of range" errors and "Failed to reapply connection" when connecting to Test 1 enc
@@ -92,7 +92,7 @@
 - [x] ALL Config should follow the same patch flow (verified: all config changes use patch, only lifecycle commands remain as direct events)
 - [x] When i change a module name, it does not reflect on the module on the same page (fixed: optimistic local store update on rename)
 - [x] When module settings pane is open and switching to new module, name stays on old module (fixed: reset editName on moduleId change)
-- [x] Channel map changes is not live anymore, need to restart for changes to take effect (fixed: EnginePatchRouter now handles both add/replace ops for channelMap, added fallback _connId resolution, tightened connection add guard)
+- [x] Channel map changes is not live anymore, need to restart for changes to take effect (fixed: same root cause as pw-link delete — PatchRouter sent ID-based paths to engine. Also: EnginePatchRouter now handles both add/replace ops for channelMap, added fallback _connId resolution)
 - [x] Channel map does not rightly detect channel count from the decoder, decoder can have 6 channels, but channel map only sees 2 (fixed: decoder reads channels from connected encoder, creates null-sink with correct count, exposes as readOnly setting)
 - [x] Need to refresh tab after module is added (fixed: optimistic addModule now includes ports, configSchema, color, icon, default settings, health — so the node renders immediately without waiting for server enrichment)
 

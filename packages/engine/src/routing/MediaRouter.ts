@@ -227,7 +227,7 @@ export class MediaRouter {
         return this.portRegistry.getConnectionCount(moduleId, portId, this.connections.values());
     }
 
-    getModuleUdpSource(moduleId: string): { host: string; port: number; connectionId: string; codec?: string } | undefined {
+    getModuleUdpSource(moduleId: string): { host: string; port: number; connectionId: string; codec?: string; channels?: number } | undefined {
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId === moduleId && conn.streamType === 'muxed/mpegts') {
                 const port = this.udpPorts.get(conn.sourceModuleId);
