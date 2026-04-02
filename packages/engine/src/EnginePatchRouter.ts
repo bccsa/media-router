@@ -1,5 +1,5 @@
 import { createLogger, applyJsonPatch } from '@media-router/shared-types';
-import type { PatchOp } from '@media-router/shared-types';
+import type { PatchOp, ChannelMapEntry } from '@media-router/shared-types';
 
 /** PatchOp with resolved connection ID for side effect handling. */
 interface ResolvedPatchOp extends PatchOp {
@@ -125,7 +125,7 @@ export class EnginePatchRouter {
                         conn.sourcePortId as string,
                         conn.sinkModuleId as string,
                         conn.sinkPortId as string,
-                        conn.channelMap as any,
+                        conn.channelMap as ChannelMapEntry[] | undefined,
                     ).then((connId) => {
                         log.info({ connectionId: connId }, 'Live connect');
                     }).catch((err) => log.error({ err }, 'Live connect failed'));
@@ -152,7 +152,7 @@ export class EnginePatchRouter {
                 }
                 if (connectionId) {
                     log.info({ connectionId, hasMap: op.value != null }, 'Channel map update');
-                    this.mediaRouter.updateChannelMap(connectionId, op.value as any)
+                    this.mediaRouter.updateChannelMap(connectionId, op.value as ChannelMapEntry[] | undefined)
                         .catch((err) => log.error({ err, connectionId }, 'Channel map update failed'));
                 } else {
                     log.warn({ path: op.path }, 'Channel map update — could not resolve connection ID');

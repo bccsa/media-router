@@ -69,7 +69,7 @@ export class ModuleManager extends EventEmitter {
                 log.warn({ instanceId, pluginId, errors }, 'Config validation failed — resetting invalid values to defaults');
 
                 // Reset invalid properties to their schema defaults
-                const props = (schema as any).properties ?? {};
+                const props = (schema as Record<string, unknown> & { properties?: Record<string, Record<string, unknown>> }).properties ?? {};
                 for (const err of validate.errors ?? []) {
                     const key = (err.instancePath || '').replace(/^\//, '');
                     if (key && props[key]?.default !== undefined) {

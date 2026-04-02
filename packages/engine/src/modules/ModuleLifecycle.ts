@@ -1,4 +1,4 @@
-import type { ChannelMapEntry } from '@media-router/shared-types';
+import type { ChannelMapEntry, StreamType } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 import type { ModuleManager } from './ModuleManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
@@ -6,6 +6,11 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { PluginLoader } from '../plugins/PluginLoader.js';
 
 const log = createLogger('ModuleLifecycle');
+
+/** Time to wait for PipeWire nodes to settle after module start/restart. */
+const PW_SETTLE_MS = 300;
+/** Time to wait for MPEG-TS pipelines to settle before creating audio connections. */
+const MPEGTS_SETTLE_MS = 500;
 
 /** Create a log label like "Encoder 1 (audio-encoder-abc)" for readable logs. */
 function moduleLabel(modConfig: Record<string, unknown>): string {
@@ -20,7 +25,7 @@ function mapPorts(raw: RawPort[]) {
     return raw.map((p) => ({
         id: p.id,
         direction: p.direction as 'input' | 'output',
-        streamType: p.streamType as any,
+        streamType: p.streamType as StreamType,
         label: p.label ?? p.id,
         maxConnections: p.maxConnections ?? -1,
     }));
@@ -135,7 +140,7 @@ export class ModuleLifecycle {
     /** Delete a single module — tear down connections, stop, unregister, remove. */
     async deleteSingle(moduleId: string): Promise<void> {
         const instance = this.moduleManager.get(moduleId);
-        const label = instance ? `[${(instance as any).config?.displayName ?? moduleId}]` : `[${moduleId}]`;
+        const label = instance ? `[${instance.config?.displayName ?? moduleId}]` : `[${moduleId}]`;
         log.info({ moduleId, module: label }, 'Deleting module');
 
         // Tear down all connections involving this module
@@ -186,7 +191,7 @@ export class ModuleLifecycle {
         }
 
         // Wait for PipeWire to settle, then reapply any stored connections
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, PW_SETTLE_MS));
         await this.reapplyModuleConnections(moduleId);
     }
 
@@ -219,13 +224,13 @@ export class ModuleLifecycle {
         }
 
         // Wait for PipeWire to settle, then re-apply connections
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, PW_SETTLE_MS));
         await this.reapplyModuleConnections(moduleId);
     }
 
     async disable(moduleId: string): Promise<void> {
         const config = this.getConfig();
-        const modName = (config?.modules as any)?.[moduleId]?.displayName ?? moduleId;
+        const modName = (config?.modules as Record<string, Record<string, unknown>>)?.[moduleId]?.displayName ?? moduleId;
         log.info({ moduleId, module: `[${modName}]` }, 'Module disabled');
 
         const connections = this.mediaRouter.getModuleConnections(moduleId);
@@ -282,7 +287,7 @@ export class ModuleLifecycle {
         }
 
         // Wait for PipeWire to settle, then reapply connections
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, PW_SETTLE_MS));
         await this.reapplyModuleConnections(moduleId);
     }
 
@@ -317,7 +322,7 @@ export class ModuleLifecycle {
         }
 
         if (mpegtsConns.length > 0 && audioConns.length > 0) {
-            await new Promise((r) => setTimeout(r, 500));
+            await new Promise((r) => setTimeout(r, MPEGTS_SETTLE_MS));
         }
 
         for (const conn of audioConns) {

@@ -55,6 +55,7 @@ export class AudioOutputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
+        this.paModuleId = null;
         await super.onStop();
     }
 

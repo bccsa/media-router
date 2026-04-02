@@ -126,6 +126,13 @@ export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp
     }
 }
 
+/** Default edge colors for stream types in the routing editor. */
+export const STREAM_TYPE_COLORS: Record<string, string> = {
+    'audio/pcm': '#3b82f6',
+    'muxed/mpegts': '#f59e0b',
+    'video/raw': '#10b981',
+};
+
 // --- Stream Types -----------------------------------------------------------
 
 /** Media stream type — determines routing domain and port compatibility. */

@@ -1,4 +1,4 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import { GstPluginBase, type PipelineDescription } from '@media-router/engine';
 
 function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -42,7 +42,7 @@ export class SrtInputModule extends GstPluginBase {
         await super.onStop();
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription {
+    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         const host = (config.host as string) ?? '0.0.0.0';
         const port = (config.port as number) ?? 9000;
         const mode = (config.mode as string) ?? 'listener';
@@ -64,7 +64,7 @@ export class SrtInputModule extends GstPluginBase {
         const udpPort = endpoint?.port;
         if (!udpPort) {
             this.log.warn('No UDP port assigned — cannot output MPEG-TS');
-            return null as unknown as PipelineDescription;
+            return null;
         }
 
         const pipeline = [

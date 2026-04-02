@@ -5,13 +5,15 @@ import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
 
+/** Edge colors by stream type — matches CSS variables in main.css. */
+const STREAM_TYPE_COLORS: Record<string, string> = {
+    'audio/pcm': '#3b82f6',
+    'muxed/mpegts': '#f59e0b',
+    'video/raw': '#10b981',
+};
+
 function edgeColor(streamType?: string): string {
-    switch (streamType) {
-        case 'audio/pcm': return '#3b82f6';
-        case 'muxed/mpegts': return '#f59e0b';
-        case 'video/raw': return '#10b981';
-        default: return '#6b7280';
-    }
+    return STREAM_TYPE_COLORS[streamType ?? ''] ?? '#6b7280';
 }
 
 export function useGraphSync(

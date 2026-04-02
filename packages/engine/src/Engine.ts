@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { ModuleRuntimeState } from '@media-router/shared-types';
+import type { ModuleRuntimeState, PatchOp } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
@@ -215,13 +215,13 @@ export class Engine {
         // Handle patches from manager
         this.managerConnection.on('patch', (data: unknown) => {
             const { ops } = data as { ops: Array<{ op: string; path: string; value?: unknown }> };
-            if (ops?.length > 0) this.enginePatchRouter!.onPatch('manager', 'manager', ops as any);
+            if (ops?.length > 0) this.enginePatchRouter!.onPatch('manager', 'manager', ops as PatchOp[]);
         });
 
         // Handle patches from LCP
         this.lcpServer.on('patch', (data: unknown) => {
             const { ops, _socketId } = data as { ops: Array<{ op: string; path: string; value?: unknown }>; _socketId: string };
-            if (ops?.length > 0) this.enginePatchRouter!.onPatch(_socketId, 'lcp', ops as any);
+            if (ops?.length > 0) this.enginePatchRouter!.onPatch(_socketId, 'lcp', ops as PatchOp[]);
         });
 
         // configRequested removed — replaced by 'init' event on connect
