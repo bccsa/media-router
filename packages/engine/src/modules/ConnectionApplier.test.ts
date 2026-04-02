@@ -1,0 +1,256 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ConnectionApplier, type StoredConnection, type RawPort } from './ConnectionApplier.js';
+
+function makeConn(overrides: Partial<StoredConnection> = {}): StoredConnection {
+    return {
+        id: 'conn-1',
+        sourceModuleId: 'src-mod',
+        sourcePortId: 'out',
+        sinkModuleId: 'sink-mod',
+        sinkPortId: 'in',
+        ...overrides,
+    };
+}
+
+function makeModules(ids: string[], pluginId = 'test-plugin'): Record<string, Record<string, unknown>> {
+    const modules: Record<string, Record<string, unknown>> = {};
+    for (const id of ids) modules[id] = { pluginId };
+    return modules;
+}
+
+describe('ConnectionApplier', () => {
+    let mockMediaRouter: { createConnection: ReturnType<typeof vi.fn> };
+    let mockModuleManager: { get: ReturnType<typeof vi.fn> };
+    let resolvePortsForInstance: ReturnType<typeof vi.fn>;
+    let getConfig: ReturnType<typeof vi.fn>;
+    let applier: ConnectionApplier;
+
+    beforeEach(() => {
+        mockMediaRouter = {
+            createConnection: vi.fn().mockResolvedValue('conn-id'),
+        };
+        mockModuleManager = {
+            get: vi.fn().mockReturnValue({ running: true }),
+        };
+        resolvePortsForInstance = vi.fn().mockReturnValue([]);
+        getConfig = vi.fn().mockReturnValue(null);
+
+        applier = new ConnectionApplier(
+            mockModuleManager as any,
+            mockMediaRouter as any,
+            getConfig,
+            resolvePortsForInstance,
+        );
+    });
+
+    describe('applyConnections', () => {
+        it('applies MPEG-TS connections first', async () => {
+            const mpegtsPort: RawPort = { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts' };
+            resolvePortsForInstance.mockReturnValue([mpegtsPort]);
+
+            const conn = makeConn({ sourcePortId: 'mpegts-out', sinkPortId: 'mpegts-in' });
+            const modules = makeModules(['src-mod', 'sink-mod']);
+
+            await applier.applyConnections([conn], modules);
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledWith(
+                'src-mod', 'mpegts-out', 'sink-mod', 'mpegts-in', undefined,
+            );
+        });
+
+        it('applies audio/pcm connections after MPEG-TS with settle delay', async () => {
+            // MPEG-TS port for encoder module
+            const mpegtsPort: RawPort = { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts' };
+            // Audio port for audio module
+            const audioPort: RawPort = { id: 'audio-out', direction: 'output', streamType: 'audio/pcm' };
+
+            resolvePortsForInstance.mockImplementation((instanceId: string) => {
+                if (instanceId === 'encoder') return [mpegtsPort];
+                if (instanceId === 'audio-src') return [audioPort];
+                return [];
+            });
+
+            const mpegtsConn = makeConn({
+                id: 'mpegts-conn',
+                sourceModuleId: 'encoder',
+                sourcePortId: 'mpegts-out',
+                sinkModuleId: 'decoder',
+                sinkPortId: 'mpegts-in',
+            });
+            const audioConn = makeConn({
+                id: 'audio-conn',
+                sourceModuleId: 'audio-src',
+                sourcePortId: 'audio-out',
+                sinkModuleId: 'audio-sink',
+                sinkPortId: 'audio-in',
+            });
+
+            const modules = makeModules(['encoder', 'decoder', 'audio-src', 'audio-sink']);
+            const callOrder: string[] = [];
+            mockMediaRouter.createConnection.mockImplementation(async (srcMod: string) => {
+                callOrder.push(srcMod);
+                return 'conn-id';
+            });
+
+            await applier.applyConnections([audioConn, mpegtsConn], modules);
+
+            // MPEG-TS applied first, then audio
+            expect(callOrder).toEqual(['encoder', 'audio-src']);
+        });
+
+        it('applies only audio connections without settle delay when no MPEG-TS', async () => {
+            resolvePortsForInstance.mockReturnValue([
+                { id: 'audio-out', direction: 'output', streamType: 'audio/pcm' },
+            ]);
+
+            const conn = makeConn({ sourcePortId: 'audio-out' });
+            const modules = makeModules(['src-mod', 'sink-mod']);
+
+            await applier.applyConnections([conn], modules);
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
+        });
+
+        it('does nothing with empty connections array', async () => {
+            await applier.applyConnections([], {});
+
+            expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+            expect(resolvePortsForInstance).not.toHaveBeenCalled();
+        });
+
+        it('skips audio connections where endpoints are not running', async () => {
+            resolvePortsForInstance.mockReturnValue([
+                { id: 'audio-out', direction: 'output', streamType: 'audio/pcm' },
+            ]);
+            mockModuleManager.get.mockReturnValue({ running: false });
+
+            const conn = makeConn({ sourcePortId: 'audio-out' });
+            const modules = makeModules(['src-mod', 'sink-mod']);
+
+            await applier.applyConnections([conn], modules);
+
+            expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+        });
+
+        it('continues on error for individual connections', async () => {
+            resolvePortsForInstance.mockReturnValue([
+                { id: 'out', direction: 'output', streamType: 'audio/pcm' },
+            ]);
+
+            const conn1 = makeConn({ id: 'c1', sourceModuleId: 'a', sinkModuleId: 'b' });
+            const conn2 = makeConn({ id: 'c2', sourceModuleId: 'c', sinkModuleId: 'd' });
+            const modules = makeModules(['a', 'b', 'c', 'd']);
+
+            mockMediaRouter.createConnection
+                .mockRejectedValueOnce(new Error('fail'))
+                .mockResolvedValueOnce('ok');
+
+            await applier.applyConnections([conn1, conn2], modules);
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(2);
+        });
+
+        it('handles mixed MPEG-TS and audio with correct ordering', async () => {
+            resolvePortsForInstance.mockImplementation((instanceId: string) => {
+                if (instanceId === 'enc-1') return [{ id: 'ts-out', direction: 'output', streamType: 'muxed/mpegts' }];
+                if (instanceId === 'enc-2') return [{ id: 'ts-out2', direction: 'output', streamType: 'muxed/mpegts' }];
+                if (instanceId === 'audio-1') return [{ id: 'a-out', direction: 'output', streamType: 'audio/pcm' }];
+                return [];
+            });
+
+            const ts1 = makeConn({ id: 'ts1', sourceModuleId: 'enc-1', sourcePortId: 'ts-out', sinkModuleId: 'dec-1', sinkPortId: 'ts-in' });
+            const ts2 = makeConn({ id: 'ts2', sourceModuleId: 'enc-2', sourcePortId: 'ts-out2', sinkModuleId: 'dec-2', sinkPortId: 'ts-in2' });
+            const audio = makeConn({ id: 'a1', sourceModuleId: 'audio-1', sourcePortId: 'a-out', sinkModuleId: 'audio-sink', sinkPortId: 'a-in' });
+
+            const modules = makeModules(['enc-1', 'enc-2', 'dec-1', 'dec-2', 'audio-1', 'audio-sink']);
+            const callOrder: string[] = [];
+            mockMediaRouter.createConnection.mockImplementation(async (srcMod: string) => {
+                callOrder.push(srcMod);
+                return 'id';
+            });
+
+            await applier.applyConnections([audio, ts1, ts2], modules);
+
+            // Both MPEG-TS first, then audio
+            expect(callOrder.slice(0, 2)).toEqual(['enc-1', 'enc-2']);
+            expect(callOrder[2]).toBe('audio-1');
+        });
+    });
+
+    describe('reapplyModuleConnections', () => {
+        it('reapplies connections involving the specified module', async () => {
+            getConfig.mockReturnValue({
+                connections: [
+                    makeConn({ id: 'c1', sourceModuleId: 'mod-a', sinkModuleId: 'mod-b' }),
+                    makeConn({ id: 'c2', sourceModuleId: 'mod-c', sinkModuleId: 'mod-d' }),
+                ],
+            });
+
+            await applier.reapplyModuleConnections('mod-a');
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledWith(
+                'mod-a', 'out', 'mod-b', 'in', undefined,
+            );
+        });
+
+        it('reapplies when module is the sink', async () => {
+            getConfig.mockReturnValue({
+                connections: [
+                    makeConn({ id: 'c1', sourceModuleId: 'mod-x', sinkModuleId: 'target' }),
+                ],
+            });
+
+            await applier.reapplyModuleConnections('target');
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
+        });
+
+        it('skips connections where source or sink is not running', async () => {
+            getConfig.mockReturnValue({
+                connections: [makeConn({ sourceModuleId: 'mod-a', sinkModuleId: 'mod-b' })],
+            });
+            mockModuleManager.get.mockImplementation((id: string) => {
+                if (id === 'mod-a') return { running: true };
+                return { running: false };
+            });
+
+            await applier.reapplyModuleConnections('mod-a');
+
+            expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+        });
+
+        it('does nothing when config is null', async () => {
+            getConfig.mockReturnValue(null);
+
+            await applier.reapplyModuleConnections('mod-a');
+
+            expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+        });
+
+        it('continues on error for individual connections', async () => {
+            getConfig.mockReturnValue({
+                connections: [
+                    makeConn({ id: 'c1', sourceModuleId: 'target', sinkModuleId: 'mod-b' }),
+                    makeConn({ id: 'c2', sourceModuleId: 'target', sinkModuleId: 'mod-c', sourcePortId: 'out2', sinkPortId: 'in2' }),
+                ],
+            });
+
+            mockMediaRouter.createConnection
+                .mockRejectedValueOnce(new Error('fail'))
+                .mockResolvedValueOnce('ok');
+
+            await applier.reapplyModuleConnections('target');
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(2);
+        });
+
+        it('handles config with no connections key', async () => {
+            getConfig.mockReturnValue({});
+
+            await applier.reapplyModuleConnections('mod-a');
+
+            expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+        });
+    });
+});

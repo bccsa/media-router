@@ -12,6 +12,12 @@ export default defineConfig({
     test: {
         globals: true,
         include: ['packages/*/src/**/*.test.ts', 'plugins/*/engine/**/*.test.ts'],
+        coverage: {
+            include: ['packages/*/src/**/*.ts', 'plugins/*/engine/**/*.ts'],
+            exclude: ['**/*.test.ts', '**/*.d.ts', '**/index.ts', 'packages/manager-ui/**', 'packages/local-panel/**', 'packages/profile-manager/**', 'v1/**', '**/dist/**', '**/node_modules/**'],
+            all: false,
+            reporter: ['text'],
+        },
         // Ensure Vue/Pinia resolve from manager-ui's node_modules
         deps: {
             optimizer: {

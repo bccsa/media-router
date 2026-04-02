@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { io as IOClient, type Socket as ClientSocket } from 'socket.io-client';
 import { LcpServer } from './LcpServer.js';
 
@@ -152,5 +152,85 @@ describe('LcpServer', () => {
         client.emit('start');
         const received = await controlPromise;
         expect(received).toEqual({ action: 'start' });
+    });
+
+    it('forwards stop lifecycle command', async () => {
+        const controlPromise = new Promise<unknown>((resolve) => {
+            lcpServer.on('control', resolve);
+        });
+        client.emit('stop');
+        const received = await controlPromise;
+        expect(received).toEqual({ action: 'stop' });
+    });
+
+    it('ignores patch with empty ops array', async () => {
+        const patchHandler = vi.fn();
+        lcpServer.on('patch', patchHandler);
+        client.emit('patch', { ops: [] });
+        await new Promise((r) => setTimeout(r, 100));
+        expect(patchHandler).not.toHaveBeenCalled();
+    });
+
+    it('ignores patch with missing ops', async () => {
+        const patchHandler = vi.fn();
+        lcpServer.on('patch', patchHandler);
+        client.emit('patch', {});
+        await new Promise((r) => setTimeout(r, 100));
+        expect(patchHandler).not.toHaveBeenCalled();
+    });
+
+    it('broadcastAllStates sends all states to clients', async () => {
+        const states = {
+            'mic-1': { running: true, health: 'ok', ready: true },
+            'spk-1': { running: false, health: 'ok', ready: false },
+        };
+        const promise = waitForEvent(client, 'allStates');
+        lcpServer.broadcastAllStates(states);
+        const received = await promise;
+        expect(received).toEqual(states);
+    });
+
+    it('sendInitialState broadcasts allStates', async () => {
+        const states = { 'mic-1': { running: true, health: 'ok', ready: true } };
+        const promise = waitForEvent(client, 'allStates');
+        lcpServer.sendInitialState(states);
+        const received = await promise;
+        expect(received).toEqual(states);
+    });
+
+    it('broadcastEngineRunning tracks internal state', () => {
+        lcpServer.broadcastEngineRunning(true);
+        expect(lcpServer._engineRunning).toBe(true);
+        lcpServer.broadcastEngineRunning(false);
+        expect(lcpServer._engineRunning).toBe(false);
+    });
+
+    it('sendConfigToSocket sends config to a specific socket', async () => {
+        const config = { modules: { 'mic-1': { pluginId: 'audio-input' } } };
+        const promise = waitForEvent(client, 'config');
+        lcpServer.sendConfigToSocket(client.id!, config);
+        const received = await promise;
+        expect(received).toEqual(config);
+    });
+
+    it('does not send init data when _getInitData is null', async () => {
+        lcpServer._getInitData = null;
+        const client2 = IOClient(`http://localhost:${TEST_PORT}`, {
+            transports: ['websocket'],
+            reconnection: false,
+        });
+        let received = false;
+        client2.on('init', () => { received = true; });
+        await new Promise<void>((resolve) => client2.on('connect', resolve));
+        await new Promise((r) => setTimeout(r, 100));
+        expect(received).toBe(false);
+        client2.disconnect();
+    });
+
+    it('serves static files via HTTP when static dir exists', async () => {
+        // The test environment has local-panel/dist built, so this should serve index.html
+        const response = await fetch(`http://localhost:${TEST_PORT}/`);
+        expect(response.status).toBe(200);
+        expect(response.headers.get('content-type')).toContain('text/html');
     });
 });

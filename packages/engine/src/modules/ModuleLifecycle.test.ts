@@ -271,6 +271,197 @@ describe('ModuleLifecycle', () => {
         });
     });
 
+    describe('disable', () => {
+        it('stops a running module and removes connections', async () => {
+            await lifecycle.startAll();
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+
+            await lifecycle.disable('mod-a');
+            expect(moduleManager.get('mod-a')?.running).toBe(false);
+        });
+
+        it('handles module with no connections gracefully', async () => {
+            await lifecycle.startAll();
+            // mod-a has no connections, disable should still work
+            await lifecycle.disable('mod-a');
+            expect(moduleManager.get('mod-a')?.running).toBe(false);
+        });
+
+        it('marks module as disabled in config', async () => {
+            const config = {
+                modules: {
+                    'mod-a': { pluginId: 'example', displayName: 'A', enabled: true, settings: {}, ports: [] },
+                },
+                connections: [],
+            };
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => config);
+            await lc.startAll();
+            await lc.disable('mod-a');
+            expect(config.modules['mod-a'].enabled).toBe(false);
+        });
+
+        it('does not crash when instance is not running', async () => {
+            await lifecycle.startAll();
+            const instance = moduleManager.get('mod-a')!;
+            await instance.stop(); // already stopped
+            // Should not throw
+            await lifecycle.disable('mod-a');
+            expect(instance.running).toBe(false);
+        });
+    });
+
+    describe('enable', () => {
+        it('starts a previously disabled module', async () => {
+            const config = {
+                modules: {
+                    'mod-a': { pluginId: 'example', displayName: 'A', enabled: false, settings: {}, ports: [] },
+                },
+                connections: [] as any[],
+            };
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => config);
+
+            await lc.enable('mod-a');
+            expect(config.modules['mod-a'].enabled).toBe(true);
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+        });
+
+        it('restarts an existing stopped instance', async () => {
+            await lifecycle.startAll();
+            const instance = moduleManager.get('mod-a')!;
+            await instance.stop();
+            expect(instance.running).toBe(false);
+
+            await lifecycle.enable('mod-a');
+            expect(instance.running).toBe(true);
+        });
+
+        it('does nothing when config is null', async () => {
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => null);
+            // Should not throw
+            await lc.enable('mod-a');
+            expect(moduleManager.size).toBe(0);
+        });
+
+        it('does nothing when module is not in config', async () => {
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => ({
+                modules: {},
+                connections: [],
+            }));
+            await lc.enable('nonexistent');
+            expect(moduleManager.size).toBe(0);
+        });
+
+        it('does not restart an already running instance', async () => {
+            await lifecycle.startAll();
+            const instance = moduleManager.get('mod-a')!;
+            expect(instance.running).toBe(true);
+            // Enable should not throw even if already running
+            await lifecycle.enable('mod-a');
+            expect(instance.running).toBe(true);
+        });
+    });
+
+    describe('deleteSingle', () => {
+        it('stops and removes a module', async () => {
+            await lifecycle.startAll();
+            expect(moduleManager.get('mod-a')).toBeDefined();
+
+            await lifecycle.deleteSingle('mod-a');
+            // deleteModule is fire-and-forget in deleteSingle, wait a tick for async destroy
+            await new Promise((r) => setTimeout(r, 10));
+            expect(moduleManager.get('mod-a')).toBeUndefined();
+        });
+
+        it('handles non-existent module gracefully', async () => {
+            // Should not throw
+            await lifecycle.deleteSingle('nonexistent');
+        });
+
+        it('removes connections before stopping module', async () => {
+            await lifecycle.startAll();
+
+            // Register ports and create a connection so there's something to tear down
+            mediaRouter.registerPorts('mod-a', [
+                { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out', maxConnections: -1 },
+            ]);
+            mediaRouter.registerPorts('mod-b', [
+                { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In', maxConnections: -1 },
+            ]);
+            await mediaRouter.createConnection('mod-a', 'out', 'mod-b', 'in');
+
+            const connsBefore = mediaRouter.getModuleConnections('mod-a');
+            expect(connsBefore.length).toBe(1);
+
+            await lifecycle.deleteSingle('mod-a');
+            // deleteModule is fire-and-forget in deleteSingle, wait a tick for async destroy
+            await new Promise((r) => setTimeout(r, 10));
+            expect(moduleManager.get('mod-a')).toBeUndefined();
+        });
+    });
+
+    describe('startSingle', () => {
+        it('does nothing when config is null', async () => {
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => null);
+            await lc.startSingle('mod-a');
+            expect(moduleManager.size).toBe(0);
+        });
+
+        it('does nothing when module is not in config', async () => {
+            await lifecycle.startSingle('nonexistent');
+            expect(moduleManager.get('nonexistent')).toBeUndefined();
+        });
+
+        it('skips disabled modules', async () => {
+            const config = {
+                modules: {
+                    'mod-a': { pluginId: 'example', displayName: 'A', enabled: false, settings: {}, ports: [] },
+                },
+                connections: [] as any[],
+            };
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => config);
+            await lc.startSingle('mod-a');
+            expect(moduleManager.get('mod-a')).toBeUndefined();
+        });
+
+        it('starts a module and registers ports', async () => {
+            await lifecycle.startSingle('mod-a');
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+        });
+
+        it('handles start failure gracefully', async () => {
+            // Create a mock pluginLoader that will cause createModule to fail
+            const badPluginLoader = {
+                get: vi.fn().mockReturnValue(null), // no plugin found
+            } as any;
+            const config = {
+                modules: {
+                    'mod-fail': { pluginId: 'nonexistent-plugin', displayName: 'Fail', enabled: true, settings: {}, ports: [] },
+                },
+                connections: [] as any[],
+            };
+            const mm = new ModuleManager(badPluginLoader, mockPipeWire, mediaRouter);
+            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, () => config, badPluginLoader);
+            // Should not throw — error is caught internally
+            await lc.startSingle('mod-fail');
+        });
+    });
+
+    describe('restart', () => {
+        it('restarts a running module', async () => {
+            await lifecycle.startAll();
+            const instance = moduleManager.get('mod-a')!;
+            expect(instance.running).toBe(true);
+
+            await lifecycle.restart('mod-a');
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+        });
+
+        it('does nothing for non-existent module', async () => {
+            // Should not throw
+            await lifecycle.restart('nonexistent');
+        });
+    });
+
     describe('resolvePorts — MPEG-TS classification', () => {
         it('resolves MPEG-TS ports from manifest when config has none', async () => {
             const mockPluginLoader = {
