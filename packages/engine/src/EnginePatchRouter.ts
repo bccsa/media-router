@@ -116,8 +116,8 @@ export class EnginePatchRouter {
                     .catch((err) => log.error({ err, moduleId }, 'Module delete failed'));
             }
 
-            // Connection added → create routing
-            if (op.op === 'add' && parts[0] === 'connections') {
+            // Connection added → create routing (only top-level connection add, not sub-field adds)
+            if (op.op === 'add' && parts[0] === 'connections' && parts.length <= 2) {
                 const conn = op.value as Record<string, unknown>;
                 if (conn?.sourceModuleId) {
                     this.mediaRouter.createConnection(
@@ -142,11 +142,20 @@ export class EnginePatchRouter {
             }
 
             // Channel map updated → update routing (resolvedOps carry _connId)
-            if (parts[0] === 'connections' && parts[2] === 'channelMap' && op.op === 'replace') {
-                const connectionId = op._connId as string | undefined;
+            if (parts[0] === 'connections' && parts[2] === 'channelMap' && (op.op === 'replace' || op.op === 'add')) {
+                // _connId from pre-resolution, or look up from updated config
+                let connectionId = op._connId as string | undefined;
+                if (!connectionId) {
+                    const idx = parseInt(parts[1], 10);
+                    const conns = (config.connections ?? []) as Array<Record<string, unknown>>;
+                    connectionId = (!isNaN(idx) ? conns[idx]?.id : undefined) as string | undefined;
+                }
                 if (connectionId) {
+                    log.info({ connectionId, hasMap: op.value != null }, 'Channel map update');
                     this.mediaRouter.updateChannelMap(connectionId, op.value as any)
-                        .catch((err) => log.error({ err }, 'Channel map update failed'));
+                        .catch((err) => log.error({ err, connectionId }, 'Channel map update failed'));
+                } else {
+                    log.warn({ path: op.path }, 'Channel map update — could not resolve connection ID');
                 }
             }
         }

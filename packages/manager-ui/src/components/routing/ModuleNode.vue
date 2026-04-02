@@ -180,7 +180,7 @@ function formatStatusValue(value: unknown, unit?: string): string {
                     <div class="flex items-center gap-1.5 mb-0.5"><span class="w-2 h-2 rounded-full inline-block" style="background:#f59e0b" /><span class="text-foreground">Warning</span></div>
                     <div class="flex items-center gap-1.5 mb-0.5"><span class="w-2 h-2 rounded-full inline-block" style="background:#ef4444" /><span class="text-foreground">Error</span></div>
                     <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full inline-block" style="background:#6b7280" /><span class="text-foreground">Stopped</span></div>
-                    <div v-if="data.error" class="mt-1 pt-1 text-red-400 truncate border-t border-border-alt">{{ data.error }}</div>
+                    <div v-if="data.error" class="mt-1 pt-1 text-red-400 break-words whitespace-normal border-t border-border-alt">{{ data.error }}</div>
                 </div>
             </div>
         </div>
@@ -275,8 +275,11 @@ function formatStatusValue(value: unknown, unit?: string): string {
         </div>
 
         <!-- Error -->
-        <div v-if="data.error && data.health === 'error'" class="px-3 py-1 text-[10px] text-red-400 truncate">
+        <div v-if="data.error && data.health === 'error'" class="group/err relative px-3 py-1 text-[10px] text-red-400 break-words whitespace-normal">
             {{ data.error }}
+            <div class="hidden group-hover/err:block absolute left-0 top-full mt-1 p-2 rounded-md shadow-lg text-[10px] leading-relaxed pointer-events-none bg-card border border-border text-foreground w-64 z-50">
+                {{ data.error }}
+            </div>
         </div>
 
         <!-- Input handles (left) — hidden if maxConnections=0 -->

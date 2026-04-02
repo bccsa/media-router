@@ -47,27 +47,12 @@
                     "default": 128,
                     "description": "Bitrate in kbps",
                     "x-liveUpdatable": true,
-                    "x-enumByCodec": {
-                        "opus": [
-                            32,
-                            64,
-                            96,
-                            128,
-                            192,
-                            256,
-                            320,
-                            510
-                        ],
-                        "aac": [
-                            32,
-                            64,
-                            96,
-                            128,
-                            160,
-                            192,
-                            256,
-                            320
-                        ]
+                    "x-enumBy": {
+                        "field": "codec",
+                        "map": {
+                            "opus": [32, 64, 96, 128, 192, 256, 320, 510],
+                            "aac": [32, 64, 96, 128, 160, 192, 256, 320]
+                        }
                     }
                 },
                 "frameSize": {
@@ -117,10 +102,8 @@
                 },
                 "channels": {
                     "type": "number",
-                    "enum": [
-                        1,
-                        2
-                    ],
+                    "minimum": 1,
+                    "maximum": 8,
                     "default": 2,
                     "description": "Number of audio channels"
                 },

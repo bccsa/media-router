@@ -33,6 +33,12 @@
         "configSchema": {
             "type": "object",
             "properties": {
+                "channels": {
+                    "type": "number",
+                    "default": 2,
+                    "description": "Channels (auto-detected from encoder)",
+                    "x-readOnly": true
+                },
                 "volumeMax": {
                     "type": "number",
                     "enum": [

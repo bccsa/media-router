@@ -229,9 +229,12 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
             "default": 128,
             "description": "Bitrate in kbps",
             "x-liveUpdatable": true,
-            "x-enumByCodec": {
-                "opus": [32, 64, 96, 128, 192, 256, 320, 510],
-                "aac": [32, 64, 96, 128, 160, 192, 256, 320]
+            "x-enumBy": {
+                "field": "codec",
+                "map": {
+                    "opus": [32, 64, 96, 128, 192, 256, 320, 510],
+                    "aac": [32, 64, 96, 128, 160, 192, 256, 320]
+                }
             }
         },
         "frameSize": {
@@ -272,7 +275,8 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
 | `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |
 | `x-maxFrom` | `string` | Key of another setting that controls slider maximum |
-| `x-enumByCodec` | `Record<string, unknown[]>` | Codec-dependent dropdown options (key = codec value) |
+| `x-enumBy` | `{ field, map }` | Field-dependent dropdown options (e.g. `{ "field": "codec", "map": { "opus": [...], "aac": [...] } }`) |
+| `x-maxBy` | `{ field, map }` | Field-dependent max for number inputs (e.g. `{ "field": "codec", "map": { "opus": 8, "aac": 6 } }`) |
 | `x-showWhen` | `string` | Only show field when condition matches (e.g. `"codec=opus"`) |
 | `x-contextMenu` | `boolean` | Show this setting in the module's right-click context menu |
 | `x-unit` | `string` | Unit label displayed next to the value (e.g. `"%"`, `"kbps"`, `"ms"`) |

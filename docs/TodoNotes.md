@@ -51,6 +51,7 @@
 [x] - Bigger slider knobs in the LCP (44px thumb, 48px interaction width, touch-friendly)
 [x] - Tablet landscape/portrait support (responsive layout, compact landscape mode, safe area insets for notched devices)
 [x] - Change to tailwind css (added @theme inline mapping CSS vars to Tailwind tokens; converted 262 :style bindings across 28 files to utility classes)
+[ ] - Knobs and mute button is some times hard to press on the touch screen devices, can we make the touch area bigger? 
 
 ## Audio issues 
 [x] - On my yocto devices i am not able to start audio inputs, see logs for erros 
@@ -76,3 +77,6 @@
 [x] - ALL Config should follow the same patch flow (verified: all config changes use patch, only lifecycle commands remain as direct events)
 [x] - When i change a module name, it does not reflect on the module on the same page (fixed: optimistic local store update on rename)
 [x] - When module settings pane is open and switching to new module, name stays on old module (fixed: reset editName on moduleId change)
+[x] - Channel map changes is not live anymore, need to restart for changes to take effect (fixed: EnginePatchRouter now handles both add/replace ops for channelMap, added fallback _connId resolution, tightened connection add guard)
+[x] - Channel map does not rightly detect channel count from the decoder, decoder can have 6 channels, but channel map only sees 2 (fixed: decoder reads channels from connected encoder, creates null-sink with correct count, exposes as readOnly setting)
+[x] - Need to refresh tab after module is added (fixed: optimistic addModule now includes ports, configSchema, color, icon, default settings, health — so the node renders immediately without waiting for server enrichment) 

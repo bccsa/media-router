@@ -49,7 +49,8 @@ interface FormField {
     widget?: string; // 'slider' etc.
     minimum?: number; maximum?: number; step?: number;
     maxFrom?: string; // key of another setting that controls slider max
-    enumByCodec?: Record<string, unknown[]>; // codec → valid enum values
+    enumBy?: { field: string; map: Record<string, unknown[]> }; // field value → valid enum values
+    maxBy?: { field: string; map: Record<string, number> }; // field value → max for number fields
     readOnly?: boolean; // x-readOnly — show value but greyed out
     items?: { type?: string; properties?: Record<string, unknown> }; // array item schema
     showWhen?: string; // x-showWhen — "key=value" conditional visibility
@@ -80,7 +81,8 @@ interface SchemaProperty {
     'x-widget'?: string;
     'x-step'?: number;
     'x-maxFrom'?: string;
-    'x-enumByCodec'?: Record<string, unknown[]>;
+    'x-enumBy'?: { field: string; map: Record<string, unknown[]> };
+    'x-maxBy'?: { field: string; map: Record<string, number> };
     'x-readOnly'?: boolean;
     'x-showWhen'?: string;
     items?: { type?: string; properties?: Record<string, unknown> };
@@ -104,7 +106,8 @@ const formFields = computed<FormField[]>(() => {
         maximum: prop.maximum,
         step: prop['x-step'],
         maxFrom: prop['x-maxFrom'],
-        enumByCodec: prop['x-enumByCodec'],
+        enumBy: prop['x-enumBy'],
+        maxBy: prop['x-maxBy'],
         readOnly: !!prop['x-readOnly'],
         showWhen: prop['x-showWhen'],
         items: prop.items as FormField['items'],
@@ -118,13 +121,22 @@ function isFieldVisible(field: FormField): boolean {
     return String(localSettings.value[key] ?? '') === value;
 }
 
-/** Resolve effective enum values for a field — checks enumByCodec first. */
+/** Resolve effective enum values for a field — checks x-enumBy first. */
 function getFieldEnum(field: FormField): unknown[] | undefined {
-    if (field.enumByCodec) {
-        const codec = (localSettings.value.codec as string) ?? 'opus';
-        return field.enumByCodec[codec] ?? field.enumValues;
+    if (field.enumBy) {
+        const val = String(localSettings.value[field.enumBy.field] ?? '');
+        return field.enumBy.map[val] ?? field.enumValues;
     }
     return field.enumValues;
+}
+
+/** Resolve effective maximum for a number field — checks x-maxBy first. */
+function getFieldMax(field: FormField): number | undefined {
+    if (field.maxBy) {
+        const val = String(localSettings.value[field.maxBy.field] ?? '');
+        return field.maxBy.map[val] ?? field.maximum;
+    }
+    return field.maximum;
 }
 
 const localSettings = ref<Record<string, unknown>>({});
@@ -156,6 +168,15 @@ function sendLiveUpdate(key: string, value: unknown) {
 
 function updateSetting(key: string, value: unknown) {
     localSettings.value = { ...localSettings.value, [key]: value };
+    // Clamp dependent fields when a controlling field changes (e.g. codec → channels max)
+    for (const f of formFields.value) {
+        if (!f.maxBy) continue;
+        const max = getFieldMax(f);
+        const cur = Number(localSettings.value[f.key] ?? 0);
+        if (max != null && cur > max) {
+            localSettings.value = { ...localSettings.value, [f.key]: max };
+        }
+    }
     const field = formFields.value.find((f) => f.key === key);
     if (field?.liveUpdatable) {
         pendingLiveUpdate = { key, value };
@@ -280,7 +301,7 @@ function applyAll() {
                               })),
                           ]"
                           @update:model-value="updateSetting(field.key, $event)" />
-                <!-- Enum select (supports codec-dependent options via x-enumByCodec) -->
+                <!-- Enum select (supports field-dependent options via x-enumBy) -->
                 <MrSelect v-else-if="getFieldEnum(field)"
                           :model-value="localSettings[field.key] as string | number"
                           :options="getFieldEnum(field)!.map(opt => ({ value: (field.type === 'number' ? Number(opt) : String(opt)) as string | number, label: String(opt) }))"
@@ -310,6 +331,8 @@ function applyAll() {
                 <!-- Plain number input -->
                 <MrInput v-else-if="field.type === 'number'" type="number"
                          :model-value="localSettings[field.key] as number"
+                         :min="field.minimum"
+                         :max="getFieldMax(field)"
                          @update:model-value="updateSetting(field.key, $event)" />
                 <!-- Text input (default) -->
                 <MrInput v-else type="text"

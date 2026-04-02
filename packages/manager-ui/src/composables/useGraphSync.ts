@@ -212,7 +212,7 @@ export function useGraphSync(
         patch.removeConnection(engineId(), edgeId);
     }
 
-    function onAddModule(plugin: { pluginId: string }, displayName: string) {
+    function onAddModule(plugin: { pluginId: string; ports?: unknown[]; configSchema?: Record<string, unknown>; color?: string; icon?: string }, displayName: string) {
         const instanceId = `${plugin.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
         const el = document.querySelector('.vue-flow') as HTMLElement | null;
         let x = 300, y = 200;
@@ -222,7 +222,28 @@ export function useGraphSync(
             x = center.x - 100 + Math.random() * 40 - 20;
             y = center.y - 50 + Math.random() * 40 - 20;
         }
-        patch.addModule(engineId(), instanceId, { pluginId: plugin.pluginId, displayName, position: { x, y } });
+        // Build default settings from configSchema
+        const defaults: Record<string, unknown> = {};
+        const props = (plugin.configSchema as any)?.properties;
+        if (props) {
+            for (const [key, schema] of Object.entries(props) as [string, any][]) {
+                if (schema.default !== undefined) defaults[key] = schema.default;
+            }
+        }
+        patch.addModule(engineId(), instanceId, {
+            instanceId,
+            pluginId: plugin.pluginId,
+            displayName,
+            position: { x, y },
+            settings: defaults,
+            ports: plugin.ports ?? [],
+            configSchema: plugin.configSchema ?? {},
+            color: plugin.color,
+            icon: plugin.icon,
+            enabled: true,
+            running: false,
+            health: 'stopped',
+        });
     }
 
     function focusModule(moduleId: string) {

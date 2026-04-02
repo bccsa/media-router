@@ -156,6 +156,29 @@ export class PatchRouter {
                 continue;
             }
 
+            // Channel count change: clean up stale channel map entries on connected edges
+            if (op.op === 'replace' && op.path.match(/^\/modules\/[^/]+\/settings\/channels$/)) {
+                processed.push(op);
+                const parts = op.path.split('/');
+                const moduleId = parts[2];
+                const newChannels = op.value as number;
+                const connections = (config.connections ?? []) as Array<Record<string, unknown>>;
+                for (let i = 0; i < connections.length; i++) {
+                    const conn = connections[i];
+                    if (!Array.isArray(conn.channelMap) || conn.channelMap.length === 0) continue;
+                    if (conn.sourceModuleId !== moduleId && conn.sinkModuleId !== moduleId) continue;
+                    const filtered = conn.channelMap.filter((entry: any) => {
+                        if (conn.sourceModuleId === moduleId && entry.srcChannel >= newChannels) return false;
+                        if (conn.sinkModuleId === moduleId && entry.dstChannel >= newChannels) return false;
+                        return true;
+                    });
+                    if (filtered.length !== conn.channelMap.length) {
+                        processed.push({ op: 'replace', path: `/connections/${i}/channelMap`, value: filtered.length > 0 ? filtered : undefined });
+                    }
+                }
+                continue;
+            }
+
             processed.push(op);
         }
 

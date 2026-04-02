@@ -92,7 +92,17 @@ export class PluginLoader {
                         const exportedClass = Object.values(mod).find(
                             (v) => typeof v === 'function' && v.prototype,
                         ) as (new () => PluginModule) | undefined;
-                        if (exportedClass) ModuleClass = exportedClass;
+                        if (exportedClass) {
+                            ModuleClass = exportedClass;
+                            // Let the plugin modify its manifest at load time (e.g. detect runtime capabilities)
+                            if (typeof (exportedClass as any).initManifest === 'function') {
+                                try {
+                                    await (exportedClass as any).initManifest(manifest);
+                                } catch (err) {
+                                    log.warn({ err, pluginId: manifest.pluginId }, 'initManifest failed');
+                                }
+                            }
+                        }
                     }
                 } catch (err) {
                     log.warn({ err, pluginId: manifest.pluginId }, 'Could not load engine module');

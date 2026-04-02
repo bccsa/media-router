@@ -1,4 +1,20 @@
+import { execFile } from 'child_process';
 import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+
+/** Parse max channels from gst-inspect output for an element. */
+function gstInspectMaxChannels(element: string): Promise<number> {
+    return new Promise((resolve) => {
+        execFile('gst-inspect-1.0', [element], { timeout: 5000 }, (err, stdout) => {
+            if (err) return resolve(2);
+            // Find "channels: [ 1, N ]" — take the smallest max across all pad templates
+            let min = Infinity;
+            for (const m of stdout.matchAll(/channels:\s*\[\s*\d+\s*,\s*(\d+)\s*\]/g)) {
+                min = Math.min(min, parseInt(m[1], 10));
+            }
+            resolve(min === Infinity ? 2 : min);
+        });
+    });
+}
 
 /**
  * Audio Encoder plugin.
@@ -8,6 +24,19 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
  * and writes to stdout (fd 1) for piping to other modules (RIST, SRT, etc.).
  */
 export class AudioEncoderModule extends GstPluginBase {
+    /** Called by PluginLoader after loading — detect GStreamer capabilities and update schema. */
+    static async initManifest(manifest: Record<string, any>): Promise<void> {
+        const [opusMax, aacMax] = await Promise.all([
+            gstInspectMaxChannels('opusenc'),
+            gstInspectMaxChannels('avenc_aac'),
+        ]);
+        const props = (manifest.configSchema as any)?.properties;
+        if (props?.channels) {
+            props.channels.maximum = Math.max(opusMax, aacMax);
+            props.channels['x-maxBy'] = { field: 'codec', map: { opus: opusMax, aac: aacMax } };
+        }
+    }
+
     protected liveUpdatableParams = ['bitrate', 'volume', 'audioEnabled'];
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
@@ -123,7 +152,7 @@ export class AudioEncoderModule extends GstPluginBase {
         let tail: string;
         switch (codec) {
             case 'aac':
-                tail = `avenc_aac bitrate=${bitrate * 1000} aac-is=false aac-ms=false ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`;
+                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=false aac-ms=false ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`;
                 break;
             case 'opus':
             default: {

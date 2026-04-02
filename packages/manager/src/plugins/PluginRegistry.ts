@@ -33,6 +33,39 @@ export class PluginRegistry {
         return this.cache;
     }
 
+    /** Load engine module classes and call static initManifest() to detect runtime capabilities. */
+    async init(): Promise<void> {
+        const plugins = this.getAll();
+        for (const plugin of plugins) {
+            try {
+                const pluginDir = path.join(this.pluginsDir, plugin.pluginId);
+                const pkg = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf-8'));
+                const engineFile = pkg.mediaRouter?.engine;
+                if (!engineFile) continue;
+
+                const enginePath = path.resolve(pluginDir, engineFile);
+                const distJsPath = path.join(pluginDir, 'dist', path.basename(engineFile).replace(/\.ts$/, '.js'));
+                const jsPath = enginePath.replace(/\.ts$/, '.js');
+
+                let mod: any;
+                for (const tryPath of [distJsPath, jsPath, enginePath]) {
+                    if (fs.existsSync(tryPath)) {
+                        mod = await import(tryPath);
+                        break;
+                    }
+                }
+                if (!mod) continue;
+
+                const cls = Object.values(mod).find((v) => typeof v === 'function' && v.prototype) as any;
+                if (cls?.initManifest) {
+                    await cls.initManifest(plugin);
+                }
+            } catch {
+                // Skip — initManifest is optional
+            }
+        }
+    }
+
     /** Find a specific plugin by ID. */
     find(pluginId: string): PluginManifest | undefined {
         return this.getAll().find((p) => p.pluginId === pluginId);

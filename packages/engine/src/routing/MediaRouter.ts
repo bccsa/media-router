@@ -234,7 +234,8 @@ export class MediaRouter {
                 if (port !== undefined) {
                     const srcModule = this.moduleGetter?.(conn.sourceModuleId);
                     const codec = srcModule?.config?.codec as string | undefined;
-                    return { host: MULTICAST_ADDR, port, connectionId: connId, codec };
+                    const channels = srcModule?.config?.channels as number | undefined;
+                    return { host: MULTICAST_ADDR, port, connectionId: connId, codec, channels };
                 }
             }
         }

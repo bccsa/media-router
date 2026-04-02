@@ -17,16 +17,24 @@ export class AudioDecoderModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
-        // Create a named null-sink — decoded audio goes here
+        // Detect codec and channels from connected encoder
+        const instanceId = this.services?.instanceId ?? '';
+        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const channels = udpSource?.channels ?? (this.config.channels as number) ?? 2;
+
+        // Create a named null-sink with the correct channel count
         if (this.services?.pipeWire) {
             this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId, 2, 48000, this.services.instanceId,
+                this.services.instanceId, channels, 48000, this.services.instanceId,
             );
         }
 
-        // Detect codec — use encoder's config if available, otherwise probe the stream
-        const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        // Expose detected channels so channel map editor and UI can see the real count
+        if (channels !== this.config.channels) {
+            this.config.channels = channels;
+            this.emitConfigUpdate({ channels });
+        }
+
         if (udpSource?.codec) {
             // Local encoder — codec is known, skip probe for instant startup
             this.probeResult = { codec: udpSource.codec as any, rawCaps: '' };

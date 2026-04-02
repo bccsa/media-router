@@ -37,6 +37,7 @@ export class Manager {
     private readonly engineManager: EngineConnectionManager;
     private readonly httpServer: HttpServer;
     private readonly io: SocketIOServer;
+    private readonly pluginRegistry: PluginRegistry;
     private running = false;
 
     constructor(config: Partial<ManagerConfig> = {}) {
@@ -54,7 +55,8 @@ export class Manager {
         this.io = new SocketIOServer(this.httpServer, { cors: { origin: '*' } });
 
         // Services
-        const pluginRegistry = new PluginRegistry();
+        this.pluginRegistry = new PluginRegistry();
+        const pluginRegistry = this.pluginRegistry;
         const engineCommands = new EngineCommandService(this.configStore, this.engineManager);
         const eventForwarder = new EngineEventForwarder(this.configStore, this.engineManager, engineCommands, this.io);
         const patchRouter = new PatchRouter(this.configStore, this.engineManager, this.io, pluginRegistry);
@@ -76,6 +78,7 @@ export class Manager {
 
     async start(): Promise<void> {
         if (this.running) return;
+        await this.pluginRegistry.init();
         await this.engineManager.start();
         log.info({ port: this.config.dgramPort }, 'dgram-comms listening');
 
