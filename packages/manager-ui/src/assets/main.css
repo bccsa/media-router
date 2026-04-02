@@ -38,9 +38,9 @@
 
 /* --- Light Mode (default) ------------------------------------------------- */
 :root {
-    --bg-primary: #ffffff;
-    --bg-secondary: #f8fafc;
-    --bg-sidebar: #f1f5f9;
+    --bg-primary: #f8fafc;
+    --bg-secondary: #e9edf2;
+    --bg-sidebar: #f6f8fb;
     --bg-card: #ffffff;
     --bg-input: #ffffff;
     --border-primary: #e2e8f0;
