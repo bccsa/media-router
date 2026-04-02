@@ -66,7 +66,7 @@
 - [x] Module config panel overlaps with the top bar, hiding connected status and light/dark mode button. Popups should tuck under the top bar (fixed: both settings and add-module panels now start at top-12, below the header)
 - [x] Add module menu doesn't show when a module settings menu is open — perhaps show it to the left of the module settings menu? (fixed: clicking Add Module now closes the settings panel)
 - [x] Light mode too light — make the sheet background colour darker so modules stand out against the background (fixed: darkened bg-primary to #f8fafc, bg-secondary to #e9edf2, bg-sidebar to #e2e8f0 — white cards now stand out)
-- [ ] Rename search field to "Search modules…"
+- [x] Rename search field to "Search modules…"
 - [ ] N-1 Mixer naming unclear in menu — rename to "N-1 Audio Mixer"
 - [x] New module not visible until browser refresh after adding via manager
 - [ ] Screen goes black after changing browser URL to background1 and back

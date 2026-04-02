@@ -67,7 +67,7 @@ function portColor(st: string) { return st === 'audio/pcm' ? 'var(--port-audio-p
         </div>
 
         <div class="px-4 py-2 shrink-0">
-            <input v-model="searchQuery" type="text" placeholder="Search plugins..." class="w-full px-3 py-1.5 text-sm rounded-md bg-input border border-border text-foreground" />
+            <input v-model="searchQuery" type="text" placeholder="Search modules…" class="w-full px-3 py-1.5 text-sm rounded-md bg-input border border-border text-foreground" />
         </div>
 
         <div class="flex-1 overflow-y-auto px-4 py-2">
