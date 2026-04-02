@@ -62,9 +62,9 @@
 - [x] Manager ui does not currectly reflect engine online status, the engine can be offline but the manager-ui still shows it online, until i refresh (Not even refresh woeks, they manager indication stays online even though it is offline)
 - [x] Cant remove labels on links (fixed: send empty string instead of undefined)
 - [x] settins does not live update between rightclick menu and setting pane, if i make the change in the one, i first need to close and open the other ot see the change (fixed: removed localSettings snapshot guard, panel now watches store deeply and always syncs)
-- [ ] Manager not showing (most) links anymore
-- [ ] Module config panel overlaps with the top bar, hiding connected status and light/dark mode button. Popups should tuck under the top bar
-- [ ] Add module menu doesn't show when a module settings menu is open — perhaps show it to the left of the module settings menu?
+- [x] Manager not showing (most) links anymore (fixed: added moduleIds to edge watcher dependencies + skip connections with missing modules)
+- [x] Module config panel overlaps with the top bar, hiding connected status and light/dark mode button. Popups should tuck under the top bar (fixed: both settings and add-module panels now start at top-12, below the header)
+- [x] Add module menu doesn't show when a module settings menu is open — perhaps show it to the left of the module settings menu? (fixed: clicking Add Module now closes the settings panel)
 - [ ] Light mode too light — make the sheet background colour darker so modules stand out against the background
 - [ ] Rename search field to "Search modules…"
 - [ ] N-1 Mixer naming unclear in menu — rename to "N-1 Audio Mixer"

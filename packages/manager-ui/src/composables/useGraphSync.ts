@@ -87,11 +87,13 @@ export function useGraphSync(
         return engine.value.connections.map((c) => c.id).sort().join(',');
     });
 
-    watch([connectionKey, focusMode, focusedModules], () => {
+    watch([connectionKey, moduleIds, focusMode, focusedModules], () => {
         const connections = engine.value?.connections ?? [];
 
         const desired = new Map<string, Edge>();
         for (const conn of connections) {
+            // Skip connections where source or target module doesn't exist
+            if (!engine.value?.modules[conn.sourceModuleId] || !engine.value?.modules[conn.sinkModuleId]) continue;
             const srcModule = engine.value?.modules[conn.sourceModuleId];
             const srcPort = srcModule?.ports?.find((p) => p.id === conn.sourcePortId);
             const color = edgeColor(srcPort?.streamType);

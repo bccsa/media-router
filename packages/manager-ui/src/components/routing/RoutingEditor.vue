@@ -192,7 +192,7 @@ function dismissAll() {
             <div class="w-px h-5 bg-border" />
 
             <MrTooltip text="Add a new module (encoder, decoder, input, output)" width="w-52">
-                <MrButton size="sm" @click="showAddPanel = !showAddPanel">+ Add Module</MrButton>
+                <MrButton size="sm" @click="showAddPanel = !showAddPanel; settingsPanel = null">+ Add Module</MrButton>
             </MrTooltip>
             <MrTooltip text="Zoom to fit all modules in view" width="w-44">
                 <MrButton size="sm" variant="secondary" @click="fitView({ padding: 0.2 })">Fit View</MrButton>

@@ -232,7 +232,7 @@ function applyAll() {
 </script>
 
 <template>
-    <div class="fixed right-0 top-0 h-screen w-80 z-30 flex flex-col shadow-xl bg-card border-l border-border">
+    <div class="fixed right-0 top-12 h-[calc(100vh-3rem)] w-80 z-30 flex flex-col shadow-xl bg-card border-l border-border">
         <div class="flex items-center justify-between px-4 py-3 border-b border-border">
             <input v-model="editName" class="text-sm font-semibold bg-transparent border-b outline-none flex-1 mr-2 text-foreground border-border"
                    @keydown.enter="($event.target as HTMLInputElement).blur()" @blur="saveName" />

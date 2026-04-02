@@ -58,7 +58,7 @@ function portColor(st: string) { return st === 'audio/pcm' ? 'var(--port-audio-p
 </script>
 
 <template>
-    <div class="fixed right-0 top-0 h-screen w-80 z-20 flex flex-col shadow-xl bg-card border-l border-border">
+    <div class="fixed right-0 top-12 h-[calc(100vh-3rem)] w-80 z-20 flex flex-col shadow-xl bg-card border-l border-border">
         <div class="flex items-center justify-between px-4 py-3 shrink-0 border-b border-border">
             <h3 class="text-sm font-semibold text-foreground">Add Module</h3>
             <button @click="$emit('close')" class="p-1 rounded-md text-muted">
