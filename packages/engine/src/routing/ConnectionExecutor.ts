@@ -46,19 +46,25 @@ export class ConnectionExecutor {
             log.info({ paModuleId: handle.paModuleId }, 'Removing loopback');
             await this.pipeWire.unloadModule(handle.paModuleId);
         } else if (handle.type === 'pw-link') {
-            // Try by link ID first, fall back to port name pairs
-            const removedByName = new Set<string>();
+            log.info({ connectionId: handle.connectionId, links: handle.pwLinkPairs?.length ?? 0 }, 'Removing pw-link connections');
+            // 1. Remove by exact port name pairs
             if (handle.pwLinkPairs?.length) {
-                log.info({ connectionId: handle.connectionId, links: handle.pwLinkPairs.length }, 'Removing pw-link connections by name');
                 for (const pair of handle.pwLinkPairs) {
                     this.pipeWire.pwUnlinkByName(pair.src, pair.dst);
-                    removedByName.add(`${pair.src}→${pair.dst}`);
                 }
             }
-            // Also try by ID for any that weren't covered by name
+            // 2. Remove by link ID (catches any missed by name)
             if (handle.pwLinkIds?.length) {
                 for (const linkId of handle.pwLinkIds) {
                     if (linkId > 0) this.pipeWire.pwUnlink(linkId);
+                }
+            }
+            // 3. Final sweep: remove ALL links between the two nodes (catches any stragglers)
+            if (handle.pwLinkPairs?.length) {
+                const srcNode = handle.pwLinkPairs[0].src.split(':')[0];
+                const dstNode = handle.pwLinkPairs[0].dst.split(':')[0];
+                if (srcNode && dstNode) {
+                    this.pipeWire.pwUnlinkAllBetween(srcNode, dstNode);
                 }
             }
         } else if (handle.type === 'udp') {

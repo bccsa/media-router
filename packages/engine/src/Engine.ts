@@ -306,7 +306,8 @@ export class Engine {
 
     /** Full reset: stop modules, restart PipeWire, restart modules. */
     async resetEngine(): Promise<void> {
-        log.info('Resetting engine...');
+        const wasRunning = this.moduleManager.size > 0;
+        log.info({ wasRunning }, 'Resetting engine...');
 
         // 1. Stop all modules and clean up
         await this.lifecycle.stopAll();
@@ -326,9 +327,13 @@ export class Engine {
         // 3. Clean up any orphan PipeWire modules
         await this.pipeWire.cleanupOrphans();
 
-        // 4. Restart modules
-        await this.lifecycle.startAll();
-        log.info('Engine reset complete');
+        // 4. Only restart modules if they were running before AND no stop was requested during reset
+        if (wasRunning && !this.commandDispatcher.isStopRequested) {
+            await this.lifecycle.startAll();
+        } else if (this.commandDispatcher.isStopRequested) {
+            log.info('Stop requested during reset — skipping module restart');
+        }
+        log.info({ wasRunning }, 'Engine reset complete');
     }
 
     async reconnectManager(): Promise<void> {

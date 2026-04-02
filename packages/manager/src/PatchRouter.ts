@@ -44,27 +44,30 @@ export class PatchRouter {
         log.debug({ engineId, senderType, opCount: ops.length }, 'Processing patch');
 
         // 1. Apply to SQLite
+        let processedOps: PatchOp[] = [];
         const updatedConfig = this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
             // Handle special ops that need pre-processing
-            const processedOps = this.preprocessOps(engineId, config, ops);
+            processedOps = this.preprocessOps(engineId, config, ops);
             applyJsonPatch(config, processedOps);
             return config;
         });
 
         // 2. Broadcast to other clients (skip sender)
         // Enrich ops if needed (e.g. module add needs full module data)
-        const broadcastOps = this.enrichOpsForBroadcast(engineId, ops, updatedConfig);
+        // Use processedOps (index-based paths) for engine, enriched original ops for browsers
+        const browserOps = this.enrichOpsForBroadcast(engineId, ops, updatedConfig);
+        const engineOps = this.enrichOpsForBroadcast(engineId, processedOps, updatedConfig);
 
         if (senderType === 'browser') {
-            // Forward to engine
+            // Forward to engine (must use processedOps with index-based paths)
             if (this.engineManager.isEngineOnline(engineId)) {
-                this.engineManager.sendToEngine(engineId, 'patch', { ops: broadcastOps }, { guaranteeDelivery: true });
+                this.engineManager.sendToEngine(engineId, 'patch', { ops: engineOps }, { guaranteeDelivery: true });
             }
-            // Broadcast to all OTHER browsers (skip sender)
-            this.io.except(senderId).emit('engine:update', { engineId, patch: broadcastOps });
+            // Broadcast to all OTHER browsers (skip sender — browsers handle ID-based paths)
+            this.io.except(senderId).emit('engine:update', { engineId, patch: browserOps });
         } else {
             // Sender is engine — broadcast to ALL browsers
-            this.io.emit('engine:update', { engineId, patch: broadcastOps });
+            this.io.emit('engine:update', { engineId, patch: browserOps });
         }
     }
 

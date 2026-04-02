@@ -304,10 +304,13 @@ export class PipeWireManager {
     }
 
     /** Remove a PipeWire link by port names. */
-    pwUnlinkByName(outputPort: string, inputPort: string): void {
+    pwUnlinkByName(outputPort: string, inputPort: string): boolean {
         try {
             execFileSync('pw-link', ['-d', outputPort, inputPort], { timeout: 5000 });
-        } catch { /* ignore */ }
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /**

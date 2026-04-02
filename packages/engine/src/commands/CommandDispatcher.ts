@@ -27,8 +27,12 @@ export interface CommandContext {
  */
 export class CommandDispatcher {
     private commandLock: Promise<void> = Promise.resolve();
+    private stopRequested = false;
 
     constructor(private ctx: CommandContext) {}
+
+    /** Check if a stop was requested (used by resetEngine to abort restart). */
+    get isStopRequested(): boolean { return this.stopRequested; }
 
     dispatch(cmd: Record<string, unknown>): void {
         log.info({ command: cmd.command }, 'Received command');
@@ -40,12 +44,15 @@ export class CommandDispatcher {
                 break;
 
             case 'stop':
+                this.stopRequested = true;
                 this.commandLock = this.commandLock
                     .then(() => this.ctx.stopModules())
+                    .then(() => { this.stopRequested = false; })
                     .catch((err) => log.error({ err }, 'Stop failed'));
                 break;
 
             case 'reset':
+                this.stopRequested = false;
                 this.commandLock = this.commandLock
                     .then(() => this.ctx.resetEngine())
                     .catch((err) => log.error({ err }, 'Reset failed'));
