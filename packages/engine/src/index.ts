@@ -2,7 +2,7 @@ export { Engine } from './Engine.js';
 export type { EngineConfig } from './Engine.js';
 export { PluginLoader } from './plugins/PluginLoader.js';
 export type { PluginModule, PipelineDescription, ModuleServices } from './plugins/PluginModule.js';
-export { GstPluginBase } from './plugins/PluginModule.js';
+export { GstPluginBase } from './plugins/GstPluginBase.js';
 export { PaCommandQueue } from './audio/PaCommandQueue.js';
 export { ModuleManager } from './modules/ModuleManager.js';
 export { ModuleInstance } from './modules/ModuleInstance.js';

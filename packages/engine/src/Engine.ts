@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import type { ModuleRuntimeState, PatchOp } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
@@ -16,6 +15,7 @@ import { LogForwarder } from './logging/LogForwarder.js';
 import { CommandDispatcher } from './commands/CommandDispatcher.js';
 import { EnginePatchRouter } from './EnginePatchRouter.js';
 import { SystemStatsCollector } from './system/SystemStatsCollector.js';
+import { wireEngineEvents } from './EngineEventWiring.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle } from './modules/ModuleLifecycle.js';
 
@@ -140,71 +140,6 @@ export class Engine {
             this.managerConnection.send('system', stats);
         });
 
-        this.wireEvents();
-    }
-
-    // --- Event wiring (thin — delegates to dispatcher) ---
-
-    private wireEvents(): void {
-        this.logForwarder.on('logs', (batch: unknown[]) => {
-            if (this.managerConnection.isConnected) {
-                this.managerConnection.send('logs', batch);
-            }
-        });
-
-        this.moduleManager.on('stateChange', (instanceId: string, state: ModuleRuntimeState) => {
-            this.managerConnection.sendState({ [instanceId]: state });
-            this.lcpServer.broadcastState(instanceId, state);
-        });
-
-        this.moduleManager.on('configUpdated', (instanceId: string, changes: Record<string, unknown>) => {
-            log.trace({ instanceId, changes }, 'Plugin auto-detected config');
-            const ops = Object.entries(changes).map(([key, value]) => ({
-                op: 'replace' as const, path: `/modules/${instanceId}/settings/${key}`, value,
-            }));
-            this.managerConnection.send('patch', { ops });
-        });
-
-        // VU data with dedup + heartbeat
-        const lastVu = new Map<string, string>();
-        const lastVuSent = new Map<string, number>();
-        this.moduleManager.on('vuData', (instanceId: string, data: number[]) => {
-            const key = JSON.stringify(data);
-            const prev = lastVu.get(instanceId);
-            const lastSent = lastVuSent.get(instanceId) ?? 0;
-            const now = Date.now();
-            if (key !== prev || now - lastSent >= 1000) {
-                lastVu.set(instanceId, key);
-                lastVuSent.set(instanceId, now);
-                this.managerConnection.sendVu(instanceId, data);
-                this.lcpServer.broadcastVuData(instanceId, data);
-            }
-        });
-
-        this.managerConnection.on('config', (config: unknown) => {
-            log.info('Received config from manager');
-            this.currentConfig = config as Record<string, unknown>;
-            // Enrich with lcpType before broadcasting to LCP clients
-            const enriched = this.enrichConfigForLcp(this.currentConfig);
-            this.lcpServer.broadcastConfigUpdate([{ op: 'replace', path: '/', value: enriched }]);
-        });
-
-        this.managerConnection.on('command', (command: unknown) => {
-            this.commandDispatcher.dispatch(command as Record<string, unknown>);
-        });
-
-        // LCP lifecycle commands (start/stop)
-        this.lcpServer.on('control', (command: unknown) => {
-            const cmd = command as Record<string, unknown>;
-            if (cmd.action === 'start') {
-                this.commandDispatcher.dispatch({ command: 'start' });
-                this.managerConnection.send('lcpEngineCommand', { command: 'start' });
-            } else if (cmd.action === 'stop') {
-                this.commandDispatcher.dispatch({ command: 'stop' });
-                this.managerConnection.send('lcpEngineCommand', { command: 'stop' });
-            }
-        });
-
         // Unified patch router (N-1)
         this.enginePatchRouter = new EnginePatchRouter(
             this.moduleManager, this.mediaRouter, this.lcpServer,
@@ -212,38 +147,18 @@ export class Engine {
             () => this.currentConfig,
         );
 
-        // Handle patches from manager
-        this.managerConnection.on('patch', (data: unknown) => {
-            const { ops } = data as { ops: Array<{ op: string; path: string; value?: unknown }> };
-            if (ops?.length > 0) this.enginePatchRouter!.onPatch('manager', 'manager', ops as PatchOp[]);
-        });
-
-        // Handle patches from LCP
-        this.lcpServer.on('patch', (data: unknown) => {
-            const { ops, _socketId } = data as { ops: Array<{ op: string; path: string; value?: unknown }>; _socketId: string };
-            if (ops?.length > 0) this.enginePatchRouter!.onPatch(_socketId, 'lcp', ops as PatchOp[]);
-        });
-
-        // configRequested removed — replaced by 'init' event on connect
-
-        this.managerConnection.on('connected', () => {
-            this.systemStats.start();
-            // Tell the manager whether modules are actually running (not just the engine process).
-            // moduleManager.size > 0 means modules were started and are active.
-            const modulesRunning = this.moduleManager.size > 0;
-            this.managerConnection.send('engineRunningState', { running: modulesRunning });
-            const states = this.moduleManager.getAllStates();
-            if (Object.keys(states).length > 0) {
-                this.managerConnection.sendState(states);
-            }
-            // Send audio device list so the manager can serve it to browsers
-            try {
-                const devices = this.pipeWire.listDevices();
-                this.managerConnection.send('audioDevices', devices);
-            } catch { /* best effort */ }
-        });
-        this.managerConnection.on('disconnected', () => {
-            this.systemStats.stop();
+        wireEngineEvents({
+            logForwarder: this.logForwarder,
+            moduleManager: this.moduleManager,
+            managerConnection: this.managerConnection,
+            lcpServer: this.lcpServer,
+            pipeWire: this.pipeWire,
+            commandDispatcher: this.commandDispatcher,
+            enginePatchRouter: this.enginePatchRouter,
+            systemStats: this.systemStats,
+            getCurrentConfig: () => this.currentConfig,
+            setCurrentConfig: (config) => { this.currentConfig = config; },
+            enrichConfigForLcp: (config) => this.enrichConfigForLcp(config),
         });
     }
 
