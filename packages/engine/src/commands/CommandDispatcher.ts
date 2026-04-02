@@ -27,35 +27,68 @@ export interface CommandContext {
  */
 export class CommandDispatcher {
     private commandLock: Promise<void> = Promise.resolve();
-    private stopRequested = false;
+    /** Pending lifecycle command — only the last one is kept (queue depth = 1). */
+    private pendingLifecycle: 'start' | 'stop' | 'reset' | null = null;
+    private lifecycleBusy = false;
 
     constructor(private ctx: CommandContext) {}
 
-    /** Check if a stop was requested (used by resetEngine to abort restart). */
-    get isStopRequested(): boolean { return this.stopRequested; }
+    /** Check if a stop is pending or currently executing (used by resetEngine to abort restart). */
+    get isStopRequested(): boolean {
+        return this.pendingLifecycle === 'stop';
+    }
+
+    private scheduleLifecycle(command: 'start' | 'stop' | 'reset'): void {
+        if (this.lifecycleBusy) {
+            log.info({ command, replaced: this.pendingLifecycle }, 'Lifecycle busy — replacing pending command');
+            this.pendingLifecycle = command;
+            return;
+        }
+
+        this.runLifecycle(command);
+    }
+
+    private runLifecycle(command: 'start' | 'stop' | 'reset'): void {
+        this.lifecycleBusy = true;
+        this.pendingLifecycle = null;
+
+        this.commandLock = this.commandLock
+            .then(() => {
+                return command === 'start' ? this.ctx.startModules()
+                    : command === 'stop' ? this.ctx.stopModules()
+                    : this.ctx.resetEngine();
+            })
+            .catch((err) => log.error({ err, command }, 'Lifecycle command failed'))
+            .finally(() => {
+                this.lifecycleBusy = false;
+                if (this.pendingLifecycle) {
+                    const next = this.pendingLifecycle;
+                    const hasRunning = this.ctx.moduleManager.size > 0;
+                    // Skip if the engine is already in the desired state
+                    if ((next === 'start' && hasRunning) || (next === 'stop' && !hasRunning)) {
+                        log.info({ command: next, hasRunning }, 'Skipping pending — already in desired state');
+                        this.pendingLifecycle = null;
+                        return;
+                    }
+                    log.info({ command: next }, 'Running pending lifecycle command');
+                    this.runLifecycle(next);
+                }
+            });
+    }
 
     dispatch(cmd: Record<string, unknown>): void {
         log.info({ command: cmd.command }, 'Received command');
         switch (cmd.command) {
             case 'start':
-                this.commandLock = this.commandLock
-                    .then(() => this.ctx.startModules())
-                    .catch((err) => log.error({ err }, 'Start failed'));
+                this.scheduleLifecycle('start');
                 break;
 
             case 'stop':
-                this.stopRequested = true;
-                this.commandLock = this.commandLock
-                    .then(() => this.ctx.stopModules())
-                    .then(() => { this.stopRequested = false; })
-                    .catch((err) => log.error({ err }, 'Stop failed'));
+                this.scheduleLifecycle('stop');
                 break;
 
             case 'reset':
-                this.stopRequested = false;
-                this.commandLock = this.commandLock
-                    .then(() => this.ctx.resetEngine())
-                    .catch((err) => log.error({ err }, 'Reset failed'));
+                this.scheduleLifecycle('reset');
                 break;
 
             case 'moduleConfig': {
@@ -108,7 +141,7 @@ export class CommandDispatcher {
 
             case 'moduleRestart': {
                 const moduleId = cmd.moduleId as string;
-                if (!this.ctx.moduleManager.get(moduleId)) {
+                if (!this.ctx.moduleManager.get(moduleId)?.running) {
                     log.warn({ moduleId }, 'moduleRestart: module not running');
                     break;
                 }
