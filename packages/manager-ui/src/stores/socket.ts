@@ -34,12 +34,18 @@ export const useSocketStore = defineStore('socket', () => {
             console.log('[socket] Disconnected');
         });
 
-        // Engine list (initial load on connect — includes modules/connections)
+        // Engine list (lightweight — metadata only, no modules/connections)
         s.on('engine:list', (list: any[]) => {
             const engines = useEngineStore();
             for (const e of list) {
                 engines.addEngine(e);
             }
+        });
+
+        // Engine config (full modules/connections — sent when watch:engine fires)
+        s.on('engine:config', (data: { engineId: string; modules: Record<string, unknown>; connections: unknown[] }) => {
+            const engines = useEngineStore();
+            engines.setEngineConfig(data.engineId, data.modules, data.connections);
         });
 
         // Delta updates (JSON Patch)

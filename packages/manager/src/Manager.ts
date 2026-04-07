@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
@@ -49,10 +50,14 @@ export class Manager {
 
         // HTTP + Socket.IO
         const app = express();
+        app.use(compression());
         app.use(cors());
         app.use(express.json());
         this.httpServer = createServer(app);
-        this.io = new SocketIOServer(this.httpServer, { cors: { origin: '*' } });
+        this.io = new SocketIOServer(this.httpServer, {
+            cors: { origin: '*' },
+            perMessageDeflate: true,
+        });
 
         // Services
         this.pluginRegistry = new PluginRegistry();

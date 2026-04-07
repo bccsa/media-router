@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useSocketStore } from '@/stores/socket';
 import { useModuleStore } from '@/stores/modules';
 import { patch } from '@/composables/usePatch';
@@ -8,8 +8,16 @@ import MixerStrip from '@/components/MixerStrip.vue';
 const socketStore = useSocketStore();
 const moduleStore = useModuleStore();
 
+const isDark = ref(localStorage.getItem('lcp-theme') !== 'light');
+function toggleTheme() {
+    isDark.value = !isDark.value;
+    localStorage.setItem('lcp-theme', isDark.value ? 'dark' : 'light');
+    document.documentElement.classList.toggle('light', !isDark.value);
+}
+
 onMounted(() => {
     socketStore.connect();
+    if (!isDark.value) document.documentElement.classList.add('light');
 });
 
 function onVolume(moduleId: string, volume: number) {
@@ -45,6 +53,10 @@ function stopEngine() {
                 <span v-if="moduleStore.buildNumber" class="header-build">{{ moduleStore.buildNumber }}</span>
             </div>
             <div class="header-right">
+                <button class="theme-btn" @click="toggleTheme" :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
+                    <svg v-if="isDark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                </button>
                 <button v-if="moduleStore.engineRunning" class="engine-btn stop" @click="stopEngine">Stop</button>
                 <button v-else class="engine-btn start" @click="startEngine">Start</button>
             </div>
@@ -71,7 +83,7 @@ function stopEngine() {
 </template>
 
 <style>
-/* Global styles */
+/* Global styles — dark mode (default) */
 :root {
     --bg-primary: #0f1117;
     --bg-card: #232735;
@@ -82,6 +94,19 @@ function stopEngine() {
     --text-secondary: #94a3b8;
     --text-muted: #64748b;
     --border-primary: #2d3348;
+}
+
+/* Light mode */
+:root.light {
+    --bg-primary: #f0f2f5;
+    --bg-card: #ffffff;
+    --bg-secondary: #e5e7eb;
+    --accent: #10b981;
+    --accent-text: #059669;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --border-primary: #d1d5db;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -146,7 +171,22 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: s
 
 .header-right {
     display: flex;
+    align-items: center;
     gap: 8px;
+}
+
+.theme-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    touch-action: manipulation;
 }
 
 .engine-btn {

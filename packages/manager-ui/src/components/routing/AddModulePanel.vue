@@ -1,19 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
-import { icons } from 'lucide-vue-next';
+import { getLucideIcon } from '@/composables/useLucideIcons';
 
 interface PluginInfo {
     pluginId: string; displayName: string; description: string;
     category: string; ports: Array<{ id: string; direction: string; streamType: string; label: string }>;
     configSchema: Record<string, unknown>;
     icon?: string; color?: string;
-}
-
-function getLucideIcon(name?: string) {
-    if (!name) return null;
-    const pascal = name.replace(/(^|-)(\w)/g, (_: string, __: string, c: string) => c.toUpperCase());
-    return (icons as Record<string, unknown>)[pascal] ?? null;
 }
 
 const emit = defineEmits<{ close: []; add: [plugin: PluginInfo, displayName: string] }>();

@@ -4,7 +4,7 @@ import { Handle, Position } from '@vue-flow/core';
 import type { ModuleState } from '@/stores/engines';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
-import * as lucideIcons from 'lucide-vue-next';
+import { getLucideIcon } from '@/composables/useLucideIcons';
 
 const props = defineProps<{ data: ModuleState }>();
 
@@ -103,14 +103,7 @@ onUnmounted(() => {
  * Plugin specifies icon as kebab-case (e.g. "mic", "volume-2", "upload", "download").
  * Lucide exports as PascalCase (e.g. "Mic", "Volume2", "Upload", "Download").
  */
-function resolveLucideIcon(name: string): Component | null {
-    if (!name) return null;
-    // Convert kebab-case to PascalCase: "volume-2" → "Volume2"
-    const pascal = name.replace(/(^|-)([a-z0-9])/g, (_, __, c) => c.toUpperCase());
-    return (lucideIcons as unknown as Record<string, Component>)[pascal] ?? null;
-}
-
-const iconComponent = computed(() => resolveLucideIcon(props.data.icon ?? ''));
+const iconComponent = computed(() => getLucideIcon(props.data.icon ?? ''));
 
 const moduleColor = computed(() => props.data.color ?? undefined);
 
@@ -229,7 +222,7 @@ function formatStatusValue(value: unknown, unit?: string): string {
             <span v-for="badge in moduleBadges" :key="badge.id"
                   class="inline-flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-surface-alt"
                   :style="{ color: badge.color ?? 'var(--text-muted)' }">
-                <component v-if="badge.icon && resolveLucideIcon(badge.icon)" :is="resolveLucideIcon(badge.icon)" :size="9" />
+                <component v-if="badge.icon && getLucideIcon(badge.icon)" :is="getLucideIcon(badge.icon)" :size="9" />
                 <span>{{ badge.text }}</span>
             </span>
         </div>

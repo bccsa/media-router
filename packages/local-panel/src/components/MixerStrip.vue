@@ -177,10 +177,11 @@ function toggleMute() {
 
 .mute-btn {
     width: 100%;
-    padding: 8px 4px;
+    min-height: 48px;
+    padding: 12px 4px;
     border: 1px solid var(--border-primary, #2d3348);
     border-radius: 6px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;
@@ -221,8 +222,9 @@ function toggleMute() {
         font-size: 11px;
     }
     .mute-btn {
-        padding: 4px 4px;
-        font-size: 10px;
+        min-height: 40px;
+        padding: 8px 4px;
+        font-size: 11px;
     }
 }
 

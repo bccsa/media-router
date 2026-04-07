@@ -51,7 +51,7 @@
 - [x] Bigger slider knobs in the LCP (44px thumb, 48px interaction width, touch-friendly)
 - [x] Tablet landscape/portrait support (responsive layout, compact landscape mode, safe area insets for notched devices)
 - [x] Change to tailwind css (added @theme inline mapping CSS vars to Tailwind tokens; converted 262 :style bindings across 28 files to utility classes)
-- [ ] Knobs and mute button is some times hard to press on the touch screen devices, can we make the touch area bigger?
+- [x] Knobs and mute button is some times hard to press on the touch screen devices, can we make the touch area bigger? (fixed: mute button min-height 48px + larger padding/font, fader track widened from 48px to 64px)
 
 ## Audio issues
 - [x] On my yocto devices i am not able to start audio inputs, see logs for erros

@@ -51,15 +51,13 @@ export function setupSocketIO(deps: SocketDeps): void {
                     }
                 }
 
-                // Overlay live plugin manifest on stored modules
+                // Overlay live plugin manifest + cached runtime state
                 const cachedStates = eventForwarder.getCachedStates(e.engine_id as string);
                 for (const [id, mod] of Object.entries(modules)) {
                     const m = mod as Record<string, unknown>;
                     const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
                     if (manifest) {
-                        if (!m.ports || (m.ports as unknown[]).length === 0) {
-                            m.ports = manifest.ports ?? [];
-                        }
+                        if (!m.ports || (m.ports as unknown[]).length === 0) m.ports = manifest.ports ?? [];
                         m.configSchema = manifest.configSchema ?? {};
                         m.color = manifest.color;
                         m.icon = manifest.icon;

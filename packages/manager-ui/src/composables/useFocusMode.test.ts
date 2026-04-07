@@ -30,10 +30,11 @@ function makeEngine(modules: Record<string, { focused?: boolean }>): EngineState
         };
     }
     return {
-        id: 'eng-1',
+        engineId: 'eng-1',
         name: 'Test',
         online: true,
         running: false,
+        activeProfile: null,
         modules: mods,
         connections: [],
     } as EngineState;

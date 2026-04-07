@@ -108,7 +108,7 @@ const thumbPercent = computed(() => valueToPercent(props.value));
 <style scoped>
 .fader-track {
     position: relative;
-    width: 48px;
+    width: 64px;
     height: 100%;
     cursor: pointer;
     touch-action: none;
@@ -143,10 +143,10 @@ const thumbPercent = computed(() => valueToPercent(props.value));
 .fader-thumb {
     position: absolute;
     left: 50%;
-    width: 44px;
-    height: 44px;
-    margin-left: -22px;
-    margin-bottom: -22px;
+    width: clamp(36px, 8vw, 56px);
+    height: clamp(36px, 8vw, 56px);
+    margin-left: calc(clamp(36px, 8vw, 56px) / -2);
+    margin-bottom: calc(clamp(36px, 8vw, 56px) / -2);
     border-radius: 50%;
     background: var(--accent, #10b981);
     border: 2px solid rgba(255, 255, 255, 0.2);

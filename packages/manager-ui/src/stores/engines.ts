@@ -136,6 +136,38 @@ export const useEngineStore = defineStore('engines', () => {
         });
     }
 
+    /** Set full config (modules + connections) for an engine — used by lazy loading. */
+    function setEngineConfig(engineId: string, rawModules: Record<string, unknown>, rawConnections: unknown[]) {
+        const engine = engines.value.get(engineId);
+        if (!engine) return;
+
+        const modules: Record<string, ModuleState> = {};
+        for (const [id, mod] of Object.entries(rawModules as Record<string, Record<string, unknown>>)) {
+            modules[id] = {
+                instanceId: id,
+                pluginId: (mod.pluginId as string) ?? '',
+                displayName: (mod.displayName as string) ?? id,
+                running: (mod.running as boolean) ?? false,
+                enabled: (mod.enabled as boolean) ?? true,
+                health: (mod.health as string) ?? 'stopped',
+                pendingRestart: (mod.pendingRestart as boolean) ?? false,
+                position: mod.position as { x: number; y: number } | undefined,
+                settings: (mod.settings ?? {}) as Record<string, unknown>,
+                ports: mod.ports as PortInfo[] | undefined,
+                configSchema: mod.configSchema as Record<string, unknown> | undefined,
+                color: mod.color as string | undefined,
+                icon: mod.icon as string | undefined,
+                statusSections: mod.statusSections as StatusSectionDef[] | undefined,
+                statusData: mod.statusData as Record<string, Record<string, string | number | boolean>> | undefined,
+                focused: (mod.focused as boolean) ?? false,
+            };
+        }
+
+        engine.modules = modules;
+        engine.connections = rawConnections as ConnectionState[];
+        engines.value = new Map(engines.value);
+    }
+
     /**
      * Apply JSON Patch (RFC 6902) operations to an engine's state.
      */
@@ -264,6 +296,7 @@ export const useEngineStore = defineStore('engines', () => {
         engineList,
         getEngine,
         addEngine,
+        setEngineConfig,
         applyEnginePatch,
         setOnline,
         setRunning,
