@@ -5,7 +5,7 @@
     "description": "N-1 mix-minus audio mixer — each output gets all inputs except its own paired input",
     "mediaRouter": {
         "pluginId": "n1-mixer",
-        "displayName": "N-1 Mixer",
+        "displayName": "N-1 Audio Mixer",
         "description": "Broadcast mix-minus: each output hears all inputs except its own return",
         "color": "#a855f7",
         "icon": "shuffle",
