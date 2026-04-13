@@ -55,7 +55,7 @@ export function probeMpegTsStream(
 
             const rawCaps = capsMatch[1].trim();
             const result = parseCaps(rawCaps);
-            log.info({ host, port, codec: result.codec, rawCaps }, 'Detected codec');
+            log.info({ host, port, codec: result.codec, channels: result.channels, rawCaps }, 'Detected codec');
             resolve(result);
         });
 

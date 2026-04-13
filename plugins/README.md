@@ -685,17 +685,18 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 }
 ```
 
-For local connections where the encoder's codec is known, skip the probe:
+Always probe the stream — this detects both codec and channel count regardless of source (local encoder, SRT, RIST, external):
 
 ```typescript
 const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-if (udpSource?.codec) {
-    // Known codec — instant startup
-    this.probeResult = { codec: udpSource.codec as any, rawCaps: '' };
-} else if (udpSource) {
-    // Unknown source — probe the stream (~3s)
+if (udpSource) {
     this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
+    // probeResult.codec: 'opus' | 'aac' | 'mp2' | 'ac3' | 'unknown'
+    // probeResult.channels: number | undefined (opus includes it, AAC doesn't)
+    // probeResult.sampleRate: number | undefined
 }
+// For channels not in probe caps (e.g. AAC), fall back to encoder config:
+const channels = probeResult?.channels ?? udpSource?.channels ?? this.config.channels ?? 2;
 ```
 
 ---

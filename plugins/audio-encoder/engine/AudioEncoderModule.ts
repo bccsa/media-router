@@ -44,10 +44,16 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
+        // Normalize config — write resolved defaults back so downstream modules can read them
+        const codec = (this.config.codec as string) ?? 'opus';
+        const channels = (this.config.channels as number) ?? 2;
+        const rate = (this.config.sampleRate as number) ?? 48000;
+        this.config.codec = codec;
+        this.config.channels = channels;
+        this.config.sampleRate = rate;
+
         // Create a named null-sink — audio sources loopback into this
         if (this.services?.pipeWire) {
-            const channels = (this.config.channels as number) ?? 2;
-            const rate = (this.config.sampleRate as number) ?? 48000;
             this.paModuleId = await this.services.pipeWire.loadNullSink(
                 this.services.instanceId, channels, rate, this.services.instanceId,
             );

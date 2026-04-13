@@ -17,32 +17,39 @@ export class AudioDecoderModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
-        // Detect codec and channels from connected encoder
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-        const channels = udpSource?.channels ?? (this.config.channels as number) ?? 2;
 
-        // Create a named null-sink with the correct channel count
+        // 1. Probe the stream for codec (and channels if available — opus includes it, AAC doesn't)
+        if (udpSource) {
+            this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
+            this.log.info({ codec: this.probeResult.codec, channels: this.probeResult.channels }, 'Stream probe');
+        } else {
+            this.probeResult = null;
+        }
+
+        // 2. Resolve channel count from multiple sources (first available wins):
+        //    - Stream probe caps (reliable for opus, unavailable for AAC/ADTS)
+        //    - Upstream encoder config (available after encoder starts — getModuleUdpSource reads it)
+        //    - Stored decoder config (from previous run's emitConfigUpdate)
+        //    - Default: 2
+        const probedCh = this.probeResult?.channels;
+        const encoderCh = udpSource?.channels;
+        const storedCh = this.config.channels as number | undefined;
+        const channels = probedCh ?? encoderCh ?? storedCh ?? 2;
+        const rate = this.probeResult?.sampleRate ?? (this.config.sampleRate as number) ?? 48000;
+        this.log.info({ probedCh, encoderCh, storedCh, resolved: channels, rate }, 'Channel resolution');
+
+        // 3. Create null-sink with resolved channel count
         if (this.services?.pipeWire) {
             this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId, channels, 48000, this.services.instanceId,
+                this.services.instanceId, channels, rate, this.services.instanceId,
             );
         }
 
-        // Expose detected channels so channel map editor and UI can see the real count
-        if (channels !== this.config.channels) {
-            this.config.channels = channels;
+        // 4. Update config and notify UI if changed
+        if (channels !== storedCh) {
             this.emitConfigUpdate({ channels });
-        }
-
-        if (udpSource?.codec) {
-            // Local encoder — codec is known, skip probe for instant startup
-            this.probeResult = { codec: udpSource.codec as any, rawCaps: '' };
-        } else if (udpSource) {
-            // External/unknown source — probe the stream
-            this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
-        } else {
-            this.probeResult = null;
         }
 
         await super.onStart();

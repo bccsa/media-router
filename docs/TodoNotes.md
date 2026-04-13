@@ -104,3 +104,5 @@
 - [ ] Enable mDNS to easily discover the media router
 - [ ] Show RAUC download progress when selecting a new image, and display message that restart is needed
 
+- [x] Output channel count still not detected correctly in the channel map on links (fixed: decoder now always probes the stream before creating null-sink — detects channels from actual MPEG-TS caps regardless of source. Encoder also normalizes config values so downstream readers always see explicit values) 
+

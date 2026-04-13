@@ -96,6 +96,11 @@ export class ModuleManager extends EventEmitter {
             this.emit('vuData', id, data);
         });
 
+        // Forward config updates (e.g. decoder auto-detected channels)
+        instance.on('configUpdated', (id: string, changes: Record<string, unknown>) => {
+            this.emit('configUpdated', id, changes);
+        });
+
         this.modules.set(instanceId, instance);
         return instance;
     }
