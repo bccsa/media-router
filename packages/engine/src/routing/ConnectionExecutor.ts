@@ -1,4 +1,3 @@
-import type { ChannelMapEntry } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
@@ -9,9 +8,8 @@ const log = createLogger('ConnectionExecutor');
 /**
  * Executes and tears down media connections between modules.
  *
- * Handles three connection types:
- * - audio/pcm via PipeWire loopback (default)
- * - audio/pcm via pw-link (when channelMap is specified)
+ * Connection types:
+ * - audio/pcm via pw-link (identity mapping or explicit channelMap)
  * - muxed/mpegts via UDP multicast
  */
 export class ConnectionExecutor {
@@ -50,13 +48,13 @@ export class ConnectionExecutor {
             // 1. Remove by exact port name pairs
             if (handle.pwLinkPairs?.length) {
                 for (const pair of handle.pwLinkPairs) {
-                    this.pipeWire.pwUnlinkByName(pair.src, pair.dst);
+                    await this.pipeWire.pwUnlinkByName(pair.src, pair.dst);
                 }
             }
             // 2. Remove by link ID (catches any missed by name)
             if (handle.pwLinkIds?.length) {
                 for (const linkId of handle.pwLinkIds) {
-                    if (linkId > 0) this.pipeWire.pwUnlink(linkId);
+                    if (linkId > 0) await this.pipeWire.pwUnlink(linkId);
                 }
             }
             // 3. Final sweep: remove ALL links between the two nodes (catches any stragglers)
@@ -64,7 +62,7 @@ export class ConnectionExecutor {
                 const srcNode = handle.pwLinkPairs[0].src.split(':')[0];
                 const dstNode = handle.pwLinkPairs[0].dst.split(':')[0];
                 if (srcNode && dstNode) {
-                    this.pipeWire.pwUnlinkAllBetween(srcNode, dstNode);
+                    await this.pipeWire.pwUnlinkAllBetween(srcNode, dstNode);
                 }
             }
         } else if (handle.type === 'udp') {
@@ -108,27 +106,7 @@ export class ConnectionExecutor {
             return null;
         }
 
-        // If channel map is specified, use pw-link for per-channel routing
-        if (conn.channelMap?.length) {
-            return this.executePwLink(conn, sourceNodes.source, sinkNodes.sink);
-        }
-
-        // Default: use module-loopback
-        log.info({ source: sourceNodes.source, sink: sinkNodes.sink }, `Creating audio loopback ${this.connLabel(conn)}`);
-
-        const paModuleId = await this.pipeWire.loadLoopback(
-            conn.id,
-            sourceNodes.source,
-            sinkNodes.sink,
-            2, 48000,
-            conn.sourceModuleId,
-        );
-
-        return {
-            connectionId: conn.id,
-            type: 'loopback',
-            paModuleId,
-        };
+        return this.executePwLink(conn, sourceNodes.source, sinkNodes.sink);
     }
 
     private async executePwLink(
@@ -136,27 +114,43 @@ export class ConnectionExecutor {
         sourcePwNode: string,
         sinkPwNode: string,
     ): Promise<ActiveHandle | null> {
+        // Remove any existing direct links between these nodes
+        await this.pipeWire.pwUnlinkAllBetween(sourcePwNode, sinkPwNode);
+
+        // Discover actual port names from PipeWire
+        const srcPorts = await this.pipeWire.listPorts(sourcePwNode, 'output');
+        const sinkPorts = await this.pipeWire.listPorts(sinkPwNode, 'input');
+
+        log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);
+
+        // Use explicit channel map or generate identity mapping (ch0→ch0, ch1→ch1, ...)
+        const channelMap = conn.channelMap?.length
+            ? conn.channelMap
+            : Array.from({ length: Math.min(srcPorts.length, sinkPorts.length) }, (_, i) => ({
+                srcChannel: i, dstChannel: i,
+            }));
+
+        if (!conn.channelMap?.length && srcPorts.length !== sinkPorts.length) {
+            log.warn({
+                source: sourcePwNode, sink: sinkPwNode,
+                srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,
+                linked: channelMap.length,
+            }, `Channel count mismatch — linking ${channelMap.length} of ${Math.max(srcPorts.length, sinkPorts.length)} channels ${this.connLabel(conn)}`);
+        }
+
         log.info({
             connectionId: conn.id,
             source: sourcePwNode,
             sink: sinkPwNode,
-            mappings: conn.channelMap!.length,
-        }, `Creating per-channel pw-link connections ${this.connLabel(conn)}`);
-
-        // Remove any existing direct links between these nodes
-        this.pipeWire.pwUnlinkAllBetween(sourcePwNode, sinkPwNode);
-
-        // Discover actual port names from PipeWire
-        const srcPorts = this.pipeWire.listPorts(sourcePwNode, 'output');
-        const sinkPorts = this.pipeWire.listPorts(sinkPwNode, 'input');
-
-        log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);
+            mappings: channelMap.length,
+            explicit: !!conn.channelMap?.length,
+        }, `Creating pw-link connections ${this.connLabel(conn)}`);
 
         const linkIds: number[] = [];
         const linkPairs: Array<{ src: string; dst: string }> = [];
 
-        for (const entry of conn.channelMap!) {
-            if (entry.gain !== undefined && entry.gain !== 1.0) {
+        for (const entry of channelMap) {
+            if ('gain' in entry && entry.gain !== undefined && entry.gain !== 1.0) {
                 log.warn({ srcCh: entry.srcChannel, dstCh: entry.dstChannel, gain: entry.gain },
                     'Per-channel gain not supported with pw-link — gain ignored');
             }
@@ -173,7 +167,7 @@ export class ConnectionExecutor {
             }
 
             try {
-                const linkId = this.pipeWire.pwLink(srcPort, sinkPort);
+                const linkId = await this.pipeWire.pwLink(srcPort, sinkPort);
                 linkIds.push(linkId);
                 linkPairs.push({ src: srcPort, dst: sinkPort });
                 log.info({ src: srcPort, dst: sinkPort, linkId }, `Created pw-link ${this.connLabel(conn)}`);

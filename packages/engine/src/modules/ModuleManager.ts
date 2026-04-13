@@ -125,6 +125,7 @@ export class ModuleManager extends EventEmitter {
         if (!mod) return;
         await mod.destroy();
         this.modules.delete(instanceId);
+        this.emit('moduleDeleted', instanceId);
     }
 
     /** Stop all running modules. */

@@ -7,7 +7,7 @@ import type { PluginLoader } from '../plugins/PluginLoader.js';
 const log = createLogger('ConnectionApplier');
 
 /** Time to wait for MPEG-TS pipelines to settle before creating audio connections. */
-const MPEGTS_SETTLE_MS = 500;
+const MPEGTS_SETTLE_MS = 1000;
 
 export type RawPort = { id: string; direction: string; streamType: string; label?: string; maxConnections?: number };
 

@@ -207,9 +207,10 @@ describe('MediaRouter', () => {
     it('getModuleUdpSource finds upstream encoder for a decoder', async () => {
         registerMpegtsPair(router);
 
-        // Set up dependencies with a module getter that returns config
+        // Set up dependencies with a module getter that returns config + lifecycle
         const mockModuleGetter = vi.fn().mockImplementation((id: string) => {
-            if (id === 'encoder') return { config: { codec: 'opus', channels: 2 } };
+            if (id === 'encoder') return { config: { codec: 'opus', channels: 2 }, running: false };
+            if (id === 'decoder') return { config: {}, running: false, stop: vi.fn(), start: vi.fn() };
             return undefined;
         });
         router.setDependencies({} as any, mockModuleGetter);

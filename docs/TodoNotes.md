@@ -106,3 +106,4 @@
 
 - [x] Output channel count still not detected correctly in the channel map on links (fixed: decoder now always probes the stream before creating null-sink — detects channels from actual MPEG-TS caps regardless of source. Encoder also normalizes config values so downstream readers always see explicit values) 
 
+- [] LCP Light mode cant see module names 

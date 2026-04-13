@@ -7,6 +7,7 @@ function createMockContext(): CommandContext {
             size: 0,
             get: vi.fn().mockReturnValue(undefined),
             applyConfigUpdate: vi.fn().mockResolvedValue(undefined),
+            getAllStates: vi.fn().mockReturnValue({}),
         } as any,
         mediaRouter: {
             createConnection: vi.fn().mockResolvedValue('conn-1'),
@@ -107,24 +108,49 @@ describe('CommandDispatcher', () => {
             expect(dispatcher.isStopRequested).toBe(false);
         });
 
-        it('skips pending start when modules are already running', async () => {
+        it('runs pending start after stop (modules stopped = not running)', async () => {
             let resolveStop!: () => void;
             (ctx.stopModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
                 new Promise<void>((r) => { resolveStop = r; }),
             );
 
-            // Simulate that modules are running
+            // Modules exist (size=3) but after stop none are running
             (ctx.moduleManager as any).size = 3;
+            (ctx.moduleManager.getAllStates as ReturnType<typeof vi.fn>).mockReturnValue({
+                'mod-1': { running: false },
+                'mod-2': { running: false },
+                'mod-3': { running: false },
+            });
 
             dispatcher.dispatch({ command: 'stop' }); // starts running
             dispatcher.dispatch({ command: 'start' }); // queued as pending
 
             resolveStop();
-            // After stop, moduleManager.size is still 3 (mock), so 'start' sees hasRunning=true → skip
             await flush();
 
             expect(ctx.stopModules).toHaveBeenCalledOnce();
-            expect(ctx.startModules).not.toHaveBeenCalled(); // skipped — already running
+            expect(ctx.startModules).toHaveBeenCalledOnce(); // runs — no modules are actually running
+        });
+
+        it('skips pending start when modules are actually running', async () => {
+            let resolveStop!: () => void;
+            (ctx.stopModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+                new Promise<void>((r) => { resolveStop = r; }),
+            );
+
+            // Modules still running (stop didn't work or different scenario)
+            (ctx.moduleManager.getAllStates as ReturnType<typeof vi.fn>).mockReturnValue({
+                'mod-1': { running: true },
+            });
+
+            dispatcher.dispatch({ command: 'stop' }); // starts running
+            dispatcher.dispatch({ command: 'start' }); // queued as pending
+
+            resolveStop();
+            await flush();
+
+            expect(ctx.stopModules).toHaveBeenCalledOnce();
+            expect(ctx.startModules).not.toHaveBeenCalled(); // skipped — modules still running
         });
 
         it('skips pending stop when no modules are running', async () => {
@@ -133,18 +159,17 @@ describe('CommandDispatcher', () => {
                 new Promise<void>((r) => { resolveStart = r; }),
             );
 
-            // size = 0 → no running modules
-            (ctx.moduleManager as any).size = 0;
+            // No modules running
+            (ctx.moduleManager.getAllStates as ReturnType<typeof vi.fn>).mockReturnValue({});
 
             dispatcher.dispatch({ command: 'start' }); // starts running
             dispatcher.dispatch({ command: 'stop' });  // queued as pending
 
             resolveStart();
-            // After start, size is still 0 (mock), so pending 'stop' sees !hasRunning → skip
             await flush();
 
             expect(ctx.startModules).toHaveBeenCalledOnce();
-            expect(ctx.stopModules).not.toHaveBeenCalled(); // skipped — already stopped
+            expect(ctx.stopModules).not.toHaveBeenCalled(); // skipped — nothing running
         });
     });
 
@@ -265,18 +290,6 @@ describe('CommandDispatcher', () => {
             dispatcher.dispatch({ command: 'routingUpdate', connectionId: 'conn-1', channelMap: [{ srcChannel: 0, dstChannel: 1 }] });
             await flush();
             expect(ctx.mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-1', [{ srcChannel: 0, dstChannel: 1 }]);
-        });
-    });
-
-    describe('configPatch', () => {
-        it('applies patch to currentConfig and broadcasts', () => {
-            ctx.currentConfig = { modules: { 'mod-1': { displayName: 'Old' } }, connections: [] };
-            dispatcher.dispatch({
-                command: 'configPatch',
-                ops: [{ op: 'replace', path: '/modules/mod-1/displayName', value: 'New' }],
-            });
-            expect((ctx.currentConfig as any).modules['mod-1'].displayName).toBe('New');
-            expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalled();
         });
     });
 

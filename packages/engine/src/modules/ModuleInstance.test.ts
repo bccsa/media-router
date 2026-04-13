@@ -86,6 +86,14 @@ describe('ModuleInstance', () => {
         expect(plugin.onStart).toHaveBeenCalledTimes(1);
     });
 
+    it('stop then start does not re-call onInit (initialized guard)', async () => {
+        await instance.start();
+        await instance.stop();
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(1);
+        expect(plugin.onStart).toHaveBeenCalledTimes(2);
+    });
+
     it('start() emits stateChange', async () => {
         const spy = vi.fn();
         instance.on('stateChange', spy);
@@ -161,6 +169,16 @@ describe('ModuleInstance', () => {
         expect(plugin.onStop).toHaveBeenCalled();
         expect(plugin.onDestroy).toHaveBeenCalled();
         expect(instance.running).toBe(false);
+    });
+
+    it('destroy() resets _initialized so next start re-runs onInit', async () => {
+        await instance.start();
+        await instance.destroy();
+        // Re-create since destroy removes listeners, but the plugin is reusable
+        const fresh = new ModuleInstance('inst-1', 'audio-decoder', plugin, { ...config });
+        await fresh.start();
+        // onInit called twice total: once for original, once after destroy+recreate
+        expect(plugin.onInit).toHaveBeenCalledTimes(2);
     });
 
     it('destroy() removes all listeners', async () => {

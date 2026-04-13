@@ -73,10 +73,12 @@ export class MediaRouter {
 
     async unregisterPorts(moduleId: string): Promise<void> {
         this.portRegistry.unregister(moduleId);
-        for (const [id, conn] of this.connections) {
-            if (conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId) {
-                await this.removeConnection(id);
-            }
+        // Snapshot keys — removeConnection mutates this.connections during iteration
+        const toRemove = Array.from(this.connections.entries())
+            .filter(([, conn]) => conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId)
+            .map(([id]) => id);
+        for (const id of toRemove) {
+            await this.removeConnection(id);
         }
     }
 
@@ -141,11 +143,21 @@ export class MediaRouter {
         };
         this.connections.set(connId, conn);
 
-        try {
-            const handle = await this.executor?.execute(conn);
-            if (handle) this.handles.set(connId, handle);
-        } catch (err) {
-            log.error({ err, connectionId: connId }, 'Failed to execute connection');
+        if (this.executor) {
+            try {
+                const handle = await this.executor.execute(conn);
+                if (handle) {
+                    this.handles.set(connId, handle);
+                } else {
+                    // Execution returned null — remove the zombie connection
+                    this.connections.delete(connId);
+                    log.warn({ connectionId: connId }, 'Connection execution returned null — removed');
+                }
+            } catch (err) {
+                // Execution threw — remove the zombie connection
+                this.connections.delete(connId);
+                log.error({ err, connectionId: connId }, 'Failed to execute connection — removed');
+            }
         }
 
         return connId;

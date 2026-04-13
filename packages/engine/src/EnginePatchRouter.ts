@@ -116,34 +116,35 @@ export class EnginePatchRouter {
                     .catch((err) => log.error({ err, moduleId }, 'Module delete failed'));
             }
 
-            // Connection added → create routing (only top-level connection add, not sub-field adds)
+            // Connection added → create routing (chained to lifecycle lock so module exists first)
             if (op.op === 'add' && parts[0] === 'connections' && parts.length <= 2) {
                 const conn = op.value as Record<string, unknown>;
                 if (conn?.sourceModuleId) {
-                    this.mediaRouter.createConnection(
-                        conn.sourceModuleId as string,
-                        conn.sourcePortId as string,
-                        conn.sinkModuleId as string,
-                        conn.sinkPortId as string,
-                        conn.channelMap as ChannelMapEntry[] | undefined,
-                    ).then((connId) => {
-                        log.info({ connectionId: connId }, 'Live connect');
-                    }).catch((err) => log.error({ err }, 'Live connect failed'));
+                    this.lifecycleLock = this.lifecycleLock
+                        .then(() => this.mediaRouter.createConnection(
+                            conn.sourceModuleId as string,
+                            conn.sourcePortId as string,
+                            conn.sinkModuleId as string,
+                            conn.sinkPortId as string,
+                            conn.channelMap as ChannelMapEntry[] | undefined,
+                        ))
+                        .then((connId) => { log.info({ connectionId: connId }, 'Live connect'); })
+                        .catch((err) => log.error({ err }, 'Live connect failed'));
                 }
             }
 
-            // Connection removed → destroy routing (resolvedOps carry _connId from pre-resolution)
+            // Connection removed → destroy routing (chained to lifecycle lock)
             if (op.op === 'remove' && parts[0] === 'connections' && parts.length === 2) {
                 const connectionId = op._connId as string | undefined;
                 if (connectionId) {
-                    this.mediaRouter.removeConnection(connectionId)
+                    this.lifecycleLock = this.lifecycleLock
+                        .then(async () => { await this.mediaRouter.removeConnection(connectionId); })
                         .catch((err) => log.error({ err, connectionId }, 'Live disconnect failed'));
                 }
             }
 
-            // Channel map updated → update routing (resolvedOps carry _connId)
+            // Channel map updated → update routing (chained to lifecycle lock)
             if (parts[0] === 'connections' && parts[2] === 'channelMap' && (op.op === 'replace' || op.op === 'add')) {
-                // _connId from pre-resolution, or look up from updated config
                 let connectionId = op._connId as string | undefined;
                 if (!connectionId) {
                     const idx = parseInt(parts[1], 10);
@@ -151,9 +152,11 @@ export class EnginePatchRouter {
                     connectionId = (!isNaN(idx) ? conns[idx]?.id : undefined) as string | undefined;
                 }
                 if (connectionId) {
-                    log.info({ connectionId, hasMap: op.value != null }, 'Channel map update');
-                    this.mediaRouter.updateChannelMap(connectionId, op.value as ChannelMapEntry[] | undefined)
-                        .catch((err) => log.error({ err, connectionId }, 'Channel map update failed'));
+                    const resolvedId = connectionId;
+                    log.info({ connectionId: resolvedId, hasMap: op.value != null }, 'Channel map update');
+                    this.lifecycleLock = this.lifecycleLock
+                        .then(() => this.mediaRouter.updateChannelMap(resolvedId, op.value as ChannelMapEntry[] | undefined))
+                        .catch((err) => log.error({ err, connectionId: resolvedId }, 'Channel map update failed'));
                 } else {
                     log.warn({ path: op.path }, 'Channel map update — could not resolve connection ID');
                 }

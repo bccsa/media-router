@@ -10,7 +10,7 @@ const defaultLog = createLogger('GstPluginBase');
  * Abstract base class for GStreamer-based plugins.
  *
  * Subclasses implement `buildPipeline()` to define their GStreamer pipeline.
- * Phase 3 will add child process management. For now, lifecycle is no-op.
+ * Manages child process lifecycle, VU metering, status data, and badges.
  */
 export abstract class GstPluginBase extends EventEmitter implements PluginModule {
     protected config: Record<string, unknown> = {};
@@ -52,7 +52,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** PipeWire node name for this module instance. */
     protected get pwNodeName(): string {
-        return `MR_PW_${this.services?.instanceId ?? 'unknown'}`;
+        if (!this.services?.instanceId) {
+            throw new Error('Cannot resolve PipeWire node name — services not initialised');
+        }
+        return `MR_PW_${this.services.instanceId}`;
     }
 
     async onStart(): Promise<void> {

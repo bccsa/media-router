@@ -1,4 +1,4 @@
-import Fastify, { type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import { createLogger } from '@media-router/shared-types';
 import type { Engine } from '../Engine.js';
@@ -79,7 +79,7 @@ function registerProfileRoutes(app: ReturnType<typeof Fastify>, engine: Engine):
         return engine.profileStore.getAll();
     });
 
-    app.post('/api/v1/profiles', async (req: FastifyRequest) => {
+    app.post('/api/v1/profiles', async (req: FastifyRequest, reply: FastifyReply) => {
         const body = req.body as {
             name: string;
             managerHost: string;
@@ -89,7 +89,7 @@ function registerProfileRoutes(app: ReturnType<typeof Fastify>, engine: Engine):
         };
 
         if (!body.name || !body.managerHost || !body.managerPort || !body.password) {
-            return { error: 'name, managerHost, managerPort, and password are required' };
+            return reply.status(400).send({ error: 'name, managerHost, managerPort, and password are required' });
         }
 
         const paths = body.paths ?? [{ host: body.managerHost, port: body.managerPort }];

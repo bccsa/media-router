@@ -90,11 +90,12 @@ export class ManagedProcess extends EventEmitter {
         this._startTime = Date.now();
         this._exitCode = null;
 
-        // Line-buffered stdout
+        // Line-buffered stdout (capped at 64KB to prevent OOM from long lines)
         if (this.child.stdout) {
             let buffer = '';
             this.child.stdout.on('data', (chunk: Buffer) => {
                 buffer += chunk.toString();
+                if (buffer.length > 65536) buffer = buffer.slice(-32768);
                 const lines = buffer.split('\n');
                 buffer = lines.pop() ?? '';
                 for (const line of lines) {
@@ -106,16 +107,16 @@ export class ManagedProcess extends EventEmitter {
             });
         }
 
-        // Line-buffered stderr
+        // Line-buffered stderr (capped at 64KB to prevent OOM from long lines)
         if (this.child.stderr) {
             let buffer = '';
             this.child.stderr.on('data', (chunk: Buffer) => {
                 buffer += chunk.toString();
+                if (buffer.length > 65536) buffer = buffer.slice(-32768);
                 const lines = buffer.split('\n');
                 buffer = lines.pop() ?? '';
                 for (const line of lines) {
                     if (line.trim()) {
-                        // Only log stderr if no callback handles it
                         if (this.options.onStderr) {
                             this.options.onStderr(line);
                         } else {

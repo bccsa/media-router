@@ -66,11 +66,8 @@ export class AudioDecoderModule extends GstPluginBase {
         if ('volume' in changes || 'audioEnabled' in changes) {
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            const gstVol = volumePct / 100;
-            await this.setElementProperty('vol', 'volume', gstVol).catch(() => {});
-            if (this.services?.pipeWire) {
-                await this.services.pipeWire.setSinkVolume(this.pwNodeName, volumePct);
-            }
+            // Volume controlled via GStreamer element only — no pactl to avoid double-attenuation
+            await this.setElementProperty('vol', 'volume', volumePct / 100).catch(() => {});
         }
     }
 

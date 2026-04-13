@@ -215,7 +215,6 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
         // fd 3 = commands (JSON), fd 4 = events (JSON)
         pyProcess = spawn('python3', [PYTHON_RUNNER], {
             stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
-            detached: true,
         });
 
         // Error handlers
@@ -241,7 +240,6 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
         // BUS MESSAGE MODE: stdin = commands, stderr = events, stdout = unused
         pyProcess = spawn('python3', [PYTHON_RUNNER], {
             stdio: ['pipe', 'pipe', 'pipe'],
-            detached: true,
         });
 
         // Events come on stderr (GST_JSON: prefix)
@@ -273,9 +271,7 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
 
 function killProcess(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
     if (!proc.pid) return;
-    try { process.kill(-proc.pid, signal); } catch {
-        try { proc.kill(signal); } catch { /* already dead */ }
-    }
+    try { proc.kill(signal); } catch { /* already dead */ }
 }
 
 function stopPipeline(): void {
@@ -413,7 +409,6 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('exit', () => {
     if (pyProcess && pyProcess.pid) {
         try { process.kill(pyProcess.pid, 'SIGKILL'); } catch {}
-        try { process.kill(-pyProcess.pid, 'SIGKILL'); } catch {}
     }
 });
 

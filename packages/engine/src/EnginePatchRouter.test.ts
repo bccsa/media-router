@@ -113,11 +113,13 @@ describe('EnginePatchRouter', () => {
             expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', { volume: 80 });
         });
 
-        it('triggers connection creation for connection add', () => {
+        it('triggers connection creation for connection add', async () => {
             const { router, mediaRouter } = createMocks();
             router.onPatch('manager', 'manager', [
                 { op: 'add', path: '/connections/-', value: { sourceModuleId: 'a', sourcePortId: 'out', sinkModuleId: 'b', sinkPortId: 'in' } },
             ]);
+            // Connection creation is chained to the lifecycle lock
+            await new Promise((r) => setTimeout(r, 10));
             expect(mediaRouter.createConnection).toHaveBeenCalledWith('a', 'out', 'b', 'in', undefined);
         });
     });
@@ -304,12 +306,14 @@ describe('EnginePatchRouter', () => {
     });
 
     describe('connection add with channelMap', () => {
-        it('passes channelMap to createConnection', () => {
+        it('passes channelMap to createConnection', async () => {
             const { router, mediaRouter } = createMocks();
             const channelMap = [{ source: 0, sink: 1 }];
             router.onPatch('manager', 'manager', [
                 { op: 'add', path: '/connections/-', value: { sourceModuleId: 'a', sourcePortId: 'out', sinkModuleId: 'b', sinkPortId: 'in', channelMap } },
             ]);
+            // Connection creation is chained to the lifecycle lock
+            await new Promise((r) => setTimeout(r, 10));
             expect(mediaRouter.createConnection).toHaveBeenCalledWith('a', 'out', 'b', 'in', channelMap);
         });
 

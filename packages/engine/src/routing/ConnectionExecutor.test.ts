@@ -33,7 +33,6 @@ function makeMockPipeWire(): {
         : PipeWireManager[K];
 } {
     return {
-        loadLoopback: vi.fn(async () => 42),
         unloadModule: vi.fn(async () => {}),
         pwLink: vi.fn(() => 100),
         pwUnlink: vi.fn(),
@@ -74,7 +73,7 @@ describe('ConnectionExecutor', () => {
             expect(result).toBeNull();
         });
 
-        it('dispatches audio/pcm to loopback', async () => {
+        it('dispatches audio/pcm to pw-link with identity mapping', async () => {
             const srcMod = makeMockModule({
                 getPipeWireNodes: vi.fn(() => ({ source: 'mic-node' })),
             });
@@ -84,17 +83,25 @@ describe('ConnectionExecutor', () => {
             modules.set('src-mod', srcMod);
             modules.set('sink-mod', sinkMod);
 
+            pw.listPorts.mockImplementation((node: string, dir: string) => {
+                if (dir === 'output') return ['mic-node:output_FL', 'mic-node:output_FR'];
+                return ['encoder-node:input_FL', 'encoder-node:input_FR'];
+            });
+
             const conn = makeConnection();
             const result = await executor.execute(conn);
 
             expect(result).toEqual({
                 connectionId: conn.id,
-                type: 'loopback',
-                paModuleId: 42,
+                type: 'pw-link',
+                pwLinkIds: [100, 100],
+                pwLinkPairs: [
+                    { src: 'mic-node:output_FL', dst: 'encoder-node:input_FL' },
+                    { src: 'mic-node:output_FR', dst: 'encoder-node:input_FR' },
+                ],
             });
-            expect(pw.loadLoopback).toHaveBeenCalledWith(
-                conn.id, 'mic-node', 'encoder-node', 2, 48000, 'src-mod',
-            );
+            expect(pw.pwUnlinkAllBetween).toHaveBeenCalledWith('mic-node', 'encoder-node');
+            expect(pw.pwLink).toHaveBeenCalledTimes(2);
         });
 
         it('dispatches muxed/mpegts to UDP', async () => {
@@ -162,11 +169,15 @@ describe('ConnectionExecutor', () => {
             modules.set('src-mod', srcMod);
             modules.set('sink-mod', sinkMod);
 
+            pw.listPorts.mockImplementation((node: string, dir: string) => {
+                if (dir === 'output') return ['port-specific-src:output_FL'];
+                return ['port-specific-sink:input_FL'];
+            });
+
             await executor.execute(makeConnection());
 
-            expect(pw.loadLoopback).toHaveBeenCalledWith(
-                expect.any(String), 'port-specific-src', 'port-specific-sink', 2, 48000, 'src-mod',
-            );
+            expect(pw.pwUnlinkAllBetween).toHaveBeenCalledWith('port-specific-src', 'port-specific-sink');
+            expect(pw.pwLink).toHaveBeenCalledWith('port-specific-src:output_FL', 'port-specific-sink:input_FL');
         });
 
         it('falls back to module-level nodes when port-specific returns undefined', async () => {
@@ -181,14 +192,18 @@ describe('ConnectionExecutor', () => {
             modules.set('src-mod', srcMod);
             modules.set('sink-mod', sinkMod);
 
+            pw.listPorts.mockImplementation((node: string, dir: string) => {
+                if (dir === 'output') return ['module-src:output_FL'];
+                return ['module-sink:input_FL'];
+            });
+
             await executor.execute(makeConnection());
 
-            expect(pw.loadLoopback).toHaveBeenCalledWith(
-                expect.any(String), 'module-src', 'module-sink', 2, 48000, 'src-mod',
-            );
+            expect(pw.pwUnlinkAllBetween).toHaveBeenCalledWith('module-src', 'module-sink');
+            expect(pw.pwLink).toHaveBeenCalledWith('module-src:output_FL', 'module-sink:input_FL');
         });
 
-        it('creates loopback for audio/pcm without channelMap', async () => {
+        it('creates pw-link identity mapping for audio/pcm without channelMap', async () => {
             modules.set('src-mod', makeMockModule({
                 getPipeWireNodes: vi.fn(() => ({ source: 'mic' })),
             }));
@@ -196,13 +211,42 @@ describe('ConnectionExecutor', () => {
                 getPipeWireNodes: vi.fn(() => ({ sink: 'enc' })),
             }));
 
+            pw.listPorts.mockImplementation((node: string, dir: string) => {
+                if (dir === 'output') return ['mic:output_FL', 'mic:output_FR'];
+                return ['enc:input_FL', 'enc:input_FR'];
+            });
+
             const result = await executor.execute(makeConnection());
 
             expect(result).toEqual({
                 connectionId: 'src:out-sink:in',
-                type: 'loopback',
-                paModuleId: 42,
+                type: 'pw-link',
+                pwLinkIds: [100, 100],
+                pwLinkPairs: [
+                    { src: 'mic:output_FL', dst: 'enc:input_FL' },
+                    { src: 'mic:output_FR', dst: 'enc:input_FR' },
+                ],
             });
+        });
+
+        it('identity mapping uses min(src, dst) channels', async () => {
+            modules.set('src-mod', makeMockModule({
+                getPipeWireNodes: vi.fn(() => ({ source: 'src8ch' })),
+            }));
+            modules.set('sink-mod', makeMockModule({
+                getPipeWireNodes: vi.fn(() => ({ sink: 'sink2ch' })),
+            }));
+
+            pw.listPorts.mockImplementation((node: string, dir: string) => {
+                if (dir === 'output') return ['src8ch:out_0', 'src8ch:out_1', 'src8ch:out_2', 'src8ch:out_3', 'src8ch:out_4', 'src8ch:out_5', 'src8ch:out_6', 'src8ch:out_7'];
+                return ['sink2ch:in_0', 'sink2ch:in_1'];
+            });
+
+            const result = await executor.execute(makeConnection());
+
+            // Only 2 links created (limited by sink's 2 channels)
+            expect(pw.pwLink).toHaveBeenCalledTimes(2);
+            expect(result!.pwLinkPairs).toHaveLength(2);
         });
     });
 
@@ -351,30 +395,6 @@ describe('ConnectionExecutor', () => {
     // --- teardown ---
 
     describe('teardown()', () => {
-        it('unloads PA module for loopback handle', async () => {
-            const handle: ActiveHandle = {
-                connectionId: 'c1',
-                type: 'loopback',
-                paModuleId: 99,
-            };
-
-            await executor.teardown(handle, undefined);
-
-            expect(pw.unloadModule).toHaveBeenCalledWith(99);
-        });
-
-        it('skips unload when loopback has no paModuleId', async () => {
-            const handle: ActiveHandle = {
-                connectionId: 'c1',
-                type: 'loopback',
-                paModuleId: undefined,
-            };
-
-            await executor.teardown(handle, undefined);
-
-            expect(pw.unloadModule).not.toHaveBeenCalled();
-        });
-
         it('removes pw-link by name, by ID, and sweeps', async () => {
             const handle: ActiveHandle = {
                 connectionId: 'c1',

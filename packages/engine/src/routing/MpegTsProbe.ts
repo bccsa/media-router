@@ -40,10 +40,15 @@ export function probeMpegTsStream(
 
         log.info({ host, port }, 'Probing MPEG-TS stream');
 
+        let resolved = false;
         const child = execFile('gst-launch-1.0', args, {
             timeout: timeoutMs,
             maxBuffer: 1024 * 64,
         }, (err, stdout, stderr) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(safetyTimer);
+
             const output = (stdout ?? '') + (stderr ?? '');
             const capsMatch = output.match(/caps\s*=\s*(audio\/[^\n]+)/);
 
@@ -59,9 +64,10 @@ export function probeMpegTsStream(
             resolve(result);
         });
 
-        // Safety: kill if still running after timeout
-        setTimeout(() => {
-            try { child.kill('SIGTERM'); } catch {}
+        // Safety: kill if still running after timeout (guards against execFile timeout not firing)
+        const safetyTimer = setTimeout(() => {
+            if (resolved) return;
+            try { child.kill('SIGKILL'); } catch { /* already dead */ }
         }, timeoutMs + 500);
     });
 }

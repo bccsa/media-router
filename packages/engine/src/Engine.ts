@@ -227,13 +227,17 @@ export class Engine {
         // 1. Stop all modules and clean up
         await this.lifecycle.stopAll();
 
-        // 2. Try to restart PipeWire
+        // 2. Try to restart PipeWire (async to avoid blocking event loop)
         try {
-            const { execFileSync } = await import('child_process');
-            execFileSync('systemctl', ['--user', 'restart', 'pipewire'], { timeout: 10000 });
+            const { execFile } = await import('child_process');
+            await new Promise<void>((resolve, reject) => {
+                execFile('systemctl', ['--user', 'restart', 'pipewire'], { timeout: 10000 }, (err) => {
+                    if (err) reject(err); else resolve();
+                });
+            });
             log.info('PipeWire restarted successfully');
-            // Wait for PipeWire to come back up
-            await new Promise((r) => setTimeout(r, 2000));
+            // Wait for PipeWire to stabilise (Pi can be slow)
+            await new Promise((r) => setTimeout(r, 3000));
         } catch (err) {
             log.warn({ err: formatError(err) },
                 'Could not restart PipeWire (permission denied or not available) — continuing with cleanup');

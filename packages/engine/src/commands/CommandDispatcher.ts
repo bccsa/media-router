@@ -1,5 +1,5 @@
 import type { ChannelMapEntry, PatchOp } from '@media-router/shared-types';
-import { createLogger, applyJsonPatch } from '@media-router/shared-types';
+import { createLogger } from '@media-router/shared-types';
 import type { ModuleManager } from '../modules/ModuleManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { LcpServer } from '../comms/LcpServer.js';
@@ -63,10 +63,13 @@ export class CommandDispatcher {
                 this.lifecycleBusy = false;
                 if (this.pendingLifecycle) {
                     const next = this.pendingLifecycle;
-                    const hasRunning = this.ctx.moduleManager.size > 0;
+                    // Check if any module is actually running — not just existing in the map.
+                    // After stopAll(), modules exist but are stopped (size > 0, running = 0).
+                    const states = this.ctx.moduleManager.getAllStates();
+                    const anyRunning = Object.values(states).some((s) => s.running);
                     // Skip if the engine is already in the desired state
-                    if ((next === 'start' && hasRunning) || (next === 'stop' && !hasRunning)) {
-                        log.info({ command: next, hasRunning }, 'Skipping pending — already in desired state');
+                    if ((next === 'start' && anyRunning) || (next === 'stop' && !anyRunning)) {
+                        log.info({ command: next, anyRunning }, 'Skipping pending — already in desired state');
                         this.pendingLifecycle = null;
                         return;
                     }
@@ -168,13 +171,6 @@ export class CommandDispatcher {
                 this.commandLock = this.commandLock
                     .then(() => this.ctx.startSingleModule(moduleId))
                     .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
-                break;
-            }
-
-            case 'configPatch': {
-                const ops = cmd.ops as PatchOp[];
-                applyJsonPatch(this.ctx.currentConfig, ops);
-                this.ctx.lcpServer.broadcastConfigUpdate(ops);
                 break;
             }
 

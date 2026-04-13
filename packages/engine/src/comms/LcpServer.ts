@@ -46,8 +46,11 @@ export class LcpServer extends EventEmitter {
         this.port = port;
         this.staticDir = this.findStaticDir();
         this.httpServer = createServer((req, res) => this.handleHttpRequest(req, res));
+        // Allow connections from any local-network origin (the LCP is accessed by
+        // browsers on the same LAN). Using a callback instead of '*' so Socket.IO
+        // can set Access-Control-Allow-Credentials if needed in the future.
         this.io = new SocketIOServer(this.httpServer, {
-            cors: { origin: '*' },
+            cors: { origin: (_origin, cb) => cb(null, true) },
         });
 
         this.io.on('connection', (socket) => {

@@ -19,6 +19,7 @@ export class ModuleInstance extends EventEmitter {
     public config: Record<string, unknown>;
     private _running = false;
     private _pendingRestart = false;
+    private _initialized = false;
     private services: ModuleServices | null = null;
     /** Bound listener refs for cleanup — prevents EventEmitter leaks across start/stop cycles. */
     private pluginListeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
@@ -90,7 +91,10 @@ export class ModuleInstance extends EventEmitter {
     async start(): Promise<void> {
         if (this._running) return;
         try {
-            await this.plugin.onInit(this.config, this.services ?? undefined);
+            if (!this._initialized) {
+                await this.plugin.onInit(this.config, this.services ?? undefined);
+                this._initialized = true;
+            }
             await this.plugin.onStart();
             this._running = true;
             this._pendingRestart = false;
@@ -135,6 +139,7 @@ export class ModuleInstance extends EventEmitter {
         } catch (err) {
             log.error({ err, instanceId: this.instanceId }, 'Module destroy failed');
         }
+        this._initialized = false;
         this.detachPluginListeners();
         this.removeAllListeners();
     }

@@ -231,26 +231,26 @@ export class PipeWireManager {
 
     // --- Port discovery (delegated to PwLinkOps) ---
 
-    listPorts(node: string, direction: 'input' | 'output'): string[] {
+    async listPorts(node: string, direction: 'input' | 'output'): Promise<string[]> {
         return _listPorts(node, direction);
     }
 
     // --- pw-link (delegated to PwLinkOps) ---
 
-    pwLink(outputPort: string, inputPort: string): number {
+    async pwLink(outputPort: string, inputPort: string): Promise<number> {
         return _pwLink(outputPort, inputPort);
     }
 
-    pwUnlink(linkId: number): void {
-        _pwUnlink(linkId);
+    async pwUnlink(linkId: number): Promise<void> {
+        return _pwUnlink(linkId);
     }
 
-    pwUnlinkByName(outputPort: string, inputPort: string): boolean {
+    async pwUnlinkByName(outputPort: string, inputPort: string): Promise<boolean> {
         return _pwUnlinkByName(outputPort, inputPort);
     }
 
-    pwUnlinkAllBetween(sourceNode: string, sinkNode: string): void {
-        _pwUnlinkAllBetween(sourceNode, sinkNode);
+    async pwUnlinkAllBetween(sourceNode: string, sinkNode: string): Promise<void> {
+        return _pwUnlinkAllBetween(sourceNode, sinkNode);
     }
 
     // --- Cleanup ---
@@ -298,7 +298,7 @@ export class PipeWireManager {
 
     // --- Links (delegated to PwLinkOps) ---
 
-    getLinks(): Array<{ output: string; input: string }> {
+    async getLinks(): Promise<Array<{ output: string; input: string }>> {
         return _getLinks();
     }
 }

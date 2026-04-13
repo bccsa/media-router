@@ -48,19 +48,31 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     });
 
     // VU data with dedup + heartbeat
-    const lastVu = new Map<string, string>();
+    const lastVu = new Map<string, number[]>();
     const lastVuSent = new Map<string, number>();
+    const vuChanged = (prev: number[] | undefined, next: number[]): boolean => {
+        if (!prev || prev.length !== next.length) return true;
+        for (let i = 0; i < next.length; i++) {
+            if (prev[i] !== next[i]) return true;
+        }
+        return false;
+    };
     ctx.moduleManager.on('vuData', (instanceId: string, data: number[]) => {
-        const key = JSON.stringify(data);
         const prev = lastVu.get(instanceId);
         const lastSent = lastVuSent.get(instanceId) ?? 0;
         const now = Date.now();
-        if (key !== prev || now - lastSent >= 1000) {
-            lastVu.set(instanceId, key);
+        if (vuChanged(prev, data) || now - lastSent >= 1000) {
+            lastVu.set(instanceId, data);
             lastVuSent.set(instanceId, now);
             ctx.managerConnection.sendVu(instanceId, data);
             ctx.lcpServer.broadcastVuData(instanceId, data);
         }
+    });
+
+    // Clean up VU dedup maps when modules are destroyed
+    ctx.moduleManager.on('moduleDeleted', (instanceId: string) => {
+        lastVu.delete(instanceId);
+        lastVuSent.delete(instanceId);
     });
 
     ctx.managerConnection.on('config', (config: unknown) => {

@@ -10,7 +10,7 @@ import type { RawPort, StoredConnection } from './ConnectionApplier.js';
 const log = createLogger('ModuleLifecycle');
 
 /** Time to wait for PipeWire nodes to settle after module start/restart. */
-const PW_SETTLE_MS = 300;
+const PW_SETTLE_MS = 500;
 
 /** Create a log label like "Encoder 1 (audio-encoder-abc)" for readable logs. */
 function moduleLabel(modConfig: Record<string, unknown>): string {
@@ -32,12 +32,17 @@ function mapPorts(raw: RawPort[]) {
 /**
  * Manages module lifecycle operations: start all, stop all, restart,
  * enable, disable. Handles connection teardown/re-application.
+ *
+ * All public methods are serialized through a lifecycle lock to prevent
+ * concurrent startAll/stopAll/restart/enable/disable from racing.
  */
 export class ModuleLifecycle {
     /** Called when a module's dynamic ports are resolved — allows the engine to push updates to the manager. */
     onDynamicPortsResolved?: (moduleId: string, ports: RawPort[]) => void;
 
     private connectionApplier: ConnectionApplier;
+    /** Serialization lock — prevents concurrent lifecycle operations from racing. */
+    private lock: Promise<void> = Promise.resolve();
 
     constructor(
         private moduleManager: ModuleManager,
@@ -76,7 +81,43 @@ export class ModuleLifecycle {
         return (this.pluginLoader?.get(pluginId)?.manifest?.ports as RawPort[] | undefined) ?? [];
     }
 
+    /** Run an operation under the lifecycle lock — prevents concurrent lifecycle transitions. */
+    private serialize(fn: () => Promise<void>): Promise<void> {
+        this.lock = this.lock.then(fn, fn);
+        return this.lock;
+    }
+
     async startAll(): Promise<void> {
+        return this.serialize(() => this._startAll());
+    }
+
+    async stopAll(): Promise<void> {
+        return this.serialize(() => this._stopAll());
+    }
+
+    async deleteSingle(moduleId: string): Promise<void> {
+        return this.serialize(() => this._deleteSingle(moduleId));
+    }
+
+    async startSingle(moduleId: string): Promise<void> {
+        return this.serialize(() => this._startSingle(moduleId));
+    }
+
+    async restart(moduleId: string): Promise<void> {
+        return this.serialize(() => this._restart(moduleId));
+    }
+
+    async disable(moduleId: string): Promise<void> {
+        return this.serialize(() => this._disable(moduleId));
+    }
+
+    async enable(moduleId: string): Promise<void> {
+        return this.serialize(() => this._enable(moduleId));
+    }
+
+    // --- Internal implementations (run under lock) ---
+
+    private async _startAll(): Promise<void> {
         const config = this.getConfig();
         if (!config) {
             log.info('No config — nothing to start');
@@ -125,18 +166,16 @@ export class ModuleLifecycle {
         }
     }
 
-    async stopAll(): Promise<void> {
+    private async _stopAll(): Promise<void> {
         log.info('Stopping all modules...');
         await this.mediaRouter.removeAllConnections(true);
-        // Unregister all ports — mediaRouter tracks them internally
         this.mediaRouter.unregisterAll();
         await this.moduleManager.stopAll();
         await this.pipeWire.cleanupOrphans();
         log.info('All modules stopped');
     }
 
-    /** Delete a single module — tear down connections, stop, unregister, remove. */
-    async deleteSingle(moduleId: string): Promise<void> {
+    private async _deleteSingle(moduleId: string): Promise<void> {
         const instance = this.moduleManager.get(moduleId);
         const label = instance ? `[${instance.config?.displayName ?? moduleId}]` : `[${moduleId}]`;
         log.info({ moduleId, module: label }, 'Deleting module');
@@ -154,14 +193,13 @@ export class ModuleLifecycle {
             try { await instance.stop(); } catch { /* best effort */ }
         }
 
-        // Unregister ports and delete
+        // Unregister ports BEFORE deleting — ensures consistent state during deletion events
         await this.mediaRouter.unregisterPorts(moduleId);
-        this.moduleManager.deleteModule(moduleId);
+        await this.moduleManager.deleteModule(moduleId);
         log.info({ moduleId, module: label }, 'Module deleted');
     }
 
-    /** Start a single module from the current config (used when adding a module while engine is running). */
-    async startSingle(moduleId: string): Promise<void> {
+    private async _startSingle(moduleId: string): Promise<void> {
         const config = this.getConfig();
         if (!config) { log.warn({ moduleId }, 'No config — cannot start module'); return; }
         const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
@@ -193,7 +231,7 @@ export class ModuleLifecycle {
         await this.connectionApplier.reapplyModuleConnections(moduleId);
     }
 
-    async restart(moduleId: string): Promise<void> {
+    private async _restart(moduleId: string): Promise<void> {
         const instance = this.moduleManager.get(moduleId);
         if (!instance) return;
 
@@ -226,7 +264,7 @@ export class ModuleLifecycle {
         await this.connectionApplier.reapplyModuleConnections(moduleId);
     }
 
-    async disable(moduleId: string): Promise<void> {
+    private async _disable(moduleId: string): Promise<void> {
         const config = this.getConfig();
         const modName = (config?.modules as Record<string, Record<string, unknown>>)?.[moduleId]?.displayName ?? moduleId;
         log.info({ moduleId, module: `[${modName}]` }, 'Module disabled');
@@ -248,7 +286,7 @@ export class ModuleLifecycle {
         }
     }
 
-    async enable(moduleId: string): Promise<void> {
+    private async _enable(moduleId: string): Promise<void> {
         const config = this.getConfig();
         if (!config) return;
 

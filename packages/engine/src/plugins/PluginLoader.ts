@@ -71,41 +71,38 @@ export class PluginLoader {
                 if (!manifest.configSchema) manifest.configSchema = {};
 
                 // Try to load the engine module class via dynamic import()
+                // Each plugin is isolated — one bad import doesn't break others
                 let ModuleClass: (new () => PluginModule) | null = null;
-                try {
-                    const enginePath = path.resolve(pluginDir, manifest.engine);
-                    // Try compiled JS first (prod), then .ts (tsx dev mode)
-                    const tsPath = enginePath;
-                    const jsPath = enginePath.replace(/\.ts$/, '.js');
-                    const distJsPath = path.join(pluginDir, 'dist', path.basename(manifest.engine).replace(/\.ts$/, '.js'));
+                const enginePath = path.resolve(pluginDir, manifest.engine);
+                const tsPath = enginePath;
+                const jsPath = enginePath.replace(/\.ts$/, '.js');
+                const distJsPath = path.join(pluginDir, 'dist', path.basename(manifest.engine).replace(/\.ts$/, '.js'));
 
-                    let mod: any;
-                    for (const tryPath of [distJsPath, jsPath, tsPath]) {
-                        if (fs.existsSync(tryPath)) {
-                            mod = await import(tryPath);
-                            break;
-                        }
+                let mod: any;
+                for (const tryPath of [distJsPath, jsPath, tsPath]) {
+                    if (!fs.existsSync(tryPath)) continue;
+                    try {
+                        mod = await import(tryPath);
+                        break;
+                    } catch (err) {
+                        log.error({ err, pluginId: manifest.pluginId, path: tryPath }, 'Plugin import failed');
                     }
+                }
 
-                    if (mod) {
-                        // Find the exported class (first export that's a constructor)
-                        const exportedClass = Object.values(mod).find(
-                            (v) => typeof v === 'function' && v.prototype,
-                        ) as (new () => PluginModule) | undefined;
-                        if (exportedClass) {
-                            ModuleClass = exportedClass;
-                            // Let the plugin modify its manifest at load time (e.g. detect runtime capabilities)
-                            if (typeof (exportedClass as any).initManifest === 'function') {
-                                try {
-                                    await (exportedClass as any).initManifest(manifest);
-                                } catch (err) {
-                                    log.warn({ err, pluginId: manifest.pluginId }, 'initManifest failed');
-                                }
+                if (mod) {
+                    const exportedClass = Object.values(mod).find(
+                        (v) => typeof v === 'function' && v.prototype,
+                    ) as (new () => PluginModule) | undefined;
+                    if (exportedClass) {
+                        ModuleClass = exportedClass;
+                        if (typeof (exportedClass as any).initManifest === 'function') {
+                            try {
+                                await (exportedClass as any).initManifest(manifest);
+                            } catch (err) {
+                                log.warn({ err, pluginId: manifest.pluginId }, 'initManifest failed');
                             }
                         }
                     }
-                } catch (err) {
-                    log.warn({ err, pluginId: manifest.pluginId }, 'Could not load engine module');
                 }
 
                 this.plugins.set(manifest.pluginId, {
@@ -115,7 +112,7 @@ export class PluginLoader {
 
                 log.info({ pluginId: manifest.pluginId, displayName: manifest.displayName, hasEngineClass: !!ModuleClass }, 'Loaded plugin');
             } catch (err) {
-                log.warn({ err, plugin: entry.name }, 'Failed to load plugin');
+                log.error({ err, plugin: entry.name }, 'Failed to load plugin — skipping');
             }
         }
 
