@@ -39,6 +39,7 @@ export class Manager {
     private readonly httpServer: HttpServer;
     private readonly io: SocketIOServer;
     private readonly pluginRegistry: PluginRegistry;
+    private readonly engineCommands: EngineCommandService;
     private running = false;
 
     constructor(config: Partial<ManagerConfig> = {}) {
@@ -62,7 +63,8 @@ export class Manager {
         // Services
         this.pluginRegistry = new PluginRegistry();
         const pluginRegistry = this.pluginRegistry;
-        const engineCommands = new EngineCommandService(this.configStore, this.engineManager);
+        this.engineCommands = new EngineCommandService(this.configStore, this.engineManager);
+        const engineCommands = this.engineCommands;
         const eventForwarder = new EngineEventForwarder(this.configStore, this.engineManager, engineCommands, this.io);
         const patchRouter = new PatchRouter(this.configStore, this.engineManager, this.io, pluginRegistry);
 
@@ -99,9 +101,10 @@ export class Manager {
     async stop(): Promise<void> {
         if (!this.running) return;
         this.running = false;
+        this.engineCommands.cancelAll();
         await this.engineManager.stop();
         this.io.close();
-        this.httpServer.close();
+        await new Promise<void>((resolve) => this.httpServer.close(() => resolve()));
         this.configStore.close();
     }
 }

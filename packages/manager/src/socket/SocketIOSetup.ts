@@ -51,10 +51,10 @@ export function setupSocketIO(deps: SocketDeps): void {
                     }
                 }
 
-                // Overlay live plugin manifest + cached runtime state
+                // Overlay live plugin manifest + cached runtime state (clone to avoid mutating ConfigStore)
                 const cachedStates = eventForwarder.getCachedStates(e.engine_id as string);
                 for (const [id, mod] of Object.entries(modules)) {
-                    const m = mod as Record<string, unknown>;
+                    const m = modules[id] = { ...(mod as Record<string, unknown>) };
                     const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
                     if (manifest) {
                         if (!m.ports || (m.ports as unknown[]).length === 0) m.ports = manifest.ports ?? [];
@@ -107,27 +107,31 @@ export function setupSocketIO(deps: SocketDeps): void {
             }
         });
 
+        /** Check engineId is a non-empty string and the engine exists. */
+        const validEngine = (engineId: unknown): engineId is string =>
+            typeof engineId === 'string' && engineId.length > 0 && !!configStore.getEngine(engineId);
+
         // --- Lifecycle commands (not patches) ---
         socket.on('engine:start', (p: any) => {
-            if (!p?.engineId) return;
+            if (!validEngine(p?.engineId)) return;
             engineCommands.setRunning(p.engineId, true);
             engineCommands.sendCommand(p.engineId, 'start');
             io.emit('engine:running', { engineId: p.engineId, running: true });
         });
         socket.on('engine:stop', (p: any) => {
-            if (!p?.engineId) return;
+            if (!validEngine(p?.engineId)) return;
             engineCommands.setRunning(p.engineId, false);
             engineCommands.sendCommand(p.engineId, 'stop');
             io.emit('engine:running', { engineId: p.engineId, running: false });
         });
         socket.on('engine:reset', (p: any) => {
-            if (!p?.engineId) return;
+            if (!validEngine(p?.engineId)) return;
             if (engineManager.isEngineOnline(p.engineId)) {
                 engineManager.sendToEngine(p.engineId, 'command', { command: 'reset' }, { guaranteeDelivery: true });
             }
         });
         socket.on('module:restart', (p: any) => {
-            if (!p?.engineId || !p?.moduleId) return;
+            if (!validEngine(p?.engineId) || typeof p?.moduleId !== 'string') return;
             if (engineManager.isEngineOnline(p.engineId)) {
                 engineManager.sendToEngine(p.engineId, 'command', {
                     command: 'moduleRestart', moduleId: p.moduleId,
@@ -137,7 +141,7 @@ export function setupSocketIO(deps: SocketDeps): void {
 
         // --- Unified patch (N-1 router) ---
         socket.on('patch', (p: any) => {
-            if (p?.engineId && Array.isArray(p?.ops) && p.ops.length > 0) {
+            if (validEngine(p?.engineId) && Array.isArray(p?.ops) && p.ops.length > 0) {
                 patchRouter.onPatch(socket.id, 'browser', p.engineId, p.ops);
             }
         });

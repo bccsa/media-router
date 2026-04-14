@@ -53,15 +53,13 @@ export class PatchRouter {
         });
 
         // 2. Broadcast to other clients (skip sender)
-        // Enrich ops if needed (e.g. module add needs full module data)
-        // Use processedOps (index-based paths) for engine, enriched original ops for browsers
+        // Enrich ops for browsers (UI fields); engine gets raw processedOps (no UI data)
         const browserOps = this.enrichOpsForBroadcast(engineId, ops, updatedConfig);
-        const engineOps = this.enrichOpsForBroadcast(engineId, processedOps, updatedConfig);
 
         if (senderType === 'browser') {
-            // Forward to engine (must use processedOps with index-based paths)
+            // Forward to engine (raw processedOps with index-based paths — no UI enrichment)
             if (this.engineManager.isEngineOnline(engineId)) {
-                this.engineManager.sendToEngine(engineId, 'patch', { ops: engineOps }, { guaranteeDelivery: true });
+                this.engineManager.sendToEngine(engineId, 'patch', { ops: processedOps }, { guaranteeDelivery: true });
             }
             // Broadcast to all OTHER browsers (skip sender — browsers handle ID-based paths)
             this.io.except(senderId).emit('engine:update', { engineId, patch: browserOps });

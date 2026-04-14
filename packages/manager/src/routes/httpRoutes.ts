@@ -1,7 +1,8 @@
 import type { Application } from 'express';
 import express from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { ConfigStore } from '../config/ConfigStore.js';
@@ -41,8 +42,9 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         res.json(pluginRegistry.getAll());
     });
 
-    // Audio devices
-    app.get('/api/v1/audio/devices', (_req, res) => {
+    // Audio devices (async to avoid blocking the event loop)
+    const execFileAsync = promisify(execFile);
+    app.get('/api/v1/audio/devices', async (_req, res) => {
         const devices: Array<{ name: string; description: string; direction: string; channels: number; sampleRate: number }> = [];
         try {
             const parseDevices = (output: string, direction: string) => {
@@ -73,8 +75,12 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
                     }
                 }
             };
-            parseDevices(execFileSync('pactl', ['list', 'sinks'], { encoding: 'utf-8' }), 'sink');
-            parseDevices(execFileSync('pactl', ['list', 'sources'], { encoding: 'utf-8' }), 'source');
+            const [sinks, sources] = await Promise.all([
+                execFileAsync('pactl', ['list', 'sinks'], { encoding: 'utf-8' }),
+                execFileAsync('pactl', ['list', 'sources'], { encoding: 'utf-8' }),
+            ]);
+            parseDevices(sinks.stdout, 'sink');
+            parseDevices(sources.stdout, 'source');
         } catch {}
         res.json(devices);
     });

@@ -63,6 +63,7 @@ export class EngineEventForwarder {
         this.engineManager.on('engineOffline', (engineId: string) => {
             this.cachedModuleStates.delete(engineId);
             this.engineData.delete(engineId);
+            this.logBuffers.delete(engineId);
             this.io.emit('engine:offline', { engineId });
         });
 

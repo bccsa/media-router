@@ -160,10 +160,12 @@ export class ConfigStore {
 
     deleteEngine(engineId: string): void {
         try {
+            this.db.prepare('DELETE FROM engine_profiles WHERE engine_id = ?').run(engineId);
+            this.db.prepare('DELETE FROM engine_config_history WHERE engine_id = ?').run(engineId);
             this.db.prepare('DELETE FROM engines WHERE engine_id = ?').run(engineId);
-            this.db
-                .prepare('DELETE FROM engine_config_history WHERE engine_id = ?')
-                .run(engineId);
+            for (const key of this.versionTimers.keys()) {
+                if (key.startsWith(`${engineId}:`)) this.versionTimers.delete(key);
+            }
         } catch (err) {
             log.error({ err, engineId }, 'Failed to delete engine');
             throw err;
@@ -298,6 +300,13 @@ export class ConfigStore {
                     'DELETE FROM engine_profiles WHERE engine_id = ? AND profile_name = ?',
                 )
                 .run(engineId, profileName);
+            // Cascade: remove version history and timer for this profile
+            this.db
+                .prepare(
+                    'DELETE FROM engine_config_history WHERE engine_id = ? AND profile_name = ?',
+                )
+                .run(engineId, profileName);
+            this.versionTimers.delete(`${engineId}:${profileName}`);
         } catch (err) {
             log.error({ err, engineId, profileName }, 'Failed to delete profile');
             throw err;

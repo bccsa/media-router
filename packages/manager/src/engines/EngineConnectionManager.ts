@@ -89,12 +89,7 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('enginePatch', clientId, data);
             });
 
-            socket.on('disconnected', () => {
-                log.info({ engineId: clientId }, 'engine disconnected');
-                this.onlineEngines.delete(clientId);
-                this.engineSockets.delete(clientId);
-                this.emit('engineOffline', clientId);
-            });
+            // Socket-level disconnect is handled by server.on('disconnection') below
         });
 
         this.server.on('disconnection', (clientId: string) => {
