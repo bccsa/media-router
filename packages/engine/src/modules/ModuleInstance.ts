@@ -128,6 +128,10 @@ export class ModuleInstance extends EventEmitter {
                 await this.services.processManager.releaseAll(this.instanceId);
             } catch { /* best effort */ }
         }
+        // Release UDP encoder port (if this module had one allocated)
+        if (this.services?.mediaRouter) {
+            this.services.mediaRouter.releaseEncoderPort(this.instanceId);
+        }
         this.emitStateChange();
     }
 
