@@ -291,7 +291,7 @@ describe('ConnectionExecutor', () => {
             });
         });
 
-        it('skips entries where source channel is out of range', async () => {
+        it('falls back to identity mapping when all channelMap entries are out of range', async () => {
             setupPwLinkModules();
             const conn = makeConnection({
                 channelMap: [{ srcChannel: 5, dstChannel: 0 }],
@@ -299,21 +299,27 @@ describe('ConnectionExecutor', () => {
 
             const result = await executor.execute(conn);
 
-            expect(pw.pwLink).not.toHaveBeenCalled();
-            expect(result!.pwLinkIds).toEqual([]);
-            expect(result!.pwLinkPairs).toEqual([]);
+            // All entries invalid → falls back to identity mapping (2 stereo links)
+            expect(pw.pwLink).toHaveBeenCalledTimes(2);
+            expect(result!.pwLinkIds).toHaveLength(2);
         });
 
-        it('skips entries where sink channel is out of range', async () => {
+        it('filters out-of-range entries and keeps valid ones', async () => {
             setupPwLinkModules();
             const conn = makeConnection({
-                channelMap: [{ srcChannel: 0, dstChannel: 5 }],
+                channelMap: [
+                    { srcChannel: 0, dstChannel: 0 },  // valid
+                    { srcChannel: 5, dstChannel: 1 },  // src out of range
+                    { srcChannel: 0, dstChannel: 5 },  // dst out of range
+                ],
             });
 
             const result = await executor.execute(conn);
 
-            expect(pw.pwLink).not.toHaveBeenCalled();
-            expect(result!.pwLinkIds).toEqual([]);
+            // Only 1 valid entry
+            expect(pw.pwLink).toHaveBeenCalledTimes(1);
+            expect(pw.pwLink).toHaveBeenCalledWith('src-node:output_FL', 'sink-node:input_FL');
+            expect(result!.pwLinkIds).toEqual([100]);
         });
 
         it('handles pwLink failure gracefully and continues', async () => {

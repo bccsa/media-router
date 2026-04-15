@@ -124,18 +124,35 @@ export class ConnectionExecutor {
         log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);
 
         // Use explicit channel map or generate identity mapping (ch0→ch0, ch1→ch1, ...)
-        const channelMap = conn.channelMap?.length
-            ? conn.channelMap
-            : Array.from({ length: Math.min(srcPorts.length, sinkPorts.length) }, (_, i) => ({
-                srcChannel: i, dstChannel: i,
-            }));
+        const identityMap = () => Array.from(
+            { length: Math.min(srcPorts.length, sinkPorts.length) },
+            (_, i) => ({ srcChannel: i, dstChannel: i }),
+        );
 
-        if (!conn.channelMap?.length && srcPorts.length !== sinkPorts.length) {
-            log.warn({
-                source: sourcePwNode, sink: sinkPwNode,
-                srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,
-                linked: channelMap.length,
-            }, `Channel count mismatch — linking ${channelMap.length} of ${Math.max(srcPorts.length, sinkPorts.length)} channels ${this.connLabel(conn)}`);
+        let channelMap: Array<{ srcChannel: number; dstChannel: number; gain?: number }>;
+        if (conn.channelMap?.length) {
+            // Clamp explicit map to actual port counts
+            const valid = conn.channelMap.filter(
+                (e) => e.srcChannel < srcPorts.length && e.dstChannel < sinkPorts.length,
+            );
+            const dropped = conn.channelMap.length - valid.length;
+            if (dropped > 0) {
+                log.warn({
+                    total: conn.channelMap.length, valid: valid.length, dropped,
+                    srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,
+                }, `Channel map: ${dropped} entries out of range, using ${valid.length > 0 ? 'valid subset' : 'identity fallback'} ${this.connLabel(conn)}`);
+            }
+            // Fall back to identity mapping if all explicit entries were invalid
+            channelMap = valid.length > 0 ? valid : identityMap();
+        } else {
+            channelMap = identityMap();
+            if (srcPorts.length !== sinkPorts.length) {
+                log.warn({
+                    source: sourcePwNode, sink: sinkPwNode,
+                    srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,
+                    linked: channelMap.length,
+                }, `Channel count mismatch — linking ${channelMap.length} of ${Math.max(srcPorts.length, sinkPorts.length)} channels ${this.connLabel(conn)}`);
+            }
         }
 
         log.info({
@@ -156,15 +173,6 @@ export class ConnectionExecutor {
             }
             const srcPort = srcPorts[entry.srcChannel];
             const sinkPort = sinkPorts[entry.dstChannel];
-
-            if (!srcPort) {
-                log.warn({ srcCh: entry.srcChannel, available: srcPorts.length }, 'Source channel out of range');
-                continue;
-            }
-            if (!sinkPort) {
-                log.warn({ dstCh: entry.dstChannel, available: sinkPorts.length }, 'Sink channel out of range');
-                continue;
-            }
 
             try {
                 const linkId = await this.pipeWire.pwLink(srcPort, sinkPort);
