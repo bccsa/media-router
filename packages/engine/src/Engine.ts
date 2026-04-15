@@ -8,6 +8,7 @@ import { ManagerConnection } from './comms/ManagerConnection.js';
 import { LcpServer } from './comms/LcpServer.js';
 import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
+import { requirePwLink } from './audio/PwLinkOps.js';
 import { ProcessManager } from './child-process/ProcessManager.js';
 import { PaCommandQueue } from './audio/PaCommandQueue.js';
 import { createApiServer } from './api/server.js';
@@ -166,6 +167,7 @@ export class Engine {
 
     async start(): Promise<void> {
         log.info('Starting...');
+        await requirePwLink();
         await this.pipeWire.cleanupOrphans();
 
         const pluginCount = await this.pluginLoader.load();

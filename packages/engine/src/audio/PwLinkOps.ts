@@ -6,6 +6,21 @@ const log = createLogger('PwLinkOps');
 const execFileAsync = promisify(execFile);
 
 /**
+ * Verify pw-link is installed. Throws if missing — pipewire-tools is a required package.
+ * Call once at engine startup before any audio routing.
+ */
+export async function requirePwLink(): Promise<void> {
+    try {
+        await execFileAsync('pw-link', ['--version'], { timeout: 3000 });
+    } catch {
+        throw new Error(
+            'pw-link not found. Install pipewire-tools: this is a required package for audio routing. '
+            + 'Yocto: IMAGE_INSTALL:append = " pipewire-tools" | Debian: apt install pipewire',
+        );
+    }
+}
+
+/**
  * Create a direct PipeWire port-to-port link using `pw-link`.
  * Returns the link ID for later removal.
  */

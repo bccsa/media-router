@@ -31,6 +31,7 @@ All GStreamer plugin packages are required:
 | Package | Purpose |
 |---------|---------|
 | `pipewire` | Core audio server |
+| `pipewire-tools` | **Required.** Provides `pw-link` for native port-to-port audio routing |
 | `wireplumber` | PipeWire session manager |
 | `pipewire-pulse` | PulseAudio compatibility layer (used by `pulsesrc`/`pulsesink`) |
 | `pipewire-alsa` | ALSA compatibility |
