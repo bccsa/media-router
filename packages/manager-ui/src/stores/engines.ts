@@ -230,18 +230,33 @@ export const useEngineStore = defineStore('engines', () => {
 
     function setOnline(engineId: string, online: boolean) {
         const engine = engines.value.get(engineId);
-        if (engine) {
-            engine.online = online;
-            engines.value = new Map(engines.value);
+        if (!engine || engine.online === online) return;
+        // Replace with a new object so Vue's computed caching detects the change
+        engines.value.set(engineId, { ...engine, online });
+        engines.value = new Map(engines.value);
+    }
+
+    /** Clear runtime data when engine goes offline (stats, module health, badges). */
+    function clearEngineRuntime(engineId: string) {
+        const engine = engines.value.get(engineId);
+        if (!engine) return;
+        engine.running = false;
+        engine.system = undefined;
+        for (const mod of Object.values(engine.modules)) {
+            mod.running = false;
+            mod.health = 'stopped';
+            mod.error = undefined;
+            mod.statusData = undefined;
+            mod.badges = undefined;
         }
+        engines.value = new Map(engines.value);
     }
 
     function setRunning(engineId: string, running: boolean) {
         const engine = engines.value.get(engineId);
-        if (engine) {
-            engine.running = running;
-            engines.value = new Map(engines.value);
-        }
+        if (!engine || engine.running === running) return;
+        engines.value.set(engineId, { ...engine, running });
+        engines.value = new Map(engines.value);
     }
 
     function updateEngineInfo(data: Record<string, unknown>) {
@@ -299,6 +314,7 @@ export const useEngineStore = defineStore('engines', () => {
         setEngineConfig,
         applyEnginePatch,
         setOnline,
+        clearEngineRuntime,
         setRunning,
         updateEngineInfo,
         removeEngine,

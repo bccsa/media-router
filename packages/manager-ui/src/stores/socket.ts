@@ -60,6 +60,8 @@ export const useSocketStore = defineStore('socket', () => {
         });
         s.on('engine:offline', (data: { engineId: string }) => {
             useEngineStore().setOnline(data.engineId, false);
+            useEngineStore().clearEngineRuntime(data.engineId);
+            useVuStore().clear(data.engineId);
         });
 
         // Engine running state
