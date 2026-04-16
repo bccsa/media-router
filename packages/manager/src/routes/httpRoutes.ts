@@ -5,10 +5,34 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
+import { z } from 'zod';
+import { createLogger, CreateEngineSchema, UpdateEngineSchema, CreateManagerProfileSchema, RollbackSchema } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
 import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
+
+const log = createLogger('HttpRoutes');
+
+/** Wrap an Express handler with Zod body validation. Returns 400 with details on failure. */
+function withBody<T>(schema: z.ZodType<T>, handler: (req: express.Request, res: express.Response, body: T) => void): express.RequestHandler {
+    return ((req: express.Request, res: express.Response) => {
+        const result = schema.safeParse(req.body);
+        if (!result.success) {
+            const details = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+            log.warn({ path: req.path, details }, 'Request body validation failed');
+            res.status(400).json({ error: 'Validation failed', details });
+            return;
+        }
+        handler(req, res, result.data);
+    }) as express.RequestHandler;
+}
+
+/** Helper: get route param as string (Express v5 params can be string | string[]). */
+function param(req: express.Request, name: string): string {
+    const v = req.params[name];
+    return Array.isArray(v) ? v[0] : v;
+}
 
 export interface HttpRouteDeps {
     app: Application;
@@ -81,7 +105,9 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
             ]);
             parseDevices(sinks.stdout, 'sink');
             parseDevices(sources.stdout, 'source');
-        } catch {}
+        } catch (err) {
+            log.warn({ err }, 'Failed to enumerate local audio devices via pactl');
+        }
         res.json(devices);
     });
 
@@ -108,12 +134,7 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         res.json(engines);
     });
 
-    app.post('/api/v1/engines', (req, res) => {
-        const { engineId, displayName, password } = req.body;
-        if (!engineId || !displayName || !password) {
-            res.status(400).json({ error: 'engineId, displayName, and password are required' });
-            return;
-        }
+    app.post('/api/v1/engines', withBody(CreateEngineSchema, (req, res, { engineId, displayName, password }) => {
         if (configStore.getEngine(engineId)) {
             res.status(409).json({ error: 'Engine ID already exists' });
             return;
@@ -132,25 +153,24 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         };
         io.emit('engine:added', result);
         res.status(201).json(result);
-    });
+    }));
 
-    app.put('/api/v1/engines/:id', (req, res) => {
-        const engine = requireEngine(req.params.id, res);
+    app.put('/api/v1/engines/:id', withBody(UpdateEngineSchema, (req, res, { displayName, password }) => {
+        const id = param(req, 'id');
+        const engine = requireEngine(id, res);
         if (!engine) return;
-        const { displayName, password } = req.body;
-        if (!displayName) { res.status(400).json({ error: 'displayName is required' }); return; }
-        configStore.updateEngine(req.params.id, displayName, password || undefined);
+        configStore.updateEngine(id, displayName, password || undefined);
         if (password) engineManager.refreshEncryptionKeys();
-        const updated = configStore.getEngine(req.params.id)!;
+        const updated = configStore.getEngine(id)!;
         const result = {
             engine_id: updated.engine_id,
             display_name: updated.display_name,
             active_profile: updated.active_profile,
-            online: engineManager.isEngineOnline(req.params.id),
+            online: engineManager.isEngineOnline(id),
         };
         io.emit('engine:updated', result);
         res.json(result);
-    });
+    }));
 
     app.delete('/api/v1/engines/:id', (req, res) => {
         if (!requireEngine(req.params.id, res)) return;
@@ -165,14 +185,13 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         res.json(configStore.getProfiles(req.params.id));
     });
 
-    app.post('/api/v1/engines/:id/profiles', (req, res) => {
-        const engine = requireEngine(req.params.id, res);
+    app.post('/api/v1/engines/:id/profiles', withBody(CreateManagerProfileSchema, (req, res, { profileName, config }) => {
+        const id = param(req, 'id');
+        const engine = requireEngine(id, res);
         if (!engine) return;
-        const { profileName, config } = req.body;
-        if (!profileName) { res.status(400).json({ error: 'profileName is required' }); return; }
-        configStore.createProfile(req.params.id, profileName, config ?? {});
+        configStore.createProfile(id, profileName, config ?? {});
         res.status(201).json({ profile_name: profileName });
-    });
+    }));
 
     app.delete('/api/v1/engines/:id/profiles/:profile', (req, res) => {
         const engine = requireEngine(req.params.id, res);
@@ -230,14 +249,13 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         res.json(configStore.getVersionHistory(req.params.id, req.params.profile));
     });
 
-    app.post('/api/v1/engines/:id/profiles/:profile/rollback', (req, res) => {
-        const { versionId } = req.body as { versionId: number };
-        if (!versionId) { res.status(400).json({ error: 'versionId required' }); return; }
-        const version = configStore.getVersion(req.params.id, req.params.profile, versionId);
+    app.post('/api/v1/engines/:id/profiles/:profile/rollback', withBody(RollbackSchema, (req, res, { versionId }) => {
+        const id = param(req, 'id'), profile = param(req, 'profile');
+        const version = configStore.getVersion(id, profile, versionId);
         if (!version) { res.status(404).json({ error: 'Version not found' }); return; }
-        configStore.updateProfileConfig(req.params.id, req.params.profile, version);
+        configStore.updateProfileConfig(id, profile, version);
         res.json({ ok: true });
-    });
+    }));
 
     // Static file serving (manager-ui)
     const uiDistPath = path.resolve(__dirname, '../../../manager-ui/dist');

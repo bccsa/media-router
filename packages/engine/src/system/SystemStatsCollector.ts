@@ -1,6 +1,9 @@
 import * as os from 'os';
 import * as fs from 'fs';
+import { createLogger } from '@media-router/shared-types';
 import { getAllIps, findBuildNumber, getHostname } from './deviceInfo.js';
+
+const log = createLogger('SystemStats');
 
 export interface SystemStats {
     cpu: number;
@@ -54,7 +57,7 @@ export class SystemStatsCollector {
                 try {
                     const temp = fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf-8');
                     cpuTemp = Math.round(parseInt(temp, 10) / 1000);
-                } catch { /* not available */ }
+                } catch { /* thermal zone not available on this hardware */ }
 
                 const stats: SystemStats = { cpu: cpuPercent, mem: memPercent, temp: cpuTemp };
 
@@ -72,7 +75,7 @@ export class SystemStatsCollector {
                 this.sampleCount++;
 
                 this.onStats(stats);
-            } catch { /* ignore */ }
+            } catch (err) { log.debug({ err }, 'Stats collection tick failed'); }
         }, this.intervalMs);
     }
 

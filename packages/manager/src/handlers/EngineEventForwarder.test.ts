@@ -2,14 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { EngineEventForwarder } from './EngineEventForwarder.js';
 
-vi.mock('@media-router/shared-types', () => ({
-    createLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-    }),
-}));
+vi.mock('@media-router/shared-types', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@media-router/shared-types')>();
+    return {
+        ...actual,
+        createLogger: () => ({
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+            debug: vi.fn(),
+        }),
+    };
+});
 
 function createMocks() {
     const configStore = {

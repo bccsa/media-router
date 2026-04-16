@@ -5,6 +5,7 @@ import { decrypt } from './encryption.js';
 import { fragment, Reassembler, parseFragmentHeader } from './fragmentation.js';
 import { Socket } from './Socket.js';
 import type { DgramMessage, ManagerPath } from '@media-router/shared-types';
+import { DgramWireMessageSchema, DgramDataSchema } from '@media-router/shared-types';
 
 export interface ClientOptions {
     /** Client identifier — must match a key in the server's encryptionKeys. */
@@ -191,24 +192,37 @@ export class Client extends EventEmitter {
         const complete = ps.reassembler.addFragment(rawPacket);
         if (!complete) return;
 
-        // Parse JSON
-        let msg: DgramMessage;
+        // Parse and validate JSON envelope
+        let raw: unknown;
         try {
-            msg = JSON.parse(complete.toString());
+            raw = JSON.parse(complete.toString());
         } catch {
             return;
         }
+        const parsed = DgramWireMessageSchema.safeParse(raw);
+        if (!parsed.success) {
+            console.warn('[dgram-comms Client] Invalid message envelope — dropping');
+            return;
+        }
+        const msg: DgramMessage = parsed.data as DgramMessage;
 
         // Decrypt if encrypted
         let data = msg.data;
         if (msg.iv && typeof data === 'string') {
             const decrypted = decrypt(data, msg.iv, this.encryptionKey);
             if (!decrypted) return;
+            let decryptedJson: unknown;
             try {
-                data = JSON.parse(decrypted);
+                decryptedJson = JSON.parse(decrypted);
             } catch {
                 return;
             }
+            const dataResult = DgramDataSchema.safeParse(decryptedJson);
+            if (!dataResult.success) {
+                console.warn('[dgram-comms Client] Invalid decrypted data — dropping');
+                return;
+            }
+            data = dataResult.data;
         }
 
         // Route to the path's socket

@@ -3,7 +3,7 @@ import compression from 'compression';
 import cors from 'cors';
 import { createServer, type Server as HttpServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shared-types';
 import { ConfigStore } from './config/ConfigStore.js';
 import { EngineConnectionManager } from './engines/EngineConnectionManager.js';
 import { PluginRegistry } from './plugins/PluginRegistry.js';
@@ -73,8 +73,8 @@ export class Manager {
 
         // Handle patches from engine (N-1 router)
         this.engineManager.on('enginePatch', (engineId: string, data: unknown) => {
-            const { ops } = data as { ops: Array<{ op: string; path: string; value?: unknown }> };
-            if (ops?.length > 0) patchRouter.onPatch('engine', 'engine', engineId, ops as any);
+            const envelope = safeParse(PatchEnvelopeSchema, data, 'enginePatch', log);
+            if (envelope) patchRouter.onPatch('engine', 'engine', engineId, envelope.ops);
         });
 
         setupSocketIO({ io: this.io, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, engineCommands, eventForwarder, patchRouter });

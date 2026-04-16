@@ -9,8 +9,12 @@ import type { RawPort, StoredConnection } from './ConnectionApplier.js';
 
 const log = createLogger('ModuleLifecycle');
 
-/** Time to wait for PipeWire nodes to settle after module start/restart. */
-const PW_SETTLE_MS = 500;
+/**
+ * Brief settle delay before applying connections after module start.
+ * The real waiting happens in ConnectionExecutor.waitForPorts() which polls
+ * for up to 3s — this is just a minimum pause to let PipeWire process events.
+ */
+const PW_SETTLE_MS = 200;
 
 /** Create a log label like "Encoder 1 (audio-encoder-abc)" for readable logs. */
 function moduleLabel(modConfig: Record<string, unknown>): string {
@@ -185,12 +189,12 @@ export class ModuleLifecycle {
         for (const conn of connections) {
             try {
                 await this.mediaRouter.removeConnection(conn.id, true);
-            } catch { /* best effort */ }
+            } catch (err) { log.debug({ err: formatError(err), connId: conn.id }, 'Connection removal during delete'); }
         }
 
         // Stop the module
         if (instance) {
-            try { await instance.stop(); } catch { /* best effort */ }
+            try { await instance.stop(); } catch (err) { log.debug({ err: formatError(err), moduleId }, 'Module stop during delete'); }
         }
 
         // Unregister ports BEFORE deleting — ensures consistent state during deletion events

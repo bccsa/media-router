@@ -101,7 +101,7 @@ export class ModuleInstance extends EventEmitter {
         } catch (err) {
             log.error({ err: formatError(err), instanceId: this.instanceId }, 'Module start failed');
             // Attempt cleanup so the module doesn't get stuck in a half-initialised state
-            try { await this.plugin.onStop(); } catch { /* best effort */ }
+            try { await this.plugin.onStop(); } catch (e) { log.debug({ err: formatError(e), instanceId: this.instanceId }, 'onStop cleanup after failed start'); }
             throw err;
         }
         this.emitStateChange();
@@ -120,13 +120,13 @@ export class ModuleInstance extends EventEmitter {
         if (this.services?.pipeWire) {
             try {
                 await this.services.pipeWire.releaseAll(this.instanceId);
-            } catch { /* best effort */ }
+            } catch (e) { log.debug({ err: formatError(e), instanceId: this.instanceId }, 'PipeWire cleanup failed'); }
         }
         // Auto-cleanup spawned processes owned by this module
         if (this.services?.processManager) {
             try {
                 await this.services.processManager.releaseAll(this.instanceId);
-            } catch { /* best effort */ }
+            } catch (e) { log.debug({ err: formatError(e), instanceId: this.instanceId }, 'Process cleanup failed'); }
         }
         // Release UDP encoder port (if this module had one allocated)
         if (this.services?.mediaRouter) {

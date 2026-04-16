@@ -141,13 +141,18 @@ describe('ConnectionApplier', () => {
             const conn2 = makeConn({ id: 'c2', sourceModuleId: 'c', sinkModuleId: 'd' });
             const modules = makeModules(['a', 'b', 'c', 'd']);
 
-            mockMediaRouter.createConnection
-                .mockRejectedValueOnce(new Error('fail'))
-                .mockResolvedValueOnce('ok');
+            // Fail consistently for c1 (all retries), succeed for c2
+            mockMediaRouter.createConnection.mockImplementation(async (srcMod: string) => {
+                if (srcMod === 'a') throw new Error('fail');
+                return 'ok';
+            });
 
             await applier.applyConnections([conn1, conn2], modules);
 
-            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(2);
+            // c1: 1 initial + 2 retries = 3, c2: 1 = total 4
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(4);
+            // c2 should still have been attempted (continues after c1 exhausts retries)
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledWith('c', 'out', 'd', 'in', undefined);
         });
 
         it('handles mixed MPEG-TS and audio with correct ordering', async () => {
@@ -236,13 +241,18 @@ describe('ConnectionApplier', () => {
                 ],
             });
 
-            mockMediaRouter.createConnection
-                .mockRejectedValueOnce(new Error('fail'))
-                .mockResolvedValueOnce('ok');
+            // Fail consistently for c1 (all retries), succeed for c2
+            mockMediaRouter.createConnection.mockImplementation(async (_src: string, _sp: string, sink: string) => {
+                if (sink === 'mod-b') throw new Error('fail');
+                return 'ok';
+            });
 
             await applier.reapplyModuleConnections('target');
 
-            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(2);
+            // c1: 1 initial + 2 retries = 3, c2: 1 = total 4
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(4);
+            // c2 still attempted
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledWith('target', 'out2', 'mod-c', 'in2', undefined);
         });
 
         it('handles config with no connections key', async () => {

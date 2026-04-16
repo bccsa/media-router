@@ -122,8 +122,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.vuProcess.on('vuData', (data: { peak: number[] }) => {
                 this.setVuData(data.peak);
             });
-            // Ignore state/error from VU process — it's auxiliary
-            this.vuProcess.on('error', () => {});
+            this.vuProcess.on('error', (err: unknown) => {
+                this.log.debug({ err }, 'VU process error (auxiliary — non-fatal)');
+            });
 
             const vuPipeline = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=20000 latency-time=10000 ! audioconvert ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=66000000 ! fakesink sync=false`;
             await this.vuProcess.start({ pipeline: vuPipeline });
@@ -160,11 +161,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             }
         }
         if (this.vuProcess) {
-            try { await this.vuProcess.destroy(); } catch { /* best effort */ }
+            try { await this.vuProcess.destroy(); } catch (err) { this.log.debug({ err }, 'VU process cleanup failed'); }
             this.vuProcess = null;
         }
         if (this.childProcess) {
-            try { await this.childProcess.destroy(); } catch { /* best effort */ }
+            try { await this.childProcess.destroy(); } catch (err) { this.log.debug({ err }, 'Child process cleanup failed'); }
             this.childProcess = null;
         }
         this.removeAllListeners();

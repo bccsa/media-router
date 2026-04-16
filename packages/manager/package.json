@@ -17,7 +17,8 @@
         "compression": "^1.8.1",
         "cors": "^2.8.6",
         "express": "^5.2.1",
-        "socket.io": "^4.8.3"
+        "socket.io": "^4.8.3",
+        "zod": "^4.3.6"
     },
     "devDependencies": {
         "@types/better-sqlite3": "^7.6.13",

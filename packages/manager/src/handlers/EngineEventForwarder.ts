@@ -1,5 +1,5 @@
 import type { Server as SocketIOServer } from 'socket.io';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, safeParse, EngineRunningStateSchema, LcpEngineCommandSchema, DynamicPortsSchema } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { EngineCommandService } from './EngineCommandService.js';
@@ -35,7 +35,9 @@ export class EngineEventForwarder {
 
         // Engine reports its running state on connect. Manager state is authoritative.
         this.engineManager.on('engineRunningState', (engineId: string, data: unknown) => {
-            const { running: engineRunning } = data as { running: boolean };
+            const parsed = safeParse(EngineRunningStateSchema, data, 'engineRunningState', log);
+            if (!parsed) return;
+            const { running: engineRunning } = parsed;
             const managerWantsRunning = this.engineCommands.isRunning(engineId);
 
             if (managerWantsRunning && !engineRunning) {
@@ -68,6 +70,10 @@ export class EngineEventForwarder {
         });
 
         this.engineManager.on('engineState', (engineId: string, state: unknown) => {
+            if (typeof state !== 'object' || state === null) {
+                log.warn({ engineId }, 'engineState: expected object, dropping');
+                return;
+            }
             this.cachedModuleStates.set(engineId, {
                 ...(this.cachedModuleStates.get(engineId) ?? {}),
                 ...(state as Record<string, unknown>),
@@ -76,10 +82,12 @@ export class EngineEventForwarder {
         });
 
         this.engineManager.on('engineVu', (engineId: string, data: unknown) => {
+            if (typeof data !== 'object' || data === null) return;
             this.io.to(`watch:${engineId}`).volatile.emit('engine:vu', { engineId, ...(data as Record<string, unknown>) });
         });
 
         this.engineManager.on('engineSystem', (engineId: string, data: unknown) => {
+            if (typeof data !== 'object' || data === null) return;
             const d = data as Record<string, unknown>;
             // Cache IP + hostname + build when engine reports them
             if (d.ip) this.setEngineData(engineId, 'ip', d.ip);
@@ -113,8 +121,9 @@ export class EngineEventForwarder {
 
         // LCP start/stop commands — update running state + broadcast to browsers
         this.engineManager.on('engineLcpCommand', (engineId: string, data: unknown) => {
-            const { command } = data as { command: 'start' | 'stop' };
-            if (!command) return;
+            const parsed = safeParse(LcpEngineCommandSchema, data, 'engineLcpCommand', log);
+            if (!parsed) return;
+            const { command } = parsed;
             const running = command === 'start';
             this.engineCommands.setRunning(engineId, running);
             this.io.emit('engine:running', { engineId, running });
@@ -122,8 +131,9 @@ export class EngineEventForwarder {
 
         // Dynamic port updates — persist to config + broadcast to browsers
         this.engineManager.on('engineDynamicPorts', (engineId: string, data: unknown) => {
-            const { moduleId, ports } = data as { moduleId: string; ports: unknown[] };
-            if (!moduleId || !ports) return;
+            const parsed = safeParse(DynamicPortsSchema, data, 'engineDynamicPorts', log);
+            if (!parsed) return;
+            const { moduleId, ports } = parsed;
             // 1. Update stored config
             const engine = this.configStore.getEngine(engineId);
             if (engine?.active_profile) {

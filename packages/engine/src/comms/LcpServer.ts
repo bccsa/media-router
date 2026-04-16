@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, validated, PatchEnvelopeSchema } from '@media-router/shared-types';
 
 const log = createLogger('LcpServer');
 
@@ -72,12 +72,9 @@ export class LcpServer extends EventEmitter {
             });
 
             // Unified patch from LCP (N-1 router)
-            socket.on('patch', (data: unknown) => {
-                const d = data as { ops?: unknown[] };
-                if (Array.isArray(d?.ops) && d.ops.length > 0) {
-                    this.emit('patch', { ops: d.ops, _socketId: socket.id });
-                }
-            });
+            socket.on('patch', validated(PatchEnvelopeSchema, log, ({ ops }) => {
+                this.emit('patch', { ops, _socketId: socket.id });
+            }));
 
             socket.on('disconnect', () => {
                 log.info({ socketId: socket.id }, 'Client disconnected');

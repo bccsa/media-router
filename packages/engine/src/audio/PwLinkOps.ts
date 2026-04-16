@@ -40,7 +40,9 @@ export async function pwLink(outputPort: string, inputPort: string): Promise<num
                 if (match) return parseInt(match[1], 10);
             }
         }
-    } catch { /* best effort */ }
+    } catch (err) {
+        log.debug({ err, outputPort, inputPort }, 'Could not retrieve link ID after pw-link');
+    }
 
     return 0;
 }
@@ -50,7 +52,7 @@ export async function pwUnlink(linkId: number): Promise<void> {
     if (linkId <= 0) return;
     try {
         await execFileAsync('pw-link', ['-d', String(linkId)], { timeout: 5000 });
-    } catch { /* link may already be gone */ }
+    } catch (err) { log.debug({ err, linkId }, 'pw-link unlink failed (link may already be gone)'); }
 }
 
 /** Remove a PipeWire link by port names. */
@@ -58,7 +60,8 @@ export async function pwUnlinkByName(outputPort: string, inputPort: string): Pro
     try {
         await execFileAsync('pw-link', ['-d', outputPort, inputPort], { timeout: 5000 });
         return true;
-    } catch {
+    } catch (err) {
+        log.debug({ err, outputPort, inputPort }, 'pw-link unlink by name failed');
         return false;
     }
 }
@@ -85,7 +88,7 @@ export async function pwUnlinkAllBetween(sourceNode: string, sinkNode: string): 
                 }
             }
         }
-    } catch { /* ignore */ }
+    } catch (err) { log.debug({ err, sourceNode, sinkNode }, 'pw-link sweep failed'); }
 }
 
 /**
@@ -114,7 +117,8 @@ export async function listPorts(node: string, direction: 'input' | 'output'): Pr
         });
 
         return ports;
-    } catch {
+    } catch (err) {
+        log.warn({ err, node, direction }, 'pw-link port listing failed — returning empty');
         return [];
     }
 }
@@ -146,7 +150,8 @@ export async function getLinks(): Promise<Array<{ output: string; input: string 
         }
 
         return links;
-    } catch {
+    } catch (err) {
+        log.warn({ err }, 'pw-link listing failed — returning empty');
         return [];
     }
 }

@@ -4,6 +4,26 @@
 
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
+export {
+    PatchOpSchema,
+    PatchOpsSchema,
+    DgramWireMessageSchema,
+    DgramDataSchema,
+    EngineRunningStateSchema,
+    LcpEngineCommandSchema,
+    DynamicPortsSchema,
+    PatchEnvelopeSchema,
+    CreateEngineSchema,
+    UpdateEngineSchema,
+    CreateManagerProfileSchema,
+    RollbackSchema,
+    CreateEngineProfileSchema,
+    EngineIdPayloadSchema,
+    ModuleRestartPayloadSchema,
+    BrowserPatchPayloadSchema,
+    safeParse,
+    validated,
+} from './validation.js';
 
 // --- Error Classes ----------------------------------------------------------
 

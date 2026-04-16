@@ -1,6 +1,6 @@
 import Fastify, { type FastifyRequest, type FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, CreateEngineProfileSchema } from '@media-router/shared-types';
 import type { Engine } from '../Engine.js';
 
 const log = createLogger('ApiServer');
@@ -80,17 +80,13 @@ function registerProfileRoutes(app: ReturnType<typeof Fastify>, engine: Engine):
     });
 
     app.post('/api/v1/profiles', async (req: FastifyRequest, reply: FastifyReply) => {
-        const body = req.body as {
-            name: string;
-            managerHost: string;
-            managerPort: number;
-            password: string;
-            paths?: Array<{ host: string; port: number; bindInterface?: string; bindAddress?: string }>;
-        };
-
-        if (!body.name || !body.managerHost || !body.managerPort || !body.password) {
-            return reply.status(400).send({ error: 'name, managerHost, managerPort, and password are required' });
+        const result = CreateEngineProfileSchema.safeParse(req.body);
+        if (!result.success) {
+            const details = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+            log.warn({ details }, 'POST /api/v1/profiles validation failed');
+            return reply.status(400).send({ error: 'Validation failed', details });
         }
+        const body = result.data;
 
         const paths = body.paths ?? [{ host: body.managerHost, port: body.managerPort }];
 

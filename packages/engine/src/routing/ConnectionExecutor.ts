@@ -74,7 +74,7 @@ export class ConnectionExecutor {
             if (conn) {
                 const sink = this.moduleGetter(conn.sinkModuleId);
                 if (sink?.running) {
-                    try { await sink.stop(); await sink.start(); } catch { /* best effort */ }
+                    try { await sink.stop(); await sink.start(); } catch (err) { log.debug({ err, moduleId: conn.sinkModuleId }, 'Decoder restart after disconnect failed'); }
                 }
             }
         }
@@ -109,6 +109,26 @@ export class ConnectionExecutor {
         return this.executePwLink(conn, sourceNodes.source, sinkNodes.sink);
     }
 
+    /**
+     * Poll for PipeWire ports to appear on a node.
+     * PipeWire node registration is async — ports may not be visible immediately
+     * after module start, especially on loaded hardware (RPi 5).
+     */
+    private async waitForPorts(
+        node: string,
+        direction: 'input' | 'output',
+        timeoutMs = 3000,
+        intervalMs = 100,
+    ): Promise<string[]> {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const ports = await this.pipeWire.listPorts(node, direction);
+            if (ports.length > 0) return ports;
+            await new Promise((r) => setTimeout(r, intervalMs));
+        }
+        return [];
+    }
+
     private async executePwLink(
         conn: Connection,
         sourcePwNode: string,
@@ -117,17 +137,32 @@ export class ConnectionExecutor {
         // Remove any existing direct links between these nodes
         await this.pipeWire.pwUnlinkAllBetween(sourcePwNode, sinkPwNode);
 
-        // Discover actual port names from PipeWire
-        const srcPorts = await this.pipeWire.listPorts(sourcePwNode, 'output');
-        const sinkPorts = await this.pipeWire.listPorts(sinkPwNode, 'input');
+        // Wait for ports to appear (polls every 100ms, up to 3s)
+        const srcPorts = await this.waitForPorts(sourcePwNode, 'output');
+        const sinkPorts = await this.waitForPorts(sinkPwNode, 'input');
+
+        if (srcPorts.length === 0) {
+            log.warn({ node: sourcePwNode }, `No output ports found after polling — connection cannot be created ${this.connLabel(conn)}`);
+            return null;
+        }
+        if (sinkPorts.length === 0) {
+            log.warn({ node: sinkPwNode }, `No input ports found after polling — connection cannot be created ${this.connLabel(conn)}`);
+            return null;
+        }
 
         log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);
 
-        // Use explicit channel map or generate identity mapping (ch0→ch0, ch1→ch1, ...)
-        const identityMap = () => Array.from(
-            { length: Math.min(srcPorts.length, sinkPorts.length) },
-            (_, i) => ({ srcChannel: i, dstChannel: i }),
-        );
+        // Generate default mapping: 1:1 where both exist, mono fans out to all dst channels
+        const defaultMap = () => {
+            if (srcPorts.length === 1 && sinkPorts.length > 1) {
+                // Mono source → duplicate to all destination channels
+                return Array.from({ length: sinkPorts.length }, (_, i) => ({ srcChannel: 0, dstChannel: i }));
+            }
+            return Array.from(
+                { length: Math.min(srcPorts.length, sinkPorts.length) },
+                (_, i) => ({ srcChannel: i, dstChannel: i }),
+            );
+        };
 
         let channelMap: Array<{ srcChannel: number; dstChannel: number; gain?: number }>;
         if (conn.channelMap?.length) {
@@ -143,9 +178,9 @@ export class ConnectionExecutor {
                 }, `Channel map: ${dropped} entries out of range, using ${valid.length > 0 ? 'valid subset' : 'identity fallback'} ${this.connLabel(conn)}`);
             }
             // Fall back to identity mapping if all explicit entries were invalid
-            channelMap = valid.length > 0 ? valid : identityMap();
+            channelMap = valid.length > 0 ? valid : defaultMap();
         } else {
-            channelMap = identityMap();
+            channelMap = defaultMap();
             if (srcPorts.length !== sinkPorts.length) {
                 log.warn({
                     source: sourcePwNode, sink: sinkPwNode,

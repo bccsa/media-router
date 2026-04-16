@@ -1,5 +1,5 @@
 import type { Server as SocketIOServer, Socket as IOSocket } from 'socket.io';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, validated, EngineIdPayloadSchema, ModuleRestartPayloadSchema, BrowserPatchPayloadSchema } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
@@ -88,22 +88,22 @@ export function setupSocketIO(deps: SocketDeps): void {
         );
 
         // --- Watch engine (stream VU/logs/system only for active engine) ---
-        socket.on('watch:engine', (payload: { engineId: string }) => {
+        socket.on('watch:engine', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
             for (const room of socket.rooms) {
                 if (room.startsWith('watch:')) socket.leave(room);
             }
-            if (payload.engineId) {
-                socket.join(`watch:${payload.engineId}`);
-            }
-        });
+            socket.join(`watch:${engineId}`);
+        }));
 
-        // --- Log history ---
-        socket.on('logs:history', (payload: { engineId: string }, callback?: (entries: unknown[]) => void) => {
-            const buffer = eventForwarder.getLogBuffer(payload.engineId);
+        // --- Log history (has callback arg — use validated with rest passthrough) ---
+        socket.on('logs:history', (raw: unknown, callback?: (entries: unknown[]) => void) => {
+            const result = EngineIdPayloadSchema.safeParse(raw);
+            if (!result.success) return;
+            const buffer = eventForwarder.getLogBuffer(result.data.engineId);
             if (typeof callback === 'function') {
                 callback(buffer);
             } else {
-                socket.emit('logs:history', { engineId: payload.engineId, entries: buffer });
+                socket.emit('logs:history', { engineId: result.data.engineId, entries: buffer });
             }
         });
 
@@ -112,39 +112,38 @@ export function setupSocketIO(deps: SocketDeps): void {
             typeof engineId === 'string' && engineId.length > 0 && !!configStore.getEngine(engineId);
 
         // --- Lifecycle commands (not patches) ---
-        socket.on('engine:start', (p: any) => {
-            if (!validEngine(p?.engineId)) return;
-            engineCommands.setRunning(p.engineId, true);
-            engineCommands.sendCommand(p.engineId, 'start');
-            io.emit('engine:running', { engineId: p.engineId, running: true });
-        });
-        socket.on('engine:stop', (p: any) => {
-            if (!validEngine(p?.engineId)) return;
-            engineCommands.setRunning(p.engineId, false);
-            engineCommands.sendCommand(p.engineId, 'stop');
-            io.emit('engine:running', { engineId: p.engineId, running: false });
-        });
-        socket.on('engine:reset', (p: any) => {
-            if (!validEngine(p?.engineId)) return;
-            if (engineManager.isEngineOnline(p.engineId)) {
-                engineManager.sendToEngine(p.engineId, 'command', { command: 'reset' }, { guaranteeDelivery: true });
+        socket.on('engine:start', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+            if (!validEngine(engineId)) return;
+            engineCommands.setRunning(engineId, true);
+            engineCommands.sendCommand(engineId, 'start');
+            io.emit('engine:running', { engineId, running: true });
+        }));
+        socket.on('engine:stop', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+            if (!validEngine(engineId)) return;
+            engineCommands.setRunning(engineId, false);
+            engineCommands.sendCommand(engineId, 'stop');
+            io.emit('engine:running', { engineId, running: false });
+        }));
+        socket.on('engine:reset', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+            if (!validEngine(engineId)) return;
+            if (engineManager.isEngineOnline(engineId)) {
+                engineManager.sendToEngine(engineId, 'command', { command: 'reset' }, { guaranteeDelivery: true });
             }
-        });
-        socket.on('module:restart', (p: any) => {
-            if (!validEngine(p?.engineId) || typeof p?.moduleId !== 'string') return;
-            if (engineManager.isEngineOnline(p.engineId)) {
-                engineManager.sendToEngine(p.engineId, 'command', {
-                    command: 'moduleRestart', moduleId: p.moduleId,
+        }));
+        socket.on('module:restart', validated(ModuleRestartPayloadSchema, log, ({ engineId, moduleId }) => {
+            if (!validEngine(engineId)) return;
+            if (engineManager.isEngineOnline(engineId)) {
+                engineManager.sendToEngine(engineId, 'command', {
+                    command: 'moduleRestart', moduleId,
                 }, { guaranteeDelivery: true });
             }
-        });
+        }));
 
         // --- Unified patch (N-1 router) ---
-        socket.on('patch', (p: any) => {
-            if (validEngine(p?.engineId) && Array.isArray(p?.ops) && p.ops.length > 0) {
-                patchRouter.onPatch(socket.id, 'browser', p.engineId, p.ops);
-            }
-        });
+        socket.on('patch', validated(BrowserPatchPayloadSchema, log, ({ engineId, ops }) => {
+            if (!validEngine(engineId)) return;
+            patchRouter.onPatch(socket.id, 'browser', engineId, ops);
+        }));
 
         socket.on('disconnect', () => {
             log.info({ socketId: socket.id }, 'browser disconnected');

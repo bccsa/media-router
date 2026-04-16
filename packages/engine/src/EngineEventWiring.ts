@@ -1,5 +1,5 @@
 import type { ModuleRuntimeState, PatchOp } from '@media-router/shared-types';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shared-types';
 
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
@@ -76,14 +76,21 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     });
 
     ctx.managerConnection.on('config', (config: unknown) => {
+        if (typeof config !== 'object' || config === null) {
+            log.warn('Received invalid config from manager — expected object');
+            return;
+        }
         log.info('Received config from manager');
         ctx.setCurrentConfig(config as Record<string, unknown>);
-        // Enrich with lcpType before broadcasting to LCP clients
         const enriched = ctx.enrichConfigForLcp(config as Record<string, unknown>);
         ctx.lcpServer.broadcastConfigUpdate([{ op: 'replace', path: '/', value: enriched }]);
     });
 
     ctx.managerConnection.on('command', (command: unknown) => {
+        if (typeof command !== 'object' || command === null) {
+            log.warn('Received invalid command from manager — expected object');
+            return;
+        }
         ctx.commandDispatcher.dispatch(command as Record<string, unknown>);
     });
 
@@ -101,14 +108,15 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
 
     // Handle patches from manager
     ctx.managerConnection.on('patch', (data: unknown) => {
-        const { ops } = data as { ops: Array<{ op: string; path: string; value?: unknown }> };
-        if (ops?.length > 0) ctx.enginePatchRouter.onPatch('manager', 'manager', ops as PatchOp[]);
+        const envelope = safeParse(PatchEnvelopeSchema, data, 'manager:patch', log);
+        if (envelope) ctx.enginePatchRouter.onPatch('manager', 'manager', envelope.ops as PatchOp[]);
     });
 
-    // Handle patches from LCP
+    // Handle patches from LCP (already validated by LcpServer, but _socketId comes through)
     ctx.lcpServer.on('patch', (data: unknown) => {
-        const { ops, _socketId } = data as { ops: Array<{ op: string; path: string; value?: unknown }>; _socketId: string };
-        if (ops?.length > 0) ctx.enginePatchRouter.onPatch(_socketId, 'lcp', ops as PatchOp[]);
+        const d = data as { ops?: unknown[]; _socketId?: string };
+        const envelope = safeParse(PatchEnvelopeSchema, d, 'lcp:patch', log);
+        if (envelope) ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
     });
 
     ctx.managerConnection.on('connected', () => {
@@ -125,7 +133,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         try {
             const devices = ctx.pipeWire.listDevices();
             ctx.managerConnection.send('audioDevices', devices);
-        } catch { /* best effort */ }
+        } catch (err) { log.debug({ err }, 'Failed to send audio device list to manager'); }
     });
     ctx.managerConnection.on('disconnected', () => {
         ctx.systemStats.stop();
