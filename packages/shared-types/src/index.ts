@@ -136,8 +136,12 @@ export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp
                 break;
             case 'remove':
                 if (Array.isArray(target)) {
-                    const idx = parseInt(last, 10);
-                    if (!isNaN(idx)) target.splice(idx, 1);
+                    let idx = parseInt(last, 10);
+                    // Support ID-based removal: find array element by .id property
+                    if (isNaN(idx)) {
+                        idx = (target as Array<Record<string, unknown>>).findIndex((item) => item?.id === last);
+                    }
+                    if (idx >= 0) target.splice(idx, 1);
                 } else {
                     delete target[last];
                 }

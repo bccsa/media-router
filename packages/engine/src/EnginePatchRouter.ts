@@ -180,9 +180,16 @@ export class EnginePatchRouter {
         return ops.map((op) => {
             const parts = op.path.split('/').filter(Boolean);
             if (parts[0] === 'connections' && parts[1]) {
-                const idx = parseInt(parts[1], 10);
+                const key = parts[1];
+                const idx = parseInt(key, 10);
                 if (!isNaN(idx) && connections[idx]?.id) {
+                    // Numeric index → resolve to connection ID
                     return { ...op, _connId: connections[idx].id as string } as ResolvedPatchOp;
+                }
+                // Non-numeric → treat as connection ID directly (browser sends ID-based paths)
+                const match = connections.find((c) => c.id === key);
+                if (match) {
+                    return { ...op, _connId: match.id as string } as ResolvedPatchOp;
                 }
             }
             return op;

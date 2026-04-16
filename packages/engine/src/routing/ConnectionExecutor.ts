@@ -181,7 +181,7 @@ export class ConnectionExecutor {
             channelMap = valid.length > 0 ? valid : defaultMap();
         } else {
             channelMap = defaultMap();
-            if (srcPorts.length !== sinkPorts.length) {
+            if (srcPorts.length !== sinkPorts.length && !(srcPorts.length === 1 && sinkPorts.length > 1)) {
                 log.warn({
                     source: sourcePwNode, sink: sinkPwNode,
                     srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,

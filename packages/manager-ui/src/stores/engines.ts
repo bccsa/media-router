@@ -134,6 +134,7 @@ export const useEngineStore = defineStore('engines', () => {
             hostname: data.hostname as string | undefined,
             buildNumber: data.buildNumber as string | undefined,
         });
+        engines.value = new Map(engines.value);
     }
 
     /** Set full config (modules + connections) for an engine — used by lazy loading. */
