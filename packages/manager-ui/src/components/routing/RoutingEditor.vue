@@ -39,7 +39,8 @@ const {
 } = useContextMenu(() => props.engineId, engine, focusedModules, setModuleFocused);
 
 const {
-    hasInitialFit, fitView, isValidConnection, onConnect,
+    nodes, edges,
+    hasInitialFit, fitView, onConnect,
     onNodeDragStart, onNodeDragStop, onEdgeDelete, onAddModule: graphAddModule, focusModule: graphFocusModule,
 } = useGraphSync(() => props.engineId, engine, focusMode, focusedModules, isEdgeDimmed);
 
@@ -234,8 +235,9 @@ function dismissAll() {
             </MrTooltip>
         </div>
 
-        <VueFlow class="flex-1" :snap-to-grid="true" :snap-grid="[16, 16]" :min-zoom="0.2" :max-zoom="2" :default-zoom="1"
-                 fit-view-on-init :is-valid-connection="isValidConnection"
+        <VueFlow class="flex-1" :nodes="nodes" :edges="edges"
+                 :snap-to-grid="true" :snap-grid="[16, 16]" :min-zoom="0.2" :max-zoom="2" :default-zoom="1"
+                 fit-view-on-init
                  @connect="onConnect" @edge-click="onEdgeClick" @edge-context-menu="onEdgeContextMenu"
                  @node-context-menu="onNodeContextMenu" @node-drag-start="onNodeDragStart" @node-drag-stop="onNodeDragStop"
                  @pane-click="dismissAll">

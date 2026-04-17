@@ -16,6 +16,14 @@ function edgeColor(streamType?: string): string {
     return STREAM_TYPE_COLORS[streamType ?? ''] ?? '#6b7280';
 }
 
+/**
+ * Declarative Vue Flow sync:
+ *   - `nodes` and `edges` are reactive refs, bound to <VueFlow :nodes :edges>
+ *   - Edges are held in `pendingEdges` until onNodesInitialized fires (n8n pattern)
+ *     — otherwise Vue Flow can't anchor them before handles mount.
+ *   - `isValidConnection` is NOT passed to VueFlow as a prop (it was called during
+ *     setEdges and dropped edges that hit maxConnections). Only used in onConnect.
+ */
 export function useGraphSync(
     engineId: () => string,
     engine: ComputedRef<EngineState | undefined>,
@@ -25,11 +33,19 @@ export function useGraphSync(
 ) {
     const socket = useSocketStore();
     const engineStore = useEngineStore();
-    const { fitView, setNodes, setEdges, addEdges, removeEdges, zoomTo, setCenter, getNodes, getEdges, getViewport, screenToFlowCoordinate } = useVueFlow();
+    const { fitView, setCenter, screenToFlowCoordinate, onNodesInitialized } = useVueFlow();
     const hasInitialFit = ref(false);
 
-    // --- Node sync ---
+    // --- Nodes: reactive ref bound via v-model:nodes ---
 
+    const nodes = ref<Node[]>([]);
+
+    // Track drags so server position updates don't overwrite user drags
+    const activeDrags = new Set<string>();
+    const recentDrags = new Map<string, number>();
+    const DRAG_IGNORE_MS = 2000;
+
+    // Rebuild nodes when module IDs change (add/remove).
     const moduleIds = computed(() => {
         if (!engine.value?.modules) return '';
         return Object.keys(engine.value.modules).sort().join(',');
@@ -37,11 +53,12 @@ export function useGraphSync(
 
     watch(moduleIds, () => {
         const modules = engine.value?.modules;
-        if (!modules) { setNodes([]); return; }
+        if (!modules) { nodes.value = []; return; }
 
+        // Preserve positions from current nodes (user may have dragged)
         const currentPositions = new Map<string, { x: number; y: number }>();
-        for (const node of getNodes.value) {
-            currentPositions.set(node.id, { ...node.position });
+        for (const n of nodes.value) {
+            currentPositions.set(n.id, { ...n.position });
         }
 
         const newNodes: Node[] = Object.values(modules).map((mod) => ({
@@ -50,56 +67,59 @@ export function useGraphSync(
             position: currentPositions.get(mod.instanceId) ?? mod.position ?? { x: 100, y: 100 },
             data: mod,
         }));
-        setNodes(newNodes);
+        nodes.value = newNodes;
 
-        if (!hasInitialFit.value && newNodes.length > 0) {
+        if (!hasInitialFit.value && nodes.value.length > 0) {
             hasInitialFit.value = true;
             nextTick(() => fitView({ padding: 0.2 }));
             setTimeout(() => fitView({ padding: 0.2 }), 200);
         }
     }, { immediate: true });
 
-    // Track which modules the user is dragging or recently dragged — ignore server position
-    const activeDrags = new Set<string>(); // currently being dragged
-    const recentDrags = new Map<string, number>(); // moduleId → timestamp of drag end
-    const DRAG_IGNORE_MS = 2000; // ignore server position updates for 2s after drag end
 
-    // Update node data in-place (doesn't trigger setNodes, preserves edges)
+    // Update node data + positions when module properties change.
+    // Declarative mode: replace node objects in the array so Vue Flow re-reads.
     watch(() => engine.value?.modules, (modules) => {
         if (!modules) return;
         const now = Date.now();
-        for (const node of getNodes.value) {
+        let changed = false;
+        const updated: Node[] = (nodes.value as Node[]).map((node) => {
             const mod = modules[node.id];
-            if (!mod) continue;
-            node.data = mod;
-            // Skip position update if user is dragging or recently dragged this node
-            if (activeDrags.has(node.id)) continue;
-            const lastDrag = recentDrags.get(node.id);
-            if (lastDrag && now - lastDrag < DRAG_IGNORE_MS) continue;
-            if (mod.position && (node.position.x !== mod.position.x || node.position.y !== mod.position.y)) {
-                node.position = { ...mod.position };
+            if (!mod) return node;
+            const skipPosition = activeDrags.has(node.id)
+                || (now - (recentDrags.get(node.id) ?? 0) < DRAG_IGNORE_MS);
+            const newPos = skipPosition || !mod.position
+                ? node.position
+                : (node.position.x === mod.position.x && node.position.y === mod.position.y
+                    ? node.position
+                    : { ...mod.position });
+            if (node.data !== mod || newPos !== node.position) {
+                changed = true;
+                return { ...node, data: mod, position: newPos };
             }
-        }
+            return node;
+        });
+        if (changed) nodes.value = updated;
     }, { deep: true });
 
-    // --- Edge sync ---
+    // --- Edges: ref with deferred publish until handles are mounted ---
     //
-    // Vue Flow silently drops edges if node Handle components haven't
-    // mounted yet. We wait for onNodesInitialized (handles are in the DOM)
-    // before setting edges. After that, the watcher handles live changes.
+    // n8n's pattern: hold pending edges in a NON-reactive `let` variable
+    // until onNodesInitialized fires. Publishing edges before handles are
+    // mounted causes Vue Flow to silently drop them.
+    const edges = ref<Edge[]>([]);
+    let pendingEdges: Edge[] | null = null;
+    let handlesInitialized = false;
 
-    const connectionKey = computed(() => {
-        if (!engine.value?.connections) return '';
-        return engine.value.connections.map((c) => c.id).sort().join(',');
-    });
+    function buildEdges(): Edge[] {
+        const conns = engine.value?.connections ?? [];
+        const modules = engine.value?.modules;
+        if (!modules) return [];
 
-    function buildDesiredEdges(): Edge[] {
-        const connections = engine.value?.connections ?? [];
-        const edges: Edge[] = [];
-        for (const conn of connections) {
-            if (!engine.value?.modules[conn.sourceModuleId] || !engine.value?.modules[conn.sinkModuleId]) continue;
-            const srcModule = engine.value?.modules[conn.sourceModuleId];
-            const srcPort = srcModule?.ports?.find((p) => p.id === conn.sourcePortId);
+        const result: Edge[] = [];
+        for (const conn of conns) {
+            if (!modules[conn.sourceModuleId] || !modules[conn.sinkModuleId]) continue;
+            const srcPort = modules[conn.sourceModuleId]?.ports?.find((p) => p.id === conn.sourcePortId);
             const color = edgeColor(srcPort?.streamType);
             const dimmed = isEdgeDimmed(conn.sourceModuleId, conn.sinkModuleId);
             const edge: Edge = {
@@ -119,16 +139,35 @@ export function useGraphSync(
                 edge.labelBgPadding = [4, 2] as [number, number];
                 edge.labelBgBorderRadius = 4;
             }
-            edges.push(edge);
+            result.push(edge);
         }
-        return edges;
+        return result;
     }
 
-    // Set edges when nodes exist and connections/focus change.
-    watch([connectionKey, () => getNodes.value.length, focusMode, focusedModules], () => {
-        if (getNodes.value.length === 0) return;
-        setEdges(buildDesiredEdges());
+    const edgeDeps = computed(() => ({
+        conn: engine.value?.connections?.map((c) => c.id).sort().join(',') ?? '',
+        mods: engine.value ? Object.keys(engine.value.modules).sort().join(',') : '',
+        focus: focusMode.value,
+        focused: Array.from(focusedModules.value).sort().join(','),
+    }));
+
+    watch(edgeDeps, () => {
+        const built = buildEdges();
+        if (handlesInitialized) {
+            edges.value = built;
+        } else {
+            pendingEdges = built;
+        }
     }, { immediate: true });
+
+    // Flush held edges once Vue Flow confirms handles are mounted
+    onNodesInitialized(() => {
+        handlesInitialized = true;
+        if (pendingEdges) {
+            edges.value = pendingEdges;
+            pendingEdges = null;
+        }
+    });
 
     // --- Connection validation ---
 
@@ -181,11 +220,8 @@ export function useGraphSync(
         }
 
         const edgeId = `${outModule}:${outPort}-${inModule}:${inPort}`;
-        const outMod = engine.value?.modules[outModule];
-        const outP = outMod?.ports?.find((p) => p.id === outPort);
-        const colour = edgeColor(outP?.streamType);
-
-        addEdges([{ id: edgeId, source: outModule, sourceHandle: outPort, target: inModule, targetHandle: inPort, animated: true, interactionWidth: 20, style: { stroke: colour } }]);
+        // Just persist — the computed `edges` will reactively add the edge when
+        // the store updates via socket response.
         patch.addConnection(engineId(), { id: edgeId, sourceModuleId: outModule, sourcePortId: outPort, sinkModuleId: inModule, sinkPortId: inPort });
     }
 
@@ -200,7 +236,6 @@ export function useGraphSync(
     }
 
     function onEdgeDelete(edgeId: string) {
-        removeEdges([edgeId]);
         engineStore.removeConnection(engineId(), edgeId);
         patch.removeConnection(engineId(), edgeId);
     }
@@ -215,7 +250,6 @@ export function useGraphSync(
             x = center.x - 100 + Math.random() * 40 - 20;
             y = center.y - 50 + Math.random() * 40 - 20;
         }
-        // Build default settings from configSchema
         const defaults: Record<string, unknown> = {};
         const props = (plugin.configSchema as any)?.properties;
         if (props) {
@@ -240,7 +274,7 @@ export function useGraphSync(
     }
 
     function focusModule(moduleId: string) {
-        const node = getNodes.value.find((n: Node) => n.id === moduleId);
+        const node = (nodes.value as Node[]).find((n) => n.id === moduleId);
         if (node) {
             setCenter(node.position.x + 100, node.position.y + 40, { zoom: 1, duration: 300 });
         } else {
@@ -251,6 +285,8 @@ export function useGraphSync(
     }
 
     return {
+        nodes,
+        edges,
         hasInitialFit,
         fitView,
         isValidConnection,
