@@ -19,7 +19,7 @@
 - [x] issue, when adding a moduel can get it started, until i stop and start the engine, then only i can get it started
 - [ ] !!!!!! Issue that orpahne process stil lrun, so my audio outpu hsa audio on it, even though there in not connection to it, i need to stop and start the engine to fix this, this only hapeps ocationaly (Might have been with the deleted modules that does not get stopped, but need to test)
 - [x] module being addid far of from the other modules (fixed: new modules placed at center of current viewport)
-- [ ] tace and warn debugging
+- [x] tace and warn debugging (log viewer has per-level toggles for Debug/Info/Warn/Error; silent failures throughout the codebase now log at debug/warn level with context)
 - [x] When moving modules, the modules jump back to the original position if i do not keep moving the mouse (fixed: track active drags via dragStart/dragStop, block server position updates during entire drag + 2s after)
 - [x] Some times i need to refresh the page, if i was away from it for a while to see live data again, as if the socket conenction does not auto reconnect or smt (fixed: re-emit watch:engine on Socket.IO reconnect so VU/logs resume)
 - [x] when clicking outside the stats page, the page does not close (fixed: click handler moved to backdrop overlay)
