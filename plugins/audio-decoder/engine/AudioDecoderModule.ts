@@ -45,6 +45,8 @@ export class AudioDecoderModule extends GstPluginBase {
             this.paModuleId = await this.services.pipeWire.loadNullSink(
                 this.services.instanceId, channels, rate, this.services.instanceId,
             );
+            // Force 100% volume — PulseAudio's stream-restore may remember 0% from a previous session
+            await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
         }
 
         // 4. Update config and notify UI if changed

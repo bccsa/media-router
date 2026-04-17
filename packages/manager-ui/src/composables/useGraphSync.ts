@@ -83,24 +83,26 @@ export function useGraphSync(
     }, { deep: true });
 
     // --- Edge sync ---
+    //
+    // Vue Flow silently drops edges if node Handle components haven't
+    // mounted yet. We wait for onNodesInitialized (handles are in the DOM)
+    // before setting edges. After that, the watcher handles live changes.
 
     const connectionKey = computed(() => {
         if (!engine.value?.connections) return '';
         return engine.value.connections.map((c) => c.id).sort().join(',');
     });
 
-    watch([connectionKey, moduleIds, focusMode, focusedModules], () => {
+    function buildDesiredEdges(): Edge[] {
         const connections = engine.value?.connections ?? [];
-
-        const desired = new Map<string, Edge>();
+        const edges: Edge[] = [];
         for (const conn of connections) {
-            // Skip connections where source or target module doesn't exist
             if (!engine.value?.modules[conn.sourceModuleId] || !engine.value?.modules[conn.sinkModuleId]) continue;
             const srcModule = engine.value?.modules[conn.sourceModuleId];
             const srcPort = srcModule?.ports?.find((p) => p.id === conn.sourcePortId);
             const color = edgeColor(srcPort?.streamType);
             const dimmed = isEdgeDimmed(conn.sourceModuleId, conn.sinkModuleId);
-            const edgeData: Edge = {
+            const edge: Edge = {
                 id: conn.id,
                 source: conn.sourceModuleId,
                 sourceHandle: conn.sourcePortId,
@@ -110,35 +112,22 @@ export function useGraphSync(
                 interactionWidth: 20,
                 style: { stroke: color, opacity: dimmed ? 0.1 : 1, transition: 'opacity 0.2s ease' },
             };
-            // Add label if the connection has one
             if (conn.label) {
-                edgeData.label = conn.label;
-                edgeData.labelStyle = { fill: 'var(--text-secondary)', fontSize: '10px' };
-                edgeData.labelBgStyle = { fill: 'var(--bg-card)', fillOpacity: 0.9 };
-                edgeData.labelBgPadding = [4, 2] as [number, number];
-                edgeData.labelBgBorderRadius = 4;
+                edge.label = conn.label;
+                edge.labelStyle = { fill: 'var(--text-secondary)', fontSize: '10px' };
+                edge.labelBgStyle = { fill: 'var(--bg-card)', fillOpacity: 0.9 };
+                edge.labelBgPadding = [4, 2] as [number, number];
+                edge.labelBgBorderRadius = 4;
             }
-            desired.set(conn.id, edgeData);
+            edges.push(edge);
         }
+        return edges;
+    }
 
-        const currentEdgeIds = new Set(getEdges.value.map(e => e.id));
-        const desiredIds = new Set(desired.keys());
-
-        const toRemove = [...currentEdgeIds].filter(id => !desiredIds.has(id));
-        if (toRemove.length > 0) removeEdges(toRemove);
-
-        const toAdd = [...desired.values()].filter(e => !currentEdgeIds.has(e.id));
-        if (toAdd.length > 0) addEdges(toAdd);
-
-        for (const edge of getEdges.value) {
-            const d = desired.get(edge.id);
-            if (d) {
-                edge.style = d.style;
-                edge.label = d.label ?? '';
-                if (d.labelStyle) edge.labelStyle = d.labelStyle;
-                if (d.labelBgStyle) edge.labelBgStyle = d.labelBgStyle;
-            }
-        }
+    // Set edges when nodes exist and connections/focus change.
+    watch([connectionKey, () => getNodes.value.length, focusMode, focusedModules], () => {
+        if (getNodes.value.length === 0) return;
+        setEdges(buildDesiredEdges());
     }, { immediate: true });
 
     // --- Connection validation ---

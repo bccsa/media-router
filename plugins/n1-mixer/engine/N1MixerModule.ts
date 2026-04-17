@@ -67,11 +67,13 @@ export class N1MixerModule extends GstPluginBase {
         // 1. Create N input null-sinks
         for (let i = 0; i < this.pairCount; i++) {
             await pw.loadNullSink(`${instanceId}_in_${i}`, 2, 48000, instanceId);
+            await pw.setSinkVolume(`MR_PW_${instanceId}_in_${i}`, 100);
         }
 
         // 2. Create N output null-sinks (mix buses)
         for (let i = 0; i < this.pairCount; i++) {
             await pw.loadNullSink(`${instanceId}_out_${i}`, 2, 48000, instanceId);
+            await pw.setSinkVolume(`MR_PW_${instanceId}_out_${i}`, 100);
         }
 
         // 3. Wait for all sinks to appear

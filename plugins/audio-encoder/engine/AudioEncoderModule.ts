@@ -57,6 +57,8 @@ export class AudioEncoderModule extends GstPluginBase {
             this.paModuleId = await this.services.pipeWire.loadNullSink(
                 this.services.instanceId, channels, rate, this.services.instanceId,
             );
+            // Force 100% volume — PulseAudio's stream-restore may remember 0% from a previous session
+            await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
         }
 
         await super.onStart();

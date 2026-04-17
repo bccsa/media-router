@@ -260,12 +260,19 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
     // Static file serving (manager-ui)
     const uiDistPath = path.resolve(__dirname, '../../../manager-ui/dist');
     if (fs.existsSync(uiDistPath)) {
-        app.use(express.static(uiDistPath));
+        // Hashed assets (*.js, *.css) — cache forever (hash changes on rebuild)
+        app.use('/assets', express.static(path.join(uiDistPath, 'assets'), {
+            maxAge: '1y',
+            immutable: true,
+        }));
+        // index.html — never cache (so browser always gets latest asset references)
+        app.use(express.static(uiDistPath, { maxAge: 0, etag: false }));
         app.get('/{*path}', (req, res) => {
             if (req.path.startsWith('/api/') || req.path.startsWith('/health') || req.path.startsWith('/socket.io')) {
                 res.status(404).json({ error: 'Not found' });
                 return;
             }
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
             res.sendFile(path.join(uiDistPath, 'index.html'));
         });
     } else {
