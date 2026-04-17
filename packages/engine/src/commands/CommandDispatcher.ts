@@ -144,13 +144,19 @@ export class CommandDispatcher {
 
             case 'moduleRestart': {
                 const moduleId = cmd.moduleId as string;
-                if (!this.ctx.moduleManager.get(moduleId)?.running) {
-                    log.warn({ moduleId }, 'moduleRestart: module not running');
-                    break;
+                const instance = this.ctx.moduleManager.get(moduleId);
+                if (instance?.running) {
+                    // Module is running — restart it (stop + start + reapply connections)
+                    this.commandLock = this.commandLock
+                        .then(() => this.ctx.restartModule(moduleId))
+                        .catch((err) => log.error({ err, moduleId }, 'Module restart failed'));
+                } else {
+                    // Module exists but failed to start — try starting it fresh
+                    log.info({ moduleId }, 'moduleRestart: module not running — attempting start');
+                    this.commandLock = this.commandLock
+                        .then(() => this.ctx.startSingleModule(moduleId))
+                        .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
                 }
-                this.commandLock = this.commandLock
-                    .then(() => this.ctx.restartModule(moduleId))
-                    .catch((err) => log.error({ err, moduleId }, 'Module restart failed'));
                 break;
             }
 

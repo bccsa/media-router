@@ -119,23 +119,48 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         if (envelope) ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
     });
 
+    // --- Audio device hotplug detection ---
+    // Poll every 2s (like v1's 1s but less aggressive). Only send when changed.
+    let lastDeviceJson = '';
+    let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+
+    function pollDevices() {
+        if (!ctx.managerConnection.isConnected) return;
+        try {
+            const devices = ctx.pipeWire.listDevices();
+            const json = JSON.stringify(devices);
+            if (json !== lastDeviceJson) {
+                lastDeviceJson = json;
+                ctx.managerConnection.send('audioDevices', devices);
+                log.info({ count: devices.length }, 'Audio device list changed — pushed to manager');
+            }
+        } catch (err) { log.warn({ err }, 'Device poll failed'); }
+    }
+
+    function startDevicePoll() {
+        if (devicePollTimer) return;
+        devicePollTimer = setInterval(pollDevices, 2000);
+    }
+
+    function stopDevicePoll() {
+        if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
+    }
+
     ctx.managerConnection.on('connected', () => {
         ctx.systemStats.start();
-        // Tell the manager whether modules are actually running (not just the engine process).
-        // moduleManager.size > 0 means modules were started and are active.
         const modulesRunning = ctx.moduleManager.size > 0;
         ctx.managerConnection.send('engineRunningState', { running: modulesRunning });
         const states = ctx.moduleManager.getAllStates();
         if (Object.keys(states).length > 0) {
             ctx.managerConnection.sendState(states);
         }
-        // Send audio device list so the manager can serve it to browsers
-        try {
-            const devices = ctx.pipeWire.listDevices();
-            ctx.managerConnection.send('audioDevices', devices);
-        } catch (err) { log.debug({ err }, 'Failed to send audio device list to manager'); }
+        // Always send full device list on connect + start polling
+        lastDeviceJson = '';
+        pollDevices();
+        startDevicePoll();
     });
     ctx.managerConnection.on('disconnected', () => {
         ctx.systemStats.stop();
+        stopDevicePoll();
     });
 }

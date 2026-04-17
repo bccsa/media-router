@@ -108,3 +108,5 @@
 
 - [] LCP Light mode cant see module names 
 - [x] Engine online / offline indication is not live (fixed: setOnline/setRunning now create new EngineState objects instead of mutating in-place — Vue's computed caching missed the in-place mutation. Also: clearEngineRuntime resets module health/stats/badges on disconnect)
+- [x] USB audio hotplug: new devices not detected until engine reset (fixed: engine polls `pactl` every 2s and pushes to manager when device list changes; settings panel polls manager every 3s while open. Worst case ~5s latency from hotplug to UI update)
+- [x] Device persistence on disconnect: if a selected audio device is unplugged, keep it in the dropdown (fixed: `deviceOptions()` in ModuleSettingsPanel appends the currently-selected device with "(Disconnected)" suffix if it's not in the current device list. Removed only when user selects a different device)

@@ -183,13 +183,14 @@ describe('CommandDispatcher', () => {
             expect(ctx.restartModule).toHaveBeenCalledWith('mod-1');
         });
 
-        it('skips restart for a non-running module', async () => {
+        it('starts a non-running module instead of restarting', async () => {
             (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue({ running: false });
 
             dispatcher.dispatch({ command: 'moduleRestart', moduleId: 'mod-1' });
             await flush();
 
             expect(ctx.restartModule).not.toHaveBeenCalled();
+            expect(ctx.startSingleModule).toHaveBeenCalledWith('mod-1');
         });
 
         it('skips restart for a module that does not exist', async () => {

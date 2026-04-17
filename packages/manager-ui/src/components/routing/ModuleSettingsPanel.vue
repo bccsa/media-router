@@ -56,16 +56,46 @@ interface FormField {
     showWhen?: string; // x-showWhen — "key=value" conditional visibility
 }
 
-// Fetch audio devices from the engine (not the manager — devices differ per engine)
+// Audio device list from the engine — refreshes every 3s while panel is open
+// so the user sees USB hotplug (connect/disconnect) without needing to reopen.
 const audioDevices = ref<Array<{ name: string; description: string; direction: string; channels: number; sampleRate: number }>>([]);
-onMounted(async () => {
+let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function fetchDevices() {
     try {
         const res = await fetch(`/api/v1/engines/${props.engineId}/audio/devices`);
         if (res.ok) audioDevices.value = await res.json();
     } catch (err) {
         console.warn('[ModuleSettings] Failed to load audio devices:', err);
     }
+}
+
+onMounted(() => {
+    fetchDevices();
+    devicePollTimer = setInterval(fetchDevices, 3000);
 });
+
+onUnmounted(() => {
+    if (devicePollTimer) clearInterval(devicePollTimer);
+});
+
+/** Build device dropdown options. If the currently selected device was unplugged,
+ *  keep it in the list greyed out so config survives unplug/replug cycles. */
+function deviceOptions(fieldKey: string, direction: string) {
+    const available = audioDevices.value.filter(d => d.direction === direction);
+    const options = available.map(d => ({
+        value: d.name,
+        label: `${d.description || d.name} (${d.channels}ch, ${d.sampleRate}Hz)`,
+    }));
+
+    // If the selected device isn't in the list, add it as disconnected
+    const selected = localSettings.value[fieldKey] as string | undefined;
+    if (selected && !available.some(d => d.name === selected)) {
+        options.push({ value: selected, label: `${selected} (Disconnected)` });
+    }
+
+    return [{ value: '', label: 'No device selected' }, ...options];
+}
 
 /** JSON Schema property shape with media-router extensions. */
 interface SchemaProperty {
@@ -293,13 +323,7 @@ function applyAll() {
                 <template v-else>
                 <MrSelect v-if="field.deviceType"
                           :model-value="localSettings[field.key] as string ?? ''"
-                          :options="[
-                              { value: '', label: 'Default device' },
-                              ...audioDevices.filter(d => d.direction === field.deviceType).map(d => ({
-                                  value: d.name,
-                                  label: `${d.description || d.name} (${d.channels}ch, ${d.sampleRate}Hz)`,
-                              })),
-                          ]"
+                          :options="deviceOptions(field.key, field.deviceType!)"
                           @update:model-value="updateSetting(field.key, $event)" />
                 <!-- Enum select (supports field-dependent options via x-enumBy) -->
                 <MrSelect v-else-if="getFieldEnum(field)"
