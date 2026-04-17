@@ -10,7 +10,14 @@ const logStore = useLogStore();
 const socket = useSocketStore();
 const engineStore = useEngineStore();
 
-const minLevel = ref(30); // info
+// Per-level visibility. Default: info + warn + error (ignore noise from trace/debug)
+const enabledLevels = ref<Set<number>>(new Set([30, 40, 50]));
+function toggleLevel(level: number) {
+    const s = new Set(enabledLevels.value);
+    if (s.has(level)) s.delete(level);
+    else s.add(level);
+    enabledLevels.value = s;
+}
 const searchQuery = ref('');
 const autoScroll = ref(true);
 const scrollEl = ref<HTMLElement | null>(null);
@@ -66,8 +73,8 @@ const filteredEntries = computed(() => {
         entries = entries.filter((e) => !e.name || !hiddenSources.value.has(e.name));
     }
 
-    // Filter by level
-    entries = entries.filter((e) => e.level >= minLevel.value);
+    // Filter by level (per-level toggle, not threshold)
+    entries = entries.filter((e) => enabledLevels.value.has(e.level));
 
     // Filter by search
     if (searchQuery.value) {
@@ -119,7 +126,6 @@ function getModuleName(instanceId: string): string | undefined {
 }
 
 const levels = [
-    { value: 10, label: 'Trace' },
     { value: 20, label: 'Debug' },
     { value: 30, label: 'Info' },
     { value: 40, label: 'Warn' },
@@ -134,9 +140,9 @@ const levels = [
             <!-- Level filter -->
             <div class="flex items-center gap-0.5 shrink-0">
                 <button v-for="lvl in levels" :key="lvl.value"
-                        @click="minLevel = lvl.value"
+                        @click="toggleLevel(lvl.value)"
                         class="px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors"
-                        :class="minLevel <= lvl.value ? 'bg-accent-muted text-accent-fg' : 'bg-transparent text-muted'">
+                        :class="enabledLevels.has(lvl.value) ? 'bg-accent-muted text-accent-fg' : 'bg-transparent text-muted'">
                     {{ lvl.label }}
                 </button>
             </div>

@@ -144,7 +144,7 @@ function toggleMute() {
 .module-name {
     font-size: 18px;
     font-weight: 700;
-    color: #ffffff;
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

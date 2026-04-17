@@ -98,7 +98,7 @@
 
 ## Device / System (from alpha testing)
 - [ ] Splash image not showing when connecting a monitor
-- [ ] Debug logging toggle reversed — need to press Info button to disable debug; enabling works correctly
+- [x] Debug logging toggle reversed (fixed: log level buttons are now per-level toggles instead of thresholds — click each level to show/hide independently. Default enables Info/Warn/Error; Trace/Debug off)
 
 ## Feature Requests (from alpha testing)
 - [ ] Enable mDNS to easily discover the media router
@@ -106,7 +106,7 @@
 
 - [x] Output channel count still not detected correctly in the channel map on links (fixed: decoder now always probes the stream before creating null-sink — detects channels from actual MPEG-TS caps regardless of source. Encoder also normalizes config values so downstream readers always see explicit values) 
 
-- [] LCP Light mode cant see module names 
+- [x] LCP Light mode can't see module names (fixed: `.module-name` in MixerStrip.vue had hardcoded `color: #ffffff` — changed to `var(--text-primary)` so it follows light/dark theme)
 - [x] Engine online / offline indication is not live (fixed: setOnline/setRunning now create new EngineState objects instead of mutating in-place — Vue's computed caching missed the in-place mutation. Also: clearEngineRuntime resets module health/stats/badges on disconnect)
 - [x] USB audio hotplug: new devices not detected until engine reset (fixed: engine polls `pactl` every 2s and pushes to manager when device list changes; settings panel polls manager every 3s while open. Worst case ~5s latency from hotplug to UI update)
 - [x] Device persistence on disconnect: if a selected audio device is unplugged, keep it in the dropdown (fixed: `deviceOptions()` in ModuleSettingsPanel appends the currently-selected device with "(Disconnected)" suffix if it's not in the current device list. Removed only when user selects a different device)

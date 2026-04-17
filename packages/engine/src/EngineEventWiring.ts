@@ -40,7 +40,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     });
 
     ctx.moduleManager.on('configUpdated', (instanceId: string, changes: Record<string, unknown>) => {
-        log.trace({ instanceId, changes }, 'Plugin auto-detected config');
+        log.debug({ instanceId, changes }, 'Plugin auto-detected config');
         const ops = Object.entries(changes).map(([key, value]) => ({
             op: 'replace' as const, path: `/modules/${instanceId}/settings/${key}`, value,
         }));
