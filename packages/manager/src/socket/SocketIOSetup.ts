@@ -57,7 +57,10 @@ export function setupSocketIO(deps: SocketDeps): void {
                     const m = modules[id] = { ...(mod as Record<string, unknown>) };
                     const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
                     if (manifest) {
-                        if (!m.ports || (m.ports as unknown[]).length === 0) m.ports = manifest.ports ?? [];
+                        // Always take ports from manifest so port config changes (e.g. maxConnections)
+                        // propagate to existing modules. Dynamic ports (n1-mixer etc.) are pushed
+                        // from the engine via engine:update events after start.
+                        m.ports = manifest.ports ?? [];
                         m.configSchema = manifest.configSchema ?? {};
                         m.color = manifest.color;
                         m.icon = manifest.icon;

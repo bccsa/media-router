@@ -20,7 +20,7 @@
                 "direction": "input",
                 "streamType": "audio/pcm",
                 "label": "Audio In",
-                "maxConnections": 1
+                "maxConnections": -1
             },
             {
                 "id": "mpegts-out",
