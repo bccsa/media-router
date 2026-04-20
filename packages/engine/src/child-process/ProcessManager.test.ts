@@ -72,7 +72,12 @@ describe('ProcessManager', () => {
     });
 
     it('kill removes a specific process', async () => {
-        const proc = pm.spawn('owner-1', { label: 'target', command: 'sleep', args: ['60'], autoRestart: false });
+        const proc = pm.spawn('owner-1', {
+            label: 'target',
+            command: 'sleep',
+            args: ['60'],
+            autoRestart: false,
+        });
         pm.spawn('owner-1', { label: 'keep', command: 'sleep', args: ['60'], autoRestart: false });
 
         await new Promise((r) => setTimeout(r, 100));

@@ -30,7 +30,11 @@ export const useVuStore = defineStore('vuMeters', () => {
 
     // Clean up timer when store is disposed
     if (typeof onUnmounted === 'function') {
-        try { onUnmounted(() => clearInterval(cleanupTimer)); } catch { /* not in component */ }
+        try {
+            onUnmounted(() => clearInterval(cleanupTimer));
+        } catch {
+            /* not in component */
+        }
     }
 
     function update(engineId: string, instanceId: string, vuData: number[]) {

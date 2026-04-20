@@ -50,21 +50,27 @@ describe('Server + Client integration', () => {
         // Wait for connection (with timeout)
         await Promise.race([
             connectionPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 5000)),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Connection timeout')), 5000),
+            ),
         ]);
 
         // Test message exchange: server → client
-        const clientReceivedPromise = new Promise<{ topic: string; message: unknown }>((resolve) => {
-            client.on('data', (topic: string, message: unknown) => {
-                resolve({ topic, message });
-            });
-        });
+        const clientReceivedPromise = new Promise<{ topic: string; message: unknown }>(
+            (resolve) => {
+                client.on('data', (topic: string, message: unknown) => {
+                    resolve({ topic, message });
+                });
+            },
+        );
 
         server.sendTo('engine-1', 'config', { modules: {} });
 
         const received = await Promise.race([
             clientReceivedPromise,
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Receive timeout')), 5000)),
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Receive timeout')), 5000),
+            ),
         ]);
 
         expect(received.topic).toBe('config');

@@ -36,15 +36,22 @@ export class RistInputModule extends GstPluginBase {
         }
 
         // Build RIST input URLs from links config
-        const links = (this.config.links as RistLink[]) ?? [{ mode: 'listener', address: '0.0.0.0', port: 5004, weight: 50, cname: 'link1' }];
-        const inputUrls = links.map((link) => {
-            const params: string[] = [];
-            if (link.weight !== undefined) params.push(`weight=${link.weight}`);
-            if (link.cname) params.push(`cname=${link.cname}`);
-            // RIST URL: rist://@host:port for listener, rist://host:port for caller
-            const addr = link.mode === 'listener' ? `@${link.address || '0.0.0.0'}` : (link.address || 'localhost');
-            return `rist://${addr}:${link.port}${params.length ? '?' + params.join('&') : ''}`;
-        }).join(',');
+        const links = (this.config.links as RistLink[]) ?? [
+            { mode: 'listener', address: '0.0.0.0', port: 5004, weight: 50, cname: 'link1' },
+        ];
+        const inputUrls = links
+            .map((link) => {
+                const params: string[] = [];
+                if (link.weight !== undefined) params.push(`weight=${link.weight}`);
+                if (link.cname) params.push(`cname=${link.cname}`);
+                // RIST URL: rist://@host:port for listener, rist://host:port for caller
+                const addr =
+                    link.mode === 'listener'
+                        ? `@${link.address || '0.0.0.0'}`
+                        : link.address || 'localhost';
+                return `rist://${addr}:${link.port}${params.length ? '?' + params.join('&') : ''}`;
+            })
+            .join(',');
 
         // ristreceiver CLI outputs via regular UDP (not multicast), use localhost
         const outputUrl = `udp://127.0.0.1:${endpoint.port}`;
@@ -61,22 +68,22 @@ export class RistInputModule extends GstPluginBase {
         args.push('-b', String(buffer));
         args.push('-S', String(statsInterval));
         args.push('-v', '6');
-        if (secret) { args.push('-s', secret); args.push('-e', String(encType)); }
+        if (secret) {
+            args.push('-s', secret);
+            args.push('-e', String(encType));
+        }
 
         // Spawn ristreceiver via ProcessManager
         if (this.services?.processManager) {
-            this.receiver = this.services.processManager.spawn(
-                this.services.instanceId,
-                {
-                    label: 'ristreceiver',
-                    command: 'ristreceiver',
-                    args,
-                    autoRestart: true,
-                    onStderr: (line) => {
-                        if (line.includes('-stats"')) this.parseStats(line);
-                    },
+            this.receiver = this.services.processManager.spawn(this.services.instanceId, {
+                label: 'ristreceiver',
+                command: 'ristreceiver',
+                args,
+                autoRestart: true,
+                onStderr: (line) => {
+                    if (line.includes('-stats"')) this.parseStats(line);
                 },
-            );
+            });
             this.receiver.on('started', () => {
                 this.running = true;
                 this.ready = true;
@@ -133,7 +140,9 @@ export class RistInputModule extends GstPluginBase {
             });
 
             // Per-peer stats and dynamic sections
-            const peers = flow.peers as Array<{ id?: number; cname?: string; stats?: Record<string, unknown> }> | undefined;
+            const peers = flow.peers as
+                | Array<{ id?: number; cname?: string; stats?: Record<string, unknown> }>
+                | undefined;
             if (peers && peers.length > 0) {
                 const peerFields = [
                     { key: 'quality', label: 'Quality', unit: '%' },
@@ -158,7 +167,10 @@ export class RistInputModule extends GstPluginBase {
                         dropped: Number(p.dropped_late ?? 0),
                         recovered: Number(p.recovered_total ?? 0),
                         lost: Number(p.lost ?? 0),
-                        rtt: typeof p.avg_rtt === 'number' ? `${(p.avg_rtt as number).toFixed(2)}` : String(p.rtt ?? '—'),
+                        rtt:
+                            typeof p.avg_rtt === 'number'
+                                ? `${(p.avg_rtt as number).toFixed(2)}`
+                                : String(p.rtt ?? '—'),
                     });
 
                     const existing = this.dynamicStatusSections.find((sec) => sec.id === sectionId);
@@ -178,17 +190,30 @@ export class RistInputModule extends GstPluginBase {
                         dropped: Number(s.dropped_late ?? 0),
                         recovered: Number(s.recovered_total ?? 0),
                         lost: Number(s.lost ?? 0),
-                        rtt: typeof firstPeer.avg_rtt === 'number' ? `${(firstPeer.avg_rtt as number).toFixed(2)}` : String(firstPeer.rtt ?? '—'),
+                        rtt:
+                            typeof firstPeer.avg_rtt === 'number'
+                                ? `${(firstPeer.avg_rtt as number).toFixed(2)}`
+                                : String(firstPeer.rtt ?? '—'),
                     });
                 }
             }
 
             const quality = Number(s.quality ?? 0);
-            this.setBadge('quality', { icon: 'signal', text: `${quality}%`, color: quality >= 90 ? '#10b981' : quality >= 50 ? '#f59e0b' : '#ef4444' });
+            this.setBadge('quality', {
+                icon: 'signal',
+                text: `${quality}%`,
+                color: quality >= 90 ? '#10b981' : quality >= 50 ? '#f59e0b' : '#ef4444',
+            });
 
             // Connection badge — show peer count
             const peerCount = peers?.length ?? 0;
-            this.setBadge('connections', { icon: 'link', text: `${peerCount}`, color: peerCount > 0 ? '#10b981' : '#6b7280' });
-        } catch { /* not a stats line */ }
+            this.setBadge('connections', {
+                icon: 'link',
+                text: `${peerCount}`,
+                color: peerCount > 0 ? '#10b981' : '#6b7280',
+            });
+        } catch {
+            /* not a stats line */
+        }
     }
 }

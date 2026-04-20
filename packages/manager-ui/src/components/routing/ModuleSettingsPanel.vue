@@ -27,13 +27,20 @@ const module = computed(() => engineStore.getEngine(props.engineId)?.modules[pro
 
 // Rename
 const editName = ref('');
-watch(() => module.value?.displayName, (name) => {
-    if (name) editName.value = name;
-}, { immediate: true });
+watch(
+    () => module.value?.displayName,
+    (name) => {
+        if (name) editName.value = name;
+    },
+    { immediate: true },
+);
 // Reset name when switching modules
-watch(() => props.moduleId, () => {
-    editName.value = module.value?.displayName ?? '';
-});
+watch(
+    () => props.moduleId,
+    () => {
+        editName.value = module.value?.displayName ?? '';
+    },
+);
 
 function saveName() {
     const trimmed = editName.value.trim();
@@ -43,11 +50,18 @@ function saveName() {
 }
 
 interface FormField {
-    key: string; type: string; label: string; description: string;
-    defaultValue: unknown; enumValues?: unknown[]; liveUpdatable: boolean;
+    key: string;
+    type: string;
+    label: string;
+    description: string;
+    defaultValue: unknown;
+    enumValues?: unknown[];
+    liveUpdatable: boolean;
     deviceType?: string; // 'source' or 'sink' — shows device picker
     widget?: string; // 'slider' etc.
-    minimum?: number; maximum?: number; step?: number;
+    minimum?: number;
+    maximum?: number;
+    step?: number;
     maxFrom?: string; // key of another setting that controls slider max
     enumBy?: { field: string; map: Record<string, unknown[]> }; // field value → valid enum values
     maxBy?: { field: string; map: Record<string, number> }; // field value → max for number fields
@@ -58,7 +72,15 @@ interface FormField {
 
 // Audio device list from the engine — refreshes every 3s while panel is open
 // so the user sees USB hotplug (connect/disconnect) without needing to reopen.
-const audioDevices = ref<Array<{ name: string; description: string; direction: string; channels: number; sampleRate: number }>>([]);
+const audioDevices = ref<
+    Array<{
+        name: string;
+        description: string;
+        direction: string;
+        channels: number;
+        sampleRate: number;
+    }>
+>([]);
 let devicePollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function fetchDevices() {
@@ -82,15 +104,15 @@ onUnmounted(() => {
 /** Build device dropdown options. If the currently selected device was unplugged,
  *  keep it in the list greyed out so config survives unplug/replug cycles. */
 function deviceOptions(fieldKey: string, direction: string) {
-    const available = audioDevices.value.filter(d => d.direction === direction);
-    const options = available.map(d => ({
+    const available = audioDevices.value.filter((d) => d.direction === direction);
+    const options = available.map((d) => ({
         value: d.name,
         label: `${d.description || d.name} (${d.channels}ch, ${d.sampleRate}Hz)`,
     }));
 
     // If the selected device isn't in the list, add it as disconnected
     const selected = localSettings.value[fieldKey] as string | undefined;
-    if (selected && !available.some(d => d.name === selected)) {
+    if (selected && !available.some((d) => d.name === selected)) {
         options.push({ value: selected, label: `${selected} (Disconnected)` });
     }
 
@@ -171,21 +193,28 @@ function getFieldMax(field: FormField): number | undefined {
 
 const localSettings = ref<Record<string, unknown>>({});
 
-watch(() => module.value?.settings, (settings) => {
-    if (!settings) return;
-    const defaults: Record<string, unknown> = {};
-    for (const f of formFields.value) {
-        if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
-    }
-    localSettings.value = { ...defaults, ...settings };
-}, { immediate: true, deep: true });
+watch(
+    () => module.value?.settings,
+    (settings) => {
+        if (!settings) return;
+        const defaults: Record<string, unknown> = {};
+        for (const f of formFields.value) {
+            if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
+        }
+        localSettings.value = { ...defaults, ...settings };
+    },
+    { immediate: true, deep: true },
+);
 
 // Throttle live updates (sliders) to max once per 50ms, with a final send on release
 let liveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingLiveUpdate: { key: string; value: unknown } | null = null;
 
 onUnmounted(() => {
-    if (liveThrottleTimer) { clearTimeout(liveThrottleTimer); liveThrottleTimer = null; }
+    if (liveThrottleTimer) {
+        clearTimeout(liveThrottleTimer);
+        liveThrottleTimer = null;
+    }
     if (pendingLiveUpdate) {
         sendLiveUpdate(pendingLiveUpdate.key, pendingLiveUpdate.value);
         pendingLiveUpdate = null;
@@ -257,111 +286,247 @@ const saved = ref(false);
 function applyAll() {
     patch.moduleSettings(props.engineId, props.moduleId, localSettings.value);
     saved.value = true;
-    setTimeout(() => { saved.value = false; }, 2000);
+    setTimeout(() => {
+        saved.value = false;
+    }, 2000);
 }
 </script>
 
 <template>
-    <div class="fixed right-0 top-12 h-[calc(100vh-3rem)] w-80 z-30 flex flex-col shadow-xl bg-card border-l border-border">
+    <div
+        class="fixed right-0 top-12 h-[calc(100vh-3rem)] w-80 z-30 flex flex-col shadow-xl bg-card border-l border-border"
+    >
         <div class="flex items-center justify-between px-4 py-3 border-b border-border">
-            <input v-model="editName" class="text-sm font-semibold bg-transparent border-b outline-none flex-1 mr-2 text-foreground border-border"
-                   @keydown.enter="($event.target as HTMLInputElement).blur()" @blur="saveName" />
+            <input
+                v-model="editName"
+                class="text-sm font-semibold bg-transparent border-b outline-none flex-1 mr-2 text-foreground border-border"
+                @keydown.enter="($event.target as HTMLInputElement).blur()"
+                @blur="saveName"
+            />
             <button @click="$emit('close')" class="p-1 rounded-md text-muted">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M6 18L18 6M6 6l12 12"
+                    />
+                </svg>
             </button>
         </div>
 
         <!-- Quick actions -->
         <div class="flex items-center justify-around px-3 py-2 border-b border-border">
-            <button @click="doRestart" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-subtle">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+            <button
+                @click="doRestart"
+                class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-subtle"
+            >
+                <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <polyline points="23 4 23 10 17 10" />
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                 </svg>
                 <span class="text-[9px]">Restart</span>
             </button>
-            <button @click="doToggle" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80"
-                    :class="isEnabled ? 'text-subtle' : 'text-ok'">
-                <svg v-if="isEnabled" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18.36 6.64A9 9 0 0 1 20.77 15M2 12a10 10 0 0 0 18.77 3" /><line x1="1" y1="1" x2="23" y2="23" />
+            <button
+                @click="doToggle"
+                class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80"
+                :class="isEnabled ? 'text-subtle' : 'text-ok'"
+            >
+                <svg
+                    v-if="isEnabled"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <path d="M18.36 6.64A9 9 0 0 1 20.77 15M2 12a10 10 0 0 0 18.77 3" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
                 </svg>
-                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                <svg
+                    v-else
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
                 </svg>
                 <span class="text-[9px]">{{ isEnabled ? 'Disable' : 'Enable' }}</span>
             </button>
-            <button @click="doClone" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-subtle">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            <button
+                @click="doClone"
+                class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-subtle"
+            >
+                <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <rect x="9" y="9" width="13" height="13" rx="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                 </svg>
                 <span class="text-[9px]">Clone</span>
             </button>
-            <button @click="doDelete" class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-error">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+            <button
+                @click="doDelete"
+                class="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors hover:opacity-80 text-error"
+            >
+                <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                    <path d="M10 11v6" />
+                    <path d="M14 11v6" />
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
                 </svg>
                 <span class="text-[9px]">Delete</span>
             </button>
         </div>
 
         <div class="flex-1 overflow-y-auto p-4 space-y-4">
-            <div v-if="formFields.length === 0" class="text-sm py-4 text-center text-muted">No configurable settings.</div>
-            <div v-for="field in formFields" :key="field.key" v-show="isFieldVisible(field)" class="space-y-1.5">
+            <div v-if="formFields.length === 0" class="text-sm py-4 text-center text-muted">
+                No configurable settings.
+            </div>
+            <div
+                v-for="field in formFields"
+                :key="field.key"
+                v-show="isFieldVisible(field)"
+                class="space-y-1.5"
+            >
                 <label class="flex items-center gap-1 text-xs font-medium text-subtle">
                     {{ field.label }}
-                    <span v-if="field.liveUpdatable" class="text-amber-500 text-[10px] cursor-help relative group">&#9889;
-                        <span class="hidden group-hover:block absolute left-4 -top-1 w-40 p-2 rounded-md shadow-lg text-[9px] leading-relaxed bg-card border border-border text-foreground" style="z-index:9999">
+                    <span
+                        v-if="field.liveUpdatable"
+                        class="text-amber-500 text-[10px] cursor-help relative group"
+                        >&#9889;
+                        <span
+                            class="hidden group-hover:block absolute left-4 -top-1 w-40 p-2 rounded-md shadow-lg text-[9px] leading-relaxed bg-card border border-border text-foreground"
+                            style="z-index: 9999"
+                        >
                             Live update — changes apply instantly without restarting the module
                         </span>
                     </span>
                 </label>
-                <p v-if="field.description" class="text-[10px] text-muted">{{ field.description }}</p>
+                <p v-if="field.description" class="text-[10px] text-muted">
+                    {{ field.description }}
+                </p>
                 <!-- Read-only field (auto-detected values) -->
-                <div v-if="field.readOnly" class="w-full px-2 py-1.5 text-sm rounded-md opacity-60 bg-surface-alt border border-border-alt text-muted">
+                <div
+                    v-if="field.readOnly"
+                    class="w-full px-2 py-1.5 text-sm rounded-md opacity-60 bg-surface-alt border border-border-alt text-muted"
+                >
                     {{ localSettings[field.key] ?? '—' }}
                 </div>
                 <!-- Device picker (for x-deviceType fields) -->
                 <template v-else>
-                <MrSelect v-if="field.deviceType"
-                          :model-value="localSettings[field.key] as string ?? ''"
-                          :options="deviceOptions(field.key, field.deviceType!)"
-                          @update:model-value="updateSetting(field.key, $event)" />
-                <!-- Enum select (supports field-dependent options via x-enumBy) -->
-                <MrSelect v-else-if="getFieldEnum(field)"
-                          :model-value="localSettings[field.key] as string | number"
-                          :options="getFieldEnum(field)!.map(opt => ({ value: (field.type === 'number' ? Number(opt) : String(opt)) as string | number, label: String(opt) }))"
-                          @update:model-value="updateSetting(field.key, $event)" />
-                <!-- Array field -->
-                <MrArrayField v-else-if="field.type === 'array' && field.items"
-                              :model-value="(localSettings[field.key] as unknown[]) ?? field.defaultValue ?? []"
-                              :schema="field.items"
-                              :disabled="field.readOnly"
-                              @update:model-value="updateSetting(field.key, $event)" />
-                <!-- Boolean toggle -->
-                <MrToggle v-else-if="field.type === 'boolean'"
-                          :model-value="!!localSettings[field.key]"
-                          @update:model-value="updateSetting(field.key, $event)" />
-                <!-- Slider for volume/gain controls -->
-                <div v-else-if="field.widget === 'slider'" class="flex items-center gap-2">
-                    <MrSlider class="flex-1"
-                              :model-value="Number(localSettings[field.key] ?? field.defaultValue ?? 1)"
-                              :min="field.minimum ?? 0"
-                              :max="field.maxFrom ? Number(localSettings[field.maxFrom] ?? field.maximum ?? 2) : (field.maximum ?? 2)"
-                              :step="field.step ?? 0.01"
-                              @update:model-value="updateSetting(field.key, $event)" />
-                    <span class="text-xs w-12 text-right tabular-nums text-subtle">
-                        {{ Math.round(Number(localSettings[field.key] ?? field.defaultValue ?? 100)) }}%
-                    </span>
-                </div>
-                <!-- Plain number input -->
-                <MrInput v-else-if="field.type === 'number'" type="number"
-                         :model-value="localSettings[field.key] as number"
-                         :min="field.minimum"
-                         :max="getFieldMax(field)"
-                         @update:model-value="updateSetting(field.key, $event)" />
-                <!-- Text input (default) -->
-                <MrInput v-else type="text"
-                         :model-value="localSettings[field.key] as string"
-                         @update:model-value="updateSetting(field.key, $event)" />
+                    <MrSelect
+                        v-if="field.deviceType"
+                        :model-value="(localSettings[field.key] as string) ?? ''"
+                        :options="deviceOptions(field.key, field.deviceType!)"
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
+                    <!-- Enum select (supports field-dependent options via x-enumBy) -->
+                    <MrSelect
+                        v-else-if="getFieldEnum(field)"
+                        :model-value="localSettings[field.key] as string | number"
+                        :options="
+                            getFieldEnum(field)!.map((opt) => ({
+                                value: (field.type === 'number' ? Number(opt) : String(opt)) as
+                                    | string
+                                    | number,
+                                label: String(opt),
+                            }))
+                        "
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
+                    <!-- Array field -->
+                    <MrArrayField
+                        v-else-if="field.type === 'array' && field.items"
+                        :model-value="
+                            (localSettings[field.key] as unknown[]) ?? field.defaultValue ?? []
+                        "
+                        :schema="field.items"
+                        :disabled="field.readOnly"
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
+                    <!-- Boolean toggle -->
+                    <MrToggle
+                        v-else-if="field.type === 'boolean'"
+                        :model-value="!!localSettings[field.key]"
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
+                    <!-- Slider for volume/gain controls -->
+                    <div v-else-if="field.widget === 'slider'" class="flex items-center gap-2">
+                        <MrSlider
+                            class="flex-1"
+                            :model-value="
+                                Number(localSettings[field.key] ?? field.defaultValue ?? 1)
+                            "
+                            :min="field.minimum ?? 0"
+                            :max="
+                                field.maxFrom
+                                    ? Number(localSettings[field.maxFrom] ?? field.maximum ?? 2)
+                                    : (field.maximum ?? 2)
+                            "
+                            :step="field.step ?? 0.01"
+                            @update:model-value="updateSetting(field.key, $event)"
+                        />
+                        <span class="text-xs w-12 text-right tabular-nums text-subtle">
+                            {{
+                                Math.round(
+                                    Number(localSettings[field.key] ?? field.defaultValue ?? 100),
+                                )
+                            }}%
+                        </span>
+                    </div>
+                    <!-- Plain number input -->
+                    <MrInput
+                        v-else-if="field.type === 'number'"
+                        type="number"
+                        :model-value="localSettings[field.key] as number"
+                        :min="field.minimum"
+                        :max="getFieldMax(field)"
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
+                    <!-- Text input (default) -->
+                    <MrInput
+                        v-else
+                        type="text"
+                        :model-value="localSettings[field.key] as string"
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
                 </template>
             </div>
         </div>
@@ -370,7 +535,13 @@ function applyAll() {
             <MrButton size="sm" @click="applyAll">Apply All</MrButton>
             <MrButton variant="secondary" size="sm" @click="$emit('close')">Close</MrButton>
             <span v-if="saved" class="text-xs ml-auto flex items-center gap-1 text-ok">
-                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>
+                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path
+                        fill-rule="evenodd"
+                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                        clip-rule="evenodd"
+                    />
+                </svg>
                 Saved
             </span>
         </div>

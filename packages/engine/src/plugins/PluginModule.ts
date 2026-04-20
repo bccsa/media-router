@@ -41,7 +41,13 @@ export interface PluginModule {
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
     getPipeWireNodeForPort?(portId: string): { source?: string; sink?: string };
     /** Return dynamic ports based on config (overrides manifest ports). */
-    getDynamicPorts?(): Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections?: number }>;
+    getDynamicPorts?(): Array<{
+        id: string;
+        direction: 'input' | 'output';
+        streamType: string;
+        label: string;
+        maxConnections?: number;
+    }>;
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess?(): GstChildProcess | null;
     /** Count of running child processes owned by this module. */

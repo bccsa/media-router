@@ -105,9 +105,7 @@ describe('useEngineStore', () => {
 
         it('replaces a top-level field', () => {
             const store = useEngineStore();
-            store.applyEnginePatch('eng-1', [
-                { op: 'replace', path: '/online', value: false },
-            ]);
+            store.applyEnginePatch('eng-1', [{ op: 'replace', path: '/online', value: false }]);
             expect(store.getEngine('eng-1')!.online).toBe(false);
         });
 
@@ -149,9 +147,7 @@ describe('useEngineStore', () => {
 
         it('removes a module', () => {
             const store = useEngineStore();
-            store.applyEnginePatch('eng-1', [
-                { op: 'remove', path: '/modules/mod-1' },
-            ]);
+            store.applyEnginePatch('eng-1', [{ op: 'remove', path: '/modules/mod-1' }]);
             expect(store.getEngine('eng-1')!.modules['mod-1']).toBeUndefined();
         });
 
@@ -246,7 +242,11 @@ describe('useEngineStore', () => {
 
         it('updates ip, hostname, and buildNumber', () => {
             const store = useEngineStore();
-            store.setEngineInfo('eng-1', { ip: '192.168.1.100', hostname: 'pi5', buildNumber: 'v2.0.1' });
+            store.setEngineInfo('eng-1', {
+                ip: '192.168.1.100',
+                hostname: 'pi5',
+                buildNumber: 'v2.0.1',
+            });
 
             const engine = store.getEngine('eng-1')!;
             expect(engine.ip).toBe('192.168.1.100');

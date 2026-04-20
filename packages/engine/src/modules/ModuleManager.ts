@@ -28,7 +28,12 @@ export class ModuleManager extends EventEmitter {
     private mediaRouter: MediaRouter | null = null;
     private processManager: ProcessManager | null = null;
 
-    constructor(pluginLoader: PluginLoader, pipeWire?: PipeWireManager, mediaRouter?: MediaRouter, processManager?: ProcessManager) {
+    constructor(
+        pluginLoader: PluginLoader,
+        pipeWire?: PipeWireManager,
+        mediaRouter?: MediaRouter,
+        processManager?: ProcessManager,
+    ) {
         super();
         this.pluginLoader = pluginLoader;
         this.pipeWire = pipeWire ?? null;
@@ -63,13 +68,20 @@ export class ModuleManager extends EventEmitter {
         if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
             const validate = ajv.compile(schema);
             if (!validate(config)) {
-                const errors = validate.errors?.map(
-                    (e) => `${e.instancePath || '/'} ${e.message}`,
-                ) ?? [];
-                log.warn({ instanceId, pluginId, errors }, 'Config validation failed — resetting invalid values to defaults');
+                const errors =
+                    validate.errors?.map((e) => `${e.instancePath || '/'} ${e.message}`) ?? [];
+                log.warn(
+                    { instanceId, pluginId, errors },
+                    'Config validation failed — resetting invalid values to defaults',
+                );
 
                 // Reset invalid properties to their schema defaults
-                const props = (schema as Record<string, unknown> & { properties?: Record<string, Record<string, unknown>> }).properties ?? {};
+                const props =
+                    (
+                        schema as Record<string, unknown> & {
+                            properties?: Record<string, Record<string, unknown>>;
+                        }
+                    ).properties ?? {};
                 for (const err of validate.errors ?? []) {
                     const key = (err.instancePath || '').replace(/^\//, '');
                     if (key && props[key]?.default !== undefined) {
@@ -80,9 +92,15 @@ export class ModuleManager extends EventEmitter {
         }
 
         // Build services context for the plugin
-        const services: ModuleServices | undefined = (this.pipeWire && this.mediaRouter && this.processManager)
-            ? { pipeWire: this.pipeWire, mediaRouter: this.mediaRouter, processManager: this.processManager, instanceId }
-            : undefined;
+        const services: ModuleServices | undefined =
+            this.pipeWire && this.mediaRouter && this.processManager
+                ? {
+                      pipeWire: this.pipeWire,
+                      mediaRouter: this.mediaRouter,
+                      processManager: this.processManager,
+                      instanceId,
+                  }
+                : undefined;
 
         const instance = new ModuleInstance(instanceId, pluginId, plugin, config, services);
 

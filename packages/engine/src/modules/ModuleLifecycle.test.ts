@@ -27,8 +27,20 @@ describe('ModuleLifecycle', () => {
 
         const getConfig = () => ({
             modules: {
-                'mod-a': { pluginId: 'example', displayName: 'Module A', enabled: true, settings: {}, ports: [] },
-                'mod-b': { pluginId: 'example', displayName: 'Module B', enabled: true, settings: {}, ports: [] },
+                'mod-a': {
+                    pluginId: 'example',
+                    displayName: 'Module A',
+                    enabled: true,
+                    settings: {},
+                    ports: [],
+                },
+                'mod-b': {
+                    pluginId: 'example',
+                    displayName: 'Module B',
+                    enabled: true,
+                    settings: {},
+                    ports: [],
+                },
             },
             connections: [],
         });
@@ -46,8 +58,20 @@ describe('ModuleLifecycle', () => {
     it('skips disabled modules', async () => {
         const getConfig = () => ({
             modules: {
-                'mod-a': { pluginId: 'example', displayName: 'A', enabled: true, settings: {}, ports: [] },
-                'mod-b': { pluginId: 'example', displayName: 'B', enabled: false, settings: {}, ports: [] },
+                'mod-a': {
+                    pluginId: 'example',
+                    displayName: 'A',
+                    enabled: true,
+                    settings: {},
+                    ports: [],
+                },
+                'mod-b': {
+                    pluginId: 'example',
+                    displayName: 'B',
+                    enabled: false,
+                    settings: {},
+                    ports: [],
+                },
             },
             connections: [],
         });
@@ -87,7 +111,10 @@ describe('ModuleLifecycle', () => {
     });
 
     it('does nothing when config has no modules', async () => {
-        lifecycle = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => ({ modules: {}, connections: [] }));
+        lifecycle = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => ({
+            modules: {},
+            connections: [],
+        }));
         await lifecycle.startAll();
         expect(moduleManager.size).toBe(0);
     });
@@ -126,11 +153,22 @@ describe('ModuleLifecycle', () => {
     describe('port registration fallback', () => {
         it('uses config ports when available', async () => {
             const configPorts = [
-                { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Audio Out' },
+                {
+                    id: 'audio-out',
+                    direction: 'output',
+                    streamType: 'audio/pcm',
+                    label: 'Audio Out',
+                },
             ];
             const getConfig = () => ({
                 modules: {
-                    'mic-1': { pluginId: 'example', displayName: 'Mic', enabled: true, settings: {}, ports: configPorts },
+                    'mic-1': {
+                        pluginId: 'example',
+                        displayName: 'Mic',
+                        enabled: true,
+                        settings: {},
+                        ports: configPorts,
+                    },
                 },
                 connections: [],
             });
@@ -152,7 +190,12 @@ describe('ModuleLifecycle', () => {
                         pluginId: 'example',
                         displayName: 'Example',
                         ports: [
-                            { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Audio Out' },
+                            {
+                                id: 'audio-out',
+                                direction: 'output',
+                                streamType: 'audio/pcm',
+                                label: 'Audio Out',
+                            },
                         ],
                     },
                 }),
@@ -161,20 +204,89 @@ describe('ModuleLifecycle', () => {
 
             const getConfig = () => ({
                 modules: {
-                    'mic-1': { pluginId: 'example', displayName: 'Mic', enabled: true, settings: {}, ports: [] },
+                    'mic-1': {
+                        pluginId: 'example',
+                        displayName: 'Mic',
+                        enabled: true,
+                        settings: {},
+                        ports: [],
+                    },
                 },
                 connections: [],
             });
 
             // Recreate moduleManager with the mock plugin loader
             const mm = new ModuleManager(mockPluginLoader, mockPipeWire, mediaRouter);
-            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, getConfig, mockPluginLoader);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                getConfig,
+                mockPluginLoader,
+            );
             await lc.startAll();
 
             // Port should be registered from plugin manifest fallback
             const port = mediaRouter.portRegistry.get('mic-1', 'audio-out');
             expect(port).toBeDefined();
             expect(port!.streamType).toBe('audio/pcm');
+        });
+
+        it('prefers manifest ports over stored config ports (stale-cache defence)', async () => {
+            // Stored config has a stale port definition (maxConnections: 1),
+            // manifest declares the current definition (maxConnections: -1).
+            // Manifest must win so port-config changes (e.g. allow-multi) propagate.
+            const stalePorts = [
+                {
+                    id: 'audio-in',
+                    direction: 'input',
+                    streamType: 'audio/pcm',
+                    label: 'Audio In',
+                    maxConnections: 1,
+                },
+            ];
+            const manifestPorts = [
+                {
+                    id: 'audio-in',
+                    direction: 'input',
+                    streamType: 'audio/pcm',
+                    label: 'Audio In',
+                    maxConnections: -1,
+                },
+            ];
+            const mockPluginLoader = {
+                get: vi.fn().mockReturnValue({
+                    manifest: { pluginId: 'example', displayName: 'Example', ports: manifestPorts },
+                }),
+                loadAll: vi.fn(),
+            } as any;
+
+            const getConfig = () => ({
+                modules: {
+                    'enc-1': {
+                        pluginId: 'example',
+                        displayName: 'Encoder',
+                        enabled: true,
+                        settings: {},
+                        ports: stalePorts,
+                    },
+                },
+                connections: [],
+            });
+
+            const mm = new ModuleManager(mockPluginLoader, mockPipeWire, mediaRouter);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                getConfig,
+                mockPluginLoader,
+            );
+            await lc.startAll();
+
+            const port = mediaRouter.portRegistry.get('enc-1', 'audio-in');
+            expect(port).toBeDefined();
+            expect(port!.maxConnections).toBe(-1);
         });
 
         it('falls back to plugin manifest ports when config has no ports field', async () => {
@@ -184,7 +296,12 @@ describe('ModuleLifecycle', () => {
                         pluginId: 'example',
                         displayName: 'Example',
                         ports: [
-                            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'MPEG-TS Out' },
+                            {
+                                id: 'mpegts-out',
+                                direction: 'output',
+                                streamType: 'muxed/mpegts',
+                                label: 'MPEG-TS Out',
+                            },
                         ],
                     },
                 }),
@@ -193,14 +310,25 @@ describe('ModuleLifecycle', () => {
 
             const getConfig = () => ({
                 modules: {
-                    'enc-1': { pluginId: 'example', displayName: 'Encoder', enabled: true, settings: {} },
+                    'enc-1': {
+                        pluginId: 'example',
+                        displayName: 'Encoder',
+                        enabled: true,
+                        settings: {},
+                    },
                     // Note: no 'ports' field at all
                 },
                 connections: [],
             });
 
             const mm = new ModuleManager(mockPluginLoader, mockPipeWire, mediaRouter);
-            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, getConfig, mockPluginLoader);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                getConfig,
+                mockPluginLoader,
+            );
             await lc.startAll();
 
             const port = mediaRouter.portRegistry.get('enc-1', 'mpegts-out');
@@ -217,7 +345,12 @@ describe('ModuleLifecycle', () => {
                         pluginId: 'example',
                         displayName: 'Example',
                         ports: [
-                            { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Audio Out' },
+                            {
+                                id: 'audio-out',
+                                direction: 'output',
+                                streamType: 'audio/pcm',
+                                label: 'Audio Out',
+                            },
                         ],
                     },
                 }),
@@ -225,13 +358,24 @@ describe('ModuleLifecycle', () => {
 
             const getConfig = () => ({
                 modules: {
-                    'mic-2': { pluginId: 'example', displayName: 'Mic 2', enabled: true, settings: {} },
+                    'mic-2': {
+                        pluginId: 'example',
+                        displayName: 'Mic 2',
+                        enabled: true,
+                        settings: {},
+                    },
                 },
                 connections: [],
             });
 
             const mm = new ModuleManager(mockPluginLoader, mockPipeWire, mediaRouter);
-            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, getConfig, mockPluginLoader);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                getConfig,
+                mockPluginLoader,
+            );
             await lc.startSingle('mic-2');
 
             const port = mediaRouter.portRegistry.get('mic-2', 'audio-out');
@@ -248,7 +392,12 @@ describe('ModuleLifecycle', () => {
                         pluginId: 'example',
                         displayName: 'Example',
                         ports: [
-                            { id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'Audio In' },
+                            {
+                                id: 'audio-in',
+                                direction: 'input',
+                                streamType: 'audio/pcm',
+                                label: 'Audio In',
+                            },
                         ],
                     },
                 }),
@@ -256,13 +405,24 @@ describe('ModuleLifecycle', () => {
 
             const getConfig = () => ({
                 modules: {
-                    'out-1': { pluginId: 'example', displayName: 'Output', enabled: false, settings: {} },
+                    'out-1': {
+                        pluginId: 'example',
+                        displayName: 'Output',
+                        enabled: false,
+                        settings: {},
+                    },
                 },
                 connections: [],
             });
 
             const mm = new ModuleManager(mockPluginLoader, mockPipeWire, mediaRouter);
-            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, getConfig, mockPluginLoader);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                getConfig,
+                mockPluginLoader,
+            );
             await lc.enable('out-1');
 
             const port = mediaRouter.portRegistry.get('out-1', 'audio-in');
@@ -290,7 +450,13 @@ describe('ModuleLifecycle', () => {
         it('marks module as disabled in config', async () => {
             const config = {
                 modules: {
-                    'mod-a': { pluginId: 'example', displayName: 'A', enabled: true, settings: {}, ports: [] },
+                    'mod-a': {
+                        pluginId: 'example',
+                        displayName: 'A',
+                        enabled: true,
+                        settings: {},
+                        ports: [],
+                    },
                 },
                 connections: [],
             };
@@ -314,7 +480,13 @@ describe('ModuleLifecycle', () => {
         it('starts a previously disabled module', async () => {
             const config = {
                 modules: {
-                    'mod-a': { pluginId: 'example', displayName: 'A', enabled: false, settings: {}, ports: [] },
+                    'mod-a': {
+                        pluginId: 'example',
+                        displayName: 'A',
+                        enabled: false,
+                        settings: {},
+                        ports: [],
+                    },
                 },
                 connections: [] as any[],
             };
@@ -382,10 +554,22 @@ describe('ModuleLifecycle', () => {
 
             // Register ports and create a connection so there's something to tear down
             mediaRouter.registerPorts('mod-a', [
-                { id: 'out', direction: 'output', streamType: 'audio/pcm', label: 'Out', maxConnections: -1 },
+                {
+                    id: 'out',
+                    direction: 'output',
+                    streamType: 'audio/pcm',
+                    label: 'Out',
+                    maxConnections: -1,
+                },
             ]);
             mediaRouter.registerPorts('mod-b', [
-                { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In', maxConnections: -1 },
+                {
+                    id: 'in',
+                    direction: 'input',
+                    streamType: 'audio/pcm',
+                    label: 'In',
+                    maxConnections: -1,
+                },
             ]);
             await mediaRouter.createConnection('mod-a', 'out', 'mod-b', 'in');
 
@@ -414,7 +598,13 @@ describe('ModuleLifecycle', () => {
         it('skips disabled modules', async () => {
             const config = {
                 modules: {
-                    'mod-a': { pluginId: 'example', displayName: 'A', enabled: false, settings: {}, ports: [] },
+                    'mod-a': {
+                        pluginId: 'example',
+                        displayName: 'A',
+                        enabled: false,
+                        settings: {},
+                        ports: [],
+                    },
                 },
                 connections: [] as any[],
             };
@@ -435,12 +625,24 @@ describe('ModuleLifecycle', () => {
             } as any;
             const config = {
                 modules: {
-                    'mod-fail': { pluginId: 'nonexistent-plugin', displayName: 'Fail', enabled: true, settings: {}, ports: [] },
+                    'mod-fail': {
+                        pluginId: 'nonexistent-plugin',
+                        displayName: 'Fail',
+                        enabled: true,
+                        settings: {},
+                        ports: [],
+                    },
                 },
                 connections: [] as any[],
             };
             const mm = new ModuleManager(badPluginLoader, mockPipeWire, mediaRouter);
-            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, () => config, badPluginLoader);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                () => config,
+                badPluginLoader,
+            );
             // Should not throw — error is caught internally
             await lc.startSingle('mod-fail');
         });
@@ -470,7 +672,12 @@ describe('ModuleLifecycle', () => {
                         pluginId: 'srt-input',
                         displayName: 'SRT Input',
                         ports: [
-                            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'MPEG-TS Out' },
+                            {
+                                id: 'mpegts-out',
+                                direction: 'output',
+                                streamType: 'muxed/mpegts',
+                                label: 'MPEG-TS Out',
+                            },
                         ],
                     },
                 }),
@@ -479,13 +686,24 @@ describe('ModuleLifecycle', () => {
             // Config has no ports field — resolvePorts must use manifest
             const getConfig = () => ({
                 modules: {
-                    'srt-1': { pluginId: 'srt-input', displayName: 'SRT Input', enabled: true, settings: {} },
+                    'srt-1': {
+                        pluginId: 'srt-input',
+                        displayName: 'SRT Input',
+                        enabled: true,
+                        settings: {},
+                    },
                 },
                 connections: [],
             });
 
             const mm = new ModuleManager(mockPluginLoader, mockPipeWire, mediaRouter);
-            const lc = new ModuleLifecycle(mm, mediaRouter, mockPipeWire, getConfig, mockPluginLoader);
+            const lc = new ModuleLifecycle(
+                mm,
+                mediaRouter,
+                mockPipeWire,
+                getConfig,
+                mockPluginLoader,
+            );
             await lc.startAll();
 
             // Port should be registered from manifest with correct streamType

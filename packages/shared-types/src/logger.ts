@@ -27,7 +27,11 @@ export function createLogger(name: string): pino.Logger {
     const tee = new Transform({
         transform(chunk, _encoding, callback) {
             if (globalLogTap) {
-                try { globalLogTap(chunk.toString()); } catch { /* never block */ }
+                try {
+                    globalLogTap(chunk.toString());
+                } catch {
+                    /* never block */
+                }
             }
             callback(null, chunk);
         },

@@ -29,45 +29,59 @@ export function probeMpegTsStream(
         // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port
         const isMulticast = host.startsWith('239.');
         const udpSrcArgs = isMulticast
-            ? ['udpsrc', `multicast-group=${host}`, `port=${port}`, 'multicast-iface=lo', 'auto-multicast=true', 'num-buffers=50']
+            ? [
+                  'udpsrc',
+                  `multicast-group=${host}`,
+                  `port=${port}`,
+                  'multicast-iface=lo',
+                  'auto-multicast=true',
+                  'num-buffers=50',
+              ]
             : ['udpsrc', `port=${port}`, 'num-buffers=50'];
-        const args = [
-            '-v',
-            ...udpSrcArgs,
-            '!', 'tsdemux', 'latency=0',
-            '!', 'fakesink',
-        ];
+        const args = ['-v', ...udpSrcArgs, '!', 'tsdemux', 'latency=0', '!', 'fakesink'];
 
         log.info({ host, port }, 'Probing MPEG-TS stream');
 
         let resolved = false;
-        const child = execFile('gst-launch-1.0', args, {
-            timeout: timeoutMs,
-            maxBuffer: 1024 * 64,
-        }, (err, stdout, stderr) => {
-            if (resolved) return;
-            resolved = true;
-            clearTimeout(safetyTimer);
+        const child = execFile(
+            'gst-launch-1.0',
+            args,
+            {
+                timeout: timeoutMs,
+                maxBuffer: 1024 * 64,
+            },
+            (err, stdout, stderr) => {
+                if (resolved) return;
+                resolved = true;
+                clearTimeout(safetyTimer);
 
-            const output = (stdout ?? '') + (stderr ?? '');
-            const capsMatch = output.match(/caps\s*=\s*(audio\/[^\n]+)/);
+                const output = (stdout ?? '') + (stderr ?? '');
+                const capsMatch = output.match(/caps\s*=\s*(audio\/[^\n]+)/);
 
-            if (!capsMatch) {
-                log.warn({ host, port }, 'No audio caps detected');
-                resolve({ codec: 'unknown', rawCaps: '' });
-                return;
-            }
+                if (!capsMatch) {
+                    log.warn({ host, port }, 'No audio caps detected');
+                    resolve({ codec: 'unknown', rawCaps: '' });
+                    return;
+                }
 
-            const rawCaps = capsMatch[1].trim();
-            const result = parseCaps(rawCaps);
-            log.info({ host, port, codec: result.codec, channels: result.channels, rawCaps }, 'Detected codec');
-            resolve(result);
-        });
+                const rawCaps = capsMatch[1].trim();
+                const result = parseCaps(rawCaps);
+                log.info(
+                    { host, port, codec: result.codec, channels: result.channels, rawCaps },
+                    'Detected codec',
+                );
+                resolve(result);
+            },
+        );
 
         // Safety: kill if still running after timeout (guards against execFile timeout not firing)
         const safetyTimer = setTimeout(() => {
             if (resolved) return;
-            try { child.kill('SIGKILL'); } catch { /* already dead */ }
+            try {
+                child.kill('SIGKILL');
+            } catch {
+                /* already dead */
+            }
         }, timeoutMs + 500);
     });
 }
@@ -101,4 +115,3 @@ function parseCaps(rawCaps: string): ProbeResult {
 
     return { codec: 'unknown', sampleRate, channels, rawCaps };
 }
-

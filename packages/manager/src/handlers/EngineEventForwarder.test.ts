@@ -47,7 +47,16 @@ function createMocks() {
     const forwarder = new EngineEventForwarder(configStore, engineManager, engineCommands, io);
     forwarder.setup();
 
-    return { forwarder, configStore, engineManager, engineCommands, io, volatileEmit, toRoom, roomVolatileEmit };
+    return {
+        forwarder,
+        configStore,
+        engineManager,
+        engineCommands,
+        io,
+        volatileEmit,
+        toRoom,
+        roomVolatileEmit,
+    };
 }
 
 describe('EngineEventForwarder', () => {
@@ -96,7 +105,10 @@ describe('EngineEventForwarder', () => {
 
             expect(engineCommands.sendCommand).not.toHaveBeenCalled();
             expect(engineManager.sendToEngine).toHaveBeenCalledWith(
-                'eng-1', 'config', expect.any(Object), expect.objectContaining({ guaranteeDelivery: true }),
+                'eng-1',
+                'config',
+                expect.any(Object),
+                expect.objectContaining({ guaranteeDelivery: true }),
             );
         });
 
@@ -211,7 +223,10 @@ describe('EngineEventForwarder', () => {
         it('buffers log entries and forwards to watchers', () => {
             const { forwarder, engineManager, toRoom, roomVolatileEmit } = createMocks();
 
-            const batch = [{ ts: 1, msg: 'hello' }, { ts: 2, msg: 'world' }];
+            const batch = [
+                { ts: 1, msg: 'hello' },
+                { ts: 2, msg: 'world' },
+            ];
             engineManager.emit('engineLogs', 'eng-1', batch);
 
             expect(toRoom).toHaveBeenCalledWith('watch:eng-1');
@@ -235,7 +250,10 @@ describe('EngineEventForwarder', () => {
             const { forwarder, engineManager } = createMocks();
 
             // Send a large batch that exceeds 1000
-            const largeBatch = Array.from({ length: 1100 }, (_, i) => ({ ts: i, msg: `entry-${i}` }));
+            const largeBatch = Array.from({ length: 1100 }, (_, i) => ({
+                ts: i,
+                msg: `entry-${i}`,
+            }));
             engineManager.emit('engineLogs', 'eng-1', largeBatch);
 
             const buffer = forwarder.getLogBuffer('eng-1');
@@ -264,7 +282,10 @@ describe('EngineEventForwarder', () => {
             engineManager.emit('engineLcpCommand', 'eng-1', { command: 'start' });
 
             expect(engineCommands.setRunning).toHaveBeenCalledWith('eng-1', true);
-            expect(io.emit).toHaveBeenCalledWith('engine:running', { engineId: 'eng-1', running: true });
+            expect(io.emit).toHaveBeenCalledWith('engine:running', {
+                engineId: 'eng-1',
+                running: true,
+            });
         });
 
         it('sets stopped state and broadcasts on stop command', () => {
@@ -273,7 +294,10 @@ describe('EngineEventForwarder', () => {
             engineManager.emit('engineLcpCommand', 'eng-1', { command: 'stop' });
 
             expect(engineCommands.setRunning).toHaveBeenCalledWith('eng-1', false);
-            expect(io.emit).toHaveBeenCalledWith('engine:running', { engineId: 'eng-1', running: false });
+            expect(io.emit).toHaveBeenCalledWith('engine:running', {
+                engineId: 'eng-1',
+                running: false,
+            });
         });
 
         it('ignores missing command field', () => {
@@ -289,10 +313,17 @@ describe('EngineEventForwarder', () => {
         it('updates config and broadcasts port changes', () => {
             const { engineManager, configStore, io } = createMocks();
 
-            const ports = [{ id: 'in-0', direction: 'input' }, { id: 'out-0', direction: 'output' }];
+            const ports = [
+                { id: 'in-0', direction: 'input' },
+                { id: 'out-0', direction: 'output' },
+            ];
             engineManager.emit('engineDynamicPorts', 'eng-1', { moduleId: 'mod-1', ports });
 
-            expect(configStore.modifyProfileConfig).toHaveBeenCalledWith('eng-1', 'default', expect.any(Function));
+            expect(configStore.modifyProfileConfig).toHaveBeenCalledWith(
+                'eng-1',
+                'default',
+                expect.any(Function),
+            );
             expect(io.emit).toHaveBeenCalledWith('engine:update', {
                 engineId: 'eng-1',
                 patch: [{ op: 'replace', path: '/modules/mod-1/ports', value: ports }],

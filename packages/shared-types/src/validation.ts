@@ -124,6 +124,70 @@ export const BrowserPatchPayloadSchema = z.object({
     ops: PatchOpsSchema,
 });
 
+// --- Interlocks -------------------------------------------------------------
+
+/**
+ * An "interlock" is an exclusive-mute group: at most one member may have
+ * `settings.audioEnabled === true` at a time. Unmuting one auto-mutes the rest.
+ */
+export const InterlockSchema = z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    members: z.array(z.string().min(1)),
+    color: z.string().optional(),
+});
+
+export const InterlocksSchema = z.array(InterlockSchema);
+
+export interface InterlockInvariantIssue {
+    kind: 'duplicate-id' | 'duplicate-member' | 'unknown-member' | 'ineligible-member';
+    interlockId: string;
+    moduleId?: string;
+}
+
+/**
+ * Check that an interlocks array satisfies cross-entry invariants:
+ *  - unique interlock ids
+ *  - each moduleId appears in at most one group
+ *  - every moduleId exists in the provided set (if given)
+ *  - every moduleId is eligible per `isEligible` predicate (if given)
+ */
+export function validateInterlocksInvariants(
+    interlocks: Array<{ id: string; members: string[] }>,
+    opts: {
+        knownModuleIds?: ReadonlySet<string>;
+        isEligible?: (moduleId: string) => boolean;
+    } = {},
+): InterlockInvariantIssue[] {
+    const issues: InterlockInvariantIssue[] = [];
+    const seenIds = new Set<string>();
+    const seenMembers = new Map<string, string>(); // moduleId → owning interlockId
+
+    for (const ilk of interlocks) {
+        if (seenIds.has(ilk.id)) {
+            issues.push({ kind: 'duplicate-id', interlockId: ilk.id });
+        } else {
+            seenIds.add(ilk.id);
+        }
+
+        for (const moduleId of ilk.members) {
+            const owner = seenMembers.get(moduleId);
+            if (owner && owner !== ilk.id) {
+                issues.push({ kind: 'duplicate-member', interlockId: ilk.id, moduleId });
+            } else {
+                seenMembers.set(moduleId, ilk.id);
+            }
+            if (opts.knownModuleIds && !opts.knownModuleIds.has(moduleId)) {
+                issues.push({ kind: 'unknown-member', interlockId: ilk.id, moduleId });
+            }
+            if (opts.isEligible && !opts.isEligible(moduleId)) {
+                issues.push({ kind: 'ineligible-member', interlockId: ilk.id, moduleId });
+            }
+        }
+    }
+    return issues;
+}
+
 // --- Helpers ----------------------------------------------------------------
 
 type Logger = { warn: (obj: Record<string, unknown>, msg: string) => void };
@@ -141,7 +205,10 @@ export function safeParse<T>(
 ): T | undefined {
     const result = schema.safeParse(data);
     if (result.success) return result.data;
-    logger?.warn({ context, issues: formatIssues(result.error) }, 'Validation failed — dropping message');
+    logger?.warn(
+        { context, issues: formatIssues(result.error) },
+        'Validation failed — dropping message',
+    );
     return undefined;
 }
 
@@ -159,7 +226,10 @@ export function validated<T>(
     return (raw: unknown, ...rest: unknown[]) => {
         const result = schema.safeParse(raw);
         if (!result.success) {
-            logger.warn({ issues: formatIssues(result.error) }, 'Validation failed — dropping event');
+            logger.warn(
+                { issues: formatIssues(result.error) },
+                'Validation failed — dropping event',
+            );
             return;
         }
         handler(result.data);

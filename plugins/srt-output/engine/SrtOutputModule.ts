@@ -19,7 +19,10 @@ function formatBytes(bytes: number): string {
 export class SrtOutputModule extends GstPluginBase {
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     // Per-caller delta tracking for packet loss
-    private callerStats = new Map<number, { prevLost: number; prevSent: number; lossAvg: number }>();
+    private callerStats = new Map<
+        number,
+        { prevLost: number; prevSent: number; lossAvg: number }
+    >();
     /** Previous bytes-sent total — used to detect stalled connections in caller mode. */
     private lastSentBytes = 0;
 
@@ -32,7 +35,10 @@ export class SrtOutputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+        if (this.statsTimer) {
+            clearInterval(this.statsTimer);
+            this.statsTimer = null;
+        }
         await super.onStop();
     }
 
@@ -81,7 +87,11 @@ export class SrtOutputModule extends GstPluginBase {
 
             if (callers && callers.length > 0) {
                 // Listener mode — per-caller stats as dynamic sections
-                const sections: Array<{ id: string; label: string; fields: Array<{ key: string; label: string; unit?: string }> }> = [];
+                const sections: Array<{
+                    id: string;
+                    label: string;
+                    fields: Array<{ key: string; label: string; unit?: string }>;
+                }> = [];
                 const callerFields = [
                     { key: 'bitrate', label: 'Bitrate', unit: 'Mbps' },
                     { key: 'rtt', label: 'RTT', unit: 'ms' },
@@ -92,7 +102,11 @@ export class SrtOutputModule extends GstPluginBase {
                 for (let i = 0; i < callers.length; i++) {
                     const c = callers[i];
                     const sectionId = `caller-${i}`;
-                    sections.push({ id: sectionId, label: `Caller ${i + 1}`, fields: callerFields });
+                    sections.push({
+                        id: sectionId,
+                        label: `Caller ${i + 1}`,
+                        fields: callerFields,
+                    });
 
                     // Get or create per-caller tracking
                     if (!this.callerStats.has(i)) {
@@ -101,7 +115,9 @@ export class SrtOutputModule extends GstPluginBase {
                     const tracker = this.callerStats.get(i)!;
 
                     const rtt = (c['rtt-ms'] ?? '—') as string | number;
-                    const bitrate = (c['send-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as string | number;
+                    const bitrate = (c['send-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as
+                        | string
+                        | number;
                     const rawBytes = Number(c['bytes-sent'] ?? 0);
                     const bytesSent = rawBytes > 0 ? formatBytes(rawBytes) : '—';
 
@@ -128,7 +144,11 @@ export class SrtOutputModule extends GstPluginBase {
                 // Update dynamic sections and summary
                 this.dynamicStatusSections = sections;
                 this.setStatusData('stats', { callers: callerCount });
-                this.setBadge('callers', { icon: 'users', text: String(callerCount), color: callerCount > 0 ? '#10b981' : '#6b7280' });
+                this.setBadge('callers', {
+                    icon: 'users',
+                    text: String(callerCount),
+                    color: callerCount > 0 ? '#10b981' : '#6b7280',
+                });
                 if (callerCount === 0) {
                     this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
                 } else {
@@ -143,7 +163,9 @@ export class SrtOutputModule extends GstPluginBase {
                 // Caller mode — check if actually sending by looking at bytes delta
                 const c = stats;
                 const rtt = (c['rtt-ms'] ?? '—') as string | number;
-                const bitrate = (c['send-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as string | number;
+                const bitrate = (c['send-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as
+                    | string
+                    | number;
                 const rawBytes = Number(c['bytes-sent'] ?? stats['bytes-sent-total'] ?? 0);
                 const bytesSent = rawBytes > 0 ? formatBytes(rawBytes) : '—';
                 const prevBytes = this.lastSentBytes;
@@ -172,15 +194,27 @@ export class SrtOutputModule extends GstPluginBase {
                 tracker.prevSent = currSent;
 
                 this.dynamicStatusSections = [];
-                this.setStatusData('stats', { bitrate, rtt, packetLoss, bytesSent, callers: callerCount || '—' });
+                this.setStatusData('stats', {
+                    bitrate,
+                    rtt,
+                    packetLoss,
+                    bytesSent,
+                    callers: callerCount || '—',
+                });
                 if (isSending) {
                     this.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
                 } else {
-                    this.setBadge('status', { icon: 'radio', text: rawBytes > 0 ? 'Stalled' : 'Connecting', color: '#f59e0b' });
+                    this.setBadge('status', {
+                        icon: 'radio',
+                        text: rawBytes > 0 ? 'Stalled' : 'Connecting',
+                        color: '#f59e0b',
+                    });
                 }
                 this.clearBadge('callers');
             }
-        } catch { /* best-effort */ }
+        } catch {
+            /* best-effort */
+        }
     }
 
     private updateStatusData(): void {

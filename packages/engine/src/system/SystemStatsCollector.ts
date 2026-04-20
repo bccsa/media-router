@@ -45,7 +45,8 @@ export class SystemStatsCollector {
                 }
                 const totalDelta = totalTick - this.prevCpuTotal;
                 const idleDelta = idleTick - this.prevCpuIdle;
-                const cpuPercent = totalDelta > 0 ? Math.round((1 - idleDelta / totalDelta) * 100) : 0;
+                const cpuPercent =
+                    totalDelta > 0 ? Math.round((1 - idleDelta / totalDelta) * 100) : 0;
                 this.prevCpuTotal = totalTick;
                 this.prevCpuIdle = idleTick;
 
@@ -57,7 +58,9 @@ export class SystemStatsCollector {
                 try {
                     const temp = fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf-8');
                     cpuTemp = Math.round(parseInt(temp, 10) / 1000);
-                } catch { /* thermal zone not available on this hardware */ }
+                } catch {
+                    /* thermal zone not available on this hardware */
+                }
 
                 const stats: SystemStats = { cpu: cpuPercent, mem: memPercent, temp: cpuTemp };
 
@@ -75,7 +78,9 @@ export class SystemStatsCollector {
                 this.sampleCount++;
 
                 this.onStats(stats);
-            } catch (err) { log.debug({ err }, 'Stats collection tick failed'); }
+            } catch (err) {
+                log.debug({ err }, 'Stats collection tick failed');
+            }
         }, this.intervalMs);
     }
 

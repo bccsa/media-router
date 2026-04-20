@@ -36,12 +36,19 @@ export class PortRegistry {
     getConnectionCount(
         moduleId: string,
         portId: string,
-        connections: Iterable<{ sourceModuleId: string; sourcePortId: string; sinkModuleId: string; sinkPortId: string }>,
+        connections: Iterable<{
+            sourceModuleId: string;
+            sourcePortId: string;
+            sinkModuleId: string;
+            sinkPortId: string;
+        }>,
     ): number {
         let count = 0;
         for (const conn of connections) {
-            if ((conn.sourceModuleId === moduleId && conn.sourcePortId === portId) ||
-                (conn.sinkModuleId === moduleId && conn.sinkPortId === portId)) {
+            if (
+                (conn.sourceModuleId === moduleId && conn.sourcePortId === portId) ||
+                (conn.sinkModuleId === moduleId && conn.sinkPortId === portId)
+            ) {
                 count++;
             }
         }

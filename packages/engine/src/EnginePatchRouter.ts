@@ -85,7 +85,12 @@ export class EnginePatchRouter {
             const parts = op.path.split('/').filter(Boolean);
 
             // Module settings change → collect for batched live update
-            if (parts[0] === 'modules' && parts[2] === 'settings' && parts[3] && (op.op === 'replace' || op.op === 'add')) {
+            if (
+                parts[0] === 'modules' &&
+                parts[2] === 'settings' &&
+                parts[3] &&
+                (op.op === 'replace' || op.op === 'add')
+            ) {
                 const moduleId = parts[1];
                 const key = parts[3];
                 if (!settingsChanges.has(moduleId)) settingsChanges.set(moduleId, {});
@@ -96,7 +101,11 @@ export class EnginePatchRouter {
             if (parts[0] === 'modules' && parts[2] === 'enabled' && op.op === 'replace') {
                 const moduleId = parts[1];
                 this.lifecycleLock = this.lifecycleLock
-                    .then(() => op.value ? this.lifecycle.enable(moduleId) : this.lifecycle.disable(moduleId))
+                    .then(() =>
+                        op.value
+                            ? this.lifecycle.enable(moduleId)
+                            : this.lifecycle.disable(moduleId),
+                    )
                     .catch((err) => log.error({ err, moduleId }, 'Enable/disable failed'));
             }
 
@@ -121,14 +130,18 @@ export class EnginePatchRouter {
                 const conn = op.value as Record<string, unknown>;
                 if (conn?.sourceModuleId) {
                     this.lifecycleLock = this.lifecycleLock
-                        .then(() => this.mediaRouter.createConnection(
-                            conn.sourceModuleId as string,
-                            conn.sourcePortId as string,
-                            conn.sinkModuleId as string,
-                            conn.sinkPortId as string,
-                            conn.channelMap as ChannelMapEntry[] | undefined,
-                        ))
-                        .then((connId) => { log.info({ connectionId: connId }, 'Live connect'); })
+                        .then(() =>
+                            this.mediaRouter.createConnection(
+                                conn.sourceModuleId as string,
+                                conn.sourcePortId as string,
+                                conn.sinkModuleId as string,
+                                conn.sinkPortId as string,
+                                conn.channelMap as ChannelMapEntry[] | undefined,
+                            ),
+                        )
+                        .then((connId) => {
+                            log.info({ connectionId: connId }, 'Live connect');
+                        })
                         .catch((err) => log.error({ err }, 'Live connect failed'));
                 }
             }
@@ -138,13 +151,19 @@ export class EnginePatchRouter {
                 const connectionId = op._connId as string | undefined;
                 if (connectionId) {
                     this.lifecycleLock = this.lifecycleLock
-                        .then(async () => { await this.mediaRouter.removeConnection(connectionId); })
+                        .then(async () => {
+                            await this.mediaRouter.removeConnection(connectionId);
+                        })
                         .catch((err) => log.error({ err, connectionId }, 'Live disconnect failed'));
                 }
             }
 
             // Channel map updated → update routing (chained to lifecycle lock)
-            if (parts[0] === 'connections' && parts[2] === 'channelMap' && (op.op === 'replace' || op.op === 'add')) {
+            if (
+                parts[0] === 'connections' &&
+                parts[2] === 'channelMap' &&
+                (op.op === 'replace' || op.op === 'add')
+            ) {
                 let connectionId = op._connId as string | undefined;
                 if (!connectionId) {
                     const idx = parseInt(parts[1], 10);
@@ -153,19 +172,36 @@ export class EnginePatchRouter {
                 }
                 if (connectionId) {
                     const resolvedId = connectionId;
-                    log.info({ connectionId: resolvedId, hasMap: op.value != null }, 'Channel map update');
+                    log.info(
+                        { connectionId: resolvedId, hasMap: op.value != null },
+                        'Channel map update',
+                    );
                     this.lifecycleLock = this.lifecycleLock
-                        .then(() => this.mediaRouter.updateChannelMap(resolvedId, op.value as ChannelMapEntry[] | undefined))
-                        .catch((err) => log.error({ err, connectionId: resolvedId }, 'Channel map update failed'));
+                        .then(() =>
+                            this.mediaRouter.updateChannelMap(
+                                resolvedId,
+                                op.value as ChannelMapEntry[] | undefined,
+                            ),
+                        )
+                        .catch((err) =>
+                            log.error(
+                                { err, connectionId: resolvedId },
+                                'Channel map update failed',
+                            ),
+                        );
                 } else {
-                    log.warn({ path: op.path }, 'Channel map update — could not resolve connection ID');
+                    log.warn(
+                        { path: op.path },
+                        'Channel map update — could not resolve connection ID',
+                    );
                 }
             }
         }
 
         // Apply batched settings changes (live config updates)
         for (const [moduleId, changes] of settingsChanges) {
-            this.moduleManager.applyConfigUpdate(moduleId, changes)
+            this.moduleManager
+                .applyConfigUpdate(moduleId, changes)
                 .catch((err) => log.warn({ err, moduleId }, 'Live config update failed'));
         }
     }
@@ -175,7 +211,10 @@ export class EnginePatchRouter {
      * After applyJsonPatch removes a connection, we can't look it up anymore.
      * Attaches _connId to ops that reference connections by index.
      */
-    private resolveConnectionIds(ops: PatchOp[], config: Record<string, unknown>): ResolvedPatchOp[] {
+    private resolveConnectionIds(
+        ops: PatchOp[],
+        config: Record<string, unknown>,
+    ): ResolvedPatchOp[] {
         const connections = (config.connections ?? []) as Array<Record<string, unknown>>;
         return ops.map((op) => {
             const parts = op.path.split('/').filter(Boolean);
@@ -207,13 +246,16 @@ export class EnginePatchRouter {
         const key = 'lcpPatch';
         const existing = this.debounceTimers.get(key);
         if (existing) clearTimeout(existing);
-        this.debounceTimers.set(key, setTimeout(() => {
-            this.debounceTimers.delete(key);
-            if (this.managerConnection.isConnected && this.pendingOps.length > 0) {
-                this.managerConnection.send('patch', { ops: this.pendingOps });
-            }
-            this.pendingOps = [];
-        }, 100));
+        this.debounceTimers.set(
+            key,
+            setTimeout(() => {
+                this.debounceTimers.delete(key);
+                if (this.managerConnection.isConnected && this.pendingOps.length > 0) {
+                    this.managerConnection.send('patch', { ops: this.pendingOps });
+                }
+                this.pendingOps = [];
+            }, 100),
+        );
     }
 
     /** Clean up timers. */

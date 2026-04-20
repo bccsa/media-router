@@ -37,15 +37,22 @@ export class RistOutputModule extends GstPluginBase {
         const inputUrl = `udp://${udpSource.host}:${udpSource.port}`;
 
         // Build RIST output URLs from links config
-        const links = (this.config.links as RistLink[]) ?? [{ mode: 'caller', address: 'localhost', port: 5004, weight: 50, cname: 'link1' }];
-        const outputUrls = links.map((link) => {
-            const params: string[] = [];
-            if (link.weight !== undefined) params.push(`weight=${link.weight}`);
-            if (link.cname) params.push(`cname=${link.cname}`);
-            // RIST URL: rist://@host:port for listener, rist://host:port for caller
-            const addr = link.mode === 'listener' ? `@${link.address || '0.0.0.0'}` : (link.address || 'localhost');
-            return `rist://${addr}:${link.port}${params.length ? '?' + params.join('&') : ''}`;
-        }).join(',');
+        const links = (this.config.links as RistLink[]) ?? [
+            { mode: 'caller', address: 'localhost', port: 5004, weight: 50, cname: 'link1' },
+        ];
+        const outputUrls = links
+            .map((link) => {
+                const params: string[] = [];
+                if (link.weight !== undefined) params.push(`weight=${link.weight}`);
+                if (link.cname) params.push(`cname=${link.cname}`);
+                // RIST URL: rist://@host:port for listener, rist://host:port for caller
+                const addr =
+                    link.mode === 'listener'
+                        ? `@${link.address || '0.0.0.0'}`
+                        : link.address || 'localhost';
+                return `rist://${addr}:${link.port}${params.length ? '?' + params.join('&') : ''}`;
+            })
+            .join(',');
 
         // Build CLI args
         const args = ['-i', inputUrl, '-o', outputUrls];
@@ -60,24 +67,24 @@ export class RistOutputModule extends GstPluginBase {
         args.push('-b', String(buffer));
         args.push('-S', String(statsInterval));
         args.push('-v', '6');
-        if (secret) { args.push('-s', secret); args.push('-e', String(encType)); }
+        if (secret) {
+            args.push('-s', secret);
+            args.push('-e', String(encType));
+        }
         if (npd) args.push('-n');
 
         // Spawn ristsender via ProcessManager
         if (this.services?.processManager) {
-            this.sender = this.services.processManager.spawn(
-                this.services.instanceId,
-                {
-                    label: 'ristsender',
-                    command: 'ristsender',
-                    args,
-                    autoRestart: true,
-                    onStderr: (line) => {
-                        if (line.includes('-stats"')) this.parseStats(line);
-                        // Non-stats lines are logged by ManagedProcess at warn level
-                    },
+            this.sender = this.services.processManager.spawn(this.services.instanceId, {
+                label: 'ristsender',
+                command: 'ristsender',
+                args,
+                autoRestart: true,
+                onStderr: (line) => {
+                    if (line.includes('-stats"')) this.parseStats(line);
+                    // Non-stats lines are logged by ManagedProcess at warn level
                 },
-            );
+            });
             this.sender.on('started', () => {
                 this.running = true;
                 this.ready = true;
@@ -105,7 +112,10 @@ export class RistOutputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
-        if (this.peerCleanupTimer) { clearInterval(this.peerCleanupTimer); this.peerCleanupTimer = null; }
+        if (this.peerCleanupTimer) {
+            clearInterval(this.peerCleanupTimer);
+            this.peerCleanupTimer = null;
+        }
         this.sender = null;
         this.lastStats = {};
         this.peerLastSeen.clear();
@@ -123,13 +133,19 @@ export class RistOutputModule extends GstPluginBase {
         for (const [id, ts] of this.peerLastSeen) {
             if (now - ts > 3000) {
                 this.peerLastSeen.delete(id);
-                this.dynamicStatusSections = this.dynamicStatusSections.filter((sec) => sec.id !== `peer-${id}`);
+                this.dynamicStatusSections = this.dynamicStatusSections.filter(
+                    (sec) => sec.id !== `peer-${id}`,
+                );
                 changed = true;
             }
         }
         if (changed) {
             const peerCount = this.peerLastSeen.size;
-            this.setBadge('connections', { icon: 'link', text: `${peerCount}`, color: peerCount > 0 ? '#10b981' : '#6b7280' });
+            this.setBadge('connections', {
+                icon: 'link',
+                text: `${peerCount}`,
+                color: peerCount > 0 ? '#10b981' : '#6b7280',
+            });
             if (peerCount === 0) {
                 this.clearBadge('quality');
             }
@@ -156,7 +172,10 @@ export class RistOutputModule extends GstPluginBase {
                 sent: Number(s.sent ?? 0),
                 retransmitted: Number(s.retransmitted ?? 0),
                 bandwidth: typeof s.bandwidth === 'number' ? `${s.bandwidth} kbps` : '—',
-                rtt: typeof s.avg_rtt === 'number' ? `${s.avg_rtt.toFixed(2)}` : String(s.rtt ?? '—'),
+                rtt:
+                    typeof s.avg_rtt === 'number'
+                        ? `${s.avg_rtt.toFixed(2)}`
+                        : String(s.rtt ?? '—'),
             });
 
             // Dynamic section per peer
@@ -182,9 +201,19 @@ export class RistOutputModule extends GstPluginBase {
             this.cleanupStalePeers();
 
             // Update badges
-            this.setBadge('quality', { icon: 'signal', text: `${s.quality ?? 0}%`, color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444' });
+            this.setBadge('quality', {
+                icon: 'signal',
+                text: `${s.quality ?? 0}%`,
+                color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444',
+            });
             const peerCount = this.peerLastSeen.size;
-            this.setBadge('connections', { icon: 'link', text: `${peerCount}`, color: peerCount > 0 ? '#10b981' : '#6b7280' });
-        } catch { /* not a stats line */ }
+            this.setBadge('connections', {
+                icon: 'link',
+                text: `${peerCount}`,
+                color: peerCount > 0 ? '#10b981' : '#6b7280',
+            });
+        } catch {
+            /* not a stats line */
+        }
     }
 }

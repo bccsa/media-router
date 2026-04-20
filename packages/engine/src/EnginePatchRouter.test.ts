@@ -37,8 +37,11 @@ function createMocks() {
     } as any;
 
     const router = new EnginePatchRouter(
-        moduleManager, mediaRouter, lcpServer,
-        managerConnection, lifecycle,
+        moduleManager,
+        mediaRouter,
+        lcpServer,
+        managerConnection,
+        lifecycle,
         () => config,
     );
 
@@ -88,7 +91,10 @@ describe('EnginePatchRouter', () => {
             router.onPatch('lcp-1', 'lcp', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
             ]);
-            expect(lcpServer.broadcastConfigUpdateExcept).toHaveBeenCalledWith('lcp-1', expect.any(Array));
+            expect(lcpServer.broadcastConfigUpdateExcept).toHaveBeenCalledWith(
+                'lcp-1',
+                expect.any(Array),
+            );
         });
 
         it('debounced forwards to manager', async () => {
@@ -100,7 +106,10 @@ describe('EnginePatchRouter', () => {
             expect(managerConnection.send).not.toHaveBeenCalled();
             // Wait for debounce
             await new Promise((r) => setTimeout(r, 150));
-            expect(managerConnection.send).toHaveBeenCalledWith('patch', expect.objectContaining({ ops: expect.any(Array) }));
+            expect(managerConnection.send).toHaveBeenCalledWith(
+                'patch',
+                expect.objectContaining({ ops: expect.any(Array) }),
+            );
         });
     });
 
@@ -116,11 +125,26 @@ describe('EnginePatchRouter', () => {
         it('triggers connection creation for connection add', async () => {
             const { router, mediaRouter } = createMocks();
             router.onPatch('manager', 'manager', [
-                { op: 'add', path: '/connections/-', value: { sourceModuleId: 'a', sourcePortId: 'out', sinkModuleId: 'b', sinkPortId: 'in' } },
+                {
+                    op: 'add',
+                    path: '/connections/-',
+                    value: {
+                        sourceModuleId: 'a',
+                        sourcePortId: 'out',
+                        sinkModuleId: 'b',
+                        sinkPortId: 'in',
+                    },
+                },
             ]);
             // Connection creation is chained to the lifecycle lock
             await new Promise((r) => setTimeout(r, 10));
-            expect(mediaRouter.createConnection).toHaveBeenCalledWith('a', 'out', 'b', 'in', undefined);
+            expect(mediaRouter.createConnection).toHaveBeenCalledWith(
+                'a',
+                'out',
+                'b',
+                'in',
+                undefined,
+            );
         });
     });
 
@@ -128,11 +152,11 @@ describe('EnginePatchRouter', () => {
         it('triggers removeConnection for connection remove (pre-resolved _connId)', async () => {
             const { router, config, mediaRouter } = createMocks();
             // Set up a connection in config so resolveConnectionIds can find it
-            (config as any).connections = [{ id: 'conn-abc', sourceModuleId: 'a', sinkModuleId: 'b' }];
+            (config as any).connections = [
+                { id: 'conn-abc', sourceModuleId: 'a', sinkModuleId: 'b' },
+            ];
 
-            router.onPatch('manager', 'manager', [
-                { op: 'remove', path: '/connections/0' },
-            ]);
+            router.onPatch('manager', 'manager', [{ op: 'remove', path: '/connections/0' }]);
 
             // Wait for async side effect
             await new Promise((r) => setTimeout(r, 10));
@@ -143,9 +167,7 @@ describe('EnginePatchRouter', () => {
             const { router, config, mediaRouter } = createMocks();
             (config as any).connections = [];
 
-            router.onPatch('manager', 'manager', [
-                { op: 'remove', path: '/connections/5' },
-            ]);
+            router.onPatch('manager', 'manager', [{ op: 'remove', path: '/connections/5' }]);
 
             await new Promise((r) => setTimeout(r, 10));
             expect(mediaRouter.removeConnection).not.toHaveBeenCalled();
@@ -155,21 +177,31 @@ describe('EnginePatchRouter', () => {
     describe('side effects — channel map update', () => {
         it('triggers updateChannelMap with resolved connection ID', async () => {
             const { router, config, mediaRouter } = createMocks();
-            (config as any).connections = [{ id: 'conn-xyz', sourceModuleId: 'a', sinkModuleId: 'b', channelMap: null }];
+            (config as any).connections = [
+                { id: 'conn-xyz', sourceModuleId: 'a', sinkModuleId: 'b', channelMap: null },
+            ];
 
             router.onPatch('manager', 'manager', [
-                { op: 'replace', path: '/connections/0/channelMap', value: [{ source: 0, sink: 0 }] },
+                {
+                    op: 'replace',
+                    path: '/connections/0/channelMap',
+                    value: [{ source: 0, sink: 0 }],
+                },
             ]);
 
             await new Promise((r) => setTimeout(r, 10));
-            expect(mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-xyz', [{ source: 0, sink: 0 }]);
+            expect(mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-xyz', [
+                { source: 0, sink: 0 },
+            ]);
         });
 
         it('falls back to config lookup when _connId not pre-resolved', async () => {
             const { router, config, mediaRouter } = createMocks();
             // The connection exists in config (after patch apply) but path uses non-numeric key
             // Simulate: connection at index 0 with id
-            (config as any).connections = [{ id: 'conn-fallback', sourceModuleId: 'a', sinkModuleId: 'b', channelMap: [] }];
+            (config as any).connections = [
+                { id: 'conn-fallback', sourceModuleId: 'a', sinkModuleId: 'b', channelMap: [] },
+            ];
 
             // Use 'add' op on channelMap — _connId from resolveConnectionIds would be set for index 0
             router.onPatch('manager', 'manager', [
@@ -177,7 +209,9 @@ describe('EnginePatchRouter', () => {
             ]);
 
             await new Promise((r) => setTimeout(r, 10));
-            expect(mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-fallback', [{ source: 1, sink: 1 }]);
+            expect(mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-fallback', [
+                { source: 1, sink: 1 },
+            ]);
         });
 
         it('logs warning when connection ID cannot be resolved for channelMap update', async () => {
@@ -232,9 +266,7 @@ describe('EnginePatchRouter', () => {
         it('calls lifecycle.deleteSingle when module removed', async () => {
             const { router, lifecycle } = createMocks();
 
-            router.onPatch('manager', 'manager', [
-                { op: 'remove', path: '/modules/mod-1' },
-            ]);
+            router.onPatch('manager', 'manager', [{ op: 'remove', path: '/modules/mod-1' }]);
 
             await new Promise((r) => setTimeout(r, 10));
             expect(lifecycle.deleteSingle).toHaveBeenCalledWith('mod-1');
@@ -248,7 +280,10 @@ describe('EnginePatchRouter', () => {
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
                 { op: 'replace', path: '/modules/mod-1/settings/mute', value: true },
             ]);
-            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', { volume: 80, mute: true });
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', {
+                volume: 80,
+                mute: true,
+            });
         });
 
         it('handles add op for settings', () => {
@@ -256,7 +291,9 @@ describe('EnginePatchRouter', () => {
             router.onPatch('manager', 'manager', [
                 { op: 'add', path: '/modules/mod-1/settings/newProp', value: 'hello' },
             ]);
-            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', { newProp: 'hello' });
+            expect(moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', {
+                newProp: 'hello',
+            });
         });
     });
 
@@ -310,11 +347,27 @@ describe('EnginePatchRouter', () => {
             const { router, mediaRouter } = createMocks();
             const channelMap = [{ source: 0, sink: 1 }];
             router.onPatch('manager', 'manager', [
-                { op: 'add', path: '/connections/-', value: { sourceModuleId: 'a', sourcePortId: 'out', sinkModuleId: 'b', sinkPortId: 'in', channelMap } },
+                {
+                    op: 'add',
+                    path: '/connections/-',
+                    value: {
+                        sourceModuleId: 'a',
+                        sourcePortId: 'out',
+                        sinkModuleId: 'b',
+                        sinkPortId: 'in',
+                        channelMap,
+                    },
+                },
             ]);
             // Connection creation is chained to the lifecycle lock
             await new Promise((r) => setTimeout(r, 10));
-            expect(mediaRouter.createConnection).toHaveBeenCalledWith('a', 'out', 'b', 'in', channelMap);
+            expect(mediaRouter.createConnection).toHaveBeenCalledWith(
+                'a',
+                'out',
+                'b',
+                'in',
+                channelMap,
+            );
         });
 
         it('skips connection creation for sub-field adds (length > 2)', () => {
@@ -361,7 +414,14 @@ describe('EnginePatchRouter', () => {
             const lcpServer = { broadcastConfigUpdate: vi.fn() } as any;
             const managerConnection = { isConnected: false, send: vi.fn() } as any;
             const lifecycle = {} as any;
-            const router = new EnginePatchRouter(moduleManager, mediaRouter, lcpServer, managerConnection, lifecycle, () => null);
+            const router = new EnginePatchRouter(
+                moduleManager,
+                mediaRouter,
+                lcpServer,
+                managerConnection,
+                lifecycle,
+                () => null,
+            );
             router.onPatch('manager', 'manager', [{ op: 'replace', path: '/x', value: 1 }]);
             expect(lcpServer.broadcastConfigUpdate).not.toHaveBeenCalled();
         });

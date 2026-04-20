@@ -10,5 +10,7 @@ defineProps<{ engineId: string }>();
 </template>
 
 <style scoped>
-div { height: calc(100vh - 48px); /* Full height minus header */ }
+div {
+    height: calc(100vh - 48px); /* Full height minus header */
+}
 </style>

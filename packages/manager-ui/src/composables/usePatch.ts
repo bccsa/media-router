@@ -36,13 +36,20 @@ export const patch = {
     },
 
     moduleSettings(engineId: string, moduleId: string, changes: Record<string, unknown>) {
-        emit(engineId, Object.entries(changes).map(([key, value]) => ({
-            op: 'replace' as const, path: `/modules/${moduleId}/settings/${key}`, value,
-        })));
+        emit(
+            engineId,
+            Object.entries(changes).map(([key, value]) => ({
+                op: 'replace' as const,
+                path: `/modules/${moduleId}/settings/${key}`,
+                value,
+            })),
+        );
     },
 
     moduleRename(engineId: string, moduleId: string, displayName: string) {
-        emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/displayName`, value: displayName }]);
+        emit(engineId, [
+            { op: 'replace', path: `/modules/${moduleId}/displayName`, value: displayName },
+        ]);
     },
 
     modulePosition(engineId: string, moduleId: string, position: { x: number; y: number }) {
@@ -75,5 +82,32 @@ export const patch = {
 
     connectionField(engineId: string, connectionId: string, field: string, value: unknown) {
         emit(engineId, [{ op: 'replace', path: `/connections/${connectionId}/${field}`, value }]);
+    },
+
+    // --- Interlocks (exclusive-mute groups) ---
+
+    createInterlock(
+        engineId: string,
+        value: { id: string; name: string; members: string[]; color?: string },
+    ) {
+        emit(engineId, [{ op: 'add', path: '/interlocks/-', value }]);
+    },
+
+    deleteInterlock(engineId: string, interlockId: string) {
+        emit(engineId, [{ op: 'remove', path: `/interlocks/${interlockId}` }]);
+    },
+
+    renameInterlock(engineId: string, interlockId: string, name: string) {
+        emit(engineId, [{ op: 'replace', path: `/interlocks/${interlockId}/name`, value: name }]);
+    },
+
+    recolorInterlock(engineId: string, interlockId: string, color: string) {
+        emit(engineId, [{ op: 'replace', path: `/interlocks/${interlockId}/color`, value: color }]);
+    },
+
+    setInterlockMembers(engineId: string, interlockId: string, members: string[]) {
+        emit(engineId, [
+            { op: 'replace', path: `/interlocks/${interlockId}/members`, value: members },
+        ]);
     },
 };

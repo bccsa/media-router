@@ -42,6 +42,8 @@ export interface ModuleState {
     badges?: Array<{ id: string; icon?: string; text: string; color?: string }>;
     faceWidgets?: Array<Record<string, unknown>>;
     focused?: boolean;
+    /** Plugin manifest opts into interlock (exclusive-mute) groups. */
+    interlock?: boolean;
 }
 
 /** Mirrors @media-router/shared-types ChannelMapEntry (browser can't import Node packages). */
@@ -62,10 +64,18 @@ export interface ConnectionState {
 }
 
 export interface SystemStats {
-    cpu: number;    // CPU usage %
-    mem: number;    // Memory usage %
-    temp: number | null;  // CPU temperature °C
-    processCount?: number;  // Spawned child processes
+    cpu: number; // CPU usage %
+    mem: number; // Memory usage %
+    temp: number | null; // CPU temperature °C
+    processCount?: number; // Spawned child processes
+}
+
+/** Exclusive-mute group: only one member may have settings.audioEnabled=true. */
+export interface InterlockState {
+    id: string;
+    name: string;
+    members: string[];
+    color?: string;
 }
 
 export interface EngineState {
@@ -76,6 +86,7 @@ export interface EngineState {
     activeProfile: string | null;
     modules: Record<string, ModuleState>;
     connections: ConnectionState[];
+    interlocks: InterlockState[];
     system?: SystemStats;
     ip?: string;
     ips?: string[];
@@ -116,8 +127,11 @@ export const useEngineStore = defineStore('engines', () => {
                 color: mod.color as string | undefined,
                 icon: mod.icon as string | undefined,
                 statusSections: mod.statusSections as StatusSectionDef[] | undefined,
-                statusData: mod.statusData as Record<string, Record<string, string | number | boolean>> | undefined,
+                statusData: mod.statusData as
+                    | Record<string, Record<string, string | number | boolean>>
+                    | undefined,
                 focused: (mod.focused as boolean) ?? false,
+                interlock: mod.interlock === true,
             };
         }
 
@@ -129,6 +143,7 @@ export const useEngineStore = defineStore('engines', () => {
             activeProfile: (data.active_profile as string) ?? null,
             modules,
             connections: (data.connections ?? []) as ConnectionState[],
+            interlocks: (data.interlocks ?? []) as InterlockState[],
             ip: data.ip as string | undefined,
             ips: data.ips as string[] | undefined,
             hostname: data.hostname as string | undefined,
@@ -138,12 +153,18 @@ export const useEngineStore = defineStore('engines', () => {
     }
 
     /** Set full config (modules + connections) for an engine — used by lazy loading. */
-    function setEngineConfig(engineId: string, rawModules: Record<string, unknown>, rawConnections: unknown[]) {
+    function setEngineConfig(
+        engineId: string,
+        rawModules: Record<string, unknown>,
+        rawConnections: unknown[],
+    ) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
 
         const modules: Record<string, ModuleState> = {};
-        for (const [id, mod] of Object.entries(rawModules as Record<string, Record<string, unknown>>)) {
+        for (const [id, mod] of Object.entries(
+            rawModules as Record<string, Record<string, unknown>>,
+        )) {
             modules[id] = {
                 instanceId: id,
                 pluginId: (mod.pluginId as string) ?? '',
@@ -159,8 +180,11 @@ export const useEngineStore = defineStore('engines', () => {
                 color: mod.color as string | undefined,
                 icon: mod.icon as string | undefined,
                 statusSections: mod.statusSections as StatusSectionDef[] | undefined,
-                statusData: mod.statusData as Record<string, Record<string, string | number | boolean>> | undefined,
+                statusData: mod.statusData as
+                    | Record<string, Record<string, string | number | boolean>>
+                    | undefined,
                 focused: (mod.focused as boolean) ?? false,
+                interlock: mod.interlock === true,
             };
         }
 
@@ -180,6 +204,7 @@ export const useEngineStore = defineStore('engines', () => {
             ...engine,
             modules: { ...engine.modules },
             connections: [...engine.connections],
+            interlocks: [...(engine.interlocks ?? [])],
         };
 
         for (const op of patch as Array<{ op: string; path: string; value?: unknown }>) {
@@ -194,7 +219,10 @@ export const useEngineStore = defineStore('engines', () => {
      * Apply a single JSON Patch op to a nested object.
      * Handles: objects, arrays (by numeric index or by .id lookup), append via '-'.
      */
-    function applyOp(obj: Record<string, unknown>, op: { op: string; path: string; value?: unknown }) {
+    function applyOp(
+        obj: Record<string, unknown>,
+        op: { op: string; path: string; value?: unknown },
+    ) {
         const parts = op.path.split('/').filter(Boolean);
         const last = parts.pop();
         if (!last) return;
@@ -291,14 +319,29 @@ export const useEngineStore = defineStore('engines', () => {
         }
     }
 
-    function setEngineInfo(engineId: string, info: { ip?: string; ips?: string[]; hostname?: string; buildNumber?: string }) {
+    function setEngineInfo(
+        engineId: string,
+        info: { ip?: string; ips?: string[]; hostname?: string; buildNumber?: string },
+    ) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
         let changed = false;
-        if (info.ip && engine.ip !== info.ip) { engine.ip = info.ip; changed = true; }
-        if (info.ips && JSON.stringify(info.ips) !== JSON.stringify(engine.ips)) { engine.ips = info.ips; changed = true; }
-        if (info.hostname && engine.hostname !== info.hostname) { engine.hostname = info.hostname; changed = true; }
-        if (info.buildNumber && engine.buildNumber !== info.buildNumber) { engine.buildNumber = info.buildNumber; changed = true; }
+        if (info.ip && engine.ip !== info.ip) {
+            engine.ip = info.ip;
+            changed = true;
+        }
+        if (info.ips && JSON.stringify(info.ips) !== JSON.stringify(engine.ips)) {
+            engine.ips = info.ips;
+            changed = true;
+        }
+        if (info.hostname && engine.hostname !== info.hostname) {
+            engine.hostname = info.hostname;
+            changed = true;
+        }
+        if (info.buildNumber && engine.buildNumber !== info.buildNumber) {
+            engine.buildNumber = info.buildNumber;
+            changed = true;
+        }
         if (changed) engines.value = new Map(engines.value);
     }
 

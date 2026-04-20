@@ -37,6 +37,7 @@ function makeEngine(modules: Record<string, { focused?: boolean }>): EngineState
         activeProfile: null,
         modules: mods,
         connections: [],
+        interlocks: [],
     } as EngineState;
 }
 
@@ -53,11 +54,13 @@ describe('useFocusMode', () => {
     });
 
     it('computes focused modules from engine state', () => {
-        const engine = computed(() => makeEngine({
-            'mod-a': { focused: true },
-            'mod-b': { focused: false },
-            'mod-c': { focused: true },
-        }));
+        const engine = computed(() =>
+            makeEngine({
+                'mod-a': { focused: true },
+                'mod-b': { focused: false },
+                'mod-c': { focused: true },
+            }),
+        );
         const { focusedModules } = useFocusMode(engine);
         expect(focusedModules.value).toEqual(new Set(['mod-a', 'mod-c']));
     });
@@ -79,10 +82,12 @@ describe('useFocusMode', () => {
 
     describe('isModuleDimmed', () => {
         it('returns false when focus mode is off', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': { focused: true },
-                'mod-b': {},
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': { focused: true },
+                    'mod-b': {},
+                }),
+            );
             const { isModuleDimmed } = useFocusMode(engine);
             expect(isModuleDimmed('mod-b')).toBe(false);
         });
@@ -95,20 +100,24 @@ describe('useFocusMode', () => {
         });
 
         it('returns true for unfocused module when focus mode is on', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': { focused: true },
-                'mod-b': {},
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': { focused: true },
+                    'mod-b': {},
+                }),
+            );
             const { focusMode, isModuleDimmed } = useFocusMode(engine);
             focusMode.value = true;
             expect(isModuleDimmed('mod-b')).toBe(true);
         });
 
         it('returns false for focused module when focus mode is on', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': { focused: true },
-                'mod-b': {},
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': { focused: true },
+                    'mod-b': {},
+                }),
+            );
             const { focusMode, isModuleDimmed } = useFocusMode(engine);
             focusMode.value = true;
             expect(isModuleDimmed('mod-a')).toBe(false);
@@ -117,10 +126,12 @@ describe('useFocusMode', () => {
 
     describe('isEdgeDimmed', () => {
         it('returns false when focus mode is off', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': { focused: true },
-                'mod-b': {},
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': { focused: true },
+                    'mod-b': {},
+                }),
+            );
             const { isEdgeDimmed } = useFocusMode(engine);
             expect(isEdgeDimmed('mod-a', 'mod-b')).toBe(false);
         });
@@ -133,30 +144,36 @@ describe('useFocusMode', () => {
         });
 
         it('returns true when source is not focused', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': {},
-                'mod-b': { focused: true },
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': {},
+                    'mod-b': { focused: true },
+                }),
+            );
             const { focusMode, isEdgeDimmed } = useFocusMode(engine);
             focusMode.value = true;
             expect(isEdgeDimmed('mod-a', 'mod-b')).toBe(true);
         });
 
         it('returns true when sink is not focused', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': { focused: true },
-                'mod-b': {},
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': { focused: true },
+                    'mod-b': {},
+                }),
+            );
             const { focusMode, isEdgeDimmed } = useFocusMode(engine);
             focusMode.value = true;
             expect(isEdgeDimmed('mod-a', 'mod-b')).toBe(true);
         });
 
         it('returns false when both endpoints are focused', () => {
-            const engine = computed(() => makeEngine({
-                'mod-a': { focused: true },
-                'mod-b': { focused: true },
-            }));
+            const engine = computed(() =>
+                makeEngine({
+                    'mod-a': { focused: true },
+                    'mod-b': { focused: true },
+                }),
+            );
             const { focusMode, isEdgeDimmed } = useFocusMode(engine);
             focusMode.value = true;
             expect(isEdgeDimmed('mod-a', 'mod-b')).toBe(false);

@@ -15,7 +15,11 @@ describe('PluginLoader', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    function createPlugin(name: string, manifest: Record<string, unknown>, engineCode?: string): void {
+    function createPlugin(
+        name: string,
+        manifest: Record<string, unknown>,
+        engineCode?: string,
+    ): void {
         const pluginDir = path.join(tmpDir, name);
         fs.mkdirSync(pluginDir, { recursive: true });
 
@@ -156,11 +160,15 @@ describe('PluginLoader', () => {
                 onStop() {}
             }
         `;
-        createPlugin('with-class', {
-            pluginId: 'with-class',
-            displayName: 'With Class',
-            engine: './engine/TestModule.js',
-        }, engineCode);
+        createPlugin(
+            'with-class',
+            {
+                pluginId: 'with-class',
+                displayName: 'With Class',
+                engine: './engine/TestModule.js',
+            },
+            engineCode,
+        );
 
         const loader = new PluginLoader(tmpDir);
         await loader.load();

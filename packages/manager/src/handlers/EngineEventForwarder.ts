@@ -1,5 +1,11 @@
 import type { Server as SocketIOServer } from 'socket.io';
-import { createLogger, safeParse, EngineRunningStateSchema, LcpEngineCommandSchema, DynamicPortsSchema } from '@media-router/shared-types';
+import {
+    createLogger,
+    safeParse,
+    EngineRunningStateSchema,
+    LcpEngineCommandSchema,
+    DynamicPortsSchema,
+} from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { EngineCommandService } from './EngineCommandService.js';
@@ -49,9 +55,14 @@ export class EngineEventForwarder {
                 log.info({ engineId }, 'Engine already running — pushing config');
                 const engine = this.configStore.getEngine(engineId);
                 if (engine?.active_profile) {
-                    const config = this.configStore.getProfile(engineId, engine.active_profile as string);
+                    const config = this.configStore.getProfile(
+                        engineId,
+                        engine.active_profile as string,
+                    );
                     if (config) {
-                        this.engineManager.sendToEngine(engineId, 'config', config, { guaranteeDelivery: true });
+                        this.engineManager.sendToEngine(engineId, 'config', config, {
+                            guaranteeDelivery: true,
+                        });
                     }
                 }
             } else if (!managerWantsRunning && engineRunning) {
@@ -83,7 +94,9 @@ export class EngineEventForwarder {
 
         this.engineManager.on('engineVu', (engineId: string, data: unknown) => {
             if (typeof data !== 'object' || data === null) return;
-            this.io.to(`watch:${engineId}`).volatile.emit('engine:vu', { engineId, ...(data as Record<string, unknown>) });
+            this.io
+                .to(`watch:${engineId}`)
+                .volatile.emit('engine:vu', { engineId, ...(data as Record<string, unknown>) });
         });
 
         this.engineManager.on('engineSystem', (engineId: string, data: unknown) => {
@@ -112,7 +125,9 @@ export class EngineEventForwarder {
                 buffer.splice(0, buffer.length - this.LOG_BUFFER_MAX);
             }
 
-            this.io.to(`watch:${engineId}`).volatile.emit('engine:logs', { engineId, entries: batch });
+            this.io
+                .to(`watch:${engineId}`)
+                .volatile.emit('engine:logs', { engineId, entries: batch });
         });
 
         this.engineManager.on('engineAudioDevices', (engineId: string, devices: unknown) => {
@@ -137,13 +152,19 @@ export class EngineEventForwarder {
             // 1. Update stored config
             const engine = this.configStore.getEngine(engineId);
             if (engine?.active_profile) {
-                this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
-                    const modules = config.modules as Record<string, Record<string, unknown>> | undefined;
-                    if (modules?.[moduleId]) {
-                        modules[moduleId].ports = ports;
-                    }
-                    return config;
-                });
+                this.configStore.modifyProfileConfig(
+                    engineId,
+                    engine.active_profile as string,
+                    (config) => {
+                        const modules = config.modules as
+                            | Record<string, Record<string, unknown>>
+                            | undefined;
+                        if (modules?.[moduleId]) {
+                            modules[moduleId].ports = ports;
+                        }
+                        return config;
+                    },
+                );
             }
             // 2. Broadcast to browsers
             this.io.emit('engine:update', {
@@ -173,5 +194,4 @@ export class EngineEventForwarder {
     getLogBuffer(engineId: string): unknown[] {
         return this.logBuffers.get(engineId) ?? [];
     }
-
 }

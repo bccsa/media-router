@@ -72,7 +72,9 @@ export class AudioDeviceOps {
                     description: descMatch?.[1]?.trim() ?? name,
                     direction: 'source',
                     channels: specMatch?.[1] ? parseInt(specMatch[1], 10) || undefined : undefined,
-                    sampleRate: specMatch?.[2] ? parseInt(specMatch[2], 10) || undefined : undefined,
+                    sampleRate: specMatch?.[2]
+                        ? parseInt(specMatch[2], 10) || undefined
+                        : undefined,
                 });
             }
 
@@ -95,7 +97,9 @@ export class AudioDeviceOps {
                     description: descMatch?.[1]?.trim() ?? name,
                     direction: 'sink',
                     channels: specMatch?.[1] ? parseInt(specMatch[1], 10) || undefined : undefined,
-                    sampleRate: specMatch?.[2] ? parseInt(specMatch[2], 10) || undefined : undefined,
+                    sampleRate: specMatch?.[2]
+                        ? parseInt(specMatch[2], 10) || undefined
+                        : undefined,
                 });
             }
         } catch (err) {

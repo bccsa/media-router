@@ -44,7 +44,12 @@ describe('MediaRouter', () => {
             { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
         ]);
 
-        const connId = await router.createConnection('encoder', 'mpegts-out', 'srt-output', 'mpegts-in');
+        const connId = await router.createConnection(
+            'encoder',
+            'mpegts-out',
+            'srt-output',
+            'mpegts-in',
+        );
         expect(connId).toBe('encoder:mpegts-out-srt-output:mpegts-in');
         expect(router.getConnections()).toHaveLength(1);
     });
@@ -57,7 +62,9 @@ describe('MediaRouter', () => {
             { id: 'in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
         ]);
 
-        await expect(router.createConnection('audio', 'out', 'srt', 'in')).rejects.toThrow('Stream type mismatch');
+        await expect(router.createConnection('audio', 'out', 'srt', 'in')).rejects.toThrow(
+            'Stream type mismatch',
+        );
     });
 
     it('rejects wrong port direction', async () => {
@@ -68,7 +75,9 @@ describe('MediaRouter', () => {
             { id: 'in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
         ]);
 
-        await expect(router.createConnection('mod-a', 'in', 'mod-b', 'in')).rejects.toThrow('not an output');
+        await expect(router.createConnection('mod-a', 'in', 'mod-b', 'in')).rejects.toThrow(
+            'not an output',
+        );
     });
 
     it('removes a connection', async () => {
@@ -102,12 +111,18 @@ describe('MediaRouter', () => {
 
     it('validates audio channel compatibility', () => {
         const src: ModulePort = {
-            id: 'out', direction: 'output', streamType: 'audio/pcm',
-            channelConfig: { channels: 2 }, label: 'Stereo Out',
+            id: 'out',
+            direction: 'output',
+            streamType: 'audio/pcm',
+            channelConfig: { channels: 2 },
+            label: 'Stereo Out',
         };
         const sink: ModulePort = {
-            id: 'in', direction: 'input', streamType: 'audio/pcm',
-            channelConfig: { channels: 6 }, label: '5.1 In',
+            id: 'in',
+            direction: 'input',
+            streamType: 'audio/pcm',
+            channelConfig: { channels: 6 },
+            label: '5.1 In',
         };
 
         const result = router.portRegistry.validateCompatibility(src, sink);
@@ -140,7 +155,12 @@ describe('MediaRouter', () => {
 
     it('updateChannelMap warns for non-audio connection', async () => {
         registerMpegtsPair(router);
-        const connId = await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
+        const connId = await router.createConnection(
+            'encoder',
+            'mpegts-out',
+            'decoder',
+            'mpegts-in',
+        );
 
         // Should not throw — just logs a warning and returns
         await router.updateChannelMap(connId, [{ sourceChannel: 0, sinkChannel: 0 }]);
@@ -210,7 +230,8 @@ describe('MediaRouter', () => {
         // Set up dependencies with a module getter that returns config + lifecycle
         const mockModuleGetter = vi.fn().mockImplementation((id: string) => {
             if (id === 'encoder') return { config: { codec: 'opus', channels: 2 }, running: false };
-            if (id === 'decoder') return { config: {}, running: false, stop: vi.fn(), start: vi.fn() };
+            if (id === 'decoder')
+                return { config: {}, running: false, stop: vi.fn(), start: vi.fn() };
             return undefined;
         });
         router.setDependencies({} as any, mockModuleGetter);

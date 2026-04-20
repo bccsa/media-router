@@ -21,14 +21,14 @@ const NUM_BLOCKS = props.numBlocks ?? 15;
 const BLOCK_GAP = props.blockGap ?? 2;
 
 // Color thresholds (block index based)
-const GREEN_LIMIT = 10;  // blocks 0-9: green
+const GREEN_LIMIT = 10; // blocks 0-9: green
 const YELLOW_LIMIT = 13; // blocks 10-12: yellow/orange
 // blocks 13-14: red
 
 function getBlockColor(i: number): string {
-    if (i < GREEN_LIMIT) return '#22c55e';   // green
-    if (i < YELLOW_LIMIT) return '#eab308';  // yellow
-    return '#ef4444';                          // red
+    if (i < GREEN_LIMIT) return '#22c55e'; // green
+    if (i < YELLOW_LIMIT) return '#eab308'; // yellow
+    return '#ef4444'; // red
 }
 
 /**
@@ -142,15 +142,19 @@ onUnmounted(() => {
 });
 
 // Watch levels reactively — uses requestAnimationFrame to batch
-watch(() => props.levels, () => {
-    if (animFrame) return; // already scheduled
-    animFrame = requestAnimationFrame(() => {
-        animFrame = 0;
-        paint();
-    });
-}, { deep: true });
+watch(
+    () => props.levels,
+    () => {
+        if (animFrame) return; // already scheduled
+        animFrame = requestAnimationFrame(() => {
+            animFrame = 0;
+            paint();
+        });
+    },
+    { deep: true },
+);
 </script>
 
 <template>
-    <canvas ref="canvasRef" style="display: block; width: 100%; height: 100%; border-radius: 2px;" />
+    <canvas ref="canvasRef" style="display: block; width: 100%; height: 100%; border-radius: 2px" />
 </template>

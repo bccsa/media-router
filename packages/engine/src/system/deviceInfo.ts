@@ -30,7 +30,9 @@ export function findBuildNumber(startDir = process.cwd()): string {
     for (let i = 0; i < 4; i++) {
         try {
             return fs.readFileSync(path.join(dir, 'build-number.txt'), 'utf-8').trim();
-        } catch { /* not found here */ }
+        } catch {
+            /* not found here */
+        }
         const parent = path.dirname(dir);
         if (parent === dir) break;
         dir = parent;

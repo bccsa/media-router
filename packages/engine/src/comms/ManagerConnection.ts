@@ -48,7 +48,10 @@ export class ManagerConnection extends EventEmitter {
             this.client = null;
         }
 
-        log.info({ name: profile.name, paths: profile.paths.map(p => `${p.host}:${p.port}`) }, 'Connecting');
+        log.info(
+            { name: profile.name, paths: profile.paths.map((p) => `${p.host}:${p.port}`) },
+            'Connecting',
+        );
 
         this.client = new Client({
             clientId: profile.name,
@@ -68,7 +71,10 @@ export class ManagerConnection extends EventEmitter {
         }, 5000);
 
         this.client.on('connected', () => {
-            if (this.connectTimeout) { clearTimeout(this.connectTimeout); this.connectTimeout = null; }
+            if (this.connectTimeout) {
+                clearTimeout(this.connectTimeout);
+                this.connectTimeout = null;
+            }
             this._isConnected = true;
             this.clearReconnectTimer();
             this.backoff.reset();
@@ -113,7 +119,10 @@ export class ManagerConnection extends EventEmitter {
     /** Disconnect from manager (intentional — no auto-reconnect). */
     disconnect(): void {
         this.intentionalDisconnect = true;
-        if (this.connectTimeout) { clearTimeout(this.connectTimeout); this.connectTimeout = null; }
+        if (this.connectTimeout) {
+            clearTimeout(this.connectTimeout);
+            this.connectTimeout = null;
+        }
         this.clearReconnectTimer();
         this.backoff.destroy();
         if (this.client) {

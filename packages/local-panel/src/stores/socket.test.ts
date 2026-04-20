@@ -45,10 +45,13 @@ describe('Socket Store', () => {
     it('creates a socket on connect()', () => {
         const store = useSocketStore();
         store.connect();
-        expect(io).toHaveBeenCalledWith(window.location.origin, expect.objectContaining({
-            reconnection: true,
-            reconnectionDelay: 1000,
-        }));
+        expect(io).toHaveBeenCalledWith(
+            window.location.origin,
+            expect.objectContaining({
+                reconnection: true,
+                reconnectionDelay: 1000,
+            }),
+        );
     });
 
     it('does not create duplicate sockets on repeated connect()', () => {
@@ -86,7 +89,11 @@ describe('Socket Store', () => {
             hostname: 'engine-01',
             buildNumber: '1.2.3',
             config: {
-                'mic-1': { displayName: 'Mic 1', settings: { volume: 100 }, lcpType: 'mixer-strip' },
+                'mic-1': {
+                    displayName: 'Mic 1',
+                    settings: { volume: 100 },
+                    lcpType: 'mixer-strip',
+                },
             },
         });
 
@@ -116,7 +123,15 @@ describe('Socket Store', () => {
         const socketStore = useSocketStore();
         const moduleStore = useModuleStore();
         moduleStore.setAll({
-            'mic-1': { pluginId: 'audio-input', displayName: 'Mic 1', health: 'stopped', running: false, ready: false, settings: {}, lcpType: 'mixer-strip' },
+            'mic-1': {
+                pluginId: 'audio-input',
+                displayName: 'Mic 1',
+                health: 'stopped',
+                running: false,
+                ready: false,
+                settings: {},
+                lcpType: 'mixer-strip',
+            },
         });
         socketStore.connect();
 
@@ -140,7 +155,15 @@ describe('Socket Store', () => {
         const socketStore = useSocketStore();
         const moduleStore = useModuleStore();
         moduleStore.setAll({
-            'mic-1': { pluginId: 'audio-input', displayName: 'Mic 1', health: 'ok', running: true, ready: true, settings: { volume: 100 }, lcpType: 'mixer-strip' },
+            'mic-1': {
+                pluginId: 'audio-input',
+                displayName: 'Mic 1',
+                health: 'ok',
+                running: true,
+                ready: true,
+                settings: { volume: 100 },
+                lcpType: 'mixer-strip',
+            },
         });
         socketStore.connect();
 
@@ -155,7 +178,15 @@ describe('Socket Store', () => {
         const socketStore = useSocketStore();
         const moduleStore = useModuleStore();
         moduleStore.setAll({
-            'mic-1': { pluginId: 'audio-input', displayName: 'Mic 1', health: 'ok', running: true, ready: true, settings: { volume: 100 }, lcpType: 'mixer-strip' },
+            'mic-1': {
+                pluginId: 'audio-input',
+                displayName: 'Mic 1',
+                health: 'ok',
+                running: true,
+                ready: true,
+                settings: { volume: 100 },
+                lcpType: 'mixer-strip',
+            },
         });
         socketStore.connect();
 

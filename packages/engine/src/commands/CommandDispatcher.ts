@@ -40,7 +40,10 @@ export class CommandDispatcher {
 
     private scheduleLifecycle(command: 'start' | 'stop' | 'reset'): void {
         if (this.lifecycleBusy) {
-            log.info({ command, replaced: this.pendingLifecycle }, 'Lifecycle busy — replacing pending command');
+            log.info(
+                { command, replaced: this.pendingLifecycle },
+                'Lifecycle busy — replacing pending command',
+            );
             this.pendingLifecycle = command;
             return;
         }
@@ -54,9 +57,11 @@ export class CommandDispatcher {
 
         this.commandLock = this.commandLock
             .then(() => {
-                return command === 'start' ? this.ctx.startModules()
-                    : command === 'stop' ? this.ctx.stopModules()
-                    : this.ctx.resetEngine();
+                return command === 'start'
+                    ? this.ctx.startModules()
+                    : command === 'stop'
+                      ? this.ctx.stopModules()
+                      : this.ctx.resetEngine();
             })
             .catch((err) => log.error({ err, command }, 'Lifecycle command failed'))
             .finally(() => {
@@ -69,7 +74,10 @@ export class CommandDispatcher {
                     const anyRunning = Object.values(states).some((s) => s.running);
                     // Skip if the engine is already in the desired state
                     if ((next === 'start' && anyRunning) || (next === 'stop' && !anyRunning)) {
-                        log.info({ command: next, anyRunning }, 'Skipping pending — already in desired state');
+                        log.info(
+                            { command: next, anyRunning },
+                            'Skipping pending — already in desired state',
+                        );
                         this.pendingLifecycle = null;
                         return;
                     }
@@ -103,16 +111,26 @@ export class CommandDispatcher {
                     break;
                 }
                 // Config updates run outside commandLock — they shouldn't block start/stop
-                this.ctx.moduleManager.applyConfigUpdate(moduleId, changes)
+                this.ctx.moduleManager
+                    .applyConfigUpdate(moduleId, changes)
                     .then(() => {
                         log.debug({ moduleId }, 'moduleConfig: applied');
                         for (const [key, value] of Object.entries(changes)) {
                             this.ctx.lcpServer.broadcastConfigUpdate([
-                                { op: 'replace', path: `/modules/${moduleId}/settings/${key}`, value },
+                                {
+                                    op: 'replace',
+                                    path: `/modules/${moduleId}/settings/${key}`,
+                                    value,
+                                },
                             ]);
                         }
                     })
-                    .catch((err) => log.error({ err: err instanceof Error ? err.message : err, moduleId }, 'Config update failed'));
+                    .catch((err) =>
+                        log.error(
+                            { err: err instanceof Error ? err.message : err, moduleId },
+                            'Config update failed',
+                        ),
+                    );
                 break;
             }
 
@@ -181,16 +199,36 @@ export class CommandDispatcher {
             }
 
             case 'routingConnect': {
-                const { sourceModuleId, sourcePortId, sinkModuleId, sinkPortId, channelMap } = cmd as {
-                    sourceModuleId: string; sourcePortId: string;
-                    sinkModuleId: string; sinkPortId: string;
-                    channelMap?: ChannelMapEntry[];
-                };
-                this.ctx.mediaRouter.createConnection(sourceModuleId, sourcePortId, sinkModuleId, sinkPortId, channelMap)
+                const { sourceModuleId, sourcePortId, sinkModuleId, sinkPortId, channelMap } =
+                    cmd as {
+                        sourceModuleId: string;
+                        sourcePortId: string;
+                        sinkModuleId: string;
+                        sinkPortId: string;
+                        channelMap?: ChannelMapEntry[];
+                    };
+                this.ctx.mediaRouter
+                    .createConnection(
+                        sourceModuleId,
+                        sourcePortId,
+                        sinkModuleId,
+                        sinkPortId,
+                        channelMap,
+                    )
                     .then((connId) => {
                         log.info({ connectionId: connId }, 'Live connect');
                         this.ctx.lcpServer.broadcastConfigUpdate([
-                            { op: 'add', path: '/connections/-', value: { id: connId, sourceModuleId, sourcePortId, sinkModuleId, sinkPortId } },
+                            {
+                                op: 'add',
+                                path: '/connections/-',
+                                value: {
+                                    id: connId,
+                                    sourceModuleId,
+                                    sourcePortId,
+                                    sinkModuleId,
+                                    sinkPortId,
+                                },
+                            },
                         ]);
                     })
                     .catch((err) => log.error({ err }, 'Live connect failed'));
@@ -198,16 +236,21 @@ export class CommandDispatcher {
             }
 
             case 'routingUpdate': {
-                const { connectionId, channelMap } = cmd as { connectionId: string; channelMap?: ChannelMapEntry[] };
+                const { connectionId, channelMap } = cmd as {
+                    connectionId: string;
+                    channelMap?: ChannelMapEntry[];
+                };
                 log.info({ connectionId, hasChannelMap: !!channelMap?.length }, 'Routing update');
-                this.ctx.mediaRouter.updateChannelMap(connectionId, channelMap)
+                this.ctx.mediaRouter
+                    .updateChannelMap(connectionId, channelMap)
                     .catch((err) => log.error({ err, connectionId }, 'Routing update failed'));
                 break;
             }
 
             case 'routingDisconnect': {
                 const connectionId = cmd.connectionId as string;
-                this.ctx.mediaRouter.removeConnection(connectionId)
+                this.ctx.mediaRouter
+                    .removeConnection(connectionId)
                     .then(() => {
                         log.info({ connectionId }, 'Live disconnect');
                         this.ctx.lcpServer.broadcastConfigUpdate([

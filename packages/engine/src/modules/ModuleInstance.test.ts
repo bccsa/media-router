@@ -27,9 +27,11 @@ class MockPlugin extends EventEmitter implements PluginModule {
     // Optional delegates
     getPipeWireNodes = vi.fn().mockReturnValue({ source: 'src-node', sink: 'sink-node' });
     getPipeWireNodeForPort = vi.fn().mockReturnValue({ source: 'port-src' });
-    getDynamicPorts = vi.fn().mockReturnValue([
-        { id: 'p1', direction: 'output' as const, streamType: 'audio/pcm', label: 'Out' },
-    ]);
+    getDynamicPorts = vi
+        .fn()
+        .mockReturnValue([
+            { id: 'p1', direction: 'output' as const, streamType: 'audio/pcm', label: 'Out' },
+        ]);
     getChildProcess = vi.fn().mockReturnValue(null);
     getProcessCount = vi.fn().mockReturnValue(2);
 }
@@ -100,7 +102,10 @@ describe('ModuleInstance', () => {
         const spy = vi.fn();
         instance.on('stateChange', spy);
         await instance.start();
-        expect(spy).toHaveBeenCalledWith('inst-1', expect.objectContaining({ pendingRestart: false }));
+        expect(spy).toHaveBeenCalledWith(
+            'inst-1',
+            expect.objectContaining({ pendingRestart: false }),
+        );
     });
 
     it('start() calls onStop for cleanup when onInit throws', async () => {
@@ -303,7 +308,12 @@ describe('ModuleInstance', () => {
             onStart: vi.fn().mockResolvedValue(undefined),
             onStop: vi.fn().mockResolvedValue(undefined),
             onDestroy: vi.fn().mockResolvedValue(undefined),
-            getState: vi.fn().mockReturnValue({ running: false, ready: false, health: 'ok', pendingRestart: false }),
+            getState: vi.fn().mockReturnValue({
+                running: false,
+                ready: false,
+                health: 'ok',
+                pendingRestart: false,
+            }),
             getLiveUpdatableParams: vi.fn().mockReturnValue([]),
             onLiveConfigUpdate: vi.fn().mockResolvedValue(undefined),
         };
@@ -318,7 +328,12 @@ describe('ModuleInstance', () => {
             onStart: vi.fn().mockResolvedValue(undefined),
             onStop: vi.fn().mockResolvedValue(undefined),
             onDestroy: vi.fn().mockResolvedValue(undefined),
-            getState: vi.fn().mockReturnValue({ running: false, ready: false, health: 'ok', pendingRestart: false }),
+            getState: vi.fn().mockReturnValue({
+                running: false,
+                ready: false,
+                health: 'ok',
+                pendingRestart: false,
+            }),
             getLiveUpdatableParams: vi.fn().mockReturnValue([]),
             onLiveConfigUpdate: vi.fn().mockResolvedValue(undefined),
         };

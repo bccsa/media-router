@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Server } from '@media-router/dgram-comms';
 import { createLogger } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
+import { reconcileInterlocks } from '../config/reconcileInterlocks.js';
 
 const log = createLogger('EngineConnectionManager');
 
@@ -42,11 +43,26 @@ export class EngineConnectionManager extends EventEmitter {
             // Push active profile config to engine
             const engine = this.configStore.getEngine(clientId);
             if (engine?.active_profile) {
-                const config = this.configStore.getProfile(
+                const profileName = engine.active_profile as string;
+                // Reconcile interlocks BEFORE sending so the engine never starts
+                // with two members of a group hot at once.
+                let repairOps: ReturnType<typeof reconcileInterlocks> = [];
+                const config = this.configStore.modifyProfileConfig(
                     clientId,
-                    engine.active_profile as string,
+                    profileName,
+                    (cfg) => {
+                        repairOps = reconcileInterlocks(cfg);
+                        return cfg;
+                    },
                 );
                 if (config) {
+                    if (repairOps.length > 0) {
+                        log.info(
+                            { engineId: clientId, opCount: repairOps.length },
+                            'Repaired interlocks on connect',
+                        );
+                        this.emit('interlockRepair', clientId, repairOps);
+                    }
                     socket.send('config', config, { guaranteeDelivery: true });
                 }
             }

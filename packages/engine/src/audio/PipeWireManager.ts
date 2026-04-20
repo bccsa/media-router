@@ -1,6 +1,13 @@
 import { createLogger } from '@media-router/shared-types';
 import { PaCommandQueue } from './PaCommandQueue.js';
-import { pwLink as _pwLink, pwUnlink as _pwUnlink, pwUnlinkByName as _pwUnlinkByName, pwUnlinkAllBetween as _pwUnlinkAllBetween, listPorts as _listPorts, getLinks as _getLinks } from './PwLinkOps.js';
+import {
+    pwLink as _pwLink,
+    pwUnlink as _pwUnlink,
+    pwUnlinkByName as _pwUnlinkByName,
+    pwUnlinkAllBetween as _pwUnlinkAllBetween,
+    listPorts as _listPorts,
+    getLinks as _getLinks,
+} from './PwLinkOps.js';
 import { AudioDeviceOps } from './AudioDeviceOps.js';
 
 const log = createLogger('PipeWireManager');
@@ -77,10 +84,16 @@ export class PipeWireManager {
      * Create a named null-sink for a module.
      * Returns the PulseAudio module ID (used for unloading).
      */
-    async loadNullSink(name: string, channels = 2, rate = 48000, ownerId?: string): Promise<number> {
+    async loadNullSink(
+        name: string,
+        channels = 2,
+        rate = 48000,
+        ownerId?: string,
+    ): Promise<number> {
         const sinkName = `${MR_PW_PREFIX}${name}`;
         const output = await this.paQueue.exec([
-            'load-module', 'module-null-sink',
+            'load-module',
+            'module-null-sink',
             `sink_name=${sinkName}`,
             `rate=${rate}`,
             `channels=${channels}`,
@@ -99,10 +112,17 @@ export class PipeWireManager {
      * Create a PipeWire remap-source from a hardware source.
      * No GStreamer in the audio path — PipeWire handles remapping natively.
      */
-    async loadRemapSource(name: string, master: string, channels = 2, rate = 48000, ownerId?: string): Promise<number> {
+    async loadRemapSource(
+        name: string,
+        master: string,
+        channels = 2,
+        rate = 48000,
+        ownerId?: string,
+    ): Promise<number> {
         const sourceName = `${MR_PW_PREFIX}${name}`;
         const output = await this.paQueue.exec([
-            'load-module', 'module-remap-source',
+            'load-module',
+            'module-remap-source',
             `master=${master}`,
             `source_name=${sourceName}`,
             `channels=${channels}`,
@@ -122,10 +142,17 @@ export class PipeWireManager {
      * Create a PipeWire remap-sink mapping to a hardware sink.
      * No GStreamer in the audio path — PipeWire handles remapping natively.
      */
-    async loadRemapSink(name: string, master: string, channels = 2, rate = 48000, ownerId?: string): Promise<number> {
+    async loadRemapSink(
+        name: string,
+        master: string,
+        channels = 2,
+        rate = 48000,
+        ownerId?: string,
+    ): Promise<number> {
         const sinkName = `${MR_PW_PREFIX}${name}`;
         const output = await this.paQueue.exec([
-            'load-module', 'module-remap-sink',
+            'load-module',
+            'module-remap-sink',
             `master=${master}`,
             `sink_name=${sinkName}`,
             `channels=${channels}`,
@@ -186,7 +213,9 @@ export class PipeWireManager {
             try {
                 const output = this.paQueue.execImmediate(['list', 'short', 'sources']);
                 if (output.includes(sourceName)) return true;
-            } catch { /* retry */ }
+            } catch {
+                /* retry */
+            }
             await new Promise((r) => setTimeout(r, intervalMs));
         }
         log.warn({ sourceName, timeoutMs }, 'Timed out waiting for source to appear');
@@ -210,7 +239,8 @@ export class PipeWireManager {
     ): Promise<number> {
         const loopbackName = `${MR_PW_PREFIX}CONN_${connId}`;
         const output = await this.paQueue.exec([
-            'load-module', 'module-loopback',
+            'load-module',
+            'module-loopback',
             `loopback_name=${loopbackName}`,
             `source=${source}`,
             `sink=${sink}`,

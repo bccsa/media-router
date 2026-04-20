@@ -20,7 +20,10 @@ function formatBytes(bytes: number): string {
 export class SrtInputModule extends GstPluginBase {
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     // Per-caller delta tracking for packet loss
-    private callerStats = new Map<number, { prevLost: number; prevRecv: number; lossAvg: number }>();
+    private callerStats = new Map<
+        number,
+        { prevLost: number; prevRecv: number; lossAvg: number }
+    >();
     /** Previous bytes-received total — used to detect stalled connections in caller mode. */
     private lastRecvBytes = 0;
 
@@ -38,7 +41,10 @@ export class SrtInputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+        if (this.statsTimer) {
+            clearInterval(this.statsTimer);
+            this.statsTimer = null;
+        }
         await super.onStop();
     }
 
@@ -99,7 +105,9 @@ export class SrtInputModule extends GstPluginBase {
                 const tracker = this.callerStats.get(idx)!;
 
                 const rtt = (c['rtt-ms'] ?? '—') as string | number;
-                const bitrate = (c['receive-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as string | number;
+                const bitrate = (c['receive-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as
+                    | string
+                    | number;
                 const rawBytes = Number(c['bytes-received'] ?? 0);
                 const bytesReceived = rawBytes > 0 ? formatBytes(rawBytes) : '—';
 
@@ -120,13 +128,20 @@ export class SrtInputModule extends GstPluginBase {
                 tracker.prevLost = currLost;
                 tracker.prevRecv = currRecv;
 
-                return this.setStatusData(`caller-${idx}`, { bitrate, rtt, packetLoss, bytesReceived });
+                return this.setStatusData(`caller-${idx}`, {
+                    bitrate,
+                    rtt,
+                    packetLoss,
+                    bytesReceived,
+                });
             };
 
             if (callers && callers.length > 0) {
                 // Listener mode — per-caller dynamic sections
                 const sections = callers.map((_, i) => ({
-                    id: `caller-${i}`, label: `Caller ${i + 1}`, fields: callerFields,
+                    id: `caller-${i}`,
+                    label: `Caller ${i + 1}`,
+                    fields: callerFields,
                 }));
                 this.dynamicStatusSections = sections;
                 for (let i = 0; i < callers.length; i++) processCallerStats(callers[i], i);
@@ -135,7 +150,11 @@ export class SrtInputModule extends GstPluginBase {
                     if (idx >= callers.length) this.callerStats.delete(idx);
                 }
                 this.setStatusData('stats', { callers: callerCount });
-                this.setBadge('callers', { icon: 'users', text: String(callerCount), color: callerCount > 0 ? '#10b981' : '#6b7280' });
+                this.setBadge('callers', {
+                    icon: 'users',
+                    text: String(callerCount),
+                    color: callerCount > 0 ? '#10b981' : '#6b7280',
+                });
                 if (callerCount === 0) {
                     this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
                 } else {
@@ -145,7 +164,9 @@ export class SrtInputModule extends GstPluginBase {
                 // Caller mode — check if actually connected by looking at recv bytes delta
                 this.dynamicStatusSections = [];
                 processCallerStats(stats, 0);
-                const rawBytes = Number(stats['bytes-received-total'] ?? stats['bytes-received'] ?? 0);
+                const rawBytes = Number(
+                    stats['bytes-received-total'] ?? stats['bytes-received'] ?? 0,
+                );
                 const prevBytes = this.lastRecvBytes ?? 0;
                 const isConnected = rawBytes > 0 && rawBytes > prevBytes;
                 this.lastRecvBytes = rawBytes;
@@ -159,11 +180,17 @@ export class SrtInputModule extends GstPluginBase {
                     this.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
                     this.clearBadge('callers');
                 } else {
-                    this.setBadge('status', { icon: 'radio', text: rawBytes > 0 ? 'Stalled' : 'Connecting', color: '#f59e0b' });
+                    this.setBadge('status', {
+                        icon: 'radio',
+                        text: rawBytes > 0 ? 'Stalled' : 'Connecting',
+                        color: '#f59e0b',
+                    });
                     this.clearBadge('callers');
                 }
             }
-        } catch { /* best-effort */ }
+        } catch {
+            /* best-effort */
+        }
     }
 
     private updateStatusData(): void {

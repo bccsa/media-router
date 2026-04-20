@@ -24,7 +24,13 @@ export class ModuleInstance extends EventEmitter {
     /** Bound listener refs for cleanup — prevents EventEmitter leaks across start/stop cycles. */
     private pluginListeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
 
-    constructor(instanceId: string, pluginId: string, plugin: PluginModule, config: Record<string, unknown>, services?: ModuleServices) {
+    constructor(
+        instanceId: string,
+        pluginId: string,
+        plugin: PluginModule,
+        config: Record<string, unknown>,
+        services?: ModuleServices,
+    ) {
         super();
         this.instanceId = instanceId;
         this.pluginId = pluginId;
@@ -65,7 +71,11 @@ export class ModuleInstance extends EventEmitter {
 
     /** Remove all listeners we attached to the plugin. */
     private detachPluginListeners(): void {
-        if (!('removeListener' in this.plugin) || typeof (this.plugin as any).removeListener !== 'function') return;
+        if (
+            !('removeListener' in this.plugin) ||
+            typeof (this.plugin as any).removeListener !== 'function'
+        )
+            return;
 
         const emitter = this.plugin as unknown as EventEmitter;
         for (const { event, handler } of this.pluginListeners) {
@@ -99,9 +109,19 @@ export class ModuleInstance extends EventEmitter {
             this._running = true;
             this._pendingRestart = false;
         } catch (err) {
-            log.error({ err: formatError(err), instanceId: this.instanceId }, 'Module start failed');
+            log.error(
+                { err: formatError(err), instanceId: this.instanceId },
+                'Module start failed',
+            );
             // Attempt cleanup so the module doesn't get stuck in a half-initialised state
-            try { await this.plugin.onStop(); } catch (e) { log.debug({ err: formatError(e), instanceId: this.instanceId }, 'onStop cleanup after failed start'); }
+            try {
+                await this.plugin.onStop();
+            } catch (e) {
+                log.debug(
+                    { err: formatError(e), instanceId: this.instanceId },
+                    'onStop cleanup after failed start',
+                );
+            }
             throw err;
         }
         this.emitStateChange();
@@ -120,13 +140,23 @@ export class ModuleInstance extends EventEmitter {
         if (this.services?.pipeWire) {
             try {
                 await this.services.pipeWire.releaseAll(this.instanceId);
-            } catch (e) { log.debug({ err: formatError(e), instanceId: this.instanceId }, 'PipeWire cleanup failed'); }
+            } catch (e) {
+                log.debug(
+                    { err: formatError(e), instanceId: this.instanceId },
+                    'PipeWire cleanup failed',
+                );
+            }
         }
         // Auto-cleanup spawned processes owned by this module
         if (this.services?.processManager) {
             try {
                 await this.services.processManager.releaseAll(this.instanceId);
-            } catch (e) { log.debug({ err: formatError(e), instanceId: this.instanceId }, 'Process cleanup failed'); }
+            } catch (e) {
+                log.debug(
+                    { err: formatError(e), instanceId: this.instanceId },
+                    'Process cleanup failed',
+                );
+            }
         }
         // Release UDP encoder port (if this module had one allocated)
         if (this.services?.mediaRouter) {
@@ -193,7 +223,15 @@ export class ModuleInstance extends EventEmitter {
     }
 
     /** Get dynamic ports from the plugin (overrides config/manifest ports). */
-    getDynamicPorts(): Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections?: number }> | undefined {
+    getDynamicPorts():
+        | Array<{
+              id: string;
+              direction: 'input' | 'output';
+              streamType: string;
+              label: string;
+              maxConnections?: number;
+          }>
+        | undefined {
         return this.plugin.getDynamicPorts?.();
     }
 

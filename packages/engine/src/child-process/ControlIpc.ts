@@ -12,11 +12,14 @@ import type { ControlIpcMessage } from '@media-router/shared-types';
  */
 export class ControlIpc {
     private child: ChildProcess;
-    private pending = new Map<string, {
-        resolve: (data: unknown) => void;
-        reject: (err: Error) => void;
-        timer: ReturnType<typeof setTimeout>;
-    }>();
+    private pending = new Map<
+        string,
+        {
+            resolve: (data: unknown) => void;
+            reject: (err: Error) => void;
+            timer: ReturnType<typeof setTimeout>;
+        }
+    >();
     private eventHandlers = new Map<string, (data: unknown) => void>();
     private messageHandler: (msg: ControlIpcMessage) => void;
     private exitHandler: () => void;

@@ -157,7 +157,10 @@ export class Client extends EventEmitter {
             // This prevents duplicate delivery from multi-path bonding while allowing
             // repeated identical messages (e.g. mute→unmute→mute) to get through
             const timeBucket = Math.floor(Date.now() / 500);
-            const dedupKey = crypto.createHash('md5').update(`${timeBucket}:${topic}:${JSON.stringify(message)}`).digest('hex');
+            const dedupKey = crypto
+                .createHash('md5')
+                .update(`${timeBucket}:${topic}:${JSON.stringify(message)}`)
+                .digest('hex');
             if (this.seenMessages.has(dedupKey)) return;
             this.seenMessages.add(dedupKey);
             this.emit('data', topic, message);
@@ -165,14 +168,14 @@ export class Client extends EventEmitter {
 
         // Send connect immediately, then retry every 1s until connected
         this.connectPath(index);
-        setTimeout(() => this.connectPath(index), 200);  // Quick retry in case first packet was lost
+        setTimeout(() => this.connectPath(index), 200); // Quick retry in case first packet was lost
         setTimeout(() => this.connectPath(index), 500);
 
         pathState.reconnectTimer = setInterval(() => {
             if (!pathState.connected && !this.destroyed) {
                 this.connectPath(index);
             }
-        }, 1000);  // Retry every 1s (not every 5s)
+        }, 1000); // Retry every 1s (not every 5s)
     }
 
     private connectPath(index: number): void {
@@ -232,11 +235,7 @@ export class Client extends EventEmitter {
     /**
      * Send a message to the server on ALL paths.
      */
-    send(
-        topic: string,
-        message: unknown,
-        options: { guaranteeDelivery?: boolean } = {},
-    ): void {
+    send(topic: string, message: unknown, options: { guaranteeDelivery?: boolean } = {}): void {
         if (this.destroyed) return;
         for (const ps of this.pathStates) {
             if (ps.connected) {

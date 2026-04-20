@@ -75,7 +75,9 @@ export class MediaRouter {
         this.portRegistry.unregister(moduleId);
         // Snapshot keys — removeConnection mutates this.connections during iteration
         const toRemove = Array.from(this.connections.entries())
-            .filter(([, conn]) => conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId)
+            .filter(
+                ([, conn]) => conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId,
+            )
             .map(([id]) => id);
         for (const id of toRemove) {
             await this.removeConnection(id);
@@ -102,11 +104,14 @@ export class MediaRouter {
         const sourcePort = this.portRegistry.get(sourceModuleId, sourcePortId);
         const sinkPort = this.portRegistry.get(sinkModuleId, sinkPortId);
 
-        if (!sourcePort) throw new Error(`Source port not found: ${sourceModuleId}:${sourcePortId}`);
+        if (!sourcePort)
+            throw new Error(`Source port not found: ${sourceModuleId}:${sourcePortId}`);
         if (!sinkPort) throw new Error(`Sink port not found: ${sinkModuleId}:${sinkPortId}`);
 
-        if (sourcePort.direction !== 'output') throw new Error(`Source port ${sourcePortId} is not an output`);
-        if (sinkPort.direction !== 'input') throw new Error(`Sink port ${sinkPortId} is not an input`);
+        if (sourcePort.direction !== 'output')
+            throw new Error(`Source port ${sourcePortId} is not an output`);
+        if (sinkPort.direction !== 'input')
+            throw new Error(`Sink port ${sinkPortId} is not an input`);
 
         const compat = this.portRegistry.validateCompatibility(sourcePort, sinkPort);
         if (!compat.compatible) throw new Error(`Incompatible ports: ${compat.reason}`);
@@ -118,12 +123,24 @@ export class MediaRouter {
         if (sinkMax === 0) throw new Error(`Port ${sinkPortId} does not allow connections`);
 
         if (sourceMax > 0) {
-            const count = this.portRegistry.getConnectionCount(sourceModuleId, sourcePortId, this.connections.values());
-            if (count >= sourceMax) throw new Error(`Port ${sourcePortId} already has ${count}/${sourceMax} connections`);
+            const count = this.portRegistry.getConnectionCount(
+                sourceModuleId,
+                sourcePortId,
+                this.connections.values(),
+            );
+            if (count >= sourceMax)
+                throw new Error(
+                    `Port ${sourcePortId} already has ${count}/${sourceMax} connections`,
+                );
         }
         if (sinkMax > 0) {
-            const count = this.portRegistry.getConnectionCount(sinkModuleId, sinkPortId, this.connections.values());
-            if (count >= sinkMax) throw new Error(`Port ${sinkPortId} already has ${count}/${sinkMax} connections`);
+            const count = this.portRegistry.getConnectionCount(
+                sinkModuleId,
+                sinkPortId,
+                this.connections.values(),
+            );
+            if (count >= sinkMax)
+                throw new Error(`Port ${sinkPortId} already has ${count}/${sinkMax} connections`);
         }
 
         const connId = `${sourceModuleId}:${sourcePortId}-${sinkModuleId}:${sinkPortId}`;
@@ -136,8 +153,10 @@ export class MediaRouter {
 
         const conn: Connection = {
             id: connId,
-            sourceModuleId, sourcePortId,
-            sinkModuleId, sinkPortId,
+            sourceModuleId,
+            sourcePortId,
+            sinkModuleId,
+            sinkPortId,
             streamType: sourcePort.streamType,
             channelMap: channelMap?.length ? channelMap : undefined,
         };
@@ -151,7 +170,10 @@ export class MediaRouter {
                 } else {
                     // Execution returned null — remove the zombie connection
                     this.connections.delete(connId);
-                    log.warn({ connectionId: connId }, 'Connection execution returned null — removed');
+                    log.warn(
+                        { connectionId: connId },
+                        'Connection execution returned null — removed',
+                    );
                 }
             } catch (err) {
                 // Execution threw — remove the zombie connection
@@ -197,7 +219,10 @@ export class MediaRouter {
             const newHandle = await this.executor?.execute(conn);
             if (newHandle) this.handles.set(connId, newHandle);
         } catch (err) {
-            log.error({ err, connectionId: connId }, 'Failed to re-execute connection with new channel map');
+            log.error(
+                { err, connectionId: connId },
+                'Failed to re-execute connection with new channel map',
+            );
         }
     }
 
@@ -239,7 +264,11 @@ export class MediaRouter {
         return this.portRegistry.getConnectionCount(moduleId, portId, this.connections.values());
     }
 
-    getModuleUdpSource(moduleId: string): { host: string; port: number; connectionId: string; codec?: string; channels?: number } | undefined {
+    getModuleUdpSource(
+        moduleId: string,
+    ):
+        | { host: string; port: number; connectionId: string; codec?: string; channels?: number }
+        | undefined {
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId === moduleId && conn.streamType === 'muxed/mpegts') {
                 const port = this.udpPorts.get(conn.sourceModuleId);

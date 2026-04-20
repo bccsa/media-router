@@ -10,10 +10,12 @@ function createMockPipeWire() {
     return {
         loadedSinks,
         loadedLoopbacks,
-        loadNullSink: vi.fn(async (name: string, _channels: number, _rate: number, _ownerId?: string) => {
-            loadedSinks.push(`MR_PW_${name}`);
-            return ++moduleIdCounter;
-        }),
+        loadNullSink: vi.fn(
+            async (name: string, _channels: number, _rate: number, _ownerId?: string) => {
+                loadedSinks.push(`MR_PW_${name}`);
+                return ++moduleIdCounter;
+            },
+        ),
         waitForSink: vi.fn(async () => true),
         loadLoopback: vi.fn(async (connId: string, source: string, sink: string) => {
             loadedLoopbacks.push({ connId, source, sink });
@@ -53,8 +55,20 @@ describe('N1MixerModule', () => {
             expect(ports).toHaveLength(8); // 4 in + 4 out
             expect(ports.filter((p) => p.direction === 'input')).toHaveLength(4);
             expect(ports.filter((p) => p.direction === 'output')).toHaveLength(4);
-            expect(ports[0]).toEqual({ id: 'in-0', direction: 'input', streamType: 'audio/pcm', label: 'In 1', maxConnections: -1 });
-            expect(ports[4]).toEqual({ id: 'out-0', direction: 'output', streamType: 'audio/pcm', label: 'Out 1', maxConnections: -1 });
+            expect(ports[0]).toEqual({
+                id: 'in-0',
+                direction: 'input',
+                streamType: 'audio/pcm',
+                label: 'In 1',
+                maxConnections: -1,
+            });
+            expect(ports[4]).toEqual({
+                id: 'out-0',
+                direction: 'output',
+                streamType: 'audio/pcm',
+                label: 'Out 1',
+                maxConnections: -1,
+            });
         });
 
         it('generates correct ports for 2 pairs', async () => {
@@ -125,7 +139,11 @@ describe('N1MixerModule', () => {
             const { module, pw, services } = createModule(pairCount);
             await module.onInit({ pairCount }, services);
             // onStart will fail on GstChildProcess (VU) but PipeWire calls succeed
-            try { await module.onStart(); } catch { /* VU processes will fail in test env */ }
+            try {
+                await module.onStart();
+            } catch {
+                /* VU processes will fail in test env */
+            }
             return { module, pw };
         }
 
@@ -137,13 +155,19 @@ describe('N1MixerModule', () => {
             // Check input sinks
             for (let i = 0; i < 4; i++) {
                 expect(pw.loadNullSink).toHaveBeenCalledWith(
-                    `n1-test-001_in_${i}`, 2, 48000, 'n1-test-001',
+                    `n1-test-001_in_${i}`,
+                    2,
+                    48000,
+                    'n1-test-001',
                 );
             }
             // Check output sinks
             for (let i = 0; i < 4; i++) {
                 expect(pw.loadNullSink).toHaveBeenCalledWith(
-                    `n1-test-001_out_${i}`, 2, 48000, 'n1-test-001',
+                    `n1-test-001_out_${i}`,
+                    2,
+                    48000,
+                    'n1-test-001',
                 );
             }
         });
@@ -166,10 +190,12 @@ describe('N1MixerModule', () => {
                 expect(loopbacksToThisOutput).toHaveLength(3);
 
                 // The excluded input should be the one at the same index
-                const sourceInputIndices = loopbacksToThisOutput.map((lb) => {
-                    const match = lb.source.match(/_in_(\d+)\.monitor$/);
-                    return match ? parseInt(match[1], 10) : -1;
-                }).sort();
+                const sourceInputIndices = loopbacksToThisOutput
+                    .map((lb) => {
+                        const match = lb.source.match(/_in_(\d+)\.monitor$/);
+                        return match ? parseInt(match[1], 10) : -1;
+                    })
+                    .sort();
 
                 // Should contain all indices except 'out'
                 const expected = [0, 1, 2, 3].filter((i) => i !== out);
@@ -185,16 +211,12 @@ describe('N1MixerModule', () => {
             expect(pw.loadLoopback).toHaveBeenCalledTimes(2);
 
             // out-0 gets in-1 only
-            const toOut0 = pw.loadedLoopbacks.filter(
-                (lb) => lb.sink === 'MR_PW_n1-test-001_out_0',
-            );
+            const toOut0 = pw.loadedLoopbacks.filter((lb) => lb.sink === 'MR_PW_n1-test-001_out_0');
             expect(toOut0).toHaveLength(1);
             expect(toOut0[0].source).toBe('MR_PW_n1-test-001_in_1.monitor');
 
             // out-1 gets in-0 only
-            const toOut1 = pw.loadedLoopbacks.filter(
-                (lb) => lb.sink === 'MR_PW_n1-test-001_out_1',
-            );
+            const toOut1 = pw.loadedLoopbacks.filter((lb) => lb.sink === 'MR_PW_n1-test-001_out_1');
             expect(toOut1).toHaveLength(1);
             expect(toOut1[0].source).toBe('MR_PW_n1-test-001_in_0.monitor');
         });

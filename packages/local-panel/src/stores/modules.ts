@@ -80,7 +80,9 @@ export const useModuleStore = defineStore('modules', () => {
                 modules.value[id] = {
                     ...modules.value[id],
                     displayName: (modConfig.displayName as string) ?? modules.value[id].displayName,
-                    settings: (modConfig.settings as Record<string, unknown>) ?? modules.value[id].settings,
+                    settings:
+                        (modConfig.settings as Record<string, unknown>) ??
+                        modules.value[id].settings,
                     lcpType: (modConfig.lcpType as string) ?? modules.value[id].lcpType,
                 };
             } else {
@@ -166,5 +168,19 @@ export const useModuleStore = defineStore('modules', () => {
         modules.value = { ...modules.value };
     }
 
-    return { modules, engineRunning, engineIp, engineIps, engineHostname, buildNumber, visibleModules, setAll, updateState, applyConfig, applyPatch, updateSetting, remove };
+    return {
+        modules,
+        engineRunning,
+        engineIp,
+        engineIps,
+        engineHostname,
+        buildNumber,
+        visibleModules,
+        setAll,
+        updateState,
+        applyConfig,
+        applyPatch,
+        updateSetting,
+        remove,
+    };
 });

@@ -80,17 +80,23 @@ function updateField(index: number, key: string, value: unknown) {
                 <span v-if="label" class="text-xs font-medium text-foreground">{{ label }}</span>
                 <p v-if="description" class="text-[10px] text-muted">{{ description }}</p>
             </div>
-            <MrButton size="sm" variant="secondary" :disabled="disabled" @click="addItem">+ Add</MrButton>
+            <MrButton size="sm" variant="secondary" :disabled="disabled" @click="addItem"
+                >+ Add</MrButton
+            >
         </div>
 
-        <div v-for="(item, idx) in items" :key="idx"
-             class="rounded-md p-2 space-y-1.5 bg-surface-alt border border-border-alt">
+        <div
+            v-for="(item, idx) in items"
+            :key="idx"
+            class="rounded-md p-2 space-y-1.5 bg-surface-alt border border-border-alt"
+        >
             <div class="flex items-center justify-between mb-1">
-                <span class="text-[10px] font-medium text-muted">
-                    Item {{ idx + 1 }}
-                </span>
-                <button @click="removeItem(idx)" :disabled="disabled"
-                        class="text-[10px] px-1 rounded hover:bg-red-500/20 transition-colors text-red-400">
+                <span class="text-[10px] font-medium text-muted"> Item {{ idx + 1 }} </span>
+                <button
+                    @click="removeItem(idx)"
+                    :disabled="disabled"
+                    class="text-[10px] px-1 rounded hover:bg-red-500/20 transition-colors text-red-400"
+                >
                     Remove
                 </button>
             </div>
@@ -98,21 +104,39 @@ function updateField(index: number, key: string, value: unknown) {
             <div v-for="field in fields" :key="field.key" class="space-y-0.5">
                 <label class="text-[10px] text-muted">{{ field.description }}</label>
 
-                <MrSelect v-if="field.enumValues"
-                          :model-value="(item as Record<string, unknown>)[field.key] as string | number"
-                          :options="field.enumValues.map(v => ({ value: v as string | number, label: String(v) }))"
-                          :disabled="disabled"
-                          @update:model-value="updateField(idx, field.key, $event)" />
+                <MrSelect
+                    v-if="field.enumValues"
+                    :model-value="(item as Record<string, unknown>)[field.key] as string | number"
+                    :options="
+                        field.enumValues.map((v) => ({
+                            value: v as string | number,
+                            label: String(v),
+                        }))
+                    "
+                    :disabled="disabled"
+                    @update:model-value="updateField(idx, field.key, $event)"
+                />
 
-                <MrInput v-else
-                         :model-value="String((item as Record<string, unknown>)[field.key] ?? '')"
-                         :type="field.type === 'number' ? 'number' : 'text'"
-                         :disabled="disabled"
-                         @update:model-value="updateField(idx, field.key, field.type === 'number' ? Number($event) : $event)" />
+                <MrInput
+                    v-else
+                    :model-value="String((item as Record<string, unknown>)[field.key] ?? '')"
+                    :type="field.type === 'number' ? 'number' : 'text'"
+                    :disabled="disabled"
+                    @update:model-value="
+                        updateField(
+                            idx,
+                            field.key,
+                            field.type === 'number' ? Number($event) : $event,
+                        )
+                    "
+                />
             </div>
         </div>
 
-        <div v-if="items.length === 0" class="text-center py-3 text-[11px] rounded-md text-muted border border-dashed border-border-alt">
+        <div
+            v-if="items.length === 0"
+            class="text-center py-3 text-[11px] rounded-md text-muted border border-dashed border-border-alt"
+        >
             No items. Click "+ Add" to create one.
         </div>
     </div>

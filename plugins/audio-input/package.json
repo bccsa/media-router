@@ -10,6 +10,7 @@
         "color": "#3b82f6",
         "icon": "mic",
         "category": "protocol",
+        "interlock": true,
         "architectures": [
             "arm64",
             "x86_64"

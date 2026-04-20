@@ -29,7 +29,20 @@ defineEmits<{
             :disabled="disabled"
             :min="min"
             :max="max"
-            @input="$emit('update:modelValue', type === 'number' ? Math.min(max ?? Infinity, Math.max(min ?? -Infinity, Number(($event.target as HTMLInputElement).value))) : ($event.target as HTMLInputElement).value)"
+            @input="
+                $emit(
+                    'update:modelValue',
+                    type === 'number'
+                        ? Math.min(
+                              max ?? Infinity,
+                              Math.max(
+                                  min ?? -Infinity,
+                                  Number(($event.target as HTMLInputElement).value),
+                              ),
+                          )
+                        : ($event.target as HTMLInputElement).value,
+                )
+            "
             class="w-full px-2.5 py-1.5 text-sm rounded-md outline-none transition-colors bg-input border text-foreground"
             :class="[
                 disabled ? 'opacity-50 cursor-not-allowed' : '',

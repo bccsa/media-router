@@ -28,14 +28,20 @@ const localVolume = ref(storeVolume.value);
 const dragging = ref(false);
 
 // Sync from store when NOT dragging (e.g. another LCP client changed it)
-watch(storeVolume, (v) => { if (!dragging.value) localVolume.value = v; });
+watch(storeVolume, (v) => {
+    if (!dragging.value) localVolume.value = v;
+});
 
 const healthClass = computed(() => {
     switch (props.module.health) {
-        case 'ok': return 'bg-ok';
-        case 'warning': return 'bg-warning';
-        case 'error': return 'bg-error';
-        default: return 'bg-stopped';
+        case 'ok':
+            return 'bg-ok';
+        case 'warning':
+            return 'bg-warning';
+        case 'error':
+            return 'bg-error';
+        default:
+            return 'bg-stopped';
     }
 });
 
@@ -62,7 +68,10 @@ function onFaderEnd(val: number) {
     localVolume.value = val;
     dragging.value = false;
     emit('volume', props.module.instanceId, val);
-    if (throttleTimer) { clearTimeout(throttleTimer); throttleTimer = null; }
+    if (throttleTimer) {
+        clearTimeout(throttleTimer);
+        throttleTimer = null;
+    }
     pendingValue = null;
 }
 
@@ -80,7 +89,10 @@ function toggleMute() {
         </div>
 
         <!-- VU Meter (vertical) -->
-        <div class="vu-container" :style="{ width: Math.min(Math.max(vuLevels.length, 2) * 10, 110) + 'px' }">
+        <div
+            class="vu-container"
+            :style="{ width: Math.min(Math.max(vuLevels.length, 2) * 10, 110) + 'px' }"
+        >
             <MrVuMeter :levels="vuLevels" orientation="vertical" :num-blocks="15" :block-gap="2" />
         </div>
 

@@ -12,7 +12,7 @@ vi.mock('@/stores/socket', () => {
 
 import { patch } from './usePatch';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const { __emitFn: emitFn } = await import('@/stores/socket') as any;
+const { __emitFn: emitFn } = (await import('@/stores/socket')) as any;
 
 describe('usePatch', () => {
     beforeEach(() => {
@@ -51,7 +51,9 @@ describe('usePatch', () => {
         it('handles boolean values', () => {
             patch.moduleSetting('enc-1', 'audioEnabled', false);
             expect(emitFn).toHaveBeenCalledWith('patch', {
-                ops: [{ op: 'replace', path: '/modules/enc-1/settings/audioEnabled', value: false }],
+                ops: [
+                    { op: 'replace', path: '/modules/enc-1/settings/audioEnabled', value: false },
+                ],
             });
         });
 

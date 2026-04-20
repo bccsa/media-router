@@ -9,7 +9,10 @@ import { LcpServer } from './LcpServer.js';
 
 function waitForEvent(socket: ClientSocket, event: string, timeout = 2000): Promise<unknown> {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`Timeout waiting for '${event}'`)), timeout);
+        const timer = setTimeout(
+            () => reject(new Error(`Timeout waiting for '${event}'`)),
+            timeout,
+        );
         socket.once(event, (data: unknown) => {
             clearTimeout(timer);
             resolve(data);
@@ -34,7 +37,10 @@ describe('LcpServer', () => {
         });
         await new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('Client connect timeout')), 3000);
-            client.on('connect', () => { clearTimeout(timer); resolve(); });
+            client.on('connect', () => {
+                clearTimeout(timer);
+                resolve();
+            });
         });
     });
 
@@ -44,7 +50,9 @@ describe('LcpServer', () => {
     });
 
     it('broadcasts configUpdate to connected clients', async () => {
-        const patch = [{ op: 'replace', path: '/modules/mic-1/settings/audioEnabled', value: false }];
+        const patch = [
+            { op: 'replace', path: '/modules/mic-1/settings/audioEnabled', value: false },
+        ];
         const promise = waitForEvent(client, 'configUpdate');
         lcpServer.broadcastConfigUpdate(patch);
         const received = await promise;
@@ -94,7 +102,9 @@ describe('LcpServer', () => {
         const patchPromise = new Promise<unknown>((resolve) => {
             lcpServer.on('patch', resolve);
         });
-        client.emit('patch', { ops: [{ op: 'replace', path: '/modules/mic-1/settings/volume', value: 75 }] });
+        client.emit('patch', {
+            ops: [{ op: 'replace', path: '/modules/mic-1/settings/volume', value: 75 }],
+        });
         const received = await patchPromise;
         const d = received as { ops: unknown[]; _socketId: string };
         expect(d.ops).toHaveLength(1);
@@ -126,11 +136,15 @@ describe('LcpServer', () => {
         });
         await new Promise<void>((resolve) => client2.on('connect', resolve));
 
-        const patch = [{ op: 'replace', path: '/modules/mic-1/settings/audioEnabled', value: false }];
+        const patch = [
+            { op: 'replace', path: '/modules/mic-1/settings/audioEnabled', value: false },
+        ];
 
         // Client 1 should NOT receive (excluded), client 2 should receive
         let client1Received = false;
-        client.once('configUpdate', () => { client1Received = true; });
+        client.once('configUpdate', () => {
+            client1Received = true;
+        });
 
         const p2 = waitForEvent(client2, 'configUpdate');
         lcpServer.broadcastConfigUpdateExcept(client.id!, patch);
@@ -220,7 +234,9 @@ describe('LcpServer', () => {
             reconnection: false,
         });
         let received = false;
-        client2.on('init', () => { received = true; });
+        client2.on('init', () => {
+            received = true;
+        });
         await new Promise<void>((resolve) => client2.on('connect', resolve));
         await new Promise((r) => setTimeout(r, 100));
         expect(received).toBe(false);

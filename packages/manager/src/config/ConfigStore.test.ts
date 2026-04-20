@@ -54,14 +54,15 @@ describe('ConfigStore', () => {
         it('creates and retrieves a profile', () => {
             store.createProfile('eng-1', 'prod', { modules: {} });
             const profile = store.getProfile('eng-1', 'prod');
-            expect(profile).toEqual({ modules: {} });
+            // getProfile always normalizes `interlocks` to an array.
+            expect(profile).toEqual({ modules: {}, interlocks: [] });
         });
 
         it('INSERT OR IGNORE on duplicate profile', () => {
             store.createProfile('eng-1', 'default', { version: 1 });
             store.createProfile('eng-1', 'default', { version: 2 }); // should not throw
             const profile = store.getProfile('eng-1', 'default');
-            expect(profile).toEqual({ version: 1 }); // original preserved
+            expect(profile).toEqual({ version: 1, interlocks: [] });
         });
 
         it('updates profile config', () => {
@@ -149,7 +150,9 @@ describe('ConfigStore', () => {
                 return { ...config, modules: { 'mic-1': { pluginId: 'audio-input' } } };
             });
             expect(result).toBeDefined();
-            expect((result as Record<string, unknown>).modules).toEqual({ 'mic-1': { pluginId: 'audio-input' } });
+            expect((result as Record<string, unknown>).modules).toEqual({
+                'mic-1': { pluginId: 'audio-input' },
+            });
             // Verify it was persisted
             const profile = store.getProfile('eng-1', 'prod');
             expect(profile!.modules).toEqual({ 'mic-1': { pluginId: 'audio-input' } });
@@ -220,7 +223,7 @@ describe('ConfigStore', () => {
         it('createProfile with default empty config', () => {
             store.createProfile('eng-1', 'empty');
             const profile = store.getProfile('eng-1', 'empty');
-            expect(profile).toEqual({});
+            expect(profile).toEqual({ interlocks: [] });
         });
 
         it('updateProfileConfig persists complex nested config', () => {
@@ -230,13 +233,29 @@ describe('ConfigStore', () => {
                     'mic-1': { pluginId: 'audio-input', settings: { volume: 80, device: 'hw:0' } },
                     'spk-1': { pluginId: 'audio-output', settings: { volume: 100 } },
                 },
-                connections: [
-                    { id: 'conn-1', sourceModuleId: 'mic-1', sinkModuleId: 'spk-1' },
-                ],
+                connections: [{ id: 'conn-1', sourceModuleId: 'mic-1', sinkModuleId: 'spk-1' }],
             };
             store.updateProfileConfig('eng-1', 'complex', config);
             const retrieved = store.getProfile('eng-1', 'complex');
-            expect(retrieved).toEqual(config);
+            expect(retrieved).toEqual({ ...config, interlocks: [] });
+        });
+
+        it('normalizes corrupt interlocks shape on load', () => {
+            // Simulates the earlier applyJsonPatch bug that persisted
+            // `interlocks: { "-": {...} }` instead of an array.
+            store.createProfile('eng-1', 'bad');
+            (store as any).db
+                .prepare(
+                    'UPDATE engine_profiles SET config = ? WHERE engine_id = ? AND profile_name = ?',
+                )
+                .run(
+                    JSON.stringify({ interlocks: { '-': { id: 'g1', name: 'G', members: [] } } }),
+                    'eng-1',
+                    'bad',
+                );
+            const profile = store.getProfile('eng-1', 'bad');
+            expect(Array.isArray(profile?.interlocks)).toBe(true);
+            expect(profile?.interlocks).toHaveLength(1);
         });
     });
 

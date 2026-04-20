@@ -27,7 +27,8 @@ defineEmits<{
             :class="[
                 disabled ? 'opacity-50 cursor-not-allowed' : '',
                 modelValue ? 'bg-accent' : 'bg-border',
-            ]">
+            ]"
+        >
             <span
                 class="inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform duration-200"
                 :class="modelValue ? 'translate-x-[18px]' : 'translate-x-0.5'"

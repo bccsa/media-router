@@ -26,8 +26,20 @@ export class N1MixerModule extends GstPluginBase {
     }
 
     /** Generate ports dynamically based on pairCount config. */
-    getDynamicPorts(): Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections: number }> {
-        const ports: Array<{ id: string; direction: 'input' | 'output'; streamType: string; label: string; maxConnections: number }> = [];
+    getDynamicPorts(): Array<{
+        id: string;
+        direction: 'input' | 'output';
+        streamType: string;
+        label: string;
+        maxConnections: number;
+    }> {
+        const ports: Array<{
+            id: string;
+            direction: 'input' | 'output';
+            streamType: string;
+            label: string;
+            maxConnections: number;
+        }> = [];
         for (let i = 0; i < this.pairCount; i++) {
             ports.push({
                 id: `in-${i}`,
@@ -151,5 +163,4 @@ export class N1MixerModule extends GstPluginBase {
     getPipeWireNodes(): { source?: string; sink?: string } {
         return {};
     }
-
 }

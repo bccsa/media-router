@@ -1,4 +1,9 @@
-import { Server as HttpServer, createServer, type IncomingMessage, type ServerResponse } from 'http';
+import {
+    Server as HttpServer,
+    createServer,
+    type IncomingMessage,
+    type ServerResponse,
+} from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -72,9 +77,12 @@ export class LcpServer extends EventEmitter {
             });
 
             // Unified patch from LCP (N-1 router)
-            socket.on('patch', validated(PatchEnvelopeSchema, log, ({ ops }) => {
-                this.emit('patch', { ops, _socketId: socket.id });
-            }));
+            socket.on(
+                'patch',
+                validated(PatchEnvelopeSchema, log, ({ ops }) => {
+                    this.emit('patch', { ops, _socketId: socket.id });
+                }),
+            );
 
             socket.on('disconnect', () => {
                 log.info({ socketId: socket.id }, 'Client disconnected');
@@ -160,11 +168,11 @@ export class LcpServer extends EventEmitter {
     private findStaticDir(): string | null {
         // Try common locations relative to this file / cwd
         const candidates = [
-            path.resolve(__dirname, '../../../local-panel/dist'),         // dev: packages/engine/src → packages/local-panel/dist
-            path.resolve(__dirname, '../../../../local-panel/dist'),      // dev: packages/engine/dist → packages/local-panel/dist
-            path.resolve(process.cwd(), '../local-panel/dist'),          // packages/engine cwd
-            path.resolve(process.cwd(), 'local-panel/dist'),             // repo root cwd (Yocto)
-            path.resolve(process.cwd(), 'packages/local-panel/dist'),    // repo root cwd
+            path.resolve(__dirname, '../../../local-panel/dist'), // dev: packages/engine/src → packages/local-panel/dist
+            path.resolve(__dirname, '../../../../local-panel/dist'), // dev: packages/engine/dist → packages/local-panel/dist
+            path.resolve(process.cwd(), '../local-panel/dist'), // packages/engine cwd
+            path.resolve(process.cwd(), 'local-panel/dist'), // repo root cwd (Yocto)
+            path.resolve(process.cwd(), 'packages/local-panel/dist'), // repo root cwd
         ];
         for (const dir of candidates) {
             if (fs.existsSync(path.join(dir, 'index.html'))) {
@@ -201,7 +209,11 @@ export class LcpServer extends EventEmitter {
                 // SPA fallback — serve index.html for non-asset routes
                 if (!/\.(js|css|png|svg|ico|json|woff2?)$/.test(urlPath)) {
                     fs.readFile(path.join(this.staticDir!, 'index.html'), (err2, html) => {
-                        if (err2) { res.writeHead(404); res.end('Not found'); return; }
+                        if (err2) {
+                            res.writeHead(404);
+                            res.end('Not found');
+                            return;
+                        }
                         res.writeHead(200, { 'Content-Type': 'text/html' });
                         res.end(html);
                     });

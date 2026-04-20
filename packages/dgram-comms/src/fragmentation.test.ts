@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { fragment, parseFragmentHeader, Reassembler, MAX_PAYLOAD_SIZE, HEADER_SIZE } from './fragmentation.js';
+import {
+    fragment,
+    parseFragmentHeader,
+    Reassembler,
+    MAX_PAYLOAD_SIZE,
+    HEADER_SIZE,
+} from './fragmentation.js';
 
 describe('fragmentation', () => {
     describe('fragment()', () => {

@@ -40,7 +40,9 @@ export function useFocusMode(engine: ComputedRef<EngineState | undefined>): Focu
     }
 
     function isModuleDimmed(moduleId: string): boolean {
-        return focusMode.value && focusedModules.value.size > 0 && !focusedModules.value.has(moduleId);
+        return (
+            focusMode.value && focusedModules.value.size > 0 && !focusedModules.value.has(moduleId)
+        );
     }
 
     function isEdgeDimmed(sourceModuleId: string, sinkModuleId: string): boolean {

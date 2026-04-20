@@ -7,7 +7,12 @@ import MrContextMenu from './MrContextMenu.vue';
 
 describe('MrContextMenu', () => {
     const items = [
-        { label: 'Restart', action: 'restart', icon: '<circle cx="12" cy="12" r="3"/>', tooltip: 'Restart the module' },
+        {
+            label: 'Restart',
+            action: 'restart',
+            icon: '<circle cx="12" cy="12" r="3"/>',
+            tooltip: 'Restart the module',
+        },
         { label: 'Settings', action: 'settings' },
         { label: '', action: '', divider: true },
         { label: 'Delete', action: 'delete', danger: true, tooltip: 'Remove permanently' },
@@ -73,9 +78,7 @@ describe('MrContextMenu', () => {
     });
 
     it('does not emit action for disabled items', async () => {
-        const disabledItems = [
-            { label: 'Disabled', action: 'noop', disabled: true },
-        ];
+        const disabledItems = [{ label: 'Disabled', action: 'noop', disabled: true }];
         const wrapper = mount(MrContextMenu, {
             props: { items: disabledItems, x: 100, y: 100 },
             global: { stubs: { Teleport: true } },
@@ -105,9 +108,7 @@ describe('MrContextMenu', () => {
     });
 
     it('does not render tooltip for items without tooltip', () => {
-        const noTooltipItems = [
-            { label: 'Plain', action: 'plain' },
-        ];
+        const noTooltipItems = [{ label: 'Plain', action: 'plain' }];
         const wrapper = mount(MrContextMenu, {
             props: { items: noTooltipItems, x: 100, y: 100 },
             global: { stubs: { Teleport: true } },

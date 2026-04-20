@@ -31,6 +31,8 @@ const iconMap: Record<string, Component> = {
 /** Resolve a Lucide icon component by kebab-case name (e.g. "volume-2" → Volume2). */
 export function getLucideIcon(name?: string): Component | null {
     if (!name) return null;
-    const pascal = name.replace(/(^|-)([a-z0-9])/g, (_: string, __: string, c: string) => c.toUpperCase());
+    const pascal = name.replace(/(^|-)([a-z0-9])/g, (_: string, __: string, c: string) =>
+        c.toUpperCase(),
+    );
     return iconMap[pascal] ?? null;
 }

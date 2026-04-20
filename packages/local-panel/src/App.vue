@@ -46,18 +46,67 @@ function stopEngine() {
         <!-- Header -->
         <header class="lcp-header">
             <div class="header-left">
-                <div class="status-dot" :class="socketStore.connected ? 'bg-accent' : 'bg-stopped'"></div>
+                <div
+                    class="status-dot"
+                    :class="socketStore.connected ? 'bg-accent' : 'bg-stopped'"
+                ></div>
                 <h1 class="header-title">Media Router</h1>
                 <span class="header-subtitle">Local Control Panel</span>
-                <span v-if="moduleStore.engineIps.length > 0" class="header-ip">{{ moduleStore.engineIps.join(', ') }}</span>
-                <span v-if="moduleStore.buildNumber" class="header-build">{{ moduleStore.buildNumber }}</span>
+                <span v-if="moduleStore.engineIps.length > 0" class="header-ip">{{
+                    moduleStore.engineIps.join(', ')
+                }}</span>
+                <span v-if="moduleStore.buildNumber" class="header-build">{{
+                    moduleStore.buildNumber
+                }}</span>
             </div>
             <div class="header-right">
-                <button class="theme-btn" @click="toggleTheme" :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'">
-                    <svg v-if="isDark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-                    <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                <button
+                    class="theme-btn"
+                    @click="toggleTheme"
+                    :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
+                >
+                    <svg
+                        v-if="isDark"
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    >
+                        <circle cx="12" cy="12" r="5" />
+                        <line x1="12" y1="1" x2="12" y2="3" />
+                        <line x1="12" y1="21" x2="12" y2="23" />
+                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                        <line x1="1" y1="12" x2="3" y2="12" />
+                        <line x1="21" y1="12" x2="23" y2="12" />
+                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                    </svg>
+                    <svg
+                        v-else
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    >
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                    </svg>
                 </button>
-                <button v-if="moduleStore.engineRunning" class="engine-btn stop" @click="stopEngine">Stop</button>
+                <button
+                    v-if="moduleStore.engineRunning"
+                    class="engine-btn stop"
+                    @click="stopEngine"
+                >
+                    Stop
+                </button>
                 <button v-else class="engine-btn start" @click="startEngine">Start</button>
             </div>
         </header>
@@ -109,10 +158,28 @@ function stopEngine() {
     --border-primary: #d1d5db;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; }
-body { background: var(--bg-primary); color: var(--text-primary); font-family: system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
-#app { height: 100%; }
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+html,
+body {
+    height: 100%;
+    overflow: hidden;
+}
+body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family:
+        system-ui,
+        -apple-system,
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+#app {
+    height: 100%;
+}
 </style>
 
 <style scoped>
@@ -237,10 +304,18 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: s
     .lcp-header {
         padding: 4px 12px;
     }
-    .header-title { font-size: 14px; }
-    .header-subtitle { display: none; }
-    .mixer-area { padding: 6px; }
-    .mixer-row { gap: 4px; }
+    .header-title {
+        font-size: 14px;
+    }
+    .header-subtitle {
+        display: none;
+    }
+    .mixer-area {
+        padding: 6px;
+    }
+    .mixer-row {
+        gap: 4px;
+    }
 }
 
 /* Portrait small phones: tighter padding */
@@ -248,8 +323,12 @@ body { background: var(--bg-primary); color: var(--text-primary); font-family: s
     .lcp-header {
         padding: 8px 10px;
     }
-    .mixer-area { padding: 8px; }
-    .mixer-row { gap: 4px; }
+    .mixer-area {
+        padding: 8px;
+    }
+    .mixer-row {
+        gap: 4px;
+    }
 }
 
 /* Safe area insets for notched devices / iOS */

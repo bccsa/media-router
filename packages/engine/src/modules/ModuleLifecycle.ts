@@ -59,30 +59,40 @@ export class ModuleLifecycle {
             moduleManager,
             mediaRouter,
             getConfig,
-            (instanceId, modConfig, pluginId) => this.resolvePortsForInstance(instanceId, modConfig, pluginId),
+            (instanceId, modConfig, pluginId) =>
+                this.resolvePortsForInstance(instanceId, modConfig, pluginId),
         );
     }
 
     /**
-     * Resolve ports for a module. Priority:
-     * 1. Dynamic ports from plugin (getDynamicPorts) — for modules with configurable port count
-     * 2. Config ports (modConfig.ports) — stored in profile
-     * 3. Plugin manifest ports — fallback
+     * Resolve ports for a module. The plugin manifest is the source of truth
+     * for static-port plugins — stored `modConfig.ports` is a cache that can
+     * go stale (e.g. when a plugin changes maxConnections between versions).
+     *
+     * Priority:
+     * 1. Plugin manifest ports — authoritative for plugins with static ports.
+     * 2. Dynamic ports from module instance (getDynamicPorts) — for plugins
+     *    with runtime-configurable port count (manifest.ports is empty).
+     * 3. Stored config ports — last-resort fallback.
      */
-    private resolvePortsForInstance(instanceId: string, modConfig: Record<string, unknown>, pluginId: string): RawPort[] {
-        // Check if the module instance provides dynamic ports
+    private resolvePortsForInstance(
+        instanceId: string,
+        modConfig: Record<string, unknown>,
+        pluginId: string,
+    ): RawPort[] {
+        const manifestPorts = (this.pluginLoader?.get(pluginId)?.manifest?.ports ??
+            []) as RawPort[];
+        if (manifestPorts.length > 0) return manifestPorts;
+
         const instance = this.moduleManager.get(instanceId);
         const dynamicPorts = instance?.getDynamicPorts();
         if (dynamicPorts && dynamicPorts.length > 0) {
-            // Update the config so the manager gets the correct ports on next sync
             modConfig.ports = dynamicPorts;
             this.onDynamicPortsResolved?.(instanceId, dynamicPorts as RawPort[]);
             return dynamicPorts as RawPort[];
         }
-        // Fall back to config or manifest
-        const configPorts = (modConfig.ports ?? []) as RawPort[];
-        if (configPorts.length > 0) return configPorts;
-        return (this.pluginLoader?.get(pluginId)?.manifest?.ports as RawPort[] | undefined) ?? [];
+
+        return (modConfig.ports ?? []) as RawPort[];
     }
 
     /** Run an operation under the lifecycle lock — prevents concurrent lifecycle transitions. */
@@ -153,14 +163,24 @@ export class ModuleLifecycle {
 
             const pluginId = modConfig.pluginId as string;
             try {
-                this.moduleManager.createModule(instanceId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
+                this.moduleManager.createModule(
+                    instanceId,
+                    pluginId,
+                    (modConfig.settings as Record<string, unknown>) ?? {},
+                );
 
-                this.mediaRouter.registerPorts(instanceId, mapPorts(this.resolvePortsForInstance(instanceId, modConfig, pluginId)));
+                this.mediaRouter.registerPorts(
+                    instanceId,
+                    mapPorts(this.resolvePortsForInstance(instanceId, modConfig, pluginId)),
+                );
 
                 await this.moduleManager.startModule(instanceId);
                 log.info({ instanceId, module: label }, 'Started module');
             } catch (err) {
-                log.error({ instanceId, module: label }, `Failed to start module: ${formatError(err)}`);
+                log.error(
+                    { instanceId, module: label },
+                    `Failed to start module: ${formatError(err)}`,
+                );
             }
         }
 
@@ -189,12 +209,21 @@ export class ModuleLifecycle {
         for (const conn of connections) {
             try {
                 await this.mediaRouter.removeConnection(conn.id, true);
-            } catch (err) { log.debug({ err: formatError(err), connId: conn.id }, 'Connection removal during delete'); }
+            } catch (err) {
+                log.debug(
+                    { err: formatError(err), connId: conn.id },
+                    'Connection removal during delete',
+                );
+            }
         }
 
         // Stop the module
         if (instance) {
-            try { await instance.stop(); } catch (err) { log.debug({ err: formatError(err), moduleId }, 'Module stop during delete'); }
+            try {
+                await instance.stop();
+            } catch (err) {
+                log.debug({ err: formatError(err), moduleId }, 'Module stop during delete');
+            }
         }
 
         // Unregister ports BEFORE deleting — ensures consistent state during deletion events
@@ -205,10 +234,16 @@ export class ModuleLifecycle {
 
     private async _startSingle(moduleId: string): Promise<void> {
         const config = this.getConfig();
-        if (!config) { log.warn({ moduleId }, 'No config — cannot start module'); return; }
+        if (!config) {
+            log.warn({ moduleId }, 'No config — cannot start module');
+            return;
+        }
         const modules = (config.modules ?? {}) as Record<string, Record<string, unknown>>;
         const modConfig = modules[moduleId];
-        if (!modConfig) { log.warn({ moduleId }, 'Module not in config'); return; }
+        if (!modConfig) {
+            log.warn({ moduleId }, 'Module not in config');
+            return;
+        }
 
         const pluginId = modConfig.pluginId as string;
         const label = `[${modConfig.displayName ?? moduleId}]`;
@@ -219,9 +254,16 @@ export class ModuleLifecycle {
         }
 
         try {
-            const instance = this.moduleManager.createModule(moduleId, pluginId, modConfig.settings as Record<string, unknown>);
+            const instance = this.moduleManager.createModule(
+                moduleId,
+                pluginId,
+                modConfig.settings as Record<string, unknown>,
+            );
 
-            this.mediaRouter.registerPorts(moduleId, mapPorts(this.resolvePortsForInstance(moduleId, modConfig, pluginId)));
+            this.mediaRouter.registerPorts(
+                moduleId,
+                mapPorts(this.resolvePortsForInstance(moduleId, modConfig, pluginId)),
+            );
 
             await this.moduleManager.startModule(moduleId);
             log.info({ moduleId, module: label }, 'Started module');
@@ -270,7 +312,9 @@ export class ModuleLifecycle {
 
     private async _disable(moduleId: string): Promise<void> {
         const config = this.getConfig();
-        const modName = (config?.modules as Record<string, Record<string, unknown>>)?.[moduleId]?.displayName ?? moduleId;
+        const modName =
+            (config?.modules as Record<string, Record<string, unknown>>)?.[moduleId]?.displayName ??
+            moduleId;
         log.info({ moduleId, module: `[${modName}]` }, 'Module disabled');
 
         const connections = this.mediaRouter.getModuleConnections(moduleId);
@@ -311,7 +355,11 @@ export class ModuleLifecycle {
                 }
             } else {
                 const pluginId = modConfig.pluginId as string;
-                this.moduleManager.createModule(moduleId, pluginId, (modConfig.settings as Record<string, unknown>) ?? {});
+                this.moduleManager.createModule(
+                    moduleId,
+                    pluginId,
+                    (modConfig.settings as Record<string, unknown>) ?? {},
+                );
 
                 const ports = this.resolvePortsForInstance(moduleId, modConfig, pluginId);
                 if (ports.length > 0) {

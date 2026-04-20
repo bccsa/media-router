@@ -11,7 +11,7 @@ const engineStore = useEngineStore();
 
 const engineCount = computed(() => engineStore.engineList.length);
 const onlineCount = computed(() => engineStore.engineList.filter((e) => e.online).length);
-const managerUrl = computed(() => typeof location !== 'undefined' ? location.origin : '—');
+const managerUrl = computed(() => (typeof location !== 'undefined' ? location.origin : '—'));
 </script>
 
 <template>
@@ -20,26 +20,36 @@ const managerUrl = computed(() => typeof location !== 'undefined' ? location.ori
 
         <!-- Appearance -->
         <div class="rounded-lg overflow-hidden bg-card border border-border">
-            <div class="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border-alt">
+            <div
+                class="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border-alt"
+            >
                 Appearance
             </div>
             <div class="px-5 py-4">
-                <MrToggle :model-value="theme.isDark" @update:model-value="theme.toggle()"
-                          label="Dark Mode" description="Use dark colour scheme" />
+                <MrToggle
+                    :model-value="theme.isDark"
+                    @update:model-value="theme.toggle()"
+                    label="Dark Mode"
+                    description="Use dark colour scheme"
+                />
             </div>
         </div>
 
         <!-- Connection -->
         <div class="rounded-lg overflow-hidden bg-card border border-border">
-            <div class="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border-alt">
+            <div
+                class="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border-alt"
+            >
                 Connection
             </div>
             <div class="divide-y divide-border-alt">
                 <div class="px-5 py-3 flex items-center justify-between">
                     <span class="text-sm text-subtle">Socket.IO</span>
                     <div class="flex items-center gap-1.5">
-                        <div class="w-2 h-2 rounded-full"
-                             :class="socket.connected ? 'bg-ok' : 'bg-error'" />
+                        <div
+                            class="w-2 h-2 rounded-full"
+                            :class="socket.connected ? 'bg-ok' : 'bg-error'"
+                        />
                         <span class="text-xs text-subtle">
                             {{ socket.connected ? 'Connected' : 'Disconnected' }}
                         </span>
@@ -62,7 +72,9 @@ const managerUrl = computed(() => typeof location !== 'undefined' ? location.ori
 
         <!-- About -->
         <div class="rounded-lg overflow-hidden bg-card border border-border">
-            <div class="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border-alt">
+            <div
+                class="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted border-b border-border-alt"
+            >
                 About
             </div>
             <div class="px-5 py-4 space-y-2">

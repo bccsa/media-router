@@ -25,7 +25,10 @@ let restartAttempts = 0;
 const MAX_RESTART_ATTEMPTS = 10;
 
 // Pending get_property/get_stats requests waiting for response from Python
-const pendingRequests = new Map<string, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
+const pendingRequests = new Map<
+    string,
+    { requestId: string; timer: ReturnType<typeof setTimeout> }
+>();
 
 // Path to the Python runner script (same directory as this file)
 const PYTHON_RUNNER = path.resolve(__dirname, 'gst-pipeline-runner.py');
@@ -33,7 +36,15 @@ const PYTHON_RUNNER = path.resolve(__dirname, 'gst-pipeline-runner.py');
 // --- IPC message handling (to parent Node.js process) ---
 
 function sendToParent(msg: ControlIpcMessage): void {
-    process.send?.(msg);
+    // Channel may be closed during graceful shutdown — late Python events
+    // (stateChange on SIGTERM, final vu) would otherwise crash the child
+    // with ERR_IPC_CHANNEL_CLOSED.
+    if (!process.connected) return;
+    try {
+        process.send?.(msg);
+    } catch {
+        /* channel closed mid-write */
+    }
 }
 
 function sendEvent(action: string, data?: unknown): void {
@@ -149,13 +160,17 @@ function handlePythonEventFd(data: Buffer): void {
             try {
                 const json = JSON.parse(trimmed.substring(9));
                 handlePythonEvent(json);
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
         } else if (trimmed) {
             // Plain JSON line (no prefix on fd 4)
             try {
                 const json = JSON.parse(trimmed);
                 handlePythonEvent(json);
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
         }
     }
 }
@@ -184,13 +199,19 @@ function sendToPython(cmd: Record<string, unknown>): void {
 function scheduleRestart(): void {
     if (restartTimer) return;
     if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-        console.error(`[gst-runner] Max restart attempts (${MAX_RESTART_ATTEMPTS}) reached — giving up`);
-        sendEvent('error', { message: `Pipeline failed after ${MAX_RESTART_ATTEMPTS} restart attempts` });
+        console.error(
+            `[gst-runner] Max restart attempts (${MAX_RESTART_ATTEMPTS}) reached — giving up`,
+        );
+        sendEvent('error', {
+            message: `Pipeline failed after ${MAX_RESTART_ATTEMPTS} restart attempts`,
+        });
         return;
     }
     restartAttempts++;
     const delay = Math.min(1000 * restartAttempts, 5000); // 1s, 2s, 3s... max 5s
-    console.error(`[gst-runner] Restarting pipeline in ${delay}ms (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})`);
+    console.error(
+        `[gst-runner] Restarting pipeline in ${delay}ms (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})`,
+    );
     restartTimer = setTimeout(() => {
         restartTimer = null;
         if (lastPipelineString) {
@@ -200,7 +221,10 @@ function scheduleRestart(): void {
 }
 
 function startPipeline(pipeline: string, requestId: string, stdioForData = false): void {
-    if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+    if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+    }
     if (pyProcess) {
         stopPipeline();
     }
@@ -235,7 +259,6 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
 
         // Also watch stderr for fallback/debug
         pyProcess.stderr?.on('data', handlePythonStderr);
-
     } else {
         // BUS MESSAGE MODE: stdin = commands, stderr = events, stdout = unused
         pyProcess = spawn('python3', [PYTHON_RUNNER], {
@@ -271,7 +294,11 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
 
 function killProcess(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
     if (!proc.pid) return;
-    try { proc.kill(signal); } catch { /* already dead */ }
+    try {
+        proc.kill(signal);
+    } catch {
+        /* already dead */
+    }
 }
 
 function stopPipeline(): void {
@@ -280,8 +307,12 @@ function stopPipeline(): void {
     console.error('[gst-runner] Stopping pipeline...');
 
     // Unpipe streams
-    try { process.stdin.unpipe(pyProcess.stdin!); } catch {}
-    try { pyProcess.stdout?.unpipe(process.stdout); } catch {}
+    try {
+        process.stdin.unpipe(pyProcess.stdin!);
+    } catch {}
+    try {
+        pyProcess.stdout?.unpipe(process.stdout);
+    } catch {}
 
     // Send stop command
     sendToPython({ cmd: 'stop' });
@@ -304,7 +335,11 @@ function stopPipeline(): void {
 process.on('message', (msg: ControlIpcMessage) => {
     switch (msg.action) {
         case 'startPipeline': {
-            const d = msg.data as { pipeline: string; useStdioForData?: boolean; restartOnError?: boolean };
+            const d = msg.data as {
+                pipeline: string;
+                useStdioForData?: boolean;
+                restartOnError?: boolean;
+            };
             restartOnError = d.restartOnError ?? false;
             restartAttempts = 0;
             startPipeline(d.pipeline, msg.id, d.useStdioForData);
@@ -313,7 +348,10 @@ process.on('message', (msg: ControlIpcMessage) => {
 
         case 'stopPipeline':
             restartOnError = false; // Cancel any pending restarts
-            if (restartTimer) { clearTimeout(restartTimer); restartTimer = null; }
+            if (restartTimer) {
+                clearTimeout(restartTimer);
+                restartTimer = null;
+            }
             stopPipeline();
             sendResponse(msg.id, { ok: true });
             setTimeout(() => process.exit(0), 3000);
@@ -325,7 +363,12 @@ process.on('message', (msg: ControlIpcMessage) => {
 
         case 'setProperty': {
             const d = msg.data as { element: string; property: string; value: unknown };
-            sendToPython({ cmd: 'set_property', element: d.element, property: d.property, value: d.value });
+            sendToPython({
+                cmd: 'set_property',
+                element: d.element,
+                property: d.property,
+                value: d.value,
+            });
             sendResponse(msg.id, { ok: true });
             break;
         }
@@ -340,7 +383,12 @@ process.on('message', (msg: ControlIpcMessage) => {
                     sendResponse(msg.id, { error: 'Timeout waiting for property' });
                 }, 5000),
             });
-            sendToPython({ cmd: 'get_property', element: d.element, property: d.property, id: reqId });
+            sendToPython({
+                cmd: 'get_property',
+                element: d.element,
+                property: d.property,
+                id: reqId,
+            });
             break;
         }
 
@@ -395,7 +443,9 @@ function shutdown(reason: string): void {
         // Schedule SIGKILL as fallback
         const py = pyProcess;
         setTimeout(() => {
-            try { killProcess(py, 'SIGKILL'); } catch {}
+            try {
+                killProcess(py, 'SIGKILL');
+            } catch {}
         }, 1000);
     }
     setTimeout(() => process.exit(0), 1500);
@@ -408,7 +458,9 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // Emergency cleanup: if this process exits for any reason, kill Python
 process.on('exit', () => {
     if (pyProcess && pyProcess.pid) {
-        try { process.kill(pyProcess.pid, 'SIGKILL'); } catch {}
+        try {
+            process.kill(pyProcess.pid, 'SIGKILL');
+        } catch {}
     }
 });
 

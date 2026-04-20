@@ -62,7 +62,10 @@ export class PluginLoader {
 
                 // Filter by architecture
                 if (manifest.architectures && !manifest.architectures.includes(currentArch)) {
-                    log.info({ pluginId: manifest.pluginId, arch: currentArch }, 'Skipping plugin: not supported on architecture');
+                    log.info(
+                        { pluginId: manifest.pluginId, arch: currentArch },
+                        'Skipping plugin: not supported on architecture',
+                    );
                     continue;
                 }
 
@@ -76,7 +79,11 @@ export class PluginLoader {
                 const enginePath = path.resolve(pluginDir, manifest.engine);
                 const tsPath = enginePath;
                 const jsPath = enginePath.replace(/\.ts$/, '.js');
-                const distJsPath = path.join(pluginDir, 'dist', path.basename(manifest.engine).replace(/\.ts$/, '.js'));
+                const distJsPath = path.join(
+                    pluginDir,
+                    'dist',
+                    path.basename(manifest.engine).replace(/\.ts$/, '.js'),
+                );
 
                 let mod: any;
                 for (const tryPath of [distJsPath, jsPath, tsPath]) {
@@ -85,7 +92,10 @@ export class PluginLoader {
                         mod = await import(tryPath);
                         break;
                     } catch (err) {
-                        log.error({ err, pluginId: manifest.pluginId, path: tryPath }, 'Plugin import failed');
+                        log.error(
+                            { err, pluginId: manifest.pluginId, path: tryPath },
+                            'Plugin import failed',
+                        );
                     }
                 }
 
@@ -99,7 +109,10 @@ export class PluginLoader {
                             try {
                                 await (exportedClass as any).initManifest(manifest);
                             } catch (err) {
-                                log.warn({ err, pluginId: manifest.pluginId }, 'initManifest failed');
+                                log.warn(
+                                    { err, pluginId: manifest.pluginId },
+                                    'initManifest failed',
+                                );
                             }
                         }
                     }
@@ -110,7 +123,14 @@ export class PluginLoader {
                     ModuleClass,
                 });
 
-                log.info({ pluginId: manifest.pluginId, displayName: manifest.displayName, hasEngineClass: !!ModuleClass }, 'Loaded plugin');
+                log.info(
+                    {
+                        pluginId: manifest.pluginId,
+                        displayName: manifest.displayName,
+                        hasEngineClass: !!ModuleClass,
+                    },
+                    'Loaded plugin',
+                );
             } catch (err) {
                 log.error({ err, plugin: entry.name }, 'Failed to load plugin — skipping');
             }

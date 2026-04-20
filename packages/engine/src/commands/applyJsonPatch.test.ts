@@ -34,7 +34,9 @@ describe('applyJsonPatch', () => {
 
     it('skips replace on nonexistent intermediate path', () => {
         const obj: Record<string, unknown> = { modules: {} };
-        applyJsonPatch(obj, [{ op: 'replace', path: '/modules/nonexistent/displayName', value: 'X' }]);
+        applyJsonPatch(obj, [
+            { op: 'replace', path: '/modules/nonexistent/displayName', value: 'X' },
+        ]);
         // Should NOT set displayName on modules itself
         expect((obj.modules as any).displayName).toBeUndefined();
         expect((obj.modules as any).nonexistent).toBeUndefined();

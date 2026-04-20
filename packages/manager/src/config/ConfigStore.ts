@@ -4,6 +4,27 @@ import { createLogger } from '@media-router/shared-types';
 const log = createLogger('ConfigStore');
 
 /**
+ * Coerce a loaded profile config into a well-formed shape so callers never see
+ * `interlocks: undefined` or (from an earlier applyJsonPatch bug) `interlocks: { "-": {...} }`.
+ * This is the single coercion point — PatchRouter / SocketIOSetup / reconcileInterlocks
+ * no longer need defensive `Array.isArray` checks.
+ */
+function normalizeProfileConfig(config: Record<string, unknown>): Record<string, unknown> {
+    if (!Array.isArray(config.interlocks)) {
+        const raw = config.interlocks;
+        if (raw && typeof raw === 'object') {
+            config.interlocks = Object.values(raw as Record<string, unknown>).filter(
+                (v): v is Record<string, unknown> =>
+                    !!v && typeof v === 'object' && !Array.isArray(v),
+            );
+        } else {
+            config.interlocks = [];
+        }
+    }
+    return config;
+}
+
+/**
  * SQLite configuration store for the Manager.
  *
  * Stores engine registrations, named configuration profiles per engine,
@@ -62,7 +83,8 @@ export class ConfigStore {
     /** Seed database with a default engine + profile on first start. Skips in-memory DBs (tests). */
     private seedDefaults(): void {
         if (this.db.name === ':memory:' || this.db.name === '') return; // Skip for tests
-        const count = (this.db.prepare('SELECT COUNT(*) as c FROM engines').get() as { c: number }).c;
+        const count = (this.db.prepare('SELECT COUNT(*) as c FROM engines').get() as { c: number })
+            .c;
         if (count > 0) return; // Already has data
 
         log.info('First start — seeding default engine and profile');
@@ -71,9 +93,11 @@ export class ConfigStore {
         const password = 'media-router';
 
         // Create default engine
-        this.db.prepare(
-            'INSERT INTO engines (engine_id, display_name, password, active_profile) VALUES (?, ?, ?, ?)'
-        ).run(engineId, 'Local Engine', password, 'default');
+        this.db
+            .prepare(
+                'INSERT INTO engines (engine_id, display_name, password, active_profile) VALUES (?, ?, ?, ?)',
+            )
+            .run(engineId, 'Local Engine', password, 'default');
 
         // Create default profile with Audio Input → Audio Output
         const inputId = `audio-input-${Date.now().toString(36)}`;
@@ -86,16 +110,44 @@ export class ConfigStore {
                     displayName: 'Audio Input',
                     enabled: true,
                     position: { x: 100, y: 200 },
-                    settings: { device: '', sampleRate: 48000, channels: 2, volume: 100, volumeMax: 150 },
-                    ports: [{ id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Audio Out', maxConnections: -1 }],
+                    settings: {
+                        device: '',
+                        sampleRate: 48000,
+                        channels: 2,
+                        volume: 100,
+                        volumeMax: 150,
+                    },
+                    ports: [
+                        {
+                            id: 'audio-out',
+                            direction: 'output',
+                            streamType: 'audio/pcm',
+                            label: 'Audio Out',
+                            maxConnections: -1,
+                        },
+                    ],
                 },
                 [outputId]: {
                     pluginId: 'audio-output',
                     displayName: 'Audio Output',
                     enabled: true,
                     position: { x: 500, y: 200 },
-                    settings: { device: '', sampleRate: 48000, channels: 2, volume: 100, volumeMax: 150 },
-                    ports: [{ id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'Audio In', maxConnections: -1 }],
+                    settings: {
+                        device: '',
+                        sampleRate: 48000,
+                        channels: 2,
+                        volume: 100,
+                        volumeMax: 150,
+                    },
+                    ports: [
+                        {
+                            id: 'audio-in',
+                            direction: 'input',
+                            streamType: 'audio/pcm',
+                            label: 'Audio In',
+                            maxConnections: -1,
+                        },
+                    ],
                 },
             },
             connections: [
@@ -107,20 +159,23 @@ export class ConfigStore {
                     sinkPortId: 'audio-in',
                 },
             ],
+            interlocks: [],
         };
 
-        this.db.prepare(
-            'INSERT INTO engine_profiles (engine_id, profile_name, config) VALUES (?, ?, ?)'
-        ).run(engineId, 'default', JSON.stringify(config));
+        this.db
+            .prepare(
+                'INSERT INTO engine_profiles (engine_id, profile_name, config) VALUES (?, ?, ?)',
+            )
+            .run(engineId, 'default', JSON.stringify(config));
     }
 
     // --- Engine CRUD ---
 
     createEngine(engineId: string, displayName: string, password: string): void {
         try {
-            this.db.prepare(
-                'INSERT INTO engines (engine_id, display_name, password) VALUES (?, ?, ?)',
-            ).run(engineId, displayName, password);
+            this.db
+                .prepare('INSERT INTO engines (engine_id, display_name, password) VALUES (?, ?, ?)')
+                .run(engineId, displayName, password);
         } catch (err) {
             log.error({ err, engineId }, 'Failed to create engine');
             throw err;
@@ -191,18 +246,14 @@ export class ConfigStore {
         }
     }
 
-    getProfile(
-        engineId: string,
-        profileName: string,
-    ): Record<string, unknown> | undefined {
+    getProfile(engineId: string, profileName: string): Record<string, unknown> | undefined {
         const row = this.db
-            .prepare(
-                'SELECT config FROM engine_profiles WHERE engine_id = ? AND profile_name = ?',
-            )
+            .prepare('SELECT config FROM engine_profiles WHERE engine_id = ? AND profile_name = ?')
             .get(engineId, profileName) as { config: string } | undefined;
         if (!row) return undefined;
         try {
-            return JSON.parse(row.config);
+            const parsed = JSON.parse(row.config) as Record<string, unknown>;
+            return normalizeProfileConfig(parsed);
         } catch (err) {
             log.error({ err, engineId, profileName }, 'Corrupt config JSON in database');
             return {};
@@ -269,9 +320,9 @@ export class ConfigStore {
 
             let config: Record<string, unknown>;
             try {
-                config = JSON.parse(row.config);
+                config = normalizeProfileConfig(JSON.parse(row.config));
             } catch {
-                config = {};
+                config = normalizeProfileConfig({});
             }
 
             const modified = modifier(config);
@@ -296,9 +347,7 @@ export class ConfigStore {
     deleteProfile(engineId: string, profileName: string): void {
         try {
             this.db
-                .prepare(
-                    'DELETE FROM engine_profiles WHERE engine_id = ? AND profile_name = ?',
-                )
+                .prepare('DELETE FROM engine_profiles WHERE engine_id = ? AND profile_name = ?')
                 .run(engineId, profileName);
             // Cascade: remove version history and timer for this profile
             this.db
@@ -315,11 +364,7 @@ export class ConfigStore {
 
     // --- Version History ---
 
-    private maybeSaveVersion(
-        engineId: string,
-        profileName: string,
-        configStr: string,
-    ): void {
+    private maybeSaveVersion(engineId: string, profileName: string, configStr: string): void {
         const key = `${engineId}:${profileName}`;
         const now = Date.now();
         const lastSave = this.versionTimers.get(key) ?? 0;

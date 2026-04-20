@@ -61,16 +61,33 @@ export class ManagedProcess extends EventEmitter {
     ) {
         super();
         const bo = { ...DEFAULT_BACKOFF, ...options.backoff };
-        this.backoff = new ExponentialBackoff(bo.baseDelayMs, bo.maxDelayMs, bo.maxAttempts, bo.stabilityMs);
+        this.backoff = new ExponentialBackoff(
+            bo.baseDelayMs,
+            bo.maxDelayMs,
+            bo.maxAttempts,
+            bo.stabilityMs,
+        );
         this.log = createLogger(`Process:${ownerId ?? 'unknown'}:${options.label}`);
     }
 
-    get pid(): number | undefined { return this.child?.pid; }
-    get isRunning(): boolean { return this.child !== null && !this.child.killed && this.child.exitCode === null; }
-    get uptime(): number { return this._startTime > 0 && this.isRunning ? Date.now() - this._startTime : 0; }
-    get exitCode(): number | null { return this._exitCode; }
-    get label(): string { return this.options.label; }
-    get destroyed(): boolean { return this._destroyed; }
+    get pid(): number | undefined {
+        return this.child?.pid;
+    }
+    get isRunning(): boolean {
+        return this.child !== null && !this.child.killed && this.child.exitCode === null;
+    }
+    get uptime(): number {
+        return this._startTime > 0 && this.isRunning ? Date.now() - this._startTime : 0;
+    }
+    get exitCode(): number | null {
+        return this._exitCode;
+    }
+    get label(): string {
+        return this.options.label;
+    }
+    get destroyed(): boolean {
+        return this._destroyed;
+    }
 
     /** Start the process. */
     start(): void {
@@ -178,7 +195,10 @@ export class ManagedProcess extends EventEmitter {
         // Wait up to 3s for exit
         const exited = await new Promise<boolean>((resolve) => {
             const timer = setTimeout(() => resolve(false), 3000);
-            child.once('exit', () => { clearTimeout(timer); resolve(true); });
+            child.once('exit', () => {
+                clearTimeout(timer);
+                resolve(true);
+            });
         });
 
         if (!exited && !child.killed) {
@@ -186,7 +206,10 @@ export class ManagedProcess extends EventEmitter {
             child.kill('SIGKILL');
             await new Promise<void>((resolve) => {
                 const timer = setTimeout(resolve, 2000);
-                child.once('exit', () => { clearTimeout(timer); resolve(); });
+                child.once('exit', () => {
+                    clearTimeout(timer);
+                    resolve();
+                });
             });
         }
 

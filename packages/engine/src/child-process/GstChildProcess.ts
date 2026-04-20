@@ -159,7 +159,11 @@ export class GstChildProcess extends EventEmitter {
             // Wait up to 2s for clean exit, then SIGKILL
             await new Promise<void>((resolve) => {
                 const killTimer = setTimeout(() => {
-                    try { child.kill('SIGKILL'); } catch { /* already dead */ }
+                    try {
+                        child.kill('SIGKILL');
+                    } catch {
+                        /* already dead */
+                    }
                     resolve();
                 }, 2000);
 
@@ -220,7 +224,9 @@ export class GstChildProcess extends EventEmitter {
     }
 
     /** Get current throughput for all tracked elements. */
-    async getThroughput(): Promise<Record<string, { total_bytes: number; bitrate_kbps: number; bitrate_mbps: number }>> {
+    async getThroughput(): Promise<
+        Record<string, { total_bytes: number; bitrate_kbps: number; bitrate_mbps: number }>
+    > {
         if (!this.ipc || !this.running) return {};
         const result = await this.ipc.sendRequest('getThroughput', {});
         return (result as any)?.data ?? {};
@@ -246,7 +252,10 @@ export class GstChildProcess extends EventEmitter {
             return;
         }
 
-        log.info({ delayMs: delay, attempt: this.backoff.attempts, maxRestarts: MAX_RESTARTS }, 'Restarting');
+        log.info(
+            { delayMs: delay, attempt: this.backoff.attempts, maxRestarts: MAX_RESTARTS },
+            'Restarting',
+        );
 
         this.restartTimer = setTimeout(async () => {
             if (!this.destroyed && this.pipelineDesc) {

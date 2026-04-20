@@ -38,14 +38,24 @@ describe('usePatch', () => {
         expect(mockApplyEnginePatch).toHaveBeenCalledOnce();
         const ops = mockApplyEnginePatch.mock.calls[0][1];
         expect(ops).toHaveLength(2);
-        expect(ops).toContainEqual({ op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 });
-        expect(ops).toContainEqual({ op: 'replace', path: '/modules/mod-1/settings/device', value: 'mic-1' });
+        expect(ops).toContainEqual({
+            op: 'replace',
+            path: '/modules/mod-1/settings/volume',
+            value: 80,
+        });
+        expect(ops).toContainEqual({
+            op: 'replace',
+            path: '/modules/mod-1/settings/device',
+            value: 'mic-1',
+        });
     });
 
     it('moduleRename sends a replace op for displayName', () => {
         patch.moduleRename('eng-1', 'mod-1', 'New Name');
 
-        const expectedOps = [{ op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' }];
+        const expectedOps = [
+            { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' },
+        ];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
         expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops: expectedOps });
     });
@@ -53,7 +63,9 @@ describe('usePatch', () => {
     it('modulePosition sends a replace op for position', () => {
         patch.modulePosition('eng-1', 'mod-1', { x: 100, y: 200 });
 
-        const expectedOps = [{ op: 'replace', path: '/modules/mod-1/position', value: { x: 100, y: 200 } }];
+        const expectedOps = [
+            { op: 'replace', path: '/modules/mod-1/position', value: { x: 100, y: 200 } },
+        ];
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', expectedOps);
     });
 
@@ -89,7 +101,12 @@ describe('usePatch', () => {
     });
 
     it('addConnection sends an add op with /connections/-', () => {
-        const conn = { sourceModuleId: 'mod-1', sourcePortId: 'out', sinkModuleId: 'mod-2', sinkPortId: 'in' };
+        const conn = {
+            sourceModuleId: 'mod-1',
+            sourcePortId: 'out',
+            sinkModuleId: 'mod-2',
+            sinkPortId: 'in',
+        };
         patch.addConnection('eng-1', conn);
 
         const expectedOps = [{ op: 'add', path: '/connections/-', value: conn }];

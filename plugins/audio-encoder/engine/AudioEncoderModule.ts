@@ -55,7 +55,10 @@ export class AudioEncoderModule extends GstPluginBase {
         // Create a named null-sink — audio sources loopback into this
         if (this.services?.pipeWire) {
             this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId, channels, rate, this.services.instanceId,
+                this.services.instanceId,
+                channels,
+                rate,
+                this.services.instanceId,
             );
             // Force 100% volume — PulseAudio's stream-restore may remember 0% from a previous session
             await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
@@ -69,12 +72,16 @@ export class AudioEncoderModule extends GstPluginBase {
         this.lastPollTime = Date.now();
         this.statsTimer = setInterval(async () => {
             try {
-                const bytesServed = await this.getElementProperty('usink', 'bytes-served') as number;
+                const bytesServed = (await this.getElementProperty(
+                    'usink',
+                    'bytes-served',
+                )) as number;
                 if (typeof bytesServed === 'number') {
                     const now = Date.now();
                     const elapsed = (now - this.lastPollTime) / 1000;
                     const deltaBytes = bytesServed - this.lastBytes;
-                    const bitrateKbps = elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
+                    const bitrateKbps =
+                        elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
                     this.lastBytes = bytesServed;
                     this.lastPollTime = now;
                     this.setStatusData('throughput', {
@@ -82,7 +89,9 @@ export class AudioEncoderModule extends GstPluginBase {
                         'Total Bytes': `${(bytesServed / 1024 / 1024).toFixed(1)} MB`,
                     });
                 }
-            } catch { /* ignore */ }
+            } catch {
+                /* ignore */
+            }
         }, 2000);
     }
 
@@ -107,7 +116,10 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+        if (this.statsTimer) {
+            clearInterval(this.statsTimer);
+            this.statsTimer = null;
+        }
         await super.onStop();
         // PipeWire cleanup is automatic via ownership tracking
     }
@@ -118,12 +130,18 @@ export class AudioEncoderModule extends GstPluginBase {
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
             // Volume controlled via GStreamer element only — no pactl to avoid double-attenuation
-            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => { this.log.debug({ err }, 'Volume update failed (pipeline may not be running)'); });
+            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => {
+                this.log.debug({ err }, 'Volume update failed (pipeline may not be running)');
+            });
         }
         if ('bitrate' in changes) {
             const codec = (this.config.codec as string) ?? 'opus';
             const elementName = codec === 'aac' ? 'avenc_aac0' : 'opusenc0';
-            await this.setElementProperty(elementName, 'bitrate', (changes.bitrate as number) * 1000);
+            await this.setElementProperty(
+                elementName,
+                'bitrate',
+                (changes.bitrate as number) * 1000,
+            );
         }
         this.updateStatusData();
     }
@@ -138,14 +156,18 @@ export class AudioEncoderModule extends GstPluginBase {
         const bitrate = (config.bitrate as number) ?? 128;
         const sampleRate = (config.sampleRate as number) ?? 48000;
         const channels = (config.channels as number) ?? 2;
-        const volumePct = (config.volume as number) ?? 100;
+        // Respect audioEnabled on start — otherwise a muted module unmutes
+        // itself when restarted (gst volume element starts at config.volume).
+        const audioOff = (config.audioEnabled as boolean) === false;
+        const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const gstVolume = (volumePct / 100).toFixed(2);
 
         // Read from our null-sink's monitor
         const source = `pulsesrc device=${this.pwNodeName}.monitor`;
         const format = `audioconvert ! audioresample ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
         const vol = `volume name=vol volume=${gstVolume}`;
-        const level = 'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
+        const level =
+            'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
 
         // Encoder always gets a UDP multicast port assigned at startup.
         const instanceId = this.services?.instanceId ?? '';
@@ -166,7 +188,11 @@ export class AudioEncoderModule extends GstPluginBase {
                 const packetLoss = (config.packetLoss as number) ?? 10;
                 // Use restricted-lowdelay for frame sizes <= 5ms
                 const audioType = frameSize <= 5 ? 'audio-type=restricted-lowdelay' : '';
-                tail = `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} ${audioType} ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`.replace(/  +/g, ' ');
+                tail =
+                    `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} ${audioType} ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`.replace(
+                        /  +/g,
+                        ' ',
+                    );
                 break;
             }
         }

@@ -136,23 +136,35 @@ describe('ConnectionExecutor', () => {
         });
 
         it('returns null when source has no PipeWire source node', async () => {
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'only-sink' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'sink-node' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'only-sink' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'sink-node' })),
+                }),
+            );
             const result = await executor.execute(makeConnection());
             expect(result).toBeNull();
         });
 
         it('returns null when sink has no PipeWire sink node', async () => {
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'src-node' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'only-source' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'src-node' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'only-source' })),
+                }),
+            );
             const result = await executor.execute(makeConnection());
             expect(result).toBeNull();
         });
@@ -176,8 +188,14 @@ describe('ConnectionExecutor', () => {
 
             await executor.execute(makeConnection());
 
-            expect(pw.pwUnlinkAllBetween).toHaveBeenCalledWith('port-specific-src', 'port-specific-sink');
-            expect(pw.pwLink).toHaveBeenCalledWith('port-specific-src:output_FL', 'port-specific-sink:input_FL');
+            expect(pw.pwUnlinkAllBetween).toHaveBeenCalledWith(
+                'port-specific-src',
+                'port-specific-sink',
+            );
+            expect(pw.pwLink).toHaveBeenCalledWith(
+                'port-specific-src:output_FL',
+                'port-specific-sink:input_FL',
+            );
         });
 
         it('falls back to module-level nodes when port-specific returns undefined', async () => {
@@ -204,12 +222,18 @@ describe('ConnectionExecutor', () => {
         });
 
         it('creates pw-link identity mapping for audio/pcm without channelMap', async () => {
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'mic' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'enc' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'mic' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'enc' })),
+                }),
+            );
 
             pw.listPorts.mockImplementation((node: string, dir: string) => {
                 if (dir === 'output') return ['mic:output_FL', 'mic:output_FR'];
@@ -230,15 +254,31 @@ describe('ConnectionExecutor', () => {
         });
 
         it('identity mapping uses min(src, dst) channels', async () => {
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'src8ch' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'sink2ch' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'src8ch' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'sink2ch' })),
+                }),
+            );
 
             pw.listPorts.mockImplementation((node: string, dir: string) => {
-                if (dir === 'output') return ['src8ch:out_0', 'src8ch:out_1', 'src8ch:out_2', 'src8ch:out_3', 'src8ch:out_4', 'src8ch:out_5', 'src8ch:out_6', 'src8ch:out_7'];
+                if (dir === 'output')
+                    return [
+                        'src8ch:out_0',
+                        'src8ch:out_1',
+                        'src8ch:out_2',
+                        'src8ch:out_3',
+                        'src8ch:out_4',
+                        'src8ch:out_5',
+                        'src8ch:out_6',
+                        'src8ch:out_7',
+                    ];
                 return ['sink2ch:in_0', 'sink2ch:in_1'];
             });
 
@@ -254,12 +294,18 @@ describe('ConnectionExecutor', () => {
 
     describe('executePwLink (audio/pcm with channelMap)', () => {
         function setupPwLinkModules() {
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'src-node' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'sink-node' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'src-node' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'sink-node' })),
+                }),
+            );
         }
 
         it('creates pw-links for each channelMap entry', async () => {
@@ -308,9 +354,9 @@ describe('ConnectionExecutor', () => {
             setupPwLinkModules();
             const conn = makeConnection({
                 channelMap: [
-                    { srcChannel: 0, dstChannel: 0 },  // valid
-                    { srcChannel: 5, dstChannel: 1 },  // src out of range
-                    { srcChannel: 0, dstChannel: 5 },  // dst out of range
+                    { srcChannel: 0, dstChannel: 0 }, // valid
+                    { srcChannel: 5, dstChannel: 1 }, // src out of range
+                    { srcChannel: 0, dstChannel: 5 }, // dst out of range
                 ],
             });
 
@@ -324,7 +370,9 @@ describe('ConnectionExecutor', () => {
 
         it('handles pwLink failure gracefully and continues', async () => {
             setupPwLinkModules();
-            pw.pwLink.mockImplementationOnce(() => { throw new Error('link failed'); });
+            pw.pwLink.mockImplementationOnce(() => {
+                throw new Error('link failed');
+            });
             pw.pwLink.mockReturnValueOnce(200);
 
             const conn = makeConnection({
@@ -383,7 +431,9 @@ describe('ConnectionExecutor', () => {
 
         it('returns handle even when decoder start fails', async () => {
             const sinkMod = makeMockModule({
-                start: vi.fn(async () => { throw new Error('start failed'); }),
+                start: vi.fn(async () => {
+                    throw new Error('start failed');
+                }),
             });
             modules.set('sink-mod', sinkMod);
             udpPorts.set('src-mod', 5004);
@@ -415,8 +465,14 @@ describe('ConnectionExecutor', () => {
             await executor.teardown(handle, undefined);
 
             // Step 1: unlink by name
-            expect(pw.pwUnlinkByName).toHaveBeenCalledWith('src-node:output_FL', 'sink-node:input_FL');
-            expect(pw.pwUnlinkByName).toHaveBeenCalledWith('src-node:output_FR', 'sink-node:input_FR');
+            expect(pw.pwUnlinkByName).toHaveBeenCalledWith(
+                'src-node:output_FL',
+                'sink-node:input_FL',
+            );
+            expect(pw.pwUnlinkByName).toHaveBeenCalledWith(
+                'src-node:output_FR',
+                'sink-node:input_FR',
+            );
 
             // Step 2: unlink by ID
             expect(pw.pwUnlink).toHaveBeenCalledWith(10);
@@ -431,9 +487,7 @@ describe('ConnectionExecutor', () => {
                 connectionId: 'c1',
                 type: 'pw-link',
                 pwLinkIds: [0, 15],
-                pwLinkPairs: [
-                    { src: 'src-node:output_FL', dst: 'sink-node:input_FL' },
-                ],
+                pwLinkPairs: [{ src: 'src-node:output_FL', dst: 'sink-node:input_FL' }],
             };
 
             await executor.teardown(handle, undefined);
@@ -531,7 +585,9 @@ describe('ConnectionExecutor', () => {
         it('handles decoder restart failure gracefully', async () => {
             const sinkMod = makeMockModule({
                 running: true,
-                stop: vi.fn(async () => { throw new Error('stop failed'); }),
+                stop: vi.fn(async () => {
+                    throw new Error('stop failed');
+                }),
             });
             modules.set('sink-mod', sinkMod);
 
@@ -549,12 +605,18 @@ describe('ConnectionExecutor', () => {
         it('uses displayNameResolver when provided', async () => {
             // The label is used in logging; we just verify execute works with it.
             // The constructor was given a resolver that uppercases IDs.
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'src' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'snk' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'src' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'snk' })),
+                }),
+            );
 
             const result = await executor.execute(makeConnection());
             expect(result).not.toBeNull();
@@ -568,12 +630,18 @@ describe('ConnectionExecutor', () => {
                 '239.0.0.1',
             );
 
-            modules.set('src-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ source: 'src' })),
-            }));
-            modules.set('sink-mod', makeMockModule({
-                getPipeWireNodes: vi.fn(() => ({ sink: 'snk' })),
-            }));
+            modules.set(
+                'src-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ source: 'src' })),
+                }),
+            );
+            modules.set(
+                'sink-mod',
+                makeMockModule({
+                    getPipeWireNodes: vi.fn(() => ({ sink: 'snk' })),
+                }),
+            );
 
             const result = await execNoResolver.execute(makeConnection());
             expect(result).not.toBeNull();

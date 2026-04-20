@@ -39,7 +39,7 @@ export const useVuStore = defineStore('vuMeters', () => {
         for (const key of Object.keys(lastUpdate)) {
             if (now - lastUpdate[key] > STALE_MS) {
                 const currentLevels = levels[key];
-                if (currentLevels && currentLevels.some(v => v > 0)) {
+                if (currentLevels && currentLevels.some((v) => v > 0)) {
                     levels[key] = currentLevels.map(() => 0);
                 }
             }
@@ -48,7 +48,9 @@ export const useVuStore = defineStore('vuMeters', () => {
 
     try {
         onUnmounted(() => clearInterval(cleanupTimer));
-    } catch { /* store created outside component */ }
+    } catch {
+        /* store created outside component */
+    }
 
     return { levels, update, get, clear, clearAll };
 });

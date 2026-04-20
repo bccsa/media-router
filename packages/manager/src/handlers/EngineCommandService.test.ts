@@ -108,9 +108,7 @@ describe('EngineCommandService', () => {
 
     it('aborts if running state changed before retry', () => {
         service.setRunning('eng-1', true);
-        mockEngineManager.isEngineOnline
-            .mockReturnValueOnce(false)
-            .mockReturnValueOnce(true);
+        mockEngineManager.isEngineOnline.mockReturnValueOnce(false).mockReturnValueOnce(true);
 
         service.sendCommand('eng-1', 'start');
 

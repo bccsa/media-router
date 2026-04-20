@@ -12,6 +12,8 @@ export interface PluginManifest {
     configSchema: Record<string, unknown>;
     statusSections?: Array<Record<string, unknown>>;
     faceWidgets?: Array<Record<string, unknown>>;
+    /** Module is eligible for interlock (exclusive-mute) groups. */
+    interlock?: boolean;
 }
 
 /**
@@ -39,12 +41,18 @@ export class PluginRegistry {
         for (const plugin of plugins) {
             try {
                 const pluginDir = path.join(this.pluginsDir, plugin.pluginId);
-                const pkg = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf-8'));
+                const pkg = JSON.parse(
+                    fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf-8'),
+                );
                 const engineFile = pkg.mediaRouter?.engine;
                 if (!engineFile) continue;
 
                 const enginePath = path.resolve(pluginDir, engineFile);
-                const distJsPath = path.join(pluginDir, 'dist', path.basename(engineFile).replace(/\.ts$/, '.js'));
+                const distJsPath = path.join(
+                    pluginDir,
+                    'dist',
+                    path.basename(engineFile).replace(/\.ts$/, '.js'),
+                );
                 const jsPath = enginePath.replace(/\.ts$/, '.js');
 
                 let mod: any;
@@ -56,7 +64,9 @@ export class PluginRegistry {
                 }
                 if (!mod) continue;
 
-                const cls = Object.values(mod).find((v) => typeof v === 'function' && v.prototype) as any;
+                const cls = Object.values(mod).find(
+                    (v) => typeof v === 'function' && v.prototype,
+                ) as any;
                 if (cls?.initManifest) {
                     await cls.initManifest(plugin);
                 }
@@ -101,6 +111,7 @@ export class PluginRegistry {
                         configSchema: pkg.mediaRouter.configSchema ?? {},
                         statusSections: pkg.mediaRouter.statusSections,
                         faceWidgets: pkg.mediaRouter.faceWidgets,
+                        interlock: pkg.mediaRouter.interlock === true,
                     });
                 }
             } catch {

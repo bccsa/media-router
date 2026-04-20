@@ -15,17 +15,17 @@ describe('Engine API Server', () => {
             moduleManager: { size: 3 },
             managerConnection: { isConnected: true },
             pluginLoader: {
-                getManifests: vi.fn().mockReturnValue([
-                    { pluginId: 'audio-input' },
-                    { pluginId: 'audio-encoder' },
-                ]),
+                getManifests: vi
+                    .fn()
+                    .mockReturnValue([{ pluginId: 'audio-input' }, { pluginId: 'audio-encoder' }]),
             },
             profileStore: {
-                getAll: vi.fn().mockReturnValue([
-                    { name: 'prod', paths: [{ host: '10.0.0.1', port: 3000 }] },
-                ]),
+                getAll: vi
+                    .fn()
+                    .mockReturnValue([{ name: 'prod', paths: [{ host: '10.0.0.1', port: 3000 }] }]),
                 get: vi.fn((name: string) => {
-                    if (name === 'prod') return { name: 'prod', paths: [{ host: '10.0.0.1', port: 3000 }] };
+                    if (name === 'prod')
+                        return { name: 'prod', paths: [{ host: '10.0.0.1', port: 3000 }] };
                     return undefined;
                 }),
                 create: vi.fn(),
@@ -175,7 +175,12 @@ describe('Engine API Server', () => {
         const res = await app.inject({
             method: 'POST',
             url: '/api/v1/profiles',
-            payload: { name: 'staging', managerHost: '10.0.0.2', managerPort: 3000, password: 'secret' },
+            payload: {
+                name: 'staging',
+                managerHost: '10.0.0.2',
+                managerPort: 3000,
+                password: 'secret',
+            },
         });
         const body = JSON.parse(res.payload);
         expect(body.ok).toBe(true);

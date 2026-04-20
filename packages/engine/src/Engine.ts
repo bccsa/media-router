@@ -83,7 +83,12 @@ export class Engine {
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
-        this.moduleManager = new ModuleManager(this.pluginLoader, this.pipeWire, this.mediaRouter, this.processManager);
+        this.moduleManager = new ModuleManager(
+            this.pluginLoader,
+            this.pipeWire,
+            this.mediaRouter,
+            this.processManager,
+        );
         this.managerConnection = new ManagerConnection();
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
         this.lcpServer._getInitData = () => this.getLcpInitData();
@@ -93,7 +98,10 @@ export class Engine {
             this.pipeWire,
             (id) => this.moduleManager.get(id),
             (id) => {
-                const modules = (this.currentConfig?.modules ?? {}) as Record<string, Record<string, unknown>>;
+                const modules = (this.currentConfig?.modules ?? {}) as Record<
+                    string,
+                    Record<string, unknown>
+                >;
                 return (modules[id]?.displayName as string) ?? id;
             },
         );
@@ -103,7 +111,9 @@ export class Engine {
             moduleManager: this.moduleManager,
             mediaRouter: this.mediaRouter,
             lcpServer: this.lcpServer,
-            get currentConfig() { return engine.currentConfig; },
+            get currentConfig() {
+                return engine.currentConfig;
+            },
             startModules: async () => {
                 await this.lifecycle.startAll();
                 this.lcpServer.broadcastEngineRunning(true);
@@ -122,29 +132,40 @@ export class Engine {
 
         // Module lifecycle
         this.lifecycle = new ModuleLifecycle(
-            this.moduleManager, this.mediaRouter, this.pipeWire,
+            this.moduleManager,
+            this.mediaRouter,
+            this.pipeWire,
             () => this.currentConfig,
             this.pluginLoader,
         );
 
         // When a module generates dynamic ports, push as patch to manager + LCP
         this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {
-            log.info({ moduleId, portCount: ports.length }, 'Dynamic ports resolved — pushing to manager');
-            const ops = [{ op: 'replace' as const, path: `/modules/${moduleId}/ports`, value: ports }];
+            log.info(
+                { moduleId, portCount: ports.length },
+                'Dynamic ports resolved — pushing to manager',
+            );
+            const ops = [
+                { op: 'replace' as const, path: `/modules/${moduleId}/ports`, value: ports },
+            ];
             this.managerConnection.send('patch', { ops });
             this.lcpServer.broadcastConfigUpdate(ops);
         };
 
         // System stats
         this.systemStats = new SystemStatsCollector((stats) => {
-            stats.processCount = this.moduleManager.gstProcessCount + this.processManager.activeCount;
+            stats.processCount =
+                this.moduleManager.gstProcessCount + this.processManager.activeCount;
             this.managerConnection.send('system', stats);
         });
 
         // Unified patch router (N-1)
         this.enginePatchRouter = new EnginePatchRouter(
-            this.moduleManager, this.mediaRouter, this.lcpServer,
-            this.managerConnection, this.lifecycle,
+            this.moduleManager,
+            this.mediaRouter,
+            this.lcpServer,
+            this.managerConnection,
+            this.lifecycle,
             () => this.currentConfig,
         );
 
@@ -158,7 +179,9 @@ export class Engine {
             enginePatchRouter: this.enginePatchRouter,
             systemStats: this.systemStats,
             getCurrentConfig: () => this.currentConfig,
-            setCurrentConfig: (config) => { this.currentConfig = config; },
+            setCurrentConfig: (config) => {
+                this.currentConfig = config;
+            },
             enrichConfigForLcp: (config) => this.enrichConfigForLcp(config),
         });
     }
@@ -233,16 +256,24 @@ export class Engine {
         try {
             const { execFile } = await import('child_process');
             await new Promise<void>((resolve, reject) => {
-                execFile('systemctl', ['--user', 'restart', 'pipewire'], { timeout: 10000 }, (err) => {
-                    if (err) reject(err); else resolve();
-                });
+                execFile(
+                    'systemctl',
+                    ['--user', 'restart', 'pipewire'],
+                    { timeout: 10000 },
+                    (err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    },
+                );
             });
             log.info('PipeWire restarted successfully');
             // Wait for PipeWire to stabilise (Pi can be slow)
             await new Promise((r) => setTimeout(r, 3000));
         } catch (err) {
-            log.warn({ err: formatError(err) },
-                'Could not restart PipeWire (permission denied or not available) — continuing with cleanup');
+            log.warn(
+                { err: formatError(err) },
+                'Could not restart PipeWire (permission denied or not available) — continuing with cleanup',
+            );
         }
 
         // 3. Clean up any orphan PipeWire modules
@@ -300,5 +331,4 @@ export class Engine {
             config,
         };
     }
-
 }

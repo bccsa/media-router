@@ -17,7 +17,9 @@ export class ChildProcessManager {
         // Clean up existing if any
         const existing = this.children.get(instanceId);
         if (existing) {
-            existing.destroy().catch((err) => { log.debug({ err, instanceId }, 'Old child process cleanup failed'); });
+            existing.destroy().catch((err) => {
+                log.debug({ err, instanceId }, 'Old child process cleanup failed');
+            });
         }
         this.children.set(instanceId, child);
     }

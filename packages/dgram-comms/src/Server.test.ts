@@ -5,7 +5,11 @@ describe('Server', () => {
     let server: Server;
 
     afterEach(async () => {
-        try { await server?.stop(); } catch { /* already closed */ }
+        try {
+            await server?.stop();
+        } catch {
+            /* already closed */
+        }
     });
 
     // ---- Construction ----
@@ -71,7 +75,9 @@ describe('Server', () => {
         server = new Server();
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         server.sendTo('missing', 'topic', { data: 1 });
-        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no socket for client missing'));
+        expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining('no socket for client missing'),
+        );
         warnSpy.mockRestore();
     });
 
@@ -95,7 +101,9 @@ describe('Server', () => {
         server['sockets'].set('s1', mockSocket as any);
 
         server.broadcast('important', 'data', { guaranteeDelivery: true });
-        expect(mockSocket.send).toHaveBeenCalledWith('important', 'data', { guaranteeDelivery: true });
+        expect(mockSocket.send).toHaveBeenCalledWith('important', 'data', {
+            guaranteeDelivery: true,
+        });
     });
 
     it('broadcast is no-op with no connected sockets', () => {
@@ -121,7 +129,9 @@ describe('Server', () => {
         server['clientToSocket'].set('engine-1', 'orphan-sock');
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         server.sendTo('engine-1', 'topic', 'data');
-        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('socket orphan-sock not found'));
+        expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining('socket orphan-sock not found'),
+        );
         warnSpy.mockRestore();
     });
 
@@ -149,7 +159,11 @@ describe('Server', () => {
         server = new Server({ encryptionKeys: {} });
         const spy = vi.fn();
         server.on('connection', spy);
-        server['handleConnect']('unknown-engine', {}, { address: '1.2.3.4', port: 9999, family: 'IPv4', size: 0 });
+        server['handleConnect'](
+            'unknown-engine',
+            {},
+            { address: '1.2.3.4', port: 9999, family: 'IPv4', size: 0 },
+        );
         expect(spy).not.toHaveBeenCalled();
         expect(server['sockets'].size).toBe(0);
     });
@@ -158,7 +172,11 @@ describe('Server', () => {
         server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
         const spy = vi.fn();
         server.on('connection', spy);
-        server['handleConnect']('engine-1', {}, { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 });
+        server['handleConnect'](
+            'engine-1',
+            {},
+            { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 },
+        );
         expect(spy).toHaveBeenCalledWith(expect.any(Object), 'engine-1');
         expect(server['sockets'].size).toBe(1);
         expect(server['clientToSocket'].has('engine-1')).toBe(true);
@@ -168,12 +186,20 @@ describe('Server', () => {
         server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
 
         // First connection
-        server['handleConnect']('engine-1', {}, { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 });
+        server['handleConnect'](
+            'engine-1',
+            {},
+            { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 },
+        );
         const firstSocketId = server['clientToSocket'].get('engine-1')!;
         expect(server['sockets'].has(firstSocketId)).toBe(true);
 
         // Reconnect — old socket should be replaced
-        server['handleConnect']('engine-1', {}, { address: '10.0.0.1', port: 5001, family: 'IPv4', size: 0 });
+        server['handleConnect'](
+            'engine-1',
+            {},
+            { address: '10.0.0.1', port: 5001, family: 'IPv4', size: 0 },
+        );
         const secondSocketId = server['clientToSocket'].get('engine-1')!;
         expect(secondSocketId).not.toBe(firstSocketId);
         expect(server['sockets'].has(firstSocketId)).toBe(false);
@@ -187,7 +213,11 @@ describe('Server', () => {
         const disconnectSpy = vi.fn();
         server.on('disconnection', disconnectSpy);
 
-        server['handleConnect']('engine-1', {}, { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 });
+        server['handleConnect'](
+            'engine-1',
+            {},
+            { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 },
+        );
         const socketId = server['clientToSocket'].get('engine-1')!;
         const socket = server['sockets'].get(socketId)!;
 
@@ -224,7 +254,11 @@ describe('Server', () => {
             server['udpSocket'].bind(0, '127.0.0.1', () => resolve());
         });
 
-        server['handleConnect']('engine-1', {}, { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 });
+        server['handleConnect'](
+            'engine-1',
+            {},
+            { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 },
+        );
         expect(server['sockets'].size).toBe(1);
 
         await server.stop();

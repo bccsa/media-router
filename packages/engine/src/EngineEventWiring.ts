@@ -39,13 +39,18 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         ctx.lcpServer.broadcastState(instanceId, state);
     });
 
-    ctx.moduleManager.on('configUpdated', (instanceId: string, changes: Record<string, unknown>) => {
-        log.debug({ instanceId, changes }, 'Plugin auto-detected config');
-        const ops = Object.entries(changes).map(([key, value]) => ({
-            op: 'replace' as const, path: `/modules/${instanceId}/settings/${key}`, value,
-        }));
-        ctx.managerConnection.send('patch', { ops });
-    });
+    ctx.moduleManager.on(
+        'configUpdated',
+        (instanceId: string, changes: Record<string, unknown>) => {
+            log.debug({ instanceId, changes }, 'Plugin auto-detected config');
+            const ops = Object.entries(changes).map(([key, value]) => ({
+                op: 'replace' as const,
+                path: `/modules/${instanceId}/settings/${key}`,
+                value,
+            }));
+            ctx.managerConnection.send('patch', { ops });
+        },
+    );
 
     // VU data with dedup + heartbeat
     const lastVu = new Map<string, number[]>();
@@ -109,14 +114,16 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // Handle patches from manager
     ctx.managerConnection.on('patch', (data: unknown) => {
         const envelope = safeParse(PatchEnvelopeSchema, data, 'manager:patch', log);
-        if (envelope) ctx.enginePatchRouter.onPatch('manager', 'manager', envelope.ops as PatchOp[]);
+        if (envelope)
+            ctx.enginePatchRouter.onPatch('manager', 'manager', envelope.ops as PatchOp[]);
     });
 
     // Handle patches from LCP (already validated by LcpServer, but _socketId comes through)
     ctx.lcpServer.on('patch', (data: unknown) => {
         const d = data as { ops?: unknown[]; _socketId?: string };
         const envelope = safeParse(PatchEnvelopeSchema, d, 'lcp:patch', log);
-        if (envelope) ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
+        if (envelope)
+            ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
     });
 
     // --- Audio device hotplug detection ---
@@ -132,9 +139,14 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             if (json !== lastDeviceJson) {
                 lastDeviceJson = json;
                 ctx.managerConnection.send('audioDevices', devices);
-                log.info({ count: devices.length }, 'Audio device list changed — pushed to manager');
+                log.info(
+                    { count: devices.length },
+                    'Audio device list changed — pushed to manager',
+                );
             }
-        } catch (err) { log.warn({ err }, 'Device poll failed'); }
+        } catch (err) {
+            log.warn({ err }, 'Device poll failed');
+        }
     }
 
     function startDevicePoll() {
@@ -143,7 +155,10 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     }
 
     function stopDevicePoll() {
-        if (devicePollTimer) { clearInterval(devicePollTimer); devicePollTimer = null; }
+        if (devicePollTimer) {
+            clearInterval(devicePollTimer);
+            devicePollTimer = null;
+        }
     }
 
     ctx.managerConnection.on('connected', () => {

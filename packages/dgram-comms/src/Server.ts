@@ -109,7 +109,9 @@ export class Server extends EventEmitter {
         }
         const socket = this.sockets.get(socketId);
         if (!socket) {
-            console.warn(`[dgram-comms Server] sendTo: socket ${socketId} not found for client ${clientId}`);
+            console.warn(
+                `[dgram-comms Server] sendTo: socket ${socketId} not found for client ${clientId}`,
+            );
             return;
         }
         socket.send(topic, message, options);
@@ -167,7 +169,9 @@ export class Server extends EventEmitter {
             }
             const dataResult = DgramDataSchema.safeParse(decryptedJson);
             if (!dataResult.success) {
-                console.warn(`[dgram-comms Server] Invalid decrypted data from ${clientID} — dropping`);
+                console.warn(
+                    `[dgram-comms Server] Invalid decrypted data from ${clientID} — dropping`,
+                );
                 return;
             }
             data = dataResult.data;
@@ -176,7 +180,9 @@ export class Server extends EventEmitter {
         // Route by message type
         switch (type) {
             case 'connect':
-                console.log(`[dgram-comms Server] connect from ${clientID} (${rinfo.address}:${rinfo.port}), has key: ${!!this.encryptionKeys[clientID]}`);
+                console.log(
+                    `[dgram-comms Server] connect from ${clientID} (${rinfo.address}:${rinfo.port}), has key: ${!!this.encryptionKeys[clientID]}`,
+                );
                 this.handleConnect(clientID, data, rinfo);
                 break;
 

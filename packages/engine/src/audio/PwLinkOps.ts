@@ -14,8 +14,8 @@ export async function requirePwLink(): Promise<void> {
         await execFileAsync('pw-link', ['--version'], { timeout: 3000 });
     } catch {
         throw new Error(
-            'pw-link not found. Install pipewire-tools: this is a required package for audio routing. '
-            + 'Yocto: IMAGE_INSTALL:append = " pipewire-tools" | Debian: apt install pipewire',
+            'pw-link not found. Install pipewire-tools: this is a required package for audio routing. ' +
+                'Yocto: IMAGE_INSTALL:append = " pipewire-tools" | Debian: apt install pipewire',
         );
     }
 }
@@ -33,7 +33,9 @@ export async function pwLink(outputPort: string, inputPort: string): Promise<num
 
     // Get the link ID so we can remove it later
     try {
-        const { stdout } = await execFileAsync('pw-link', ['-I', '-o', outputPort], { timeout: 5000 });
+        const { stdout } = await execFileAsync('pw-link', ['-I', '-o', outputPort], {
+            timeout: 5000,
+        });
         for (const line of stdout.split('\n')) {
             if (line.includes(inputPort)) {
                 const match = line.match(/^\s*(\d+)/);
@@ -52,7 +54,9 @@ export async function pwUnlink(linkId: number): Promise<void> {
     if (linkId <= 0) return;
     try {
         await execFileAsync('pw-link', ['-d', String(linkId)], { timeout: 5000 });
-    } catch (err) { log.debug({ err, linkId }, 'pw-link unlink failed (link may already be gone)'); }
+    } catch (err) {
+        log.debug({ err, linkId }, 'pw-link unlink failed (link may already be gone)');
+    }
 }
 
 /** Remove a PipeWire link by port names. */
@@ -83,12 +87,17 @@ export async function pwUnlinkAllBetween(sourceNode: string, sinkNode: string): 
                 currentOutput = trimmed;
             } else if (trimmed.startsWith('|->') || trimmed.startsWith('|<-')) {
                 const linkedPort = trimmed.replace(/^\|[<>]->\s*/, '').trim();
-                if (currentOutput.startsWith(baseSource + ':') && linkedPort.startsWith(baseSink + ':')) {
+                if (
+                    currentOutput.startsWith(baseSource + ':') &&
+                    linkedPort.startsWith(baseSink + ':')
+                ) {
                     await pwUnlinkByName(currentOutput, linkedPort);
                 }
             }
         }
-    } catch (err) { log.debug({ err, sourceNode, sinkNode }, 'pw-link sweep failed'); }
+    } catch (err) {
+        log.debug({ err, sourceNode, sinkNode }, 'pw-link sweep failed');
+    }
 }
 
 /**
@@ -99,7 +108,8 @@ export async function listPorts(node: string, direction: 'input' | 'output'): Pr
     try {
         const { stdout } = await execFileAsync('pw-link', [flag], { timeout: 5000 });
         const baseNode = node.replace(/\.monitor$/, '');
-        const ports = stdout.split('\n')
+        const ports = stdout
+            .split('\n')
             .map((l) => l.trim())
             .filter((l) => l.startsWith(baseNode + ':') || l.startsWith(node + ':'));
 

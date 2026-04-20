@@ -1,5 +1,11 @@
 import type { Server as SocketIOServer, Socket as IOSocket } from 'socket.io';
-import { createLogger, validated, EngineIdPayloadSchema, ModuleRestartPayloadSchema, BrowserPatchPayloadSchema } from '@media-router/shared-types';
+import {
+    createLogger,
+    validated,
+    EngineIdPayloadSchema,
+    ModuleRestartPayloadSchema,
+    BrowserPatchPayloadSchema,
+} from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
@@ -26,7 +32,15 @@ export interface SocketDeps {
  * Streams (VU/logs/system/state) are handled by EngineEventForwarder.
  */
 export function setupSocketIO(deps: SocketDeps): void {
-    const { io, configStore, engineManager, pluginRegistry, engineCommands, eventForwarder, patchRouter } = deps;
+    const {
+        io,
+        configStore,
+        engineManager,
+        pluginRegistry,
+        engineCommands,
+        eventForwarder,
+        patchRouter,
+    } = deps;
 
     io.on('connection', (socket: IOSocket) => {
         log.info({ socketId: socket.id }, 'browser connected');
@@ -39,6 +53,7 @@ export function setupSocketIO(deps: SocketDeps): void {
             engines.map((e) => {
                 let modules: Record<string, unknown> = {};
                 let connections: unknown[] = [];
+                let interlocks: unknown[] = [];
 
                 if (e.active_profile) {
                     const profileConfig = configStore.getProfile(
@@ -48,24 +63,29 @@ export function setupSocketIO(deps: SocketDeps): void {
                     if (profileConfig) {
                         modules = (profileConfig.modules ?? {}) as Record<string, unknown>;
                         connections = (profileConfig.connections ?? []) as unknown[];
+                        interlocks = (profileConfig.interlocks ?? []) as unknown[];
                     }
                 }
 
                 // Overlay live plugin manifest + cached runtime state (clone to avoid mutating ConfigStore)
                 const cachedStates = eventForwarder.getCachedStates(e.engine_id as string);
                 for (const [id, mod] of Object.entries(modules)) {
-                    const m = modules[id] = { ...(mod as Record<string, unknown>) };
+                    const m = (modules[id] = { ...(mod as Record<string, unknown>) });
                     const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
                     if (manifest) {
-                        // Always take ports from manifest so port config changes (e.g. maxConnections)
-                        // propagate to existing modules. Dynamic ports (n1-mixer etc.) are pushed
-                        // from the engine via engine:update events after start.
-                        m.ports = manifest.ports ?? [];
+                        // Static-port plugins: manifest is authoritative — overlay so port
+                        // config changes (e.g. maxConnections) propagate to existing modules.
+                        // Dynamic-port plugins (manifest.ports empty, e.g. n1-mixer): keep
+                        // the stored/dynamic ports; the engine pushes fresh ones on start.
+                        if ((manifest.ports ?? []).length > 0) {
+                            m.ports = manifest.ports;
+                        }
                         m.configSchema = manifest.configSchema ?? {};
                         m.color = manifest.color;
                         m.icon = manifest.icon;
                         m.statusSections = manifest.statusSections;
                         m.faceWidgets = manifest.faceWidgets;
+                        m.interlock = manifest.interlock === true;
                     }
                     const cached = cachedStates[id] as Record<string, unknown> | undefined;
                     if (cached) {
@@ -86,17 +106,21 @@ export function setupSocketIO(deps: SocketDeps): void {
                     buildNumber: eventForwarder.getEngineData(e.engine_id as string, 'buildNumber'),
                     modules,
                     connections,
+                    interlocks,
                 };
             }),
         );
 
         // --- Watch engine (stream VU/logs/system only for active engine) ---
-        socket.on('watch:engine', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
-            for (const room of socket.rooms) {
-                if (room.startsWith('watch:')) socket.leave(room);
-            }
-            socket.join(`watch:${engineId}`);
-        }));
+        socket.on(
+            'watch:engine',
+            validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+                for (const room of socket.rooms) {
+                    if (room.startsWith('watch:')) socket.leave(room);
+                }
+                socket.join(`watch:${engineId}`);
+            }),
+        );
 
         // --- Log history (has callback arg — use validated with rest passthrough) ---
         socket.on('logs:history', (raw: unknown, callback?: (entries: unknown[]) => void) => {
@@ -112,41 +136,69 @@ export function setupSocketIO(deps: SocketDeps): void {
 
         /** Check engineId is a non-empty string and the engine exists. */
         const validEngine = (engineId: unknown): engineId is string =>
-            typeof engineId === 'string' && engineId.length > 0 && !!configStore.getEngine(engineId);
+            typeof engineId === 'string' &&
+            engineId.length > 0 &&
+            !!configStore.getEngine(engineId);
 
         // --- Lifecycle commands (not patches) ---
-        socket.on('engine:start', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
-            if (!validEngine(engineId)) return;
-            engineCommands.setRunning(engineId, true);
-            engineCommands.sendCommand(engineId, 'start');
-            io.emit('engine:running', { engineId, running: true });
-        }));
-        socket.on('engine:stop', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
-            if (!validEngine(engineId)) return;
-            engineCommands.setRunning(engineId, false);
-            engineCommands.sendCommand(engineId, 'stop');
-            io.emit('engine:running', { engineId, running: false });
-        }));
-        socket.on('engine:reset', validated(EngineIdPayloadSchema, log, ({ engineId }) => {
-            if (!validEngine(engineId)) return;
-            if (engineManager.isEngineOnline(engineId)) {
-                engineManager.sendToEngine(engineId, 'command', { command: 'reset' }, { guaranteeDelivery: true });
-            }
-        }));
-        socket.on('module:restart', validated(ModuleRestartPayloadSchema, log, ({ engineId, moduleId }) => {
-            if (!validEngine(engineId)) return;
-            if (engineManager.isEngineOnline(engineId)) {
-                engineManager.sendToEngine(engineId, 'command', {
-                    command: 'moduleRestart', moduleId,
-                }, { guaranteeDelivery: true });
-            }
-        }));
+        socket.on(
+            'engine:start',
+            validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+                if (!validEngine(engineId)) return;
+                engineCommands.setRunning(engineId, true);
+                engineCommands.sendCommand(engineId, 'start');
+                io.emit('engine:running', { engineId, running: true });
+            }),
+        );
+        socket.on(
+            'engine:stop',
+            validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+                if (!validEngine(engineId)) return;
+                engineCommands.setRunning(engineId, false);
+                engineCommands.sendCommand(engineId, 'stop');
+                io.emit('engine:running', { engineId, running: false });
+            }),
+        );
+        socket.on(
+            'engine:reset',
+            validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+                if (!validEngine(engineId)) return;
+                if (engineManager.isEngineOnline(engineId)) {
+                    engineManager.sendToEngine(
+                        engineId,
+                        'command',
+                        { command: 'reset' },
+                        { guaranteeDelivery: true },
+                    );
+                }
+            }),
+        );
+        socket.on(
+            'module:restart',
+            validated(ModuleRestartPayloadSchema, log, ({ engineId, moduleId }) => {
+                if (!validEngine(engineId)) return;
+                if (engineManager.isEngineOnline(engineId)) {
+                    engineManager.sendToEngine(
+                        engineId,
+                        'command',
+                        {
+                            command: 'moduleRestart',
+                            moduleId,
+                        },
+                        { guaranteeDelivery: true },
+                    );
+                }
+            }),
+        );
 
         // --- Unified patch (N-1 router) ---
-        socket.on('patch', validated(BrowserPatchPayloadSchema, log, ({ engineId, ops }) => {
-            if (!validEngine(engineId)) return;
-            patchRouter.onPatch(socket.id, 'browser', engineId, ops);
-        }));
+        socket.on(
+            'patch',
+            validated(BrowserPatchPayloadSchema, log, ({ engineId, ops }) => {
+                if (!validEngine(engineId)) return;
+                patchRouter.onPatch(socket.id, 'browser', engineId, ops);
+            }),
+        );
 
         socket.on('disconnect', () => {
             log.info({ socketId: socket.id }, 'browser disconnected');

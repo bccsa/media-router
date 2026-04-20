@@ -11,11 +11,19 @@ describe('ManagedProcess', () => {
         procs.length = 0;
     });
 
-    function create(opts: Partial<Parameters<typeof ManagedProcess.prototype.start>[0]> & { command: string; label: string }): ManagedProcess {
-        const proc = new ManagedProcess({
-            autoRestart: false,
-            ...opts,
-        }, 'test-owner');
+    function create(
+        opts: Partial<Parameters<typeof ManagedProcess.prototype.start>[0]> & {
+            command: string;
+            label: string;
+        },
+    ): ManagedProcess {
+        const proc = new ManagedProcess(
+            {
+                autoRestart: false,
+                ...opts,
+            },
+            'test-owner',
+        );
         procs.push(proc);
         return proc;
     }
@@ -69,10 +77,14 @@ describe('ManagedProcess', () => {
 
     it('emits stopped event on exit', async () => {
         const proc = create({ label: 'stop-test', command: '/bin/sh', args: ['-c', 'exit 0'] });
-        const result = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {
-            proc.on('stopped', (code: number | null, signal: string | null) => resolve({ code, signal }));
-            proc.start();
-        });
+        const result = await new Promise<{ code: number | null; signal: string | null }>(
+            (resolve) => {
+                proc.on('stopped', (code: number | null, signal: string | null) =>
+                    resolve({ code, signal }),
+                );
+                proc.start();
+            },
+        );
         expect(result.code).toBe(0);
     });
 

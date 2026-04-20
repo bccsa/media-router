@@ -21,9 +21,13 @@ export {
     EngineIdPayloadSchema,
     ModuleRestartPayloadSchema,
     BrowserPatchPayloadSchema,
+    InterlockSchema,
+    InterlocksSchema,
+    validateInterlocksInvariants,
     safeParse,
     validated,
 } from './validation.js';
+export type { InterlockInvariantIssue } from './validation.js';
 
 // --- Error Classes ----------------------------------------------------------
 
@@ -49,7 +53,10 @@ export class IpcTimeoutError extends MediaRouterError {
 
 /** GStreamer pipeline failed to start or crashed. */
 export class PipelineError extends MediaRouterError {
-    constructor(message: string, public readonly pipelineDescription?: string) {
+    constructor(
+        message: string,
+        public readonly pipelineDescription?: string,
+    ) {
         super(message, 'PIPELINE_ERROR');
         this.name = 'PipelineError';
     }
@@ -57,7 +64,10 @@ export class PipelineError extends MediaRouterError {
 
 /** Module configuration is invalid. */
 export class ConfigValidationError extends MediaRouterError {
-    constructor(message: string, public readonly validationErrors?: string[]) {
+    constructor(
+        message: string,
+        public readonly validationErrors?: string[],
+    ) {
         super(message, 'CONFIG_VALIDATION_ERROR');
         this.name = 'ConfigValidationError';
     }
@@ -65,7 +75,10 @@ export class ConfigValidationError extends MediaRouterError {
 
 /** Connection to manager or engine failed. */
 export class ConnectionError extends MediaRouterError {
-    constructor(message: string, public readonly target?: string) {
+    constructor(
+        message: string,
+        public readonly target?: string,
+    ) {
         super(message, 'CONNECTION_ERROR');
         this.name = 'ConnectionError';
     }
@@ -73,7 +86,11 @@ export class ConnectionError extends MediaRouterError {
 
 /** Module lifecycle error (failed to start, stop, or transition). */
 export class ModuleLifecycleError extends MediaRouterError {
-    constructor(message: string, public readonly moduleId?: string, public readonly phase?: string) {
+    constructor(
+        message: string,
+        public readonly moduleId?: string,
+        public readonly phase?: string,
+    ) {
         super(message, 'MODULE_LIFECYCLE_ERROR');
         this.name = 'ModuleLifecycleError';
     }
@@ -81,7 +98,10 @@ export class ModuleLifecycleError extends MediaRouterError {
 
 /** PipeWire/PulseAudio command failed. */
 export class AudioRoutingError extends MediaRouterError {
-    constructor(message: string, public readonly command?: string) {
+    constructor(
+        message: string,
+        public readonly command?: string,
+    ) {
         super(message, 'AUDIO_ROUTING_ERROR');
         this.name = 'AudioRoutingError';
     }
@@ -118,8 +138,12 @@ export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp
         let valid = true;
         for (const part of parts) {
             if (target[part] == null || typeof target[part] !== 'object') {
-                if (op.op === 'add') { target[part] = {}; }
-                else { valid = false; break; }
+                if (op.op === 'add') {
+                    target[part] = {};
+                } else {
+                    valid = false;
+                    break;
+                }
             }
             target = target[part] as Record<string, unknown>;
         }
@@ -139,7 +163,9 @@ export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp
                     let idx = parseInt(last, 10);
                     // Support ID-based removal: find array element by .id property
                     if (isNaN(idx)) {
-                        idx = (target as Array<Record<string, unknown>>).findIndex((item) => item?.id === last);
+                        idx = (target as Array<Record<string, unknown>>).findIndex(
+                            (item) => item?.id === last,
+                        );
                     }
                     if (idx >= 0) target.splice(idx, 1);
                 } else {
@@ -161,15 +187,15 @@ export const STREAM_TYPE_COLORS: Record<string, string> = {
 
 /** Media stream type — determines routing domain and port compatibility. */
 export type StreamType =
-    | 'audio/pcm'       // Raw PCM audio (PipeWire routing)
-    | 'audio/opus'      // Encoded Opus audio
-    | 'audio/aac'       // Encoded AAC audio
-    | 'video/raw'       // Raw video frames
-    | 'video/h264'      // Encoded H.264 video
-    | 'video/h265'      // Encoded H.265/HEVC video
-    | 'muxed/mpegts'    // MPEG-TS container (audio + video + subs)
-    | 'text/subtitle'   // Subtitle stream (SRT, ASS, etc.)
-    | 'data/generic';   // Generic data (metadata, control, etc.)
+    | 'audio/pcm' // Raw PCM audio (PipeWire routing)
+    | 'audio/opus' // Encoded Opus audio
+    | 'audio/aac' // Encoded AAC audio
+    | 'video/raw' // Raw video frames
+    | 'video/h264' // Encoded H.264 video
+    | 'video/h265' // Encoded H.265/HEVC video
+    | 'muxed/mpegts' // MPEG-TS container (audio + video + subs)
+    | 'text/subtitle' // Subtitle stream (SRT, ASS, etc.)
+    | 'data/generic'; // Generic data (metadata, control, etc.)
 
 // --- Module Ports -----------------------------------------------------------
 
@@ -212,7 +238,6 @@ export interface ChannelMapEntry {
     gain?: number;
 }
 
-
 // --- Module Runtime State ---------------------------------------------------
 
 /** Overall module health for the state icon. */
@@ -239,7 +264,11 @@ export interface ModuleRuntimeState {
     /** Generic status data — keyed by section ID, values are key-value pairs. */
     statusData?: Record<string, Record<string, string | number | boolean>>;
     /** Dynamic status sections added at runtime (e.g. per-caller SRT stats). */
-    dynamicStatusSections?: Array<{ id: string; label: string; fields: Array<{ key: string; label: string; unit?: string }> }>;
+    dynamicStatusSections?: Array<{
+        id: string;
+        label: string;
+        fields: Array<{ key: string; label: string; unit?: string }>;
+    }>;
     /** Small icon+text indicators shown on the module face. */
     badges?: ModuleBadge[];
     /** Error message if health is "error". */
@@ -452,4 +481,23 @@ export interface PluginManifest {
     lcp?: string;
     /** LCP display type: "mixer-strip", "meter-only", "video-monitor", etc. */
     lcpType?: string;
+    /**
+     * Opt-in flag: module is eligible for interlock groups (exclusive-mute).
+     * Requires a live-updatable boolean `audioEnabled` in configSchema.
+     */
+    interlock?: boolean;
+}
+
+// --- Interlocks -------------------------------------------------------------
+
+/** An exclusive-mute group: only one member may have audioEnabled=true. */
+export interface Interlock {
+    /** Stable unique id. */
+    id: string;
+    /** User-facing name. */
+    name: string;
+    /** Module IDs in this group. Order is used for priority on conflict resolution. */
+    members: string[];
+    /** Optional accent color for UI badge/ring. */
+    color?: string;
 }

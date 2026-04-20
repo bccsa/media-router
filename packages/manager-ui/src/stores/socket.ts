@@ -43,10 +43,17 @@ export const useSocketStore = defineStore('socket', () => {
         });
 
         // Engine config (full modules/connections — sent when watch:engine fires)
-        s.on('engine:config', (data: { engineId: string; modules: Record<string, unknown>; connections: unknown[] }) => {
-            const engines = useEngineStore();
-            engines.setEngineConfig(data.engineId, data.modules, data.connections);
-        });
+        s.on(
+            'engine:config',
+            (data: {
+                engineId: string;
+                modules: Record<string, unknown>;
+                connections: unknown[];
+            }) => {
+                const engines = useEngineStore();
+                engines.setEngineConfig(data.engineId, data.modules, data.connections);
+            },
+        );
 
         // Delta updates (JSON Patch)
         s.on('engine:update', (data: { engineId: string; patch: unknown[] }) => {
@@ -88,7 +95,8 @@ export const useSocketStore = defineStore('socket', () => {
                     if ('running' in s) mod.running = s.running as boolean;
                     if ('error' in s) mod.error = s.error as string | undefined;
                     if ('statusData' in s) mod.statusData = s.statusData as any;
-                    if ('dynamicStatusSections' in s) mod.dynamicStatusSections = s.dynamicStatusSections as any;
+                    if ('dynamicStatusSections' in s)
+                        mod.dynamicStatusSections = s.dynamicStatusSections as any;
                     if ('badges' in s) mod.badges = s.badges as any;
                 }
             }
@@ -102,13 +110,36 @@ export const useSocketStore = defineStore('socket', () => {
         });
 
         // System stats (CPU, memory, temp, IP, build)
-        s.on('engine:system', (data: { engineId: string; cpu: number; mem: number; temp: number | null; processCount?: number; ip?: string; ips?: string[]; hostname?: string; buildNumber?: string }) => {
-            const store = useEngineStore();
-            store.setSystemStats(data.engineId, { cpu: data.cpu, mem: data.mem, temp: data.temp, processCount: data.processCount });
-            if (data.ip || data.ips || data.hostname || data.buildNumber) {
-                store.setEngineInfo(data.engineId, { ip: data.ip, ips: data.ips, hostname: data.hostname, buildNumber: data.buildNumber });
-            }
-        });
+        s.on(
+            'engine:system',
+            (data: {
+                engineId: string;
+                cpu: number;
+                mem: number;
+                temp: number | null;
+                processCount?: number;
+                ip?: string;
+                ips?: string[];
+                hostname?: string;
+                buildNumber?: string;
+            }) => {
+                const store = useEngineStore();
+                store.setSystemStats(data.engineId, {
+                    cpu: data.cpu,
+                    mem: data.mem,
+                    temp: data.temp,
+                    processCount: data.processCount,
+                });
+                if (data.ip || data.ips || data.hostname || data.buildNumber) {
+                    store.setEngineInfo(data.engineId, {
+                        ip: data.ip,
+                        ips: data.ips,
+                        hostname: data.hostname,
+                        buildNumber: data.buildNumber,
+                    });
+                }
+            },
+        );
 
         // Log streaming
         s.on('engine:logs', (data: { engineId: string; entries: any[] }) => {

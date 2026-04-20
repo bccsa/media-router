@@ -41,10 +41,7 @@ export class ExponentialBackoff {
     nextDelay(): number | null {
         if (this.exhausted) return null;
 
-        const delay = Math.min(
-            this.baseDelayMs * Math.pow(2, this._attempts),
-            this.maxDelayMs,
-        );
+        const delay = Math.min(this.baseDelayMs * Math.pow(2, this._attempts), this.maxDelayMs);
         this._attempts++;
         return delay;
     }

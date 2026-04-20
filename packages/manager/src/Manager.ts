@@ -65,8 +65,18 @@ export class Manager {
         const pluginRegistry = this.pluginRegistry;
         this.engineCommands = new EngineCommandService(this.configStore, this.engineManager);
         const engineCommands = this.engineCommands;
-        const eventForwarder = new EngineEventForwarder(this.configStore, this.engineManager, engineCommands, this.io);
-        const patchRouter = new PatchRouter(this.configStore, this.engineManager, this.io, pluginRegistry);
+        const eventForwarder = new EngineEventForwarder(
+            this.configStore,
+            this.engineManager,
+            engineCommands,
+            this.io,
+        );
+        const patchRouter = new PatchRouter(
+            this.configStore,
+            this.engineManager,
+            this.io,
+            pluginRegistry,
+        );
 
         // Wire everything
         eventForwarder.setup();
@@ -77,10 +87,33 @@ export class Manager {
             if (envelope) patchRouter.onPatch('engine', 'engine', engineId, envelope.ops);
         });
 
-        setupSocketIO({ io: this.io, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, engineCommands, eventForwarder, patchRouter });
-        registerHttpRoutes({ app, configStore: this.configStore, engineManager: this.engineManager, pluginRegistry, io: this.io, eventForwarder });
+        // Broadcast interlock repairs made during engine reconnect so browsers update.
+        this.engineManager.on('interlockRepair', (engineId: string, ops: unknown) => {
+            this.io.emit('engine:update', { engineId, patch: ops });
+        });
 
-        log.info({ httpPort: this.config.httpPort, dgramPort: this.config.dgramPort }, 'Manager configured');
+        setupSocketIO({
+            io: this.io,
+            configStore: this.configStore,
+            engineManager: this.engineManager,
+            pluginRegistry,
+            engineCommands,
+            eventForwarder,
+            patchRouter,
+        });
+        registerHttpRoutes({
+            app,
+            configStore: this.configStore,
+            engineManager: this.engineManager,
+            pluginRegistry,
+            io: this.io,
+            eventForwarder,
+        });
+
+        log.info(
+            { httpPort: this.config.httpPort, dgramPort: this.config.dgramPort },
+            'Manager configured',
+        );
     }
 
     async start(): Promise<void> {

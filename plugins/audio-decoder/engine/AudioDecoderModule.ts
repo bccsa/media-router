@@ -1,4 +1,10 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices, probeMpegTsStream, type ProbeResult } from '@media-router/engine';
+import {
+    GstPluginBase,
+    type PipelineDescription,
+    type ModuleServices,
+    probeMpegTsStream,
+    type ProbeResult,
+} from '@media-router/engine';
 
 /**
  * Audio Decoder plugin.
@@ -23,7 +29,10 @@ export class AudioDecoderModule extends GstPluginBase {
         // 1. Probe the stream for codec (and channels if available — opus includes it, AAC doesn't)
         if (udpSource) {
             this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
-            this.log.info({ codec: this.probeResult.codec, channels: this.probeResult.channels }, 'Stream probe');
+            this.log.info(
+                { codec: this.probeResult.codec, channels: this.probeResult.channels },
+                'Stream probe',
+            );
         } else {
             this.probeResult = null;
         }
@@ -38,12 +47,18 @@ export class AudioDecoderModule extends GstPluginBase {
         const storedCh = this.config.channels as number | undefined;
         const channels = probedCh ?? encoderCh ?? storedCh ?? 2;
         const rate = this.probeResult?.sampleRate ?? (this.config.sampleRate as number) ?? 48000;
-        this.log.info({ probedCh, encoderCh, storedCh, resolved: channels, rate }, 'Channel resolution');
+        this.log.info(
+            { probedCh, encoderCh, storedCh, resolved: channels, rate },
+            'Channel resolution',
+        );
 
         // 3. Create null-sink with resolved channel count
         if (this.services?.pipeWire) {
             this.paModuleId = await this.services.pipeWire.loadNullSink(
-                this.services.instanceId, channels, rate, this.services.instanceId,
+                this.services.instanceId,
+                channels,
+                rate,
+                this.services.instanceId,
             );
             // Force 100% volume — PulseAudio's stream-restore may remember 0% from a previous session
             await this.services.pipeWire.setSinkVolume(this.pwNodeName, 100);
@@ -69,7 +84,9 @@ export class AudioDecoderModule extends GstPluginBase {
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
             // Volume controlled via GStreamer element only — no pactl to avoid double-attenuation
-            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => { this.log.debug({ err }, 'Volume update failed (pipeline may not be running)'); });
+            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => {
+                this.log.debug({ err }, 'Volume update failed (pipeline may not be running)');
+            });
         }
     }
 
@@ -79,7 +96,10 @@ export class AudioDecoderModule extends GstPluginBase {
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
-        const volumePct = (config.volume as number) ?? 100;
+        // Respect audioEnabled on start — otherwise a muted module unmutes
+        // itself when restarted (gst volume element starts at config.volume).
+        const audioOff = (config.audioEnabled as boolean) === false;
+        const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const gstVolume = (volumePct / 100).toFixed(2);
 
         // Check if we have a UDP source assigned by MediaRouter
@@ -102,11 +122,21 @@ export class AudioDecoderModule extends GstPluginBase {
         // Plugin decides decoder based on probe result
         let decoder: string;
         switch (this.probeResult?.codec) {
-            case 'opus': decoder = 'opusdec'; break;
-            case 'aac': decoder = 'avdec_aac'; break;
-            case 'mp2': decoder = 'mpegaudioparse ! mpg123audiodec'; break;
-            case 'ac3': decoder = 'a52dec'; break;
-            default: decoder = 'decodebin'; break; // fallback for unknown
+            case 'opus':
+                decoder = 'opusdec';
+                break;
+            case 'aac':
+                decoder = 'avdec_aac';
+                break;
+            case 'mp2':
+                decoder = 'mpegaudioparse ! mpg123audiodec';
+                break;
+            case 'ac3':
+                decoder = 'a52dec';
+                break;
+            default:
+                decoder = 'decodebin';
+                break; // fallback for unknown
         }
 
         // pulsesink slave-method: 0=resample (absorbs clock drift), 1=skew (adjusts timestamps)

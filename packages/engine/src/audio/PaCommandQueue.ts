@@ -67,22 +67,29 @@ export class PaCommandQueue {
         this.processing = true;
         const item = this.queue[0];
 
-        execFile('pactl', item.args, {
-            timeout: 5000,
-            env: { ...process.env, DISPLAY: '' },
-        }, (err, stdout, stderr) => {
-            this.queue.shift();
+        execFile(
+            'pactl',
+            item.args,
+            {
+                timeout: 5000,
+                env: { ...process.env, DISPLAY: '' },
+            },
+            (err, stdout, stderr) => {
+                this.queue.shift();
 
-            if (err) {
-                const msg = stderr?.trim() || err.message;
-                item.reject(new Error(`pactl command failed: pactl ${item.args.join(' ')}\n${msg}`));
-            } else {
-                item.resolve(stdout.trim());
-            }
+                if (err) {
+                    const msg = stderr?.trim() || err.message;
+                    item.reject(
+                        new Error(`pactl command failed: pactl ${item.args.join(' ')}\n${msg}`),
+                    );
+                } else {
+                    item.resolve(stdout.trim());
+                }
 
-            // Delay before next command
-            setTimeout(() => this.processNext(), this.delayMs);
-        });
+                // Delay before next command
+                setTimeout(() => this.processNext(), this.delayMs);
+            },
+        );
     }
 
     /** Number of pending commands in the queue. */

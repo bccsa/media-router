@@ -63,7 +63,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (this.paModuleId !== null && this.services?.pipeWire) {
             const ready = await this.services.pipeWire.waitForSink(this.pwNodeName);
             if (!ready) {
-                this.log.warn({ pwNodeName: this.pwNodeName }, 'Null-sink not confirmed — proceeding anyway');
+                this.log.warn(
+                    { pwNodeName: this.pwNodeName },
+                    'Null-sink not confirmed — proceeding anyway',
+                );
             }
         }
 
@@ -156,16 +159,26 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // Ensure subclass cleanup (PipeWire null-sinks, VU loopbacks, etc.) runs
         // Each step is guarded so a failure doesn't prevent subsequent cleanup
         if (this.running) {
-            try { await this.onStop(); } catch (err) {
+            try {
+                await this.onStop();
+            } catch (err) {
                 this.log.error({ err }, 'onStop failed during destroy');
             }
         }
         if (this.vuProcess) {
-            try { await this.vuProcess.destroy(); } catch (err) { this.log.debug({ err }, 'VU process cleanup failed'); }
+            try {
+                await this.vuProcess.destroy();
+            } catch (err) {
+                this.log.debug({ err }, 'VU process cleanup failed');
+            }
             this.vuProcess = null;
         }
         if (this.childProcess) {
-            try { await this.childProcess.destroy(); } catch (err) { this.log.debug({ err }, 'Child process cleanup failed'); }
+            try {
+                await this.childProcess.destroy();
+            } catch (err) {
+                this.log.debug({ err }, 'Child process cleanup failed');
+            }
             this.childProcess = null;
         }
         this.removeAllListeners();
@@ -174,7 +187,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     /** Status data for stats popup — plugins override to provide live data. */
     protected statusData: Record<string, Record<string, string | number | boolean>> = {};
     /** Dynamic status sections — plugins can add/remove sections at runtime (e.g. per-caller stats). */
-    protected dynamicStatusSections: Array<{ id: string; label: string; fields: Array<{ key: string; label: string; unit?: string }> }> = [];
+    protected dynamicStatusSections: Array<{
+        id: string;
+        label: string;
+        fields: Array<{ key: string; label: string; unit?: string }>;
+    }> = [];
     /** Badges shown on the module face — small icon+text indicators. */
     private badges = new Map<string, { id: string; icon?: string; text: string; color?: string }>();
 
@@ -239,7 +256,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     // --- Live element control (delegates to GstChildProcess → Python runner) ---
 
     /** Set a property on a named GStreamer element (live, no restart). */
-    protected async setElementProperty(element: string, property: string, value: unknown): Promise<void> {
+    protected async setElementProperty(
+        element: string,
+        property: string,
+        value: unknown,
+    ): Promise<void> {
         if (this.childProcess?.isRunning) {
             await this.childProcess.setProperty(element, property, value);
         }
@@ -261,7 +282,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /** Get throughput stats for all tracked elements. */
-    protected async getThroughput(): Promise<Record<string, { total_bytes: number; bitrate_kbps: number; bitrate_mbps: number }>> {
+    protected async getThroughput(): Promise<
+        Record<string, { total_bytes: number; bitrate_kbps: number; bitrate_mbps: number }>
+    > {
         if (this.childProcess?.isRunning) {
             return this.childProcess.getThroughput();
         }
@@ -287,5 +310,86 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.health = health;
         this.error = error;
         this.emit('stateChange', this.getState());
+    }
+
+    // --- Device presence watchdog (hardware hot-plug) ---
+    //
+    // Plugins bound to a hardware audio device start the watchdog in onStart.
+    // Every 2s we check whether the bound device is still enumerated in PipeWire;
+    // on disconnect/reconnect we delegate to subclass hooks so each plugin
+    // can teardown/rebuild its own remap-source or remap-sink.
+
+    private deviceWatchdog: ReturnType<typeof setInterval> | null = null;
+    private deviceConnected = true;
+
+    /**
+     * Subclasses bound to a hardware device return its PipeWire name (e.g.
+     * `alsa_input.usb-...`). Return null to disable the watchdog.
+     */
+    protected getWatchedDeviceName(): string | null {
+        return null;
+    }
+
+    /**
+     * Called when the watched device disappears. Default: mark health=error,
+     * zero VU, and delegate teardown to the subclass hook.
+     */
+    protected async onDeviceDisconnected(): Promise<void> {
+        /* subclass teardown */
+    }
+
+    /**
+     * Called when the watched device reappears. Subclass rebuilds its
+     * PipeWire node (remap-sink/source) and reapplies volume + mute.
+     */
+    protected async onDeviceReconnected(): Promise<void> {
+        /* subclass rebuild */
+    }
+
+    protected startDeviceWatchdog(): void {
+        if (this.deviceWatchdog) return;
+        this.deviceConnected = true;
+        this.deviceWatchdog = setInterval(() => {
+            this.checkDevice().catch(() => {
+                /* swallowed — next tick retries */
+            });
+        }, 2000);
+    }
+
+    protected stopDeviceWatchdog(): void {
+        if (this.deviceWatchdog) {
+            clearInterval(this.deviceWatchdog);
+            this.deviceWatchdog = null;
+        }
+    }
+
+    private async checkDevice(): Promise<void> {
+        const deviceName = this.getWatchedDeviceName();
+        if (!deviceName || !this.services?.pipeWire) return;
+        const present = !!this.services.pipeWire.getDeviceInfo(deviceName);
+
+        if (this.deviceConnected && !present) {
+            this.deviceConnected = false;
+            this.setHealth('error', 'Device disconnected');
+            this.setVuData([]);
+            try {
+                await this.onDeviceDisconnected();
+            } catch (err) {
+                this.log.debug({ err }, 'onDeviceDisconnected hook failed');
+            }
+            return;
+        }
+        if (!this.deviceConnected && present) {
+            this.deviceConnected = true;
+            try {
+                await this.onDeviceReconnected();
+                this.setHealth('ok');
+            } catch (err) {
+                this.setHealth(
+                    'error',
+                    `Device reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
     }
 }

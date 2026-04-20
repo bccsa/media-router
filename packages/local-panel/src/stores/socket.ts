@@ -39,14 +39,24 @@ export const useSocketStore = defineStore('socket', () => {
         });
 
         // Combined init event — config + runtime states + engineRunning in one payload
-        socket.on('init', (data: { engineRunning: boolean; ip?: string; ips?: string[]; hostname?: string; buildNumber?: string; config: Record<string, unknown> }) => {
-            moduleStore.engineRunning = data.engineRunning;
-            if (data.ip) moduleStore.engineIp = data.ip;
-            if (data.ips) moduleStore.engineIps = data.ips;
-            if (data.hostname) moduleStore.engineHostname = data.hostname;
-            if (data.buildNumber) moduleStore.buildNumber = data.buildNumber;
-            moduleStore.applyConfig(data.config);
-        });
+        socket.on(
+            'init',
+            (data: {
+                engineRunning: boolean;
+                ip?: string;
+                ips?: string[];
+                hostname?: string;
+                buildNumber?: string;
+                config: Record<string, unknown>;
+            }) => {
+                moduleStore.engineRunning = data.engineRunning;
+                if (data.ip) moduleStore.engineIp = data.ip;
+                if (data.ips) moduleStore.engineIps = data.ips;
+                if (data.hostname) moduleStore.engineHostname = data.hostname;
+                if (data.buildNumber) moduleStore.buildNumber = data.buildNumber;
+                moduleStore.applyConfig(data.config);
+            },
+        );
 
         // Individual module state update (health, running, badges, etc.)
         socket.on('moduleState', (data: { instanceId: string; state: unknown }) => {
@@ -61,7 +71,9 @@ export const useSocketStore = defineStore('socket', () => {
         // Config update from engine (live sync — when manager-ui or other LCPs change settings)
         socket.on('configUpdate', (patch: unknown) => {
             if (Array.isArray(patch)) {
-                moduleStore.applyPatch(patch as Array<{ op: string; path: string; value?: unknown }>);
+                moduleStore.applyPatch(
+                    patch as Array<{ op: string; path: string; value?: unknown }>,
+                );
             }
         });
 

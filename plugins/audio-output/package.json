@@ -10,6 +10,7 @@
         "color": "#10b981",
         "icon": "volume-2",
         "category": "protocol",
+        "interlock": true,
         "architectures": [
             "arm64",
             "x86_64"

@@ -39,12 +39,19 @@ export class ConnectionExecutor {
         return null;
     }
 
-    async teardown(handle: ActiveHandle, conn: Connection | undefined, skipModuleRestart = false): Promise<void> {
+    async teardown(
+        handle: ActiveHandle,
+        conn: Connection | undefined,
+        skipModuleRestart = false,
+    ): Promise<void> {
         if (handle.type === 'loopback' && handle.paModuleId !== undefined) {
             log.info({ paModuleId: handle.paModuleId }, 'Removing loopback');
             await this.pipeWire.unloadModule(handle.paModuleId);
         } else if (handle.type === 'pw-link') {
-            log.info({ connectionId: handle.connectionId, links: handle.pwLinkPairs?.length ?? 0 }, 'Removing pw-link connections');
+            log.info(
+                { connectionId: handle.connectionId, links: handle.pwLinkPairs?.length ?? 0 },
+                'Removing pw-link connections',
+            );
             // 1. Remove by exact port name pairs
             if (handle.pwLinkPairs?.length) {
                 for (const pair of handle.pwLinkPairs) {
@@ -66,7 +73,10 @@ export class ConnectionExecutor {
                 }
             }
         } else if (handle.type === 'udp') {
-            log.info({ connectionId: handle.connectionId, udpPort: handle.udpPort }, 'Removing UDP connection');
+            log.info(
+                { connectionId: handle.connectionId, udpPort: handle.udpPort },
+                'Removing UDP connection',
+            );
 
             if (skipModuleRestart) return;
 
@@ -74,7 +84,15 @@ export class ConnectionExecutor {
             if (conn) {
                 const sink = this.moduleGetter(conn.sinkModuleId);
                 if (sink?.running) {
-                    try { await sink.stop(); await sink.start(); } catch (err) { log.debug({ err, moduleId: conn.sinkModuleId }, 'Decoder restart after disconnect failed'); }
+                    try {
+                        await sink.stop();
+                        await sink.start();
+                    } catch (err) {
+                        log.debug(
+                            { err, moduleId: conn.sinkModuleId },
+                            'Decoder restart after disconnect failed',
+                        );
+                    }
                 }
             }
         }
@@ -92,10 +110,11 @@ export class ConnectionExecutor {
         }
 
         // Try port-specific lookup first (multi-port modules), fall back to module-level
-        const sourceNodes = sourceModule.getPipeWireNodeForPort(conn.sourcePortId)
-            ?? sourceModule.getPipeWireNodes();
-        const sinkNodes = sinkModule.getPipeWireNodeForPort(conn.sinkPortId)
-            ?? sinkModule.getPipeWireNodes();
+        const sourceNodes =
+            sourceModule.getPipeWireNodeForPort(conn.sourcePortId) ??
+            sourceModule.getPipeWireNodes();
+        const sinkNodes =
+            sinkModule.getPipeWireNodeForPort(conn.sinkPortId) ?? sinkModule.getPipeWireNodes();
 
         if (!sourceNodes?.source) {
             log.warn({ moduleId: conn.sourceModuleId }, 'Source module has no PipeWire source');
@@ -142,11 +161,17 @@ export class ConnectionExecutor {
         const sinkPorts = await this.waitForPorts(sinkPwNode, 'input');
 
         if (srcPorts.length === 0) {
-            log.warn({ node: sourcePwNode }, `No output ports found after polling — connection cannot be created ${this.connLabel(conn)}`);
+            log.warn(
+                { node: sourcePwNode },
+                `No output ports found after polling — connection cannot be created ${this.connLabel(conn)}`,
+            );
             return null;
         }
         if (sinkPorts.length === 0) {
-            log.warn({ node: sinkPwNode }, `No input ports found after polling — connection cannot be created ${this.connLabel(conn)}`);
+            log.warn(
+                { node: sinkPwNode },
+                `No input ports found after polling — connection cannot be created ${this.connLabel(conn)}`,
+            );
             return null;
         }
 
@@ -156,12 +181,15 @@ export class ConnectionExecutor {
         const defaultMap = () => {
             if (srcPorts.length === 1 && sinkPorts.length > 1) {
                 // Mono source → duplicate to all destination channels
-                return Array.from({ length: sinkPorts.length }, (_, i) => ({ srcChannel: 0, dstChannel: i }));
+                return Array.from({ length: sinkPorts.length }, (_, i) => ({
+                    srcChannel: 0,
+                    dstChannel: i,
+                }));
             }
-            return Array.from(
-                { length: Math.min(srcPorts.length, sinkPorts.length) },
-                (_, i) => ({ srcChannel: i, dstChannel: i }),
-            );
+            return Array.from({ length: Math.min(srcPorts.length, sinkPorts.length) }, (_, i) => ({
+                srcChannel: i,
+                dstChannel: i,
+            }));
         };
 
         let channelMap: Array<{ srcChannel: number; dstChannel: number; gain?: number }>;
@@ -172,39 +200,58 @@ export class ConnectionExecutor {
             );
             const dropped = conn.channelMap.length - valid.length;
             if (dropped > 0) {
-                log.warn({
-                    total: conn.channelMap.length, valid: valid.length, dropped,
-                    srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,
-                }, `Channel map: ${dropped} entries out of range, using ${valid.length > 0 ? 'valid subset' : 'identity fallback'} ${this.connLabel(conn)}`);
+                log.warn(
+                    {
+                        total: conn.channelMap.length,
+                        valid: valid.length,
+                        dropped,
+                        srcChannels: srcPorts.length,
+                        sinkChannels: sinkPorts.length,
+                    },
+                    `Channel map: ${dropped} entries out of range, using ${valid.length > 0 ? 'valid subset' : 'identity fallback'} ${this.connLabel(conn)}`,
+                );
             }
             // Fall back to identity mapping if all explicit entries were invalid
             channelMap = valid.length > 0 ? valid : defaultMap();
         } else {
             channelMap = defaultMap();
-            if (srcPorts.length !== sinkPorts.length && !(srcPorts.length === 1 && sinkPorts.length > 1)) {
-                log.warn({
-                    source: sourcePwNode, sink: sinkPwNode,
-                    srcChannels: srcPorts.length, sinkChannels: sinkPorts.length,
-                    linked: channelMap.length,
-                }, `Channel count mismatch — linking ${channelMap.length} of ${Math.max(srcPorts.length, sinkPorts.length)} channels ${this.connLabel(conn)}`);
+            if (
+                srcPorts.length !== sinkPorts.length &&
+                !(srcPorts.length === 1 && sinkPorts.length > 1)
+            ) {
+                log.warn(
+                    {
+                        source: sourcePwNode,
+                        sink: sinkPwNode,
+                        srcChannels: srcPorts.length,
+                        sinkChannels: sinkPorts.length,
+                        linked: channelMap.length,
+                    },
+                    `Channel count mismatch — linking ${channelMap.length} of ${Math.max(srcPorts.length, sinkPorts.length)} channels ${this.connLabel(conn)}`,
+                );
             }
         }
 
-        log.info({
-            connectionId: conn.id,
-            source: sourcePwNode,
-            sink: sinkPwNode,
-            mappings: channelMap.length,
-            explicit: !!conn.channelMap?.length,
-        }, `Creating pw-link connections ${this.connLabel(conn)}`);
+        log.info(
+            {
+                connectionId: conn.id,
+                source: sourcePwNode,
+                sink: sinkPwNode,
+                mappings: channelMap.length,
+                explicit: !!conn.channelMap?.length,
+            },
+            `Creating pw-link connections ${this.connLabel(conn)}`,
+        );
 
         const linkIds: number[] = [];
         const linkPairs: Array<{ src: string; dst: string }> = [];
 
         for (const entry of channelMap) {
             if ('gain' in entry && entry.gain !== undefined && entry.gain !== 1.0) {
-                log.warn({ srcCh: entry.srcChannel, dstCh: entry.dstChannel, gain: entry.gain },
-                    'Per-channel gain not supported with pw-link — gain ignored');
+                log.warn(
+                    { srcCh: entry.srcChannel, dstCh: entry.dstChannel, gain: entry.gain },
+                    'Per-channel gain not supported with pw-link — gain ignored',
+                );
             }
             const srcPort = srcPorts[entry.srcChannel];
             const sinkPort = sinkPorts[entry.dstChannel];
@@ -213,7 +260,10 @@ export class ConnectionExecutor {
                 const linkId = await this.pipeWire.pwLink(srcPort, sinkPort);
                 linkIds.push(linkId);
                 linkPairs.push({ src: srcPort, dst: sinkPort });
-                log.info({ src: srcPort, dst: sinkPort, linkId }, `Created pw-link ${this.connLabel(conn)}`);
+                log.info(
+                    { src: srcPort, dst: sinkPort, linkId },
+                    `Created pw-link ${this.connLabel(conn)}`,
+                );
             } catch (err) {
                 log.error({ err, src: srcPort, dst: sinkPort }, 'Failed to create pw-link');
             }
@@ -238,11 +288,17 @@ export class ConnectionExecutor {
 
         const udpPort = this.getUdpPort(conn.sourceModuleId);
         if (udpPort === undefined) {
-            log.warn({ sourceModuleId: conn.sourceModuleId }, 'Encoder has no assigned port — is it running?');
+            log.warn(
+                { sourceModuleId: conn.sourceModuleId },
+                'Encoder has no assigned port — is it running?',
+            );
             return null;
         }
 
-        log.info({ host: this.multicastAddr, udpPort }, `UDP MPEG-TS connection ${this.connLabel(conn)}`);
+        log.info(
+            { host: this.multicastAddr, udpPort },
+            `UDP MPEG-TS connection ${this.connLabel(conn)}`,
+        );
 
         // Start/restart the decoder so it subscribes to the encoder's multicast
         try {

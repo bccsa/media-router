@@ -21,10 +21,14 @@ export class EngineCommandService {
     setRunning(engineId: string, running: boolean): void {
         const engine = this.configStore.getEngine(engineId);
         if (!engine?.active_profile) return;
-        this.configStore.modifyProfileConfig(engineId, engine.active_profile as string, (config) => {
-            config.running = running;
-            return config;
-        });
+        this.configStore.modifyProfileConfig(
+            engineId,
+            engine.active_profile as string,
+            (config) => {
+                config.running = running;
+                return config;
+            },
+        );
     }
 
     /** Get persisted running state for an engine. */
@@ -58,7 +62,10 @@ export class EngineCommandService {
 
             // Check if the desired state still matches — abort if someone changed it
             const shouldBeRunning = this.isRunning(engineId);
-            if ((command === 'start' && !shouldBeRunning) || (command === 'stop' && shouldBeRunning)) {
+            if (
+                (command === 'start' && !shouldBeRunning) ||
+                (command === 'stop' && shouldBeRunning)
+            ) {
                 log.info({ engineId, command }, 'Command cancelled — running state changed');
                 return;
             }
@@ -76,15 +83,25 @@ export class EngineCommandService {
             if (command === 'start') {
                 const engine = this.configStore.getEngine(engineId);
                 if (engine?.active_profile) {
-                    const config = this.configStore.getProfile(engineId, engine.active_profile as string);
+                    const config = this.configStore.getProfile(
+                        engineId,
+                        engine.active_profile as string,
+                    );
                     if (config) {
-                        this.engineManager.sendToEngine(engineId, 'config', config, { guaranteeDelivery: true });
+                        this.engineManager.sendToEngine(engineId, 'config', config, {
+                            guaranteeDelivery: true,
+                        });
                     }
                 }
             }
 
             log.info({ engineId, command, attempt }, 'Sending engine command');
-            this.engineManager.sendToEngine(engineId, 'command', { command }, { guaranteeDelivery: true });
+            this.engineManager.sendToEngine(
+                engineId,
+                'command',
+                { command },
+                { guaranteeDelivery: true },
+            );
         };
 
         trySend();

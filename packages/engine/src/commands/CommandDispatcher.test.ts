@@ -67,7 +67,10 @@ describe('CommandDispatcher', () => {
             // Make startModules slow so we can queue commands while it's busy
             let resolveStart!: () => void;
             (ctx.startModules as ReturnType<typeof vi.fn>).mockImplementationOnce(
-                () => new Promise<void>((r) => { resolveStart = r; }),
+                () =>
+                    new Promise<void>((r) => {
+                        resolveStart = r;
+                    }),
             );
 
             dispatcher.dispatch({ command: 'start' }); // schedules → runLifecycle
@@ -75,8 +78,8 @@ describe('CommandDispatcher', () => {
 
             expect(ctx.startModules).toHaveBeenCalledOnce(); // now running (slow)
 
-            dispatcher.dispatch({ command: 'stop' });   // queued as pending
-            dispatcher.dispatch({ command: 'start' });  // replaces pending
+            dispatcher.dispatch({ command: 'stop' }); // queued as pending
+            dispatcher.dispatch({ command: 'start' }); // replaces pending
 
             expect(ctx.stopModules).not.toHaveBeenCalled();
 
@@ -93,7 +96,9 @@ describe('CommandDispatcher', () => {
         it('isStopRequested reflects pendingLifecycle === stop', async () => {
             let resolveStart!: () => void;
             (ctx.startModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
-                new Promise<void>((r) => { resolveStart = r; }),
+                new Promise<void>((r) => {
+                    resolveStart = r;
+                }),
             );
 
             dispatcher.dispatch({ command: 'start' });
@@ -111,7 +116,9 @@ describe('CommandDispatcher', () => {
         it('runs pending start after stop (modules stopped = not running)', async () => {
             let resolveStop!: () => void;
             (ctx.stopModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
-                new Promise<void>((r) => { resolveStop = r; }),
+                new Promise<void>((r) => {
+                    resolveStop = r;
+                }),
             );
 
             // Modules exist (size=3) but after stop none are running
@@ -135,7 +142,9 @@ describe('CommandDispatcher', () => {
         it('skips pending start when modules are actually running', async () => {
             let resolveStop!: () => void;
             (ctx.stopModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
-                new Promise<void>((r) => { resolveStop = r; }),
+                new Promise<void>((r) => {
+                    resolveStop = r;
+                }),
             );
 
             // Modules still running (stop didn't work or different scenario)
@@ -156,14 +165,16 @@ describe('CommandDispatcher', () => {
         it('skips pending stop when no modules are running', async () => {
             let resolveStart!: () => void;
             (ctx.startModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
-                new Promise<void>((r) => { resolveStart = r; }),
+                new Promise<void>((r) => {
+                    resolveStart = r;
+                }),
             );
 
             // No modules running
             (ctx.moduleManager.getAllStates as ReturnType<typeof vi.fn>).mockReturnValue({});
 
             dispatcher.dispatch({ command: 'start' }); // starts running
-            dispatcher.dispatch({ command: 'stop' });  // queued as pending
+            dispatcher.dispatch({ command: 'stop' }); // queued as pending
 
             resolveStart();
             await flush();
@@ -207,10 +218,16 @@ describe('CommandDispatcher', () => {
         it('applies config update and broadcasts to LCP', async () => {
             (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue({ running: true });
 
-            dispatcher.dispatch({ command: 'moduleConfig', moduleId: 'mod-1', changes: { volume: 80 } });
+            dispatcher.dispatch({
+                command: 'moduleConfig',
+                moduleId: 'mod-1',
+                changes: { volume: 80 },
+            });
             await flush();
 
-            expect(ctx.moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', { volume: 80 });
+            expect(ctx.moduleManager.applyConfigUpdate).toHaveBeenCalledWith('mod-1', {
+                volume: 80,
+            });
             expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalledWith([
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
@@ -219,7 +236,11 @@ describe('CommandDispatcher', () => {
         it('skips config update when module not running', async () => {
             (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
 
-            dispatcher.dispatch({ command: 'moduleConfig', moduleId: 'mod-1', changes: { volume: 80 } });
+            dispatcher.dispatch({
+                command: 'moduleConfig',
+                moduleId: 'mod-1',
+                changes: { volume: 80 },
+            });
             await flush();
 
             expect(ctx.moduleManager.applyConfigUpdate).not.toHaveBeenCalled();
@@ -270,11 +291,19 @@ describe('CommandDispatcher', () => {
         it('routingConnect creates connection and broadcasts', async () => {
             dispatcher.dispatch({
                 command: 'routingConnect',
-                sourceModuleId: 'mod-a', sourcePortId: 'out-0',
-                sinkModuleId: 'mod-b', sinkPortId: 'in-0',
+                sourceModuleId: 'mod-a',
+                sourcePortId: 'out-0',
+                sinkModuleId: 'mod-b',
+                sinkPortId: 'in-0',
             });
             await flush();
-            expect(ctx.mediaRouter.createConnection).toHaveBeenCalledWith('mod-a', 'out-0', 'mod-b', 'in-0', undefined);
+            expect(ctx.mediaRouter.createConnection).toHaveBeenCalledWith(
+                'mod-a',
+                'out-0',
+                'mod-b',
+                'in-0',
+                undefined,
+            );
             expect(ctx.lcpServer.broadcastConfigUpdate).toHaveBeenCalled();
         });
 
@@ -288,9 +317,15 @@ describe('CommandDispatcher', () => {
         });
 
         it('routingUpdate updates channel map', async () => {
-            dispatcher.dispatch({ command: 'routingUpdate', connectionId: 'conn-1', channelMap: [{ srcChannel: 0, dstChannel: 1 }] });
+            dispatcher.dispatch({
+                command: 'routingUpdate',
+                connectionId: 'conn-1',
+                channelMap: [{ srcChannel: 0, dstChannel: 1 }],
+            });
             await flush();
-            expect(ctx.mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-1', [{ srcChannel: 0, dstChannel: 1 }]);
+            expect(ctx.mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-1', [
+                { srcChannel: 0, dstChannel: 1 },
+            ]);
         });
     });
 

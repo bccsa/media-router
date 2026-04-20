@@ -75,30 +75,47 @@ onBeforeUnmount(() => {
             :class="[
                 disabled ? 'opacity-50 cursor-not-allowed' : '',
                 modelValue !== undefined ? 'text-foreground' : 'text-muted',
-            ]">
+            ]"
+        >
             <span class="truncate">{{ selectedLabel }}</span>
-            <svg class="w-3 h-3 shrink-0 ml-1 transition-transform" :class="{ 'rotate-180': open }"
-                 fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <svg
+                class="w-3 h-3 shrink-0 ml-1 transition-transform"
+                :class="{ 'rotate-180': open }"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+            >
                 <path d="M19 9l-7 7-7-7" />
             </svg>
         </button>
 
         <!-- Dropdown -->
-        <div v-if="open" class="absolute z-[999] w-full mt-1 rounded-md shadow-lg max-h-48 overflow-auto bg-card border border-border">
+        <div
+            v-if="open"
+            class="absolute z-[999] w-full mt-1 rounded-md shadow-lg max-h-48 overflow-auto bg-card border border-border"
+        >
             <!-- Search -->
             <div v-if="searchable" class="p-1.5">
-                <input v-model="search" type="text" placeholder="Search..."
-                       class="w-full px-2 py-1 text-xs rounded outline-none bg-input border border-border-alt text-foreground"
-                       @click.stop />
+                <input
+                    v-model="search"
+                    type="text"
+                    placeholder="Search..."
+                    class="w-full px-2 py-1 text-xs rounded outline-none bg-input border border-border-alt text-foreground"
+                    @click.stop
+                />
             </div>
 
             <!-- Options -->
-            <div v-for="opt in filtered" :key="String(opt.value)"
-                 @click="selectOption(opt.value)"
-                 class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors hover:bg-surface-alt"
-                 :class="[
-                     opt.value === modelValue ? 'text-accent bg-surface-alt' : 'text-foreground',
-                 ]">
+            <div
+                v-for="opt in filtered"
+                :key="String(opt.value)"
+                @click="selectOption(opt.value)"
+                class="px-2.5 py-1.5 text-sm cursor-pointer transition-colors hover:bg-surface-alt"
+                :class="[
+                    opt.value === modelValue ? 'text-accent bg-surface-alt' : 'text-foreground',
+                ]"
+            >
                 {{ opt.label }}
             </div>
 

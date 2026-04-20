@@ -90,10 +90,12 @@ describe('ManagerConnection', () => {
 
     it('connect creates a dgram-comms Client', () => {
         conn.connect(testProfile);
-        expect(MockedClient).toHaveBeenCalledWith(expect.objectContaining({
-            clientId: 'test-engine',
-            encryptionKey: 'secret',
-        }));
+        expect(MockedClient).toHaveBeenCalledWith(
+            expect.objectContaining({
+                clientId: 'test-engine',
+                encryptionKey: 'secret',
+            }),
+        );
         expect(clientInstances).toHaveLength(1);
     });
 
