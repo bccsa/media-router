@@ -4,11 +4,11 @@
     "private": true,
     "description": "Media Router v2.0 — Distributed media routing system",
     "scripts": {
-        "build": "pnpm -r --filter './packages/*' run build",
+        "build": "pnpm -r --filter './packages/*' --filter './plugins/*' run build",
         "dev": "pnpm -r --parallel --filter './packages/*' run dev",
         "test": "vitest run",
         "test:watch": "vitest",
-        "typecheck": "pnpm -r --filter './packages/*' run typecheck",
+        "typecheck": "pnpm -r --filter './packages/*' --filter './plugins/*' run typecheck",
         "lint": "prettier --check 'packages/*/src/**/*.{ts,vue}' 'plugins/*/engine/**/*.ts'",
         "format": "prettier --write 'packages/*/src/**/*.{ts,vue}' 'plugins/*/engine/**/*.ts'"
     },

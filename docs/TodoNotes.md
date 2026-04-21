@@ -112,3 +112,6 @@
 - [x] Device persistence on disconnect: if a selected audio device is unplugged, keep it in the dropdown (fixed: `deviceOptions()` in ModuleSettingsPanel appends the currently-selected device with "(Disconnected)" suffix if it's not in the current device list. Removed only when user selects a different device)
 
 - [x] Change LCP from mute / unmute to on (highlighted) / off (greyed out)
+- [x] Issue with n-1 data channels between engine and mannager, so the issue is as follows: 
+    I have the interlocks setup, and it works well, but when i on the lcp unmute a channel in an interlock group, the change happesn correctly on the manager-ui, but in the lcp, the mute update command does not come through (even after refresh) so it shows that both channels is unmuted, even though one of them is muted
+    (fixed: manager now forwards cascade ops back to the engine when the engine was the sender, so LCP clients see the sibling mutes)

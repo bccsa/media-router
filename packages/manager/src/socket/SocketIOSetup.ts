@@ -196,7 +196,7 @@ export function setupSocketIO(deps: SocketDeps): void {
             'patch',
             validated(BrowserPatchPayloadSchema, log, ({ engineId, ops }) => {
                 if (!validEngine(engineId)) return;
-                patchRouter.onPatch(socket.id, 'browser', engineId, ops);
+                patchRouter.onPatch(socket.id, engineId, ops);
             }),
         );
 

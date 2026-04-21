@@ -110,7 +110,19 @@ export class AudioDeviceOps {
     }
 
     /**
+     * Is this device currently enumerated by PipeWire? Separate from
+     * `getDeviceInfo` because a SUSPENDED device exists but can't always
+     * report spec info — treating "no spec" as "device gone" would cause the
+     * watchdog to falsely disconnect healthy idle hardware.
+     */
+    hasDevice(deviceName: string): boolean {
+        return this.listDevices().some((d) => d.name === deviceName);
+    }
+
+    /**
      * Get device info (channels, sampleRate) for a specific source or sink.
+     * Returns null if the device is missing OR has no parseable spec (e.g.
+     * SUSPENDED). Callers that only need presence should use `hasDevice`.
      */
     getDeviceInfo(deviceName: string): { channels: number; sampleRate: number } | null {
         const devices = this.listDevices();

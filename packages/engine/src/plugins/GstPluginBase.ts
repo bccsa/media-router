@@ -366,7 +366,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     private async checkDevice(): Promise<void> {
         const deviceName = this.getWatchedDeviceName();
         if (!deviceName || !this.services?.pipeWire) return;
-        const present = !!this.services.pipeWire.getDeviceInfo(deviceName);
+        // Use `hasDevice` (enumeration only) not `getDeviceInfo` — the latter
+        // returns null for SUSPENDED devices which would cause this watchdog
+        // to tear down healthy idle hardware during engine startup.
+        const present = this.services.pipeWire.hasDevice(deviceName);
 
         if (this.deviceConnected && !present) {
             this.deviceConnected = false;

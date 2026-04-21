@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PatchRouter } from './PatchRouter.js';
+import { PatchRouter, engineSenderId } from './PatchRouter.js';
 
 function createMocks() {
     const configStore = {
@@ -46,7 +46,7 @@ describe('PatchRouter', () => {
     describe('onPatch from browser', () => {
         it('applies patch to ConfigStore', () => {
             const { router, configStore } = createMocks();
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' },
             ]);
             expect(configStore.modifyProfileConfig).toHaveBeenCalled();
@@ -54,7 +54,7 @@ describe('PatchRouter', () => {
 
         it('broadcasts to other browsers (skip sender)', () => {
             const { router, io } = createMocks();
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' },
             ]);
             expect(io.except).toHaveBeenCalledWith('browser-1');
@@ -62,7 +62,7 @@ describe('PatchRouter', () => {
 
         it('forwards patch to engine', () => {
             const { router, engineManager } = createMocks();
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New Name' },
             ]);
             expect(engineManager.sendToEngine).toHaveBeenCalledWith(
@@ -76,7 +76,7 @@ describe('PatchRouter', () => {
         it('does not forward to engine if engine offline', () => {
             const { router, engineManager } = createMocks();
             engineManager.isEngineOnline.mockReturnValue(false);
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
             expect(engineManager.sendToEngine).not.toHaveBeenCalled();
@@ -85,10 +85,15 @@ describe('PatchRouter', () => {
 
     describe('onPatch from engine', () => {
         it('broadcasts to ALL browsers (not skip sender)', () => {
+            // `engine:<engineId>` is not a Socket.IO socket id, so the broadcast
+            // naturally reaches every browser (the one-invariant broadcast uses
+            // `except(senderId)` uniformly; with no matching socket it's a no-op
+            // exclusion = full broadcast).
             const { router, io } = createMocks();
-            router.onPatch('engine', 'engine', 'eng-1', [
+            router.onPatch(engineSenderId('eng-1'), 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
+            expect(io.except).toHaveBeenCalledWith('engine:eng-1');
             expect(io.emit).toHaveBeenCalledWith(
                 'engine:update',
                 expect.objectContaining({
@@ -96,13 +101,11 @@ describe('PatchRouter', () => {
                     patch: expect.any(Array),
                 }),
             );
-            // Should NOT call except (full broadcast)
-            expect(io.except).not.toHaveBeenCalled();
         });
 
         it('does NOT forward back to engine', () => {
             const { router, engineManager } = createMocks();
-            router.onPatch('engine', 'engine', 'eng-1', [
+            router.onPatch(engineSenderId('eng-1'), 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
             expect(engineManager.sendToEngine).not.toHaveBeenCalled();
@@ -112,7 +115,7 @@ describe('PatchRouter', () => {
     describe('patch forwarding', () => {
         it('forwards patch to engine (not old commands)', () => {
             const { router, engineManager } = createMocks();
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/volume', value: 80 },
             ]);
             // Should send patch, not old-style commands
@@ -132,14 +135,14 @@ describe('PatchRouter', () => {
     describe('edge cases', () => {
         it('drops patch with no ops', () => {
             const { router, configStore } = createMocks();
-            router.onPatch('browser-1', 'browser', 'eng-1', []);
+            router.onPatch('browser-1', 'eng-1', []);
             expect(configStore.modifyProfileConfig).not.toHaveBeenCalled();
         });
 
         it('drops patch when no active profile', () => {
             const { router, configStore } = createMocks();
             configStore.getEngine.mockReturnValue({ engine_id: 'eng-1', active_profile: null });
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
             expect(configStore.modifyProfileConfig).not.toHaveBeenCalled();
@@ -148,7 +151,7 @@ describe('PatchRouter', () => {
         it('drops patch when engine has no record', () => {
             const { router, configStore } = createMocks();
             configStore.getEngine.mockReturnValue(undefined);
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'X' },
             ]);
             expect(configStore.modifyProfileConfig).not.toHaveBeenCalled();
@@ -171,9 +174,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
-                { op: 'remove', path: '/connections/conn-b' },
-            ]);
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/connections/conn-b' }]);
 
             // Engine should receive index-based path
             const engineCall = engineManager.sendToEngine.mock.calls[0];
@@ -200,7 +201,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/connections/conn-b/channelMap', value: [] },
             ]);
 
@@ -222,14 +223,13 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'remove', path: '/connections/nonexistent' },
             ]);
 
-            const engineCall = engineManager.sendToEngine.mock.calls[0];
-            const engineOps = engineCall[2].ops;
-            // Should have no ops since the connection was not found
-            expect(engineOps).toHaveLength(0);
+            // Nothing to apply → nothing forwarded. The broadcast skips empty
+            // sends rather than dispatching an empty ops array.
+            expect(engineManager.sendToEngine).not.toHaveBeenCalled();
         });
 
         it('module delete cascades connection removal', () => {
@@ -251,9 +251,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
-                { op: 'remove', path: '/modules/mod-1' },
-            ]);
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/modules/mod-1' }]);
 
             const engineCall = engineManager.sendToEngine.mock.calls[0];
             const engineOps = engineCall[2].ops;
@@ -286,7 +284,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 {
                     op: 'add',
                     path: '/modules/mod-new',
@@ -314,7 +312,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'add', path: '/modules/mod-new', value: { pluginId: 'unknown-plugin' } },
             ]);
 
@@ -348,7 +346,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/pairCount', value: 3 },
             ]);
 
@@ -397,7 +395,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/pairCount', value: 4 },
             ]);
 
@@ -440,7 +438,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/channels', value: 2 },
             ]);
 
@@ -475,7 +473,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/settings/channels', value: 2 },
             ]);
 
@@ -517,7 +515,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/solo/settings/audioEnabled', value: true },
             ]);
 
@@ -535,7 +533,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
@@ -553,7 +551,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
@@ -585,9 +583,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
-                { op: 'remove', path: '/connections/abc' },
-            ]);
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/connections/abc' }]);
 
             // No cascade for a simple connection remove — sender gets no echo.
             expect(io.to).not.toHaveBeenCalled();
@@ -604,7 +600,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
@@ -624,7 +620,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
@@ -645,7 +641,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
             ]);
 
@@ -665,7 +661,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/modules/a/settings/audioEnabled', value: false },
             ]);
 
@@ -691,7 +687,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/interlocks/ilk-1/members', value: ['a', 'b', 'c'] },
             ]);
 
@@ -719,7 +715,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 {
                     op: 'add',
                     path: '/interlocks/-',
@@ -753,7 +749,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/interlocks/ilk-1/members', value: ['a', 'b'] },
             ]);
 
@@ -778,7 +774,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/interlocks/g1/members', value: ['a'] },
             ]);
 
@@ -804,9 +800,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
-                { op: 'remove', path: '/interlocks/b' },
-            ]);
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/interlocks/b' }]);
 
             const engineOps = engineManager.sendToEngine.mock.calls[0][2].ops;
             expect(engineOps).toEqual([{ op: 'remove', path: '/interlocks/1' }]);
@@ -824,12 +818,12 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
+            router.onPatch('browser-1', 'eng-1', [
                 { op: 'replace', path: '/interlocks/ghost/members', value: ['x'] },
             ]);
 
-            const engineOps = engineManager.sendToEngine.mock.calls[0][2].ops;
-            expect(engineOps).toHaveLength(0);
+            // Nothing to apply → nothing forwarded.
+            expect(engineManager.sendToEngine).not.toHaveBeenCalled();
         });
 
         it('deleting a module prunes it from its interlock group', () => {
@@ -840,7 +834,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [{ op: 'remove', path: '/modules/b' }]);
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/modules/b' }]);
 
             const engineOps = engineManager.sendToEngine.mock.calls[0][2].ops;
             expect(engineOps).toContainEqual({
@@ -871,7 +865,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('engine', 'engine', 'eng-1', [
+            router.onPatch(engineSenderId('eng-1'), 'eng-1', [
                 {
                     op: 'add',
                     path: '/modules/mod-new',
@@ -909,7 +903,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('engine', 'engine', 'eng-1', [
+            router.onPatch(engineSenderId('eng-1'), 'eng-1', [
                 { op: 'replace', path: '/modules/mod-1/displayName', value: 'New' },
             ]);
 
@@ -936,9 +930,7 @@ describe('PatchRouter', () => {
                 },
             );
 
-            router.onPatch('browser-1', 'browser', 'eng-1', [
-                { op: 'remove', path: '/connections/conn-a' },
-            ]);
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/connections/conn-a' }]);
 
             // Engine gets index-based path
             const engineOps = engineManager.sendToEngine.mock.calls[0][2].ops;

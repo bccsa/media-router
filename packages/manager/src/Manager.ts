@@ -9,7 +9,7 @@ import { EngineConnectionManager } from './engines/EngineConnectionManager.js';
 import { PluginRegistry } from './plugins/PluginRegistry.js';
 import { EngineCommandService } from './handlers/EngineCommandService.js';
 import { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
-import { PatchRouter } from './PatchRouter.js';
+import { PatchRouter, engineSenderId } from './PatchRouter.js';
 import { setupSocketIO } from './socket/SocketIOSetup.js';
 import { registerHttpRoutes } from './routes/httpRoutes.js';
 
@@ -84,7 +84,7 @@ export class Manager {
         // Handle patches from engine (N-1 router)
         this.engineManager.on('enginePatch', (engineId: string, data: unknown) => {
             const envelope = safeParse(PatchEnvelopeSchema, data, 'enginePatch', log);
-            if (envelope) patchRouter.onPatch('engine', 'engine', engineId, envelope.ops);
+            if (envelope) patchRouter.onPatch(engineSenderId(engineId), engineId, envelope.ops);
         });
 
         // Broadcast interlock repairs made during engine reconnect so browsers update.
