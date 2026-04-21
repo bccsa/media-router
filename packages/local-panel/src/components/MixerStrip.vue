@@ -110,14 +110,14 @@ function toggleMute() {
         <!-- Volume display -->
         <div v-if="volumeEnabled" class="volume-display">{{ Math.round(localVolume) }}%</div>
 
-        <!-- Mute button -->
+        <!-- On/Off button: highlighted when live, greyed out when muted -->
         <button
-            class="mute-btn"
-            :class="{ muted: isMuted, disabled: !muteEnabled }"
+            class="power-btn"
+            :class="{ on: !isMuted, off: isMuted, disabled: !muteEnabled }"
             :disabled="!muteEnabled"
             @click="toggleMute"
         >
-            {{ isMuted ? 'MUTED' : 'MUTE' }}
+            {{ isMuted ? 'OFF' : 'ON' }}
         </button>
     </div>
 </template>
@@ -187,7 +187,7 @@ function toggleMute() {
     min-height: 20px;
 }
 
-.mute-btn {
+.power-btn {
     width: 100%;
     min-height: 48px;
     padding: 12px 4px;
@@ -197,25 +197,32 @@ function toggleMute() {
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;
-    background: transparent;
-    color: var(--text-secondary, #94a3b8);
     transition: all 0.15s;
     touch-action: manipulation;
 }
 
-.mute-btn:active {
+.power-btn:active {
     transform: scale(0.95);
 }
 
-.mute-btn.muted {
-    background: #ef4444;
+.power-btn.on {
+    background: var(--accent, #10b981);
     color: white;
-    border-color: #ef4444;
+    border-color: var(--accent, #10b981);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
 }
 
-.mute-btn.disabled {
+.power-btn.off {
+    background: transparent;
+    color: var(--text-muted, #6b7280);
+    border-color: var(--border-primary, #2d3348);
+    opacity: 0.6;
+}
+
+.power-btn.disabled {
     opacity: 0.3;
     cursor: not-allowed;
+    box-shadow: none;
 }
 
 /* Landscape: shorter strips, smaller VU, compact layout */
@@ -233,7 +240,7 @@ function toggleMute() {
     .volume-display {
         font-size: 11px;
     }
-    .mute-btn {
+    .power-btn {
         min-height: 40px;
         padding: 8px 4px;
         font-size: 11px;
