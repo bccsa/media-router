@@ -2,6 +2,7 @@
 import { onMounted } from 'vue';
 import AppHeader from '@/components/common/AppHeader.vue';
 import AppSidebar from '@/components/common/AppSidebar.vue';
+import DisconnectedOverlay from '@/components/common/DisconnectedOverlay.vue';
 import { useSocketStore } from '@/stores/socket';
 import { useThemeStore } from '@/stores/theme';
 
@@ -22,5 +23,6 @@ onMounted(() => {
                 <RouterView />
             </main>
         </div>
+        <DisconnectedOverlay />
     </div>
 </template>
