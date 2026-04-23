@@ -227,11 +227,20 @@ function toggleMute() {
     box-shadow: none;
 }
 
-/* Landscape: shorter strips, smaller VU, compact layout */
+/* Small landscape screens (e.g. official Pi 4 7" 800×480 touchscreen).
+ * Everything scales down together so the proportions stay right — fader
+ * thumb, VU, power button all shrink in step. */
 @media (orientation: landscape) and (max-height: 500px) {
     .mixer-strip {
+        width: 96px;
         padding: 4px 4px;
         gap: 2px;
+    }
+    .strip-header {
+        min-height: 18px;
+    }
+    .module-name {
+        font-size: 14px;
     }
     .vu-container {
         height: 60px;
@@ -243,9 +252,9 @@ function toggleMute() {
         font-size: 11px;
     }
     .power-btn {
-        width: 80px;
-        height: 48px;
-        font-size: 13px;
+        width: 72px;
+        height: 44px;
+        font-size: 12px;
     }
 }
 

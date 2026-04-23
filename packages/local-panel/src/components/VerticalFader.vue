@@ -156,4 +156,19 @@ const thumbPercent = computed(() => valueToPercent(props.value));
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     pointer-events: none;
 }
+
+/* Small landscape screens (Pi 4 official 800×480 touchscreen etc.): shrink
+ * the track interaction zone and thumb together so the whole fader stays
+ * proportional to the rest of the strip. */
+@media (orientation: landscape) and (max-height: 500px) {
+    .fader-track {
+        width: 72px;
+    }
+    .fader-thumb {
+        width: 32px;
+        height: 32px;
+        margin-left: -16px;
+        margin-bottom: -16px;
+    }
+}
 </style>
