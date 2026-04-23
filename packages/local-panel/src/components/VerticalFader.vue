@@ -108,7 +108,10 @@ const thumbPercent = computed(() => valueToPercent(props.value));
 <style scoped>
 .fader-track {
     position: relative;
-    width: 64px;
+    /* Track interaction zone is wider than the visual track line — taps
+     * anywhere within this zone count as fader input. Makes the circle
+     * easier to hit on touchscreens without enlarging the thumb itself. */
+    width: 96px;
     height: 100%;
     cursor: pointer;
     touch-action: none;

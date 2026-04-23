@@ -101,8 +101,8 @@
 - [x] Debug logging toggle reversed (fixed: log level buttons are now per-level toggles instead of thresholds — click each level to show/hide independently. Default enables Info/Warn/Error; Trace/Debug off)
 
 ## Feature Requests (from alpha testing)
-- [ ] Enable mDNS to easily discover the media router
-- [ ] Show RAUC download progress when selecting a new image, and display message that restart is needed
+- [x] Enable mDNS to easily discover the media router
+- [x] Show RAUC download progress when selecting a new image, and display message that restart is needed
 
 - [x] Output channel count still not detected correctly in the channel map on links (fixed: decoder now always probes the stream before creating null-sink — detects channels from actual MPEG-TS caps regardless of source. Encoder also normalizes config values so downstream readers always see explicit values) 
 
@@ -115,3 +115,5 @@
 - [x] Issue with n-1 data channels between engine and mannager, so the issue is as follows: 
     I have the interlocks setup, and it works well, but when i on the lcp unmute a channel in an interlock group, the change happesn correctly on the manager-ui, but in the lcp, the mute update command does not come through (even after refresh) so it shows that both channels is unmuted, even though one of them is muted
     (fixed: manager now forwards cascade ops back to the engine when the engine was the sender, so LCP clients see the sibling mutes)
+
+- [x] Make on / off buttons square

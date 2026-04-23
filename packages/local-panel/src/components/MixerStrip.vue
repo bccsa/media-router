@@ -188,12 +188,14 @@ function toggleMute() {
 }
 
 .power-btn {
-    width: 100%;
-    min-height: 48px;
-    padding: 12px 4px;
+    width: 100px;
+    height: 64px;
+    padding: 0;
+    align-self: center;
+    flex-shrink: 0;
     border: 1px solid var(--border-primary, #2d3348);
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: 8px;
+    font-size: 16px;
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;
@@ -241,9 +243,9 @@ function toggleMute() {
         font-size: 11px;
     }
     .power-btn {
-        min-height: 40px;
-        padding: 8px 4px;
-        font-size: 11px;
+        width: 80px;
+        height: 48px;
+        font-size: 13px;
     }
 }
 
