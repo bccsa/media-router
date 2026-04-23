@@ -31,11 +31,6 @@ function getBlockColor(i: number): string {
     return '#ef4444'; // red
 }
 
-/**
- * Convert level to number of lit blocks.
- * Input is already 0-15 block scale (converted by gst-runner using v1 formula:
- * Math.round(0.25 * (60 + dB)), clamped at -60dB).
- */
 function toBlocks(level: number): number {
     return Math.min(Math.max(Math.round(level), 0), NUM_BLOCKS);
 }
@@ -52,7 +47,6 @@ function paint() {
     let needsRedraw = false;
     const currentBlocks = props.levels.map(toBlocks);
 
-    // Only redraw if block counts changed
     if (currentBlocks.length !== prevBlocks.length) {
         needsRedraw = true;
     } else {
@@ -72,41 +66,25 @@ function paint() {
     if (isHorizontal) {
         const blockWidth = (w - (NUM_BLOCKS - 1) * BLOCK_GAP) / NUM_BLOCKS;
         const chHeight = h / channels;
-
         for (let ch = 0; ch < channels; ch++) {
             const numFilled = currentBlocks[ch] ?? 0;
             const top = ch * chHeight;
-
             for (let i = 0; i < NUM_BLOCKS; i++) {
                 const left = i * (blockWidth + BLOCK_GAP);
-                if (i < numFilled) {
-                    ctx.fillStyle = getBlockColor(i);
-                    ctx.fillRect(left, top + 1, blockWidth, chHeight - 2);
-                } else {
-                    // Dim unfilled blocks (works on both light and dark backgrounds)
-                    ctx.fillStyle = 'rgba(128,128,128,0.15)';
-                    ctx.fillRect(left, top + 1, blockWidth, chHeight - 2);
-                }
+                ctx.fillStyle = i < numFilled ? getBlockColor(i) : 'rgba(128,128,128,0.15)';
+                ctx.fillRect(left, top + 1, blockWidth, chHeight - 2);
             }
         }
     } else {
-        // Vertical: blocks go bottom to top
         const blockHeight = (h - (NUM_BLOCKS - 1) * BLOCK_GAP) / NUM_BLOCKS;
         const chWidth = w / channels;
-
         for (let ch = 0; ch < channels; ch++) {
             const numFilled = currentBlocks[ch] ?? 0;
             const left = ch * chWidth;
-
             for (let i = 0; i < NUM_BLOCKS; i++) {
                 const top = h - (i + 1) * (blockHeight + BLOCK_GAP);
-                if (i < numFilled) {
-                    ctx.fillStyle = getBlockColor(i);
-                    ctx.fillRect(left + 1, top, chWidth - 2, blockHeight);
-                } else {
-                    ctx.fillStyle = 'rgba(128,128,128,0.15)';
-                    ctx.fillRect(left + 1, top, chWidth - 2, blockHeight);
-                }
+                ctx.fillStyle = i < numFilled ? getBlockColor(i) : 'rgba(128,128,128,0.15)';
+                ctx.fillRect(left + 1, top, chWidth - 2, blockHeight);
             }
         }
     }
@@ -121,7 +99,7 @@ function resize() {
         canvasRef.value.width = parent.offsetWidth;
         canvasRef.value.height = parent.offsetHeight;
     }
-    prevBlocks = []; // force repaint
+    prevBlocks = [];
     paint();
 }
 
@@ -129,9 +107,7 @@ onMounted(() => {
     if (canvasRef.value) {
         ctx = canvasRef.value.getContext('2d');
         resizeObserver = new ResizeObserver(resize);
-        if (canvasRef.value.parentElement) {
-            resizeObserver.observe(canvasRef.value.parentElement);
-        }
+        if (canvasRef.value.parentElement) resizeObserver.observe(canvasRef.value.parentElement);
         resize();
     }
 });
@@ -141,11 +117,10 @@ onUnmounted(() => {
     if (animFrame) cancelAnimationFrame(animFrame);
 });
 
-// Watch levels reactively — uses requestAnimationFrame to batch
 watch(
     () => props.levels,
     () => {
-        if (animFrame) return; // already scheduled
+        if (animFrame) return;
         animFrame = requestAnimationFrame(() => {
             animFrame = 0;
             paint();

@@ -30,7 +30,6 @@ function percentToValue(pct: number): number {
 function getPercentFromY(clientY: number): number {
     if (!trackRef.value) return 0;
     const rect = trackRef.value.getBoundingClientRect();
-    // Bottom = 0%, top = 100%
     const pct = ((rect.bottom - clientY) / rect.height) * 100;
     return pct;
 }
@@ -57,7 +56,6 @@ function onTouchEnd(e: TouchEvent) {
     emit('end', percentToValue(pct));
 }
 
-// Mouse support (for desktop testing)
 function onMouseDown(e: MouseEvent) {
     e.preventDefault();
     dragging.value = true;
@@ -98,19 +96,17 @@ const thumbPercent = computed(() => valueToPercent(props.value));
         @touchend="onTouchEnd"
         @mousedown="onMouseDown"
     >
-        <!-- Filled portion -->
         <div class="fader-fill" :style="{ height: thumbPercent + '%' }"></div>
-        <!-- Thumb -->
         <div class="fader-thumb" :style="{ bottom: thumbPercent + '%' }"></div>
     </div>
 </template>
 
 <style scoped>
+/* Track interaction zone is wider than the visual track line — taps anywhere
+ * inside this zone count as fader input. Makes the thumb easier to hit on
+ * touchscreens without enlarging it. */
 .fader-track {
     position: relative;
-    /* Track interaction zone is wider than the visual track line — taps
-     * anywhere within this zone count as fader input. Makes the circle
-     * easier to hit on touchscreens without enlarging the thumb itself. */
     width: 96px;
     height: 100%;
     cursor: pointer;
@@ -119,7 +115,7 @@ const thumbPercent = computed(() => valueToPercent(props.value));
     -webkit-user-select: none;
 }
 
-/* Track line */
+/* Visual track line */
 .fader-track::before {
     content: '';
     position: absolute;
@@ -143,32 +139,30 @@ const thumbPercent = computed(() => valueToPercent(props.value));
     pointer-events: none;
 }
 
+/* Thumb scales with viewport width so it stays thumb-sized across 7" Pi
+ * touches up to 10"+ tablets. clamp caps at 56px so we don't get absurd
+ * targets on ultra-wide screens, and floors at 36px so tiny portrait
+ * windows still have a pressable target. */
 .fader-thumb {
+    --thumb-size: clamp(36px, 8vw, 56px);
     position: absolute;
     left: 50%;
-    width: clamp(36px, 8vw, 56px);
-    height: clamp(36px, 8vw, 56px);
-    margin-left: calc(clamp(36px, 8vw, 56px) / -2);
-    margin-bottom: calc(clamp(36px, 8vw, 56px) / -2);
+    width: var(--thumb-size);
+    height: var(--thumb-size);
+    margin-left: calc(var(--thumb-size) / -2);
+    margin-bottom: calc(var(--thumb-size) / -2);
     border-radius: 50%;
-    background: var(--accent, #10b981);
+    background: var(--accent);
     border: 2px solid rgba(255, 255, 255, 0.2);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     pointer-events: none;
 }
 
-/* Small landscape screens (Pi 4 official 800×480 touchscreen etc.): shrink
- * the track interaction zone and thumb together so the whole fader stays
- * proportional to the rest of the strip. */
+/* Small landscape (Pi 4 800×480): narrow the track line; thumb already
+ * shrinks via clamp. */
 @media (orientation: landscape) and (max-height: 500px) {
     .fader-track {
         width: 72px;
-    }
-    .fader-thumb {
-        width: 32px;
-        height: 32px;
-        margin-left: -16px;
-        margin-bottom: -16px;
     }
 }
 </style>

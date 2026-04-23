@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* ============================================================================
    Tailwind Theme — maps CSS variables to utility classes
@@ -92,7 +92,11 @@
 body {
     background-color: var(--bg-primary);
     color: var(--text-primary);
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family:
+        'Inter',
+        system-ui,
+        -apple-system,
+        sans-serif;
 }
 
 /* --- Custom Scrollbar ----------------------------------------------------- */
@@ -115,7 +119,9 @@ body {
 }
 
 /* --- Input Focus Ring ----------------------------------------------------- */
-input:focus, select:focus, textarea:focus {
+input:focus,
+select:focus,
+textarea:focus {
     outline: none;
     border-color: var(--accent) !important;
     box-shadow: 0 0 0 1px var(--accent);

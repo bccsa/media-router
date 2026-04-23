@@ -23,11 +23,9 @@ const volumeEnabled = computed(() => props.module.settings?.lcpVolumeEnabled !==
 const muteEnabled = computed(() => props.module.settings?.lcpMuteEnabled !== false);
 const isMuted = computed(() => props.module.settings?.audioEnabled === false);
 
-// Local volume tracks the fader during drag — prevents snap-back between throttled emits
 const localVolume = ref(storeVolume.value);
 const dragging = ref(false);
 
-// Sync from store when NOT dragging (e.g. another LCP client changed it)
 watch(storeVolume, (v) => {
     if (!dragging.value) localVolume.value = v;
 });
@@ -35,13 +33,13 @@ watch(storeVolume, (v) => {
 const healthClass = computed(() => {
     switch (props.module.health) {
         case 'ok':
-            return 'bg-ok';
+            return 'ok';
         case 'warning':
-            return 'bg-warning';
+            return 'warning';
         case 'error':
-            return 'bg-error';
+            return 'error';
         default:
-            return 'bg-stopped';
+            return 'stopped';
     }
 });
 
@@ -82,13 +80,11 @@ function toggleMute() {
 
 <template>
     <div class="mixer-strip">
-        <!-- Module name + health dot -->
         <div class="strip-header">
-            <div class="health-dot" :class="healthClass"></div>
+            <div class="health-dot" :class="healthClass" />
             <div class="module-name">{{ module.displayName }}</div>
         </div>
 
-        <!-- VU Meter (vertical) -->
         <div
             class="vu-container"
             :style="{ width: Math.min(Math.max(vuLevels.length, 2) * 10, 110) + 'px' }"
@@ -96,7 +92,6 @@ function toggleMute() {
             <MrVuMeter :levels="vuLevels" orientation="vertical" :num-blocks="15" :block-gap="2" />
         </div>
 
-        <!-- Volume fader -->
         <div v-if="volumeEnabled" class="fader-container">
             <VerticalFader
                 :value="localVolume"
@@ -107,10 +102,8 @@ function toggleMute() {
             />
         </div>
 
-        <!-- Volume display -->
         <div v-if="volumeEnabled" class="volume-display">{{ Math.round(localVolume) }}%</div>
 
-        <!-- On/Off button: highlighted when live, greyed out when muted -->
         <button
             class="power-btn"
             :class="{ on: !isMuted, off: isMuted, disabled: !muteEnabled }"
@@ -151,7 +144,11 @@ function toggleMute() {
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
+    background: var(--text-muted);
 }
+.health-dot.ok { background: var(--health-ok); }
+.health-dot.warning { background: var(--health-warning); }
+.health-dot.error { background: var(--health-error); }
 
 .module-name {
     font-size: 18px;
@@ -201,74 +198,44 @@ function toggleMute() {
     cursor: pointer;
     transition: all 0.15s;
     touch-action: manipulation;
+    background: transparent;
+    color: var(--text-muted, #6b7280);
+    opacity: 0.6;
 }
-
 .power-btn:active {
     transform: scale(0.95);
 }
-
 .power-btn.on {
     background: var(--accent, #10b981);
-    color: white;
+    color: #ffffff;
     border-color: var(--accent, #10b981);
     box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    opacity: 1;
 }
-
-.power-btn.off {
-    background: transparent;
-    color: var(--text-muted, #6b7280);
-    border-color: var(--border-primary, #2d3348);
-    opacity: 0.6;
-}
-
 .power-btn.disabled {
     opacity: 0.3;
     cursor: not-allowed;
     box-shadow: none;
 }
 
-/* Small landscape screens (e.g. official Pi 4 7" 800×480 touchscreen).
- * Everything scales down together so the proportions stay right — fader
- * thumb, VU, power button all shrink in step. */
+/* Small landscape (Pi 4 800×480): scale down in step. */
 @media (orientation: landscape) and (max-height: 500px) {
-    .mixer-strip {
-        width: 96px;
-        padding: 4px 4px;
-        gap: 2px;
-    }
-    .strip-header {
-        min-height: 18px;
-    }
-    .module-name {
-        font-size: 14px;
-    }
-    .vu-container {
-        height: 60px;
-    }
-    .fader-container {
-        min-height: 60px;
-    }
-    .volume-display {
-        font-size: 11px;
-    }
-    .power-btn {
-        width: 72px;
-        height: 44px;
-        font-size: 12px;
-    }
+    .mixer-strip { width: 96px; padding: 4px; gap: 2px; }
+    .strip-header { min-height: 18px; }
+    .module-name { font-size: 14px; }
+    .vu-container { height: 60px; }
+    .fader-container { min-height: 60px; }
+    .volume-display { font-size: 11px; }
+    .power-btn { width: 72px; height: 44px; font-size: 12px; }
 }
 
-/* Tablet landscape: more breathing room */
+/* Tablet landscape */
 @media (orientation: landscape) and (min-height: 501px) {
-    .vu-container {
-        height: 100px;
-    }
+    .vu-container { height: 100px; }
 }
 
-/* Portrait on small screens: narrower strips */
+/* Narrow portrait */
 @media (orientation: portrait) and (max-width: 500px) {
-    .mixer-strip {
-        width: 100px;
-    }
+    .mixer-strip { width: 100px; }
 }
 </style>
