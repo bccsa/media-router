@@ -11,6 +11,7 @@
         "preview": "vite preview"
     },
     "dependencies": {
+        "@media-router/shared-types": "workspace:*",
         "@vue-flow/core": "^1.48.2",
         "lucide-vue-next": "^0.577.0",
         "pinia": "^3.0.2",

@@ -86,6 +86,7 @@ export function setupSocketIO(deps: SocketDeps): void {
                         m.statusSections = manifest.statusSections;
                         m.faceWidgets = manifest.faceWidgets;
                         m.interlock = manifest.interlock === true;
+                        m.resizable = manifest.resizable ?? false;
                     }
                     const cached = cachedStates[id] as Record<string, unknown> | undefined;
                     if (cached) {

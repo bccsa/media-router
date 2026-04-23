@@ -13,6 +13,11 @@ export default defineConfig({
     server: {
         port: 5174, // Dev server on 5174, proxies to engine's LcpServer on 8081
         host: true,
+        // Plugin UI components live in `<repo>/plugins/*/ui/*.vue`. Allow fs
+        // access up to the workspace root so `import.meta.glob` can find them.
+        fs: {
+            allow: ['../..'],
+        },
         proxy: {
             '/socket.io': {
                 target: 'http://localhost:8081',

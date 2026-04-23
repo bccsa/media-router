@@ -108,6 +108,10 @@ The plugin will automatically appear in the Manager UI's "Add Module" panel.
 | `ports` | `Port[]` | Yes | Input/output port declarations |
 | `configSchema` | `object` | Yes | JSON Schema for module settings |
 | `statusSections` | `Section[]` | No | Status data sections (stats popup) |
+| `faceWidgets` | `FaceWidget[]` | No | Declarative widgets rendered on the module card (see "Module Face — Declarative Widgets") |
+| `interlock` | `boolean` | No | Eligible for interlock (exclusive-mute) groups. Requires a live-updatable boolean `audioEnabled` in configSchema |
+| `resizable` | `boolean \| ResizableBounds` | No | User can resize the module card on the routing view. See "Resizable Modules" |
+| `lcpType` | `string` | No | Makes the module visible on the Local Control Panel. Any truthy value works — the presence is what matters, not the value. Only needed for plugins that want LCP visibility *without* shipping a `ui/LcpStrip.vue`; plugins with a strip component are auto-detected and don't need this field. See "Plugin UI Components → LCP visibility". |
 | `engine` | `string` | Yes | Path to engine module `.ts` file |
 
 ### Color and Icon
@@ -356,51 +360,113 @@ Badges auto-clear when the module stops. Use them for:
 
 ---
 
-## Custom Vue Components (Future)
+## Module Face — Declarative Widgets (`faceWidgets`)
 
-Plugins can optionally provide custom Vue components for the module face and settings panel. Declare them in the manifest:
+For simple cases where you don't need a full Vue component, declare one or more widgets in the manifest:
 
 ```json
 "mediaRouter": {
-    "ui": {
-        "faceWidget": "./ui/FaceWidget.vue",
-        "settingsComponent": "./ui/Settings.vue"
+    "faceWidgets": [
+        { "id": "stream-info", "type": "status-line", "section": "stream", "template": "{bitrate} kbps · {fps} fps" },
+        { "id": "buffer", "type": "meter", "section": "stats", "key": "bufferFill", "color": "#10b981" },
+        { "id": "note-text", "type": "setting-text", "setting": "note", "placeholder": "(empty)" }
+    ]
+}
+```
+
+Widgets render inside the module card, between the header and the port labels. Three types are supported:
+
+| Type | Reads from | Fields | Notes |
+|---|---|---|---|
+| `status-line` | `statusData` | `section`, `template`, `color?` | `{key}` placeholders in `template` are replaced with values from `statusData[section]`. Truncates with ellipsis if too long. |
+| `meter` | `statusData` | `section`, `key`, `color?` | Horizontal progress bar. Value from `statusData[section][key]` clamped to 0–100. |
+| `setting-text` | `settings` | `setting`, `placeholder?` | Reads a string setting and renders it multi-line, wrapping. Useful for annotations and labels that the user edits directly. |
+
+Declarative widgets are the first choice — they're portable, have no build-time dependencies, and work without touching the manager-ui or local-panel code.
+
+---
+
+## Resizable Modules (`resizable`)
+
+By default every module card on the routing view is a fixed 200px wide and auto-heights to fit its ports. A plugin can opt into user-resizing by adding `resizable` to its manifest:
+
+```json
+"mediaRouter": {
+    "resizable": true
+}
+```
+
+Or with explicit bounds (pixels):
+
+```json
+"mediaRouter": {
+    "resizable": {
+        "minWidth": 160,
+        "minHeight": 100,
+        "maxWidth": 600,
+        "maxHeight": 600
     }
 }
 ```
 
-### Face Widget
+When enabled, a small grip appears in the bottom-right corner of the card. Users drag it to resize; the per-instance size is persisted at `config.modules.<instanceId>.size = { width, height }` and broadcast to every connected browser via the N-1 patch router — so resizes from any tab sync everywhere.
 
-A Vue component rendered inside the module card, between the header and port labels. Receives:
+The face component (declarative widgets or `ui/NodeFace.vue`) is given the new container size automatically — use `width: 100%` and let flex/grid handle internal layout. For text-heavy content, consider pairing with a ResizeObserver-based fit (see `plugins/note/ui/useAutoFitText.ts` for a reusable example).
 
-```typescript
-interface FaceWidgetProps {
-    engineId: string;
-    moduleId: string;
-    module: ModuleState;    // Full module state from Pinia store
-}
+Non-resizable plugins stay fixed — no grip, no size in config, no behaviour change from before.
+
+---
+
+## Plugin UI Components (Vue)
+
+When a declarative widget isn't enough, a plugin can ship its own Vue components. Drop them under the plugin's `ui/` directory:
+
+```
+plugins/my-plugin/
+├── ui/
+│   ├── NodeFace.vue       # Rendered inside the module card on the routing view
+│   └── LcpStrip.vue       # Rendered instead of MixerStrip on the LCP
+├── engine/
+└── package.json
 ```
 
-Use for: custom meters, animated indicators, mini-graphs, connection visualizations.
+Both `manager-ui` and `local-panel` scan `plugins/*/ui/*.vue` at build time via `import.meta.glob`. No manifest entry needed — the directory name is the plugin id; the file name picks the slot.
 
-### Settings Component
+### `NodeFace.vue`
 
-A Vue component that replaces the default settings form. Receives:
+Rendered inside the node card on the routing view, between the header and port labels. Prop:
 
 ```typescript
-interface SettingsComponentProps {
-    engineId: string;
-    moduleId: string;
-    module: ModuleState;
-    settings: Record<string, unknown>;
-}
-// Emits: 'update:setting' with { key: string, value: unknown }
-// Emits: 'apply-all' with Record<string, unknown>
+defineProps<{ module: ModuleState }>(); // from '@/stores/engines'
 ```
 
-Use for: complex configuration UIs that can't be expressed with JSON Schema (e.g. audio ducker with gain reduction curves, N-1 mixer matrix).
+Fits within a ~200px-wide card. Use for custom meters, mini-graphs, annotations — anything that needs real Vue reactivity rather than the declarative widget set above.
 
-**Note:** Custom Vue components require the plugin's `ui/` directory to be accessible to the Vite build. This feature requires additional Vite configuration and will be implemented when a plugin needs it. For now, use the declarative JSON Schema approach for settings and `setBadge()` for module face indicators.
+### `LcpStrip.vue`
+
+Renders instead of the default `MixerStrip` on the LCP when a plugin provides one. Prop:
+
+```typescript
+defineProps<{ module: LcpModuleState }>(); // from '@/stores/modules'
+```
+
+Layout target is a ~120px-wide mixer-row cell. `volume` / `mute` emits from `MixerStrip` are optional — the dispatcher wires them up but plugins can ignore them if they don't apply.
+
+### LCP visibility
+
+A module shows up on the LCP when **either** is true:
+
+- the plugin ships a `ui/LcpStrip.vue` (preferred — the strip component itself is the opt-in signal), **or**
+- the manifest has an `lcpType` field (any truthy string — the classic path for plugins that use the default `MixerStrip`).
+
+The user can still hide an individual instance at runtime by setting `lcpVisible: false` in its settings. Sort order on the LCP is controlled by the `lcpSortOrder` setting (lower = further left).
+
+### When to use which
+
+- **Declarative widget (`faceWidgets`)** — static text, progress bars, status lines. No plugin UI code to maintain.
+- **`NodeFace.vue` / `LcpStrip.vue`** — when you need reactive behaviour, custom layout, input handlers, or dynamic styling that isn't expressible in the JSON widget spec.
+
+Both mechanisms can coexist on the same plugin; widgets render alongside the custom component.
 
 ---
 

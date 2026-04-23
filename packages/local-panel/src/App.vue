@@ -4,6 +4,7 @@ import { useSocketStore } from '@/stores/socket';
 import { useModuleStore } from '@/stores/modules';
 import { patch } from '@/composables/usePatch';
 import MixerStrip from '@/components/MixerStrip.vue';
+import { getStripComponent } from '@/composables/usePluginStripComponent';
 
 const socketStore = useSocketStore();
 const moduleStore = useModuleStore();
@@ -119,9 +120,10 @@ function stopEngine() {
                 <p v-else>No modules visible on LCP</p>
             </div>
             <div v-else class="mixer-row">
-                <MixerStrip
+                <component
                     v-for="mod in moduleStore.visibleModules"
                     :key="mod.instanceId"
+                    :is="getStripComponent(mod.pluginId) ?? MixerStrip"
                     :module="mod"
                     @volume="onVolume"
                     @mute="onMute"

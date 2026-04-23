@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import type { ResizableBounds } from '@media-router/shared-types';
 
 export interface PluginManifest {
     pluginId: string;
@@ -14,6 +15,8 @@ export interface PluginManifest {
     faceWidgets?: Array<Record<string, unknown>>;
     /** Module is eligible for interlock (exclusive-mute) groups. */
     interlock?: boolean;
+    /** User can resize the module card. `true` for defaults, object for bounds. */
+    resizable?: boolean | ResizableBounds;
 }
 
 /**
@@ -112,6 +115,7 @@ export class PluginRegistry {
                         statusSections: pkg.mediaRouter.statusSections,
                         faceWidgets: pkg.mediaRouter.faceWidgets,
                         interlock: pkg.mediaRouter.interlock === true,
+                        resizable: pkg.mediaRouter.resizable,
                     });
                 }
             } catch {

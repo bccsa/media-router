@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import type { ModuleSize, ResizableBounds } from '@media-router/shared-types';
 
 // --- Types ---
 
@@ -33,6 +34,8 @@ export interface ModuleState {
     vuData?: number[];
     error?: string;
     position?: { x: number; y: number };
+    /** Per-instance size on the routing view (only set for resizable plugins). */
+    size?: ModuleSize;
     settings: Record<string, unknown>;
     ports?: PortInfo[];
     configSchema?: Record<string, unknown>;
@@ -44,6 +47,11 @@ export interface ModuleState {
     focused?: boolean;
     /** Plugin manifest opts into interlock (exclusive-mute) groups. */
     interlock?: boolean;
+    /**
+     * Plugin opted into user-resizable cards. `false`/undefined = fixed size.
+     * Object form carries min/max bounds the plugin set.
+     */
+    resizable?: boolean | ResizableBounds;
 }
 
 /** Mirrors @media-router/shared-types ChannelMapEntry (browser can't import Node packages). */
@@ -106,33 +114,45 @@ export const useEngineStore = defineStore('engines', () => {
     }
 
     /**
+     * Turn raw server-shape module data into a `ModuleState`. Single point of
+     * truth for every per-module field — used by both `addEngine` (initial
+     * sync) and `setEngineConfig` (lazy profile load). Adding a new field
+     * means one edit here, not two.
+     */
+    function normalizeModule(id: string, mod: Record<string, unknown>): ModuleState {
+        return {
+            instanceId: id,
+            pluginId: (mod.pluginId as string) ?? '',
+            displayName: (mod.displayName as string) ?? id,
+            running: (mod.running as boolean) ?? false,
+            enabled: (mod.enabled as boolean) ?? true,
+            health: (mod.health as string) ?? 'stopped',
+            pendingRestart: (mod.pendingRestart as boolean) ?? false,
+            position: mod.position as { x: number; y: number } | undefined,
+            settings: (mod.settings ?? {}) as Record<string, unknown>,
+            ports: mod.ports as PortInfo[] | undefined,
+            configSchema: mod.configSchema as Record<string, unknown> | undefined,
+            color: mod.color as string | undefined,
+            icon: mod.icon as string | undefined,
+            statusSections: mod.statusSections as StatusSectionDef[] | undefined,
+            statusData: mod.statusData as
+                | Record<string, Record<string, string | number | boolean>>
+                | undefined,
+            focused: (mod.focused as boolean) ?? false,
+            interlock: mod.interlock === true,
+            size: mod.size as ModuleSize | undefined,
+            resizable: mod.resizable as ModuleState['resizable'],
+        };
+    }
+
+    /**
      * Add an engine from server data. Normalises modules to include instanceId.
      */
     function addEngine(data: Record<string, unknown>) {
         const modules: Record<string, ModuleState> = {};
         const rawModules = (data.modules ?? {}) as Record<string, Record<string, unknown>>;
         for (const [id, mod] of Object.entries(rawModules)) {
-            modules[id] = {
-                instanceId: id,
-                pluginId: (mod.pluginId as string) ?? '',
-                displayName: (mod.displayName as string) ?? id,
-                running: (mod.running as boolean) ?? false,
-                enabled: (mod.enabled as boolean) ?? true,
-                health: (mod.health as string) ?? 'stopped',
-                pendingRestart: (mod.pendingRestart as boolean) ?? false,
-                position: mod.position as { x: number; y: number } | undefined,
-                settings: (mod.settings ?? {}) as Record<string, unknown>,
-                ports: mod.ports as PortInfo[] | undefined,
-                configSchema: mod.configSchema as Record<string, unknown> | undefined,
-                color: mod.color as string | undefined,
-                icon: mod.icon as string | undefined,
-                statusSections: mod.statusSections as StatusSectionDef[] | undefined,
-                statusData: mod.statusData as
-                    | Record<string, Record<string, string | number | boolean>>
-                    | undefined,
-                focused: (mod.focused as boolean) ?? false,
-                interlock: mod.interlock === true,
-            };
+            modules[id] = normalizeModule(id, mod);
         }
 
         engines.value.set(data.engine_id as string, {
@@ -165,27 +185,7 @@ export const useEngineStore = defineStore('engines', () => {
         for (const [id, mod] of Object.entries(
             rawModules as Record<string, Record<string, unknown>>,
         )) {
-            modules[id] = {
-                instanceId: id,
-                pluginId: (mod.pluginId as string) ?? '',
-                displayName: (mod.displayName as string) ?? id,
-                running: (mod.running as boolean) ?? false,
-                enabled: (mod.enabled as boolean) ?? true,
-                health: (mod.health as string) ?? 'stopped',
-                pendingRestart: (mod.pendingRestart as boolean) ?? false,
-                position: mod.position as { x: number; y: number } | undefined,
-                settings: (mod.settings ?? {}) as Record<string, unknown>,
-                ports: mod.ports as PortInfo[] | undefined,
-                configSchema: mod.configSchema as Record<string, unknown> | undefined,
-                color: mod.color as string | undefined,
-                icon: mod.icon as string | undefined,
-                statusSections: mod.statusSections as StatusSectionDef[] | undefined,
-                statusData: mod.statusData as
-                    | Record<string, Record<string, string | number | boolean>>
-                    | undefined,
-                focused: (mod.focused as boolean) ?? false,
-                interlock: mod.interlock === true,
-            };
+            modules[id] = normalizeModule(id, mod);
         }
 
         engine.modules = modules;

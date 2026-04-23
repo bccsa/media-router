@@ -56,6 +56,10 @@ export const patch = {
         emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/position`, value: position }]);
     },
 
+    moduleSize(engineId: string, moduleId: string, size: { width: number; height: number }) {
+        emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/size`, value: size }]);
+    },
+
     moduleField(engineId: string, moduleId: string, field: string, value: unknown) {
         emit(engineId, [{ op: 'replace', path: `/modules/${moduleId}/${field}`, value }]);
     },

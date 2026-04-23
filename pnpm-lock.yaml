@@ -153,6 +153,9 @@ importers:
 
   packages/manager-ui:
     dependencies:
+      '@media-router/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
       '@vue-flow/core':
         specifier: ^1.48.2
         version: 1.48.2(vue@3.5.30(typescript@5.9.3))
@@ -269,6 +272,12 @@ importers:
   plugins/example-plugin: {}
 
   plugins/n1-mixer:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/note:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*

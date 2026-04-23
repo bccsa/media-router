@@ -486,6 +486,26 @@ export interface PluginManifest {
      * Requires a live-updatable boolean `audioEnabled` in configSchema.
      */
     interlock?: boolean;
+    /**
+     * Opt-in flag: user can resize the module card on the routing view.
+     * Either `true` (default bounds) or an object with explicit bounds.
+     * When enabled, per-instance size is stored at `config.modules.<id>.size`.
+     */
+    resizable?: boolean | ResizableBounds;
+}
+
+/** User-resizable plugin bounds (pixels). All fields optional. */
+export interface ResizableBounds {
+    minWidth?: number;
+    minHeight?: number;
+    maxWidth?: number;
+    maxHeight?: number;
+}
+
+/** Stored size of a module instance on the routing view. */
+export interface ModuleSize {
+    width: number;
+    height: number;
 }
 
 // --- Interlocks -------------------------------------------------------------

@@ -1,0 +1,52 @@
+{
+    "name": "@media-router/plugin-note",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Note — plain-text note visible on the routing node face and LCP (no audio)",
+    "mediaRouter": {
+        "pluginId": "note",
+        "displayName": "Note",
+        "description": "A free-text note. No audio path — used to annotate the routing graph and surface a persistent message on the Local Control Panel.",
+        "color": "#f59e0b",
+        "icon": "sticky-note",
+        "category": "utility",
+        "architectures": ["arm64", "x86_64"],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "note": {
+                    "type": "string",
+                    "default": "",
+                    "description": "The note text",
+                    "x-widget": "textarea",
+                    "x-live": true
+                },
+                "lcpVisible": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show on Local Control Panel"
+                },
+                "lcpSortOrder": {
+                    "type": "number",
+                    "default": 0,
+                    "description": "Display order on LCP (lower = left)"
+                }
+            }
+        },
+        "resizable": {
+            "minWidth": 160,
+            "minHeight": 100,
+            "maxWidth": 600,
+            "maxHeight": 600
+        },
+        "engine": "./engine/NoteModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

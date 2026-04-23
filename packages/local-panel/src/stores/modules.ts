@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
+import { getStripComponent } from '../composables/usePluginStripComponent';
 
 /** Module state as received from the engine's LcpServer. */
 export interface LcpModuleState {
@@ -27,11 +28,18 @@ export const useModuleStore = defineStore('modules', () => {
     const engineHostname = ref('');
     const buildNumber = ref('');
 
-    /** Modules visible on the LCP, sorted by lcpSortOrder. */
+    /**
+     * Modules visible on the LCP, sorted by lcpSortOrder. A module is LCP-
+     * visible if either:
+     *   - the manifest declares an `lcpType` (the classic mixer-strip flag), or
+     *   - the plugin ships its own `ui/LcpStrip.vue` component.
+     * Either way, `lcpVisible` in settings can hide individual instances.
+     */
     const visibleModules = computed(() => {
         return Object.values(modules.value)
             .filter((m) => {
-                if (!m.lcpType) return false;
+                const eligible = !!m.lcpType || !!getStripComponent(m.pluginId);
+                if (!eligible) return false;
                 const visible = m.settings?.lcpVisible;
                 return visible !== false; // default true
             })

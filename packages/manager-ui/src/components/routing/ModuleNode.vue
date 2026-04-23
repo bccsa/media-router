@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, onUnmounted, type Ref, type Component } from 'vue';
-import { Handle, Position } from '@vue-flow/core';
+import { Handle, Position, useVueFlow } from '@vue-flow/core';
 import type { ModuleState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
 import { getLucideIcon } from '@/composables/useLucideIcons';
 import { getInterlockForModule, INTERLOCK_DEFAULT_COLOR } from '@/composables/useInterlocks';
+import { getFaceComponent } from '@/composables/usePluginFaceComponent';
+import { patch } from '@/composables/usePatch';
 
 const props = defineProps<{ data: ModuleState }>();
 
@@ -54,6 +56,109 @@ const allStatusSections = computed(() => {
 const moduleBadges = computed(() => props.data.badges ?? []);
 const faceWidgets = computed(() => props.data.faceWidgets ?? []);
 
+// Plugin-provided face component: if the plugin ships a `ui/NodeFace.vue`,
+// it's rendered in the body of the card. Declarative widgets (`faceWidgets`)
+// still work alongside for simpler cases.
+const pluginFace = computed(() => getFaceComponent(props.data.pluginId));
+
+// --- Resizable card (opt-in per plugin) ---
+//
+// When `resizable` is truthy, the user can drag the bottom-right grip to
+// resize the card. Size is stored per-instance at `/modules/<id>/size` and
+// patched on drag end. Bounds come from the plugin manifest (or sensible
+// defaults). Non-resizable plugins use a fixed width + content-driven height.
+
+const DEFAULT_WIDTH = 200;
+const DEFAULT_BOUNDS = { minWidth: 160, minHeight: 80, maxWidth: 600, maxHeight: 600 };
+
+const resizable = computed(() => !!props.data.resizable);
+const bounds = computed(() => {
+    const r = props.data.resizable;
+    const custom = typeof r === 'object' && r !== null ? r : {};
+    return { ...DEFAULT_BOUNDS, ...custom };
+});
+
+// Optimistic local override while the user drags — replaces the stored size
+// until drag-end persists. Falls back to the stored size, then the default.
+const dragSize = ref<{ width: number; height: number } | null>(null);
+const cardWidth = computed(() => {
+    if (dragSize.value) return dragSize.value.width;
+    return props.data.size?.width ?? DEFAULT_WIDTH;
+});
+const cardHeight = computed(() => {
+    if (dragSize.value) return dragSize.value.height;
+    return props.data.size?.height;
+});
+// The non-resizable floor: enough space for the declared ports.
+const cardMinHeight = computed(
+    () => 36 + Math.max(inputPorts.value.length, outputPorts.value.length, 1) * 24 + 8,
+);
+
+function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+}
+
+const { updateNodeInternals } = useVueFlow();
+
+// When the stored size changes (e.g. patched from another browser), tell
+// Vue Flow to re-measure so edge anchors follow.
+watch(
+    () => [props.data.size?.width, props.data.size?.height],
+    () => updateNodeInternals([props.data.instanceId]),
+);
+
+function onResizeStart(event: MouseEvent | TouchEvent) {
+    const startX = 'touches' in event ? event.touches[0].clientX : event.clientX;
+    const startY = 'touches' in event ? event.touches[0].clientY : event.clientY;
+    const startW = cardWidth.value;
+    const startH = cardHeight.value ?? cardMinHeight.value;
+    const b = bounds.value;
+
+    const move = (e: MouseEvent | TouchEvent) => {
+        const cx = 'touches' in e ? e.touches[0].clientX : e.clientX;
+        const cy = 'touches' in e ? e.touches[0].clientY : e.clientY;
+        dragSize.value = {
+            width: clamp(startW + (cx - startX), b.minWidth!, b.maxWidth!),
+            height: clamp(startH + (cy - startY), b.minHeight!, b.maxHeight!),
+        };
+        // Nudge Vue Flow so edge anchor points follow the resized node live.
+        updateNodeInternals([props.data.instanceId]);
+    };
+    const end = () => {
+        const final = dragSize.value;
+        if (final && engineId) {
+            patch.moduleSize(engineId, props.data.instanceId, final);
+            // Keep `dragSize` populated so `cardWidth`/`cardHeight` stay stable
+            // across the transition from "drag-override" to "store-backed". It
+            // clears as soon as the store reports the same size we just sent —
+            // no one-frame snap back to the pre-drag dimensions. The optimistic
+            // apply inside `patch.moduleSize` usually makes this fire within the
+            // same microtask; the watch is just a safety net.
+            const stop = watch(
+                () => props.data.size,
+                (s) => {
+                    if (s && s.width === final.width && s.height === final.height) {
+                        dragSize.value = null;
+                        stop();
+                    }
+                },
+                { flush: 'sync' },
+            );
+        } else {
+            dragSize.value = null;
+        }
+        updateNodeInternals([props.data.instanceId]);
+        window.removeEventListener('mousemove', move);
+        window.removeEventListener('mouseup', end);
+        window.removeEventListener('touchmove', move);
+        window.removeEventListener('touchend', end);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', end);
+    window.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('touchend', end);
+}
+
 /** Interpolate a status-line template: "{key}" replaced with statusData values. */
 function interpolateFaceWidget(widget: Record<string, unknown>): string {
     const template = (widget.template as string) ?? '';
@@ -63,6 +168,19 @@ function interpolateFaceWidget(widget: Record<string, unknown>): string {
         const val = sectionData[key as string];
         return val !== undefined && val !== null ? String(val) : '—';
     });
+}
+
+/**
+ * Read a text value from a module setting for `setting-text` face widgets.
+ * Returns the `placeholder` from the widget definition when the setting is
+ * empty, so the face shows something rather than blank space.
+ */
+function getSettingText(widget: Record<string, unknown>): string {
+    const key = (widget.setting as string) ?? '';
+    const raw = props.data.settings?.[key];
+    const val = typeof raw === 'string' ? raw : '';
+    if (val.trim().length > 0) return val;
+    return (widget.placeholder as string) ?? '';
 }
 
 /** Get a numeric value from statusData for a meter widget. */
@@ -163,21 +281,41 @@ function formatStatusValue(value: unknown, unit?: string): string {
 
 <template>
     <div
-        class="rounded-lg shadow-md select-none relative bg-card transition-[opacity] duration-200 ease-in-out"
+        class="rounded-lg shadow-md select-none relative bg-card transition-[opacity] duration-200 ease-in-out flex flex-col"
         @touchstart.passive="onTouchStart"
         @touchend.passive="onTouchEnd"
         @touchmove.passive="onTouchMove"
         :class="data.health === 'error' ? 'border-2 border-error' : 'border border-border'"
         :style="{
             borderLeft: moduleColor ? `3px solid ${moduleColor}` : undefined,
-            width: '200px',
-            minHeight: 36 + Math.max(inputPorts.length, outputPorts.length, 1) * 24 + 8 + 'px',
+            width: cardWidth + 'px',
+            minHeight: cardMinHeight + 'px',
+            ...(resizable && cardHeight ? { height: cardHeight + 'px' } : {}),
             opacity: data.enabled === false ? 0.4 : isDimmed ? 0.15 : 1,
             boxShadow: isHotMember
                 ? `0 0 0 2px ${interlock?.color ?? INTERLOCK_DEFAULT_COLOR}`
                 : undefined,
         }"
     >
+        <!-- Resize grip (bottom-right) — only for opt-in plugins -->
+        <div
+            v-if="resizable"
+            class="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize opacity-40 hover:opacity-100"
+            style="z-index: 5"
+            @mousedown.stop.prevent="onResizeStart"
+            @touchstart.stop.prevent="onResizeStart"
+            title="Drag to resize"
+        >
+            <svg viewBox="0 0 16 16" class="w-full h-full" fill="currentColor">
+                <path
+                    d="M11 15 L15 11 M7 15 L15 7 M3 15 L15 3"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    fill="none"
+                />
+            </svg>
+        </div>
         <!-- Interlock membership badge -->
         <div
             v-if="interlock"
@@ -363,6 +501,14 @@ function formatStatusValue(value: unknown, unit?: string): string {
             </span>
         </div>
 
+        <!-- Plugin-provided face component (rich view, full Vue power) -->
+        <!-- Plugin face: fills remaining card height. The `min-h-0 overflow-hidden`
+             combo is what makes `flex: 1` actually cap the inner content so any
+             auto-fit script inside the plugin sees a bounded container. -->
+        <div v-if="pluginFace" class="flex-1 min-h-0 overflow-hidden flex flex-col">
+            <component :is="pluginFace" :module="data" />
+        </div>
+
         <!-- Face widgets (declarative from manifest) -->
         <div v-if="faceWidgets.length > 0" class="px-3 space-y-0.5">
             <template v-for="widget in faceWidgets" :key="widget.id">
@@ -386,6 +532,15 @@ function formatStatusValue(value: unknown, unit?: string): string {
                             backgroundColor: (widget.color as string) ?? 'var(--accent)',
                         }"
                     />
+                </div>
+                <!-- Setting text: multi-line text read directly from a setting key.
+                     Intentionally NOT truncated — the whole note should be visible. -->
+                <div
+                    v-else-if="widget.type === 'setting-text'"
+                    class="text-[11px] leading-snug whitespace-pre-wrap break-words"
+                    :class="getSettingText(widget) ? 'text-foreground' : 'text-muted italic'"
+                >
+                    {{ getSettingText(widget) }}
                 </div>
             </template>
         </div>

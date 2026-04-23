@@ -117,3 +117,4 @@
     (fixed: manager now forwards cascade ops back to the engine when the engine was the sender, so LCP clients see the sibling mutes)
 
 - [x] Make on / off buttons square
+- [ ] clone does not work for live chagne, when i clone, i need to refresh before i see the cloned item
