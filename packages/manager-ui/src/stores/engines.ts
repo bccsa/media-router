@@ -207,7 +207,21 @@ export const useEngineStore = defineStore('engines', () => {
             interlocks: [...(engine.interlocks ?? [])],
         };
 
-        for (const op of patch as Array<{ op: string; path: string; value?: unknown }>) {
+        for (const rawOp of patch as Array<{ op: string; path: string; value?: unknown }>) {
+            // Optimistic clone/add: the sender constructs a raw module object
+            // (only the fields it knows about). Normalise so the store always
+            // holds a full `ModuleState` — same shape as `addEngine` produces.
+            // Without this, freshly-cloned modules render with `undefined`
+            // optional fields and the live node doesn't appear until a refresh
+            // rehydrates them via `engine:config`.
+            let op = rawOp;
+            if (op.op === 'add' && /^\/modules\/[^/]+$/.test(op.path) && op.value) {
+                const moduleId = op.path.split('/')[2];
+                op = {
+                    ...op,
+                    value: normalizeModule(moduleId, op.value as Record<string, unknown>),
+                };
+            }
             applyOp(updated as unknown as Record<string, unknown>, op);
         }
 

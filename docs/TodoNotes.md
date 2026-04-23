@@ -117,4 +117,4 @@
     (fixed: manager now forwards cascade ops back to the engine when the engine was the sender, so LCP clients see the sibling mutes)
 
 - [x] Make on / off buttons square
-- [ ] clone does not work for live chagne, when i clone, i need to refresh before i see the cloned item
+- [x] clone does not work for live chagne, when i clone, i need to refresh before i see the cloned item (fixed: `applyEnginePatch` now runs `normalizeModule` on optimistic `/modules/<id>` adds so freshly cloned nodes have the full `ModuleState` shape — without it `pendingRestart`/`focused`/`interlock`/etc. stayed undefined and the node didn't render until `engine:config` rehydrated after refresh)

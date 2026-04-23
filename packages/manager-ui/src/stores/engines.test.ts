@@ -145,6 +145,34 @@ describe('useEngineStore', () => {
             expect(store.getEngine('eng-1')!.modules['mod-2'].displayName).toBe('Encoder 1');
         });
 
+        it('normalises a cloned module so optional fields have defaults', () => {
+            // Clone only copies the fields the UI knows about — `pendingRestart`,
+            // `focused`, `interlock`, etc. aren't set by the sender. Without
+            // normalisation on the optimistic apply the new node renders with
+            // `undefined` values until a refresh rehydrates it via engine:config.
+            const store = useEngineStore();
+            store.applyEnginePatch('eng-1', [
+                {
+                    op: 'add',
+                    path: '/modules/mod-clone',
+                    value: {
+                        pluginId: 'audio-encoder',
+                        displayName: 'Encoder (copy)',
+                        settings: { bitrate: 128 },
+                    },
+                },
+            ]);
+            const cloned = store.getEngine('eng-1')!.modules['mod-clone'];
+            expect(cloned.instanceId).toBe('mod-clone');
+            expect(cloned.pendingRestart).toBe(false);
+            expect(cloned.focused).toBe(false);
+            expect(cloned.interlock).toBe(false);
+            expect(cloned.enabled).toBe(true);
+            expect(cloned.running).toBe(false);
+            expect(cloned.health).toBe('stopped');
+            expect(cloned.settings).toEqual({ bitrate: 128 });
+        });
+
         it('removes a module', () => {
             const store = useEngineStore();
             store.applyEnginePatch('eng-1', [{ op: 'remove', path: '/modules/mod-1' }]);
