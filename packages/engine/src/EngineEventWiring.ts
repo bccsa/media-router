@@ -10,6 +10,7 @@ import type { LogForwarder } from './logging/LogForwarder.js';
 import type { CommandDispatcher } from './commands/CommandDispatcher.js';
 import type { EnginePatchRouter } from './EnginePatchRouter.js';
 import type { SystemStatsCollector } from './system/SystemStatsCollector.js';
+import type { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 
 const log = createLogger('Engine');
 
@@ -19,6 +20,7 @@ export interface EngineEventContext {
     managerConnection: ManagerConnection;
     lcpServer: LcpServer;
     pipeWire: PipeWireManager;
+    deviceProviders: DeviceProviderRegistry;
     commandDispatcher: CommandDispatcher;
     enginePatchRouter: EnginePatchRouter;
     systemStats: SystemStatsCollector;
@@ -126,38 +128,24 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             ctx.enginePatchRouter.onPatch(d._socketId ?? 'lcp', 'lcp', envelope.ops as PatchOp[]);
     });
 
-    // --- Audio device hotplug detection ---
-    // Poll every 2s (like v1's 1s but less aggressive). Only send when changed.
-    let lastDeviceJson = '';
-    let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+    // Forward every registered device provider's changes to the manager
+    // through a single typed topic. One loop, any number of device types.
+    ctx.deviceProviders.on(
+        'deviceList',
+        ({ type, devices }: { type: string; devices: unknown }) => {
+            if (!ctx.managerConnection.isConnected) return;
+            ctx.managerConnection.send('deviceList', { type, devices });
+        },
+    );
 
-    function pollDevices() {
-        if (!ctx.managerConnection.isConnected) return;
-        try {
-            const devices = ctx.pipeWire.listDevices();
-            const json = JSON.stringify(devices);
-            if (json !== lastDeviceJson) {
-                lastDeviceJson = json;
-                ctx.managerConnection.send('audioDevices', devices);
-                log.info(
-                    { count: devices.length },
-                    'Audio device list changed — pushed to manager',
-                );
+    async function sendInitialDeviceSnapshots() {
+        for (const type of ctx.deviceProviders.types()) {
+            try {
+                const devices = await ctx.deviceProviders.getDevices(type);
+                ctx.managerConnection.send('deviceList', { type, devices });
+            } catch (err) {
+                log.warn({ err, type }, 'Initial device snapshot failed');
             }
-        } catch (err) {
-            log.warn({ err }, 'Device poll failed');
-        }
-    }
-
-    function startDevicePoll() {
-        if (devicePollTimer) return;
-        devicePollTimer = setInterval(pollDevices, 2000);
-    }
-
-    function stopDevicePoll() {
-        if (devicePollTimer) {
-            clearInterval(devicePollTimer);
-            devicePollTimer = null;
         }
     }
 
@@ -169,13 +157,14 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         if (Object.keys(states).length > 0) {
             ctx.managerConnection.sendState(states);
         }
-        // Always send full device list on connect + start polling
-        lastDeviceJson = '';
-        pollDevices();
-        startDevicePoll();
+        // Always push a full snapshot of every device type on connect, then
+        // let the registry's internal polling take over change detection.
+        ctx.deviceProviders.resetSnapshots();
+        void sendInitialDeviceSnapshots();
+        ctx.deviceProviders.startPolling();
     });
     ctx.managerConnection.on('disconnected', () => {
         ctx.systemStats.stop();
-        stopDevicePoll();
+        ctx.deviceProviders.stopPolling();
     });
 }

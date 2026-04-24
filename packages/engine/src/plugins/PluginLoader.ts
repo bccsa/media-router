@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { PluginManifest } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
-import type { PluginModule } from './PluginModule.js';
+import type { PluginModule, EngineServices } from './PluginModule.js';
 
 const log = createLogger('PluginLoader');
 
@@ -28,8 +28,8 @@ export class PluginLoader {
         this.pluginsDir = pluginsDir ?? path.resolve(__dirname, '../../../../plugins');
     }
 
-    /** Discover and load all valid plugins. Returns count of loaded plugins. */
-    async load(): Promise<number> {
+    /** Discover and load all valid plugins. If `services` is passed, each plugin's static `registerServices` runs once after `initManifest`. */
+    async load(services?: EngineServices): Promise<number> {
         this.plugins.clear();
 
         if (!fs.existsSync(this.pluginsDir)) {
@@ -112,6 +112,19 @@ export class PluginLoader {
                                 log.warn(
                                     { err, pluginId: manifest.pluginId },
                                     'initManifest failed',
+                                );
+                            }
+                        }
+                        if (
+                            services &&
+                            typeof (exportedClass as any).registerServices === 'function'
+                        ) {
+                            try {
+                                await (exportedClass as any).registerServices(services);
+                            } catch (err) {
+                                log.warn(
+                                    { err, pluginId: manifest.pluginId },
+                                    'registerServices failed',
                                 );
                             }
                         }

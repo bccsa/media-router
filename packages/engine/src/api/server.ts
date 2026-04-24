@@ -17,6 +17,7 @@ export async function createApiServer(engine: Engine, port = 3001) {
     registerHealthRoutes(app, engine);
     registerEngineRoutes(app, engine);
     registerProfileRoutes(app, engine);
+    registerSystemRoutes(app, engine);
     registerAudioRoutes(app, engine);
 
     await app.listen({ port, host: '0.0.0.0' });
@@ -128,13 +129,26 @@ function registerProfileRoutes(app: ReturnType<typeof Fastify>, engine: Engine):
     });
 }
 
+/** `:type` matches the `x-deviceType` string in a plugin's configSchema. 404 for unregistered types. */
+function registerSystemRoutes(app: ReturnType<typeof Fastify>, engine: Engine): void {
+    app.get(
+        '/api/v1/system/devices/:type',
+        async (req: FastifyRequest<{ Params: { type: string } }>, reply: FastifyReply) => {
+            try {
+                return await engine.deviceProviders.getDevices(req.params.type);
+            } catch (err) {
+                reply.code(404);
+                return { error: (err as Error).message };
+            }
+        },
+    );
+}
+
 function registerAudioRoutes(app: ReturnType<typeof Fastify>, engine: Engine): void {
     const pwManager = engine.pipeWire;
 
-    app.get('/api/v1/audio/devices', async () => {
-        return pwManager.listDevices();
-    });
-
+    // pw-link state — still audio-specific because it's about PipeWire link
+    // introspection, not device enumeration.
     app.get('/api/v1/audio/links', async () => {
         return pwManager.getLinks();
     });

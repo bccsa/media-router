@@ -1,8 +1,6 @@
 import type { Application } from 'express';
 import express from 'express';
 import type { Server as SocketIOServer } from 'socket.io';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
 import { z } from 'zod';
@@ -75,73 +73,24 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         res.json(pluginRegistry.getAll());
     });
 
-    // Audio devices (async to avoid blocking the event loop)
-    const execFileAsync = promisify(execFile);
-    app.get('/api/v1/audio/devices', async (_req, res) => {
-        const devices: Array<{
-            name: string;
-            description: string;
-            direction: string;
-            channels: number;
-            sampleRate: number;
-        }> = [];
-        try {
-            const parseDevices = (output: string, direction: string) => {
-                let name = '';
-                let description = '';
-                let channels = 2;
-                let sampleRate = 48000;
-                for (const line of output.split('\n')) {
-                    const nameMatch = line.match(/^\s+Name:\s+(.+)/);
-                    const descMatch = line.match(/^\s+Description:\s+(.+)/);
-                    const specMatch = line.match(
-                        /^\s+Sample Specification:\s+\S+\s+(\d+)ch\s+(\d+)Hz/,
-                    );
-                    if (nameMatch) name = nameMatch[1];
-                    if (descMatch) description = descMatch[1];
-                    if (specMatch) {
-                        channels = parseInt(specMatch[1], 10);
-                        sampleRate = parseInt(specMatch[2], 10);
-                    }
-                    if (line.trim() === '' && name && description) {
-                        if (direction !== 'source' || !name.endsWith('.monitor')) {
-                            devices.push({ name, description, direction, channels, sampleRate });
-                        }
-                        name = '';
-                        description = '';
-                        channels = 2;
-                        sampleRate = 48000;
-                    }
-                }
-                if (name && description) {
-                    if (direction !== 'source' || !name.endsWith('.monitor')) {
-                        devices.push({ name, description, direction, channels, sampleRate });
-                    }
-                }
-            };
-            const [sinks, sources] = await Promise.all([
-                execFileAsync('pactl', ['list', 'sinks'], { encoding: 'utf-8' }),
-                execFileAsync('pactl', ['list', 'sources'], { encoding: 'utf-8' }),
-            ]);
-            parseDevices(sinks.stdout, 'sink');
-            parseDevices(sources.stdout, 'source');
-        } catch (err) {
-            log.warn({ err }, 'Failed to enumerate local audio devices via pactl');
-        }
-        res.json(devices);
-    });
-
-    // Per-engine data (cached from engine reports — audio devices, etc.)
+    // Per-engine data (cached from engine reports — arbitrary topics). Most
+    // device consumers prefer the typed route below; this one is for anything
+    // not device-shaped (future: stream metrics, channel maps, etc.).
     app.get('/api/v1/engines/:id/data/:topic', (req, res) => {
         if (!requireEngine(req.params.id, res)) return;
         const data = eventForwarder.getEngineData(req.params.id, req.params.topic);
         res.json(data ?? []);
     });
 
-    // Shortcut: per-engine audio devices
-    app.get('/api/v1/engines/:id/audio/devices', (req, res) => {
+    // Generic per-engine device list — any plugin-registered device type.
+    // Initial snapshot for the UI; live updates come over Socket.IO
+    // (`engine:deviceList` event broadcast to the `watch:<engineId>` room).
+    app.get('/api/v1/engines/:id/system/devices/:type', (req, res) => {
         if (!requireEngine(req.params.id, res)) return;
-        const devices = eventForwarder.getEngineData(req.params.id, 'audioDevices');
+        const devices = eventForwarder.getEngineData(
+            req.params.id,
+            `devices:${req.params.type}`,
+        );
         res.json(devices ?? []);
     });
 

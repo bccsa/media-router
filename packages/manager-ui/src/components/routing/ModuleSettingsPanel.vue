@@ -8,6 +8,7 @@ import MrToggle from '@/components/common/MrToggle.vue';
 import MrArrayField from '@/components/common/MrArrayField.vue';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
+import { useDeviceStore } from '@/stores/devices';
 import { patch } from '@/composables/usePatch';
 
 const props = defineProps<{ engineId: string; moduleId: string }>();
@@ -22,6 +23,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown));
 
 const engineStore = useEngineStore();
 const socket = useSocketStore();
+const deviceStore = useDeviceStore();
 
 const module = computed(() => engineStore.getEngine(props.engineId)?.modules[props.moduleId]);
 
@@ -57,7 +59,7 @@ interface FormField {
     defaultValue: unknown;
     enumValues?: unknown[];
     liveUpdatable: boolean;
-    deviceType?: string; // 'source' or 'sink' — shows device picker
+    deviceType?: string; // e.g. 'audio-source', 'audio-sink', 'video', 'drm-connector'
     widget?: string; // 'slider' etc.
     minimum?: number;
     maximum?: number;
@@ -70,47 +72,51 @@ interface FormField {
     showWhen?: string; // x-showWhen — "key=value" conditional visibility
 }
 
-// Audio device list from the engine — refreshes every 3s while panel is open
-// so the user sees USB hotplug (connect/disconnect) without needing to reopen.
-const audioDevices = ref<
-    Array<{
-        name: string;
-        description: string;
-        direction: string;
-        channels: number;
-        sampleRate: number;
-    }>
->([]);
-let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+// Device lists come from `useDeviceStore`, populated live via socket push.
+// This panel does one HTTP snapshot per required type on open so dropdowns
+// render without waiting for the first push.
 
-async function fetchDevices() {
-    try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/audio/devices`);
-        if (res.ok) audioDevices.value = await res.json();
-    } catch (err) {
-        console.warn('[ModuleSettings] Failed to load audio devices:', err);
+const requiredDeviceTypes = computed<string[]>(() => {
+    const schema = module.value?.configSchema as { properties?: Record<string, SchemaProperty> } | undefined;
+    if (!schema?.properties) return [];
+    const types = new Set<string>();
+    for (const prop of Object.values(schema.properties)) {
+        if (prop['x-deviceType']) types.add(prop['x-deviceType']);
+    }
+    return Array.from(types);
+});
+
+async function fetchInitialSnapshots() {
+    for (const type of requiredDeviceTypes.value) {
+        try {
+            const res = await fetch(
+                `/api/v1/engines/${props.engineId}/system/devices/${encodeURIComponent(type)}`,
+            );
+            if (res.ok) deviceStore.set(props.engineId, type, await res.json());
+        } catch (err) {
+            console.warn('[ModuleSettings] Failed to load device list', type, err);
+        }
     }
 }
 
 onMounted(() => {
-    fetchDevices();
-    devicePollTimer = setInterval(fetchDevices, 3000);
+    fetchInitialSnapshots();
 });
 
-onUnmounted(() => {
-    if (devicePollTimer) clearInterval(devicePollTimer);
-});
+watch(
+    () => `${props.engineId}::${props.moduleId}`,
+    () => fetchInitialSnapshots(),
+);
 
 /** Build device dropdown options. If the currently selected device was unplugged,
  *  keep it in the list greyed out so config survives unplug/replug cycles. */
-function deviceOptions(fieldKey: string, direction: string) {
-    const available = audioDevices.value.filter((d) => d.direction === direction);
+function deviceOptions(fieldKey: string, type: string) {
+    const available = deviceStore.get(props.engineId, type);
     const options = available.map((d) => ({
         value: d.name,
-        label: `${d.description || d.name} (${d.channels}ch, ${d.sampleRate}Hz)`,
+        label: d.label,
     }));
 
-    // If the selected device isn't in the list, add it as disconnected
     const selected = localSettings.value[fieldKey] as string | undefined;
     if (selected && !available.some((d) => d.name === selected)) {
         options.push({ value: selected, label: `${selected} (Disconnected)` });

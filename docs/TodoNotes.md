@@ -17,7 +17,7 @@
 - [x] Add mute / unmute setting on Plugins with audio / should be able to mute their null sink / thier source / dest
 - [x] With modules that play audio into a null sink (like audio decoder / Audio output) the vumeter is mesuerd before the null sink, so if the user drops the volume on that module, the vu meter does not reflect the volume change, event though the voloume change is applied directly. (consider spawning seperate process for vu menter?)
 - [x] issue, when adding a moduel can get it started, until i stop and start the engine, then only i can get it started
-- [ ] !!!!!! Issue that orpahne process stil lrun, so my audio outpu hsa audio on it, even though there in not connection to it, i need to stop and start the engine to fix this, this only hapeps ocationaly (Might have been with the deleted modules that does not get stopped, but need to test)
+- [x] !!!!!! Issue that orpahne process stil lrun, so my audio outpu hsa audio on it, even though there in not connection to it, i need to stop and start the engine to fix this, this only hapeps ocationaly (Might have been with the deleted modules that does not get stopped, but need to test) (not reproduced in later testing)
 - [x] module being addid far of from the other modules (fixed: new modules placed at center of current viewport)
 - [x] tace and warn debugging (log viewer has per-level toggles for Debug/Info/Warn/Error; silent failures throughout the codebase now log at debug/warn level with context)
 - [x] When moving modules, the modules jump back to the original position if i do not keep moving the mouse (fixed: track active drags via dragStart/dragStop, block server position updates during entire drag + 2s after)
@@ -78,10 +78,10 @@
 - [x] Resetting automatically starts engine even when in stopped state — to recreate: stop engine → press reset (fixed: resetEngine checks wasRunning + stopRequested flag aborts restart if stop arrives during reset)
 - [x] Engine shows stopped (start button showing) but modules are still running (state sync issue)
 - [x] PWLink delete is buggy — creating and deleting a PWLink leaves it in the engine; incorrect links reappear until stop/start (fixed: PatchRouter was sending ID-based paths to engine instead of index-based — engine couldn't resolve _connId. Also added 3-step teardown cleanup: unlink by name → unlink by ID → pwUnlinkAllBetween sweep)
-- [ ] Disconnected Audio encoder shows signal after deleting default audio input and switching output to HDMI — persists after restart
-- [ ] N-1 mixer stopped giving output after reboot
-- [ ] "Source channel out of range" errors and "Failed to reapply connection" when connecting to Test 1 enc
-- [ ] High RAM usage on Pi — 1.5GB available; index.js, start-engine.js, and Pipewire consuming significant memory; Python vs C++ contributing
+- [x] Disconnected Audio encoder shows signal after deleting default audio input and switching output to HDMI — persists after restart (not reproduced in later testing)
+- [x] N-1 mixer stopped giving output after reboot (not reproduced in later testing)
+- [x] "Source channel out of range" errors and "Failed to reapply connection" when connecting to Test 1 enc (not reproduced in later testing)
+- [ ] High RAM usage on Pi — 1.5GB available; index.js, start-engine.js, and Pipewire consuming significant memory; Python vs C++ contributing (keep open — not actively an issue, revisit if it regresses)
 
 ## Data Flow revamp
 - [x] when i move a module, after 2 seconds, it jumps back to original position (fixed: optimistic local store update on drag end)

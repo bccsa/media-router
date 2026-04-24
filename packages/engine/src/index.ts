@@ -1,7 +1,16 @@
 export { Engine } from './Engine.js';
 export type { EngineConfig } from './Engine.js';
 export { PluginLoader } from './plugins/PluginLoader.js';
-export type { PluginModule, PipelineDescription, ModuleServices } from './plugins/PluginModule.js';
+export type {
+    PluginModule,
+    PipelineDescription,
+    EngineServices,
+    ModuleServices,
+} from './plugins/PluginModule.js';
+export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
+export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
+// Re-export `Device` so plugins only need to depend on `@media-router/engine`.
+export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
 export { PaCommandQueue } from './audio/PaCommandQueue.js';
 export { ModuleManager } from './modules/ModuleManager.js';

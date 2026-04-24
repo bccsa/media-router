@@ -2,19 +2,18 @@ import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
+import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 
-/**
- * Services injected into plugins on init.
- * Provides access to engine subsystems without tight coupling.
- */
-export interface ModuleServices {
-    /** PipeWire manager for creating null-sinks and controlling volume. */
+/** Services passed to a plugin's static `registerServices` hook (once per plugin class). */
+export interface EngineServices {
     pipeWire: PipeWireManager;
-    /** Media router for querying UDP endpoints. */
     mediaRouter: MediaRouter;
-    /** Process manager for spawning external CLI tools (RIST, SRT, etc.). */
     processManager: ProcessManager;
-    /** The module's instance ID (unique per module instance). */
+    deviceProviders: DeviceProviderRegistry;
+}
+
+/** Services passed to each module instance's `onInit` — `EngineServices` plus the instance id. */
+export interface ModuleServices extends EngineServices {
     instanceId: string;
 }
 

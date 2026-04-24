@@ -16,6 +16,7 @@ import { LogForwarder } from './logging/LogForwarder.js';
 import { CommandDispatcher } from './commands/CommandDispatcher.js';
 import { EnginePatchRouter } from './EnginePatchRouter.js';
 import { SystemStatsCollector } from './system/SystemStatsCollector.js';
+import { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 import { wireEngineEvents } from './EngineEventWiring.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle } from './modules/ModuleLifecycle.js';
@@ -49,6 +50,7 @@ export class Engine {
     readonly pipeWire: PipeWireManager;
     readonly processManager: ProcessManager;
     readonly paQueue: PaCommandQueue;
+    readonly deviceProviders: DeviceProviderRegistry;
 
     private apiServer: FastifyInstance | null = null;
     private config: EngineConfig;
@@ -80,6 +82,7 @@ export class Engine {
         this.paQueue = new PaCommandQueue();
         this.pipeWire = new PipeWireManager(this.paQueue);
         this.processManager = new ProcessManager();
+        this.deviceProviders = new DeviceProviderRegistry();
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
@@ -88,6 +91,7 @@ export class Engine {
             this.pipeWire,
             this.mediaRouter,
             this.processManager,
+            this.deviceProviders,
         );
         this.managerConnection = new ManagerConnection();
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
@@ -175,6 +179,7 @@ export class Engine {
             managerConnection: this.managerConnection,
             lcpServer: this.lcpServer,
             pipeWire: this.pipeWire,
+            deviceProviders: this.deviceProviders,
             commandDispatcher: this.commandDispatcher,
             enginePatchRouter: this.enginePatchRouter,
             systemStats: this.systemStats,
@@ -193,7 +198,12 @@ export class Engine {
         await requirePwLink();
         await this.pipeWire.cleanupOrphans();
 
-        const pluginCount = await this.pluginLoader.load();
+        const pluginCount = await this.pluginLoader.load({
+            pipeWire: this.pipeWire,
+            mediaRouter: this.mediaRouter,
+            processManager: this.processManager,
+            deviceProviders: this.deviceProviders,
+        });
         log.info({ pluginCount }, 'Loaded plugins');
 
         this.apiServer = await createApiServer(this, this.config.apiPort ?? 3001);

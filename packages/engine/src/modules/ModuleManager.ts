@@ -7,6 +7,7 @@ import type { PluginLoader } from '../plugins/PluginLoader.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
+import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 import { ModuleInstance } from './ModuleInstance.js';
 
 const log = createLogger('ModuleManager');
@@ -27,18 +28,21 @@ export class ModuleManager extends EventEmitter {
     private pipeWire: PipeWireManager | null = null;
     private mediaRouter: MediaRouter | null = null;
     private processManager: ProcessManager | null = null;
+    private deviceProviders: DeviceProviderRegistry | null = null;
 
     constructor(
         pluginLoader: PluginLoader,
         pipeWire?: PipeWireManager,
         mediaRouter?: MediaRouter,
         processManager?: ProcessManager,
+        deviceProviders?: DeviceProviderRegistry,
     ) {
         super();
         this.pluginLoader = pluginLoader;
         this.pipeWire = pipeWire ?? null;
         this.mediaRouter = mediaRouter ?? null;
         this.processManager = processManager ?? null;
+        this.deviceProviders = deviceProviders ?? null;
     }
 
     /** Create a new module instance. Does NOT start it. */
@@ -93,11 +97,12 @@ export class ModuleManager extends EventEmitter {
 
         // Build services context for the plugin
         const services: ModuleServices | undefined =
-            this.pipeWire && this.mediaRouter && this.processManager
+            this.pipeWire && this.mediaRouter && this.processManager && this.deviceProviders
                 ? {
                       pipeWire: this.pipeWire,
                       mediaRouter: this.mediaRouter,
                       processManager: this.processManager,
+                      deviceProviders: this.deviceProviders,
                       instanceId,
                   }
                 : undefined;

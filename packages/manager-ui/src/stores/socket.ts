@@ -4,6 +4,8 @@ import { io, type Socket } from 'socket.io-client';
 import { useEngineStore } from './engines';
 import { useVuStore } from './vuMeters';
 import { useLogStore } from './logs';
+import { useDeviceStore } from './devices';
+import type { Device } from '@media-router/shared-types';
 
 export const useSocketStore = defineStore('socket', () => {
     const connected = ref(false);
@@ -60,6 +62,16 @@ export const useSocketStore = defineStore('socket', () => {
             const engines = useEngineStore();
             engines.applyEnginePatch(data.engineId, data.patch);
         });
+
+        // Live device-list push — any plugin-registered device type.
+        // Fired by the manager whenever an engine's device list changes;
+        // settings panels read from `useDeviceStore` for instant updates.
+        s.on(
+            'engine:deviceList',
+            (data: { engineId: string; type: string; devices: Device[] }) => {
+                useDeviceStore().applyPush(data);
+            },
+        );
 
         // Online/offline
         s.on('engine:online', (data: { engineId: string }) => {

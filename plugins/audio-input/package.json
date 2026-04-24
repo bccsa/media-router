@@ -31,7 +31,7 @@
                     "type": "string",
                     "default": "",
                     "description": "Select audio source device",
-                    "x-deviceType": "source"
+                    "x-deviceType": "audio-source"
                 },
                 "sampleRate": {
                     "type": "number",

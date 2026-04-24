@@ -36,7 +36,10 @@ function createMocks() {
 
     const volatileEmit = vi.fn();
     const roomVolatileEmit = vi.fn();
-    const toRoom = vi.fn().mockReturnValue({ volatile: { emit: roomVolatileEmit } });
+    const roomEmit = vi.fn();
+    const toRoom = vi
+        .fn()
+        .mockReturnValue({ emit: roomEmit, volatile: { emit: roomVolatileEmit } });
 
     const io = {
         emit: vi.fn(),
@@ -55,6 +58,7 @@ function createMocks() {
         io,
         volatileEmit,
         toRoom,
+        roomEmit,
         roomVolatileEmit,
     };
 }
@@ -264,14 +268,29 @@ describe('EngineEventForwarder', () => {
         });
     });
 
-    describe('engineAudioDevices', () => {
-        it('caches audio devices data', () => {
+    describe('engineDeviceList', () => {
+        it('caches devices under devices:<type> and broadcasts to watchers', () => {
+            const { forwarder, engineManager, toRoom, roomEmit } = createMocks();
+
+            const devices = [{ name: 'hw:0', label: 'Built-in Audio' }];
+            engineManager.emit('engineDeviceList', 'eng-1', {
+                type: 'audio-source',
+                devices,
+            });
+
+            expect(forwarder.getEngineData('eng-1', 'devices:audio-source')).toEqual(devices);
+            expect(toRoom).toHaveBeenCalledWith('watch:eng-1');
+            expect(roomEmit).toHaveBeenCalledWith('engine:deviceList', {
+                engineId: 'eng-1',
+                type: 'audio-source',
+                devices,
+            });
+        });
+
+        it('ignores payloads missing a type', () => {
             const { forwarder, engineManager } = createMocks();
-
-            const devices = [{ id: 'hw:0', name: 'Built-in Audio' }];
-            engineManager.emit('engineAudioDevices', 'eng-1', devices);
-
-            expect(forwarder.getEngineData('eng-1', 'audioDevices')).toEqual(devices);
+            engineManager.emit('engineDeviceList', 'eng-1', { devices: [] });
+            expect(forwarder.getEngineData('eng-1', 'devices:audio-source')).toBeUndefined();
         });
     });
 

@@ -33,6 +33,7 @@ function createModule(pairCount = 4) {
         pipeWire: pw as any,
         mediaRouter: {} as any,
         processManager: {} as any,
+        deviceProviders: {} as any,
         instanceId: 'n1-test-001',
     };
 

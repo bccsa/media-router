@@ -1,4 +1,10 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import {
+    GstPluginBase,
+    type PipelineDescription,
+    type EngineServices,
+    type ModuleServices,
+    type Device,
+} from '@media-router/engine';
 
 /**
  * Audio Input plugin.
@@ -8,6 +14,10 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
  * - module-remap-source with remix=no and latency_msec=50
  * - Separate lightweight GStreamer process for VU metering only
  * - Volume via pactl set-source-volume on the remap source
+ *
+ * Also owns the `audio-source` device type — registers a device provider
+ * during plugin load so the manager-UI's dropdown populates from PipeWire's
+ * source list. The `audio-sink` type is owned symmetrically by audio-output.
  */
 export class AudioInputModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
@@ -15,6 +25,27 @@ export class AudioInputModule extends GstPluginBase {
     private detectedChannels: number | null = null;
     private detectedSampleRate: number | null = null;
     private remapModuleId: number | null = null;
+
+    static registerServices(services: EngineServices): void {
+        services.deviceProviders.register({
+            type: 'audio-source',
+            list: () =>
+                services.pipeWire
+                    .listDevices()
+                    .filter((d) => d.direction === 'source')
+                    .map(
+                        (d): Device => ({
+                            name: d.name,
+                            label: `${d.description || d.name} (${d.channels ?? '?'}ch, ${d.sampleRate ?? '?'}Hz)`,
+                            meta: {
+                                direction: d.direction,
+                                channels: d.channels,
+                                sampleRate: d.sampleRate,
+                            },
+                        }),
+                    ),
+        });
+    }
 
     protected getWatchedDeviceName(): string | null {
         return this.deviceName || null;

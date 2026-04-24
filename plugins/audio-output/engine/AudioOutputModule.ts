@@ -1,4 +1,10 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import {
+    GstPluginBase,
+    type PipelineDescription,
+    type EngineServices,
+    type ModuleServices,
+    type Device,
+} from '@media-router/engine';
 
 /**
  * Audio Output plugin.
@@ -10,12 +16,37 @@ import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@m
  * for VU metering only.
  *
  * Volume is controlled via PipeWire sink volume (pactl set-sink-volume).
+ *
+ * Also owns the `audio-sink` device type — registers a device provider during
+ * plugin load so the manager-UI's dropdown populates from PipeWire's sink
+ * list. The `audio-source` type is owned symmetrically by audio-input.
  */
 export class AudioOutputModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
     private deviceName = '';
     private detectedChannels: number | null = null;
     private detectedSampleRate: number | null = null;
+
+    static registerServices(services: EngineServices): void {
+        services.deviceProviders.register({
+            type: 'audio-sink',
+            list: () =>
+                services.pipeWire
+                    .listDevices()
+                    .filter((d) => d.direction === 'sink')
+                    .map(
+                        (d): Device => ({
+                            name: d.name,
+                            label: `${d.description || d.name} (${d.channels ?? '?'}ch, ${d.sampleRate ?? '?'}Hz)`,
+                            meta: {
+                                direction: d.direction,
+                                channels: d.channels,
+                                sampleRate: d.sampleRate,
+                            },
+                        }),
+                    ),
+        });
+    }
 
     protected getWatchedDeviceName(): string | null {
         return this.deviceName || null;

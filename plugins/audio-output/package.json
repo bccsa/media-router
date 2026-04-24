@@ -31,7 +31,7 @@
                     "type": "string",
                     "default": "",
                     "description": "Select audio output device",
-                    "x-deviceType": "sink"
+                    "x-deviceType": "audio-sink"
                 },
                 "sampleRate": {
                     "type": "number",

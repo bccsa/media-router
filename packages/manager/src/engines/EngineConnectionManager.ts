@@ -86,8 +86,11 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('engineLogs', clientId, data);
             });
 
-            socket.on('audioDevices', (data: unknown) => {
-                this.emit('engineAudioDevices', clientId, data);
+            // Generic device-list forward. Engine sends `deviceList` with a
+            // `type` discriminator (e.g. 'audio-source', 'video', 'drm-connector');
+            // the forwarder caches per type and broadcasts to subscribed browsers.
+            socket.on('deviceList', (data: unknown) => {
+                this.emit('engineDeviceList', clientId, data);
             });
 
             // LCP engine start/stop (forward running state to browsers)

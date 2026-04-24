@@ -130,8 +130,18 @@ export class EngineEventForwarder {
                 .volatile.emit('engine:logs', { engineId, entries: batch });
         });
 
-        this.engineManager.on('engineAudioDevices', (engineId: string, devices: unknown) => {
-            this.setEngineData(engineId, 'audioDevices', devices);
+        // Cache per-type + fan out to the engine's watchers so dropdowns live-update.
+        this.engineManager.on('engineDeviceList', (engineId: string, data: unknown) => {
+            const payload = data as { type?: string; devices?: unknown } | undefined;
+            if (!payload || typeof payload.type !== 'string') {
+                log.warn({ engineId, data }, 'engineDeviceList payload missing type');
+                return;
+            }
+            const { type, devices } = payload;
+            this.setEngineData(engineId, `devices:${type}`, devices);
+            this.io
+                .to(`watch:${engineId}`)
+                .emit('engine:deviceList', { engineId, type, devices });
         });
 
         // LCP start/stop commands — update running state + broadcast to browsers

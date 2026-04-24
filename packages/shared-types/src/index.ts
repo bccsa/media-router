@@ -396,6 +396,17 @@ export interface AudioDeviceSettings {
     bufferSize: number;
 }
 
+// --- Generic device provider -----------------------------------------------
+
+export interface Device {
+    /** Stable identifier — stored as the config value. */
+    name: string;
+    /** Pre-formatted label shown in dropdowns; provider owns the format. */
+    label: string;
+    /** Type-specific fields (direction, channels, formats, ...). */
+    meta?: Record<string, unknown>;
+}
+
 // --- Communication ----------------------------------------------------------
 
 /** dgram-comms wire protocol message envelope. */
