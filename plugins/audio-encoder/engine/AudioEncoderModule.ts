@@ -1,20 +1,9 @@
-import { execFile } from 'child_process';
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
-
-/** Parse max channels from gst-inspect output for an element. */
-function gstInspectMaxChannels(element: string): Promise<number> {
-    return new Promise((resolve) => {
-        execFile('gst-inspect-1.0', [element], { timeout: 5000 }, (err, stdout) => {
-            if (err) return resolve(2);
-            // Find "channels: [ 1, N ]" — take the smallest max across all pad templates
-            let min = Infinity;
-            for (const m of stdout.matchAll(/channels:\s*\[\s*\d+\s*,\s*(\d+)\s*\]/g)) {
-                min = Math.min(min, parseInt(m[1], 10));
-            }
-            resolve(min === Infinity ? 2 : min);
-        });
-    });
-}
+import {
+    GstPluginBase,
+    gstInspectMaxChannels,
+    type PipelineDescription,
+    type ModuleServices,
+} from '@media-router/engine';
 
 /**
  * Audio Encoder plugin.

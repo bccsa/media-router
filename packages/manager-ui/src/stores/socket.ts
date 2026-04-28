@@ -110,6 +110,11 @@ export const useSocketStore = defineStore('socket', () => {
                     if ('dynamicStatusSections' in s)
                         mod.dynamicStatusSections = s.dynamicStatusSections as any;
                     if ('badges' in s) mod.badges = s.badges as any;
+                    // Plugins may change their live-updatable set based on
+                    // current config (e.g. AV1 drops `bitrate`). Keep the UI
+                    // in sync so the ⚡ icon follows.
+                    if ('liveUpdatableParams' in s)
+                        mod.liveUpdatableParams = s.liveUpdatableParams as string[] | undefined;
                 }
             }
             // Trigger reactivity

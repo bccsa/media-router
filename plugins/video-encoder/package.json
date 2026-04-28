@@ -1,0 +1,140 @@
+{
+    "name": "@media-router/plugin-video-encoder",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Video encoder — V4L2 capture to MPEG-TS output (H.264/H.265/AV1)",
+    "mediaRouter": {
+        "pluginId": "video-encoder",
+        "displayName": "Video Encoder",
+        "description": "Captures from a V4L2 device and encodes to MPEG-TS with selectable codec (H.264, H.265, AV1)",
+        "color": "#ef4444",
+        "icon": "video",
+        "category": "codec",
+        "interlock": true,
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "mpegts-out",
+                "direction": "output",
+                "streamType": "muxed/mpegts",
+                "label": "MPEG-TS Out",
+                "maxConnections": -1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "device": {
+                    "type": "string",
+                    "default": "",
+                    "description": "V4L2 capture device",
+                    "x-deviceType": "video"
+                },
+                "codec": {
+                    "type": "string",
+                    "enum": [
+                        "h264",
+                        "h265",
+                        "av1"
+                    ],
+                    "default": "h264",
+                    "description": "Video codec"
+                },
+                "encoderImpl": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "v4l2",
+                        "software"
+                    ],
+                    "default": "auto",
+                    "description": "Encoder implementation — auto prefers V4L2 hardware when available"
+                },
+                "resolution": {
+                    "type": "string",
+                    "enum": [
+                        "640x360",
+                        "854x480",
+                        "1280x720",
+                        "1920x1080",
+                        "2560x1440",
+                        "3840x2160"
+                    ],
+                    "default": "1920x1080",
+                    "description": "Resolution"
+                },
+                "framerate": {
+                    "type": "number",
+                    "enum": [
+                        24,
+                        25,
+                        30,
+                        50,
+                        60
+                    ],
+                    "default": 30,
+                    "description": "Frames per second"
+                },
+                "bitrate": {
+                    "type": "number",
+                    "default": 4000,
+                    "minimum": 128,
+                    "maximum": 20000,
+                    "description": "Video bitrate (kbps)",
+                    "x-widget": "slider",
+                    "x-step": 100,
+                    "x-liveUpdatable": true,
+                    "x-contextMenu": true,
+                    "x-debounceMs": 300,
+                    "x-unit": "kbps"
+                },
+                "keyframeInterval": {
+                    "type": "number",
+                    "default": 60,
+                    "minimum": 15,
+                    "maximum": 300,
+                    "description": "Keyframe interval (frames)"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "udp",
+                "label": "UDP Output",
+                "fields": [
+                    { "key": "host", "label": "Multicast" },
+                    { "key": "port", "label": "Port" }
+                ]
+            },
+            {
+                "id": "encoder",
+                "label": "Encoder",
+                "fields": [
+                    { "key": "codec", "label": "Codec" },
+                    { "key": "impl", "label": "Implementation" },
+                    { "key": "resolution", "label": "Resolution" },
+                    { "key": "framerate", "label": "Framerate" }
+                ]
+            },
+            {
+                "id": "throughput",
+                "label": "Live Throughput",
+                "fields": [
+                    { "key": "Output Bitrate", "label": "Output Bitrate" },
+                    { "key": "Total Bytes", "label": "Total Bytes" }
+                ]
+            }
+        ],
+        "engine": "./engine/VideoEncoderModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

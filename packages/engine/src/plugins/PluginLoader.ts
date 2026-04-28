@@ -100,8 +100,15 @@ export class PluginLoader {
                 }
 
                 if (mod) {
+                    // Classes and plain functions both have `.prototype`, so
+                    // detect the plugin class by requiring it implements the
+                    // `PluginModule` contract (onInit + onStart on the proto).
+                    // This skips any helper functions a plugin exports.
                     const exportedClass = Object.values(mod).find(
-                        (v) => typeof v === 'function' && v.prototype,
+                        (v) =>
+                            typeof v === 'function' &&
+                            typeof (v as any).prototype?.onInit === 'function' &&
+                            typeof (v as any).prototype?.onStart === 'function',
                     ) as (new () => PluginModule) | undefined;
                     if (exportedClass) {
                         ModuleClass = exportedClass;

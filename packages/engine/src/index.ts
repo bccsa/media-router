@@ -9,6 +9,7 @@ export type {
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
+export { probeGstElement, gstInspectMaxChannels } from './plugins/gstInspect.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';

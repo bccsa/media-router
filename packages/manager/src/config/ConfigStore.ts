@@ -80,14 +80,29 @@ export class ConfigStore {
         `);
     }
 
-    /** Seed database with a default engine + profile on first start. Skips in-memory DBs (tests). */
+    /**
+     * Seed the database with a demo engine + Audio Input → Audio Output
+     * profile on first start so the operator gets a working "hello world"
+     * routing without configuring anything.
+     *
+     * NOTE: this is a demo seed, not core architecture. It hard-codes the
+     * `audio-input` / `audio-output` pluginIds; if those plugins are removed
+     * or renamed the seeded profile will reference plugins that don't load.
+     * Set `MR_SKIP_SEED=1` to disable seeding entirely (production deployments
+     * that ship a profile in the image, integration tests that need a clean
+     * DB, etc.). Skipped automatically for in-memory DBs.
+     */
     private seedDefaults(): void {
         if (this.db.name === ':memory:' || this.db.name === '') return; // Skip for tests
+        if (process.env.MR_SKIP_SEED === '1' || process.env.MR_SKIP_SEED === 'true') {
+            log.info('MR_SKIP_SEED set — skipping default engine/profile seed');
+            return;
+        }
         const count = (this.db.prepare('SELECT COUNT(*) as c FROM engines').get() as { c: number })
             .c;
         if (count > 0) return; // Already has data
 
-        log.info('First start — seeding default engine and profile');
+        log.info('First start — seeding demo engine and profile');
 
         const engineId = 'local';
         const password = 'media-router';
@@ -99,7 +114,7 @@ export class ConfigStore {
             )
             .run(engineId, 'Local Engine', password, 'default');
 
-        // Create default profile with Audio Input → Audio Output
+        // Create demo profile with Audio Input → Audio Output
         const inputId = `audio-input-${Date.now().toString(36)}`;
         const outputId = `audio-output-${Date.now().toString(36)}a`;
 

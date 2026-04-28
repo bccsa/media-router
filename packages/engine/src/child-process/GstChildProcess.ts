@@ -76,6 +76,7 @@ export class GstChildProcess extends EventEmitter {
             // Use 'pipe' for stdin/stdout (MPEG-TS data), inherit stderr for debugging
             stdio: ['pipe', 'pipe', 'inherit', 'ipc'],
             execArgv,
+            env: childEnv(),
         });
 
         this.ipc = new ControlIpc(this.child);
@@ -286,4 +287,36 @@ export class GstChildProcess extends EventEmitter {
         this.child = null;
         this.running = false;
     }
+}
+
+/**
+ * Build the env block passed to the gst-runner child. Resolves Wayland
+ * connectivity at spawn time so a compositor that started after the engine
+ * is still picked up — and so an engine launched without session env (SSH,
+ * systemd-user with no inherited environment) still gets `WAYLAND_DISPLAY`
+ * set when a wayland socket exists in the user runtime dir.
+ */
+function childEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+
+    if (!env.XDG_RUNTIME_DIR && typeof process.getuid === 'function') {
+        const candidate = `/run/user/${process.getuid()}`;
+        try {
+            if (fs.statSync(candidate).isDirectory()) env.XDG_RUNTIME_DIR = candidate;
+        } catch {
+            /* nothing to do */
+        }
+    }
+
+    if (!env.WAYLAND_DISPLAY && env.XDG_RUNTIME_DIR) {
+        try {
+            const socket = fs
+                .readdirSync(env.XDG_RUNTIME_DIR)
+                .find((entry) => /^wayland-\d+$/.test(entry));
+            if (socket) env.WAYLAND_DISPLAY = socket;
+        } catch {
+            /* runtime dir unreadable */
+        }
+    }
+    return env;
 }

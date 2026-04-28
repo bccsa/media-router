@@ -118,3 +118,5 @@
 
 - [x] Make on / off buttons square
 - [x] clone does not work for live chagne, when i clone, i need to refresh before i see the cloned item (fixed: `applyEnginePatch` now runs `normalizeModule` on optimistic `/modules/<id>` adds so freshly cloned nodes have the full `ModuleState` shape — without it `pendingRestart`/`focused`/`interlock`/etc. stayed undefined and the node didn't render until `engine:config` rehydrated after refresh)
+
+- [ ] Replace media-router heading in manager and lcp with media-router logo

@@ -307,6 +307,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/video-encoder:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/video-player:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
 packages:
 
   '@ampproject/remapping@2.3.0':

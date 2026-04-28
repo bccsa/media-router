@@ -273,11 +273,12 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 
 | Extension | Type | Description |
 |-----------|------|-------------|
-| `x-deviceType` | `"source"` or `"sink"` | Shows a PipeWire device picker dropdown |
+| `x-deviceType` | `string` | Device type to populate dropdown from (e.g. `"audio-source"`, `"audio-sink"`, `"video"`, `"drm-connector"`). Plugin must register a matching `DeviceProvider` via `registerServices`. |
 | `x-widget` | `"slider"` | Renders a range slider instead of number input |
 | `x-step` | `number` | Step value for slider |
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
 | `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |
+| `x-debounceMs` | `number` | Live-update strategy for slow underlying APIs: only fire after the value has been idle for N ms (default is a 50 ms throttle that fires the first change immediately). Use for sliders where each change is expensive — e.g. `"x-debounceMs": 300` on video bitrate so the encoder isn't reconfigured on every pixel of slider drag. |
 | `x-maxFrom` | `string` | Key of another setting that controls slider maximum |
 | `x-enumBy` | `{ field, map }` | Field-dependent dropdown options (e.g. `{ "field": "codec", "map": { "opus": [...], "aac": [...] } }`) |
 | `x-maxBy` | `{ field, map }` | Field-dependent max for number inputs (e.g. `{ "field": "codec", "map": { "opus": 8, "aac": 6 } }`) |

@@ -7,6 +7,7 @@
         "pluginId": "example",
         "displayName": "Example Plugin",
         "description": "A minimal plugin template for development reference",
+        "icon": "puzzle",
         "category": "utility",
         "architectures": ["arm64", "x86_64"],
         "ports": [],

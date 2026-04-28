@@ -201,7 +201,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             ready: this.ready,
             health: this.health,
             pendingRestart: false,
-            liveUpdatableParams: this.liveUpdatableParams,
+            // Call the method rather than reading the static field so plugin
+            // overrides (e.g. VideoEncoder deciding per-codec whether bitrate
+            // is live) reach the UI.
+            liveUpdatableParams: this.getLiveUpdatableParams(),
             vuData: this.vuData,
             error: this.error,
             statusData: this.statusData,

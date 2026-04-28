@@ -29,6 +29,10 @@ export interface ModuleState {
     enabled: boolean;
     health: string;
     pendingRestart: boolean;
+    /** Runtime list of config keys the plugin currently accepts live —
+     *  plugins may narrow this based on current config. Falls back to schema
+     *  `x-live`/`x-liveUpdatable` if absent. */
+    liveUpdatableParams?: string[];
     color?: string;
     icon?: string;
     vuData?: number[];
@@ -142,6 +146,7 @@ export const useEngineStore = defineStore('engines', () => {
             interlock: mod.interlock === true,
             size: mod.size as ModuleSize | undefined,
             resizable: mod.resizable as ModuleState['resizable'],
+            liveUpdatableParams: mod.liveUpdatableParams as string[] | undefined,
         };
     }
 

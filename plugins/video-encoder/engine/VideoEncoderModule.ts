@@ -1,0 +1,247 @@
+import {
+    GstPluginBase,
+    probeGstElement,
+    type EngineServices,
+    type ModuleServices,
+    type PipelineDescription,
+} from '@media-router/engine';
+import { listV4l2Devices } from './v4l2Devices.js';
+import {
+    ENCODER_ELEMENTS,
+    buildEncoderBranch,
+    buildV4l2Source,
+    liveElementProps,
+    parseResolution,
+    resolveImpl,
+    supportsLiveBitrate,
+    type CodecId,
+    type ImplId,
+} from './videoEncoderPipeline.js';
+
+/**
+ * Video Encoder plugin.
+ *
+ * Captures from a V4L2 device, encodes to the selected codec (H.264/H.265/AV1),
+ * muxes into MPEG-TS, and sends to a UDP multicast port assigned by the
+ * MediaRouter — same transport as AudioEncoder so existing routing works
+ * unchanged. Owns the `video` device type (enumerated via v4l2-ctl).
+ *
+ * Audio lives in a separate AudioEncoder module on purpose; an MpegTsMuxer
+ * plugin will later combine the two into one stream.
+ */
+export class VideoEncoderModule extends GstPluginBase {
+    private statsTimer: ReturnType<typeof setInterval> | null = null;
+    private lastBytes = 0;
+    private lastPollTime = 0;
+
+    /** Runtime availability map — populated by `initManifest` after probing each encoder element. */
+    private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
+
+    static registerServices(services: EngineServices): void {
+        services.deviceProviders.register({
+            type: 'video',
+            list: () => listV4l2Devices(),
+            pollMs: 2000,
+        });
+    }
+
+    static async initManifest(manifest: Record<string, any>): Promise<void> {
+        const availability: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
+        await Promise.all(
+            (Object.keys(ENCODER_ELEMENTS) as CodecId[]).flatMap((codec) =>
+                (Object.entries(ENCODER_ELEMENTS[codec]) as Array<[ImplId, string]>).map(
+                    async ([impl, element]) => {
+                        if (await probeGstElement(element)) availability[codec].push(impl);
+                    },
+                ),
+            ),
+        );
+        VideoEncoderModule.availableImpls = availability;
+
+        const props = (manifest.configSchema as any)?.properties;
+        if (!props) return;
+
+        const availableCodecs = (Object.keys(availability) as CodecId[]).filter(
+            (c) => availability[c].length > 0,
+        );
+        if (props.codec && availableCodecs.length > 0) {
+            props.codec.enum = availableCodecs;
+        }
+        // Narrow the impl dropdown to entries the UI can actually honour for
+        // the current codec.
+        if (props.encoderImpl) {
+            const implMap: Record<string, string[]> = {};
+            for (const c of Object.keys(availability) as CodecId[]) {
+                implMap[c] = ['auto', ...availability[c]];
+            }
+            props.encoderImpl['x-enumBy'] = { field: 'codec', map: implMap };
+        }
+    }
+
+    /** Exposed for tests. */
+    static getAvailableImpls(): Record<CodecId, ImplId[]> {
+        return VideoEncoderModule.availableImpls;
+    }
+
+    /** Exposed for tests. */
+    static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
+        VideoEncoderModule.availableImpls = availability;
+    }
+
+    /**
+     * Live params depend on the resolved encoder. AV1 (svtav1enc) needs a
+     * pipeline rebuild for bitrate changes, so we narrow to `[]` there and
+     * route the change through `pendingRestart` instead.
+     */
+    getLiveUpdatableParams(): string[] {
+        const codec = (this.config.codec as CodecId) ?? 'h264';
+        const impl = this.resolveCurrentImpl();
+        return impl && supportsLiveBitrate(codec) ? ['bitrate'] : [];
+    }
+
+    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
+        await super.onInit(config, services);
+    }
+
+    async onStart(): Promise<void> {
+        const instanceId = this.services?.instanceId ?? '';
+        this.services?.mediaRouter?.assignEncoderPort(instanceId);
+
+        await super.onStart();
+        this.updateStatusData();
+        this.startStatsTimer();
+    }
+
+    async onStop(): Promise<void> {
+        if (this.statsTimer) {
+            clearInterval(this.statsTimer);
+            this.statsTimer = null;
+        }
+        await super.onStop();
+    }
+
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        Object.assign(this.config, changes);
+        if ('bitrate' in changes) {
+            await this.applyLiveBitrate(changes.bitrate as number);
+        }
+        this.updateStatusData();
+    }
+
+    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        const device = (config.device as string) ?? '';
+        if (!device) {
+            this.setHealth('warning', 'No V4L2 device selected');
+            return null;
+        }
+        const codec = (config.codec as CodecId) ?? 'h264';
+        const impl = resolveImpl(
+            codec,
+            (config.encoderImpl as ImplId | 'auto') ?? 'auto',
+            VideoEncoderModule.availableImpls[codec] ?? [],
+        );
+        if (!impl) {
+            this.setHealth(
+                'error',
+                `No encoder available for ${codec} — install a compatible GStreamer plugin`,
+            );
+            return null;
+        }
+        const { width, height } = parseResolution((config.resolution as string) ?? '1920x1080');
+        const framerate = (config.framerate as number) ?? 30;
+        const bitrateKbps = (config.bitrate as number) ?? 4000;
+        const kif = (config.keyframeInterval as number) ?? 60;
+
+        const source = buildV4l2Source(device, width, height, framerate);
+        const encoder = buildEncoderBranch(codec, impl, bitrateKbps, kif);
+
+        const instanceId = this.services?.instanceId ?? '';
+        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(instanceId);
+        const udpSink = endpoint
+            ? `udpsink name=usink host=${endpoint.host} port=${endpoint.port} multicast-iface=lo auto-multicast=true buffer-size=2097152 sync=false`
+            : 'fakesink name=usink sync=false';
+
+        const pipeline = `${source} ! ${encoder} ! mpegtsmux name=mux latency=0 alignment=7 ! ${udpSink}`;
+
+        return {
+            pipeline,
+            liveElements: { venc0: liveElementProps(codec, impl) },
+            restartOnError: true,
+        };
+    }
+
+    // --- internals ---
+
+    private resolveCurrentImpl(): ImplId | null {
+        const codec = (this.config.codec as CodecId) ?? 'h264';
+        return resolveImpl(
+            codec,
+            (this.config.encoderImpl as ImplId | 'auto') ?? 'auto',
+            VideoEncoderModule.availableImpls[codec] ?? [],
+        );
+    }
+
+    private async applyLiveBitrate(kbps: number): Promise<void> {
+        const codec = (this.config.codec as CodecId) ?? 'h264';
+        const impl = this.resolveCurrentImpl();
+        if (!impl) return;
+        if (impl === 'v4l2') {
+            const key = codec === 'h265' ? 'h265_i_frame_period' : 'h264_i_frame_period';
+            const kif = (this.config.keyframeInterval as number) ?? 60;
+            await this.setElementProperty(
+                'venc0',
+                'extra-controls',
+                `controls,video_bitrate=${kbps * 1000},${key}=${kif}`,
+            );
+            return;
+        }
+        const prop = codec === 'av1' ? 'target-bitrate' : 'bitrate';
+        await this.setElementProperty('venc0', prop, kbps);
+    }
+
+    private updateStatusData(): void {
+        const codec = (this.config.codec as CodecId) ?? 'h264';
+        const impl = this.resolveCurrentImpl();
+        const resolution = (this.config.resolution as string) ?? '1920x1080';
+        const fps = (this.config.framerate as number) ?? 30;
+        this.setStatusData('encoder', {
+            codec,
+            impl: impl ?? 'unavailable',
+            resolution,
+            framerate: `${fps} fps`,
+        });
+        const instanceId = this.services?.instanceId ?? '';
+        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(instanceId);
+        this.setStatusData('udp', {
+            host: endpoint?.host ?? '—',
+            port: endpoint?.port ?? 0,
+        });
+    }
+
+    private startStatsTimer(): void {
+        this.lastBytes = 0;
+        this.lastPollTime = Date.now();
+        this.statsTimer = setInterval(async () => {
+            try {
+                const bytesServed = (await this.getElementProperty(
+                    'usink',
+                    'bytes-served',
+                )) as number;
+                if (typeof bytesServed !== 'number') return;
+                const now = Date.now();
+                const elapsed = (now - this.lastPollTime) / 1000;
+                const deltaBytes = bytesServed - this.lastBytes;
+                const bitrateKbps =
+                    elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
+                this.lastBytes = bytesServed;
+                this.lastPollTime = now;
+                this.setStatusData('throughput', {
+                    'Output Bitrate': `${bitrateKbps} kbps`,
+                    'Total Bytes': `${(bytesServed / 1024 / 1024).toFixed(1)} MB`,
+                });
+            } catch {
+                /* pipeline not running yet */
+            }
+        }, 2000);
+    }
+}

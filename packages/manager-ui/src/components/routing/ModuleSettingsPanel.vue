@@ -70,6 +70,8 @@ interface FormField {
     readOnly?: boolean; // x-readOnly — show value but greyed out
     items?: { type?: string; properties?: Record<string, unknown> }; // array item schema
     showWhen?: string; // x-showWhen — "key=value" conditional visibility
+    unit?: string; // x-unit — label shown after the value (e.g. "kbps", "%")
+    debounceMs?: number; // x-debounceMs — debounce slow slider updates (overrides the default 50ms throttle)
 }
 
 // Device lists come from `useDeviceStore`, populated live via socket push.
@@ -86,26 +88,33 @@ const requiredDeviceTypes = computed<string[]>(() => {
     return Array.from(types);
 });
 
-async function fetchInitialSnapshots() {
-    for (const type of requiredDeviceTypes.value) {
-        try {
-            const res = await fetch(
-                `/api/v1/engines/${props.engineId}/system/devices/${encodeURIComponent(type)}`,
-            );
-            if (res.ok) deviceStore.set(props.engineId, type, await res.json());
-        } catch (err) {
-            console.warn('[ModuleSettings] Failed to load device list', type, err);
-        }
+const fetchedKeys = new Set<string>();
+
+async function fetchSnapshot(type: string) {
+    const cacheKey = `${props.engineId}::${type}`;
+    if (fetchedKeys.has(cacheKey)) return;
+    fetchedKeys.add(cacheKey);
+    try {
+        const res = await fetch(
+            `/api/v1/engines/${props.engineId}/system/devices/${encodeURIComponent(type)}`,
+        );
+        if (res.ok) deviceStore.set(props.engineId, type, await res.json());
+    } catch (err) {
+        console.warn('[ModuleSettings] Failed to load device list', type, err);
+        fetchedKeys.delete(cacheKey); // retry on next change
     }
 }
 
-onMounted(() => {
-    fetchInitialSnapshots();
-});
-
+// Re-run whenever the set of required types changes — covers both initial
+// mount (configSchema arrives async over the wire) and module switching.
+// The cache key includes engineId, so switching engines auto-fetches without
+// a separate watcher.
 watch(
-    () => `${props.engineId}::${props.moduleId}`,
-    () => fetchInitialSnapshots(),
+    requiredDeviceTypes,
+    (types) => {
+        for (const type of types) fetchSnapshot(type);
+    },
+    { immediate: true },
 );
 
 /** Build device dropdown options. If the currently selected device was unplugged,
@@ -143,6 +152,8 @@ interface SchemaProperty {
     'x-maxBy'?: { field: string; map: Record<string, number> };
     'x-readOnly'?: boolean;
     'x-showWhen'?: string;
+    'x-unit'?: string;
+    'x-debounceMs'?: number;
     items?: { type?: string; properties?: Record<string, unknown> };
 }
 
@@ -150,6 +161,10 @@ const formFields = computed<FormField[]>(() => {
     const schema = module.value?.configSchema;
     if (!schema?.properties) return [];
     const schemaProps = schema.properties as Record<string, SchemaProperty>;
+    // Plugins may narrow the live set based on current config (e.g. video
+    // encoder drops `bitrate` for AV1). Prefer the runtime list; fall back
+    // to the schema flag when the engine hasn't reported one yet.
+    const runtimeLive = module.value?.liveUpdatableParams;
     return Object.entries(schemaProps).map(([key, prop]) => ({
         key,
         type: prop.type ?? 'string',
@@ -157,7 +172,9 @@ const formFields = computed<FormField[]>(() => {
         description: prop.description ?? '',
         defaultValue: prop.default,
         enumValues: prop.enum,
-        liveUpdatable: !!prop['x-live'] || !!prop['x-liveUpdatable'],
+        liveUpdatable: runtimeLive
+            ? runtimeLive.includes(key)
+            : !!prop['x-live'] || !!prop['x-liveUpdatable'],
         deviceType: prop['x-deviceType'],
         widget: prop['x-widget'],
         minimum: prop.minimum,
@@ -168,6 +185,8 @@ const formFields = computed<FormField[]>(() => {
         maxBy: prop['x-maxBy'],
         readOnly: !!prop['x-readOnly'],
         showWhen: prop['x-showWhen'],
+        unit: prop['x-unit'],
+        debounceMs: prop['x-debounceMs'],
         items: prop.items as FormField['items'],
     }));
 });
@@ -212,19 +231,34 @@ watch(
     { immediate: true, deep: true },
 );
 
-// Throttle live updates (sliders) to max once per 50ms, with a final send on release
-let liveThrottleTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingLiveUpdate: { key: string; value: unknown } | null = null;
+// Live updates use one of two strategies per field:
+//   * throttle (default 50ms): fire first update immediately, coalesce the
+//     rest, flush once the window closes. Good for volume / fast interactive
+//     sliders where the backend takes updates cheaply.
+//   * debounce (opt-in via `x-debounceMs`): only fire after the user has
+//     stopped changing the value for N ms. Good for expensive sliders
+//     (video bitrate: the encoder needs to reconfigure on each change).
+const DEFAULT_THROTTLE_MS = 50;
+let throttleTimer: ReturnType<typeof setTimeout> | null = null;
+let throttlePending: { key: string; value: unknown } | null = null;
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 onUnmounted(() => {
-    if (liveThrottleTimer) {
-        clearTimeout(liveThrottleTimer);
-        liveThrottleTimer = null;
+    if (throttleTimer) {
+        clearTimeout(throttleTimer);
+        throttleTimer = null;
     }
-    if (pendingLiveUpdate) {
-        sendLiveUpdate(pendingLiveUpdate.key, pendingLiveUpdate.value);
-        pendingLiveUpdate = null;
+    if (throttlePending) {
+        sendLiveUpdate(throttlePending.key, throttlePending.value);
+        throttlePending = null;
     }
+    // Flush any pending debounced values on unmount so the user doesn't lose
+    // changes they made right before closing the panel.
+    for (const [key, timer] of debounceTimers) {
+        clearTimeout(timer);
+        sendLiveUpdate(key, localSettings.value[key]);
+    }
+    debounceTimers.clear();
 });
 
 function sendLiveUpdate(key: string, value: unknown) {
@@ -243,19 +277,31 @@ function updateSetting(key: string, value: unknown) {
         }
     }
     const field = formFields.value.find((f) => f.key === key);
-    if (field?.liveUpdatable) {
-        pendingLiveUpdate = { key, value };
-        if (!liveThrottleTimer) {
-            sendLiveUpdate(key, value);
-            liveThrottleTimer = setTimeout(() => {
-                liveThrottleTimer = null;
-                // Send final value if changed during throttle window
-                if (pendingLiveUpdate) {
-                    sendLiveUpdate(pendingLiveUpdate.key, pendingLiveUpdate.value);
-                    pendingLiveUpdate = null;
-                }
-            }, 50);
-        }
+    if (!field?.liveUpdatable) return;
+
+    if (field.debounceMs && field.debounceMs > 0) {
+        const existing = debounceTimers.get(key);
+        if (existing) clearTimeout(existing);
+        debounceTimers.set(
+            key,
+            setTimeout(() => {
+                debounceTimers.delete(key);
+                sendLiveUpdate(key, localSettings.value[key]);
+            }, field.debounceMs),
+        );
+        return;
+    }
+
+    throttlePending = { key, value };
+    if (!throttleTimer) {
+        sendLiveUpdate(key, value);
+        throttleTimer = setTimeout(() => {
+            throttleTimer = null;
+            if (throttlePending) {
+                sendLiveUpdate(throttlePending.key, throttlePending.value);
+                throttlePending = null;
+            }
+        }, DEFAULT_THROTTLE_MS);
     }
 }
 
@@ -509,12 +555,12 @@ function applyAll() {
                             :step="field.step ?? 0.01"
                             @update:model-value="updateSetting(field.key, $event)"
                         />
-                        <span class="text-xs w-12 text-right tabular-nums text-subtle">
+                        <span class="text-xs w-16 text-right tabular-nums text-subtle">
                             {{
                                 Math.round(
                                     Number(localSettings[field.key] ?? field.defaultValue ?? 100),
                                 )
-                            }}%
+                            }}{{ field.unit ?? '%' }}
                         </span>
                     </div>
                     <!-- Plain number input -->
