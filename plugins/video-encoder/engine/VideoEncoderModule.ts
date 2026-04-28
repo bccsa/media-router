@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    buildUdpSink,
     probeGstElement,
     type EngineServices,
     type ModuleServices,
@@ -158,7 +159,7 @@ export class VideoEncoderModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(instanceId);
         const udpSink = endpoint
-            ? `udpsink name=usink host=${endpoint.host} port=${endpoint.port} multicast-iface=lo auto-multicast=true buffer-size=2097152 sync=false`
+            ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';
 
         const pipeline = `${source} ! ${encoder} ! mpegtsmux name=mux latency=0 alignment=7 ! ${udpSink}`;

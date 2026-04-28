@@ -158,9 +158,10 @@ export class ModuleInstance extends EventEmitter {
                 );
             }
         }
-        // Release UDP encoder port (if this module had one allocated)
+        // Release every UDP encoder port owned by this module — primary slot plus
+        // any per-output sub-slots (multi-output plugins like mpegts-demuxer).
         if (this.services?.mediaRouter) {
-            this.services.mediaRouter.releaseEncoderPort(this.instanceId);
+            this.services.mediaRouter.releaseAllEncoderPortsFor(this.instanceId);
         }
         this.emitStateChange();
     }

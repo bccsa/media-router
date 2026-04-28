@@ -271,6 +271,18 @@ importers:
 
   plugins/example-plugin: {}
 
+  plugins/mpegts-demuxer:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/mpegts-muxer:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/n1-mixer:
     dependencies:
       '@media-router/engine':

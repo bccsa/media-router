@@ -51,6 +51,20 @@ export class UdpPortManager {
         }
     }
 
+    /**
+     * Release every port owned by `ownerId` or any sub-key of the form
+     * `${ownerId}:*`. Used when a module shuts down and may have allocated
+     * both a primary and one-or-more sub-port slots (e.g. demuxer outputs).
+     */
+    releaseAllForOwner(ownerId: string): void {
+        const prefix = `${ownerId}:`;
+        const toRelease: string[] = [];
+        for (const key of this.allocated.keys()) {
+            if (key === ownerId || key.startsWith(prefix)) toRelease.push(key);
+        }
+        for (const key of toRelease) this.release(key);
+    }
+
     /** Release all ports. */
     releaseAll(): void {
         this.allocated.clear();

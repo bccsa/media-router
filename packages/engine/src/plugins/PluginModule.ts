@@ -68,4 +68,31 @@ export interface PipelineDescription {
     useStdioForData?: boolean;
     /** When true, pipeline auto-restarts on GStreamer bus error or EOS (like v1 reload behaviour). */
     restartOnError?: boolean;
+    /**
+     * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
+     * created branches at runtime. Each rule listens for `pad-added` on a
+     * named element in the pipeline and instantiates one fresh branch per
+     * matched pad — capped by the length of `branches`. See `PadLinkRule`.
+     */
+    linkOnPadAdded?: PadLinkRule[];
+}
+
+export interface PadLinkRule {
+    /** Element name in the pipeline whose `pad-added` is observed. */
+    from: string;
+    /** Caps filter — only match pads whose first caps structure starts with `${media}/`. */
+    media: 'video' | 'audio';
+    /**
+     * One parse_launch fragment per matched pad, in pad-added order. The Nth
+     * matching pad is linked to `branches[N]`; pads beyond the list length
+     * are ignored.
+     */
+    branches: string[];
+    /**
+     * Optional — name of an outer-pipeline element to request a sink pad on
+     * after each branch is built. The branch's auto-ghosted src pad is
+     * linked to this element's freshly-requested `sink_%d`. Used to bridge
+     * dynamically-built branches into a named muxer.
+     */
+    linkTo?: string;
 }

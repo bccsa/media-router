@@ -1,0 +1,81 @@
+{
+    "name": "@media-router/plugin-mpegts-demuxer",
+    "version": "2.0.0",
+    "private": true,
+    "description": "MPEG-TS demuxer — splits a multi-program transport stream into separate video/audio outputs",
+    "mediaRouter": {
+        "pluginId": "mpegts-demuxer",
+        "displayName": "MPEG-TS Demuxer",
+        "description": "Receives one muxed/mpegts stream and splits it into N video and M audio outputs, each on its own multicast group.",
+        "color": "#f59e0b",
+        "icon": "git-fork",
+        "category": "processing",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "videoStreamCount": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 8,
+                    "default": 1,
+                    "description": "Number of video output streams"
+                },
+                "audioStreamCount": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 16,
+                    "default": 1,
+                    "description": "Number of audio output streams"
+                },
+                "videoCodec": {
+                    "type": "string",
+                    "enum": ["h264", "h265", "av1"],
+                    "default": "h264",
+                    "description": "Video codec inside the input stream — picks the parser between tsdemux and the per-output mpegtsmux"
+                },
+                "bufferMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2000,
+                    "default": 50,
+                    "description": "Per-pad queue size in milliseconds — lower = lower latency, higher = more jitter tolerance",
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "ms",
+                    "x-liveUpdatable": false
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "input",
+                "label": "Input",
+                "fields": [
+                    { "key": "host", "label": "Multicast" },
+                    { "key": "port", "label": "Port" }
+                ]
+            },
+            {
+                "id": "outputs",
+                "label": "Outputs",
+                "fields": [
+                    { "key": "video", "label": "Video Streams" },
+                    { "key": "audio", "label": "Audio Streams" }
+                ]
+            }
+        ],
+        "engine": "./engine/MpegTsDemuxerModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

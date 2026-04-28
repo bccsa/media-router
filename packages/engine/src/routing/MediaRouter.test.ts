@@ -294,6 +294,84 @@ describe('MediaRouter', () => {
         expect(router.getEncoderEndpoint('enc-1')).toBeUndefined();
     });
 
+    // --- per-port UDP allocation (multi-output mpeg-ts plugins) ---
+
+    it('assignEncoderPort with portId allocates a separate slot per output port', () => {
+        const a = router.assignEncoderPort('demux-1', 'out-0');
+        const b = router.assignEncoderPort('demux-1', 'out-1');
+        const primary = router.assignEncoderPort('demux-1');
+        expect(a).not.toEqual(b);
+        expect(a).not.toEqual(primary);
+        expect(b).not.toEqual(primary);
+    });
+
+    it('getEncoderEndpoint resolves per-port slot independently from the bare module key', () => {
+        router.assignEncoderPort('demux-1', 'out-0');
+        expect(router.getEncoderEndpoint('demux-1')).toBeUndefined();
+        expect(router.getEncoderEndpoint('demux-1', 'out-0')).toBeDefined();
+    });
+
+    it('releaseAllEncoderPortsFor sweeps the bare slot and every per-port sub-slot', () => {
+        router.assignEncoderPort('demux-1');
+        router.assignEncoderPort('demux-1', 'out-0');
+        router.assignEncoderPort('demux-1', 'out-1');
+        router.assignEncoderPort('other-mod');
+        router.releaseAllEncoderPortsFor('demux-1');
+        expect(router.getEncoderEndpoint('demux-1')).toBeUndefined();
+        expect(router.getEncoderEndpoint('demux-1', 'out-0')).toBeUndefined();
+        expect(router.getEncoderEndpoint('demux-1', 'out-1')).toBeUndefined();
+        // unrelated modules untouched
+        expect(router.getEncoderEndpoint('other-mod')).toBeDefined();
+    });
+
+    it('getModuleUdpSource prefers the per-port slot when the source has one allocated', async () => {
+        // Source advertises two muxed/mpegts outputs; sink has one input.
+        router.registerPorts('demux-1', [
+            { id: 'out-0', direction: 'output', streamType: 'muxed/mpegts', label: 'A' },
+            { id: 'out-1', direction: 'output', streamType: 'muxed/mpegts', label: 'B' },
+        ]);
+        router.registerPorts('player-1', [
+            { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
+        ]);
+        router.assignEncoderPort('demux-1', 'out-0');
+        router.assignEncoderPort('demux-1', 'out-1');
+        await router.createConnection('demux-1', 'out-1', 'player-1', 'mpegts-in');
+        const src = router.getModuleUdpSource('player-1');
+        expect(src).toBeDefined();
+        expect(src!.sourcePortId).toBe('out-1');
+        expect(src!.port).toBe(router.getEncoderEndpoint('demux-1', 'out-1')!.port);
+    });
+
+    it('getModuleUdpSource falls back to module-level allocation for legacy single-port encoders', async () => {
+        registerMpegtsPair(router);
+        router.assignEncoderPort('encoder');
+        await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
+        const src = router.getModuleUdpSource('decoder');
+        expect(src).toBeDefined();
+        expect(src!.port).toBe(router.getEncoderEndpoint('encoder')!.port);
+    });
+
+    it('getModuleUdpSources returns one entry per connected muxed/mpegts source', async () => {
+        // Two encoders feeding one muxer.
+        router.registerPorts('enc-a', [
+            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'A' },
+        ]);
+        router.registerPorts('enc-b', [
+            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'B' },
+        ]);
+        router.registerPorts('mux-1', [
+            { id: 'in-0', direction: 'input', streamType: 'muxed/mpegts', label: 'In0' },
+            { id: 'in-1', direction: 'input', streamType: 'muxed/mpegts', label: 'In1' },
+        ]);
+        router.assignEncoderPort('enc-a');
+        router.assignEncoderPort('enc-b');
+        await router.createConnection('enc-a', 'mpegts-out', 'mux-1', 'in-0');
+        await router.createConnection('enc-b', 'mpegts-out', 'mux-1', 'in-1');
+        const sources = router.getModuleUdpSources('mux-1');
+        expect(sources).toHaveLength(2);
+        expect(sources.map((s) => s.sinkPortId).sort()).toEqual(['in-0', 'in-1']);
+    });
+
     // --- getModuleConnections ---
 
     it('getModuleConnections returns only connections for the given module', async () => {

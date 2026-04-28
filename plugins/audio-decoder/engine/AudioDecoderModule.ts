@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    buildUdpSrc,
     type PipelineDescription,
     type ModuleServices,
     probeMpegTsStream,
@@ -111,13 +112,13 @@ export class AudioDecoderModule extends GstPluginBase {
             return null;
         }
 
-        // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port binding
-        const isMulticast = udpSource.host.startsWith('239.');
         // Small kernel buffer (64KB) — prevents stale data accumulation on startup.
         // The leaky queue after tsdemux handles flow control.
-        const udpSrc = isMulticast
-            ? `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=65536`
-            : `udpsrc port=${udpSource.port} buffer-size=65536`;
+        const udpSrc = buildUdpSrc({
+            host: udpSource.host,
+            port: udpSource.port,
+            bufferSize: 65_536,
+        });
 
         // Plugin decides decoder based on probe result
         let decoder: string;

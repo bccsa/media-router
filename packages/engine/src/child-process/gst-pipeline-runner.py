@@ -174,12 +174,125 @@ def on_bus_message(bus, message):
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dynamic pad linking (tsdemux → branches with sometimes-pads)
+# ---------------------------------------------------------------------------
+# Per-rule counter of how many pads we've already linked, so `maxPads` works.
+_pad_link_counts = {}
+
+def _pad_caps_media(pad):
+    """Return 'video' / 'audio' / None for a pad based on its current caps."""
+    caps = pad.get_current_caps() or pad.query_caps(None)
+    if not caps or caps.get_size() == 0:
+        return None
+    name = caps.get_structure(0).get_name() or ''
+    if name.startswith('video/'):
+        return 'video'
+    if name.startswith('audio/'):
+        return 'audio'
+    return None
+
+def _install_pad_link_rule(pipe, rule):
+    """
+    Install one `linkOnPadAdded` rule.
+
+    rule = {
+      "from": "<element name>",         # listen for pad-added on this element
+      "media": "video"|"audio",         # filter — only link pads of this media type
+      "branches": ["<parse_launch fragment>", ...],  # one branch per matched pad,
+                                                       in pad-added order
+      "linkTo": "<element name>",       # optional — request a sink pad on this
+                                        # outer-pipeline element and link the bin's
+                                        # src ghost pad to it. Used to bridge bins
+                                        # to an outer named muxer.
+    }
+
+    The Nth pad of the matching media type is connected to `branches[N]`.
+    Branches beyond the supplied list are ignored — caller controls fan-out
+    by choosing the list length.
+    """
+    src = pipe.get_by_name(rule.get("from", ""))
+    if not src:
+        emit_event({"event": "error",
+                    "message": f"linkOnPadAdded: source element not found: {rule.get('from')}"})
+        return
+
+    branches = rule.get("branches") or []
+    if not branches:
+        return
+
+    rule_id = f"{rule.get('from')}::{rule.get('media')}"
+    _pad_link_counts[rule_id] = 0
+    media_filter = rule.get("media")
+    link_to_name = rule.get("linkTo")
+
+    def on_pad_added(_element, pad):
+        if media_filter and _pad_caps_media(pad) != media_filter:
+            return
+        index = _pad_link_counts[rule_id]
+        if index >= len(branches):
+            return
+        _pad_link_counts[rule_id] = index + 1
+        branch_str = branches[index]
+        try:
+            bin_ = Gst.parse_bin_from_description(branch_str, True)
+            bin_.set_name(f"branch_{rule_id.replace('::','_')}_{index}")
+            # Order matters: add → link (both ends) → sync state. Linking before
+            # the bin moves to PLAYING avoids a race where the demuxer pad
+            # produces buffers with no downstream sink yet.
+            pipe.add(bin_)
+            sink_pad = bin_.get_static_pad("sink")
+            if not sink_pad:
+                emit_event({"event": "error",
+                            "message": f"linkOnPadAdded: branch has no sink pad ({rule_id})"})
+                return
+            link_ret = pad.link(sink_pad)
+            if link_ret != Gst.PadLinkReturn.OK:
+                emit_event({"event": "error",
+                            "message": f"linkOnPadAdded: pad link failed ({link_ret}) for rule {rule_id}"})
+                return
+            # Optional: link the bin's src ghost pad to a request pad on an outer element
+            if link_to_name:
+                target = pipe.get_by_name(link_to_name)
+                if not target:
+                    emit_event({"event": "error",
+                                "message": f"linkOnPadAdded: linkTo target not found: {link_to_name}"})
+                    return
+                src_pad = bin_.get_static_pad("src")
+                if not src_pad:
+                    emit_event({"event": "error",
+                                "message": f"linkOnPadAdded: branch has no src pad to link to {link_to_name} ({rule_id})"})
+                    return
+                # Request a fresh sink pad on the target (works for muxers / aggregators)
+                req_pad = target.request_pad_simple("sink_%d")
+                if not req_pad:
+                    emit_event({"event": "error",
+                                "message": f"linkOnPadAdded: could not request sink pad on {link_to_name} ({rule_id})"})
+                    return
+                outer_link = src_pad.link(req_pad)
+                if outer_link != Gst.PadLinkReturn.OK:
+                    emit_event({"event": "error",
+                                "message": f"linkOnPadAdded: could not link branch src to {link_to_name} ({outer_link}) ({rule_id})"})
+                    return
+            bin_.sync_state_with_parent()
+            emit_event({"event": "pad_linked",
+                        "rule": rule_id,
+                        "index": index,
+                        "padName": pad.get_name()})
+        except GLib.Error as e:
+            emit_event({"event": "error",
+                        "message": f"linkOnPadAdded: branch parse failed: {e.message}"})
+
+    src.connect("pad-added", on_pad_added)
+
+
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
-    global pipeline, loop, running, use_stdio_for_data
+    global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
 
     pipeline_str = data.get("pipeline", "")
     use_stdio_for_data = data.get("useStdioForData", False)
+    pad_link_rules = data.get("linkOnPadAdded", []) or []
 
     if not pipeline_str:
         emit_event({"event": "error", "message": "No pipeline string provided"})
@@ -190,6 +303,11 @@ def handle_start(data):
     except GLib.Error as e:
         emit_event({"event": "error", "message": f"Pipeline parse error: {e.message}"})
         return
+
+    # Reset per-run pad counters and install dynamic-pad-link rules
+    _pad_link_counts = {}
+    for rule in pad_link_rules:
+        _install_pad_link_rule(pipeline, rule)
 
     # Set up bus watch
     bus = pipeline.get_bus()
@@ -448,8 +566,18 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        # Print why we're exiting so the parent log isn't a silent "code=0".
+        sys.stderr.write(f"[gst-runner.py] Main loop exited (pipeline={'set' if pipeline else 'unset'})\n")
+        sys.stderr.flush()
         if pipeline:
             pipeline.set_state(Gst.State.NULL)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        sys.stderr.write(f"[gst-runner.py] Fatal: {e}\n")
+        sys.stderr.write(traceback.format_exc())
+        sys.stderr.flush()
+        sys.exit(1)

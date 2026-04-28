@@ -1,4 +1,9 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import {
+    GstPluginBase,
+    buildUdpSrc,
+    type PipelineDescription,
+    type ModuleServices,
+} from '@media-router/engine';
 
 function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -68,7 +73,7 @@ export class SrtOutputModule extends GstPluginBase {
         uri += '?' + params.join('&');
 
         const pipeline = [
-            `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true`,
+            buildUdpSrc({ host: udpSource.host, port: udpSource.port }),
             'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
             `srtsink name=sink uri="${uri}" sync=false`,
         ].join(' ! ');

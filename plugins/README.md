@@ -531,10 +531,55 @@ interface PipelineDescription {
     useStdioForData?: boolean;
     /** Named elements with live-updatable properties. */
     liveElements?: Record<string, string[]>;
+    /** Auto-restart on bus error / EOS. */
+    restartOnError?: boolean;
+    /** Dynamic-pad linking rules (tsdemux, decodebin, …). See below. */
+    linkOnPadAdded?: PadLinkRule[];
 }
 ```
 
 Return `null` to run the module without a GStreamer pipeline (idle state). The module's null-sink stays active but no audio processing runs. Useful for decoders waiting for an encoder connection.
+
+#### Dynamic pad linking (`linkOnPadAdded`)
+
+`gst_parse_launch` does not link sometimes-pads from elements like `tsdemux` or `decodebin` when there is more than one downstream branch per media type. To fan out N outputs, return a `linkOnPadAdded` rule per media type. Each rule lists one parse_launch fragment per matched pad, in pad-added order:
+
+```typescript
+return {
+    pipeline: 'udpsrc ! tsparse ! tsdemux name=demux',
+    linkOnPadAdded: [
+        {
+            from: 'demux',
+            media: 'video',
+            branches: [
+                'queue ! mpegtsmux ! udpsink port=41001',
+                'queue ! mpegtsmux ! udpsink port=41002',
+            ],
+        },
+        {
+            from: 'demux',
+            media: 'audio',
+            branches: ['queue ! mpegtsmux ! udpsink port=41003'],
+        },
+    ],
+};
+```
+
+Each branch's first element's sink pad is auto-ghosted, so the rule only needs the downstream elements. Pads beyond the supplied list are ignored.
+
+**Bridging branches into an outer named muxer (`linkTo`).** When several dynamic branches need to fan into one shared muxer at the top of the pipeline, the branch can't reference that outer element by name (parse_bin scope is local to the branch). Add `linkTo: '<outer element name>'` and the runner will request a fresh sink pad on that element and link the branch's auto-ghosted src pad to it:
+
+```typescript
+return {
+    pipeline: 'mpegtsmux name=mux ! udpsink ... udpsrc ! tsdemux name=demux_0 udpsrc ! tsdemux name=demux_1',
+    linkOnPadAdded: [
+        { from: 'demux_0', media: 'video', branches: ['queue ! h264parse config-interval=1'], linkTo: 'mux' },
+        { from: 'demux_0', media: 'audio', branches: ['queue'], linkTo: 'mux' },
+        { from: 'demux_1', media: 'video', branches: ['queue ! h264parse config-interval=1'], linkTo: 'mux' },
+        { from: 'demux_1', media: 'audio', branches: ['queue'], linkTo: 'mux' },
+    ],
+};
+```
 
 ### Health Status
 

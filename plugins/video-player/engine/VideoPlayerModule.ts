@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
     GstPluginBase,
+    buildUdpSrc,
     probeGstElement,
     type EngineServices,
     type ModuleServices,
@@ -254,10 +255,7 @@ export function buildLivePipeline(
     sinkElement: string,
     udpSource: { host: string; port: number },
 ): string {
-    const isMulticast = udpSource.host.startsWith('239.');
-    const udpSrc = isMulticast
-        ? `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true buffer-size=2097152`
-        : `udpsrc port=${udpSource.port} buffer-size=2097152`;
+    const udpSrc = buildUdpSrc({ host: udpSource.host, port: udpSource.port });
     return (
         `${udpSrc} ! tsdemux latency=0 ` +
         `! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! decodebin ` +

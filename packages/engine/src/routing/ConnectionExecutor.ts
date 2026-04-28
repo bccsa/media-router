@@ -16,7 +16,7 @@ export class ConnectionExecutor {
     constructor(
         private pipeWire: PipeWireManager,
         private moduleGetter: (id: string) => ModuleInstance | undefined,
-        private getUdpPort: (moduleId: string) => number | undefined,
+        private getUdpPort: (moduleId: string, portId?: string) => number | undefined,
         private multicastAddr: string,
         /** Optional: resolve moduleId → display name for logging. */
         private displayNameResolver?: (id: string) => string,
@@ -286,7 +286,7 @@ export class ConnectionExecutor {
             return null;
         }
 
-        const udpPort = this.getUdpPort(conn.sourceModuleId);
+        const udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
         if (udpPort === undefined) {
             log.warn(
                 { sourceModuleId: conn.sourceModuleId },

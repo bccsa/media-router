@@ -14,6 +14,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import type { ControlIpcMessage } from '@media-router/shared-types';
+import type { PadLinkRule } from '../plugins/PluginModule.js';
 
 let pyProcess: ChildProcess | null = null;
 let currentState: 'stopped' | 'playing' | 'error' = 'stopped';
@@ -62,10 +63,8 @@ function handlePythonEvent(eventJson: Record<string, unknown>): void {
 
     switch (event) {
         case 'ready':
-            console.error('[gst-runner] Python runner ready');
-            break;
-
         case 'started':
+            // No-op — the `Starting pipeline (...)` log already covers it.
             break;
 
         case 'state_change': {
@@ -89,15 +88,25 @@ function handlePythonEvent(eventJson: Record<string, unknown>): void {
 
         case 'error':
             currentState = 'error';
+            console.error(
+                `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
+            );
             sendEvent('error', { message: eventJson.message });
             sendEvent('stateChange', { state: 'error' });
             if (restartOnError) scheduleRestart();
             break;
 
         case 'eos':
+            console.error('[gst-runner] Pipeline EOS');
             currentState = 'stopped';
             sendEvent('stateChange', { state: 'stopped' });
             if (restartOnError) scheduleRestart();
+            break;
+
+        case 'pad_linked':
+            console.error(
+                `[gst-runner] Pad linked: rule=${eventJson.rule} index=${eventJson.index} pad=${eventJson.padName}`,
+            );
             break;
 
         case 'property':
@@ -140,6 +149,7 @@ function handlePythonStderr(data: Buffer): void {
     const text = data.toString();
     for (const line of text.split('\n')) {
         const trimmed = line.trim();
+        if (!trimmed) continue;
         if (trimmed.startsWith('GST_JSON:')) {
             try {
                 const json = JSON.parse(trimmed.substring(9));
@@ -147,6 +157,12 @@ function handlePythonStderr(data: Buffer): void {
             } catch {
                 // Not valid JSON — ignore
             }
+        } else {
+            // Forward raw GStreamer / Python stderr to engine logs so plugin
+            // pipeline errors are visible. Without this, anything that doesn't
+            // come through the bus (parse errors, GStreamer warnings, Python
+            // tracebacks) is silently dropped.
+            console.error(`[gst-py] ${trimmed}`);
         }
     }
 }
@@ -215,12 +231,24 @@ function scheduleRestart(): void {
     restartTimer = setTimeout(() => {
         restartTimer = null;
         if (lastPipelineString) {
-            startPipeline(lastPipelineString, `restart-${restartAttempts}`, useStdioForData);
+            startPipeline(
+                lastPipelineString,
+                `restart-${restartAttempts}`,
+                useStdioForData,
+                lastPadLinkRules,
+            );
         }
     }, delay);
 }
 
-function startPipeline(pipeline: string, requestId: string, stdioForData = false): void {
+let lastPadLinkRules: PadLinkRule[] = [];
+
+function startPipeline(
+    pipeline: string,
+    requestId: string,
+    stdioForData = false,
+    padLinkRules: PadLinkRule[] = [],
+): void {
     if (restartTimer) {
         clearTimeout(restartTimer);
         restartTimer = null;
@@ -230,9 +258,15 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
     }
 
     lastPipelineString = pipeline;
+    lastPadLinkRules = padLinkRules;
     useStdioForData = stdioForData;
     const mode = stdioForData ? 'data-pipe' : 'bus-messages';
-    console.error(`[gst-runner] Starting pipeline (${mode}): ${pipeline.substring(0, 100)}...`);
+    // Log the full pipeline string — truncating it hides the failing element
+    // when a plugin's pipeline is rejected by parse_launch.
+    console.error(`[gst-runner] Starting pipeline (${mode}): ${pipeline}`);
+    if (padLinkRules.length > 0) {
+        console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(padLinkRules)}`);
+    }
 
     if (stdioForData) {
         // DATA MODE: stdin/stdout carry binary MPEG-TS data
@@ -287,7 +321,12 @@ function startPipeline(pipeline: string, requestId: string, stdioForData = false
     });
 
     // Send start command to Python runner
-    sendToPython({ cmd: 'start', pipeline, useStdioForData: stdioForData });
+    sendToPython({
+        cmd: 'start',
+        pipeline,
+        useStdioForData: stdioForData,
+        linkOnPadAdded: padLinkRules,
+    });
 
     sendResponse(requestId, { ok: true });
 }
@@ -339,10 +378,11 @@ process.on('message', (msg: ControlIpcMessage) => {
                 pipeline: string;
                 useStdioForData?: boolean;
                 restartOnError?: boolean;
+                linkOnPadAdded?: PadLinkRule[];
             };
             restartOnError = d.restartOnError ?? false;
             restartAttempts = 0;
-            startPipeline(d.pipeline, msg.id, d.useStdioForData);
+            startPipeline(d.pipeline, msg.id, d.useStdioForData, d.linkOnPadAdded ?? []);
             break;
         }
 
@@ -463,5 +503,3 @@ process.on('exit', () => {
         } catch {}
     }
 });
-
-console.error('[gst-runner] Ready v3, waiting for pipeline...');

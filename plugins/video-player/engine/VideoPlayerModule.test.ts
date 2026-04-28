@@ -112,6 +112,9 @@ describe('VideoPlayerModule helpers', () => {
             (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue({
                 host: '239.255.0.1',
                 port: 5500,
+                connectionId: 'enc-1:mpegts-out-player-1:mpegts-in',
+                sourceModuleId: 'enc-1',
+                sourcePortId: 'mpegts-out',
             });
             const desc = module.buildPipeline({
                 fallbackText: 'No video',

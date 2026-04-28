@@ -4,12 +4,20 @@ export { PluginLoader } from './plugins/PluginLoader.js';
 export type {
     PluginModule,
     PipelineDescription,
+    PadLinkRule,
     EngineServices,
     ModuleServices,
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
 export { probeGstElement, gstInspectMaxChannels } from './plugins/gstInspect.js';
+export { buildUdpSrc, buildUdpSink, isMulticast } from './plugins/udpHelpers.js';
+export type { UdpSrcOpts, UdpSinkOpts } from './plugins/udpHelpers.js';
+export {
+    DEFAULT_MPEGTS_ALIGNMENT,
+    buildLeakyQueue,
+    videoParserForCodec,
+} from './plugins/tsHelpers.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
