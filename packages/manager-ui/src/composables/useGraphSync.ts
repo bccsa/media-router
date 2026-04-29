@@ -1,6 +1,6 @@
 import { ref, computed, watch, nextTick, type ComputedRef, type Ref } from 'vue';
 import { useVueFlow, type Node, type Edge, type Connection } from '@vue-flow/core';
-import type { EngineState } from '@/stores/engines';
+import type { EngineState, ModuleState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
@@ -33,47 +33,51 @@ export function useGraphSync(
 ) {
     const socket = useSocketStore();
     const engineStore = useEngineStore();
-    const { fitView, setCenter, screenToFlowCoordinate, onNodesInitialized } = useVueFlow();
+    const { fitView, setCenter, screenToFlowCoordinate, onNodesInitialized, findNode } =
+        useVueFlow();
     const hasInitialFit = ref(false);
 
-    // --- Nodes: reactive ref bound via v-model:nodes ---
+    // --- Nodes ---
+    //
+    // Position sources: `mod.position` is persistent (DB-backed); during an
+    // active drag we read live position from `findNode(id).position` (Vue Flow's
+    // internal store), NOT from `nodes.value` — its two-way sync with Vue Flow
+    // lags by a microtask and was the source of the snap-back race.
+    //
+    // Per-node change detection preserves refs when nothing relevant changed,
+    // so deep mutations (statusData / health / VU) don't churn the array.
 
     const nodes = ref<Node[]>([]);
-
-    // Track drags so server position updates don't overwrite user drags
     const activeDrags = new Set<string>();
-    const recentDrags = new Map<string, number>();
-    const DRAG_IGNORE_MS = 2000;
-
-    // Rebuild nodes when module IDs change (add/remove).
-    const moduleIds = computed(() => {
-        if (!engine.value?.modules) return '';
-        return Object.keys(engine.value.modules).sort().join(',');
-    });
 
     watch(
-        moduleIds,
-        () => {
-            const modules = engine.value?.modules;
+        () => engine.value?.modules,
+        (modules) => {
             if (!modules) {
                 nodes.value = [];
                 return;
             }
-
-            // Preserve positions from current nodes (user may have dragged)
-            const currentPositions = new Map<string, { x: number; y: number }>();
-            for (const n of nodes.value) {
-                currentPositions.set(n.id, { ...n.position });
-            }
-
-            const newNodes: Node[] = Object.values(modules).map((mod) => ({
-                id: mod.instanceId,
-                type: 'module',
-                position: currentPositions.get(mod.instanceId) ??
-                    mod.position ?? { x: 100, y: 100 },
-                data: mod,
-            }));
-            nodes.value = newNodes;
+            const prev = new Map((nodes.value as Node[]).map((n) => [n.id, n]));
+            const incoming = Object.values(modules);
+            let changed = incoming.length !== nodes.value.length;
+            const next: Node[] = incoming.map((mod) => {
+                const livePos = activeDrags.has(mod.instanceId)
+                    ? findNode(mod.instanceId)?.position
+                    : undefined;
+                const desiredPos = livePos ?? mod.position ?? { x: 100, y: 100 };
+                const old = prev.get(mod.instanceId);
+                if (
+                    old &&
+                    old.data === mod &&
+                    old.position.x === desiredPos.x &&
+                    old.position.y === desiredPos.y
+                ) {
+                    return old;
+                }
+                changed = true;
+                return { id: mod.instanceId, type: 'module', position: desiredPos, data: mod };
+            });
+            if (changed) nodes.value = next;
 
             if (!hasInitialFit.value && nodes.value.length > 0) {
                 hasInitialFit.value = true;
@@ -81,38 +85,7 @@ export function useGraphSync(
                 setTimeout(() => fitView({ padding: 0.2 }), 200);
             }
         },
-        { immediate: true },
-    );
-
-    // Update node data + positions when module properties change.
-    // Declarative mode: replace node objects in the array so Vue Flow re-reads.
-    watch(
-        () => engine.value?.modules,
-        (modules) => {
-            if (!modules) return;
-            const now = Date.now();
-            let changed = false;
-            const updated: Node[] = (nodes.value as Node[]).map((node) => {
-                const mod = modules[node.id];
-                if (!mod) return node;
-                const skipPosition =
-                    activeDrags.has(node.id) ||
-                    now - (recentDrags.get(node.id) ?? 0) < DRAG_IGNORE_MS;
-                const newPos =
-                    skipPosition || !mod.position
-                        ? node.position
-                        : node.position.x === mod.position.x && node.position.y === mod.position.y
-                          ? node.position
-                          : { ...mod.position };
-                if (node.data !== mod || newPos !== node.position) {
-                    changed = true;
-                    return { ...node, data: mod, position: newPos };
-                }
-                return node;
-            });
-            if (changed) nodes.value = updated;
-        },
-        { deep: true },
+        { deep: true, immediate: true },
     );
 
     // --- Edges: ref with deferred publish until handles are mounted ---
@@ -265,7 +238,6 @@ export function useGraphSync(
 
     function onNodeDragStop(event: { node: Node }) {
         activeDrags.delete(event.node.id);
-        recentDrags.set(event.node.id, Date.now());
         patch.modulePosition(engineId(), event.node.id, event.node.position);
     }
 

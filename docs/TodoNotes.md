@@ -121,3 +121,6 @@
 
 - [ ] Replace media-router heading in manager and lcp with media-router logo
 - [ ] Add a fourmat button to the routerView, that it auto format the layout (like with n8n)
+- [x] Modules jump around when moving them (fixed: `useGraphSync` now reads live drag position from Vue Flow's authoritative `findNode().position` instead of from `nodes.value`, whose two-way sync with Vue Flow's store is async and was returning pre-drag positions on close races; removed the `recentDrags` 2s window — no longer needed)
+- [ ] Video player need to be restarted when it looses the mpegts stream and gets it back again, thei the player crash or it is when the streen if off for long, then the player does not auto restart any more 
+- [ ] Latency grow on the video encoder / player
