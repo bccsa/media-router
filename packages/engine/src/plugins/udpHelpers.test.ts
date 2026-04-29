@@ -41,6 +41,19 @@ describe('buildUdpSrc', () => {
             'udpsrc name=src0',
         );
     });
+    it('omits timeout when not set', () => {
+        const s = buildUdpSrc({ host: '127.0.0.1', port: 1 });
+        expect(s).not.toContain('timeout=');
+    });
+    it('emits timeout=NS for unicast sources when timeoutNs is set', () => {
+        const s = buildUdpSrc({ host: '127.0.0.1', port: 1, timeoutNs: 5_000_000_000 });
+        expect(s).toContain('timeout=5000000000');
+    });
+    it('emits timeout=NS for multicast sources when timeoutNs is set', () => {
+        const s = buildUdpSrc({ host: '239.255.0.1', port: 1, timeoutNs: 5_000_000_000 });
+        expect(s).toContain('timeout=5000000000');
+        expect(s).toContain('multicast-group=239.255.0.1');
+    });
 });
 
 describe('buildUdpSink', () => {

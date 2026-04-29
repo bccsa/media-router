@@ -27,16 +27,25 @@ export interface UdpSrcOpts {
     caps?: string;
     /** Optional element name (`name=...`). */
     name?: string;
+    /**
+     * If set, udpsrc posts a `GstUDPSrcTimeout` element message on the bus
+     * when no packets arrive for this duration (nanoseconds). The Python
+     * runner translates that to an `error` event so the gst-runner restart
+     * path triggers — necessary because a stalled UDP source is otherwise
+     * silent and never emits a bus error of its own.
+     */
+    timeoutNs?: number;
 }
 
 export function buildUdpSrc(opts: UdpSrcOpts): string {
     const buf = opts.bufferSize ?? 2_097_152;
     const nameClause = opts.name ? ` name=${opts.name}` : '';
     const capsClause = opts.caps ? ` caps="${opts.caps}"` : '';
+    const timeoutClause = opts.timeoutNs ? ` timeout=${opts.timeoutNs}` : '';
     if (isMulticast(opts.host)) {
-        return `udpsrc${nameClause} multicast-group=${opts.host} port=${opts.port} multicast-iface=${MULTICAST_IFACE} auto-multicast=true buffer-size=${buf}${capsClause}`;
+        return `udpsrc${nameClause} multicast-group=${opts.host} port=${opts.port} multicast-iface=${MULTICAST_IFACE} auto-multicast=true buffer-size=${buf}${timeoutClause}${capsClause}`;
     }
-    return `udpsrc${nameClause} port=${opts.port} buffer-size=${buf}${capsClause}`;
+    return `udpsrc${nameClause} port=${opts.port} buffer-size=${buf}${timeoutClause}${capsClause}`;
 }
 
 export interface UdpSinkOpts {

@@ -166,8 +166,24 @@ def on_bus_message(bus, message):
 
     elif t == Gst.MessageType.ELEMENT:
         structure = message.get_structure()
-        if structure and structure.get_name() == "level":
+        name = structure.get_name() if structure else None
+        if name == "level":
             handle_level_message(structure)
+        elif name == "GstUDPSrcTimeout":
+            # udpsrc has not received data within its configured timeout.
+            # Surface this as an error so the gst-runner's restart path
+            # triggers — udpsrc itself does not stop the pipeline on
+            # timeout, it just posts the message.
+            emit_event(
+                {
+                    "event": "error",
+                    "message": "UDP source timeout (no data received)",
+                }
+            )
+            if pipeline:
+                pipeline.set_state(Gst.State.NULL)
+            if loop and loop.is_running():
+                loop.quit()
 
     return True
 

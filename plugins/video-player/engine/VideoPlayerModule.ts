@@ -245,17 +245,26 @@ export function buildFallbackOnlyPipeline(fallbackText: string, sinkElement: str
  * Active-source pipeline. Goes straight from `udpsrc` to the configured sink
  * with no fallback branch — the test-pattern fallback only runs when the
  * module has no source assigned (`buildFallbackOnlyPipeline`). Stream drops
- * trigger the engine's `restartOnError` loop.
+ * trigger the engine's `restartOnError` loop, which gets re-armed by the
+ * 5s `udpsrc` timeout below: if the source goes silent for 5s the runner
+ * tears the pipeline down and rebuilds with a fresh demuxer/decoder, so
+ * when the stream comes back we don't try to resume a stale state.
  *
  * `tsdemux` + `decodebin` handles any codec inside the MPEG-TS (H.264,
  * H.265, AV1). `queue leaky=2` drops oldest if the decoder falls behind so
  * latency doesn't accumulate on slow renderers.
  */
+const UDP_STREAM_TIMEOUT_NS = 5_000_000_000;
+
 export function buildLivePipeline(
     sinkElement: string,
     udpSource: { host: string; port: number },
 ): string {
-    const udpSrc = buildUdpSrc({ host: udpSource.host, port: udpSource.port });
+    const udpSrc = buildUdpSrc({
+        host: udpSource.host,
+        port: udpSource.port,
+        timeoutNs: UDP_STREAM_TIMEOUT_NS,
+    });
     return (
         `${udpSrc} ! tsdemux latency=0 ` +
         `! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! decodebin ` +

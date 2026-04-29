@@ -78,6 +78,13 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('udpsrc port=6000');
             expect(s).not.toContain('multicast-group');
         });
+        it('arms udpsrc with a 5s timeout so a stalled stream triggers restart', () => {
+            const s = buildLivePipeline('kmssink name=sink sync=false', {
+                host: '239.255.0.1',
+                port: 5000,
+            });
+            expect(s).toContain('timeout=5000000000');
+        });
     });
 
     describe('buildPipeline', () => {

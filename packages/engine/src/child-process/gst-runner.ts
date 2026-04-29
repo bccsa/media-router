@@ -13,7 +13,7 @@
  */
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
-import type { ControlIpcMessage } from '@media-router/shared-types';
+import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
 import type { PadLinkRule } from '../plugins/PluginModule.js';
 
 let pyProcess: ChildProcess | null = null;
@@ -22,8 +22,16 @@ let useStdioForData = false;
 let restartOnError = false;
 let lastPipelineString = '';
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
-let restartAttempts = 0;
-const MAX_RESTART_ATTEMPTS = 10;
+
+// Restart policy:
+//   - 1s base, 5s cap — fast recovery for transient errors.
+//   - No attempt cap (0 = unlimited): a long stream outage shouldn't make us
+//     give up forever. The outer GstChildProcess layer also retries via its
+//     own backoff, but it only sees gst-runner *process* exits, not
+//     pipeline-internal failures, so abandoning here means silent death.
+//   - 30s stable PLAYING marks attempts back to zero so transient blips don't
+//     accumulate over long sessions.
+const restartBackoff = new ExponentialBackoff(1000, 5000, 0, 30_000);
 
 // Pending get_property/get_stats requests waiting for response from Python
 const pendingRequests = new Map<
@@ -71,7 +79,7 @@ function handlePythonEvent(eventJson: Record<string, unknown>): void {
             const state = eventJson.state as string;
             if (state === 'playing' && currentState !== 'playing') {
                 currentState = 'playing';
-                restartAttempts = 0; // Reset on successful play
+                restartBackoff.markStable(); // Reset attempts after sustained PLAYING
                 sendEvent('stateChange', { state: 'playing' });
             } else if (state === 'paused') {
                 sendEvent('stateChange', { state: 'paused' });
@@ -214,26 +222,17 @@ function sendToPython(cmd: Record<string, unknown>): void {
 
 function scheduleRestart(): void {
     if (restartTimer) return;
-    if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
-        console.error(
-            `[gst-runner] Max restart attempts (${MAX_RESTART_ATTEMPTS}) reached — giving up`,
-        );
-        sendEvent('error', {
-            message: `Pipeline failed after ${MAX_RESTART_ATTEMPTS} restart attempts`,
-        });
-        return;
-    }
-    restartAttempts++;
-    const delay = Math.min(1000 * restartAttempts, 5000); // 1s, 2s, 3s... max 5s
+    const delay = restartBackoff.nextDelay();
+    if (delay === null) return; // unreachable with maxAttempts=0; defensive
     console.error(
-        `[gst-runner] Restarting pipeline in ${delay}ms (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})`,
+        `[gst-runner] Restarting pipeline in ${delay}ms (attempt ${restartBackoff.attempts})`,
     );
     restartTimer = setTimeout(() => {
         restartTimer = null;
         if (lastPipelineString) {
             startPipeline(
                 lastPipelineString,
-                `restart-${restartAttempts}`,
+                `restart-${restartBackoff.attempts}`,
                 useStdioForData,
                 lastPadLinkRules,
             );
@@ -303,18 +302,33 @@ function startPipeline(
         pyProcess.stderr?.on('data', handlePythonStderr);
     }
 
-    pyProcess.on('exit', (code, signal) => {
+    // Capture this child locally — `pyProcess` may already point to a newer
+    // spawn by the time this handler fires (a SIGKILL'd predecessor can take
+    // hundreds of ms to reap). Without this guard the late exit would clobber
+    // the live reference and trigger an extra cascade restart.
+    const myProc = pyProcess;
+    myProc.on('exit', (code, signal) => {
         console.error(`[gst-runner] Python runner exited: code=${code} signal=${signal}`);
-        const wasPlaying = currentState === 'playing';
+        if (pyProcess !== myProc) return; // a successor has taken over
         currentState = 'stopped';
         sendEvent('stateChange', { state: 'stopped', exitCode: code, signal });
-        if (wasPlaying && code !== 0) {
-            sendEvent('error', { message: `Python runner crashed with code ${code}` });
-        }
         pyProcess = null;
+        // An unexpected exit (non-zero code or fatal signal) means the
+        // pipeline died without going through the bus — e.g. decoder
+        // segfault, OOM, GStreamer assertion. Treat the same as a bus error:
+        // schedule a restart. Without this, the gst-runner stays alive with
+        // no Python child and no recovery path; the outer GstChildProcess
+        // can't see it because *this* process is still healthy.
+        if (restartOnError && (code !== 0 || signal)) {
+            sendEvent('error', {
+                message: `Python runner exited unexpectedly (code=${code} signal=${signal ?? 'none'})`,
+            });
+            scheduleRestart();
+        }
     });
 
-    pyProcess.on('error', (err) => {
+    myProc.on('error', (err) => {
+        if (pyProcess !== myProc) return;
         currentState = 'error';
         sendEvent('error', { message: err.message });
         sendEvent('stateChange', { state: 'error' });
@@ -381,13 +395,14 @@ process.on('message', (msg: ControlIpcMessage) => {
                 linkOnPadAdded?: PadLinkRule[];
             };
             restartOnError = d.restartOnError ?? false;
-            restartAttempts = 0;
+            restartBackoff.reset();
             startPipeline(d.pipeline, msg.id, d.useStdioForData, d.linkOnPadAdded ?? []);
             break;
         }
 
         case 'stopPipeline':
             restartOnError = false; // Cancel any pending restarts
+            restartBackoff.reset();
             if (restartTimer) {
                 clearTimeout(restartTimer);
                 restartTimer = null;
@@ -476,6 +491,15 @@ process.on('message', (msg: ControlIpcMessage) => {
 
 function shutdown(reason: string): void {
     console.error(`[gst-runner] Shutting down: ${reason}`);
+    // Disarm the auto-restart loop before we kill the child, otherwise the
+    // child's exit handler will spawn a fresh Python within our 1.5s exit
+    // window — which then gets killed by the process.on('exit') SIGKILL
+    // fallback, leaking a Python child every shutdown.
+    restartOnError = false;
+    if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+    }
     // Kill Python immediately — don't rely on timers that may not fire
     if (pyProcess) {
         sendToPython({ cmd: 'stop' });
