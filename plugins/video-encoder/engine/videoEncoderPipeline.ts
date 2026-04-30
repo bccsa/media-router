@@ -86,9 +86,12 @@ export function parseResolution(resolution: string): { width: number; height: nu
 
 /**
  * Build the v4l2src source branch. USB cameras typically offer MJPG at high
- * resolutions and raw YUYV only at low framerates, so we probe what the
- * device supports at the requested {width × height × framerate} and pick the
- * right input caps. Falls back to raw if probing fails.
+ * resolutions and raw YUYV only at low framerates; HDMI capture devices
+ * (Cam Link 4K, etc.) commonly only expose raw formats. We probe what the
+ * device supports at the requested {width × height} and pick the cheapest
+ * input caps; framerate mismatches and pixel-format conversions are bridged
+ * downstream by `videorate ! videoconvert ! videoscale` so a device that
+ * can't do exactly the requested fps still produces clean output.
  *
  * A leaky 100ms queue is placed immediately after v4l2src (and its format
  * filter). Without it, any back-pressure from downstream (videoconvert,
@@ -100,37 +103,65 @@ export function parseResolution(resolution: string): { width: number; height: nu
  */
 const SOURCE_QUEUE_MS = 100;
 
+/**
+ * Common raw pixel formats reported by V4L2 devices. `videoconvert` handles
+ * any of these so we don't need format-specific branches — we just need to
+ * tell v4l2src which one to pick at the device side. Order encodes a
+ * heuristic: semi-planar (NV12/NV16) is preferred over planar (YU12/YV12)
+ * which is preferred over packed (YUYV/UYVY). Within each layout class the
+ * 4:2:0 variant comes first because it's lower bandwidth than 4:2:2.
+ */
+const RAW_FORMAT_PREFERENCE = ['NV12', 'NV16', 'YU12', 'YV12', 'YUYV', 'UYVY'];
+
 export function buildV4l2Source(
     device: string,
     width: number,
     height: number,
     framerate: number,
 ): string {
-    const common = `v4l2src device=${device}`;
+    const src = `v4l2src device=${device}`;
     const queue = `queue leaky=2 max-size-time=${SOURCE_QUEUE_MS * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
+    // Output side: convert pixel format → conform framerate → conform
+    // resolution → declare the encoder's expected caps. `videorate` is
+    // load-bearing here: HDMI capture devices (Cam Link 4K, etc.) only
+    // expose specific framerates, so when the user picks a different one
+    // we drop / duplicate frames here rather than failing caps negotiation.
+    const tail = `videoconvert ! videorate ! videoscale ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1`;
+    let supported: { pixelFormat: string; framerates: number[] }[] = [];
     try {
         const stdout = execFileSync(
             'v4l2-ctl',
             ['--device', device, '--list-formats-ext'],
             { encoding: 'utf-8', timeout: 2000 },
         );
-        const formats = parseFormats(stdout);
-        const supports = (pixelFormat: string) =>
-            formats.some(
-                (f) =>
-                    f.pixelFormat === pixelFormat &&
-                    f.width === width &&
-                    f.height === height &&
-                    (f.framerates.length === 0 || f.framerates.includes(framerate)),
-            );
-        if (supports('MJPG')) {
-            return `${common} ! image/jpeg,width=${width},height=${height},framerate=${framerate}/1 ! ${queue} ! jpegdec ! videoconvert ! videoscale`;
-        }
-        if (supports('YUYV') || supports('YU12') || supports('NV12')) {
-            return `${common} ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1 ! ${queue} ! videoconvert ! videoscale`;
-        }
+        supported = parseFormats(stdout)
+            .filter((f) => f.width === width && f.height === height)
+            .map((f) => ({ pixelFormat: f.pixelFormat, framerates: f.framerates }));
     } catch {
-        /* fall through to raw path */
+        /* probe failed — fall through to no-caps v4l2src negotiation */
     }
-    return `${common} ! ${queue} ! videoconvert ! videoscale ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1`;
+    // Pick the closest framerate the device actually offers for the chosen
+    // pixel format. `videorate` then conforms it to `framerate` for the
+    // encoder.
+    const closestFps = (offered: number[]): number =>
+        offered.length === 0
+            ? framerate
+            : offered.reduce((best, fps) =>
+                  Math.abs(fps - framerate) < Math.abs(best - framerate) ? fps : best,
+              );
+    const mjpg = supported.find((f) => f.pixelFormat === 'MJPG');
+    if (mjpg) {
+        const fps = closestFps(mjpg.framerates);
+        return `${src} ! image/jpeg,width=${width},height=${height},framerate=${fps}/1 ! ${queue} ! jpegdec ! ${tail}`;
+    }
+    const raw = RAW_FORMAT_PREFERENCE.map((p) =>
+        supported.find((f) => f.pixelFormat === p),
+    ).find((f) => f !== undefined);
+    if (raw) {
+        const fps = closestFps(raw.framerates);
+        return `${src} ! video/x-raw,format=${raw.pixelFormat},width=${width},height=${height},framerate=${fps}/1 ! ${queue} ! ${tail}`;
+    }
+    // Probe failed or device offers nothing at this resolution — let
+    // v4l2src negotiate freely and rely on the conversion tail to bridge.
+    return `${src} ! ${queue} ! ${tail}`;
 }

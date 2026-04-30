@@ -153,6 +153,13 @@ describe('VideoEncoderModule', () => {
             expect(s).toContain('v4l2src device=/dev/video-nonexistent');
             expect(s).toContain('video/x-raw,width=1920,height=1080,framerate=30/1');
         });
+        it('threads videorate through the conversion tail so devices that cannot do the requested fps still negotiate cleanly', () => {
+            // Cam Link 4K and similar HDMI capture devices only expose
+            // specific framerates — without videorate the encoder fails
+            // caps negotiation when the user picks an unsupported fps.
+            const s = buildV4l2Source('/dev/video-nonexistent', 1920, 1080, 30);
+            expect(s).toContain('videoconvert ! videorate ! videoscale');
+        });
     });
 
     describe('supportsLiveBitrate', () => {
