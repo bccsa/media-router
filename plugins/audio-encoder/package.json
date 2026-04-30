@@ -51,8 +51,26 @@
                     "x-enumBy": {
                         "field": "codec",
                         "map": {
-                            "opus": [32, 64, 96, 128, 192, 256, 320, 510],
-                            "aac": [32, 64, 96, 128, 160, 192, 256, 320]
+                            "opus": [
+                                32,
+                                64,
+                                96,
+                                128,
+                                192,
+                                256,
+                                320,
+                                510
+                            ],
+                            "aac": [
+                                32,
+                                64,
+                                96,
+                                128,
+                                160,
+                                192,
+                                256,
+                                320
+                            ]
                         }
                     }
                 },
@@ -89,7 +107,7 @@
                         50
                     ],
                     "default": 10,
-                    "description": "Expected packet loss % — encoder adds more redundancy at higher values",
+                    "description": "Expected packet loss % \u2014 encoder adds more redundancy at higher values",
                     "x-showWhen": "codec=opus"
                 },
                 "sampleRate": {
@@ -143,8 +161,7 @@
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel",
-                    "x-contextMenu": true
+                    "description": "Show on Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",

@@ -84,8 +84,7 @@
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Show on Local Control Panel",
-                    "x-contextMenu": true
+                    "description": "Show on Local Control Panel"
                 },
                 "lcpSortOrder": {
                     "type": "number",
