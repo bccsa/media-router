@@ -369,9 +369,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     private async checkDevice(): Promise<void> {
         const deviceName = this.getWatchedDeviceName();
         if (!deviceName || !this.services?.pipeWire) return;
-        // Use `hasDevice` (enumeration only) not `getDeviceInfo` — the latter
-        // returns null for SUSPENDED devices which would cause this watchdog
-        // to tear down healthy idle hardware during engine startup.
+        // Watchdog only needs presence — no channel/rate info — so use
+        // `hasDevice` rather than `getDeviceInfo()` for clarity.
         const present = this.services.pipeWire.hasDevice(deviceName);
 
         if (this.deviceConnected && !present) {
@@ -386,14 +385,17 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             return;
         }
         if (!this.deviceConnected && present) {
-            this.deviceConnected = true;
+            // Only flip `deviceConnected` after a successful reconnect — a
+            // throw leaves it false so the next watchdog tick retries (e.g.
+            // the device returned but format wasn't probeable yet).
             try {
                 await this.onDeviceReconnected();
+                this.deviceConnected = true;
                 this.setHealth('ok');
             } catch (err) {
                 this.setHealth(
-                    'error',
-                    `Device reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+                    'warning',
+                    `Reconnect pending: ${err instanceof Error ? err.message : String(err)}`,
                 );
             }
         }

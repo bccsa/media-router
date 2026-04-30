@@ -158,6 +158,10 @@ export class AudioEncoderModule extends GstPluginBase {
         const vol = `volume name=vol volume=${gstVolume}`;
         const level =
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000';
+        // Leaky queue absorbs encoder/network back-pressure — without this,
+        // pulsesrc backs up and audio latency grows over hours (v1 hit this
+        // and added the same queue in commit 767f531).
+        const encoderQueue = 'queue max-size-time=50000000 leaky=2 flush-on-eos=true';
 
         // Encoder always gets a UDP multicast port assigned at startup.
         const instanceId = this.services?.instanceId ?? '';
@@ -166,27 +170,31 @@ export class AudioEncoderModule extends GstPluginBase {
             ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';
 
+        const tsAlignment = (config.tsAlignment as number) ?? 7;
         let tail: string;
         switch (codec) {
             case 'aac':
-                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=false aac-ms=false ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`;
+                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=false aac-ms=false ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`;
                 break;
             case 'opus':
             default: {
                 const frameSize = (config.frameSize as number) ?? 20;
                 const inbandFec = (config.inbandFec as boolean) ?? true;
                 const packetLoss = (config.packetLoss as number) ?? 10;
-                // Use restricted-lowdelay for frame sizes <= 5ms
-                const audioType = frameSize <= 5 ? 'audio-type=restricted-lowdelay' : '';
+                // Default preserves the pre-`audioType` behaviour: low-latency
+                // (frameSize ≤ 5 ms) implies restricted-lowdelay (2051), which
+                // is also what v1 receivers expect.
+                const audioType =
+                    (config.audioType as number) ?? (frameSize <= 5 ? 2051 : 2048);
                 tail =
-                    `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} ${audioType} ! mpegtsmux latency=0 alignment=7 ! ${udpSink}`.replace(
+                    `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} audio-type=${audioType} ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`.replace(
                         /  +/g,
                         ' ',
                     );
                 break;
             }
         }
-        const parts = [source, format, vol, level, tail].filter(Boolean);
+        const parts = [source, format, vol, level, encoderQueue, tail].filter(Boolean);
         const pipeline = parts.join(' ! ');
 
         return {

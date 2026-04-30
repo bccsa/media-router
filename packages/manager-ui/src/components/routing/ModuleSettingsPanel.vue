@@ -58,6 +58,7 @@ interface FormField {
     description: string;
     defaultValue: unknown;
     enumValues?: unknown[];
+    enumLabels?: Record<string, string>; // value → display label
     liveUpdatable: boolean;
     deviceType?: string; // e.g. 'audio-source', 'audio-sink', 'video', 'drm-connector'
     widget?: string; // 'slider' etc.
@@ -149,6 +150,7 @@ interface SchemaProperty {
     'x-step'?: number;
     'x-maxFrom'?: string;
     'x-enumBy'?: { field: string; map: Record<string, unknown[]> };
+    'x-enumLabels'?: Record<string, string>;
     'x-maxBy'?: { field: string; map: Record<string, number> };
     'x-readOnly'?: boolean;
     'x-showWhen'?: string;
@@ -172,6 +174,7 @@ const formFields = computed<FormField[]>(() => {
         description: prop.description ?? '',
         defaultValue: prop.default,
         enumValues: prop.enum,
+        enumLabels: prop['x-enumLabels'],
         liveUpdatable: runtimeLive
             ? runtimeLive.includes(key)
             : !!prop['x-live'] || !!prop['x-liveUpdatable'],
@@ -518,7 +521,7 @@ function applyAll() {
                                 value: (field.type === 'number' ? Number(opt) : String(opt)) as
                                     | string
                                     | number,
-                                label: String(opt),
+                                label: field.enumLabels?.[String(opt)] ?? String(opt),
                             }))
                         "
                         @update:model-value="updateSetting(field.key, $event)"

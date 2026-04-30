@@ -326,7 +326,7 @@ export class PipeWireManager {
         return this.deviceOps.hasDevice(deviceName);
     }
 
-    getDeviceInfo(deviceName: string): { channels: number; sampleRate: number } | null {
+    getDeviceInfo(deviceName: string): { channels?: number; sampleRate?: number } | null {
         return this.deviceOps.getDeviceInfo(deviceName);
     }
 

@@ -35,13 +35,11 @@
                 },
                 "sampleRate": {
                     "type": "number",
-                    "default": 48000,
                     "description": "Sample rate (auto-detected from device)",
                     "x-readOnly": true
                 },
                 "channels": {
                     "type": "number",
-                    "default": 2,
                     "description": "Channels (auto-detected from device)",
                     "x-readOnly": true
                 },

@@ -34,6 +34,12 @@ export { GstChildProcess } from './child-process/GstChildProcess.js';
 export { ChildProcessManager } from './child-process/ChildProcessManager.js';
 export { ControlIpc } from './child-process/ControlIpc.js';
 export { PipeWireManager } from './audio/PipeWireManager.js';
+export {
+    detectDeviceFormat,
+    resolveDeviceFormat,
+    tryResolveDeviceFormat,
+} from './audio/deviceFormat.js';
+export type { DeviceFormatState, DeviceDetection } from './audio/deviceFormat.js';
 export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';

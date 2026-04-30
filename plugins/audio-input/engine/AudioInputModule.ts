@@ -1,5 +1,8 @@
 import {
     GstPluginBase,
+    detectDeviceFormat,
+    resolveDeviceFormat,
+    tryResolveDeviceFormat,
     type PipelineDescription,
     type EngineServices,
     type ModuleServices,
@@ -55,24 +58,14 @@ export class AudioInputModule extends GstPluginBase {
         await super.onInit(config, services);
         this.deviceName = (config.device as string) ?? '';
 
-        if (this.services?.pipeWire && this.deviceName) {
-            const info = this.services.pipeWire.getDeviceInfo(this.deviceName);
-            if (info) {
-                this.detectedChannels = info.channels;
-                this.detectedSampleRate = info.sampleRate;
-
-                // Write detected values back to config so the UI and channel-map editor
-                // see the real port count, not the stale stored default.
-                const changes: Record<string, unknown> = {};
-                if (info.channels > 0 && info.channels !== config.channels) {
-                    changes.channels = info.channels;
-                }
-                if (info.sampleRate > 0 && info.sampleRate !== config.sampleRate) {
-                    changes.sampleRate = info.sampleRate;
-                }
-                if (Object.keys(changes).length > 0) this.emitConfigUpdate(changes);
-            }
-        }
+        const det = detectDeviceFormat(this.services?.pipeWire, this.deviceName, {
+            channels: config.channels as number | undefined,
+            sampleRate: config.sampleRate as number | undefined,
+        });
+        this.detectedChannels = det.detected.channels;
+        this.detectedSampleRate = det.detected.sampleRate;
+        if (Object.keys(det.configUpdates).length > 0) this.emitConfigUpdate(det.configUpdates);
+        if (det.healthWarning) this.setHealth('warning', det.healthWarning);
     }
 
     async onStart(): Promise<void> {
@@ -80,8 +73,18 @@ export class AudioInputModule extends GstPluginBase {
             throw new Error('No audio device configured');
         }
 
-        const channels = this.detectedChannels ?? (this.config.channels as number) ?? 2;
-        const rate = this.detectedSampleRate ?? (this.config.sampleRate as number) ?? 48000;
+        const { channels, rate, detected } = resolveDeviceFormat(
+            this.services?.pipeWire,
+            this.deviceName,
+            { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
+            {
+                channels: this.config.channels as number | undefined,
+                sampleRate: this.config.sampleRate as number | undefined,
+            },
+            'input',
+        );
+        this.detectedChannels = detected.channels;
+        this.detectedSampleRate = detected.sampleRate;
 
         if (this.services?.pipeWire) {
             // Create remap-source — matches v1 exactly: remix=no, latency_msec=50
@@ -132,13 +135,30 @@ export class AudioInputModule extends GstPluginBase {
     /** Base-class hook: device returned — rebuild the remap-source then restart the pipeline. */
     protected async onDeviceReconnected(): Promise<void> {
         if (this.services?.pipeWire) {
-            const channels = this.detectedChannels ?? (this.config.channels as number) ?? 2;
-            const rate = this.detectedSampleRate ?? (this.config.sampleRate as number) ?? 48000;
+            const resolved = tryResolveDeviceFormat(
+                this.services.pipeWire,
+                this.deviceName,
+                { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
+                {
+                    channels: this.config.channels as number | undefined,
+                    sampleRate: this.config.sampleRate as number | undefined,
+                },
+            );
+            this.detectedChannels = resolved.detected.channels;
+            this.detectedSampleRate = resolved.detected.sampleRate;
+            if (!resolved.channels || !resolved.rate) {
+                // Throw so the watchdog leaves `deviceConnected=false` and
+                // retries on the next tick — silently returning would have
+                // the watchdog flip health to 'ok' with no remap-source.
+                throw new Error(
+                    `Reconnected device "${this.deviceName}" has unknown channel count or sample rate`,
+                );
+            }
             this.remapModuleId = await this.services.pipeWire.loadRemapSource(
                 this.services.instanceId,
                 this.deviceName,
-                channels,
-                rate,
+                resolved.channels,
+                resolved.rate,
                 this.services.instanceId,
             );
             await this.services.pipeWire.waitForSource(this.pwNodeName);
@@ -168,7 +188,10 @@ export class AudioInputModule extends GstPluginBase {
         // VU metering only — reads directly from the remap source.
         // Caps-limit channels so audioconvert doesn't upmix mono to stereo —
         // the level element reports one peak per channel, and we want reality.
-        const channels = (config.channels as number) ?? this.detectedChannels ?? 2;
+        // `onStart` and `onDeviceReconnected` both throw if neither the live
+        // probe nor the persisted config gives us a channel count, so one of
+        // these two sources is guaranteed to be set by the time we get here.
+        const channels = (config.channels as number | undefined) ?? this.detectedChannels!;
         const pipeline = [
             `pulsesrc device=${this.pwNodeName} buffer-time=20000 latency-time=10000`,
             'audioconvert',
