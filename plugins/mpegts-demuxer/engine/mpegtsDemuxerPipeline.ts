@@ -105,10 +105,9 @@ export interface DemuxerPipelineResult {
  *  emits). Audio branches pass through directly since `mpegtsmux` accepts
  *  opus/aac caps from `tsdemux` as-is.
  *
- *  Tail is `mpegtsmux ! queue ! udpsink`: the trailing leaky queue decouples
- *  the mux thread from network IO so a transient udpsink stall (kernel send
- *  buffer full) doesn't back-pressure the upstream demuxer and surface as
- *  packet drops on every output. */
+ *  Tail is `mpegtsmux ! udpsink` with no queue between them — see the inline
+ *  comment in the function body for why a leaky queue at this boundary
+ *  corrupts decode rather than helping. */
 export function buildOutputBranch(
     out: DemuxerOutput,
     suffix: string,
@@ -141,9 +140,13 @@ export function buildOutputBranch(
  * connection — caller should set a health warning.
  *
  * Pipeline shape:
- *   udpsrc ! tsparse ! tsdemux name=demux
- * The runner then attaches `linkOnPadAdded` rules so each video/audio pad
- * gets its own pre-built branch (queue → mpegtsmux → udpsink) at runtime.
+ *   udpsrc ! tsdemux name=demux
+ * No `tsparse` between `udpsrc` and `tsdemux` — see the inline comment for
+ * why mid-pipeline PCR re-anchoring causes visible packet loss when the
+ * stream is re-muxed downstream. The runner then attaches `linkOnPadAdded`
+ * rules so each video/audio pad gets its own pre-built branch at runtime
+ * (video: parser → queue → mpegtsmux → udpsink; audio: queue → mpegtsmux →
+ * udpsink).
  */
 export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResult | null {
     const bufferMs = input.bufferMs ?? 50;
