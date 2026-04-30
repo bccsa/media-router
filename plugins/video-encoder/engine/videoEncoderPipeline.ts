@@ -89,7 +89,17 @@ export function parseResolution(resolution: string): { width: number; height: nu
  * resolutions and raw YUYV only at low framerates, so we probe what the
  * device supports at the requested {width × height × framerate} and pick the
  * right input caps. Falls back to raw if probing fails.
+ *
+ * A leaky 100ms queue is placed immediately after v4l2src (and its format
+ * filter). Without it, any back-pressure from downstream (videoconvert,
+ * videoscale, encoder) blocks v4l2src and the V4L2 driver's kernel ring
+ * buffer fills up — when full, frames drop at the kernel level, which the
+ * GStreamer pipeline below can't see or recover from. With the queue, brief
+ * downstream stalls are absorbed in user-space and frames keep being drained
+ * from the kernel; only sustained back-pressure causes (visible) drops.
  */
+const SOURCE_QUEUE_MS = 100;
+
 export function buildV4l2Source(
     device: string,
     width: number,
@@ -97,6 +107,7 @@ export function buildV4l2Source(
     framerate: number,
 ): string {
     const common = `v4l2src device=${device}`;
+    const queue = `queue leaky=2 max-size-time=${SOURCE_QUEUE_MS * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
     try {
         const stdout = execFileSync(
             'v4l2-ctl',
@@ -113,13 +124,13 @@ export function buildV4l2Source(
                     (f.framerates.length === 0 || f.framerates.includes(framerate)),
             );
         if (supports('MJPG')) {
-            return `${common} ! image/jpeg,width=${width},height=${height},framerate=${framerate}/1 ! jpegdec ! videoconvert ! videoscale`;
+            return `${common} ! image/jpeg,width=${width},height=${height},framerate=${framerate}/1 ! ${queue} ! jpegdec ! videoconvert ! videoscale`;
         }
         if (supports('YUYV') || supports('YU12') || supports('NV12')) {
-            return `${common} ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1 ! videoconvert ! videoscale`;
+            return `${common} ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1 ! ${queue} ! videoconvert ! videoscale`;
         }
     } catch {
         /* fall through to raw path */
     }
-    return `${common} ! videoconvert ! videoscale ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1`;
+    return `${common} ! ${queue} ! videoconvert ! videoscale ! video/x-raw,width=${width},height=${height},framerate=${framerate}/1`;
 }

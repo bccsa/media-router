@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
     GstPluginBase,
-    buildUdpSrc,
+    buildTsUdpInput,
     probeGstElement,
     type EngineServices,
     type ModuleServices,
@@ -250,9 +250,11 @@ export function buildFallbackOnlyPipeline(fallbackText: string, sinkElement: str
  * tears the pipeline down and rebuilds with a fresh demuxer/decoder, so
  * when the stream comes back we don't try to resume a stale state.
  *
- * `tsdemux` + `decodebin` handles any codec inside the MPEG-TS (H.264,
- * H.265, AV1). `queue leaky=2` drops oldest if the decoder falls behind so
- * latency doesn't accumulate on slow renderers.
+ * Inbound chain is `udpsrc ! queue ! tsparse ! tsdemux` (via `buildTsUdpInput`)
+ * — `tsparse` re-anchors PCR to the local clock so multi-stage encode/remux
+ * paths don't accumulate clock drift as session latency. `decodebin` handles
+ * any codec inside the MPEG-TS; the post-tsdemux `queue leaky=2` drops oldest
+ * if the decoder falls behind so latency doesn't accumulate on slow renderers.
  */
 const UDP_STREAM_TIMEOUT_NS = 5_000_000_000;
 
@@ -260,13 +262,13 @@ export function buildLivePipeline(
     sinkElement: string,
     udpSource: { host: string; port: number },
 ): string {
-    const udpSrc = buildUdpSrc({
+    const tsInput = buildTsUdpInput({
         host: udpSource.host,
         port: udpSource.port,
         timeoutNs: UDP_STREAM_TIMEOUT_NS,
     });
     return (
-        `${udpSrc} ! tsdemux latency=0 ` +
+        `${tsInput} ! tsdemux latency=0 ` +
         `! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! decodebin ` +
         `! videoconvert ! videoscale ! ${sinkElement}`
     );

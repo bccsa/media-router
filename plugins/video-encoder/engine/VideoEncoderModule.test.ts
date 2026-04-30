@@ -232,6 +232,46 @@ describe('VideoEncoderModule', () => {
             expect(desc!.restartOnError).toBe(true);
         });
 
+        it('inserts a leaky source-side queue (100ms) so encoder stalls do not back-pressure v4l2src into kernel-level frame drops', () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
+            const module = makeModule();
+            const desc = module.buildPipeline({
+                device: '/dev/video-nonexistent-for-test',
+                codec: 'h264',
+                encoderImpl: 'v4l2',
+                resolution: '1920x1080',
+                framerate: 30,
+                bitrate: 4000,
+                keyframeInterval: 60,
+            });
+            // The queue must sit immediately downstream of v4l2src, so that
+            // back-pressure from videoconvert/videoscale/encoder is absorbed in
+            // user-space rather than blocking v4l2src and filling the V4L2
+            // kernel ringbuffer (kernel-level drops are invisible to GStreamer).
+            const p = desc!.pipeline;
+            expect(p).toContain('queue leaky=2 max-size-time=100000000');
+            const idxV4l2 = p.indexOf('v4l2src');
+            const idxQueue = p.indexOf('queue leaky=2 max-size-time=100000000');
+            const idxConvert = p.indexOf('videoconvert');
+            expect(idxV4l2).toBeLessThan(idxQueue);
+            expect(idxQueue).toBeLessThan(idxConvert);
+        });
+
+        it('connects mpegtsmux straight to udpsink with no leaky queue between — a leaky queue here would drop mid-stream UDP buffers and corrupt decode', () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
+            const module = makeModule();
+            const desc = module.buildPipeline({
+                device: '/dev/video-nonexistent-for-test',
+                codec: 'h264',
+                encoderImpl: 'v4l2',
+                resolution: '1920x1080',
+                framerate: 30,
+                bitrate: 4000,
+                keyframeInterval: 60,
+            });
+            expect(desc!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! udpsink/);
+        });
+
         it('returns null + sets health warning when no device is configured', () => {
             const module = makeModule();
             const setHealth = vi.fn();

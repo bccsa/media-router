@@ -16,8 +16,10 @@ export type { UdpSrcOpts, UdpSinkOpts } from './plugins/udpHelpers.js';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     buildLeakyQueue,
+    buildTsUdpInput,
     videoParserForCodec,
 } from './plugins/tsHelpers.js';
+export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';

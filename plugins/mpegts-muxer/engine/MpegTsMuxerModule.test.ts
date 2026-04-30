@@ -55,6 +55,10 @@ describe('mpegtsMuxerPipeline helpers', () => {
             // No inline `! mux.` chain — pad-linking is done at runtime via linkOnPadAdded
             expect(s).not.toContain('! mux.');
         });
+        it('goes straight from udpsrc to tsdemux with no tsparse — re-anchoring PCR mid-pipeline causes mpegtsmux PCR re-emit to surface as packet loss', () => {
+            const s = buildInputBranch('0', { sinkPortId: 'video-0', host: '239.255.0.1', port: 40000 });
+            expect(s).not.toContain('tsparse');
+        });
         it('uses plain-port syntax for unicast hosts', () => {
             const s = buildInputBranch('1', { sinkPortId: 'audio-0', host: '127.0.0.1', port: 40001 });
             expect(s).toContain('udpsrc port=40001');
@@ -70,6 +74,15 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 alignment: 7,
             });
             expect(result).toBeNull();
+        });
+        it('connects mpegtsmux straight to udpsink with no leaky queue between — a leaky queue here would drop mid-stream UDP buffers and corrupt decode', () => {
+            const result = buildPipeline({
+                sources: [{ sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 }],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+            });
+            const p = result!.pipeline;
+            expect(p).toMatch(/mpegtsmux name=mux[^!]+! udpsink/);
         });
         it('emits one demux branch per input plus a single mpegtsmux ! udpsink chain and per-media link rules', () => {
             const result = buildPipeline({
@@ -114,27 +127,39 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(result!.pipeline).toContain('alignment=1');
         });
-        it('threads bufferMs into pad-link queue branches', () => {
+        it('threads bufferMs into the audio pad-link queue (video uses a buffer-count queue after h264parse, not time-based)', () => {
             const result = buildPipeline({
-                sources: [{ sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 }],
+                sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
                 output: { host: '239.255.0.1', port: 40010 },
                 alignment: 7,
                 bufferMs: 50,
             });
-            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             // 50ms = 50_000_000 ns
-            expect(videoRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
+            expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
         });
-        it('clamps bufferMs to a sane upper bound', () => {
+        it('clamps audio bufferMs to a sane upper bound', () => {
             const result = buildPipeline({
-                sources: [{ sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 }],
+                sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
                 output: { host: '239.255.0.1', port: 40010 },
                 alignment: 7,
                 bufferMs: 999_999,
             });
-            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             // 2000ms cap → 2_000_000_000 ns
-            expect(videoRule.branches[0]).toContain('max-size-time=2000000000');
+            expect(audioRule.branches[0]).toContain('max-size-time=2000000000');
+        });
+        it('places the video leaky queue AFTER h264parse so drops land on whole frames, not mid-NAL', () => {
+            const result = buildPipeline({
+                sources: [{ sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 }],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const branch = videoRule.branches[0];
+            // ordering: h264parse … queue (leaky, buffer-count bounded)
+            expect(branch.indexOf('h264parse')).toBeLessThan(branch.indexOf('queue'));
+            expect(branch).toContain('queue leaky=2 max-size-buffers=2');
         });
         it('emits tsdemux latency=0 on every input branch', () => {
             const result = buildPipeline({

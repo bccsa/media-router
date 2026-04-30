@@ -85,6 +85,18 @@ describe('VideoPlayerModule helpers', () => {
             });
             expect(s).toContain('timeout=5000000000');
         });
+        it('inserts tsparse between udpsrc and tsdemux to re-anchor PCR to the local clock', () => {
+            const s = buildLivePipeline('kmssink name=sink sync=false', {
+                host: '239.255.0.1',
+                port: 5000,
+            });
+            expect(s).toContain('tsparse set-timestamps=true');
+            const idxUdp = s.indexOf('udpsrc');
+            const idxTsparse = s.indexOf('tsparse');
+            const idxTsdemux = s.indexOf('tsdemux');
+            expect(idxUdp).toBeLessThan(idxTsparse);
+            expect(idxTsparse).toBeLessThan(idxTsdemux);
+        });
     });
 
     describe('buildPipeline', () => {

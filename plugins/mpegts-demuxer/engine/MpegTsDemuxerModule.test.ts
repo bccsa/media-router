@@ -25,10 +25,11 @@ describe('mpegtsDemuxerPipeline helpers', () => {
     });
 
     describe('buildOutputBranch', () => {
-        it('produces a leaky queue → h264parse → mpegtsmux → udpsink branch for video', () => {
+        it('produces an h264parse → leaky frame-bounded queue → mpegtsmux → udpsink branch for video (queue after parser so drops land on whole frames, not mid-NAL)', () => {
             const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20, 'h264');
-            expect(s).toContain('queue leaky=2 max-size-time=20000000');
             expect(s).toContain('h264parse');
+            expect(s).toContain('queue leaky=2 max-size-buffers=2');
+            expect(s.indexOf('h264parse')).toBeLessThan(s.indexOf('queue leaky=2 max-size-buffers=2'));
             expect(s).toContain('mpegtsmux name=mux_v0');
             expect(s).toContain('udpsink name=usink_v0 host=239.255.0.1 port=41005');
         });
@@ -47,6 +48,10 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20, 'av1');
             expect(s).toContain('av1parse');
             expect(s).not.toContain('h264parse');
+        });
+        it('connects mpegtsmux straight to udpsink with no leaky queue between — a leaky queue here would drop mid-stream UDP buffers and corrupt decode', () => {
+            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50, 'h264');
+            expect(s).toMatch(/mpegtsmux name=mux_v0[^!]+! udpsink/);
         });
     });
 
@@ -74,15 +79,15 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(audioRule.branches[0]).toContain('port=41002');
             expect(audioRule.branches[1]).toContain('port=41003');
         });
-        it('threads bufferMs into per-output queue branches', () => {
+        it('threads bufferMs into the audio output queue (video uses a frame-count queue so bufferMs does not apply)', () => {
             const result = buildPipeline({
                 input: { host: '239.255.0.1', port: 40001 },
-                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
-                audioOutputs: [],
+                videoOutputs: [],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
                 bufferMs: 50,
             });
-            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
-            expect(videoRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
         });
         it('emits tsdemux latency=0 on the input', () => {
             const result = buildPipeline({
@@ -91,6 +96,14 @@ describe('mpegtsDemuxerPipeline helpers', () => {
                 audioOutputs: [],
             });
             expect(result!.pipeline).toContain('tsdemux latency=0 name=demux');
+        });
+        it('goes straight from udpsrc to tsdemux with no tsparse — re-anchoring PCR mid-pipeline causes mpegtsmux PCR re-emit to surface as packet loss', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
+                audioOutputs: [],
+            });
+            expect(result!.pipeline).not.toContain('tsparse');
         });
         it('omits the rule for a media type when its output count is zero', () => {
             const result = buildPipeline({

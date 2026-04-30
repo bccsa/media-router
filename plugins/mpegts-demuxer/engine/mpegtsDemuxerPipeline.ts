@@ -103,7 +103,12 @@ export interface DemuxerPipelineResult {
  *  Video branches insert the parser for the configured codec so `mpegtsmux`
  *  receives the alignment it expects (`au`, not the `nal` that `tsdemux`
  *  emits). Audio branches pass through directly since `mpegtsmux` accepts
- *  opus/aac caps from `tsdemux` as-is. */
+ *  opus/aac caps from `tsdemux` as-is.
+ *
+ *  Tail is `mpegtsmux ! queue ! udpsink`: the trailing leaky queue decouples
+ *  the mux thread from network IO so a transient udpsink stall (kernel send
+ *  buffer full) doesn't back-pressure the upstream demuxer and surface as
+ *  packet drops on every output. */
 export function buildOutputBranch(
     out: DemuxerOutput,
     suffix: string,
@@ -112,13 +117,23 @@ export function buildOutputBranch(
     videoCodec: string,
 ): string {
     const sink = buildUdpSink({ name: `usink_${suffix}`, host: out.host, port: out.port });
-    const queue = buildLeakyQueue(bufferMs);
-    let parser = '';
+    // No leaky queue between mpegtsmux and udpsink: any drop here is a
+    // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
+    // payload) and corrupts decode at the receiver. The kernel UDP send
+    // buffer absorbs typical bursts on its own.
     if (media === 'video') {
-        const elt = videoParserForCodec(videoCodec);
-        parser = elt ? `${elt} ! ` : '';
+        const parser = videoParserForCodec(videoCodec);
+        const parserChain = parser ? `${parser} ! ` : '';
+        // Video queue placed AFTER the parser so drops land on whole access
+        // units, not mid-NAL — losing a sub-frame buffer corrupts the AU and
+        // surfaces at the receiver as packet loss until the next IDR.
+        // `leaky=2 max-size-buffers=2` keeps latency to ≤2 frames and drops
+        // a single complete frame under stall, which the decoder conceals.
+        const videoQueue = `queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0`;
+        return `${parserChain}${videoQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
     }
-    return `${queue} ! ${parser}mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
+    const audioQueue = buildLeakyQueue(bufferMs);
+    return `${audioQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
 }
 
 /**
@@ -133,12 +148,15 @@ export function buildOutputBranch(
 export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResult | null {
     const bufferMs = input.bufferMs ?? 50;
     const videoCodec = input.videoCodec ?? 'h264';
+    // Goes straight `udpsrc ! tsdemux` with no `tsparse` in between: re-deriving
+    // PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
+    // timeline, and downstream `mpegtsmux latency=0` re-emitting PCR from those
+    // values surfaces at the receiver as visible packet loss on live video.
     const udpsrc = buildUdpSrc({
         host: input.input.host,
         port: input.input.port,
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
     });
-    // `tsdemux latency=0` skips its 700 ms input buffer.
     const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;
 
     const linkOnPadAdded: PadLinkRule[] = [];

@@ -94,9 +94,12 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
  * `mpegtsmux name=mux` at runtime by the per-media `linkOnPadAdded` rules
  * returned alongside the pipeline (see `buildPipeline`).
  *
- * We declare the TS caps directly on udpsrc so negotiation does not depend
- * on data arriving from the upstream encoder — without this, an idle source
- * can cause downstream `not-negotiated` errors at PLAYING.
+ * Goes straight `udpsrc ! tsdemux` with no `tsparse` in between: re-deriving
+ * PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
+ * timeline, and `mpegtsmux latency=0` re-emitting PCR from those values
+ * surfaces at the receiver as visible packet loss on live video. The downstream
+ * pad queue (between tsdemux and h264parse) provides the only buffering this
+ * branch needs.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
     const udpsrc = buildUdpSrc({
@@ -104,8 +107,8 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
         port: source.port,
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
     });
-    // `tsdemux latency=0` removes its default 700 ms input buffer — the queue
-    // downstream of each pad already provides flow control.
+    // `tsdemux latency=0` removes its default 700 ms input buffer — the
+    // per-pad leaky queue downstream provides flow control.
     return `${udpsrc} ! tsdemux latency=0 name=demux_${branchId}`;
 }
 
@@ -138,10 +141,23 @@ export interface MuxerPipelineResult {
 export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult | null {
     if (input.sources.length === 0) return null;
     const bufferMs = input.bufferMs ?? 50;
-    const queue = buildLeakyQueue(bufferMs);
+    // Audio queue: leaky=2 on raw demuxed audio is fine (single-frame drops
+    // are inaudible).
+    const audioQueue = buildLeakyQueue(bufferMs);
+    // Video queue: placed AFTER h264parse so drops land on whole access
+    // units, not mid-NAL — dropping a sub-frame buffer corrupts the AU and
+    // the receiver sees that as packet loss until the next IDR. `leaky=2
+    // max-size-buffers=2` keeps latency at ≤2 frames (~66 ms @ 30 fps) and
+    // drops a single complete frame under stall, which the decoder conceals
+    // cleanly.
+    const videoQueue = `queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0`;
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
     const muxer = `mpegtsmux name=mux latency=0 alignment=${input.alignment}`;
     const sink = buildUdpSink({ name: 'usink', host: input.output.host, port: input.output.port });
+    // No leaky queue between mpegtsmux and udpsink: any drop here is a
+    // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
+    // payload) and corrupts decode at the receiver. The 2 MB kernel UDP
+    // send buffer (≈4 s @ 4 Mbps) absorbs typical bursts on its own.
     const pipeline = `${muxer} ! ${sink} ${branches.join(' ')}`;
 
     // Per-source pad-link rules: each tsdemux gets one rule per media type.
@@ -160,7 +176,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
                 linkOnPadAdded.push({
                     from: demux,
                     media: 'video',
-                    branches: [`${queue} ! ${parser}`],
+                    branches: [`${parser} ! ${videoQueue}`],
                     linkTo: 'mux',
                 });
             }
@@ -169,7 +185,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             linkOnPadAdded.push({
                 from: demux,
                 media: 'audio',
-                branches: [queue],
+                branches: [audioQueue],
                 linkTo: 'mux',
             });
         }
