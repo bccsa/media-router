@@ -91,16 +91,19 @@
                 "audioType": {
                     "type": "number",
                     "enum": [
+                        0,
                         2048,
                         2049,
                         2051
                     ],
                     "x-enumLabels": {
+                        "0": "Auto (Restricted Low-delay if frame size ≤ 5 ms, else Generic)",
                         "2048": "Generic",
                         "2049": "Voice",
                         "2051": "Restricted Low-delay"
                     },
-                    "description": "Opus audio type (defaults to Restricted Low-delay for frame sizes ≤ 5 ms, otherwise Generic)",
+                    "default": 0,
+                    "description": "Opus audio type",
                     "x-showWhen": "codec=opus"
                 },
                 "inbandFec": {

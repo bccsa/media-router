@@ -181,11 +181,18 @@ export class AudioEncoderModule extends GstPluginBase {
                 const frameSize = (config.frameSize as number) ?? 20;
                 const inbandFec = (config.inbandFec as boolean) ?? true;
                 const packetLoss = (config.packetLoss as number) ?? 10;
-                // Default preserves the pre-`audioType` behaviour: low-latency
-                // (frameSize ≤ 5 ms) implies restricted-lowdelay (2051), which
-                // is also what v1 receivers expect.
+                // `audioType=0` is the "Auto" sentinel — not a real Opus value
+                // (real ones are 2048/2049/2051). It picks restricted-lowdelay
+                // for low-latency configs (frame size ≤ 5 ms) and generic
+                // otherwise, matching the pre-`audioType` behaviour and what
+                // v1 receivers expect for low latency.
+                const rawAudioType = config.audioType as number | undefined;
                 const audioType =
-                    (config.audioType as number) ?? (frameSize <= 5 ? 2051 : 2048);
+                    rawAudioType && rawAudioType !== 0
+                        ? rawAudioType
+                        : frameSize <= 5
+                          ? 2051
+                          : 2048;
                 tail =
                     `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} audio-type=${audioType} ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`.replace(
                         /  +/g,
