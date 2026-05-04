@@ -130,6 +130,12 @@ export function useGraphSync(
                 edge.labelBgStyle = { fill: 'var(--bg-card)', fillOpacity: 0.9 };
                 edge.labelBgPadding = [4, 2] as [number, number];
                 edge.labelBgBorderRadius = 4;
+            } else {
+                edge.label = undefined;
+                edge.labelStyle = undefined;
+                edge.labelBgStyle = undefined;
+                edge.labelBgPadding = undefined;
+                edge.labelBgBorderRadius = undefined;
             }
             result.push(edge);
         }
@@ -139,7 +145,7 @@ export function useGraphSync(
     const edgeDeps = computed(() => ({
         conn:
             engine.value?.connections
-                ?.map((c) => c.id)
+                ?.map((c) => `${c.id}|${c.label ?? ''}`)
                 .sort()
                 .join(',') ?? '',
         mods: engine.value ? Object.keys(engine.value.modules).sort().join(',') : '',
