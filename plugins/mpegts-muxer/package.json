@@ -34,9 +34,14 @@
                 },
                 "alignment": {
                     "type": "number",
-                    "enum": [1, 7],
+                    "enum": [0, 1, 7],
+                    "x-enumLabels": {
+                        "0": "Continuous",
+                        "1": "One TS packet",
+                        "7": "SRT-aligned (1316 B)"
+                    },
                     "default": 7,
-                    "description": "MPEG-TS alignment (7 = packed UDP, 1 = single packet per buffer)"
+                    "description": "MPEG-TS muxer alignment — keep at SRT-aligned for SRT/RIST/UDP transport. Use Continuous only for v1-style receivers that derive timing from byte flow (their tsparse mis-estimates bitrate from 1316 B bursts)"
                 },
                 "bufferMs": {
                     "type": "number",
