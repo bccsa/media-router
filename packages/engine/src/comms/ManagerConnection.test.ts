@@ -60,7 +60,21 @@ describe('ManagerConnection', () => {
     it('sendState delegates to send', () => {
         const sendSpy = vi.spyOn(conn, 'send');
         conn.sendState({ 'mod-1': { health: 'ok' } });
-        expect(sendSpy).toHaveBeenCalledWith('state', { 'mod-1': { health: 'ok' } });
+        expect(sendSpy).toHaveBeenCalledWith(
+            'state',
+            { 'mod-1': { health: 'ok' } },
+            undefined,
+        );
+    });
+
+    it('sendState forwards guaranteeDelivery option', () => {
+        const sendSpy = vi.spyOn(conn, 'send');
+        conn.sendState({ 'mod-1': { health: 'ok' } }, { guaranteeDelivery: true });
+        expect(sendSpy).toHaveBeenCalledWith(
+            'state',
+            { 'mod-1': { health: 'ok' } },
+            { guaranteeDelivery: true },
+        );
     });
 
     it('sendVu delegates to send with correct format', () => {
@@ -170,6 +184,25 @@ describe('ManagerConnection', () => {
         expect(conn.isConnected).toBe(true);
         conn.disconnect();
         expect(conn.isConnected).toBe(false);
+    });
+
+    it('disconnect emits "disconnected" when previously connected', () => {
+        // Underlying Client.destroy() is silent — without an explicit emit
+        // here, listeners that mirror connect-side resources on
+        // 'connected'/'disconnected' would leak past intentional shutdown.
+        conn.connect(testProfile);
+        clientInstances[0].emit('connected');
+        const spy = vi.fn();
+        conn.on('disconnected', spy);
+        conn.disconnect();
+        expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('disconnect does not emit "disconnected" if never connected', () => {
+        const spy = vi.fn();
+        conn.on('disconnected', spy);
+        conn.disconnect();
+        expect(spy).not.toHaveBeenCalled();
     });
 
     // --- Reconnection logic ---

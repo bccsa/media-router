@@ -125,11 +125,17 @@ export class ManagerConnection extends EventEmitter {
         }
         this.clearReconnectTimer();
         this.backoff.destroy();
+        const wasConnected = this._isConnected;
         if (this.client) {
             this.client.destroy();
             this.client = null;
             this._isConnected = false;
         }
+        // `Client.destroy()` is silent — no 'disconnected' event from the
+        // underlying socket on intentional teardown — so emit ours here. Any
+        // listener that mirrors connect-side resources (timers, watchers) on
+        // 'connected'/'disconnected' would otherwise leak past shutdown.
+        if (wasConnected) this.emit('disconnected');
     }
 
     /** Send a message to the manager. */
@@ -138,8 +144,11 @@ export class ManagerConnection extends EventEmitter {
     }
 
     /** Send module state update to manager. */
-    sendState(moduleStates: Record<string, unknown>): void {
-        this.send('state', moduleStates);
+    sendState(
+        moduleStates: Record<string, unknown>,
+        options?: { guaranteeDelivery?: boolean },
+    ): void {
+        this.send('state', moduleStates, options);
     }
 
     /** Send VU data to manager. */

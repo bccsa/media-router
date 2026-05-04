@@ -149,14 +149,33 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         }
     }
 
+    // Periodic full-state resync — repairs dropped per-module stateChange
+    // packets (those go best-effort UDP). The snapshot covers adds/updates;
+    // deletes are not visible here (they're absent from getAllStates), so
+    // the manager keeps removing stale entries via guaranteed `remove`
+    // patches from EnginePatchRouter.
+    //
+    // The heartbeat itself fragments when there are many modules — drop one
+    // fragment and the whole reassembly is lost — so it's guaranteed too.
+    // Without that, persistent fragmentation would stall convergence on
+    // exactly the case the resync exists to repair.
+    let stateResyncTimer: ReturnType<typeof setInterval> | null = null;
+
     ctx.managerConnection.on('connected', () => {
         ctx.systemStats.start();
         const modulesRunning = ctx.moduleManager.size > 0;
         ctx.managerConnection.send('engineRunningState', { running: modulesRunning });
         const states = ctx.moduleManager.getAllStates();
         if (Object.keys(states).length > 0) {
-            ctx.managerConnection.sendState(states);
+            ctx.managerConnection.sendState(states, { guaranteeDelivery: true });
         }
+        if (stateResyncTimer) clearInterval(stateResyncTimer);
+        stateResyncTimer = setInterval(() => {
+            const snapshot = ctx.moduleManager.getAllStates();
+            if (Object.keys(snapshot).length > 0) {
+                ctx.managerConnection.sendState(snapshot, { guaranteeDelivery: true });
+            }
+        }, 10_000);
         // Always push a full snapshot of every device type on connect, then
         // let the registry's internal polling take over change detection.
         ctx.deviceProviders.resetSnapshots();
@@ -166,5 +185,9 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     ctx.managerConnection.on('disconnected', () => {
         ctx.systemStats.stop();
         ctx.deviceProviders.stopPolling();
+        if (stateResyncTimer) {
+            clearInterval(stateResyncTimer);
+            stateResyncTimer = null;
+        }
     });
 }
