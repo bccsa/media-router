@@ -6,7 +6,11 @@ import { useEngineStore } from '@/stores/engines';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
 import { getLucideIcon } from '@/composables/useLucideIcons';
-import { getInterlockForModule, INTERLOCK_DEFAULT_COLOR } from '@/composables/useInterlocks';
+import {
+    getInterlockForModule,
+    INTERLOCK_DEFAULT_COLOR,
+    readableTextOn,
+} from '@/composables/useInterlocks';
 import { getFaceComponent } from '@/composables/usePluginFaceComponent';
 import { patch } from '@/composables/usePatch';
 
@@ -292,9 +296,6 @@ function formatStatusValue(value: unknown, unit?: string): string {
             minHeight: cardMinHeight + 'px',
             ...(resizable && cardHeight ? { height: cardHeight + 'px' } : {}),
             opacity: data.enabled === false ? 0.4 : isDimmed ? 0.15 : 1,
-            boxShadow: isHotMember
-                ? `0 0 0 2px ${interlock?.color ?? INTERLOCK_DEFAULT_COLOR}`
-                : undefined,
         }"
     >
         <!-- Resize grip (bottom-right) — only for opt-in plugins -->
@@ -319,14 +320,24 @@ function formatStatusValue(value: unknown, unit?: string): string {
         <!-- Interlock membership badge -->
         <div
             v-if="interlock"
-            class="absolute -top-2 left-2 px-1.5 py-0.5 rounded text-[9px] font-semibold flex items-center gap-1 bg-card border border-border"
+            class="absolute -top-2 left-2 px-1.5 py-0.5 rounded text-[9px] font-semibold flex items-center gap-1 border transition-colors"
+            :class="isHotMember ? 'border-transparent' : 'bg-card border-border text-foreground'"
+            :style="
+                isHotMember
+                    ? {
+                          backgroundColor: interlock.color ?? INTERLOCK_DEFAULT_COLOR,
+                          color: readableTextOn(interlock.color ?? INTERLOCK_DEFAULT_COLOR),
+                      }
+                    : undefined
+            "
             :title="`Interlock: ${interlock.name}`"
         >
             <span
+                v-if="!isHotMember"
                 class="w-1.5 h-1.5 rounded-full"
                 :style="{ backgroundColor: interlock.color ?? INTERLOCK_DEFAULT_COLOR }"
             />
-            <span class="truncate max-w-[80px] text-foreground">{{ interlock.name }}</span>
+            <span class="truncate max-w-[80px]">{{ interlock.name }}</span>
         </div>
 
         <!-- Header -->

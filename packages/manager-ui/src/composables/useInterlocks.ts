@@ -77,3 +77,20 @@ export function willMuteOnUnmute(engine: EngineState | undefined, moduleId: stri
 export function newInterlockId(): string {
     return `ilk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
+
+/**
+ * Pick a black-or-white foreground colour that reads against the given
+ * background. Used for badges filled with a user-picked interlock colour,
+ * where light hex values would otherwise hide light text. YIQ heuristic —
+ * cheap and good enough for solid colour swatches.
+ */
+export function readableTextOn(bg: string | undefined): string {
+    const hex = (bg ?? '').replace('#', '').trim();
+    const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+    if (full.length !== 6 || !/^[0-9a-f]{6}$/i.test(full)) return '#ffffff';
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+    return yiq >= 140 ? '#0f1117' : '#ffffff';
+}

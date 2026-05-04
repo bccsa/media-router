@@ -5,6 +5,7 @@ import {
     getHotMember,
     willMuteOnUnmute,
     newInterlockId,
+    readableTextOn,
 } from './useInterlocks';
 import type { EngineState, ModuleState, InterlockState } from '@/stores/engines';
 
@@ -86,5 +87,30 @@ describe('useInterlocks', () => {
         const b = newInterlockId();
         expect(a).toMatch(/^ilk-/);
         expect(a).not.toBe(b);
+    });
+
+    describe('readableTextOn', () => {
+        it('returns dark text on light backgrounds', () => {
+            expect(readableTextOn('#ffffff')).toBe('#0f1117');
+            expect(readableTextOn('#ffff00')).toBe('#0f1117'); // yellow
+            expect(readableTextOn('#fde68a')).toBe('#0f1117'); // pale amber
+        });
+
+        it('returns light text on dark backgrounds', () => {
+            expect(readableTextOn('#0f1117')).toBe('#ffffff');
+            expect(readableTextOn('#a855f7')).toBe('#ffffff'); // default purple
+            expect(readableTextOn('#1e40af')).toBe('#ffffff'); // dark blue
+        });
+
+        it('handles 3-digit hex and missing leading hash', () => {
+            expect(readableTextOn('fff')).toBe('#0f1117');
+            expect(readableTextOn('#000')).toBe('#ffffff');
+        });
+
+        it('falls back to white for invalid input', () => {
+            expect(readableTextOn(undefined)).toBe('#ffffff');
+            expect(readableTextOn('')).toBe('#ffffff');
+            expect(readableTextOn('not-a-color')).toBe('#ffffff');
+        });
     });
 });
