@@ -320,4 +320,27 @@ describe('useEngineStore', () => {
             expect(store.engineList).toEqual([]);
         });
     });
+
+    describe('clearEngineRuntime', () => {
+        it('preserves engine.running across an offline blip', () => {
+            const store = useEngineStore();
+            store.addEngine({
+                engine_id: 'eng-1',
+                display_name: 'E1',
+                running: true,
+                modules: {
+                    'mod-1': { pluginId: 'p', displayName: 'M1', running: true, health: 'ok' },
+                },
+                connections: [],
+            });
+
+            store.clearEngineRuntime('eng-1');
+
+            const engine = store.getEngine('eng-1')!;
+            expect(engine.running).toBe(true);
+            expect(engine.modules['mod-1'].running).toBe(false);
+            expect(engine.modules['mod-1'].health).toBe('stopped');
+            expect(engine.system).toBeUndefined();
+        });
+    });
 });

@@ -284,11 +284,16 @@ export const useEngineStore = defineStore('engines', () => {
         engines.value = new Map(engines.value);
     }
 
-    /** Clear runtime data when engine goes offline (stats, module health, badges). */
+    /**
+     * Clear runtime data when engine goes offline (stats, module health, badges).
+     * Does NOT clear `engine.running` — that flag is the persisted user intent
+     * (Start/Stop button), authoritative on the manager. Wiping it here would
+     * desync the button across an offline/online blip: the engine reconnects
+     * still running, but the UI would have forgotten and shown "Start".
+     */
     function clearEngineRuntime(engineId: string) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
-        engine.running = false;
         engine.system = undefined;
         for (const mod of Object.values(engine.modules)) {
             mod.running = false;
