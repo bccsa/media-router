@@ -324,6 +324,14 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     private deviceWatchdog: ReturnType<typeof setInterval> | null = null;
     private deviceConnected = true;
+    /**
+     * In-flight `checkDevice` promise, if any. Tracked so `stopDeviceWatchdog`
+     * can await a tick that's mid-`onDeviceReconnected`. Without this, a stop
+     * racing a reconnect can leak a freshly-loaded PA module: the tick calls
+     * `loadRemap*` after `ModuleInstance.stop`'s `releaseAll` has already run,
+     * so the new ID is tracked but never unloaded.
+     */
+    private deviceCheckInFlight: Promise<void> | null = null;
 
     /**
      * Subclasses bound to a hardware device return its PipeWire name (e.g.
@@ -349,20 +357,40 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         /* subclass rebuild */
     }
 
-    protected startDeviceWatchdog(): void {
+    /**
+     * Start the watchdog. Pass `initiallyConnected=false` when the device
+     * was missing at start time — the next tick where the device is
+     * present then triggers `onDeviceReconnected` to drive setup.
+     */
+    protected startDeviceWatchdog(initiallyConnected = true): void {
         if (this.deviceWatchdog) return;
-        this.deviceConnected = true;
+        this.deviceConnected = initiallyConnected;
         this.deviceWatchdog = setInterval(() => {
-            this.checkDevice().catch(() => {
+            // Skip overlapping ticks — a slow PipeWire query or a long
+            // reconnect must not pile up concurrent runs.
+            if (this.deviceCheckInFlight) return;
+            const p = this.checkDevice().catch(() => {
                 /* swallowed — next tick retries */
+            });
+            this.deviceCheckInFlight = p.finally(() => {
+                if (this.deviceCheckInFlight === p) this.deviceCheckInFlight = null;
             });
         }, 2000);
     }
 
-    protected stopDeviceWatchdog(): void {
+    /**
+     * Stop the watchdog and wait for an in-flight tick to settle. Awaiting
+     * matters: a tick mid-`onDeviceReconnected` might still be about to call
+     * `loadRemap*` after this returns; the awaiting caller (`onStop`) then
+     * runs `releaseAll` knowing the tick has finished registering ownership.
+     */
+    protected async stopDeviceWatchdog(): Promise<void> {
         if (this.deviceWatchdog) {
             clearInterval(this.deviceWatchdog);
             this.deviceWatchdog = null;
+        }
+        if (this.deviceCheckInFlight) {
+            await this.deviceCheckInFlight;
         }
     }
 

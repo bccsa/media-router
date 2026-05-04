@@ -74,6 +74,19 @@ export class AudioOutputModule extends GstPluginBase {
             throw new Error('No audio device configured');
         }
 
+        // If the device isn't enumerated yet, defer setup to the watchdog.
+        // Throwing here would prevent the watchdog from starting at all,
+        // leaving hot-plug undetected — the module would only recover on
+        // an engine restart.
+        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+            this.setHealth(
+                'warning',
+                `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
+            );
+            this.startDeviceWatchdog(false);
+            return;
+        }
+
         const { channels, rate, detected } = resolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
@@ -87,31 +100,12 @@ export class AudioOutputModule extends GstPluginBase {
         this.detectedChannels = detected.channels;
         this.detectedSampleRate = detected.sampleRate;
 
-        if (this.services?.pipeWire) {
-            // Create a native remap-sink instead of null-sink.
-            // Audio stays entirely in PipeWire — no GStreamer buffering in the signal path.
-            this.paModuleId = await this.services.pipeWire.loadRemapSink(
-                this.services.instanceId,
-                this.deviceName,
-                channels,
-                rate,
-                this.services.instanceId,
-            );
-
-            // Respect audioEnabled on start — otherwise a muted module unmutes
-            // itself when restarted (PipeWire volume resets to config.volume).
-            const audioOff = (this.config.audioEnabled as boolean) === false;
-            const vol = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            await this.services.pipeWire.setSinkVolume(this.pwNodeName, vol);
-        }
-
-        // Start VU metering pipeline (reads from remap-sink monitor directly — no loopback needed)
-        await super.onStart();
+        await this.bringUpRemapSinkAndPipeline(channels, rate);
         this.startDeviceWatchdog();
     }
 
     async onStop(): Promise<void> {
-        this.stopDeviceWatchdog();
+        await this.stopDeviceWatchdog();
         this.paModuleId = null;
         await super.onStop();
     }
@@ -123,37 +117,62 @@ export class AudioOutputModule extends GstPluginBase {
         } catch {
             /* already stopped */
         }
+        // The disconnect path bypasses `ModuleInstance.stop`'s `releaseAll`,
+        // so unload here. Otherwise the next `loadRemapSink` (on reconnect)
+        // would collide on `sink_name=MR_PW_<id>`.
+        if (this.paModuleId !== null && this.services?.pipeWire) {
+            try {
+                await this.services.pipeWire.unloadModule(this.paModuleId);
+            } catch {
+                /* ignore — best-effort cleanup */
+            }
+            this.paModuleId = null;
+        }
     }
 
     /** Base-class hook: device returned — rebuild the remap-sink then restart the pipeline. */
     protected async onDeviceReconnected(): Promise<void> {
-        if (this.services?.pipeWire) {
-            const resolved = tryResolveDeviceFormat(
-                this.services.pipeWire,
-                this.deviceName,
-                { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
-                {
-                    channels: this.config.channels as number | undefined,
-                    sampleRate: this.config.sampleRate as number | undefined,
-                },
+        const resolved = tryResolveDeviceFormat(
+            this.services?.pipeWire,
+            this.deviceName,
+            { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
+            {
+                channels: this.config.channels as number | undefined,
+                sampleRate: this.config.sampleRate as number | undefined,
+            },
+        );
+        this.detectedChannels = resolved.detected.channels;
+        this.detectedSampleRate = resolved.detected.sampleRate;
+        if (!resolved.channels || !resolved.rate) {
+            // Throw so the watchdog leaves `deviceConnected=false` and
+            // retries on the next tick — silently returning would have
+            // the watchdog flip health to 'ok' with no remap-sink.
+            throw new Error(
+                `Reconnected device "${this.deviceName}" has unknown channel count or sample rate`,
             );
-            this.detectedChannels = resolved.detected.channels;
-            this.detectedSampleRate = resolved.detected.sampleRate;
-            if (!resolved.channels || !resolved.rate) {
-                // Throw so the watchdog leaves `deviceConnected=false` and
-                // retries on the next tick — silently returning would have
-                // the watchdog flip health to 'ok' with no remap-sink.
-                throw new Error(
-                    `Reconnected device "${this.deviceName}" has unknown channel count or sample rate`,
-                );
-            }
+        }
+        await this.bringUpRemapSinkAndPipeline(resolved.channels, resolved.rate);
+    }
+
+    /**
+     * Shared body for both the cold-start success path and watchdog-driven
+     * reconnect: load the native remap-sink (audio stays in PipeWire — no
+     * GStreamer in the signal path) and start the VU pipeline. The VU
+     * pipeline reads the master device's monitor (post-volume), so the
+     * remap-sink existing is enough; `super.onStart` waits for it to appear.
+     */
+    private async bringUpRemapSinkAndPipeline(channels: number, rate: number): Promise<void> {
+        if (this.services?.pipeWire) {
             this.paModuleId = await this.services.pipeWire.loadRemapSink(
                 this.services.instanceId,
                 this.deviceName,
-                resolved.channels,
-                resolved.rate,
+                channels,
+                rate,
                 this.services.instanceId,
             );
+
+            // Respect audioEnabled on start — otherwise a muted module unmutes
+            // itself when restarted (PipeWire volume resets to config.volume).
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const vol = audioOff ? 0 : ((this.config.volume as number) ?? 100);
             await this.services.pipeWire.setSinkVolume(this.pwNodeName, vol);

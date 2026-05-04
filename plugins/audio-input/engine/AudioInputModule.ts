@@ -73,6 +73,19 @@ export class AudioInputModule extends GstPluginBase {
             throw new Error('No audio device configured');
         }
 
+        // If the device isn't enumerated yet, defer setup to the watchdog.
+        // Throwing here would prevent the watchdog from starting at all,
+        // leaving hot-plug undetected — the module would only recover on
+        // an engine restart.
+        if (this.services?.pipeWire && !this.services.pipeWire.hasDevice(this.deviceName)) {
+            this.setHealth(
+                'warning',
+                `Audio device "${this.deviceName}" not connected — waiting for hot-plug`,
+            );
+            this.startDeviceWatchdog(false);
+            return;
+        }
+
         const { channels, rate, detected } = resolveDeviceFormat(
             this.services?.pipeWire,
             this.deviceName,
@@ -86,8 +99,69 @@ export class AudioInputModule extends GstPluginBase {
         this.detectedChannels = detected.channels;
         this.detectedSampleRate = detected.sampleRate;
 
+        await this.bringUpRemapSourceAndPipeline(channels, rate);
+        this.startDeviceWatchdog();
+    }
+
+    async onStop(): Promise<void> {
+        await this.stopDeviceWatchdog();
+        this.remapModuleId = null;
+        await super.onStop();
+    }
+
+    /** Base-class hook: device unplugged — tear down the GStreamer pipeline. */
+    protected async onDeviceDisconnected(): Promise<void> {
+        try {
+            await super.onStop();
+        } catch {
+            /* already stopped */
+        }
+        // The disconnect path bypasses `ModuleInstance.stop`'s `releaseAll`,
+        // so unload here. Otherwise the next `loadRemapSource` (on reconnect)
+        // would collide on `source_name=MR_PW_<id>`.
+        if (this.remapModuleId !== null && this.services?.pipeWire) {
+            try {
+                await this.services.pipeWire.unloadModule(this.remapModuleId);
+            } catch {
+                /* ignore — best-effort cleanup */
+            }
+            this.remapModuleId = null;
+        }
+    }
+
+    /** Base-class hook: device returned — rebuild the remap-source then restart the pipeline. */
+    protected async onDeviceReconnected(): Promise<void> {
+        const resolved = tryResolveDeviceFormat(
+            this.services?.pipeWire,
+            this.deviceName,
+            { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
+            {
+                channels: this.config.channels as number | undefined,
+                sampleRate: this.config.sampleRate as number | undefined,
+            },
+        );
+        this.detectedChannels = resolved.detected.channels;
+        this.detectedSampleRate = resolved.detected.sampleRate;
+        if (!resolved.channels || !resolved.rate) {
+            // Throw so the watchdog leaves `deviceConnected=false` and
+            // retries on the next tick — silently returning would have
+            // the watchdog flip health to 'ok' with no remap-source.
+            throw new Error(
+                `Reconnected device "${this.deviceName}" has unknown channel count or sample rate`,
+            );
+        }
+        await this.bringUpRemapSourceAndPipeline(resolved.channels, resolved.rate);
+    }
+
+    /**
+     * Shared body for both the cold-start success path and watchdog-driven
+     * reconnect: load the native remap-source (matches v1: remix=no,
+     * latency_msec=50), wait for it to appear, set volume, then start the
+     * VU pipeline. PipeWire multiplexes the remap source — pulsesrc doesn't
+     * consume it exclusively, so the VU pipeline can read it directly.
+     */
+    private async bringUpRemapSourceAndPipeline(channels: number, rate: number): Promise<void> {
         if (this.services?.pipeWire) {
-            // Create remap-source — matches v1 exactly: remix=no, latency_msec=50
             this.remapModuleId = await this.services.pipeWire.loadRemapSource(
                 this.services.instanceId,
                 this.deviceName,
@@ -106,62 +180,6 @@ export class AudioInputModule extends GstPluginBase {
 
             // Respect audioEnabled on start — otherwise a muted module unmutes
             // itself when restarted (PipeWire volume resets to config.volume).
-            const audioOff = (this.config.audioEnabled as boolean) === false;
-            const vol = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            await this.services.pipeWire.setSourceVolume(this.pwNodeName, vol);
-        }
-
-        // VU pipeline reads directly from the remap source (same as v1).
-        // PipeWire multiplexes — pulsesrc doesn't consume the source exclusively.
-        await super.onStart();
-        this.startDeviceWatchdog();
-    }
-
-    async onStop(): Promise<void> {
-        this.stopDeviceWatchdog();
-        this.remapModuleId = null;
-        await super.onStop();
-    }
-
-    /** Base-class hook: device unplugged — tear down the GStreamer pipeline. */
-    protected async onDeviceDisconnected(): Promise<void> {
-        try {
-            await super.onStop();
-        } catch {
-            /* already stopped */
-        }
-    }
-
-    /** Base-class hook: device returned — rebuild the remap-source then restart the pipeline. */
-    protected async onDeviceReconnected(): Promise<void> {
-        if (this.services?.pipeWire) {
-            const resolved = tryResolveDeviceFormat(
-                this.services.pipeWire,
-                this.deviceName,
-                { channels: this.detectedChannels, sampleRate: this.detectedSampleRate },
-                {
-                    channels: this.config.channels as number | undefined,
-                    sampleRate: this.config.sampleRate as number | undefined,
-                },
-            );
-            this.detectedChannels = resolved.detected.channels;
-            this.detectedSampleRate = resolved.detected.sampleRate;
-            if (!resolved.channels || !resolved.rate) {
-                // Throw so the watchdog leaves `deviceConnected=false` and
-                // retries on the next tick — silently returning would have
-                // the watchdog flip health to 'ok' with no remap-source.
-                throw new Error(
-                    `Reconnected device "${this.deviceName}" has unknown channel count or sample rate`,
-                );
-            }
-            this.remapModuleId = await this.services.pipeWire.loadRemapSource(
-                this.services.instanceId,
-                this.deviceName,
-                resolved.channels,
-                resolved.rate,
-                this.services.instanceId,
-            );
-            await this.services.pipeWire.waitForSource(this.pwNodeName);
             const audioOff = (this.config.audioEnabled as boolean) === false;
             const vol = audioOff ? 0 : ((this.config.volume as number) ?? 100);
             await this.services.pipeWire.setSourceVolume(this.pwNodeName, vol);
