@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    buildLeakyQueue,
     buildUdpSrc,
     type PipelineDescription,
     type ModuleServices,
@@ -74,8 +75,8 @@ export class SrtOutputModule extends GstPluginBase {
 
         const pipeline = [
             buildUdpSrc({ host: udpSource.host, port: udpSource.port }),
-            'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
-            `srtsink name=sink uri="${uri}" sync=false`,
+            buildLeakyQueue(100),
+            `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false`,
         ].join(' ! ');
 
         return { pipeline, restartOnError: true };

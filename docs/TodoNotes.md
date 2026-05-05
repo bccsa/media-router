@@ -123,5 +123,5 @@
 - [ ] Add a fourmat button to the routerView, that it auto format the layout (like with n8n)
 - [x] Modules jump around when moving them (fixed: `useGraphSync` now reads live drag position from Vue Flow's authoritative `findNode().position` instead of from `nodes.value`, whose two-way sync with Vue Flow's store is async and was returning pre-drag positions on close races; removed the `recentDrags` 2s window — no longer needed)
 - [x] Video player need to be restarted when it looses the mpegts stream and gets it back again, thei the player crash or it is when the streen if off for long, then the player does not auto restart any more (fixed: `udpsrc timeout=5000000000` posts `GstUDPSrcTimeout` on stalled streams, Python runner translates to a bus error so the existing restart path triggers; gst-runner now also restarts on Python child crash (decoder segfault / OOM) and uses `ExponentialBackoff` with `markStable()` after sustained PLAYING — no more permanent give-up after 10 attempts during a long outage)
-- [ ] Latency grow on the pegts muxer / demuxer 
+- [ ] Latency grow on the mpegts muxer / demuxer 
 - [ ] Check that auto gain control is off.
