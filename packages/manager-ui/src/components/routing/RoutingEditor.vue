@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, provide } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, provide, nextTick } from 'vue';
 import { VueFlow } from '@vue-flow/core';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
@@ -18,6 +18,7 @@ import { useSocketStore } from '@/stores/socket';
 import { useFocusMode } from '@/composables/useFocusMode';
 import { useContextMenu } from '@/composables/useContextMenu';
 import { useGraphSync } from '@/composables/useGraphSync';
+import { computeAutoLayout } from '@/utils/autoLayout';
 import { patch } from '@/composables/usePatch';
 
 const props = defineProps<{ engineId: string }>();
@@ -74,6 +75,22 @@ const showInterlocks = ref(false);
 function confirmReset() {
     showResetConfirm.value = false;
     socket.emit('engine:reset', { engineId: props.engineId });
+}
+
+function formatLayout() {
+    const newPositions = computeAutoLayout(nodes.value, edges.value);
+    if (newPositions.size === 0) return;
+    const ops = Array.from(newPositions, ([moduleId, value]) => ({
+        op: 'replace' as const,
+        path: `/modules/${moduleId}/position`,
+        value,
+    }));
+    patch.raw(props.engineId, ops);
+    // Mirror the init-fit pattern in useGraphSync: Vue Flow's internal
+    // coordinate cache lags the optimistic store update by a microtask
+    // *and* a layout pass, so a single nextTick can fit on stale bounds.
+    nextTick(() => fitView({ padding: 0.2 }));
+    setTimeout(() => fitView({ padding: 0.2 }), 200);
 }
 
 // Throttled slider change from context menu (volume, etc.)
@@ -264,6 +281,12 @@ function dismissAll() {
                 <MrButton size="sm" variant="secondary" @click="fitView({ padding: 0.2 })"
                     >Fit View</MrButton
                 >
+            </MrTooltip>
+            <MrTooltip
+                text="Auto-arrange modules in left-to-right signal-flow order"
+                width="w-52"
+            >
+                <MrButton size="sm" variant="secondary" @click="formatLayout">Format</MrButton>
             </MrTooltip>
             <MrTooltip
                 :text="showLogs ? 'Hide engine log viewer' : 'Show engine log viewer'"
