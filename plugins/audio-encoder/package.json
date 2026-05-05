@@ -108,8 +108,8 @@
                 },
                 "inbandFec": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "Enable in-band forward error correction (adds ~5-10% bitrate overhead)",
+                    "default": false,
+                    "description": "Enable in-band forward error correction. Typically only needed when distributing audio without a reliable container (e.g. sending feeds to MediaMTX for WebRTC); leave off for RIST/SRT.",
                     "x-showWhen": "codec=opus"
                 },
                 "packetLoss": {

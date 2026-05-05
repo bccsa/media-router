@@ -179,7 +179,7 @@ export class AudioEncoderModule extends GstPluginBase {
             case 'opus':
             default: {
                 const frameSize = (config.frameSize as number) ?? 20;
-                const inbandFec = (config.inbandFec as boolean) ?? true;
+                const inbandFec = (config.inbandFec as boolean) ?? false;
                 const packetLoss = (config.packetLoss as number) ?? 10;
                 // `audioType=0` is the "Auto" sentinel — not a real Opus value
                 // (real ones are 2048/2049/2051). It picks restricted-lowdelay
