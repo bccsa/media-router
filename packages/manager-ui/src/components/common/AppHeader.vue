@@ -19,15 +19,22 @@ const activeEngine = computed(() => {
 
 <template>
     <header
-        class="h-12 flex items-center justify-between px-4 shrink-0 bg-card border-b border-border"
+        class="h-12 flex items-center justify-between px-4 pl-14 md:pl-4 shrink-0 bg-card border-b border-border"
     >
-        <div class="flex items-center gap-3">
-            <div
-                class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold text-white bg-accent"
-            >
-                MR
-            </div>
-            <span class="text-sm font-semibold text-foreground">Media Router</span>
+        <div class="flex items-center">
+            <!-- Full wordmark on md+; icon-only on mobile (sidebar hamburger occupies the left edge). -->
+            <img
+                :src="theme.isDark ? '/logo_dark.svg' : '/logo_light.svg'"
+                alt="Media Router"
+                class="hidden md:block h-7 w-auto select-none"
+                draggable="false"
+            />
+            <img
+                src="/logo_small.svg"
+                alt="Media Router"
+                class="md:hidden h-7 w-auto select-none"
+                draggable="false"
+            />
         </div>
 
         <!-- Engine info strip — visible only when viewing a specific online engine -->

@@ -51,7 +51,18 @@ function stopEngine() {
                     class="status-dot"
                     :class="socketStore.connected ? 'bg-accent' : 'bg-stopped'"
                 ></div>
-                <h1 class="header-title">Media Router</h1>
+                <img
+                    :src="isDark ? '/logo_dark.svg' : '/logo_light.svg'"
+                    alt="Media Router"
+                    class="header-logo header-logo-full"
+                    draggable="false"
+                />
+                <img
+                    src="/logo_small.svg"
+                    alt="Media Router"
+                    class="header-logo header-logo-icon"
+                    draggable="false"
+                />
                 <span class="header-subtitle">Local Control Panel</span>
                 <span v-if="moduleStore.engineIps.length > 0" class="header-ip">{{
                     moduleStore.engineIps.join(', ')
@@ -213,10 +224,16 @@ body {
     border-radius: 50%;
 }
 
-.header-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--text-primary);
+.header-logo {
+    height: 22px;
+    width: auto;
+    user-select: none;
+}
+.header-logo-full {
+    display: block;
+}
+.header-logo-icon {
+    display: none;
 }
 
 .header-subtitle {
@@ -301,16 +318,25 @@ body {
     align-items: stretch;
 }
 
+/* Narrow viewports (phones in any orientation, narrow tablets):
+   collapse the wordmark to the icon and hide the subtitle so the
+   header doesn't wrap or push the right-side controls off-screen. */
+@media (max-width: 768px) {
+    .header-logo-full {
+        display: none;
+    }
+    .header-logo-icon {
+        display: block;
+    }
+    .header-subtitle {
+        display: none;
+    }
+}
+
 /* Landscape: compact header, more space for faders */
 @media (orientation: landscape) and (max-height: 500px) {
     .lcp-header {
         padding: 4px 12px;
-    }
-    .header-title {
-        font-size: 14px;
-    }
-    .header-subtitle {
-        display: none;
     }
     .mixer-area {
         padding: 6px;

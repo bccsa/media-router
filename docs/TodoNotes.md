@@ -119,7 +119,7 @@
 - [x] Make on / off buttons square
 - [x] clone does not work for live chagne, when i clone, i need to refresh before i see the cloned item (fixed: `applyEnginePatch` now runs `normalizeModule` on optimistic `/modules/<id>` adds so freshly cloned nodes have the full `ModuleState` shape — without it `pendingRestart`/`focused`/`interlock`/etc. stayed undefined and the node didn't render until `engine:config` rehydrated after refresh)
 
-- [ ] Replace media-router heading in manager and lcp with media-router logo
+- [x] Replace media-router heading in manager and lcp with media-router logo (fixed: `AppHeader.vue` and `local-panel/App.vue` now render the dark/light SVG logos from `public/logo_{dark,light}.svg`, swapped via the existing theme state)
 - [ ] Add a fourmat button to the routerView, that it auto format the layout (like with n8n)
 - [x] Modules jump around when moving them (fixed: `useGraphSync` now reads live drag position from Vue Flow's authoritative `findNode().position` instead of from `nodes.value`, whose two-way sync with Vue Flow's store is async and was returning pre-drag positions on close races; removed the `recentDrags` 2s window — no longer needed)
 - [x] Video player need to be restarted when it looses the mpegts stream and gets it back again, thei the player crash or it is when the streen if off for long, then the player does not auto restart any more (fixed: `udpsrc timeout=5000000000` posts `GstUDPSrcTimeout` on stalled streams, Python runner translates to a bus error so the existing restart path triggers; gst-runner now also restarts on Python child crash (decoder segfault / OOM) and uses `ExponentialBackoff` with `markStable()` after sustained PLAYING — no more permanent give-up after 10 attempts during a long outage)
