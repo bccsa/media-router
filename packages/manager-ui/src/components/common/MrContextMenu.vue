@@ -134,17 +134,14 @@ onUnmounted(() => {
                     @mousedown.stop
                     @touchstart.stop
                 >
-                    <div class="flex items-center justify-between text-[11px] mb-1 text-muted">
-                        <span>{{ item.label }}</span>
-                        <span class="text-foreground"
-                            >{{ getSliderValue(item) }}{{ item.slider.unit ?? '' }}</span
-                        >
-                    </div>
+                    <div class="text-[11px] mb-1 text-muted">{{ item.label }}</div>
                     <MrSlider
                         :model-value="getSliderValue(item)"
                         :min="item.slider.min"
                         :max="item.slider.max"
                         :step="item.slider.step"
+                        :editable="true"
+                        :unit="item.slider.unit"
                         @update:model-value="onSliderInput(item, $event)"
                     />
                 </div>

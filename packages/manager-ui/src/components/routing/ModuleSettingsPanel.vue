@@ -543,29 +543,20 @@ function applyAll() {
                         @update:model-value="updateSetting(field.key, $event)"
                     />
                     <!-- Slider for volume/gain controls -->
-                    <div v-else-if="field.widget === 'slider'" class="flex items-center gap-2">
-                        <MrSlider
-                            class="flex-1"
-                            :model-value="
-                                Number(localSettings[field.key] ?? field.defaultValue ?? 1)
-                            "
-                            :min="field.minimum ?? 0"
-                            :max="
-                                field.maxFrom
-                                    ? Number(localSettings[field.maxFrom] ?? field.maximum ?? 2)
-                                    : (field.maximum ?? 2)
-                            "
-                            :step="field.step ?? 0.01"
-                            @update:model-value="updateSetting(field.key, $event)"
-                        />
-                        <span class="text-xs w-16 text-right tabular-nums text-subtle">
-                            {{
-                                Math.round(
-                                    Number(localSettings[field.key] ?? field.defaultValue ?? 100),
-                                )
-                            }}{{ field.unit ?? '%' }}
-                        </span>
-                    </div>
+                    <MrSlider
+                        v-else-if="field.widget === 'slider'"
+                        :model-value="Number(localSettings[field.key] ?? field.defaultValue ?? 0)"
+                        :min="field.minimum"
+                        :max="
+                            field.maxFrom
+                                ? Number(localSettings[field.maxFrom] ?? field.maximum)
+                                : field.maximum
+                        "
+                        :step="field.step"
+                        :editable="true"
+                        :unit="field.unit ?? '%'"
+                        @update:model-value="updateSetting(field.key, $event)"
+                    />
                     <!-- Plain number input -->
                     <MrInput
                         v-else-if="field.type === 'number'"

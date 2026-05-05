@@ -135,7 +135,9 @@ describe('MrContextMenu', () => {
                 global: { stubs: { Teleport: true } },
             });
             expect(wrapper.text()).toContain('Volume');
-            expect(wrapper.text()).toContain('100%');
+            expect(wrapper.text()).toContain('%');
+            const num = wrapper.find('input[type="number"]');
+            expect((num.element as HTMLInputElement).value).toBe('100');
         });
 
         it('renders range input for slider items', () => {
