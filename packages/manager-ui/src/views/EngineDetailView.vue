@@ -5,6 +5,7 @@ import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import MrButton from '@/components/common/MrButton.vue';
 import MrModal from '@/components/common/MrModal.vue';
+import MrInput from '@/components/common/MrInput.vue';
 
 const props = defineProps<{ engineId: string }>();
 const router = useRouter();
@@ -14,6 +15,52 @@ const engine = computed(() => engineStore.getEngine(props.engineId));
 
 const showDelete = ref(false);
 const deleting = ref(false);
+
+const showEdit = ref(false);
+const editForm = ref({ displayName: '', password: '' });
+const editLoading = ref(false);
+const editError = ref('');
+const showPassword = ref(false);
+
+function openEdit() {
+    // Password stays blank: the server never round-trips the dgram-comms
+    // shared secret to the client. Empty `password` on PUT means "keep
+    // current" (httpRoutes UpdateEngineSchema treats it as optional).
+    editError.value = '';
+    showPassword.value = false;
+    editForm.value = { displayName: engine.value?.name ?? '', password: '' };
+    showEdit.value = true;
+}
+
+async function saveEdit() {
+    if (!editForm.value.displayName) {
+        editError.value = 'Display name is required';
+        return;
+    }
+    editLoading.value = true;
+    editError.value = '';
+    try {
+        const body: { displayName: string; password?: string } = {
+            displayName: editForm.value.displayName,
+        };
+        if (editForm.value.password) body.password = editForm.value.password;
+        const res = await fetch(`/api/v1/engines/${props.engineId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            editError.value = data.error ?? 'Failed to update';
+            return;
+        }
+        showEdit.value = false;
+    } catch {
+        editError.value = 'Network error';
+    } finally {
+        editLoading.value = false;
+    }
+}
 
 async function deleteEngine() {
     deleting.value = true;
@@ -77,7 +124,12 @@ const infoRows = computed(() => {
                         {{ engine.online ? 'Online' : 'Offline' }}
                     </div>
                 </div>
-                <MrButton size="sm" variant="danger" @click="showDelete = true">Delete</MrButton>
+                <div class="flex gap-2">
+                    <MrButton size="sm" variant="secondary" @click="openEdit">Edit</MrButton>
+                    <MrButton size="sm" variant="danger" @click="showDelete = true"
+                        >Delete</MrButton
+                    >
+                </div>
             </div>
 
             <div class="rounded-lg overflow-hidden bg-card border border-border">
@@ -112,6 +164,34 @@ const infoRows = computed(() => {
             </div>
         </template>
     </div>
+
+    <MrModal v-if="showEdit" title="Edit Engine" @close="showEdit = false">
+        <form @submit.prevent="saveEdit" class="space-y-3">
+            <MrInput v-model="editForm.displayName" label="Display Name" type="text" />
+            <div>
+                <div class="flex items-center justify-between mb-1">
+                    <label class="block text-xs font-medium text-foreground">Password</label>
+                    <button
+                        type="button"
+                        class="text-[11px] text-accent-fg hover:underline"
+                        @click="showPassword = !showPassword"
+                    >
+                        {{ showPassword ? 'Hide' : 'Show' }}
+                    </button>
+                </div>
+                <MrInput
+                    v-model="editForm.password"
+                    :type="showPassword ? 'text' : 'password'"
+                    placeholder="Leave blank to keep current"
+                />
+            </div>
+            <div v-if="editError" class="text-sm text-red-400">{{ editError }}</div>
+        </form>
+        <template #footer>
+            <MrButton variant="secondary" @click="showEdit = false">Cancel</MrButton>
+            <MrButton :loading="editLoading" @click="saveEdit">Save</MrButton>
+        </template>
+    </MrModal>
 
     <MrModal v-if="showDelete" title="Delete Engine" @close="showDelete = false">
         <p class="text-sm text-subtle">

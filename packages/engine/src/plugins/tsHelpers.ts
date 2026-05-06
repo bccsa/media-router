@@ -52,8 +52,10 @@ export interface TsUdpInputOpts {
     port: number;
     /** Optional `udpsrc name=…` so callers can address it (e.g. for live props). */
     udpsrcName?: string;
-    /** Jitter buffer length in milliseconds (default 50). Absorbs UDP delivery
-     *  jitter so downstream tsdemux doesn't see late bursts as discontinuities. */
+    /** Jitter buffer length in milliseconds (default 200). Absorbs UDP delivery
+     *  jitter so downstream tsdemux doesn't see late bursts as discontinuities.
+     *  200 ms covers encoder I-frame bursts on fast motion; 50 ms (the previous
+     *  default) routinely overflowed and surfaced as visible "packet loss". */
     jitterMs?: number;
     /** udpsrc timeout in nanoseconds; the runner translates the resulting
      *  `GstUDPSrcTimeout` element message into a bus error so the restart path
@@ -68,9 +70,10 @@ export interface TsUdpInputOpts {
  * Why each piece:
  *   - `udpsrc` declares MPEG-TS caps so caps negotiation works before the
  *     first packet arrives.
- *   - `queue leaky=2` (50 ms) absorbs UDP delivery jitter; without it a
- *     short burst of late packets is seen by tsdemux as a discontinuity
- *     and triggers a costly resync.
+ *   - `queue leaky=2` (200 ms) absorbs UDP delivery jitter and encoder
+ *     I-frame bursts; without enough headroom here a short burst of late
+ *     packets is seen by tsdemux as a discontinuity and triggers a costly
+ *     resync — which the user perceives as packet loss on fast motion.
  *   - `tsparse set-timestamps=true` re-frames to TS packet boundaries and
  *     re-derives PTS/DTS from PCR, anchoring them to the local clock. This
  *     is the load-bearing fix for progressive latency growth across
@@ -85,6 +88,6 @@ export function buildTsUdpInput(opts: TsUdpInputOpts): string {
         name: opts.udpsrcName,
         timeoutNs: opts.timeoutNs,
     });
-    const queue = buildLeakyQueue(opts.jitterMs ?? 50);
+    const queue = buildLeakyQueue(opts.jitterMs ?? 200);
     return `${udpsrc} ! ${queue} ! tsparse set-timestamps=true`;
 }

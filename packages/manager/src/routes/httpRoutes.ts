@@ -94,12 +94,18 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         res.json(devices ?? []);
     });
 
-    // Engine CRUD
+    // Engine CRUD. Strip `password` from listings — the dgram-comms shared
+    // secret should never round-trip to clients. The edit form prefills only
+    // displayName from this list and leaves the password field blank ("leave
+    // blank to keep current"), so the secret stays server-side.
     app.get('/api/v1/engines', (_req, res) => {
-        const engines = configStore.getAllEngines().map((e) => ({
-            ...e,
-            online: engineManager.isEngineOnline(e.engine_id as string),
-        }));
+        const engines = configStore.getAllEngines().map((e) => {
+            const { password: _password, ...rest } = e as Record<string, unknown>;
+            return {
+                ...rest,
+                online: engineManager.isEngineOnline(e.engine_id as string),
+            };
+        });
         res.json(engines);
     });
 

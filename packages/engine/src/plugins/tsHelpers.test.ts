@@ -32,8 +32,8 @@ describe('buildTsUdpInput', () => {
         expect(s).toContain('udpsrc');
         expect(s).toContain('multicast-group=239.255.0.1');
         expect(s).toContain('caps="video/mpegts');
-        // jitter queue defaults to 50 ms
-        expect(s).toContain('queue leaky=2 max-size-time=50000000');
+        // jitter queue defaults to 200 ms (absorbs encoder I-frame bursts)
+        expect(s).toContain('queue leaky=2 max-size-time=200000000');
         // tsparse re-anchors PCR to local clock (the load-bearing fix)
         expect(s).toContain('tsparse set-timestamps=true');
         // ordering: udpsrc, then queue, then tsparse

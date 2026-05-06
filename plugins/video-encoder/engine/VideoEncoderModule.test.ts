@@ -106,23 +106,37 @@ describe('VideoEncoderModule', () => {
     });
 
     describe('buildEncoderBranch', () => {
-        it('builds H.264 V4L2 with extra-controls bitrate + keyframe period', () => {
+        it('builds H.264 V4L2 with CBR mode (video_bitrate_mode=1), bitrate, and keyframe period', () => {
             const s = buildEncoderBranch('h264', 'v4l2', 4000, 60);
             expect(s).toContain('v4l2h264enc name=venc0');
             expect(s).toContain('video_bitrate=4000000');
+            // CBR mode is load-bearing — without it the V4L2 driver picks its
+            // default (typically VBR) and bursts well above target on motion.
+            expect(s).toContain('video_bitrate_mode=1');
             expect(s).toContain('h264_i_frame_period=60');
             expect(s).toContain('h264parse');
         });
-        it('builds H.264 software with x264enc kbps bitrate', () => {
+        it('builds H.265 V4L2 with CBR mode and the H.265 keyframe-period control', () => {
+            const s = buildEncoderBranch('h265', 'v4l2', 5000, 90);
+            expect(s).toContain('v4l2h265enc name=venc0');
+            expect(s).toContain('video_bitrate=5000000');
+            expect(s).toContain('video_bitrate_mode=1');
+            expect(s).toContain('h265_i_frame_period=90');
+            expect(s).toContain('h265parse');
+        });
+        it('builds H.264 software with VBV cap (~1.2× target) so bursts do not overflow downstream UDP/jitter buffers', () => {
             const s = buildEncoderBranch('h264', 'software', 3500, 90);
             expect(s).toContain('x264enc name=venc0');
             expect(s).toContain('bitrate=3500');
             expect(s).toContain('key-int-max=90');
+            expect(s).toContain('option-string="vbv-maxrate=4200:vbv-bufsize=3500"');
             expect(s).toContain('h264parse');
         });
-        it('builds H.265 software with x265enc', () => {
+        it('builds H.265 software with VBV cap proportional to target bitrate', () => {
             const s = buildEncoderBranch('h265', 'software', 3000, 30);
             expect(s).toContain('x265enc name=venc0');
+            expect(s).toContain('bitrate=3000');
+            expect(s).toContain('option-string="vbv-maxrate=3600:vbv-bufsize=3000"');
             expect(s).toContain('h265parse');
         });
         it('builds AV1 software with svtav1enc target-bitrate', () => {
@@ -163,12 +177,16 @@ describe('VideoEncoderModule', () => {
     });
 
     describe('supportsLiveBitrate', () => {
-        it('is true for h264 and h265', () => {
-            expect(supportsLiveBitrate('h264')).toBe(true);
-            expect(supportsLiveBitrate('h265')).toBe(true);
+        it('is true for v4l2 h264 and h265', () => {
+            expect(supportsLiveBitrate('h264', 'v4l2')).toBe(true);
+            expect(supportsLiveBitrate('h265', 'v4l2')).toBe(true);
+        });
+        it('is false for software encoders — vbv-maxrate is baked into option-string at element init and cannot be live-updated, so live bitrate changes would invalidate the configured VBV cap', () => {
+            expect(supportsLiveBitrate('h264', 'software')).toBe(false);
+            expect(supportsLiveBitrate('h265', 'software')).toBe(false);
         });
         it('is false for av1 (svtav1enc cannot reconfigure target-bitrate mid-stream)', () => {
-            expect(supportsLiveBitrate('av1')).toBe(false);
+            expect(supportsLiveBitrate('av1', 'software')).toBe(false);
         });
     });
 
@@ -179,10 +197,16 @@ describe('VideoEncoderModule', () => {
             return module;
         }
 
-        it('reports bitrate live when h264 software is available and selected', () => {
+        it('reports bitrate live when h264 v4l2 is available and selected', () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
+            const module = makeConfigured({ codec: 'h264', encoderImpl: 'v4l2' });
+            expect(module.getLiveUpdatableParams()).toEqual(['bitrate']);
+        });
+
+        it('reports no live params for software encoders (VBV cap would go stale)', () => {
             VideoEncoderModule.setAvailableImpls({ h264: ['software'], h265: [], av1: [] });
             const module = makeConfigured({ codec: 'h264', encoderImpl: 'software' });
-            expect(module.getLiveUpdatableParams()).toEqual(['bitrate']);
+            expect(module.getLiveUpdatableParams()).toEqual([]);
         });
 
         it('reports no live params for av1 (encoder cannot live-reconfigure)', () => {
@@ -195,6 +219,57 @@ describe('VideoEncoderModule', () => {
             VideoEncoderModule.setAvailableImpls({ h264: [], h265: [], av1: [] });
             const module = makeConfigured({ codec: 'h264', encoderImpl: 'auto' });
             expect(module.getLiveUpdatableParams()).toEqual([]);
+        });
+    });
+
+    describe('applyLiveBitrate', () => {
+        function makeRunning(config: Record<string, unknown>) {
+            const module = new VideoEncoderModule();
+            (module as any).config = config;
+            const setElementProperty = vi.fn().mockResolvedValue(undefined);
+            (module as any).setElementProperty = setElementProperty;
+            return { module, setElementProperty };
+        }
+
+        it('re-asserts video_bitrate_mode=1 (CBR) on every v4l2 bitrate update — drivers store the full controls struct from the last write, so dropping the mode silently reverts to VBR', async () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
+            const { module, setElementProperty } = makeRunning({
+                codec: 'h264',
+                encoderImpl: 'v4l2',
+                keyframeInterval: 60,
+            });
+            await (module as any).applyLiveBitrate(5000);
+            expect(setElementProperty).toHaveBeenCalledTimes(1);
+            const [name, prop, value] = setElementProperty.mock.calls[0];
+            expect(name).toBe('venc0');
+            expect(prop).toBe('extra-controls');
+            expect(value).toContain('video_bitrate=5000000');
+            expect(value).toContain('video_bitrate_mode=1');
+            expect(value).toContain('h264_i_frame_period=60');
+        });
+
+        it('uses h265_i_frame_period for v4l2 H.265', async () => {
+            VideoEncoderModule.setAvailableImpls({ h264: [], h265: ['v4l2'], av1: [] });
+            const { module, setElementProperty } = makeRunning({
+                codec: 'h265',
+                encoderImpl: 'v4l2',
+                keyframeInterval: 90,
+            });
+            await (module as any).applyLiveBitrate(6000);
+            const [, , value] = setElementProperty.mock.calls[0];
+            expect(value).toContain('h265_i_frame_period=90');
+            expect(value).toContain('video_bitrate_mode=1');
+        });
+
+        it('does nothing for software encoders — bitrate changes there must rebuild the pipeline so vbv-maxrate stays consistent', async () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['software'], h265: [], av1: [] });
+            const { module, setElementProperty } = makeRunning({
+                codec: 'h264',
+                encoderImpl: 'software',
+                keyframeInterval: 60,
+            });
+            await (module as any).applyLiveBitrate(5000);
+            expect(setElementProperty).not.toHaveBeenCalled();
         });
     });
 

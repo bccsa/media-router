@@ -97,7 +97,7 @@ export class VideoEncoderModule extends GstPluginBase {
     getLiveUpdatableParams(): string[] {
         const codec = (this.config.codec as CodecId) ?? 'h264';
         const impl = this.resolveCurrentImpl();
-        return impl && supportsLiveBitrate(codec) ? ['bitrate'] : [];
+        return impl && supportsLiveBitrate(codec, impl) ? ['bitrate'] : [];
     }
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
@@ -192,19 +192,19 @@ export class VideoEncoderModule extends GstPluginBase {
     private async applyLiveBitrate(kbps: number): Promise<void> {
         const codec = (this.config.codec as CodecId) ?? 'h264';
         const impl = this.resolveCurrentImpl();
-        if (!impl) return;
-        if (impl === 'v4l2') {
-            const key = codec === 'h265' ? 'h265_i_frame_period' : 'h264_i_frame_period';
-            const kif = (this.config.keyframeInterval as number) ?? 60;
-            await this.setElementProperty(
-                'venc0',
-                'extra-controls',
-                `controls,video_bitrate=${kbps * 1000},${key}=${kif}`,
-            );
-            return;
-        }
-        const prop = codec === 'av1' ? 'target-bitrate' : 'bitrate';
-        await this.setElementProperty('venc0', prop, kbps);
+        if (!impl || !supportsLiveBitrate(codec, impl)) return;
+        // v4l2h264enc/v4l2h265enc only — the V4L2 driver stores the full
+        // controls struct from the last `extra-controls` write, so we must
+        // re-assert `video_bitrate_mode=1` (CBR) every time. Dropping it here
+        // silently reverts to whatever default the driver chose (typically
+        // VBR), which defeats the rate-control set up at build time.
+        const key = codec === 'h265' ? 'h265_i_frame_period' : 'h264_i_frame_period';
+        const kif = (this.config.keyframeInterval as number) ?? 60;
+        await this.setElementProperty(
+            'venc0',
+            'extra-controls',
+            `controls,video_bitrate=${kbps * 1000},video_bitrate_mode=1,${key}=${kif}`,
+        );
     }
 
     private updateStatusData(): void {
@@ -239,8 +239,7 @@ export class VideoEncoderModule extends GstPluginBase {
                 const now = Date.now();
                 const elapsed = (now - this.lastPollTime) / 1000;
                 const deltaBytes = bytesServed - this.lastBytes;
-                const bitrateKbps =
-                    elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
+                const bitrateKbps = elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
                 this.lastBytes = bytesServed;
                 this.lastPollTime = now;
                 this.setStatusData('throughput', {

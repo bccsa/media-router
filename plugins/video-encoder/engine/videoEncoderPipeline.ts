@@ -37,20 +37,29 @@ export function buildEncoderBranch(
     kif: number,
 ): string {
     const bps = bitrateKbps * 1000;
+    // VBV caps hold short-term bursts close to the configured bitrate. Without
+    // them, fast-motion frames spike the wire well above target and overflow
+    // the downstream UDP / jitter buffer, which the receiver can only
+    // interpret as packet loss. `vbv-maxrate` = 1.2× target (~20% headroom
+    // for I-frames), `vbv-bufsize` = 1 s of bitrate (livestreaming default).
+    const vbvMaxKbps = Math.round(bitrateKbps * 1.2);
     if (impl === 'v4l2') {
+        // `video_bitrate_mode=1` selects CBR on the standard V4L2 H.264/H.265
+        // encoder controls. Drivers that don't expose the control skip it
+        // silently in gst-v4l2, so this is safe to set unconditionally.
         if (codec === 'h264') {
-            return `v4l2h264enc name=venc0 extra-controls="controls,video_bitrate=${bps},h264_i_frame_period=${kif}" ! video/x-h264,level=(string)4 ! h264parse config-interval=1`;
+            return `v4l2h264enc name=venc0 extra-controls="controls,video_bitrate=${bps},video_bitrate_mode=1,h264_i_frame_period=${kif}" ! video/x-h264,level=(string)4 ! h264parse config-interval=1`;
         }
         if (codec === 'h265') {
-            return `v4l2h265enc name=venc0 extra-controls="controls,video_bitrate=${bps},h265_i_frame_period=${kif}" ! h265parse config-interval=1`;
+            return `v4l2h265enc name=venc0 extra-controls="controls,video_bitrate=${bps},video_bitrate_mode=1,h265_i_frame_period=${kif}" ! h265parse config-interval=1`;
         }
     }
     if (impl === 'software') {
         if (codec === 'h264') {
-            return `x264enc name=venc0 tune=zerolatency bitrate=${bitrateKbps} speed-preset=superfast key-int-max=${kif} bframes=0 ! h264parse config-interval=1`;
+            return `x264enc name=venc0 tune=zerolatency bitrate=${bitrateKbps} speed-preset=superfast key-int-max=${kif} bframes=0 option-string="vbv-maxrate=${vbvMaxKbps}:vbv-bufsize=${bitrateKbps}" ! h264parse config-interval=1`;
         }
         if (codec === 'h265') {
-            return `x265enc name=venc0 bitrate=${bitrateKbps} tune=zerolatency speed-preset=superfast key-int-max=${kif} ! h265parse config-interval=1`;
+            return `x265enc name=venc0 bitrate=${bitrateKbps} tune=zerolatency speed-preset=superfast key-int-max=${kif} option-string="vbv-maxrate=${vbvMaxKbps}:vbv-bufsize=${bitrateKbps}" ! h265parse config-interval=1`;
         }
         if (codec === 'av1') {
             return `svtav1enc name=venc0 target-bitrate=${bitrateKbps} preset=10 ! av1parse`;
@@ -66,15 +75,21 @@ export function liveElementProps(codec: CodecId, impl: ImplId): string[] {
 }
 
 /**
- * Whether the encoder element accepts bitrate changes at runtime.
- * x264enc/x265enc honour `bitrate` live (takes effect on the next keyframe);
- * v4l2h264enc/v4l2h265enc on RPi kernels with gst-plugins-good ≥ 1.22 honour
- * `extra-controls:video_bitrate=…` live. svtav1enc does NOT — it has to
- * rebuild state for a new `target-bitrate`, so those changes route through
- * pendingRestart.
+ * Whether the encoder element accepts bitrate changes at runtime *cleanly*.
+ *
+ * - v4l2h264enc/v4l2h265enc on RPi kernels with gst-plugins-good ≥ 1.22 honour
+ *   `extra-controls:video_bitrate=…` live (re-asserting CBR mode on each
+ *   write — see `applyLiveBitrate`).
+ * - x264enc/x265enc accept `bitrate` live, but `vbv-maxrate`/`vbv-bufsize`
+ *   are baked into `option-string` at element init and cannot be updated
+ *   without a pipeline rebuild. Reporting these as live-tunable would let
+ *   the user push bitrate above the original VBV cap and overflow downstream
+ *   buffers. We therefore route software-encoder bitrate changes through
+ *   pendingRestart (caller falls back to non-live update), same as AV1.
+ * - svtav1enc has to rebuild encoder state for a new `target-bitrate`.
  */
-export function supportsLiveBitrate(codec: CodecId): boolean {
-    return codec !== 'av1';
+export function supportsLiveBitrate(codec: CodecId, impl: ImplId): boolean {
+    return impl === 'v4l2' && codec !== 'av1';
 }
 
 /** Parse a `"<width>x<height>"` resolution string; defaults to 1920x1080 on failure. */

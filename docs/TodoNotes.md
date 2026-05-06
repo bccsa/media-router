@@ -30,7 +30,7 @@
 ## Srt & Rist
 - [x] test rist
 - [x] fix srt stats
-- [ ] latency test srt & rits
+- [x] latency test srt & rits
 - [x] Muilticonenction rist
 - [x] issue, when adding a moduel can get it started, until i stop and start the engine, then only i can get it started
 - [x] [object Object] on rist link, not user friendy at all
@@ -39,10 +39,10 @@
 - [x] convert Bytes Received to easy readable stats
 - [x] Audio decoder after rist input does some times stops after a while (fixed: decoder now has restartOnError: true — auto-restarts pipeline on tsdemux error/EOS + fixed undefined vars in RIST input parseStats)
 - [x] Rist modules does not have a conenction badge (fixed: RIST input shows peer count badge, RIST output shows Connected/No link badge)
-- [ ] SRT and rist latnecy is still growing. (to be tested now)
+- [x] SRT and rist latnecy is still growing. (to be tested now)
 
 ## Featrues
-- [ ] Mpegts combiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? )
+- [x] Mpegts combiner and splitter module (this modules should be able to recive muiltiple mpegts streams, and combine it into a sigle stream, and the spliter the opiste, the user should be able to configure how many streams he wants, or it need to auto detect how many streams is conencted? ) (done: `mpegts-muxer` plugin combines N video + M audio MPEG-TS inputs into one TS via configurable `videoStreamCount`/`audioStreamCount`; `mpegts-demuxer` splits one TS into N+M outputs the same way)
 - [x] Seed db with dummy data on first start (manager: 'local' engine with Audio Input → Audio Output profile; engine: 'local' profile connecting to 127.0.0.1:3000)
 
 ## LCP
@@ -123,5 +123,5 @@
 - [x] Add a fourmat button to the routerView, that it auto format the layout (like with n8n) (fixed: new `useAutoLayout` composable runs a layered Sugiyama-style sweep — sources to layer 0, sinks rightward by longest-path depth, intra-layer order by predecessor barycenter so connected nodes stay aligned, snapped to the 16-px drag grid; `Format` toolbar button issues one bulk position patch and refits the view)
 - [x] Modules jump around when moving them (fixed: `useGraphSync` now reads live drag position from Vue Flow's authoritative `findNode().position` instead of from `nodes.value`, whose two-way sync with Vue Flow's store is async and was returning pre-drag positions on close races; removed the `recentDrags` 2s window — no longer needed)
 - [x] Video player need to be restarted when it looses the mpegts stream and gets it back again, thei the player crash or it is when the streen if off for long, then the player does not auto restart any more (fixed: `udpsrc timeout=5000000000` posts `GstUDPSrcTimeout` on stalled streams, Python runner translates to a bus error so the existing restart path triggers; gst-runner now also restarts on Python child crash (decoder segfault / OOM) and uses `ExponentialBackoff` with `markStable()` after sustained PLAYING — no more permanent give-up after 10 attempts during a long outage)
-- [ ] Latency grow on the mpegts muxer / demuxer 
+- [x] Latency grow on the mpegts muxer / demuxer 
 - [ ] Check that auto gain control is off.
