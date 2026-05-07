@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { ModuleSize, ResizableBounds } from '@media-router/shared-types';
+// shared-types is built as CJS (because the engine/manager runtime is CJS).
+// Vite's CJS↔ESM interop only synthesizes a default export for the module,
+// so named bindings like `import { applyJsonPatch }` fail with
+// "X is not exported by …/dist/index.js". Use a namespace import — that
+// gives us `esModuleInterop`-style access to the underlying CJS exports.
+import * as shared from '@media-router/shared-types';
+import type { ModuleSize, PatchOp, ResizableBounds } from '@media-router/shared-types';
+const { applyJsonPatch, coerceArray } = shared;
 
 // --- Types ---
 
@@ -167,8 +174,8 @@ export const useEngineStore = defineStore('engines', () => {
             running: (data.running as boolean) ?? false,
             activeProfile: (data.active_profile as string) ?? null,
             modules,
-            connections: (data.connections ?? []) as ConnectionState[],
-            interlocks: (data.interlocks ?? []) as InterlockState[],
+            connections: coerceArray<ConnectionState>(data.connections),
+            interlocks: coerceArray<InterlockState>(data.interlocks),
             ip: data.ip as string | undefined,
             ips: data.ips as string[] | undefined,
             hostname: data.hostname as string | undefined,
@@ -181,7 +188,7 @@ export const useEngineStore = defineStore('engines', () => {
     function setEngineConfig(
         engineId: string,
         rawModules: Record<string, unknown>,
-        rawConnections: unknown[],
+        rawConnections: unknown,
     ) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
@@ -194,14 +201,17 @@ export const useEngineStore = defineStore('engines', () => {
         }
 
         engine.modules = modules;
-        engine.connections = rawConnections as ConnectionState[];
+        engine.connections = coerceArray<ConnectionState>(rawConnections);
         engines.value = new Map(engines.value);
     }
 
     /**
      * Apply JSON Patch (RFC 6902) operations to an engine's state.
+     * Delegates to `applyJsonPatch` from `shared-types` so the walker behaves
+     * identically on both sides of the wire — id-based array paths, '-'
+     * append, and intermediate auto-creation all live in one place.
      */
-    function applyEnginePatch(engineId: string, patch: unknown[]) {
+    function applyEnginePatch(engineId: string, patchOps: unknown[]) {
         const engine = engines.value.get(engineId);
         if (!engine) return;
 
@@ -212,68 +222,25 @@ export const useEngineStore = defineStore('engines', () => {
             interlocks: [...(engine.interlocks ?? [])],
         };
 
-        for (const rawOp of patch as Array<{ op: string; path: string; value?: unknown }>) {
-            // Optimistic clone/add: the sender constructs a raw module object
-            // (only the fields it knows about). Normalise so the store always
-            // holds a full `ModuleState` — same shape as `addEngine` produces.
-            // Without this, freshly-cloned modules render with `undefined`
-            // optional fields and the live node doesn't appear until a refresh
-            // rehydrates them via `engine:config`.
-            let op = rawOp;
+        // Optimistic module-add: the sender's value is a raw shape (only the
+        // fields it knows about). Normalise so the store always holds a full
+        // `ModuleState` — without this, freshly-cloned modules render with
+        // `undefined` optional fields until `engine:config` rehydrates them.
+        const ops = (patchOps as PatchOp[]).map((op): PatchOp => {
             if (op.op === 'add' && /^\/modules\/[^/]+$/.test(op.path) && op.value) {
                 const moduleId = op.path.split('/')[2];
-                op = {
+                return {
                     ...op,
                     value: normalizeModule(moduleId, op.value as Record<string, unknown>),
                 };
             }
-            applyOp(updated as unknown as Record<string, unknown>, op);
-        }
+            return op;
+        });
+
+        applyJsonPatch(updated as unknown as Record<string, unknown>, ops);
 
         engines.value.set(engineId, updated);
         engines.value = new Map(engines.value);
-    }
-
-    /**
-     * Apply a single JSON Patch op to a nested object.
-     * Handles: objects, arrays (by numeric index or by .id lookup), append via '-'.
-     */
-    function applyOp(
-        obj: Record<string, unknown>,
-        op: { op: string; path: string; value?: unknown },
-    ) {
-        const parts = op.path.split('/').filter(Boolean);
-        const last = parts.pop();
-        if (!last) return;
-
-        // Walk to the parent of the target field
-        let target: any = obj;
-        for (const part of parts) {
-            target = Array.isArray(target) ? target[arrIdx(target, part)] : target?.[part];
-            if (target == null) return;
-        }
-
-        const idx = Array.isArray(target) ? arrIdx(target, last) : -1;
-
-        switch (op.op) {
-            case 'add':
-            case 'replace':
-                if (last === '-' && Array.isArray(target)) target.push(op.value);
-                else if (Array.isArray(target) && idx >= 0) target[idx] = op.value;
-                else target[last] = op.value;
-                break;
-            case 'remove':
-                if (Array.isArray(target) && idx >= 0) target.splice(idx, 1);
-                else delete target[last];
-                break;
-        }
-    }
-
-    /** Resolve array key: numeric index or .id lookup. */
-    function arrIdx(arr: unknown[], key: string): number {
-        const n = parseInt(key, 10);
-        if (!isNaN(n)) return n;
-        return arr.findIndex((item) => (item as any)?.id === key);
     }
 
     function setOnline(engineId: string, online: boolean) {

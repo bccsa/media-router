@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { createLogger } from '@media-router/shared-types';
+import { createLogger, coerceArray } from '@media-router/shared-types';
 
 const log = createLogger('ConfigStore');
 
@@ -10,17 +10,8 @@ const log = createLogger('ConfigStore');
  * no longer need defensive `Array.isArray` checks.
  */
 function normalizeProfileConfig(config: Record<string, unknown>): Record<string, unknown> {
-    if (!Array.isArray(config.interlocks)) {
-        const raw = config.interlocks;
-        if (raw && typeof raw === 'object') {
-            config.interlocks = Object.values(raw as Record<string, unknown>).filter(
-                (v): v is Record<string, unknown> =>
-                    !!v && typeof v === 'object' && !Array.isArray(v),
-            );
-        } else {
-            config.interlocks = [];
-        }
-    }
+    config.interlocks = coerceArray(config.interlocks);
+    config.connections = coerceArray(config.connections);
     return config;
 }
 

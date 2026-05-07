@@ -27,7 +27,7 @@ function createMocks() {
         to: vi.fn().mockReturnValue(senderRoom),
     } as any;
 
-    const pluginRegistry = {
+    const pluginRegistry: any = {
         find: vi.fn().mockReturnValue({
             pluginId: 'audio-input',
             displayName: 'Audio Input',
@@ -36,7 +36,21 @@ function createMocks() {
             color: '#3b82f6',
             icon: 'mic',
         }),
-    } as any;
+    };
+    // Mirror PluginRegistry.overlayManifest so tests that mock `find` continue
+    // to control the overlay output without needing to mock both methods.
+    pluginRegistry.overlayManifest = (mod: Record<string, unknown>) => {
+        const manifest = pluginRegistry.find(mod.pluginId);
+        if (!manifest) return;
+        if ((manifest.ports ?? []).length > 0) mod.ports = manifest.ports;
+        mod.configSchema = manifest.configSchema ?? {};
+        mod.color = manifest.color;
+        mod.icon = manifest.icon;
+        mod.statusSections = manifest.statusSections;
+        mod.faceWidgets = manifest.faceWidgets;
+        mod.interlock = manifest.interlock === true;
+        mod.resizable = manifest.resizable ?? false;
+    };
 
     const router = new PatchRouter(configStore, engineManager, io, pluginRegistry);
     return { router, configStore, engineManager, io, pluginRegistry, emitted, senderRoom };

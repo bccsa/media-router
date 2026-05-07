@@ -47,7 +47,6 @@ export function setupSocketIO(deps: SocketDeps): void {
 
         // --- Send full state on connect ---
         const engines = configStore.getAllEngines();
-        const pluginManifests = pluginRegistry.getAll();
         socket.emit(
             'engine:list',
             engines.map((e) => {
@@ -71,23 +70,7 @@ export function setupSocketIO(deps: SocketDeps): void {
                 const cachedStates = eventForwarder.getCachedStates(e.engine_id as string);
                 for (const [id, mod] of Object.entries(modules)) {
                     const m = (modules[id] = { ...(mod as Record<string, unknown>) });
-                    const manifest = pluginManifests.find((p) => p.pluginId === m.pluginId);
-                    if (manifest) {
-                        // Static-port plugins: manifest is authoritative — overlay so port
-                        // config changes (e.g. maxConnections) propagate to existing modules.
-                        // Dynamic-port plugins (manifest.ports empty, e.g. n1-mixer): keep
-                        // the stored/dynamic ports; the engine pushes fresh ones on start.
-                        if ((manifest.ports ?? []).length > 0) {
-                            m.ports = manifest.ports;
-                        }
-                        m.configSchema = manifest.configSchema ?? {};
-                        m.color = manifest.color;
-                        m.icon = manifest.icon;
-                        m.statusSections = manifest.statusSections;
-                        m.faceWidgets = manifest.faceWidgets;
-                        m.interlock = manifest.interlock === true;
-                        m.resizable = manifest.resizable ?? false;
-                    }
+                    pluginRegistry.overlayManifest(m);
                     const cached = cachedStates[id] as Record<string, unknown> | undefined;
                     if (cached) {
                         if ('health' in cached) m.health = cached.health;

@@ -124,8 +124,52 @@ export function formatError(err: unknown): string {
 }
 
 /**
+ * Coerce an unknown value to an array. Recovers from the historical
+ * applyJsonPatch bug where `/-` on a missing field produced `{ "-": value }`
+ * by walking object values and keeping only object items.
+ *
+ * Used at every server→store ingestion point so consumers can trust that
+ * `connections` / `interlocks` are arrays without runtime guards.
+ */
+export function coerceArray<T>(value: unknown): T[] {
+    if (Array.isArray(value)) return value as T[];
+    if (value && typeof value === 'object') {
+        return Object.values(value as Record<string, unknown>).filter(
+            (v): v is T => !!v && typeof v === 'object' && !Array.isArray(v),
+        ) as T[];
+    }
+    return [];
+}
+
+/** A path segment that addresses an array element ('-' append, or numeric index). */
+function isArrayKey(part: string): boolean {
+    return part === '-' || /^\d+$/.test(part);
+}
+
+/**
+ * Resolve a path segment against an array. Numeric segments are direct indices;
+ * non-numeric segments are matched against array items' `.id` property.
+ * Returns -1 if not found.
+ */
+function arrIdx(arr: unknown[], key: string): number {
+    const n = parseInt(key, 10);
+    if (!isNaN(n)) return n;
+    return (arr as Array<{ id?: unknown }>).findIndex((item) => item?.id === key);
+}
+
+/**
  * Apply JSON Patch operations to a nested object.
- * Supports: replace, add (with intermediate creation + array append via '-'), remove.
+ *
+ * Supports: replace, add (with intermediate creation + array append via '-'),
+ * remove. Array segments resolve by numeric index OR by `.id` lookup, both
+ * during walk and at the final segment — id paths survive concurrent array
+ * mutations and are what the manager broadcasts to browsers.
+ *
+ * On `add`, missing intermediates are created as an array if the next segment
+ * is array-shaped ('-' or numeric), otherwise an object. Without this, an op
+ * like `/connections/-` on a config missing `connections` would silently
+ * produce `connections: { "-": value }` — the same shape that bit `interlocks`
+ * historically (see `coerceArray`).
  */
 export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp[]): void {
     if (!obj) return;
@@ -134,42 +178,63 @@ export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp
         const last = parts.pop();
         if (!last) continue;
 
-        let target: Record<string, unknown> = obj;
+        let target: Record<string, unknown> | unknown[] = obj;
         let valid = true;
-        for (const part of parts) {
-            if (target[part] == null || typeof target[part] !== 'object') {
-                if (op.op === 'add') {
-                    target[part] = {};
-                } else {
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            if (Array.isArray(target)) {
+                const idx = arrIdx(target, part);
+                const next = idx >= 0 ? target[idx] : undefined;
+                if (next == null || typeof next !== 'object') {
                     valid = false;
                     break;
                 }
+                target = next as Record<string, unknown> | unknown[];
+            } else {
+                const cur = (target as Record<string, unknown>)[part];
+                if (cur == null || typeof cur !== 'object') {
+                    if (op.op === 'add') {
+                        const nextSeg = i + 1 < parts.length ? parts[i + 1] : last;
+                        const created: Record<string, unknown> | unknown[] = isArrayKey(nextSeg)
+                            ? []
+                            : {};
+                        (target as Record<string, unknown>)[part] = created;
+                        target = created;
+                    } else {
+                        valid = false;
+                        break;
+                    }
+                } else {
+                    target = cur as Record<string, unknown> | unknown[];
+                }
             }
-            target = target[part] as Record<string, unknown>;
         }
         if (!valid) continue;
 
         switch (op.op) {
             case 'add':
             case 'replace':
-                if (last === '-' && Array.isArray(target)) {
-                    (target as unknown[]).push(op.value);
+                if (Array.isArray(target)) {
+                    if (last === '-') {
+                        target.push(op.value);
+                    } else {
+                        const idx = arrIdx(target, last);
+                        if (idx >= 0) target[idx] = op.value;
+                        // No id match and not '-' → drop, don't poison the array
+                        // with a literal string key.
+                    }
+                } else if (last === '-') {
+                    // '-' is array-only. Skip rather than poisoning the object.
                 } else {
-                    target[last] = op.value;
+                    (target as Record<string, unknown>)[last] = op.value;
                 }
                 break;
             case 'remove':
                 if (Array.isArray(target)) {
-                    let idx = parseInt(last, 10);
-                    // Support ID-based removal: find array element by .id property
-                    if (isNaN(idx)) {
-                        idx = (target as Array<Record<string, unknown>>).findIndex(
-                            (item) => item?.id === last,
-                        );
-                    }
+                    const idx = arrIdx(target, last);
                     if (idx >= 0) target.splice(idx, 1);
                 } else {
-                    delete target[last];
+                    delete (target as Record<string, unknown>)[last];
                 }
                 break;
         }

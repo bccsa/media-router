@@ -195,26 +195,22 @@ export class PatchRouter {
         const enriched: PatchOp[] = [];
 
         for (const op of ops) {
-            // Module add: enrich with runtime defaults for the UI
+            // Module add: overlay manifest fields and runtime defaults so freshly
+            // added modules render the same as those rehydrated by `engine:list`.
+            // Without this, plugin features keyed off manifest fields (resize
+            // grip, interlock affordance, status sections) only appear after a
+            // full refresh.
             if (op.op === 'add' && op.path.match(/^\/modules\/[^/]+$/) && op.value) {
-                const modValue = op.value as Record<string, unknown>;
-                const pluginId = modValue.pluginId as string;
-                const manifest = pluginId ? this.pluginRegistry.find(pluginId) : undefined;
                 const moduleId = op.path.split('/')[2];
-                enriched.push({
-                    ...op,
-                    value: {
-                        instanceId: moduleId,
-                        running: false,
-                        health: 'stopped',
-                        pendingRestart: false,
-                        ...modValue,
-                        color: manifest?.color,
-                        icon: manifest?.icon,
-                        statusSections: manifest?.statusSections,
-                        faceWidgets: (manifest as any)?.faceWidgets,
-                    },
-                });
+                const value: Record<string, unknown> = {
+                    instanceId: moduleId,
+                    running: false,
+                    health: 'stopped',
+                    pendingRestart: false,
+                    ...(op.value as Record<string, unknown>),
+                };
+                this.pluginRegistry.overlayManifest(value);
+                enriched.push({ ...op, value });
                 continue;
             }
 

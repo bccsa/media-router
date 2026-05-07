@@ -12,6 +12,13 @@ interface PluginInfo {
     configSchema: Record<string, unknown>;
     icon?: string;
     color?: string;
+    // Manifest-derived fields the optimistic add must carry — without them,
+    // freshly-added resizable/interlock plugins miss their affordances until
+    // a full refresh rehydrates them via `engine:list`.
+    resizable?: boolean | { minWidth?: number; minHeight?: number; maxWidth?: number; maxHeight?: number };
+    interlock?: boolean;
+    statusSections?: Array<Record<string, unknown>>;
+    faceWidgets?: Array<Record<string, unknown>>;
 }
 
 const emit = defineEmits<{ close: []; add: [plugin: PluginInfo, displayName: string] }>();

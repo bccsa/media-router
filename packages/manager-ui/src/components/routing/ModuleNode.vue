@@ -91,7 +91,11 @@ const cardWidth = computed(() => {
 });
 const cardHeight = computed(() => {
     if (dragSize.value) return dragSize.value.height;
-    return props.data.size?.height;
+    if (props.data.size?.height != null) return props.data.size.height;
+    // Resizable plugins need an explicit starting height so the card isn't
+    // content-driven. Without it, text-size changes (e.g. the note plugin's
+    // auto-fit) silently grow the card. Fall back to the manifest's minHeight.
+    return resizable.value ? bounds.value.minHeight : undefined;
 });
 // The non-resizable floor: enough space for the declared ports.
 const cardMinHeight = computed(
@@ -130,32 +134,16 @@ function onResizeStart(event: MouseEvent | TouchEvent) {
     };
     const end = () => {
         const final = dragSize.value;
-        if (final && engineId) {
-            patch.moduleSize(engineId, props.data.instanceId, final);
-            // Keep `dragSize` populated so `cardWidth`/`cardHeight` stay stable
-            // across the transition from "drag-override" to "store-backed". It
-            // clears as soon as the store reports the same size we just sent —
-            // no one-frame snap back to the pre-drag dimensions. The optimistic
-            // apply inside `patch.moduleSize` usually makes this fire within the
-            // same microtask; the watch is just a safety net.
-            const stop = watch(
-                () => props.data.size,
-                (s) => {
-                    if (s && s.width === final.width && s.height === final.height) {
-                        dragSize.value = null;
-                        stop();
-                    }
-                },
-                { flush: 'sync' },
-            );
-        } else {
-            dragSize.value = null;
-        }
-        updateNodeInternals([props.data.instanceId]);
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', end);
         window.removeEventListener('touchmove', move);
         window.removeEventListener('touchend', end);
+        // patch.moduleSize applies optimistically (synchronous), so by the
+        // time we clear `dragSize`, props.data.size already matches `final` —
+        // cardWidth/cardHeight fall through to the stored size, no snap-back.
+        if (final && engineId) patch.moduleSize(engineId, props.data.instanceId, final);
+        dragSize.value = null;
+        updateNodeInternals([props.data.instanceId]);
     };
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', end);

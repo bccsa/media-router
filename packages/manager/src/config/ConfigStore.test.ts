@@ -54,15 +54,15 @@ describe('ConfigStore', () => {
         it('creates and retrieves a profile', () => {
             store.createProfile('eng-1', 'prod', { modules: {} });
             const profile = store.getProfile('eng-1', 'prod');
-            // getProfile always normalizes `interlocks` to an array.
-            expect(profile).toEqual({ modules: {}, interlocks: [] });
+            // getProfile always normalizes `interlocks` and `connections` to arrays.
+            expect(profile).toEqual({ modules: {}, interlocks: [], connections: [] });
         });
 
         it('INSERT OR IGNORE on duplicate profile', () => {
             store.createProfile('eng-1', 'default', { version: 1 });
             store.createProfile('eng-1', 'default', { version: 2 }); // should not throw
             const profile = store.getProfile('eng-1', 'default');
-            expect(profile).toEqual({ version: 1, interlocks: [] });
+            expect(profile).toEqual({ version: 1, interlocks: [], connections: [] });
         });
 
         it('updates profile config', () => {
@@ -223,7 +223,7 @@ describe('ConfigStore', () => {
         it('createProfile with default empty config', () => {
             store.createProfile('eng-1', 'empty');
             const profile = store.getProfile('eng-1', 'empty');
-            expect(profile).toEqual({ interlocks: [] });
+            expect(profile).toEqual({ interlocks: [], connections: [] });
         });
 
         it('updateProfileConfig persists complex nested config', () => {

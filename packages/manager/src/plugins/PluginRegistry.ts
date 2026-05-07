@@ -84,6 +84,29 @@ export class PluginRegistry {
         return this.getAll().find((p) => p.pluginId === pluginId);
     }
 
+    /**
+     * Mutate `mod` in place, overlaying manifest-derived fields. Single point
+     * of truth — used by both the initial `engine:list` snapshot and the
+     * `engine:update` add-module enrichment so they can't drift (a missing
+     * field here is exactly what made freshly-added resizable plugins
+     * un-resizable until refresh).
+     *
+     * Static-port plugins are authoritative for `ports`; dynamic-port plugins
+     * (manifest.ports empty, e.g. n1-mixer) keep whatever the engine pushed.
+     */
+    overlayManifest(mod: Record<string, unknown>): void {
+        const manifest = this.find(mod.pluginId as string);
+        if (!manifest) return;
+        if ((manifest.ports ?? []).length > 0) mod.ports = manifest.ports;
+        mod.configSchema = manifest.configSchema ?? {};
+        mod.color = manifest.color;
+        mod.icon = manifest.icon;
+        mod.statusSections = manifest.statusSections;
+        mod.faceWidgets = manifest.faceWidgets;
+        mod.interlock = manifest.interlock === true;
+        mod.resizable = manifest.resizable ?? false;
+    }
+
     /** Force re-scan of the plugins directory. */
     refresh(): void {
         this.cache = null;

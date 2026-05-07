@@ -259,6 +259,10 @@ export function useGraphSync(
             configSchema?: Record<string, unknown>;
             color?: string;
             icon?: string;
+            resizable?: unknown;
+            interlock?: boolean;
+            statusSections?: Array<Record<string, unknown>>;
+            faceWidgets?: Array<Record<string, unknown>>;
         },
         displayName: string,
     ) {
@@ -282,6 +286,10 @@ export function useGraphSync(
                 if (schema.default !== undefined) defaults[key] = schema.default;
             }
         }
+        // Carry the manifest-derived fields through so the sender (who skips
+        // the broadcast via N-1) sees the same shape that other browsers
+        // receive from `enrichOpsForBroadcast`. Without `resizable` here, a
+        // freshly-added note plugin has no resize grip until refresh.
         patch.addModule(engineId(), instanceId, {
             instanceId,
             pluginId: plugin.pluginId,
@@ -292,6 +300,10 @@ export function useGraphSync(
             configSchema: plugin.configSchema ?? {},
             color: plugin.color,
             icon: plugin.icon,
+            resizable: plugin.resizable ?? false,
+            interlock: plugin.interlock === true,
+            statusSections: plugin.statusSections,
+            faceWidgets: plugin.faceWidgets,
             enabled: true,
             running: false,
             health: 'stopped',
