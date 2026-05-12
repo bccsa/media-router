@@ -6,9 +6,13 @@ import { createPinia, setActivePinia } from 'pinia';
 
 const mockApplyEnginePatch = vi.fn();
 const mockEmit = vi.fn();
+const mockGetEngine = vi.fn();
 
 vi.mock('@/stores/engines', () => ({
-    useEngineStore: () => ({ applyEnginePatch: mockApplyEnginePatch }),
+    useEngineStore: () => ({
+        applyEnginePatch: mockApplyEnginePatch,
+        getEngine: mockGetEngine,
+    }),
 }));
 
 vi.mock('@/stores/socket', () => ({
@@ -22,6 +26,7 @@ describe('usePatch', () => {
         setActivePinia(createPinia());
         mockApplyEnginePatch.mockClear();
         mockEmit.mockClear();
+        mockGetEngine.mockReset();
     });
 
     it('moduleSetting sends a replace op for a setting key', () => {
@@ -136,6 +141,156 @@ describe('usePatch', () => {
 
         expect(mockApplyEnginePatch).toHaveBeenCalledWith('eng-1', ops);
         expect(mockEmit).toHaveBeenCalledWith('patch', { engineId: 'eng-1', ops });
+    });
+
+    describe('cloneModule', () => {
+        const sourceModule = {
+            instanceId: 'mod-src',
+            pluginId: 'audio-input',
+            displayName: 'Mic 1',
+            position: { x: 100, y: 200 },
+            settings: { gain: 5, device: 'mic-1' },
+            ports: [{ id: 'out', direction: 'out' as const, kind: 'audio' as const }],
+            configSchema: { type: 'object' },
+            color: '#10b981',
+            icon: 'mic',
+            running: true,
+            enabled: false,
+            health: 'running',
+        };
+
+        it('returns undefined when source module is missing', () => {
+            mockGetEngine.mockReturnValue({ modules: {} });
+
+            const result = patch.cloneModule('eng-1', 'mod-missing');
+
+            expect(result).toBeUndefined();
+            expect(mockEmit).not.toHaveBeenCalled();
+            expect(mockApplyEnginePatch).not.toHaveBeenCalled();
+        });
+
+        it('returns undefined when engine is missing', () => {
+            mockGetEngine.mockReturnValue(undefined);
+
+            const result = patch.cloneModule('eng-1', 'mod-src');
+
+            expect(result).toBeUndefined();
+            expect(mockEmit).not.toHaveBeenCalled();
+        });
+
+        it('carries manifest-derived fields (statusSections, faceWidgets, interlock, resizable) through the clone', () => {
+            const withManifest = {
+                ...sourceModule,
+                statusSections: [{ id: 'srt', label: 'SRT', fields: [] }],
+                faceWidgets: [{ id: 'vu', type: 'vu-meter' }],
+                interlock: true,
+                resizable: { minWidth: 200, minHeight: 100 } as const,
+            };
+            mockGetEngine.mockReturnValue({ modules: { 'mod-src': withManifest } });
+
+            patch.cloneModule('eng-1', 'mod-src');
+
+            const value = mockApplyEnginePatch.mock.calls[0][1][0].value as {
+                statusSections: unknown;
+                faceWidgets: unknown;
+                interlock: boolean;
+                resizable: unknown;
+            };
+            expect(value.statusSections).toEqual(withManifest.statusSections);
+            expect(value.faceWidgets).toEqual(withManifest.faceWidgets);
+            expect(value.interlock).toBe(true);
+            expect(value.resizable).toEqual(withManifest.resizable);
+        });
+
+        it('coerces non-strict-true interlock to false', () => {
+            const truthy = { ...sourceModule, interlock: 'yes' as unknown as boolean };
+            mockGetEngine.mockReturnValue({ modules: { 'mod-src': truthy } });
+
+            patch.cloneModule('eng-1', 'mod-src');
+
+            const value = mockApplyEnginePatch.mock.calls[0][1][0].value as { interlock: boolean };
+            expect(value.interlock).toBe(false);
+        });
+
+        it('emits an add op carrying all UI-critical fields from source', () => {
+            mockGetEngine.mockReturnValue({ modules: { 'mod-src': sourceModule } });
+
+            const newId = patch.cloneModule('eng-1', 'mod-src');
+
+            expect(newId).toBeDefined();
+            expect(newId).toMatch(/^audio-input-/);
+            const ops = mockApplyEnginePatch.mock.calls[0][1];
+            expect(ops).toHaveLength(1);
+            expect(ops[0].op).toBe('add');
+            expect(ops[0].path).toBe(`/modules/${newId}`);
+            const value = ops[0].value;
+            expect(value).toMatchObject({
+                instanceId: newId,
+                pluginId: 'audio-input',
+                displayName: 'Mic 1 (copy)',
+                position: { x: 150, y: 250 },
+                settings: { gain: 5, device: 'mic-1' },
+                ports: sourceModule.ports,
+                configSchema: { type: 'object' },
+                color: '#10b981',
+                icon: 'mic',
+                enabled: true,
+                running: false,
+                health: 'stopped',
+            });
+        });
+
+        it('deep-clones settings, ports, and configSchema so mutations do not leak between source and clone', () => {
+            const nested = {
+                ...sourceModule,
+                settings: { gain: 5, eq: { low: 1, high: 2 } },
+                ports: [{ id: 'out', direction: 'out' as const, kind: 'audio' as const }],
+                configSchema: { type: 'object', properties: { gain: { type: 'number' } } },
+            };
+            mockGetEngine.mockReturnValue({ modules: { 'mod-src': nested } });
+
+            patch.cloneModule('eng-1', 'mod-src');
+
+            const value = mockApplyEnginePatch.mock.calls[0][1][0].value as {
+                settings: { eq: Record<string, number> };
+                ports: { id: string }[];
+                configSchema: { properties: Record<string, unknown> };
+            };
+            // Top-level references differ
+            expect(value.settings).not.toBe(nested.settings);
+            expect(value.ports).not.toBe(nested.ports);
+            expect(value.configSchema).not.toBe(nested.configSchema);
+            // Nested references differ too — proves deep, not shallow, clone
+            expect(value.settings.eq).not.toBe(nested.settings.eq);
+            expect(value.ports[0]).not.toBe(nested.ports[0]);
+            expect(value.configSchema.properties).not.toBe(nested.configSchema.properties);
+            // Values still match
+            expect(value.settings).toEqual(nested.settings);
+            expect(value.ports).toEqual(nested.ports);
+            expect(value.configSchema).toEqual(nested.configSchema);
+        });
+
+        it('falls back to default position when source has none', () => {
+            const noPos = { ...sourceModule, position: undefined };
+            mockGetEngine.mockReturnValue({ modules: { 'mod-src': noPos } });
+
+            patch.cloneModule('eng-1', 'mod-src');
+
+            const value = mockApplyEnginePatch.mock.calls[0][1][0].value as {
+                position: { x: number; y: number };
+            };
+            expect(value.position).toEqual({ x: 150, y: 150 });
+        });
+
+        it('defaults ports to an empty array when source has none', () => {
+            const noPorts = { ...sourceModule, ports: undefined };
+            mockGetEngine.mockReturnValue({ modules: { 'mod-src': noPorts } });
+
+            patch.cloneModule('eng-1', 'mod-src');
+
+            const value = mockApplyEnginePatch.mock.calls[0][1][0].value as { ports: unknown[] };
+            expect(value.ports).toEqual([]);
+        });
     });
 
     it('always applies optimistically before emitting to socket', () => {

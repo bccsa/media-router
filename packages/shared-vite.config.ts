@@ -14,6 +14,14 @@ export default defineConfig({
             allow: ['../..'],
         },
     },
+    // Vite skips pre-bundling for pnpm-symlinked workspace packages by default,
+    // so the CJS dist of `@media-router/shared-types` reaches the browser raw
+    // → "ReferenceError: exports is not defined" at runtime. Force esbuild to
+    // pre-bundle it (and convert CJS → ESM) in dev mode. The `build` block
+    // below handles the same problem at production build time via Rollup.
+    optimizeDeps: {
+        include: ['@media-router/shared-types'],
+    },
     build: {
         commonjsOptions: {
             // Workspace packages are pnpm-symlinked from `<repo>/packages/*`,

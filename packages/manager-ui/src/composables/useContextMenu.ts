@@ -185,27 +185,7 @@ export function useContextMenu(
         } else if (action === 'focus' || action === 'unfocus') {
             setModuleFocused(eid, moduleId, action === 'focus');
         } else if (action === 'clone') {
-            const mod = engine.value?.modules[moduleId];
-            if (mod) {
-                const instanceId = `${mod.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-                patch.addModule(eid, instanceId, {
-                    instanceId,
-                    pluginId: mod.pluginId,
-                    displayName: mod.displayName + ' (copy)',
-                    position: {
-                        x: (mod.position?.x ?? 100) + 50,
-                        y: (mod.position?.y ?? 100) + 50,
-                    },
-                    settings: { ...mod.settings },
-                    ports: mod.ports ?? [],
-                    configSchema: mod.configSchema,
-                    color: mod.color,
-                    icon: mod.icon,
-                    enabled: true,
-                    running: false,
-                    health: 'stopped',
-                });
-            }
+            patch.cloneModule(eid, moduleId);
         } else if (action === 'enable' || action === 'disable') {
             patch.moduleToggle(eid, moduleId, action === 'enable');
         } else if (action === 'delete') {

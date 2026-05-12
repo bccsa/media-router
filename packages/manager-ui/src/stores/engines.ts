@@ -146,6 +146,7 @@ export const useEngineStore = defineStore('engines', () => {
             color: mod.color as string | undefined,
             icon: mod.icon as string | undefined,
             statusSections: mod.statusSections as StatusSectionDef[] | undefined,
+            faceWidgets: mod.faceWidgets as Array<Record<string, unknown>> | undefined,
             statusData: mod.statusData as
                 | Record<string, Record<string, string | number | boolean>>
                 | undefined,

@@ -68,15 +68,17 @@ describe('useVuStore', () => {
         expect(() => store.clear('eng-1')).not.toThrow();
     });
 
-    it('resets stale VU data to zero after timeout', async () => {
+    it('holds the last value until the 2s stale threshold elapses', async () => {
         vi.useFakeTimers();
         const store = useVuStore();
         store.update('eng-1', 'mod-1', [8, 8]);
+
+        // Just before the 2s threshold — should still hold the last value
+        vi.advanceTimersByTime(1900);
         expect(store.get('eng-1', 'mod-1')).toEqual([8, 8]);
 
-        // Advance past staleness threshold (1500ms) + cleanup interval (500ms)
-        vi.advanceTimersByTime(2100);
-
+        // Past 2s threshold + one cleanup tick (500ms) — should be zeroed
+        vi.advanceTimersByTime(700);
         expect(store.get('eng-1', 'mod-1')).toEqual([0, 0]);
         vi.useRealTimers();
     });

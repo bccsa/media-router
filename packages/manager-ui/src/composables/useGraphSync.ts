@@ -4,6 +4,7 @@ import type { EngineState, ModuleState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
+import { newModuleInstanceId } from '@/utils/ids';
 
 /** Edge colors by stream type — matches CSS variables in main.css. */
 const STREAM_TYPE_COLORS: Record<string, string> = {
@@ -266,7 +267,7 @@ export function useGraphSync(
         },
         displayName: string,
     ) {
-        const instanceId = `${plugin.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const instanceId = newModuleInstanceId(plugin.pluginId);
         const el = document.querySelector('.vue-flow') as HTMLElement | null;
         let x = 300,
             y = 200;

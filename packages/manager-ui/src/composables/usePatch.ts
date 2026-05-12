@@ -1,5 +1,13 @@
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
+import { newModuleInstanceId } from '@/utils/ids';
+
+// JSON round-trip clone — robust against Vue/Pinia reactive proxies, which can
+// trip `structuredClone` depending on the underlying values. Module state is
+// plain JSON (settings, ports, configSchema) so this is lossless.
+function jsonClone<T>(v: T): T {
+    return v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T);
+}
 
 interface PatchOp {
     op: 'add' | 'replace' | 'remove';
@@ -74,6 +82,44 @@ export const patch = {
 
     removeModule(engineId: string, moduleId: string) {
         emit(engineId, [{ op: 'remove', path: `/modules/${moduleId}` }]);
+    },
+
+    cloneModule(engineId: string, moduleId: string): string | undefined {
+        const mod = useEngineStore().getEngine(engineId)?.modules[moduleId];
+        if (!mod) return undefined;
+        const instanceId = newModuleInstanceId(mod.pluginId);
+        emit(engineId, [
+            {
+                op: 'add',
+                path: `/modules/${instanceId}`,
+                value: {
+                    instanceId,
+                    pluginId: mod.pluginId,
+                    displayName: mod.displayName + ' (copy)',
+                    position: {
+                        x: (mod.position?.x ?? 100) + 50,
+                        y: (mod.position?.y ?? 100) + 50,
+                    },
+                    settings: jsonClone(mod.settings ?? {}),
+                    ports: jsonClone(mod.ports ?? []),
+                    configSchema: jsonClone(mod.configSchema),
+                    color: mod.color,
+                    icon: mod.icon,
+                    // Manifest-derived fields the manager would overlay on
+                    // broadcast — but the N-1 router skips the sender, so
+                    // copy them here too or the local optimistic view loses
+                    // resize grips, status sections, etc. until refresh.
+                    statusSections: jsonClone(mod.statusSections),
+                    faceWidgets: jsonClone(mod.faceWidgets),
+                    interlock: mod.interlock === true,
+                    resizable: mod.resizable,
+                    enabled: true,
+                    running: false,
+                    health: 'stopped',
+                },
+            },
+        ]);
+        return instanceId;
     },
 
     addConnection(engineId: string, connection: Record<string, unknown>) {

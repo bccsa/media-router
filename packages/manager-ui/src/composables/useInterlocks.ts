@@ -73,10 +73,7 @@ export function willMuteOnUnmute(engine: EngineState | undefined, moduleId: stri
     return out;
 }
 
-/** Short unique interlock id. */
-export function newInterlockId(): string {
-    return `ilk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
+export { newInterlockId } from '@/utils/ids';
 
 /**
  * Pick a black-or-white foreground colour that reads against the given

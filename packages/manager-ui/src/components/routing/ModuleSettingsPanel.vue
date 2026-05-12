@@ -318,16 +318,7 @@ function doToggle() {
     patch.moduleToggle(props.engineId, props.moduleId, !isEnabled.value);
 }
 function doClone() {
-    const mod = module.value;
-    if (mod) {
-        const instanceId = `${mod.pluginId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-        patch.addModule(props.engineId, instanceId, {
-            pluginId: mod.pluginId,
-            displayName: mod.displayName + ' (copy)',
-            position: { x: (mod.position?.x ?? 100) + 50, y: (mod.position?.y ?? 100) + 50 },
-            settings: { ...mod.settings },
-        });
-    }
+    patch.cloneModule(props.engineId, props.moduleId);
 }
 function doDelete() {
     if (confirm(`Delete "${module.value?.displayName}"?`)) {
