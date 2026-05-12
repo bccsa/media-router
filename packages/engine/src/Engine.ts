@@ -20,6 +20,7 @@ import { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 import { wireEngineEvents } from './EngineEventWiring.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle } from './modules/ModuleLifecycle.js';
+import { ModuleRunController } from './modules/ModuleRunController.js';
 
 const log = createLogger('Engine');
 
@@ -59,6 +60,8 @@ export class Engine {
     private commandDispatcher: CommandDispatcher;
     private systemStats: SystemStatsCollector;
     private lifecycle: ModuleLifecycle;
+    /** Single source of truth for module run state — see ModuleRunController. */
+    readonly runController: ModuleRunController;
 
     /** Last config received from manager. */
     private currentConfig: Record<string, unknown> | null = null;
@@ -118,14 +121,8 @@ export class Engine {
             get currentConfig() {
                 return engine.currentConfig;
             },
-            startModules: async () => {
-                await this.lifecycle.startAll();
-                this.lcpServer.broadcastEngineRunning(true);
-            },
-            stopModules: async () => {
-                await this.lifecycle.stopAll();
-                this.lcpServer.broadcastEngineRunning(false);
-            },
+            startModules: () => this.startModules(),
+            stopModules: () => this.stopModules(),
             resetEngine: () => this.resetEngine(),
             restartModule: (id) => this.lifecycle.restart(id),
             startSingleModule: (id) => this.lifecycle.startSingle(id),
@@ -156,6 +153,11 @@ export class Engine {
             this.lcpServer.broadcastConfigUpdate(ops);
         };
 
+        // Single source of truth for module run state.
+        this.runController = new ModuleRunController(this.lifecycle, (running) =>
+            this.lcpServer.broadcastEngineRunning(running),
+        );
+
         // System stats
         this.systemStats = new SystemStatsCollector((stats) => {
             stats.processCount =
@@ -171,6 +173,7 @@ export class Engine {
             this.managerConnection,
             this.lifecycle,
             () => this.currentConfig,
+            () => this.runController.isRunning,
         );
 
         wireEngineEvents({
@@ -183,6 +186,7 @@ export class Engine {
             commandDispatcher: this.commandDispatcher,
             enginePatchRouter: this.enginePatchRouter,
             systemStats: this.systemStats,
+            runController: this.runController,
             getCurrentConfig: () => this.currentConfig,
             setCurrentConfig: (config) => {
                 this.currentConfig = config;
@@ -244,19 +248,19 @@ export class Engine {
         log.info('Stopped');
     }
 
-    /** Start all modules from current config. Public for API server. */
+    /** Public start (used by API server) — delegates to the run controller. */
     async startModules(): Promise<void> {
-        return this.lifecycle.startAll();
+        return this.runController.start();
     }
 
-    /** Stop all modules. Public for API server. */
+    /** Public stop (used by API server) — delegates to the run controller. */
     async stopModules(): Promise<void> {
-        return this.lifecycle.stopAll();
+        return this.runController.stop();
     }
 
     /** Full reset: stop modules, restart PipeWire, restart modules. */
     async resetEngine(): Promise<void> {
-        const wasRunning = this.moduleManager.size > 0;
+        const wasRunning = this.runController.isRunning;
         log.info({ wasRunning }, 'Resetting engine...');
 
         // 1. Stop all modules and clean up

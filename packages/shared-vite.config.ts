@@ -14,4 +14,17 @@ export default defineConfig({
             allow: ['../..'],
         },
     },
+    build: {
+        commonjsOptions: {
+            // Workspace packages are pnpm-symlinked from `<repo>/packages/*`,
+            // which sits outside `node_modules`. Rollup's commonjs plugin
+            // defaults to `[/node_modules/]` and skips workspace symlinks, so
+            // CJS-built packages (e.g. `@media-router/shared-types`, which is
+            // shared with the CJS Node engine/manager runtimes) ended up in
+            // the browser bundle as raw CJS — `exports` is undefined in the
+            // browser → "ReferenceError: exports is not defined" at runtime.
+            // Including the workspace path makes the plugin transform them.
+            include: [/node_modules/, /[\\/]packages[\\/]/],
+        },
+    },
 });

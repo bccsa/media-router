@@ -77,6 +77,7 @@ function makeCtx(stubs: Stubs): EngineEventContext {
         commandDispatcher: { dispatch: vi.fn() } as unknown as EngineEventContext['commandDispatcher'],
         enginePatchRouter: { onPatch: vi.fn() } as unknown as EngineEventContext['enginePatchRouter'],
         systemStats: stubs.systemStats as unknown as EngineEventContext['systemStats'],
+        runController: { isRunning: false } as unknown as EngineEventContext['runController'],
         getCurrentConfig: () => null,
         setCurrentConfig: vi.fn(),
         enrichConfigForLcp: (c) => c,
@@ -113,6 +114,20 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         stubs.managerConnection.emit('connected');
 
         expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
+    });
+
+    it('reports engineRunningState from the run controller, not module-map size', () => {
+        // Dormant instances exist (size > 0) but the controller says stopped —
+        // the historical `moduleManager.size > 0` proxy would mis-report this
+        // as running.
+        stubs.moduleManager.getAllStates.mockReturnValue({
+            'mod-1': { running: false, health: 'stopped' },
+        });
+        stubs.managerConnection.emit('connected');
+
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('engineRunningState', {
+            running: false,
+        });
     });
 
     it('republishes guaranteed snapshot every 10s while connected', () => {

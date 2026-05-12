@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EnginePatchRouter } from './EnginePatchRouter.js';
 
-function createMocks() {
+function createMocks(opts: { modulesRunning?: boolean } = {}) {
     const config: Record<string, unknown> = {
         modules: {
             'mod-1': { pluginId: 'audio-input', displayName: 'Mic', settings: { volume: 100 } },
@@ -43,6 +43,7 @@ function createMocks() {
         managerConnection,
         lifecycle,
         () => config,
+        () => opts.modulesRunning ?? true,
     );
 
     return { router, config, moduleManager, mediaRouter, lcpServer, managerConnection, lifecycle };
@@ -252,8 +253,8 @@ describe('EnginePatchRouter', () => {
     });
 
     describe('side effects — module add/remove', () => {
-        it('calls lifecycle.startSingle when module added', async () => {
-            const { router, config, lifecycle } = createMocks();
+        it('calls lifecycle.startSingle when module added and engine running', async () => {
+            const { router, lifecycle } = createMocks({ modulesRunning: true });
 
             router.onPatch('manager', 'manager', [
                 { op: 'add', path: '/modules/mod-new', value: { pluginId: 'test', settings: {} } },
@@ -261,6 +262,17 @@ describe('EnginePatchRouter', () => {
 
             await new Promise((r) => setTimeout(r, 10));
             expect(lifecycle.startSingle).toHaveBeenCalledWith('mod-new');
+        });
+
+        it('does NOT call lifecycle.startSingle when module added while engine stopped', async () => {
+            const { router, lifecycle } = createMocks({ modulesRunning: false });
+
+            router.onPatch('manager', 'manager', [
+                { op: 'add', path: '/modules/mod-new', value: { pluginId: 'test', settings: {} } },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(lifecycle.startSingle).not.toHaveBeenCalled();
         });
 
         it('calls lifecycle.deleteSingle when module removed', async () => {
@@ -421,6 +433,7 @@ describe('EnginePatchRouter', () => {
                 managerConnection,
                 lifecycle,
                 () => null,
+                () => false,
             );
             router.onPatch('manager', 'manager', [{ op: 'replace', path: '/x', value: 1 }]);
             expect(lcpServer.broadcastConfigUpdate).not.toHaveBeenCalled();

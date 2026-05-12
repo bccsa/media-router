@@ -11,6 +11,7 @@ import type { CommandDispatcher } from './commands/CommandDispatcher.js';
 import type { EnginePatchRouter } from './EnginePatchRouter.js';
 import type { SystemStatsCollector } from './system/SystemStatsCollector.js';
 import type { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
+import type { ModuleRunController } from './modules/ModuleRunController.js';
 
 const log = createLogger('Engine');
 
@@ -24,6 +25,7 @@ export interface EngineEventContext {
     commandDispatcher: CommandDispatcher;
     enginePatchRouter: EnginePatchRouter;
     systemStats: SystemStatsCollector;
+    runController: ModuleRunController;
     getCurrentConfig: () => Record<string, unknown> | null;
     setCurrentConfig: (config: Record<string, unknown>) => void;
     enrichConfigForLcp: (config: Record<string, unknown>) => Record<string, unknown>;
@@ -163,8 +165,9 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
 
     ctx.managerConnection.on('connected', () => {
         ctx.systemStats.start();
-        const modulesRunning = ctx.moduleManager.size > 0;
-        ctx.managerConnection.send('engineRunningState', { running: modulesRunning });
+        ctx.managerConnection.send('engineRunningState', {
+            running: ctx.runController.isRunning,
+        });
         const states = ctx.moduleManager.getAllStates();
         if (Object.keys(states).length > 0) {
             ctx.managerConnection.sendState(states, { guaranteeDelivery: true });

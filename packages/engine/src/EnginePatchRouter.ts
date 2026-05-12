@@ -35,6 +35,7 @@ export class EnginePatchRouter {
         private managerConnection: ManagerConnection,
         private lifecycle: ModuleLifecycle,
         private getConfig: () => Record<string, unknown> | null,
+        private getModulesRunning: () => boolean,
     ) {}
 
     /**
@@ -109,12 +110,21 @@ export class EnginePatchRouter {
                     .catch((err) => log.error({ err, moduleId }, 'Enable/disable failed'));
             }
 
-            // Module added → start it
+            // Module added → start it (only when the engine is in the running
+            // state — otherwise the user explicitly stopped, and adding/cloning
+            // a module shouldn't silently bring it up).
             if (op.op === 'add' && parts[0] === 'modules' && parts.length === 2) {
                 const moduleId = parts[1];
-                this.lifecycleLock = this.lifecycleLock
-                    .then(() => this.lifecycle.startSingle(moduleId))
-                    .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
+                if (this.getModulesRunning()) {
+                    this.lifecycleLock = this.lifecycleLock
+                        .then(() => this.lifecycle.startSingle(moduleId))
+                        .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
+                } else {
+                    log.info(
+                        { moduleId },
+                        'Module added while engine stopped — skipping auto-start',
+                    );
+                }
             }
 
             // Module removed → delete it
