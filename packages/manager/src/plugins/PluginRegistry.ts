@@ -107,6 +107,23 @@ export class PluginRegistry {
         mod.resizable = manifest.resizable ?? false;
     }
 
+    /**
+     * Stamp identity + runtime defaults + manifest fields onto a raw module
+     * value, mutating in place. Single point of truth for "make a raw module
+     * shape broadcast-ready" — used by both `add /modules/<id>` (PatchRouter)
+     * and `replace /modules` (profile activate). Defaults only fill missing
+     * fields so stored per-module state (user toggles, enabled flag, etc.)
+     * survives unchanged.
+     */
+    enrichModule(id: string, mod: Record<string, unknown>): void {
+        mod.instanceId = id;
+        if (mod.enabled === undefined) mod.enabled = true;
+        if (mod.running === undefined) mod.running = false;
+        if (mod.health === undefined) mod.health = 'stopped';
+        if (mod.pendingRestart === undefined) mod.pendingRestart = false;
+        this.overlayManifest(mod);
+    }
+
     /** Force re-scan of the plugins directory. */
     refresh(): void {
         this.cache = null;

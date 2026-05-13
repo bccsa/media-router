@@ -118,6 +118,63 @@ describe('PluginRegistry', () => {
         });
     });
 
+    describe('enrichModule', () => {
+        it('stamps instanceId and runtime defaults onto a raw module', () => {
+            createPlugin('audio-input', {
+                pluginId: 'audio-input',
+                displayName: 'Audio Input',
+                ports: [{ id: 'out-0', direction: 'output' }],
+                configSchema: {},
+                resizable: true,
+                interlock: true,
+            });
+
+            const registry = new PluginRegistry(tmpDir);
+            const mod: Record<string, unknown> = {
+                pluginId: 'audio-input',
+                displayName: 'Mic',
+                settings: {},
+            };
+            registry.enrichModule('mic-1', mod);
+
+            expect(mod.instanceId).toBe('mic-1');
+            expect(mod.enabled).toBe(true);
+            expect(mod.running).toBe(false);
+            expect(mod.health).toBe('stopped');
+            expect(mod.pendingRestart).toBe(false);
+            // Manifest fields overlaid:
+            expect(mod.ports).toEqual([{ id: 'out-0', direction: 'output' }]);
+            expect(mod.resizable).toBe(true);
+            expect(mod.interlock).toBe(true);
+        });
+
+        it('preserves existing per-module state (does not overwrite)', () => {
+            createPlugin('audio-input', {
+                pluginId: 'audio-input',
+                displayName: 'Audio Input',
+                ports: [],
+                configSchema: {},
+            });
+
+            const registry = new PluginRegistry(tmpDir);
+            const mod: Record<string, unknown> = {
+                pluginId: 'audio-input',
+                enabled: false,
+                running: true,
+                health: 'ok',
+                pendingRestart: true,
+            };
+            registry.enrichModule('mic-1', mod);
+
+            expect(mod.enabled).toBe(false);
+            expect(mod.running).toBe(true);
+            expect(mod.health).toBe('ok');
+            expect(mod.pendingRestart).toBe(true);
+            // instanceId always stamped, even if present:
+            expect(mod.instanceId).toBe('mic-1');
+        });
+    });
+
     describe('refresh', () => {
         it('clears cache so next getAll rescans', () => {
             createPlugin('plugin-a', {

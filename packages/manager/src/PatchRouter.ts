@@ -195,7 +195,7 @@ export class PatchRouter {
         const enriched: PatchOp[] = [];
 
         for (const op of ops) {
-            // Module add: overlay manifest fields and runtime defaults so freshly
+            // Module add: stamp manifest fields + runtime defaults so freshly
             // added modules render the same as those rehydrated by `engine:list`.
             // Without this, plugin features keyed off manifest fields (resize
             // grip, interlock affordance, status sections) only appear after a
@@ -203,13 +203,9 @@ export class PatchRouter {
             if (op.op === 'add' && op.path.match(/^\/modules\/[^/]+$/) && op.value) {
                 const moduleId = op.path.split('/')[2];
                 const value: Record<string, unknown> = {
-                    instanceId: moduleId,
-                    running: false,
-                    health: 'stopped',
-                    pendingRestart: false,
                     ...(op.value as Record<string, unknown>),
                 };
-                this.pluginRegistry.overlayManifest(value);
+                this.pluginRegistry.enrichModule(moduleId, value);
                 enriched.push({ ...op, value });
                 continue;
             }

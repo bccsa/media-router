@@ -179,6 +179,52 @@ describe('useEngineStore', () => {
             expect(store.getEngine('eng-1')!.modules['mod-1']).toBeUndefined();
         });
 
+        it('normalises modules on wholesale `replace /modules` (profile activate)', () => {
+            // Profile activation broadcasts raw module values; imported JSONs
+            // can omit `instanceId`, which makes Vue Flow crash on `id.toString`.
+            // The store must stamp the key as instanceId and fill defaults.
+            const store = useEngineStore();
+            store.applyEnginePatch('eng-1', [
+                {
+                    op: 'replace',
+                    path: '/modules',
+                    value: {
+                        'imp-1': {
+                            pluginId: 'audio-input',
+                            displayName: 'Imported Mic',
+                            settings: { device: 'plughw:1,0' },
+                        },
+                    },
+                },
+            ]);
+            const mod = store.getEngine('eng-1')!.modules['imp-1'];
+            expect(mod.instanceId).toBe('imp-1');
+            expect(mod.enabled).toBe(true);
+            expect(mod.running).toBe(false);
+            expect(mod.health).toBe('stopped');
+            expect(mod.pendingRestart).toBe(false);
+            expect(mod.settings).toEqual({ device: 'plughw:1,0' });
+        });
+
+        it('normalises module on `replace /modules/<id>`', () => {
+            const store = useEngineStore();
+            store.applyEnginePatch('eng-1', [
+                {
+                    op: 'replace',
+                    path: '/modules/mod-1',
+                    value: {
+                        pluginId: 'audio-input',
+                        displayName: 'Mic Renamed',
+                        settings: {},
+                    },
+                },
+            ]);
+            const mod = store.getEngine('eng-1')!.modules['mod-1'];
+            expect(mod.instanceId).toBe('mod-1');
+            expect(mod.displayName).toBe('Mic Renamed');
+            expect(mod.health).toBe('stopped');
+        });
+
         it('adds a connection', () => {
             const store = useEngineStore();
             store.applyEnginePatch('eng-1', [

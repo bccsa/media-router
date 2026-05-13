@@ -51,6 +51,14 @@ function createMocks() {
         mod.interlock = manifest.interlock === true;
         mod.resizable = manifest.resizable ?? false;
     };
+    pluginRegistry.enrichModule = (id: string, mod: Record<string, unknown>) => {
+        mod.instanceId = id;
+        if (mod.enabled === undefined) mod.enabled = true;
+        if (mod.running === undefined) mod.running = false;
+        if (mod.health === undefined) mod.health = 'stopped';
+        if (mod.pendingRestart === undefined) mod.pendingRestart = false;
+        pluginRegistry.overlayManifest(mod);
+    };
 
     const router = new PatchRouter(configStore, engineManager, io, pluginRegistry);
     return { router, configStore, engineManager, io, pluginRegistry, emitted, senderRoom };

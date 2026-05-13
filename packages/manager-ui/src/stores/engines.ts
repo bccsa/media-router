@@ -223,17 +223,32 @@ export const useEngineStore = defineStore('engines', () => {
             interlocks: [...(engine.interlocks ?? [])],
         };
 
-        // Optimistic module-add: the sender's value is a raw shape (only the
-        // fields it knows about). Normalise so the store always holds a full
-        // `ModuleState` — without this, freshly-cloned modules render with
-        // `undefined` optional fields until `engine:config` rehydrates them.
+        // Normalise raw module shapes the server sends. Three entry points:
+        //   - `add /modules/<id>`     — clone/addModule from another browser
+        //   - `replace /modules/<id>` — full-module replace
+        //   - `replace /modules`      — wholesale dict replace (profile activate)
+        // Without this, an imported profile that lacks `instanceId` on its
+        // module values produces nodes with `id: undefined` and Vue Flow
+        // crashes in `parseNode` (`e.id.toString()`).
         const ops = (patchOps as PatchOp[]).map((op): PatchOp => {
-            if (op.op === 'add' && /^\/modules\/[^/]+$/.test(op.path) && op.value) {
+            if (
+                (op.op === 'add' || op.op === 'replace') &&
+                /^\/modules\/[^/]+$/.test(op.path) &&
+                op.value
+            ) {
                 const moduleId = op.path.split('/')[2];
                 return {
                     ...op,
                     value: normalizeModule(moduleId, op.value as Record<string, unknown>),
                 };
+            }
+            if (op.op === 'replace' && op.path === '/modules' && op.value) {
+                const raw = op.value as Record<string, Record<string, unknown>>;
+                const next: Record<string, ModuleState> = {};
+                for (const [id, mod] of Object.entries(raw)) {
+                    next[id] = normalizeModule(id, mod);
+                }
+                return { ...op, value: next };
             }
             return op;
         });

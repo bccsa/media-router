@@ -205,17 +205,11 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
 
         const modules = (profile.modules ?? {}) as Record<string, Record<string, unknown>>;
         const connections = (profile.connections ?? []) as unknown[];
-        const pluginManifests = pluginRegistry.getAll();
-        for (const [, mod] of Object.entries(modules)) {
-            const manifest = pluginManifests.find((p) => p.pluginId === mod.pluginId);
-            if (manifest) {
-                mod.ports = manifest.ports ?? [];
-                mod.configSchema = manifest.configSchema ?? {};
-                mod.statusSections = manifest.statusSections;
-                mod.faceWidgets = manifest.faceWidgets;
-                mod.color = manifest.color;
-                mod.icon = manifest.icon;
-            }
+        // Imported profiles can lack instanceId / runtime fields on each
+        // module; without these the browser builds Vue Flow nodes with
+        // `id: undefined` and crashes in `parseNode` (e.id.toString).
+        for (const [id, mod] of Object.entries(modules)) {
+            pluginRegistry.enrichModule(id, mod);
         }
 
         io.emit('engine:update', {
