@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** Palette of dark-theme-friendly accents. Limited set keeps the picker tidy
  *  and avoids the operator inventing 50 shades of nearly-identical greens. */
-export const GROUP_COLORS = [
+const GROUP_COLORS = [
     '#ef4444', // red
     '#f97316', // orange
     '#f59e0b', // amber
