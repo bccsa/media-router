@@ -218,8 +218,8 @@ describe('ManagerConnection', () => {
         // Clear to track new client creation
         (MockedClient as unknown as ReturnType<typeof vi.fn>).mockClear();
 
-        // Advance past backoff delay (base 3000ms)
-        vi.advanceTimersByTime(3100);
+        // Advance past backoff delay (base 3000ms + up to 25% jitter ⇒ 3750ms max)
+        vi.advanceTimersByTime(4000);
 
         // Should have created a new client for reconnection
         expect(MockedClient).toHaveBeenCalledTimes(1);
@@ -268,8 +268,8 @@ describe('ManagerConnection', () => {
         clientInstances[0].emit('disconnected');
         (MockedClient as unknown as ReturnType<typeof vi.fn>).mockClear();
 
-        // Reconnect should happen at base delay (3000ms), not escalated
-        vi.advanceTimersByTime(3100);
+        // Reconnect should happen at base delay (3000ms + up to 25% jitter), not escalated
+        vi.advanceTimersByTime(4000);
         expect(MockedClient).toHaveBeenCalledTimes(1);
     });
 
@@ -287,18 +287,18 @@ describe('ManagerConnection', () => {
         clientInstances[0].emit('connected');
         clientInstances[0].emit('disconnected');
 
-        // First reconnect at 3000ms
-        vi.advanceTimersByTime(3100);
+        // First reconnect at 3000ms (+25% jitter ⇒ 3750ms max)
+        vi.advanceTimersByTime(4000);
         const secondClient = clientInstances[clientInstances.length - 1];
         secondClient.emit('disconnected');
 
         (MockedClient as unknown as ReturnType<typeof vi.fn>).mockClear();
 
-        // Second reconnect should be at 6000ms (exponential)
+        // Second reconnect should be at 6000ms (exponential, jitter range [4500, 7500])
         vi.advanceTimersByTime(3100);
-        expect(MockedClient).not.toHaveBeenCalled(); // Not yet — delay is longer
+        expect(MockedClient).not.toHaveBeenCalled(); // 3100 < 4500 min — guaranteed not yet
 
-        vi.advanceTimersByTime(3100);
-        expect(MockedClient).toHaveBeenCalled(); // Now at ~6200ms total
+        vi.advanceTimersByTime(5000);
+        expect(MockedClient).toHaveBeenCalled(); // 8100 > 7500 max — guaranteed fired
     });
 });

@@ -24,14 +24,25 @@ let lastPipelineString = '';
 let restartTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Restart policy:
-//   - 1s base, 5s cap — fast recovery for transient errors.
+//   - Default 1s base, 5s cap — fast recovery for transient errors.
 //   - No attempt cap (0 = unlimited): a long stream outage shouldn't make us
 //     give up forever. The outer GstChildProcess layer also retries via its
 //     own backoff, but it only sees gst-runner *process* exits, not
 //     pipeline-internal failures, so abandoning here means silent death.
 //   - 30s stable PLAYING marks attempts back to zero so transient blips don't
 //     accumulate over long sessions.
-const restartBackoff = new ExponentialBackoff(1000, 5000, 0, 30_000);
+//   - Plugins with slow/expensive failure modes (SRT caller against an
+//     unreachable remote, etc.) widen the window via `restartBackoffMs` on
+//     PipelineDescription — see SrtInputModule / SrtOutputModule.
+const DEFAULT_RESTART_BASE_MS = 1000;
+const DEFAULT_RESTART_MAX_MS = 5000;
+const RESTART_STABILITY_MS = 30_000;
+const restartBackoff = new ExponentialBackoff(
+    DEFAULT_RESTART_BASE_MS,
+    DEFAULT_RESTART_MAX_MS,
+    0,
+    RESTART_STABILITY_MS,
+);
 
 // Pending get_property/get_stats requests waiting for response from Python
 const pendingRequests = new Map<
@@ -392,9 +403,14 @@ process.on('message', (msg: ControlIpcMessage) => {
                 pipeline: string;
                 useStdioForData?: boolean;
                 restartOnError?: boolean;
+                restartBackoffMs?: { baseMs?: number; maxMs?: number };
                 linkOnPadAdded?: PadLinkRule[];
             };
             restartOnError = d.restartOnError ?? false;
+            restartBackoff.setBounds(
+                d.restartBackoffMs?.baseMs ?? DEFAULT_RESTART_BASE_MS,
+                d.restartBackoffMs?.maxMs ?? DEFAULT_RESTART_MAX_MS,
+            );
             restartBackoff.reset();
             startPipeline(d.pipeline, msg.id, d.useStdioForData, d.linkOnPadAdded ?? []);
             break;

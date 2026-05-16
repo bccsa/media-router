@@ -35,6 +35,25 @@ export class SrtInputModule extends GstPluginBase {
 
         await super.onStart();
 
+        // Reflect pipeline outages immediately. pollStats only runs while the
+        // pipeline is playing, so without this hook a "Connected" badge from
+        // the last good poll lingers across the 5s–10s restart-backoff window
+        // (and srtsrc bus-errors briefly flip health=error to health=stopped,
+        // which made the UI flash red while still showing "Connected").
+        this.childProcess?.on('stateChange', (data: { state: string }) => {
+            if (data.state === 'stopped' || data.state === 'error') {
+                this.setBadge('status', {
+                    icon: 'radio',
+                    text: 'Connecting',
+                    color: '#f59e0b',
+                });
+                this.clearBadge('callers');
+                this.dynamicStatusSections = [];
+                this.lastRecvBytes = 0;
+                this.callerStats.clear();
+            }
+        });
+
         // Start polling SRT stats
         this.statsTimer = setInterval(() => this.pollStats(), 2000);
         this.updateStatusData();
@@ -73,13 +92,24 @@ export class SrtInputModule extends GstPluginBase {
             return null;
         }
 
+        // auto-reconnect=false: libsrt's built-in retry loop spawns a new SRT
+        // socket (+ SndQ/RcvQ worker threads) every ~1s while the remote is
+        // unreachable, which pegs CPU. Letting srtsrc emit the bus error
+        // instead routes reconnects through restartBackoffMs. Cap is kept
+        // tight (10s) — unlike a transient crash, an unreachable SRT peer
+        // gains nothing from longer backoff: we don't know when it returns,
+        // so retrying often is what feels snappy when it finally does.
         const pipeline = [
-            `srtsrc name=src uri="${uri}"`,
+            `srtsrc name=src uri="${uri}" auto-reconnect=false`,
             'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
             buildUdpSink({ host: '239.255.0.1', port: udpPort }),
         ].join(' ! ');
 
-        return { pipeline, restartOnError: true };
+        return {
+            pipeline,
+            restartOnError: true,
+            restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
+        };
     }
 
     private async pollStats(): Promise<void> {

@@ -119,6 +119,7 @@ export class GstChildProcess extends EventEmitter {
                 pipeline: this.pipelineDesc.pipeline,
                 useStdioForData: this.pipelineDesc.useStdioForData ?? false,
                 restartOnError: this.pipelineDesc.restartOnError ?? false,
+                restartBackoffMs: this.pipelineDesc.restartBackoffMs,
                 linkOnPadAdded: this.pipelineDesc.linkOnPadAdded ?? [],
             });
         } catch (err) {

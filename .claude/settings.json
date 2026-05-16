@@ -44,7 +44,12 @@
       "Bash(ls /home/mrstation/media-router/v2/node_modules/.pnpm/*vue-flow*/node_modules/@vue-flow/core/dist/)",
       "Bash(pnpm --filter @media-router/manager-ui add vuedraggable@next)",
       "Bash(pnpm --filter @media-router/manager test --run)",
-      "Bash(grep -n \"reorderEngines moves engines\\\\|}\\\\;\\\\?$\" /home/mrstation/media-router/packages/manager/src/config/ConfigStore.test.ts)"
+      "Bash(grep -n \"reorderEngines moves engines\\\\|}\\\\;\\\\?$\" /home/mrstation/media-router/packages/manager/src/config/ConfigStore.test.ts)",
+      "Bash(pnpm --filter @media-router/srt-input build)",
+      "Bash(pnpm --filter @media-router/srt-output build)",
+      "Bash(pnpm --filter @media-router/plugin-srt-input build)",
+      "Bash(pnpm --filter @media-router/plugin-srt-output build)",
+      "Bash(pnpm --filter @media-router/engine test -- --run ManagerConnection)"
     ]
   }
 }

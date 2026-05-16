@@ -69,6 +69,15 @@ export interface PipelineDescription {
     /** When true, pipeline auto-restarts on GStreamer bus error or EOS (like v1 reload behaviour). */
     restartOnError?: boolean;
     /**
+     * Backoff for the inner restart loop in gst-runner. Defaults to 1s → 5s,
+     * which is fine for transient blips but pegs CPU when the failure is
+     * durable (e.g. SRT caller mode with an unreachable remote re-spawns
+     * Python every few seconds). Tune for the failure mode — SRT plugins
+     * ship 5s → 10s (peer-down has no benefit from longer backoff: we don't
+     * know when it returns, so retrying often is what feels snappy).
+     */
+    restartBackoffMs?: { baseMs?: number; maxMs?: number };
+    /**
      * Rules for linking sometimes-pads (tsdemux, decodebin, …) to dynamically
      * created branches at runtime. Each rule listens for `pad-added` on a
      * named element in the pipeline and instantiates one fresh branch per

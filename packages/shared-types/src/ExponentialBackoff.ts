@@ -18,11 +18,24 @@ export class ExponentialBackoff {
      * @param stabilityMs   Reset attempts after this duration of no failures (default 30000ms)
      */
     constructor(
-        private readonly baseDelayMs = 3000,
-        private readonly maxDelayMs = 60000,
+        private baseDelayMs = 3000,
+        private maxDelayMs = 60000,
         private readonly maxAttempts = 0,
         private readonly stabilityMs = 30000,
     ) {}
+
+    /**
+     * Rebind the delay window in place. Use when the same backoff instance is
+     * reused across configurations (e.g. gst-runner reapplies per-pipeline
+     * restartBackoffMs without reallocating the stability timer). Clamps
+     * `max` to be at least `base` so a swapped-min/max pair still produces a
+     * valid non-decreasing schedule (it collapses to a flat `base` delay
+     * rather than escalating, but it doesn't break callers).
+     */
+    setBounds(baseDelayMs: number, maxDelayMs: number): void {
+        this.baseDelayMs = baseDelayMs;
+        this.maxDelayMs = Math.max(baseDelayMs, maxDelayMs);
+    }
 
     /** Current attempt count. */
     get attempts(): number {
@@ -37,13 +50,19 @@ export class ExponentialBackoff {
     /**
      * Get the next delay and increment the attempt counter.
      * Returns null if max attempts exceeded.
+     *
+     * Adds ±25% multiplicative jitter so N owners that failed at the same
+     * instant don't all retry on the same tick — a stampede the engine sees
+     * when several SRT plugins lose the same peer and re-enter the restart
+     * loop together.
      */
     nextDelay(): number | null {
         if (this.exhausted) return null;
 
-        const delay = Math.min(this.baseDelayMs * Math.pow(2, this._attempts), this.maxDelayMs);
+        const base = Math.min(this.baseDelayMs * Math.pow(2, this._attempts), this.maxDelayMs);
+        const jitter = 1 + (Math.random() - 0.5) * 0.5; // 0.75 .. 1.25
         this._attempts++;
-        return delay;
+        return Math.round(base * jitter);
     }
 
     /**

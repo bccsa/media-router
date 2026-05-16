@@ -533,6 +533,13 @@ interface PipelineDescription {
     liveElements?: Record<string, string[]>;
     /** Auto-restart on bus error / EOS. */
     restartOnError?: boolean;
+    /**
+     * Inner gst-runner restart backoff window. Defaults to 1s → 5s, which
+     * pegs CPU when the failure is durable (e.g. SRT caller against an
+     * unreachable remote re-spawns Python every few seconds). Tune for the
+     * failure mode — SRT plugins ship 5s → 10s.
+     */
+    restartBackoffMs?: { baseMs?: number; maxMs?: number };
     /** Dynamic-pad linking rules (tsdemux, decodebin, …). See below. */
     linkOnPadAdded?: PadLinkRule[];
 }
