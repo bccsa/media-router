@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref, shallowRef, readonly } from 'vue';
 import { io, type Socket } from 'socket.io-client';
 import { useEngineStore } from './engines';
+import { useEngineGroupsStore } from './engineGroups';
 import { useVuStore } from './vuMeters';
 import { useLogStore } from './logs';
 import { useDeviceStore } from './devices';
@@ -176,6 +177,40 @@ export const useSocketStore = defineStore('socket', () => {
         s.on('engine:removed', (data: { engineId: string }) => {
             useEngineStore().removeEngine(data.engineId);
         });
+
+        // Engine groups + sidebar ordering. Initial set arrives once on
+        // connect (`engine-group:list`); subsequent mutations come as
+        // targeted events so we don't re-render the whole list.
+        s.on('engine-group:list', (list: Array<Record<string, unknown>>) => {
+            useEngineGroupsStore().setAll(list);
+        });
+        s.on('engine-group:added', (row: Record<string, unknown>) => {
+            useEngineGroupsStore().upsertFromRow(row);
+        });
+        s.on('engine-group:updated', (row: Record<string, unknown>) => {
+            useEngineGroupsStore().upsertFromRow(row);
+        });
+        s.on(
+            'engine-group:removed',
+            (data: {
+                groupId: string;
+                reassigned: Array<{ engineId: string; groupId: string; sortOrder: number }>;
+            }) => {
+                useEngineGroupsStore().removeGroup(data.groupId);
+                useEngineStore().applyReorder(data.reassigned);
+            },
+        );
+        s.on('engine-groups:reordered', (data: { orderedIds: string[] }) => {
+            useEngineGroupsStore().applyOrder(data.orderedIds);
+        });
+        s.on(
+            'engines:reordered',
+            (data: {
+                updates: Array<{ engineId: string; groupId: string; sortOrder: number }>;
+            }) => {
+                useEngineStore().applyReorder(data.updates);
+            },
+        );
 
         socket.value = s;
     }

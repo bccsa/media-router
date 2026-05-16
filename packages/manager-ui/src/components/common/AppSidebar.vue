@@ -1,24 +1,140 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { ref, computed, watch, nextTick } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import draggable from 'vuedraggable';
 import { useEngineStore } from '@/stores/engines';
-import { statColorClass } from '@/composables/useStatColor';
+import { useEngineGroupsStore } from '@/stores/engineGroups';
+import { engineGroupsApi } from '@/api/engineGroups';
+import { useEngineSidebarMenu } from '@/composables/useEngineSidebarMenu';
+import EngineGroup from './EngineGroup.vue';
+import MrContextMenu from './MrContextMenu.vue';
+import MrModal from './MrModal.vue';
+import MrInput from './MrInput.vue';
+import MrButton from './MrButton.vue';
+import GroupColorPicker from './GroupColorPicker.vue';
 
 const route = useRoute();
+const router = useRouter();
 const engineStore = useEngineStore();
-const open = ref(false);
+const groupsStore = useEngineGroupsStore();
 
-// Close sidebar on route change (mobile)
+const open = ref(false);
+watch(() => route.path, () => (open.value = false));
+
+// --- Group ordering: local mirror that vuedraggable mutates. ---
+const localGroups = ref([...groupsStore.groupList]);
 watch(
-    () => route.path,
-    () => {
-        open.value = false;
-    },
+    () => groupsStore.groupList,
+    (next) => (localGroups.value = [...next]),
 );
+
+async function onGroupsReorder() {
+    await engineGroupsApi.reorderGroups(localGroups.value.map((g) => g.id));
+}
+
+// --- Engine ordering ---
+async function packGroup(groupId: string, engineIds: string[]) {
+    const updates = engineIds.map((engineId, sortOrder) => ({
+        engineId,
+        groupId,
+        sortOrder,
+    }));
+    // Optimistic local update so the UI doesn't snap back while the socket
+    // broadcast round-trips. Server will re-confirm.
+    engineStore.applyReorder(updates);
+    await engineGroupsApi.reorderEngines(updates);
+}
+
+async function onEnginesChange(groupId: string, engineIds: string[]) {
+    await packGroup(groupId, engineIds);
+}
+
+// --- Rename routing: composable raises a target; we forward to the group ref. ---
+const groupRefs = ref<Record<string, InstanceType<typeof EngineGroup> | null>>({});
+const renameTarget = ref<string | null>(null);
+watch(renameTarget, (id) => {
+    if (!id) return;
+    groupRefs.value[id]?.startRename();
+    renameTarget.value = null;
+});
+
+// --- Modals (new group / edit group / delete confirm) ---
+const newGroupModal = ref(false);
+const newGroupName = ref('');
+const newGroupColor = ref<string | null>(null);
+const newGroupInput = ref<InstanceType<typeof MrInput> | null>(null);
+
+function openNewGroupModal() {
+    newGroupName.value = '';
+    newGroupColor.value = null;
+    newGroupModal.value = true;
+    nextTick(() => {
+        const el = (newGroupInput.value as unknown as { $el?: HTMLElement })?.$el;
+        el?.querySelector('input')?.focus();
+    });
+}
+async function submitNewGroup() {
+    const name = newGroupName.value.trim();
+    if (!name) return;
+    newGroupModal.value = false;
+    await engineGroupsApi.create(name, newGroupColor.value);
+}
+
+const editModal = ref<{ groupId: string; name: string; color: string | null } | null>(null);
+function openEditModal(groupId: string) {
+    const g = groupsStore.groups.get(groupId);
+    if (!g) return;
+    editModal.value = { groupId, name: g.name, color: g.color ?? null };
+}
+async function submitEdit() {
+    if (!editModal.value) return;
+    const { groupId, name, color } = editModal.value;
+    editModal.value = null;
+    await engineGroupsApi.update(groupId, { name: name.trim(), color });
+}
+
+const deleteModal = ref<{ groupId: string; groupName: string } | null>(null);
+async function confirmDeleteGroup() {
+    if (!deleteModal.value) return;
+    const id = deleteModal.value.groupId;
+    deleteModal.value = null;
+    await engineGroupsApi.remove(id);
+}
+
+// --- Context menu (delegated to composable) ---
+const {
+    menu: contextMenu,
+    items: contextMenuItems,
+    openEngineMenu,
+    openGroupMenu,
+    closeMenu,
+    dispatch: dispatchMenuAction,
+} = useEngineSidebarMenu({
+    requestRename: (id) => (renameTarget.value = id),
+    requestEdit: openEditModal,
+    requestDelete: (target) => (deleteModal.value = target),
+});
+
+function onMenuAction(action: string) {
+    dispatchMenuAction(action, { navigate: (p) => router.push(p), packGroup });
+}
+
+// --- Misc helpers ---
+function enginesFor(groupId: string) {
+    return engineStore.enginesByGroup.get(groupId) ?? [];
+}
+async function onGroupRename(groupId: string, name: string) {
+    await engineGroupsApi.update(groupId, { name });
+}
+async function onGroupCollapsedChange(groupId: string, collapsed: boolean) {
+    await engineGroupsApi.update(groupId, { collapsed });
+}
+
+const totalEngines = computed(() => engineStore.engineList.length);
 </script>
 
 <template>
-    <!-- Mobile hamburger button -->
+    <!-- Mobile hamburger -->
     <button
         class="fixed top-2 left-2 z-50 p-2 rounded-md md:hidden bg-card border border-border text-foreground"
         @click="open = !open"
@@ -44,80 +160,61 @@ watch(
         </svg>
     </button>
 
-    <!-- Mobile overlay -->
     <div v-if="open" class="fixed inset-0 z-30 bg-black/50 md:hidden" @click="open = false" />
 
-    <!-- Sidebar -->
     <aside
         class="shrink-0 flex flex-col h-full overflow-y-auto transition-transform duration-200 w-[220px] fixed z-40 md:relative md:translate-x-0 bg-sidebar border-r border-border"
         :class="open ? 'translate-x-0' : '-translate-x-full'"
     >
         <nav class="flex-1 py-3 px-2 space-y-4">
-            <!-- Engines section -->
             <div>
                 <RouterLink
                     to="/engines"
                     class="flex items-center justify-between px-3 py-1 mb-1 text-muted"
                 >
                     <span class="text-[10px] font-semibold uppercase tracking-wider">Engines</span>
-                    <span class="text-[10px]">{{ engineStore.engineList.length }}</span>
+                    <span class="text-[10px]">{{ totalEngines }}</span>
                 </RouterLink>
-                <div class="space-y-0.5">
-                    <RouterLink
-                        v-for="engine in engineStore.engineList"
-                        :key="engine.engineId"
-                        :to="`/routing/${engine.engineId}`"
-                        class="flex flex-col px-3 py-1.5 rounded-md text-sm transition-colors"
-                        :class="
-                            route.path.includes(engine.engineId)
-                                ? 'text-accent-fg bg-accent-muted'
-                                : 'text-subtle'
-                        "
-                    >
-                        <div class="flex items-center gap-2">
-                            <div
-                                class="w-2 h-2 rounded-full shrink-0"
-                                :class="engine.online ? 'bg-ok' : 'bg-stopped'"
-                            />
-                            <span class="truncate text-xs">{{ engine.name }}</span>
-                        </div>
-                        <div v-if="engine.system && engine.online" class="flex gap-2 pl-4 mt-0.5">
-                            <span
-                                class="text-[9px] tabular-nums"
-                                :class="statColorClass(engine.system.cpu, 70, 90)"
-                            >
-                                CPU {{ engine.system.cpu }}%
-                            </span>
-                            <span
-                                class="text-[9px] tabular-nums"
-                                :class="statColorClass(engine.system.mem, 80, 95)"
-                            >
-                                MEM {{ engine.system.mem }}%
-                            </span>
-                            <span
-                                v-if="engine.system.temp !== null"
-                                class="text-[9px] tabular-nums"
-                                :class="statColorClass(engine.system.temp, 70, 80)"
-                            >
-                                {{ engine.system.temp }}°C
-                            </span>
-                        </div>
-                    </RouterLink>
-                    <div
-                        v-if="engineStore.engineList.length === 0"
-                        class="px-3 py-1.5 text-xs text-muted"
-                    >
-                        No engines
-                    </div>
+
+                <draggable
+                    v-model="localGroups"
+                    item-key="id"
+                    handle=".group-header"
+                    class="space-y-2"
+                    ghost-class="opacity-40"
+                    @end="onGroupsReorder"
+                >
+                    <template #item="{ element: group }">
+                        <EngineGroup
+                            :ref="(el) => (groupRefs[group.id] = el as InstanceType<typeof EngineGroup>)"
+                            :group="group"
+                            :engines="enginesFor(group.id)"
+                            @engines-change="onEnginesChange"
+                            @engine-contextmenu="openEngineMenu"
+                            @group-contextmenu="openGroupMenu"
+                            @rename="onGroupRename"
+                            @toggle-collapsed="onGroupCollapsedChange"
+                        />
+                    </template>
+                </draggable>
+
+                <button
+                    class="w-full mt-2 px-3 py-1 text-[10px] text-muted hover:text-foreground border border-dashed border-border rounded-md"
+                    @click="openNewGroupModal"
+                >
+                    + New group
+                </button>
+
+                <div v-if="totalEngines === 0" class="px-3 py-1.5 text-xs text-muted">
+                    No engines
                 </div>
             </div>
 
-            <!-- Settings -->
             <div>
                 <div class="px-3 py-1 mb-1">
-                    <span class="text-[10px] font-semibold uppercase tracking-wider text-muted"
-                        >System</span
-                    >
+                    <span class="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                        System
+                    </span>
                 </div>
                 <RouterLink
                     to="/settings"
@@ -133,5 +230,61 @@ watch(
             </div>
         </nav>
         <div class="px-4 py-3 text-[10px] text-muted border-t border-border">Media Router v2.0</div>
+
+        <MrContextMenu
+            v-if="contextMenu"
+            :items="contextMenuItems"
+            :x="contextMenu.x"
+            :y="contextMenu.y"
+            @action="onMenuAction"
+            @close="closeMenu"
+        />
     </aside>
+
+    <MrModal v-if="newGroupModal" title="New group" @close="newGroupModal = false">
+        <form class="space-y-3" @submit.prevent="submitNewGroup">
+            <MrInput
+                ref="newGroupInput"
+                v-model="newGroupName"
+                label="Group name"
+                placeholder="e.g. Studio, On-Air"
+            />
+            <div>
+                <label class="block text-xs font-medium text-foreground mb-1.5">Color</label>
+                <GroupColorPicker v-model="newGroupColor" />
+            </div>
+        </form>
+        <template #footer>
+            <MrButton variant="secondary" @click="newGroupModal = false">Cancel</MrButton>
+            <MrButton :disabled="!newGroupName.trim()" @click="submitNewGroup">Create</MrButton>
+        </template>
+    </MrModal>
+
+    <MrModal v-if="editModal" title="Edit group" @close="editModal = null">
+        <form class="space-y-3" @submit.prevent="submitEdit">
+            <MrInput v-model="editModal.name" label="Group name" />
+            <div>
+                <label class="block text-xs font-medium text-foreground mb-1.5">Color</label>
+                <GroupColorPicker v-model="editModal.color" />
+            </div>
+        </form>
+        <template #footer>
+            <MrButton variant="secondary" @click="editModal = null">Cancel</MrButton>
+            <MrButton :disabled="!editModal.name.trim()" @click="submitEdit">Save</MrButton>
+        </template>
+    </MrModal>
+
+    <MrModal
+        v-if="deleteModal"
+        :title="`Delete group ${deleteModal.groupName}?`"
+        @close="deleteModal = null"
+    >
+        <p class="text-sm text-muted">
+            Engines in this group will be moved to <strong>Ungrouped</strong>.
+        </p>
+        <template #footer>
+            <MrButton variant="secondary" @click="deleteModal = null">Cancel</MrButton>
+            <MrButton variant="danger" @click="confirmDeleteGroup">Delete</MrButton>
+        </template>
+    </MrModal>
 </template>

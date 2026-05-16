@@ -188,3 +188,169 @@ describe('engine HTTP routes', () => {
         expect(res.status).toBe(400);
     });
 });
+
+describe('engine groups + ordering HTTP routes', () => {
+    let s: TestServer;
+
+    beforeEach(async () => {
+        s = await startServer();
+    });
+
+    afterEach(async () => {
+        await stopServer(s);
+    });
+
+    it('GET /api/v1/engine-groups returns the default Ungrouped group on first start', async () => {
+        const res = await request<Array<Record<string, unknown>>>(
+            s.port,
+            'GET',
+            '/api/v1/engine-groups',
+        );
+        expect(res.status).toBe(200);
+        expect(res.body).toHaveLength(1);
+        expect(res.body[0].id).toBe('ungrouped');
+    });
+
+    it('POST /api/v1/engine-groups creates a group and returns it', async () => {
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'POST',
+            '/api/v1/engine-groups',
+            { name: 'Studio' },
+        );
+        expect(res.status).toBe(201);
+        expect(res.body.name).toBe('Studio');
+        expect(typeof res.body.id).toBe('string');
+    });
+
+    it('PUT /api/v1/engine-groups/:id updates a group', async () => {
+        s.configStore.createGroup('grp1', 'Studio');
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'PUT',
+            '/api/v1/engine-groups/grp1',
+            { name: 'On-Air', collapsed: true },
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.name).toBe('On-Air');
+        expect(res.body.collapsed).toBe(1);
+    });
+
+    it('DELETE /api/v1/engine-groups/:id refuses to remove the default group', async () => {
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'DELETE',
+            '/api/v1/engine-groups/ungrouped',
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('DELETE /api/v1/engine-groups/:id removes a custom group and reassigns engines', async () => {
+        s.configStore.createEngine('e1', 'E1', 'p');
+        s.configStore.createGroup('grp1', 'Studio');
+        s.configStore.reorderEngines([
+            { engineId: 'e1', groupId: 'grp1', sortOrder: 0 },
+        ]);
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'DELETE',
+            '/api/v1/engine-groups/grp1',
+        );
+        expect(res.status).toBe(200);
+        expect(s.configStore.getGroup('grp1')).toBeUndefined();
+        expect(s.configStore.getEngine('e1')!.group_id).toBe('ungrouped');
+    });
+
+    it('PUT /api/v1/engine-groups/reorder reorders groups', async () => {
+        s.configStore.createGroup('a', 'A');
+        s.configStore.createGroup('b', 'B');
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'PUT',
+            '/api/v1/engine-groups/reorder',
+            { orderedIds: ['b', 'a', 'ungrouped'] },
+        );
+        expect(res.status).toBe(200);
+        const groups = s.configStore.getAllGroups();
+        expect(groups.map((g) => g.id)).toEqual(['b', 'a', 'ungrouped']);
+    });
+
+    it('PUT /api/v1/engines/reorder moves engines between groups', async () => {
+        s.configStore.createEngine('e1', 'E1', 'p');
+        s.configStore.createEngine('e2', 'E2', 'p');
+        s.configStore.createGroup('grp1', 'Studio');
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'PUT',
+            '/api/v1/engines/reorder',
+            {
+                updates: [
+                    { engineId: 'e1', groupId: 'grp1', sortOrder: 0 },
+                    { engineId: 'e2', groupId: 'ungrouped', sortOrder: 0 },
+                ],
+            },
+        );
+        expect(res.status).toBe(200);
+        expect(s.configStore.getEngine('e1')!.group_id).toBe('grp1');
+        expect(s.configStore.getEngine('e2')!.group_id).toBe('ungrouped');
+    });
+
+    it('PUT /api/v1/engines/reorder rejects moves into unknown groups', async () => {
+        s.configStore.createEngine('e1', 'E1', 'p');
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'PUT',
+            '/api/v1/engines/reorder',
+            {
+                updates: [{ engineId: 'e1', groupId: 'nonexistent', sortOrder: 0 }],
+            },
+        );
+        expect(res.status).toBe(400);
+    });
+
+    it('POST /api/v1/engine-groups accepts a color and rejects malformed hex', async () => {
+        const ok = await request<Record<string, unknown>>(s.port, 'POST', '/api/v1/engine-groups', {
+            name: 'Studio',
+            color: '#10b981',
+        });
+        expect(ok.status).toBe(201);
+        expect(ok.body.color).toBe('#10b981');
+
+        const bad = await request<Record<string, unknown>>(
+            s.port,
+            'POST',
+            '/api/v1/engine-groups',
+            { name: 'Bad', color: 'not-a-color' },
+        );
+        expect(bad.status).toBe(400);
+    });
+
+    it('PUT /api/v1/engine-groups/:id can clear color via null', async () => {
+        s.configStore.createGroup('grp1', 'Studio', '#10b981');
+        const res = await request<Record<string, unknown>>(
+            s.port,
+            'PUT',
+            '/api/v1/engine-groups/grp1',
+            { color: null },
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.color).toBeNull();
+    });
+
+    it('GET /api/v1/engines returns engines sorted by sort_order with group_id', async () => {
+        s.configStore.createEngine('first', 'First', 'p');
+        s.configStore.createEngine('second', 'Second', 'p');
+        s.configStore.reorderEngines([
+            { engineId: 'second', groupId: 'ungrouped', sortOrder: 0 },
+            { engineId: 'first', groupId: 'ungrouped', sortOrder: 1 },
+        ]);
+        const res = await request<Array<Record<string, unknown>>>(
+            s.port,
+            'GET',
+            '/api/v1/engines',
+        );
+        expect(res.status).toBe(200);
+        expect(res.body.map((e) => e.engine_id)).toEqual(['second', 'first']);
+        expect(res.body[0].group_id).toBe('ungrouped');
+    });
+});

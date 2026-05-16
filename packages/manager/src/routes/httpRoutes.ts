@@ -18,6 +18,37 @@ import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
 
 const log = createLogger('HttpRoutes');
 
+// CSS hex color (#abc | #aabbcc, optionally with alpha). Sidebar group accent.
+const HexColor = z
+    .string()
+    .regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
+
+// Schemas for sidebar grouping + ordering. Module-scope to match the rest of
+// this file's pattern (UpdateEngineSchema, RollbackSchema, etc.).
+const ReorderEnginesSchema = z.object({
+    updates: z
+        .array(
+            z.object({
+                engineId: z.string().min(1),
+                groupId: z.string().min(1),
+                sortOrder: z.number().int().nonnegative(),
+            }),
+        )
+        .min(1),
+});
+const CreateGroupSchema = z.object({
+    name: z.string().min(1).max(64),
+    color: HexColor.optional(),
+});
+const UpdateGroupSchema = z.object({
+    name: z.string().min(1).max(64).optional(),
+    collapsed: z.boolean().optional(),
+    color: HexColor.nullable().optional(),
+});
+const ReorderGroupsSchema = z.object({
+    orderedIds: z.array(z.string().min(1)).min(1),
+});
+
 /** Wrap an Express handler with Zod body validation. Returns 400 with details on failure. */
 function withBody<T>(
     schema: z.ZodType<T>,
@@ -126,10 +157,34 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
                 engine_id: engine.engine_id,
                 display_name: engine.display_name,
                 active_profile: engine.active_profile,
+                group_id: engine.group_id,
+                sort_order: engine.sort_order,
                 online: false,
             };
             io.emit('engine:added', result);
             res.status(201).json(result);
+        }),
+    );
+
+    // NOTE: defined before `PUT /api/v1/engines/:id` so the literal `reorder`
+    // path isn't swallowed as `id=reorder`. Express matches routes in
+    // definition order.
+    app.put(
+        '/api/v1/engines/reorder',
+        withBody(ReorderEnginesSchema, (_req, res, { updates }) => {
+            // Reject moves into groups that don't exist — keeps the DB
+            // referentially clean without a FK constraint (we kept the group
+            // column nullable-free with a string default for migration ease).
+            const known = new Set(configStore.getAllGroups().map((g) => g.id as string));
+            for (const u of updates) {
+                if (!known.has(u.groupId)) {
+                    res.status(400).json({ error: `Unknown group: ${u.groupId}` });
+                    return;
+                }
+            }
+            configStore.reorderEngines(updates);
+            io.emit('engines:reordered', { updates });
+            res.json({ ok: true });
         }),
     );
 
@@ -146,6 +201,8 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
                 engine_id: updated.engine_id,
                 display_name: updated.display_name,
                 active_profile: updated.active_profile,
+                group_id: updated.group_id,
+                sort_order: updated.sort_order,
                 online: engineManager.isEngineOnline(id),
             };
             io.emit('engine:updated', result);
@@ -158,6 +215,87 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
         configStore.deleteEngine(req.params.id);
         engineManager.refreshEncryptionKeys();
         io.emit('engine:removed', { engineId: req.params.id });
+        res.json({ ok: true });
+    });
+
+    // --- Engine groups ---
+    //
+    // All sidebar-grouping mutations are HTTP, not Socket.IO, so the handlers
+    // don't have a `socket` handle to skip on broadcast — every `io.emit(...)`
+    // below intentionally fans out to all connected browsers including the
+    // originator. This is safe (not strictly N-1) because the originating
+    // browser applies the change optimistically via `applyReorder` /
+    // `upsertFromRow`, which are idempotent: a re-application of the same
+    // groupId+sortOrder is a no-op (see EngineStore.applyReorder). If we ever
+    // need true sender-skip here we can plumb an X-Client-Id header through
+    // and tag the broadcast.
+
+    app.get('/api/v1/engine-groups', (_req, res) => {
+        res.json(configStore.getAllGroups());
+    });
+
+    app.post(
+        '/api/v1/engine-groups',
+        withBody(CreateGroupSchema, (_req, res, { name, color }) => {
+            // Short, stable, non-secret id. Crypto isn't required — these are
+            // not credentials.
+            const id = `grp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+            configStore.createGroup(id, name, color ?? null);
+            const group = configStore.getGroup(id)!;
+            io.emit('engine-group:added', group);
+            res.status(201).json(group);
+        }),
+    );
+
+    // Reorder before `:id` so the literal path isn't swallowed by the param route.
+    app.put(
+        '/api/v1/engine-groups/reorder',
+        withBody(ReorderGroupsSchema, (_req, res, { orderedIds }) => {
+            configStore.reorderGroups(orderedIds);
+            io.emit('engine-groups:reordered', { orderedIds });
+            res.json({ ok: true });
+        }),
+    );
+
+    app.put(
+        '/api/v1/engine-groups/:id',
+        withBody(UpdateGroupSchema, (req, res, fields) => {
+            const id = param(req, 'id');
+            const existing = configStore.getGroup(id);
+            if (!existing) {
+                res.status(404).json({ error: 'Group not found' });
+                return;
+            }
+            configStore.updateGroup(id, fields);
+            const updated = configStore.getGroup(id)!;
+            io.emit('engine-group:updated', updated);
+            res.json(updated);
+        }),
+    );
+
+    app.delete('/api/v1/engine-groups/:id', (req, res) => {
+        const id = param(req, 'id');
+        const existing = configStore.getGroup(id);
+        if (!existing) {
+            res.status(404).json({ error: 'Group not found' });
+            return;
+        }
+        if (existing.is_default === 1) {
+            res.status(400).json({ error: 'Cannot delete the default group' });
+            return;
+        }
+        configStore.deleteGroup(id);
+        // Engines moved to "Ungrouped" — broadcast the new ordering so every
+        // browser stays in sync without each having to refetch.
+        const reassigned = configStore
+            .getAllEngines()
+            .filter((e) => e.group_id === 'ungrouped')
+            .map((e) => ({
+                engineId: e.engine_id as string,
+                groupId: 'ungrouped',
+                sortOrder: e.sort_order as number,
+            }));
+        io.emit('engine-group:removed', { groupId: id, reassigned });
         res.json({ ok: true });
     });
 

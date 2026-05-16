@@ -33,6 +33,8 @@ function makeEngine(mods: ModuleState[], interlocks: InterlockState[]): EngineSt
         modules: Object.fromEntries(mods.map((m) => [m.instanceId, m])),
         connections: [],
         interlocks,
+        groupId: 'ungrouped',
+        sortOrder: 0,
     };
 }
 

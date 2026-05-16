@@ -38,6 +38,8 @@ function makeEngine(modules: Record<string, { focused?: boolean }>): EngineState
         modules: mods,
         connections: [],
         interlocks: [],
+        groupId: 'ungrouped',
+        sortOrder: 0,
     } as EngineState;
 }
 

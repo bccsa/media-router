@@ -41,7 +41,10 @@
       "Bash(find /home/mrstation/media-router/v2 -type f -name *PLAN* -o -name *ROADMAP* -o -name *phase*)",
       "Bash(find /home/mrstation/media-router/docs -type f -name *PLAN* -o -name *ROADMAP* -o -name *phase*)",
       "Read(//home/mrstation/.claude/projects/**)",
-      "Bash(ls /home/mrstation/media-router/v2/node_modules/.pnpm/*vue-flow*/node_modules/@vue-flow/core/dist/)"
+      "Bash(ls /home/mrstation/media-router/v2/node_modules/.pnpm/*vue-flow*/node_modules/@vue-flow/core/dist/)",
+      "Bash(pnpm --filter @media-router/manager-ui add vuedraggable@next)",
+      "Bash(pnpm --filter @media-router/manager test --run)",
+      "Bash(grep -n \"reorderEngines moves engines\\\\|}\\\\;\\\\?$\" /home/mrstation/media-router/packages/manager/src/config/ConfigStore.test.ts)"
     ]
   }
 }

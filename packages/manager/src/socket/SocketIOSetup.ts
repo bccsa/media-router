@@ -95,6 +95,10 @@ export function setupSocketIO(deps: SocketDeps): void {
             }),
         );
 
+        // Send the engine-group set so the sidebar can render groups on first
+        // paint without a follow-up REST round trip.
+        socket.emit('engine-group:list', configStore.getAllGroups());
+
         // --- Watch engine (stream VU/logs/system only for active engine) ---
         socket.on(
             'watch:engine',

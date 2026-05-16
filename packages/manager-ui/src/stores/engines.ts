@@ -111,6 +111,10 @@ export interface EngineState {
     ips?: string[];
     hostname?: string;
     buildNumber?: string;
+    /** Sidebar group id — defaults to 'ungrouped' on the server. */
+    groupId: string;
+    /** Position within the group; ascending. */
+    sortOrder: number;
 }
 
 // --- Store ---
@@ -119,6 +123,24 @@ export const useEngineStore = defineStore('engines', () => {
     const engines = ref<Map<string, EngineState>>(new Map());
 
     const engineList = computed(() => Array.from(engines.value.values()));
+
+    /**
+     * Engines bucketed by `groupId` and sorted by `sortOrder`. The sidebar
+     * reads from this; building it once per change is cheaper than re-sorting
+     * inside each EngineGroup component on every render.
+     */
+    const enginesByGroup = computed(() => {
+        const map = new Map<string, EngineState[]>();
+        for (const engine of engines.value.values()) {
+            const arr = map.get(engine.groupId) ?? [];
+            arr.push(engine);
+            map.set(engine.groupId, arr);
+        }
+        for (const arr of map.values()) {
+            arr.sort((a, b) => a.sortOrder - b.sortOrder);
+        }
+        return map;
+    });
 
     function getEngine(engineId: string): EngineState | undefined {
         return engines.value.get(engineId);
@@ -181,8 +203,34 @@ export const useEngineStore = defineStore('engines', () => {
             ips: data.ips as string[] | undefined,
             hostname: data.hostname as string | undefined,
             buildNumber: data.buildNumber as string | undefined,
+            groupId: (data.group_id as string) ?? 'ungrouped',
+            sortOrder: (data.sort_order as number) ?? 0,
         });
         engines.value = new Map(engines.value);
+    }
+
+    /**
+     * Apply a reorder update from the server. Bulk-shaped because the
+     * sidebar drag often shifts multiple engines (the moved one plus the
+     * gap-closers in the source/destination groups).
+     */
+    function applyReorder(
+        updates: Array<{ engineId: string; groupId: string; sortOrder: number }>,
+    ) {
+        let changed = false;
+        for (const u of updates) {
+            const engine = engines.value.get(u.engineId);
+            if (!engine) continue;
+            if (engine.groupId !== u.groupId || engine.sortOrder !== u.sortOrder) {
+                engines.value.set(u.engineId, {
+                    ...engine,
+                    groupId: u.groupId,
+                    sortOrder: u.sortOrder,
+                });
+                changed = true;
+            }
+        }
+        if (changed) engines.value = new Map(engines.value);
     }
 
     /** Set full config (modules + connections) for an engine — used by lazy loading. */
@@ -301,6 +349,8 @@ export const useEngineStore = defineStore('engines', () => {
             engine.name = (data.display_name as string) ?? engine.name;
             engine.activeProfile = (data.active_profile as string) ?? engine.activeProfile;
             engine.online = (data.online as boolean) ?? engine.online;
+            if (typeof data.group_id === 'string') engine.groupId = data.group_id;
+            if (typeof data.sort_order === 'number') engine.sortOrder = data.sort_order;
             engines.value = new Map(engines.value);
         }
     }
@@ -360,8 +410,10 @@ export const useEngineStore = defineStore('engines', () => {
     return {
         engines,
         engineList,
+        enginesByGroup,
         getEngine,
         addEngine,
+        applyReorder,
         setEngineConfig,
         applyEnginePatch,
         setOnline,

@@ -264,4 +264,128 @@ describe('ConfigStore', () => {
             expect(() => store.close()).not.toThrow();
         });
     });
+
+    describe('Engine groups', () => {
+        it('seeds the default Ungrouped group on first start', () => {
+            const groups = store.getAllGroups();
+            expect(groups).toHaveLength(1);
+            expect(groups[0].id).toBe('ungrouped');
+            expect(groups[0].is_default).toBe(1);
+        });
+
+        it('createEngine assigns engines to Ungrouped with incrementing sort_order', () => {
+            store.createEngine('a', 'A', 'p');
+            store.createEngine('b', 'B', 'p');
+            const engines = store.getAllEngines();
+            expect(engines[0].engine_id).toBe('a');
+            expect(engines[0].group_id).toBe('ungrouped');
+            expect(engines[0].sort_order).toBe(0);
+            expect(engines[1].engine_id).toBe('b');
+            expect(engines[1].sort_order).toBe(1);
+        });
+
+        it('creates a custom group with sort_order after defaults', () => {
+            store.createGroup('grp1', 'Studio');
+            const groups = store.getAllGroups();
+            expect(groups).toHaveLength(2);
+            expect(groups[1].id).toBe('grp1');
+            expect(groups[1].name).toBe('Studio');
+            expect(groups[1].sort_order).toBe(1);
+            expect(groups[1].is_default).toBe(0);
+        });
+
+        it('updateGroup edits name and collapsed state', () => {
+            store.createGroup('grp1', 'Studio');
+            store.updateGroup('grp1', { name: 'On-Air', collapsed: true });
+            const g = store.getGroup('grp1');
+            expect(g!.name).toBe('On-Air');
+            expect(g!.collapsed).toBe(1);
+        });
+
+        it('deleteGroup reassigns engines to Ungrouped and appends to end', () => {
+            store.createEngine('a', 'A', 'p'); // ungrouped, order 0
+            store.createGroup('grp1', 'Studio');
+            store.reorderEngines([{ engineId: 'a', groupId: 'grp1', sortOrder: 0 }]);
+            store.createEngine('b', 'B', 'p'); // ungrouped, order 0 (a moved out)
+            store.deleteGroup('grp1');
+            const engines = store.getAllEngines();
+            const a = engines.find((e) => e.engine_id === 'a')!;
+            expect(a.group_id).toBe('ungrouped');
+            // 'a' should land after 'b' (appended to end of ungrouped).
+            const b = engines.find((e) => e.engine_id === 'b')!;
+            expect((a.sort_order as number) > (b.sort_order as number)).toBe(true);
+            expect(store.getGroup('grp1')).toBeUndefined();
+        });
+
+        it('refuses to delete the default Ungrouped group', () => {
+            expect(() => store.deleteGroup('ungrouped')).toThrow();
+        });
+
+        it('reorderGroups updates sort_order in array index order', () => {
+            store.createGroup('a', 'A');
+            store.createGroup('b', 'B');
+            store.reorderGroups(['a', 'b', 'ungrouped']);
+            const groups = store.getAllGroups();
+            expect(groups.map((g) => g.id)).toEqual(['a', 'b', 'ungrouped']);
+        });
+
+        it('createGroup stores an optional color and updateGroup can clear it', () => {
+            store.createGroup('grp1', 'Studio', '#10b981');
+            expect(store.getGroup('grp1')?.color).toBe('#10b981');
+
+            store.updateGroup('grp1', { color: '#ef4444' });
+            expect(store.getGroup('grp1')?.color).toBe('#ef4444');
+
+            // null explicitly clears (undefined would skip the field instead).
+            store.updateGroup('grp1', { color: null });
+            expect(store.getGroup('grp1')?.color).toBeNull();
+        });
+
+        it('createGroup defaults color to null when omitted', () => {
+            store.createGroup('grp1', 'Studio');
+            expect(store.getGroup('grp1')?.color).toBeNull();
+        });
+
+        it('reorderEngines moves engines between groups in a single transaction', () => {
+            store.createEngine('e1', 'E1', 'p');
+            store.createEngine('e2', 'E2', 'p');
+            store.createGroup('grp1', 'Studio');
+            store.reorderEngines([
+                { engineId: 'e2', groupId: 'grp1', sortOrder: 0 },
+                { engineId: 'e1', groupId: 'ungrouped', sortOrder: 0 },
+            ]);
+            const engines = store.getAllEngines();
+            const e1 = engines.find((e) => e.engine_id === 'e1')!;
+            const e2 = engines.find((e) => e.engine_id === 'e2')!;
+            expect(e1.group_id).toBe('ungrouped');
+            expect(e2.group_id).toBe('grp1');
+            expect(e2.sort_order).toBe(0);
+        });
+
+        it('createGroup stores the color when supplied', () => {
+            store.createGroup('grp1', 'Studio', '#10b981');
+            expect(store.getGroup('grp1')!.color).toBe('#10b981');
+        });
+
+        it('createGroup defaults color to null when omitted', () => {
+            store.createGroup('grp1', 'Studio');
+            expect(store.getGroup('grp1')!.color).toBeNull();
+        });
+
+        it('updateGroup sets a color and can clear it back to null', () => {
+            store.createGroup('grp1', 'Studio');
+            store.updateGroup('grp1', { color: '#ef4444' });
+            expect(store.getGroup('grp1')!.color).toBe('#ef4444');
+            store.updateGroup('grp1', { color: null });
+            expect(store.getGroup('grp1')!.color).toBeNull();
+        });
+
+        it('updateGroup leaves color untouched when the field is omitted', () => {
+            store.createGroup('grp1', 'Studio', '#3b82f6');
+            store.updateGroup('grp1', { name: 'On-Air' });
+            const g = store.getGroup('grp1')!;
+            expect(g.name).toBe('On-Air');
+            expect(g.color).toBe('#3b82f6');
+        });
+    });
 });

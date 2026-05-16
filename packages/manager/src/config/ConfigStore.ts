@@ -38,6 +38,8 @@ export class ConfigStore {
         this.db = new Database(dbPath);
         this.db.pragma('journal_mode = WAL');
         this.createTables();
+        this.migrateSchema();
+        this.ensureDefaultGroup();
         this.seedDefaults();
         log.info({ dbPath }, 'database opened');
     }
@@ -49,6 +51,19 @@ export class ConfigStore {
                 display_name TEXT NOT NULL,
                 password TEXT NOT NULL,
                 active_profile TEXT,
+                group_id TEXT NOT NULL DEFAULT 'ungrouped',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS engine_groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                collapsed INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                color TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             );
@@ -69,6 +84,62 @@ export class ConfigStore {
                 saved_at TEXT DEFAULT (datetime('now'))
             );
         `);
+    }
+
+    /**
+     * Add columns introduced after the initial schema. SQLite's `ADD COLUMN`
+     * is idempotent only with a guard, so we check `PRAGMA table_info` first.
+     * Existing rows pick up the column default.
+     */
+    private migrateSchema(): void {
+        const engineCols = this.db.prepare("PRAGMA table_info('engines')").all() as Array<{
+            name: string;
+        }>;
+        const engineNames = new Set(engineCols.map((c) => c.name));
+        if (!engineNames.has('group_id')) {
+            this.db.exec(
+                "ALTER TABLE engines ADD COLUMN group_id TEXT NOT NULL DEFAULT 'ungrouped'",
+            );
+        }
+        if (!engineNames.has('sort_order')) {
+            this.db.exec('ALTER TABLE engines ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+            // Preserve historic order: assign sort_order by created_at.
+            const rows = this.db
+                .prepare(
+                    'SELECT engine_id FROM engines ORDER BY created_at ASC, engine_id ASC',
+                )
+                .all() as Array<{ engine_id: string }>;
+            const upd = this.db.prepare(
+                'UPDATE engines SET sort_order = ? WHERE engine_id = ?',
+            );
+            rows.forEach((r, i) => upd.run(i, r.engine_id));
+        }
+
+        const groupCols = this.db.prepare("PRAGMA table_info('engine_groups')").all() as Array<{
+            name: string;
+        }>;
+        const groupNames = new Set(groupCols.map((c) => c.name));
+        if (!groupNames.has('color')) {
+            this.db.exec('ALTER TABLE engine_groups ADD COLUMN color TEXT');
+        }
+    }
+
+    /**
+     * Every engine has a group. The "Ungrouped" row is a real group flagged
+     * `is_default=1` — it can be renamed/collapsed but not deleted, and is the
+     * fallback when a custom group is removed.
+     */
+    private ensureDefaultGroup(): void {
+        const row = this.db
+            .prepare("SELECT id FROM engine_groups WHERE id = 'ungrouped'")
+            .get();
+        if (!row) {
+            this.db
+                .prepare(
+                    "INSERT INTO engine_groups (id, name, sort_order, collapsed, is_default) VALUES ('ungrouped', 'Ungrouped', 0, 0, 1)",
+                )
+                .run();
+        }
     }
 
     /**
@@ -179,9 +250,19 @@ export class ConfigStore {
 
     createEngine(engineId: string, displayName: string, password: string): void {
         try {
+            // New engines go to the end of the "Ungrouped" group.
+            const max = (
+                this.db
+                    .prepare(
+                        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM engines WHERE group_id = 'ungrouped'",
+                    )
+                    .get() as { m: number }
+            ).m;
             this.db
-                .prepare('INSERT INTO engines (engine_id, display_name, password) VALUES (?, ?, ?)')
-                .run(engineId, displayName, password);
+                .prepare(
+                    "INSERT INTO engines (engine_id, display_name, password, group_id, sort_order) VALUES (?, ?, ?, 'ungrouped', ?)",
+                )
+                .run(engineId, displayName, password, max + 1);
         } catch (err) {
             log.error({ err, engineId }, 'Failed to create engine');
             throw err;
@@ -195,7 +276,147 @@ export class ConfigStore {
     }
 
     getAllEngines(): Array<Record<string, unknown>> {
-        return this.db.prepare('SELECT * FROM engines').all() as Array<Record<string, unknown>>;
+        return this.db
+            .prepare('SELECT * FROM engines ORDER BY sort_order ASC, engine_id ASC')
+            .all() as Array<Record<string, unknown>>;
+    }
+
+    // --- Engine Groups ---
+
+    getAllGroups(): Array<Record<string, unknown>> {
+        return this.db
+            .prepare('SELECT * FROM engine_groups ORDER BY sort_order ASC, id ASC')
+            .all() as Array<Record<string, unknown>>;
+    }
+
+    getGroup(groupId: string): Record<string, unknown> | undefined {
+        return this.db.prepare('SELECT * FROM engine_groups WHERE id = ?').get(groupId) as
+            | Record<string, unknown>
+            | undefined;
+    }
+
+    createGroup(groupId: string, name: string, color?: string | null): void {
+        try {
+            const max = (
+                this.db
+                    .prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM engine_groups')
+                    .get() as { m: number }
+            ).m;
+            this.db
+                .prepare(
+                    'INSERT INTO engine_groups (id, name, sort_order, color) VALUES (?, ?, ?, ?)',
+                )
+                .run(groupId, name, max + 1, color ?? null);
+        } catch (err) {
+            log.error({ err, groupId }, 'Failed to create group');
+            throw err;
+        }
+    }
+
+    updateGroup(
+        groupId: string,
+        fields: { name?: string; collapsed?: boolean; color?: string | null },
+    ): void {
+        const sets: string[] = [];
+        const values: unknown[] = [];
+        if (fields.name !== undefined) {
+            sets.push('name = ?');
+            values.push(fields.name);
+        }
+        if (fields.collapsed !== undefined) {
+            sets.push('collapsed = ?');
+            values.push(fields.collapsed ? 1 : 0);
+        }
+        if (fields.color !== undefined) {
+            sets.push('color = ?');
+            // null clears the accent — `undefined` would skip the field instead.
+            values.push(fields.color);
+        }
+        if (!sets.length) return;
+        sets.push("updated_at = datetime('now')");
+        values.push(groupId);
+        try {
+            this.db
+                .prepare(`UPDATE engine_groups SET ${sets.join(', ')} WHERE id = ?`)
+                .run(...values);
+        } catch (err) {
+            log.error({ err, groupId }, 'Failed to update group');
+            throw err;
+        }
+    }
+
+    /**
+     * Delete a non-default group. Engines belonging to it fall back to the
+     * "Ungrouped" group, keeping their order relative to each other but
+     * appended to the end of Ungrouped.
+     */
+    deleteGroup(groupId: string): void {
+        if (groupId === 'ungrouped') {
+            throw new Error('Cannot delete the default Ungrouped group');
+        }
+        const txn = this.db.transaction(() => {
+            const max = (
+                this.db
+                    .prepare(
+                        "SELECT COALESCE(MAX(sort_order), -1) AS m FROM engines WHERE group_id = 'ungrouped'",
+                    )
+                    .get() as { m: number }
+            ).m;
+            const orphans = this.db
+                .prepare(
+                    'SELECT engine_id FROM engines WHERE group_id = ? ORDER BY sort_order ASC, engine_id ASC',
+                )
+                .all(groupId) as Array<{ engine_id: string }>;
+            const reassign = this.db.prepare(
+                "UPDATE engines SET group_id = 'ungrouped', sort_order = ? WHERE engine_id = ?",
+            );
+            orphans.forEach((row, i) => reassign.run(max + 1 + i, row.engine_id));
+            this.db.prepare('DELETE FROM engine_groups WHERE id = ?').run(groupId);
+        });
+        try {
+            txn();
+        } catch (err) {
+            log.error({ err, groupId }, 'Failed to delete group');
+            throw err;
+        }
+    }
+
+    /** Bulk-set group ordering. Unknown ids are ignored. */
+    reorderGroups(orderedIds: string[]): void {
+        const txn = this.db.transaction(() => {
+            const upd = this.db.prepare('UPDATE engine_groups SET sort_order = ? WHERE id = ?');
+            orderedIds.forEach((id, i) => upd.run(i, id));
+        });
+        try {
+            txn();
+        } catch (err) {
+            log.error({ err }, 'Failed to reorder groups');
+            throw err;
+        }
+    }
+
+    /**
+     * Bulk-assign engines to groups + positions. The full updates array is
+     * applied in one transaction so a partial failure doesn't leave the list
+     * half-reordered.
+     */
+    reorderEngines(
+        updates: Array<{ engineId: string; groupId: string; sortOrder: number }>,
+    ): void {
+        const txn = this.db.transaction(() => {
+            const upd = this.db.prepare(
+                "UPDATE engines SET group_id = ?, sort_order = ?, updated_at = datetime('now') WHERE engine_id = ?",
+            );
+            for (const { engineId, groupId, sortOrder } of updates) {
+                upd.run(groupId, sortOrder, engineId);
+            }
+        });
+        try {
+            txn();
+        } catch (err) {
+            log.error({ err }, 'Failed to reorder engines');
+            throw err;
+        }
     }
 
     updateEngine(engineId: string, displayName: string, password?: string): void {
