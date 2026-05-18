@@ -5,7 +5,8 @@
     "description": "Media Router v2.0 — Distributed media routing system",
     "scripts": {
         "build": "pnpm -r --filter './packages/*' --filter './plugins/*' run build",
-        "dev": "pnpm -r --parallel --filter './packages/*' run dev",
+        "dev": "pnpm -r --parallel --filter @media-router/manager --filter @media-router/engine --filter @media-router/manager-ui --filter @media-router/local-panel --filter @media-router/profile-manager run dev",
+        "dev:all": "pnpm -r --parallel --filter './packages/*' run dev",
         "test": "vitest run",
         "test:watch": "vitest",
         "typecheck": "pnpm -r --filter './packages/*' --filter './plugins/*' run typecheck",

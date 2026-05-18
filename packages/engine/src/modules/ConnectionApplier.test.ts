@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ConnectionApplier, type StoredConnection, type RawPort } from './ConnectionApplier.js';
+import {
+    ConnectionApplier,
+    topoSortMpegtsConns,
+    type StoredConnection,
+    type RawPort,
+} from './ConnectionApplier.js';
 
 function makeConn(overrides: Partial<StoredConnection> = {}): StoredConnection {
     return {
@@ -232,6 +237,56 @@ describe('ConnectionApplier', () => {
             // Both MPEG-TS first, then audio
             expect(callOrder.slice(0, 2)).toEqual(['enc-1', 'enc-2']);
             expect(callOrder[2]).toBe('audio-1');
+        });
+    });
+
+    describe('topoSortMpegtsConns', () => {
+        it('orders parent before child so the parent apply triggers the sink-module restart that assigns the child connection\'s source port', () => {
+            // Chain: srt → demuxer → decoder
+            // Storage order is reversed (decoder→? first, parent last) — sort must fix it.
+            const parent = makeConn({
+                id: 'parent',
+                sourceModuleId: 'srt-input',
+                sinkModuleId: 'demuxer',
+            });
+            const child = makeConn({
+                id: 'child',
+                sourceModuleId: 'demuxer',
+                sinkModuleId: 'decoder',
+            });
+            const sorted = topoSortMpegtsConns([child, parent]);
+            expect(sorted.map((c) => c.id)).toEqual(['parent', 'child']);
+        });
+
+        it('handles deeper chains', () => {
+            // srt → demuxer → muxer → decoder
+            const a = makeConn({ id: 'a', sourceModuleId: 'srt', sinkModuleId: 'demuxer' });
+            const b = makeConn({ id: 'b', sourceModuleId: 'demuxer', sinkModuleId: 'muxer' });
+            const c = makeConn({ id: 'c', sourceModuleId: 'muxer', sinkModuleId: 'decoder' });
+            // Worst-case input order
+            const sorted = topoSortMpegtsConns([c, b, a]);
+            expect(sorted.map((x) => x.id)).toEqual(['a', 'b', 'c']);
+        });
+
+        it('keeps independent chains in input order', () => {
+            // Two disjoint chains: srt1→dec1 and srt2→dec2
+            const x = makeConn({ id: 'x', sourceModuleId: 'srt1', sinkModuleId: 'dec1' });
+            const y = makeConn({ id: 'y', sourceModuleId: 'srt2', sinkModuleId: 'dec2' });
+            const sorted = topoSortMpegtsConns([x, y]);
+            // Both are roots (sources are not sinks of anything else) — first-found wins
+            expect(sorted.map((c) => c.id)).toEqual(['x', 'y']);
+        });
+
+        it('falls back to input order for an empty list', () => {
+            expect(topoSortMpegtsConns([])).toEqual([]);
+        });
+
+        it('does not stall on cycles — places cyclic members at the tail', () => {
+            // Pathological: A.sink → B, B.sink → A (would imply media flowing in a circle)
+            const a = makeConn({ id: 'a', sourceModuleId: 'm1', sinkModuleId: 'm2' });
+            const b = makeConn({ id: 'b', sourceModuleId: 'm2', sinkModuleId: 'm1' });
+            const sorted = topoSortMpegtsConns([a, b]);
+            expect(sorted).toHaveLength(2);
         });
     });
 

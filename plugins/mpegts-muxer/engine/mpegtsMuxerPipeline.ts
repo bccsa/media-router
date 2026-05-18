@@ -10,11 +10,8 @@ import {
     buildLeakyQueue,
     buildUdpSink,
     buildUdpSrc,
-    videoParserForCodec,
     type PadLinkRule,
 } from '@media-router/engine';
-
-export { videoParserForCodec };
 
 export type PortDirection = 'input' | 'output';
 
@@ -31,8 +28,6 @@ export interface UdpInputSource {
     sinkPortId: string;
     host: string;
     port: number;
-    /** Upstream encoder's codec (when known) so we can pick the right parser. */
-    codec?: string;
 }
 
 const VIDEO_PORT_PREFIX = 'video-';
@@ -97,9 +92,9 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
  * Goes straight `udpsrc ! tsdemux` with no `tsparse` in between: re-deriving
  * PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
  * timeline, and `mpegtsmux latency=0` re-emitting PCR from those values
- * surfaces at the receiver as visible packet loss on live video. The downstream
- * pad queue (between tsdemux and h264parse) provides the only buffering this
- * branch needs.
+ * surfaces at the receiver as visible packet loss on live video. The runner-
+ * injected parser + the leaky pad queue downstream provide the only
+ * buffering this branch needs.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
     const udpsrc = buildUdpSrc({
@@ -129,11 +124,14 @@ export interface MuxerPipelineResult {
 /**
  * Assemble the full pipeline + per-media pad-link rules.
  *
- * For each input, we expose a named `tsdemux` and let the runner attach a
- * media-specific branch (`h264parse`/`h265parse` for video, identity-passthrough
- * for audio) per emitted pad and link the branch's src into the named muxer's
- * request sink pad. This avoids `parsebin` (which negotiates differently on
- * older GStreamer builds) and gives us deterministic per-codec parsing.
+ * For each input, we expose a named `tsdemux` and emit one `linkOnPadAdded`
+ * rule per media type. The branch itself is a parser-free `queue` — the
+ * Python pad-link runner inspects each pad's caps at pad-added time and
+ * prepends the matching parser (see `_parser_for_caps` in
+ * `gst-pipeline-runner.py`), then links the bin's src into the named
+ * muxer's request sink pad. Auto-detect by caps means one demuxer can
+ * serve mixed-codec streams (e.g. one AAC + one Opus audio pad) without
+ * per-pad config.
  *
  * Returns null when no inputs are wired — the caller should set a health
  * warning rather than start an empty pipeline.
@@ -144,12 +142,12 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // Audio queue: leaky=2 on raw demuxed audio is fine (single-frame drops
     // are inaudible).
     const audioQueue = buildLeakyQueue(bufferMs);
-    // Video queue: placed AFTER h264parse so drops land on whole access
-    // units, not mid-NAL — dropping a sub-frame buffer corrupts the AU and
-    // the receiver sees that as packet loss until the next IDR. `leaky=2
-    // max-size-buffers=2` keeps latency at ≤2 frames (~66 ms @ 30 fps) and
-    // drops a single complete frame under stall, which the decoder conceals
-    // cleanly.
+    // Video queue: placed AFTER the runner-injected parser so drops land on
+    // whole access units, not mid-NAL — dropping a sub-frame buffer corrupts
+    // the AU and the receiver sees that as packet loss until the next IDR.
+    // `leaky=2 max-size-buffers=2` keeps latency at ≤2 frames (~66 ms @ 30 fps)
+    // and drops a single complete frame under stall, which the decoder
+    // conceals cleanly.
     const videoQueue = `queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0`;
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
     const muxer = `mpegtsmux name=mux latency=0 alignment=${input.alignment}`;
@@ -161,25 +159,21 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     const pipeline = `${muxer} ! ${sink} ${branches.join(' ')}`;
 
     // Per-source pad-link rules: each tsdemux gets one rule per media type.
-    // The branch `queue ! <parser>` is wrapped into a bin and bridged to
-    // `mux` via the runner's `linkTo` mechanism. Video parser is picked from
-    // the upstream encoder's `codec`; we only emit a video rule for sources
-    // that actually arrive on a video input port — audio-only encoders don't
-    // need (and won't fire) a video rule.
+    // No codec parser in the branch — the Python pad-link runner injects the
+    // matching parser at pad-added time from the actual pad caps, which
+    // means upstream codec changes (or audio-only sources signalling video
+    // by mistake) don't take this plugin's pipeline-build path down.
     const linkOnPadAdded: PadLinkRule[] = [];
     for (let i = 0; i < input.sources.length; i++) {
         const demux = `demux_${i}`;
         const source = input.sources[i];
         if (isVideoInputPort(source.sinkPortId)) {
-            const parser = videoParserForCodec(source.codec);
-            if (parser !== null) {
-                linkOnPadAdded.push({
-                    from: demux,
-                    media: 'video',
-                    branches: [`${parser} ! ${videoQueue}`],
-                    linkTo: 'mux',
-                });
-            }
+            linkOnPadAdded.push({
+                from: demux,
+                media: 'video',
+                branches: [videoQueue],
+                linkTo: 'mux',
+            });
         }
         if (isAudioInputPort(source.sinkPortId)) {
             linkOnPadAdded.push({

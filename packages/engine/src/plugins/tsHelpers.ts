@@ -13,28 +13,9 @@ import { buildUdpSrc } from './udpHelpers.js';
 /** Default `mpegtsmux alignment`. 7 = pack 7 TS packets per UDP buffer (1316 B). */
 export const DEFAULT_MPEGTS_ALIGNMENT = 7;
 
-/**
- * Pick the per-pad video parser element (with its required props) for an
- * upstream codec. Returns null when the codec is not supported by the local
- * GStreamer build / re-mux path.
- *
- * Used by:
- *   - mpegts-muxer: pick the parser per upstream encoder's `config.codec`.
- *   - mpegts-demuxer: pick the parser per its `videoCodec` config field.
- */
-export function videoParserForCodec(codec: string | undefined): string | null {
-    switch (codec) {
-        case 'h264':
-        case undefined: // legacy upstreams that don't surface a codec — assume h264
-            return 'h264parse config-interval=1';
-        case 'h265':
-            return 'h265parse config-interval=1';
-        case 'av1':
-            return 'av1parse';
-        default:
-            return null;
-    }
-}
+// Parser selection for re-mux pipelines lives in the Python pad-link runner
+// (`gst-pipeline-runner.py`) and is driven by each pad's actual caps. The
+// TS-side codec→parser table was removed when auto-detect landed.
 
 /**
  * Format a leaky `queue` clamping its time-buffer to `bufferMs`. `leaky=2`

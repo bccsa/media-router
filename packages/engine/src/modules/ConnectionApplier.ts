@@ -32,6 +32,32 @@ export interface StoredConnection {
 }
 
 /**
+ * Topologically sort MPEG-TS connections so that for every connection
+ * `A → B`, all connections `_ → A` (i.e. connections whose sink is *this*
+ * connection's source module) come first. Applying a parent connection
+ * triggers the sink module's pipeline to start, which is what assigns the
+ * dynamic UDP ports the child connection needs.
+ *
+ * Cycles (impossible by construction for a DAG of media flow but defended
+ * against here) are placed at the end in arbitrary order.
+ */
+export function topoSortMpegtsConns(conns: StoredConnection[]): StoredConnection[] {
+    const sorted: StoredConnection[] = [];
+    const remaining = [...conns];
+    while (remaining.length > 0) {
+        const readyIdx = remaining.findIndex(
+            (c) => !remaining.some((other) => other !== c && other.sinkModuleId === c.sourceModuleId),
+        );
+        if (readyIdx === -1) {
+            sorted.push(...remaining);
+            break;
+        }
+        sorted.push(...remaining.splice(readyIdx, 1));
+    }
+    return sorted;
+}
+
+/**
  * Applies and reapplies stored connections between modules.
  * Extracted from ModuleLifecycle to keep connection logic separate from lifecycle management.
  */
@@ -51,6 +77,17 @@ export class ConnectionApplier {
      * Apply stored connections after all modules have started.
      * MPEG-TS connections are applied first (they may restart decoder pipelines),
      * then audio connections after a settle delay.
+     *
+     * MPEG-TS connections are applied in topological order: a connection
+     * `A.out → B.in` is applied before `B.out → C.in`, because applying
+     * `A.out → B.in` is what triggers B's pipeline to start and assign B's
+     * output ports. Without this ordering, a child connection fails with
+     * "encoder has no assigned port yet" (see ConnectionExecutor.executeUdp)
+     * and the per-connection retry can't recover because the unblocker
+     * (parent connection) is queued behind it in storage order. This bit
+     * the mpegts-demuxer chain: srt-input → demuxer → decoder applied the
+     * demuxer→decoder leg before srt-input→demuxer, and the decoder stayed
+     * stuck on "no encoder connected" until manual restart.
      */
     async applyConnections(
         connections: StoredConnection[],
@@ -69,28 +106,9 @@ export class ConnectionApplier {
         });
         const audioConns = connections.filter((c) => !mpegtsConns.includes(c));
 
-        for (const conn of mpegtsConns) {
-            try {
-                await this.mediaRouter.createConnection(
-                    conn.sourceModuleId,
-                    conn.sourcePortId,
-                    conn.sinkModuleId,
-                    conn.sinkPortId,
-                    conn.channelMap,
-                );
-                log.info(
-                    {
-                        source: `${conn.sourceModuleId}:${conn.sourcePortId}`,
-                        sink: `${conn.sinkModuleId}:${conn.sinkPortId}`,
-                    },
-                    'Connected',
-                );
-            } catch (err) {
-                log.error(
-                    { connectionId: conn.id },
-                    `Failed to connect: ${err instanceof Error ? err.message : err}`,
-                );
-            }
+        const ordered = topoSortMpegtsConns(mpegtsConns);
+        for (const conn of ordered) {
+            await this.connectWithRetry(conn);
         }
 
         if (mpegtsConns.length > 0 && audioConns.length > 0) {

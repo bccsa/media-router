@@ -401,10 +401,11 @@ describe('ConnectionExecutor', () => {
             expect(result).toBeNull();
         });
 
-        it('returns null when encoder has no assigned port', async () => {
+        it('throws when encoder has no assigned port — caller (ConnectionApplier) retries once the encoder is up', async () => {
             modules.set('sink-mod', makeMockModule());
-            const result = await executor.execute(makeConnection({ streamType: 'muxed/mpegts' }));
-            expect(result).toBeNull();
+            await expect(
+                executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
+            ).rejects.toThrow(/has not assigned a UDP port/);
         });
 
         it('stops and restarts a running decoder', async () => {

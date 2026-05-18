@@ -17,7 +17,6 @@ export {
     DEFAULT_MPEGTS_ALIGNMENT,
     buildLeakyQueue,
     buildTsUdpInput,
-    videoParserForCodec,
 } from './plugins/tsHelpers.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.

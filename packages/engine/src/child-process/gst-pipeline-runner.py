@@ -208,6 +208,49 @@ def _pad_caps_media(pad):
         return 'audio'
     return None
 
+# Caps-name → parser element used between `tsdemux` and a downstream `mpegtsmux`.
+# `mpegtsmux` rejects unparsed sink caps for AAC / AC-3 / MPEG-audio (no
+# `codec_data`, framed=false) and surfaces upstream as `udpsrc` emitting
+# "Internal data stream error". A per-pad parser is the load-bearing fix.
+#
+# `audio/mpeg` covers both AAC (mpegversion=2|4) and MPEG-1/2 audio (mpegversion=1).
+# `_parser_for_caps` checks `mpegversion` to pick between aacparse and mpegaudioparse.
+_PARSER_FOR_CAPS_NAME = {
+    'video/x-h264': 'h264parse config-interval=1',
+    'video/x-h265': 'h265parse config-interval=1',
+    'video/x-av1':  'av1parse',
+    'audio/x-ac3':  'ac3parse',
+    'audio/x-eac3': 'ac3parse',
+    'audio/mpeg':   None,  # disambiguated by mpegversion below
+    'audio/x-opus': None,  # tsdemux already emits muxer-ready caps
+}
+# One-shot warning suppression so unknown-codec messages don't spam the log
+# at the runner's pad-rate.
+_unknown_codec_warned = set()
+
+def _parser_for_caps(caps):
+    """Pick the parser element to prepend to a dynamic branch for a pad's caps.
+
+    Returns the parser element string (e.g. 'aacparse'), '' when the caps are
+    a recognised codec that needs no parser (Opus), or None when the codec is
+    not in our table — caller falls back to passthrough.
+    """
+    if not caps or caps.get_size() == 0:
+        return None
+    s = caps.get_structure(0)
+    name = s.get_name() or ''
+    if name == 'audio/mpeg':
+        ok, mpegversion = s.get_int('mpegversion')
+        if ok and mpegversion in (2, 4):
+            return 'aacparse'
+        if ok and mpegversion == 1:
+            return 'mpegaudioparse'
+        return None
+    if name in _PARSER_FOR_CAPS_NAME:
+        parser = _PARSER_FOR_CAPS_NAME[name]
+        return parser if parser is not None else ''
+    return None
+
 def _install_pad_link_rule(pipe, rule):
     """
     Install one `linkOnPadAdded` rule.
@@ -250,6 +293,22 @@ def _install_pad_link_rule(pipe, rule):
             return
         _pad_link_counts[rule_id] = index + 1
         branch_str = branches[index]
+        # Auto-prepend the right codec parser based on the pad's actual caps.
+        # Centralising parser selection here means JS-side branches stay
+        # codec-agnostic (`queue ! mpegtsmux ! udpsink`) and the same demuxer
+        # can serve mixed-codec streams (e.g. one AAC pad + one Opus pad)
+        # without per-pad config.
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        parser = _parser_for_caps(caps)
+        if parser is None:
+            caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else 'unknown'
+            warn_key = f"{rule_id}::{caps_name}"
+            if warn_key not in _unknown_codec_warned:
+                _unknown_codec_warned.add(warn_key)
+                emit_event({"event": "warning",
+                            "message": f"linkOnPadAdded: no parser registered for caps '{caps_name}' on rule {rule_id} — linking passthrough; mpegtsmux may refuse if codec needs framing"})
+        elif parser != '':
+            branch_str = f"{parser} ! {branch_str}"
         try:
             bin_ = Gst.parse_bin_from_description(branch_str, True)
             bin_.set_name(f"branch_{rule_id.replace('::','_')}_{index}")

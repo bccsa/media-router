@@ -178,9 +178,15 @@ export class MediaRouter {
                     );
                 }
             } catch (err) {
-                // Execution threw — remove the zombie connection
+                // Execution threw — remove the zombie connection and re-throw
+                // so callers (e.g. ConnectionApplier.connectWithRetry) see
+                // the failure and can retry. Without re-throw, transient
+                // startup races (encoder not yet started → no UDP port)
+                // turned into silently-orphaned decoders that needed manual
+                // restart to recover.
                 this.connections.delete(connId);
                 log.error({ err, connectionId: connId }, 'Failed to execute connection — removed');
+                throw err;
             }
         }
 
@@ -300,7 +306,6 @@ export class MediaRouter {
               host: string;
               port: number;
               connectionId: string;
-              codec?: string;
               channels?: number;
               sourceModuleId: string;
               sourcePortId: string;
@@ -315,13 +320,11 @@ export class MediaRouter {
                 this.udpPorts.get(conn.sourceModuleId);
             if (port !== undefined) {
                 const srcModule = this.moduleGetter?.(conn.sourceModuleId);
-                const codec = srcModule?.config?.codec as string | undefined;
                 const channels = srcModule?.config?.channels as number | undefined;
                 return {
                     host: MULTICAST_ADDR,
                     port,
                     connectionId: connId,
-                    codec,
                     channels,
                     sourceModuleId: conn.sourceModuleId,
                     sourcePortId: conn.sourcePortId,
@@ -341,7 +344,6 @@ export class MediaRouter {
         sourceModuleId: string;
         sourcePortId: string;
         sinkPortId: string;
-        codec?: string;
     }> {
         const out: Array<{
             host: string;
@@ -350,7 +352,6 @@ export class MediaRouter {
             sourceModuleId: string;
             sourcePortId: string;
             sinkPortId: string;
-            codec?: string;
         }> = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || conn.streamType !== 'muxed/mpegts') continue;
@@ -358,8 +359,6 @@ export class MediaRouter {
                 this.udpPorts.get(this.udpPortKey(conn.sourceModuleId, conn.sourcePortId)) ??
                 this.udpPorts.get(conn.sourceModuleId);
             if (port !== undefined) {
-                const srcModule = this.moduleGetter?.(conn.sourceModuleId);
-                const codec = srcModule?.config?.codec as string | undefined;
                 out.push({
                     host: MULTICAST_ADDR,
                     port,
@@ -367,7 +366,6 @@ export class MediaRouter {
                     sourceModuleId: conn.sourceModuleId,
                     sourcePortId: conn.sourcePortId,
                     sinkPortId: conn.sinkPortId,
-                    codec,
                 });
             }
         }

@@ -247,7 +247,6 @@ describe('MediaRouter', () => {
         expect(source).toBeDefined();
         expect(source!.host).toBe('239.255.0.1');
         expect(source!.port).toBe(endpoint!.port);
-        expect(source!.codec).toBe('opus');
         expect(source!.channels).toBe(2);
         expect(source!.connectionId).toBe('encoder:mpegts-out-decoder:mpegts-in');
     });
@@ -260,6 +259,32 @@ describe('MediaRouter', () => {
 
         // No encoder port assigned — should return undefined
         expect(router.getModuleUdpSource('decoder')).toBeUndefined();
+    });
+
+    it('createConnection rethrows when executor.execute throws — and removes the zombie connection', async () => {
+        // Regression guard for the connection-ordering fix: applying a
+        // child MPEG-TS connection before its parent races on the source's
+        // UDP-port assignment. ConnectionExecutor.executeUdp throws in that
+        // case; MediaRouter must surface that throw to ConnectionApplier so
+        // the retry path (connectWithRetry / topoSortMpegtsConns) can react.
+        // Previous behaviour was to swallow the error and silently delete
+        // the connection, leaving the decoder stuck on warning.
+        registerMpegtsPair(router);
+
+        // Sink module exists; source has no assigned UDP port → executeUdp throws.
+        const mockModuleGetter = vi.fn().mockImplementation((id: string) => {
+            if (id === 'decoder')
+                return { config: {}, running: false, stop: vi.fn(), start: vi.fn() };
+            return undefined;
+        });
+        router.setDependencies({} as any, mockModuleGetter);
+
+        await expect(
+            router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in'),
+        ).rejects.toThrow(/has not assigned a UDP port/);
+
+        // Zombie connection must be removed — getConnections sees nothing.
+        expect(router.getConnections()).toHaveLength(0);
     });
 
     // --- assignEncoderPort / getEncoderEndpoint ---

@@ -82,13 +82,11 @@ export class MpegTsDemuxerModule extends GstPluginBase {
         }
 
         const bufferMs = (config.bufferMs as number) ?? 50;
-        const videoCodec = (config.videoCodec as string) ?? 'h264';
         const result = buildPipeline({
             input: { host: upstream.host, port: upstream.port },
             videoOutputs,
             audioOutputs,
             bufferMs,
-            videoCodec,
         });
         if (!result) return null;
 

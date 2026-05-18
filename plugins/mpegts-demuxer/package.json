@@ -32,12 +32,6 @@
                     "default": 1,
                     "description": "Number of audio output streams"
                 },
-                "videoCodec": {
-                    "type": "string",
-                    "enum": ["h264", "h265", "av1"],
-                    "default": "h264",
-                    "description": "Video codec inside the input stream — picks the parser between tsdemux and the per-output mpegtsmux"
-                },
                 "bufferMs": {
                     "type": "number",
                     "minimum": 0,

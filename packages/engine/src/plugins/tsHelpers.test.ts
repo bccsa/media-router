@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildLeakyQueue, buildTsUdpInput, videoParserForCodec } from './tsHelpers.js';
+import { buildLeakyQueue, buildTsUdpInput } from './tsHelpers.js';
 
 describe('buildLeakyQueue', () => {
     it('emits a leaky=2 queue with byte/buffer caps disabled', () => {
@@ -12,16 +12,6 @@ describe('buildLeakyQueue', () => {
     });
     it('clamps absurdly large values to 2 seconds', () => {
         expect(buildLeakyQueue(99_999)).toContain('max-size-time=2000000000');
-    });
-});
-
-describe('videoParserForCodec', () => {
-    it('returns h264parse for h264 and undefined (legacy)', () => {
-        expect(videoParserForCodec('h264')).toContain('h264parse');
-        expect(videoParserForCodec(undefined)).toContain('h264parse');
-    });
-    it('returns null for unknown codec', () => {
-        expect(videoParserForCodec('vp9')).toBeNull();
     });
 });
 

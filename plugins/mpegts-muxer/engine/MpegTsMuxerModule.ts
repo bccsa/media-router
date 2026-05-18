@@ -10,7 +10,6 @@ import {
     isAudioInputPort,
     isVideoInputPort,
     sortSources,
-    videoParserForCodec,
     type DynamicPort,
     type UdpInputSource,
 } from './mpegtsMuxerPipeline.js';
@@ -100,24 +99,12 @@ export class MpegTsMuxerModule extends GstPluginBase {
                 sinkPortId: s.sinkPortId,
                 host: s.host,
                 port: s.port,
-                codec: s.codec,
             }));
         const sources = sortSources(muxedSources);
 
-        // Refuse the run when a connected video input uses a codec we can't
-        // re-mux — surface a health warning instead of letting the runner
-        // restart-loop on `pad link failed`.
-        const unsupported = sources.filter(
-            (s) => isVideoInputPort(s.sinkPortId) && videoParserForCodec(s.codec) === null,
-        );
-        if (unsupported.length > 0) {
-            const codecs = Array.from(new Set(unsupported.map((s) => s.codec ?? 'unknown')));
-            this.setHealth(
-                'warning',
-                `Unsupported video codec on input: ${codecs.join(', ')}`,
-            );
-            return null;
-        }
+        // Parser selection is now done by the Python pad-link runner from
+        // each pad's caps at pad-added time — unsupported codecs surface as
+        // a runner-emitted warning, not as a pre-flight pipeline refusal.
 
         const videoCount = sources.filter((s) => isVideoInputPort(s.sinkPortId)).length;
         const audioCount = sources.filter((s) => isAudioInputPort(s.sinkPortId)).length;

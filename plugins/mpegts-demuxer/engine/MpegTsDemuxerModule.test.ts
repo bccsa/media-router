@@ -25,32 +25,38 @@ describe('mpegtsDemuxerPipeline helpers', () => {
     });
 
     describe('buildOutputBranch', () => {
-        it('produces an h264parse → leaky frame-bounded queue → mpegtsmux → udpsink branch for video (queue after parser so drops land on whole frames, not mid-NAL)', () => {
-            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20, 'h264');
-            expect(s).toContain('h264parse');
+        it('produces a parser-free frame-bounded queue → mpegtsmux → udpsink branch for video (parser is injected by the runner per pad caps)', () => {
+            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20);
             expect(s).toContain('queue leaky=2 max-size-buffers=2');
-            expect(s.indexOf('h264parse')).toBeLessThan(s.indexOf('queue leaky=2 max-size-buffers=2'));
             expect(s).toContain('mpegtsmux name=mux_v0');
             expect(s).toContain('udpsink name=usink_v0 host=239.255.0.1 port=41005');
+            // alignment=7: pack 7 TS packets into one UDP datagram (1316 B —
+            // MTU-sized). For video this is right: a single frame fills many
+            // packets, so the batching adds negligible delay.
+            expect(s).toContain('alignment=7');
+            // No codec parser in the JS string — the Python pad-link runner
+            // prepends it at pad-added time based on the pad's actual caps.
+            expect(s).not.toContain('h264parse');
+            expect(s).not.toContain('h265parse');
+            expect(s).not.toContain('av1parse');
         });
-        it('produces a leaky queue → mpegtsmux → udpsink branch for audio (no parser needed)', () => {
-            const s = buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 20, 'h264');
+        it('produces a parser-free leaky queue → mpegtsmux → udpsink branch for audio (parser is injected by the runner per pad caps)', () => {
+            const s = buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 20);
             expect(s).toContain('queue leaky=2 max-size-time=20000000');
-            expect(s).not.toContain('h264parse');
             expect(s).toContain('mpegtsmux name=mux_a0');
-        });
-        it('inserts h265parse when the configured video codec is h265', () => {
-            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20, 'h265');
-            expect(s).toContain('h265parse');
-            expect(s).not.toContain('h264parse');
-        });
-        it('inserts av1parse when the configured video codec is av1', () => {
-            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20, 'av1');
-            expect(s).toContain('av1parse');
-            expect(s).not.toContain('h264parse');
+            // alignment=1 — one TS packet per UDP datagram on audio. The
+            // batched alignment=7 introduces ~40–160 ms of bursty delivery
+            // for AAC, which exceeds the decoder's late-frame tolerance and
+            // surfaces as scratchy audio. The video branch keeps alignment=7
+            // because video frames fill 7 packets fast.
+            expect(s).toContain('alignment=1');
+            expect(s).not.toContain('alignment=7');
+            expect(s).not.toContain('aacparse');
+            expect(s).not.toContain('ac3parse');
+            expect(s).not.toContain('mpegaudioparse');
         });
         it('connects mpegtsmux straight to udpsink with no leaky queue between — a leaky queue here would drop mid-stream UDP buffers and corrupt decode', () => {
-            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50, 'h264');
+            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50);
             expect(s).toMatch(/mpegtsmux name=mux_v0[^!]+! udpsink/);
         });
     });

@@ -288,11 +288,14 @@ export class ConnectionExecutor {
 
         const udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
         if (udpPort === undefined) {
-            log.warn(
-                { sourceModuleId: conn.sourceModuleId },
-                'Encoder has no assigned port — is it running?',
+            // Throw rather than silently returning null so the caller's
+            // retry path (ConnectionApplier.connectWithRetry) can re-attempt
+            // once the source module finishes starting and registers its
+            // port. The previous silent-return path left decoders stuck on
+            // the "No encoder connected" health warning until manual restart.
+            throw new Error(
+                `Encoder ${conn.sourceModuleId}:${conn.sourcePortId} has not assigned a UDP port yet`,
             );
-            return null;
         }
 
         log.info(

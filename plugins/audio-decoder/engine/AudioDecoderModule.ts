@@ -112,12 +112,14 @@ export class AudioDecoderModule extends GstPluginBase {
             return null;
         }
 
-        // Small kernel buffer (64KB) — prevents stale data accumulation on startup.
-        // The leaky queue after tsdemux handles flow control.
+        // 256 KB kernel buffer (was 64 KB). Bigger headroom against short
+        // scheduler hiccups without any latency cost — kernel UDP receive
+        // buffer is purely a back-pressure safety net, not a steady-state
+        // delay. The leaky queue after `tsdemux` still bounds latency.
         const udpSrc = buildUdpSrc({
             host: udpSource.host,
             port: udpSource.port,
-            bufferSize: 65_536,
+            bufferSize: 262_144,
         });
 
         // Plugin decides decoder based on probe result
@@ -150,7 +152,14 @@ export class AudioDecoderModule extends GstPluginBase {
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            `pulsesink device=${this.pwNodeName} sync=false slave-method=${slaveMethod} processing-deadline=40000000 buffer-time=50000 max-lateness=40000000`,
+            // `buffer-time=50000` (50 ms) — kept tight because broadcast
+            // latency budget is the dominant constraint here.
+            // `max-lateness=200000000` and `processing-deadline=100000000`
+            // were bumped up from 40 ms each: they don't add steady-state
+            // latency (pulsesink only drops/skips when an arriving frame is
+            // *already* this late) but they let pulsesink tolerate transient
+            // delivery jitter that was previously surfacing as scratchy audio.
+            `pulsesink device=${this.pwNodeName} sync=false slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=50000 max-lateness=200000000`,
         ];
         const pipeline = parts.join(' ! ');
 
