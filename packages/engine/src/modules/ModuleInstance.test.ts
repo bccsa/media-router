@@ -42,8 +42,8 @@ function createMockServices(overrides: Partial<ModuleServices> = {}): ModuleServ
             releaseAll: vi.fn().mockResolvedValue(undefined),
         } as any,
         mediaRouter: {
-            releaseEncoderPort: vi.fn(),
-            releaseAllEncoderPortsFor: vi.fn(),
+            releaseUdpPort: vi.fn(),
+            releaseAllUdpPortsFor: vi.fn(),
         } as any,
         processManager: {
             releaseAll: vi.fn().mockResolvedValue(undefined),

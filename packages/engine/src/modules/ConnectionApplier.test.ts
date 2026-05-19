@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
     ConnectionApplier,
-    topoSortMpegtsConns,
+    topoSortOrderedConns,
     type StoredConnection,
     type RawPort,
 } from './ConnectionApplier.js';
@@ -52,13 +52,14 @@ describe('ConnectionApplier', () => {
     });
 
     describe('applyConnections', () => {
-        it('applies MPEG-TS connections first', async () => {
-            const mpegtsPort: RawPort = {
+        it('applies ordered-apply connections first', async () => {
+            const orderedPort: RawPort = {
                 id: 'mpegts-out',
                 direction: 'output',
                 streamType: 'muxed/mpegts',
+                requiresOrderedApply: true,
             };
-            resolvePortsForInstance.mockReturnValue([mpegtsPort]);
+            resolvePortsForInstance.mockReturnValue([orderedPort]);
 
             const conn = makeConn({ sourcePortId: 'mpegts-out', sinkPortId: 'mpegts-in' });
             const modules = makeModules(['src-mod', 'sink-mod']);
@@ -74,14 +75,15 @@ describe('ConnectionApplier', () => {
             );
         });
 
-        it('applies audio/pcm connections after MPEG-TS with settle delay', async () => {
-            // MPEG-TS port for encoder module
-            const mpegtsPort: RawPort = {
+        it('applies non-ordered connections after ordered ones, with settle delay', async () => {
+            // Ordered-apply port for encoder module (e.g. muxed/mpegts)
+            const orderedPort: RawPort = {
                 id: 'mpegts-out',
                 direction: 'output',
                 streamType: 'muxed/mpegts',
+                requiresOrderedApply: true,
             };
-            // Audio port for audio module
+            // Plain audio port (no ordered flag) for audio module
             const audioPort: RawPort = {
                 id: 'audio-out',
                 direction: 'output',
@@ -89,7 +91,7 @@ describe('ConnectionApplier', () => {
             };
 
             resolvePortsForInstance.mockImplementation((instanceId: string) => {
-                if (instanceId === 'encoder') return [mpegtsPort];
+                if (instanceId === 'encoder') return [orderedPort];
                 if (instanceId === 'audio-src') return [audioPort];
                 return [];
             });
@@ -118,11 +120,31 @@ describe('ConnectionApplier', () => {
 
             await applier.applyConnections([audioConn, mpegtsConn], modules);
 
-            // MPEG-TS applied first, then audio
+            // Ordered first, then non-ordered
             expect(callOrder).toEqual(['encoder', 'audio-src']);
         });
 
-        it('applies only audio connections without settle delay when no MPEG-TS', async () => {
+        it('flag is opt-in: streamType=muxed/mpegts without the flag stays in the non-ordered group', async () => {
+            // Documents the decoupling: it's the flag, not the streamType,
+            // that drives ordering. A plugin can declare muxed/mpegts without
+            // ordered apply and a pw-link plugin can opt in.
+            const muxedNoFlag: RawPort = {
+                id: 'muxed-out',
+                direction: 'output',
+                streamType: 'muxed/mpegts',
+                // no requiresOrderedApply
+            };
+            resolvePortsForInstance.mockReturnValue([muxedNoFlag]);
+
+            const conn = makeConn({ sourcePortId: 'muxed-out' });
+            const modules = makeModules(['src-mod', 'sink-mod']);
+            await applier.applyConnections([conn], modules);
+
+            // It still applies (just in the non-ordered phase). One call total.
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
+        });
+
+        it('applies only non-ordered connections without settle delay when no ordered ones', async () => {
             resolvePortsForInstance.mockReturnValue([
                 { id: 'audio-out', direction: 'output', streamType: 'audio/pcm' },
             ]);
@@ -185,12 +207,26 @@ describe('ConnectionApplier', () => {
             );
         });
 
-        it('handles mixed MPEG-TS and audio with correct ordering', async () => {
+        it('handles mixed ordered and non-ordered connections with correct ordering', async () => {
             resolvePortsForInstance.mockImplementation((instanceId: string) => {
                 if (instanceId === 'enc-1')
-                    return [{ id: 'ts-out', direction: 'output', streamType: 'muxed/mpegts' }];
+                    return [
+                        {
+                            id: 'ts-out',
+                            direction: 'output',
+                            streamType: 'muxed/mpegts',
+                            requiresOrderedApply: true,
+                        },
+                    ];
                 if (instanceId === 'enc-2')
-                    return [{ id: 'ts-out2', direction: 'output', streamType: 'muxed/mpegts' }];
+                    return [
+                        {
+                            id: 'ts-out2',
+                            direction: 'output',
+                            streamType: 'muxed/mpegts',
+                            requiresOrderedApply: true,
+                        },
+                    ];
                 if (instanceId === 'audio-1')
                     return [{ id: 'a-out', direction: 'output', streamType: 'audio/pcm' }];
                 return [];
@@ -240,7 +276,7 @@ describe('ConnectionApplier', () => {
         });
     });
 
-    describe('topoSortMpegtsConns', () => {
+    describe('topoSortOrderedConns', () => {
         it('orders parent before child so the parent apply triggers the sink-module restart that assigns the child connection\'s source port', () => {
             // Chain: srt → demuxer → decoder
             // Storage order is reversed (decoder→? first, parent last) — sort must fix it.
@@ -254,7 +290,7 @@ describe('ConnectionApplier', () => {
                 sourceModuleId: 'demuxer',
                 sinkModuleId: 'decoder',
             });
-            const sorted = topoSortMpegtsConns([child, parent]);
+            const sorted = topoSortOrderedConns([child, parent]);
             expect(sorted.map((c) => c.id)).toEqual(['parent', 'child']);
         });
 
@@ -264,7 +300,7 @@ describe('ConnectionApplier', () => {
             const b = makeConn({ id: 'b', sourceModuleId: 'demuxer', sinkModuleId: 'muxer' });
             const c = makeConn({ id: 'c', sourceModuleId: 'muxer', sinkModuleId: 'decoder' });
             // Worst-case input order
-            const sorted = topoSortMpegtsConns([c, b, a]);
+            const sorted = topoSortOrderedConns([c, b, a]);
             expect(sorted.map((x) => x.id)).toEqual(['a', 'b', 'c']);
         });
 
@@ -272,20 +308,20 @@ describe('ConnectionApplier', () => {
             // Two disjoint chains: srt1→dec1 and srt2→dec2
             const x = makeConn({ id: 'x', sourceModuleId: 'srt1', sinkModuleId: 'dec1' });
             const y = makeConn({ id: 'y', sourceModuleId: 'srt2', sinkModuleId: 'dec2' });
-            const sorted = topoSortMpegtsConns([x, y]);
+            const sorted = topoSortOrderedConns([x, y]);
             // Both are roots (sources are not sinks of anything else) — first-found wins
             expect(sorted.map((c) => c.id)).toEqual(['x', 'y']);
         });
 
         it('falls back to input order for an empty list', () => {
-            expect(topoSortMpegtsConns([])).toEqual([]);
+            expect(topoSortOrderedConns([])).toEqual([]);
         });
 
         it('does not stall on cycles — places cyclic members at the tail', () => {
             // Pathological: A.sink → B, B.sink → A (would imply media flowing in a circle)
             const a = makeConn({ id: 'a', sourceModuleId: 'm1', sinkModuleId: 'm2' });
             const b = makeConn({ id: 'b', sourceModuleId: 'm2', sinkModuleId: 'm1' });
-            const sorted = topoSortMpegtsConns([a, b]);
+            const sorted = topoSortOrderedConns([a, b]);
             expect(sorted).toHaveLength(2);
         });
     });

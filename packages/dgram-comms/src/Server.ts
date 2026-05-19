@@ -17,6 +17,8 @@ export interface ServerOptions {
     connectionTimeout?: number;
     /** Max missed keepalives before disconnect (default 3). */
     missedKeepaliveThreshold?: number;
+    /** Minimum ms between repeated "No key" / "Decryption failed" warnings per client (default 30_000). */
+    rejectLogIntervalMs?: number;
 }
 
 /**
@@ -40,6 +42,17 @@ export class Server extends EventEmitter {
     /** Map clientID → socketID for targeted sends. */
     private clientToSocket = new Map<string, string>();
 
+    /**
+     * Per-clientID rate limit for "No key" / "Decryption failed" warnings.
+     * Stale or unauthorised clients can send at packet rate; without throttling
+     * they fill the journal — seen in production where one stale client
+     * produced 100+ warnings/sec until the upstream node was restarted.
+     * Tracks the timestamp of the last log and how many were suppressed
+     * since, so the next allowed log can include the suppressed count.
+     */
+    private rejectLogState = new Map<string, { lastLog: number; suppressed: number }>();
+    private readonly rejectLogIntervalMs: number;
+
     constructor(options: ServerOptions = {}) {
         super();
         this.port = options.port ?? 3000;
@@ -47,6 +60,7 @@ export class Server extends EventEmitter {
         this.encryptionKeys = { ...options.encryptionKeys };
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
+        this.rejectLogIntervalMs = options.rejectLogIntervalMs ?? 30_000;
 
         this.udpSocket = dgram.createSocket('udp4');
         this.reassembler = new Reassembler(this.connectionTimeout * 2);
@@ -54,6 +68,28 @@ export class Server extends EventEmitter {
         this.udpSocket.on('error', (err) => {
             console.error(`[dgram-comms Server] error: ${err.message}`);
         });
+    }
+
+    /**
+     * Throttle repeated rejection warnings for the same client. Returns the
+     * suppressed count to inline in the log message, or `null` if the log
+     * should be skipped entirely.
+     */
+    private claimRejectLog(clientID: string): { suppressed: number } | null {
+        const now = Date.now();
+        const state = this.rejectLogState.get(clientID);
+        if (!state) {
+            this.rejectLogState.set(clientID, { lastLog: now, suppressed: 0 });
+            return { suppressed: 0 };
+        }
+        if (now - state.lastLog < this.rejectLogIntervalMs) {
+            state.suppressed += 1;
+            return null;
+        }
+        const suppressed = state.suppressed;
+        state.lastLog = now;
+        state.suppressed = 0;
+        return { suppressed };
     }
 
     /** Start listening on the configured port. */
@@ -73,15 +109,25 @@ export class Server extends EventEmitter {
         }
         this.sockets.clear();
         this.clientToSocket.clear();
+        this.rejectLogState.clear();
         this.reassembler.destroy();
         return new Promise((resolve) => {
             this.udpSocket.close(() => resolve());
         });
     }
 
-    /** Update encryption keys at runtime (e.g. when engines are added/removed). */
+    /**
+     * Update encryption keys at runtime (e.g. when engines are added/removed).
+     * Clears any throttle state for clients that now have a registered key —
+     * if they were being rejected before and the operator just authorised
+     * them, the next genuine rejection (e.g. wrong password) deserves a
+     * fresh log line rather than being silently swallowed.
+     */
     refreshEncryptionKeys(keys: Record<string, string>): void {
         this.encryptionKeys = { ...keys };
+        for (const clientID of Object.keys(keys)) {
+            this.rejectLogState.delete(clientID);
+        }
     }
 
     /** Send a message to all connected clients. */
@@ -153,12 +199,26 @@ export class Server extends EventEmitter {
         if (clientID && iv && typeof data === 'string') {
             const key = this.encryptionKeys[clientID];
             if (!key) {
-                console.warn(`[dgram-comms Server] No key for client: ${clientID}`);
+                const claim = this.claimRejectLog(clientID);
+                if (claim) {
+                    const suffix = claim.suppressed > 0
+                        ? ` (suppressed ${claim.suppressed} similar in last ${this.rejectLogIntervalMs}ms)`
+                        : '';
+                    console.warn(`[dgram-comms Server] No key for client: ${clientID}${suffix}`);
+                }
                 return;
             }
             const decrypted = decrypt(data, iv, key);
             if (!decrypted) {
-                console.warn(`[dgram-comms Server] Decryption failed for client: ${clientID}`);
+                const claim = this.claimRejectLog(clientID);
+                if (claim) {
+                    const suffix = claim.suppressed > 0
+                        ? ` (suppressed ${claim.suppressed} similar in last ${this.rejectLogIntervalMs}ms)`
+                        : '';
+                    console.warn(
+                        `[dgram-comms Server] Decryption failed for client: ${clientID}${suffix}`,
+                    );
+                }
                 return;
             }
             let decryptedJson: unknown;

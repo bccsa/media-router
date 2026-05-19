@@ -54,7 +54,12 @@ export class Socket extends EventEmitter {
     private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
     private keepAliveTime = Date.now();
     private missedKeepalives = 0;
-    private destroyed = false;
+    private _destroyed = false;
+
+    /** True after `disconnect()` ran — no further sends or events should occur. */
+    get destroyed(): boolean {
+        return this._destroyed;
+    }
 
     /** Pending guaranteed-delivery messages awaiting ACK. */
     private waitingAck = new Map<number, ReturnType<typeof setTimeout>>();
@@ -185,8 +190,15 @@ export class Socket extends EventEmitter {
 
     /**
      * Called by Server/Client when a reassembled, parsed message arrives for this socket.
+     *
+     * Bails out on destroyed sockets: an in-flight UDP packet may arrive after
+     * `disconnect()` (kernel buffer, server-restart 'connected' reply) and
+     * without this guard it would re-emit `connected` from a dead Socket,
+     * leaving the higher level thinking it's online while every subsequent
+     * `send()` drops with "socket destroyed".
      */
     handleMessage(msg: DgramMessage): void {
+        if (this._destroyed) return;
         this.resetKeepalive();
 
         switch (msg.type) {
@@ -284,8 +296,8 @@ export class Socket extends EventEmitter {
     // ---- Lifecycle -----------------------------------------------------------
 
     disconnect(): void {
-        if (this.destroyed) return;
-        this.destroyed = true;
+        if (this._destroyed) return;
+        this._destroyed = true;
         this.connected = false;
 
         if (this.keepAliveTimer) {

@@ -237,7 +237,7 @@ describe('MediaRouter', () => {
         router.setDependencies({} as any, mockModuleGetter);
 
         // Assign an encoder port
-        const endpoint = router.assignEncoderPort('encoder');
+        const endpoint = router.assignUdpPort('encoder');
         expect(endpoint).not.toBeNull();
 
         // Create the MPEG-TS connection
@@ -287,66 +287,66 @@ describe('MediaRouter', () => {
         expect(router.getConnections()).toHaveLength(0);
     });
 
-    // --- assignEncoderPort / getEncoderEndpoint ---
+    // --- assignUdpPort / getUdpEndpoint ---
 
-    it('assignEncoderPort allocates a port with multicast address', () => {
-        const result = router.assignEncoderPort('enc-1');
+    it('assignUdpPort allocates a port with multicast address', () => {
+        const result = router.assignUdpPort('enc-1');
         expect(result).not.toBeNull();
         expect(result!.host).toBe('239.255.0.1');
         expect(typeof result!.port).toBe('number');
     });
 
-    it('assignEncoderPort returns same port for same module', () => {
-        const first = router.assignEncoderPort('enc-1');
-        const second = router.assignEncoderPort('enc-1');
+    it('assignUdpPort returns same port for same module', () => {
+        const first = router.assignUdpPort('enc-1');
+        const second = router.assignUdpPort('enc-1');
         expect(first).toEqual(second);
     });
 
-    it('getEncoderEndpoint returns undefined for unallocated module', () => {
-        expect(router.getEncoderEndpoint('unknown')).toBeUndefined();
+    it('getUdpEndpoint returns undefined for unallocated module', () => {
+        expect(router.getUdpEndpoint('unknown')).toBeUndefined();
     });
 
-    it('getEncoderEndpoint returns endpoint after assignment', () => {
-        router.assignEncoderPort('enc-1');
-        const endpoint = router.getEncoderEndpoint('enc-1');
+    it('getUdpEndpoint returns endpoint after assignment', () => {
+        router.assignUdpPort('enc-1');
+        const endpoint = router.getUdpEndpoint('enc-1');
         expect(endpoint).toBeDefined();
         expect(endpoint!.host).toBe('239.255.0.1');
     });
 
-    it('releaseEncoderPort frees the port', () => {
-        router.assignEncoderPort('enc-1');
-        router.releaseEncoderPort('enc-1');
-        expect(router.getEncoderEndpoint('enc-1')).toBeUndefined();
+    it('releaseUdpPort frees the port', () => {
+        router.assignUdpPort('enc-1');
+        router.releaseUdpPort('enc-1');
+        expect(router.getUdpEndpoint('enc-1')).toBeUndefined();
     });
 
     // --- per-port UDP allocation (multi-output mpeg-ts plugins) ---
 
-    it('assignEncoderPort with portId allocates a separate slot per output port', () => {
-        const a = router.assignEncoderPort('demux-1', 'out-0');
-        const b = router.assignEncoderPort('demux-1', 'out-1');
-        const primary = router.assignEncoderPort('demux-1');
+    it('assignUdpPort with portId allocates a separate slot per output port', () => {
+        const a = router.assignUdpPort('demux-1', 'out-0');
+        const b = router.assignUdpPort('demux-1', 'out-1');
+        const primary = router.assignUdpPort('demux-1');
         expect(a).not.toEqual(b);
         expect(a).not.toEqual(primary);
         expect(b).not.toEqual(primary);
     });
 
-    it('getEncoderEndpoint resolves per-port slot independently from the bare module key', () => {
-        router.assignEncoderPort('demux-1', 'out-0');
-        expect(router.getEncoderEndpoint('demux-1')).toBeUndefined();
-        expect(router.getEncoderEndpoint('demux-1', 'out-0')).toBeDefined();
+    it('getUdpEndpoint resolves per-port slot independently from the bare module key', () => {
+        router.assignUdpPort('demux-1', 'out-0');
+        expect(router.getUdpEndpoint('demux-1')).toBeUndefined();
+        expect(router.getUdpEndpoint('demux-1', 'out-0')).toBeDefined();
     });
 
-    it('releaseAllEncoderPortsFor sweeps the bare slot and every per-port sub-slot', () => {
-        router.assignEncoderPort('demux-1');
-        router.assignEncoderPort('demux-1', 'out-0');
-        router.assignEncoderPort('demux-1', 'out-1');
-        router.assignEncoderPort('other-mod');
-        router.releaseAllEncoderPortsFor('demux-1');
-        expect(router.getEncoderEndpoint('demux-1')).toBeUndefined();
-        expect(router.getEncoderEndpoint('demux-1', 'out-0')).toBeUndefined();
-        expect(router.getEncoderEndpoint('demux-1', 'out-1')).toBeUndefined();
+    it('releaseAllUdpPortsFor sweeps the bare slot and every per-port sub-slot', () => {
+        router.assignUdpPort('demux-1');
+        router.assignUdpPort('demux-1', 'out-0');
+        router.assignUdpPort('demux-1', 'out-1');
+        router.assignUdpPort('other-mod');
+        router.releaseAllUdpPortsFor('demux-1');
+        expect(router.getUdpEndpoint('demux-1')).toBeUndefined();
+        expect(router.getUdpEndpoint('demux-1', 'out-0')).toBeUndefined();
+        expect(router.getUdpEndpoint('demux-1', 'out-1')).toBeUndefined();
         // unrelated modules untouched
-        expect(router.getEncoderEndpoint('other-mod')).toBeDefined();
+        expect(router.getUdpEndpoint('other-mod')).toBeDefined();
     });
 
     it('getModuleUdpSource prefers the per-port slot when the source has one allocated', async () => {
@@ -358,22 +358,22 @@ describe('MediaRouter', () => {
         router.registerPorts('player-1', [
             { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
         ]);
-        router.assignEncoderPort('demux-1', 'out-0');
-        router.assignEncoderPort('demux-1', 'out-1');
+        router.assignUdpPort('demux-1', 'out-0');
+        router.assignUdpPort('demux-1', 'out-1');
         await router.createConnection('demux-1', 'out-1', 'player-1', 'mpegts-in');
         const src = router.getModuleUdpSource('player-1');
         expect(src).toBeDefined();
         expect(src!.sourcePortId).toBe('out-1');
-        expect(src!.port).toBe(router.getEncoderEndpoint('demux-1', 'out-1')!.port);
+        expect(src!.port).toBe(router.getUdpEndpoint('demux-1', 'out-1')!.port);
     });
 
     it('getModuleUdpSource falls back to module-level allocation for legacy single-port encoders', async () => {
         registerMpegtsPair(router);
-        router.assignEncoderPort('encoder');
+        router.assignUdpPort('encoder');
         await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
         const src = router.getModuleUdpSource('decoder');
         expect(src).toBeDefined();
-        expect(src!.port).toBe(router.getEncoderEndpoint('encoder')!.port);
+        expect(src!.port).toBe(router.getUdpEndpoint('encoder')!.port);
     });
 
     it('getModuleUdpSources returns one entry per connected muxed/mpegts source', async () => {
@@ -388,8 +388,8 @@ describe('MediaRouter', () => {
             { id: 'in-0', direction: 'input', streamType: 'muxed/mpegts', label: 'In0' },
             { id: 'in-1', direction: 'input', streamType: 'muxed/mpegts', label: 'In1' },
         ]);
-        router.assignEncoderPort('enc-a');
-        router.assignEncoderPort('enc-b');
+        router.assignUdpPort('enc-a');
+        router.assignUdpPort('enc-b');
         await router.createConnection('enc-a', 'mpegts-out', 'mux-1', 'in-0');
         await router.createConnection('enc-b', 'mpegts-out', 'mux-1', 'in-1');
         const sources = router.getModuleUdpSources('mux-1');

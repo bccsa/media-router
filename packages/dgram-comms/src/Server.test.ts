@@ -244,6 +244,61 @@ describe('Server', () => {
         expect(server['getSocketByDataSocketID']('sock-1')).toBe(mockSocket);
     });
 
+    // ---- Reject-log throttle ----
+
+    it('claimRejectLog allows the first call and reports zero suppressed', () => {
+        server = new Server();
+        const claim = server['claimRejectLog']('stale-client');
+        expect(claim).toEqual({ suppressed: 0 });
+    });
+
+    it('claimRejectLog suppresses repeated calls within the window', () => {
+        server = new Server({ rejectLogIntervalMs: 30_000 });
+        expect(server['claimRejectLog']('stale-client')).toEqual({ suppressed: 0 });
+        for (let i = 0; i < 5; i++) {
+            expect(server['claimRejectLog']('stale-client')).toBeNull();
+        }
+        // Internal state tracks the suppressed count
+        expect(server['rejectLogState'].get('stale-client')?.suppressed).toBe(5);
+    });
+
+    it('claimRejectLog re-emits after the window with the suppressed count', () => {
+        server = new Server({ rejectLogIntervalMs: 30_000 });
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-05-18T10:00:00Z'));
+        expect(server['claimRejectLog']('stale-client')).toEqual({ suppressed: 0 });
+        for (let i = 0; i < 7; i++) server['claimRejectLog']('stale-client');
+        // Advance past the throttle window
+        vi.setSystemTime(new Date('2026-05-18T10:00:31Z'));
+        expect(server['claimRejectLog']('stale-client')).toEqual({ suppressed: 7 });
+        // After the allowed log, the counter resets
+        expect(server['rejectLogState'].get('stale-client')?.suppressed).toBe(0);
+        vi.useRealTimers();
+    });
+
+    it('claimRejectLog tracks clients independently', () => {
+        server = new Server({ rejectLogIntervalMs: 30_000 });
+        expect(server['claimRejectLog']('client-a')).toEqual({ suppressed: 0 });
+        expect(server['claimRejectLog']('client-b')).toEqual({ suppressed: 0 });
+        expect(server['claimRejectLog']('client-a')).toBeNull();
+        expect(server['claimRejectLog']('client-b')).toBeNull();
+    });
+
+    it('refreshEncryptionKeys clears throttle state for newly-registered clients', () => {
+        server = new Server({ rejectLogIntervalMs: 30_000 });
+        server['claimRejectLog']('engine-1');
+        expect(server['rejectLogState'].has('engine-1')).toBe(true);
+        server.refreshEncryptionKeys({ 'engine-1': 'secret' });
+        expect(server['rejectLogState'].has('engine-1')).toBe(false);
+    });
+
+    it('refreshEncryptionKeys leaves throttle state for clients still unknown', () => {
+        server = new Server({ rejectLogIntervalMs: 30_000 });
+        server['claimRejectLog']('stale-client');
+        server.refreshEncryptionKeys({ 'engine-1': 'secret' });
+        expect(server['rejectLogState'].has('stale-client')).toBe(true);
+    });
+
     // ---- stop ----
 
     it('stop clears all sockets and maps', async () => {

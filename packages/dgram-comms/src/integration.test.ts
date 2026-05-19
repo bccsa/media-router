@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { Server } from './Server.js';
 import { Client } from './Client.js';
 
@@ -8,7 +8,11 @@ describe('Server + Client integration', () => {
 
     afterEach(async () => {
         client?.destroy();
-        await server?.stop();
+        client = undefined as unknown as Client;
+        if (server) {
+            await server.stop();
+            server = undefined as unknown as Server;
+        }
     });
 
     it('client connects to server and exchanges encrypted messages', async () => {
@@ -139,4 +143,100 @@ describe('Server + Client integration', () => {
 
         expect(msg).toEqual({ health: 'ok', running: true });
     }, 10000);
+
+    it('client recovers when a server restart kills its path socket', async () => {
+        // Regression: a missed-keepalive death used to leave the path's
+        // Socket permanently destroyed — every subsequent `send` dropped with
+        // "socket destroyed, dropping message topic=..." even after a fresh
+        // server came up on the same port. The path-level reconnect now
+        // replaces the dead Socket so the client recovers on its own.
+        const password = 'restart-secret';
+
+        const startServer = async () =>
+            new Promise<{ s: Server; port: number }>((resolve) => {
+                const s = new Server({
+                    port: 0,
+                    encryptionKeys: { 'engine-r': password },
+                });
+                s['udpSocket'].bind(0, '127.0.0.1', () => {
+                    s['udpSocket'].on('message', (msg: Buffer, rinfo: unknown) => {
+                        s['onPacket'](msg, rinfo as Parameters<typeof s['onPacket']>[1]);
+                    });
+                    resolve({ s, port: s['udpSocket'].address().port });
+                });
+            });
+
+        // Start server, connect client, then forcibly destroy the client-side
+        // Socket to simulate the missed-keepalive watchdog firing.
+        const first = await startServer();
+        server = first.s;
+        client = new Client({
+            clientId: 'engine-r',
+            paths: [{ host: '127.0.0.1', port: first.port }],
+            encryptionKey: password,
+            connectionTimeout: 2000,
+        });
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('initial connect timeout')), 3000);
+            client.on('connected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+
+        // Tear down the underlying Socket the way the watchdog does — this is
+        // the state the bug fix is meant to recover from.
+        const ps = (client as unknown as { pathStates: Array<{ socket: { disconnect(): void; destroyed: boolean } }> })
+            .pathStates[0];
+        ps.socket.disconnect();
+        expect(ps.socket.destroyed).toBe(true);
+
+        // Wait one reconnect tick (1s). connectPath should now notice the
+        // dead Socket, replace it, and the new Socket should re-handshake
+        // with the (still-running) server.
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('recovery timeout')), 5000);
+            client.once('connected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+
+        // The replacement Socket should NOT be the dead one.
+        const psAfter = (client as unknown as { pathStates: Array<{ socket: { destroyed: boolean } }> })
+            .pathStates[0];
+        expect(psAfter.socket.destroyed).toBe(false);
+    }, 15000);
+
+    it('destroyed Socket ignores in-flight `connected` packets', async () => {
+        // Regression: Socket.handleMessage used to process incoming messages
+        // even after `disconnect()`, so a delayed 'connected' reply (e.g.
+        // arriving after the watchdog tore the socket down) would re-emit
+        // 'connected' from a dead Socket. The higher level would then think
+        // it was online while every send dropped with "socket destroyed".
+        const { Socket: SocketCls } = await import('./Socket.js');
+        const dgramMod = await import('dgram');
+        const udp = dgramMod.createSocket('udp4');
+        const s = new SocketCls({
+            port: 1,
+            address: '127.0.0.1',
+            udpSocket: udp,
+            isClient: true,
+            clientID: 'test',
+            encryptionKey: 'k',
+            connectionTimeout: 500,
+        });
+        s.disconnect();
+
+        const spy = vi.fn();
+        s.on('connected', spy);
+        s.handleMessage({
+            type: 'connected',
+            clientID: 'test',
+            data: { socketID: 'x' },
+        } as Parameters<typeof s.handleMessage>[0]);
+        expect(spy).not.toHaveBeenCalled();
+        expect(s.connected).toBe(false);
+        udp.close();
+    });
 });

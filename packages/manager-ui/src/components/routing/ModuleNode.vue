@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch, onUnmounted, type Ref, type Component } from 'vue';
-import { Handle, Position, useVueFlow } from '@vue-flow/core';
+import { computed, inject, ref, type Ref } from 'vue';
+import { Handle, Position } from '@vue-flow/core';
 import type { ModuleState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
 import { useVuStore } from '@/stores/vuMeters';
 import MrVuMeter from './MrVuMeter.vue';
+import ModuleNodeStatsModal from './ModuleNodeStatsModal.vue';
 import { getLucideIcon } from '@/composables/useLucideIcons';
 import {
     getInterlockForModule,
@@ -13,8 +14,12 @@ import {
 } from '@/composables/useInterlocks';
 import { getFaceComponent } from '@/composables/usePluginFaceComponent';
 import { patch } from '@/composables/usePatch';
+import { useResizableCard } from '@/composables/useResizableCard';
+import { useLongPress } from '@/composables/useLongPress';
 
 const props = defineProps<{ data: ModuleState }>();
+
+const emit = defineEmits<{ longpress: [event: TouchEvent] }>();
 
 // Engine ID injected by RoutingEditor
 const engineId = inject<string>('engineId', '');
@@ -41,15 +46,6 @@ const isDimmed = computed(
 
 const showStats = ref(false);
 
-// Close stats modal on Escape
-function onStatsKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') showStats.value = false;
-}
-watch(showStats, (open) => {
-    if (open) document.addEventListener('keydown', onStatsKeydown);
-    else document.removeEventListener('keydown', onStatsKeydown);
-});
-onUnmounted(() => document.removeEventListener('keydown', onStatsKeydown));
 // Merge static sections (from plugin manifest) with dynamic sections (from runtime)
 const allStatusSections = computed(() => {
     const staticSections = props.data.statusSections ?? [];
@@ -65,91 +61,19 @@ const faceWidgets = computed(() => props.data.faceWidgets ?? []);
 // still work alongside for simpler cases.
 const pluginFace = computed(() => getFaceComponent(props.data.pluginId));
 
-// --- Resizable card (opt-in per plugin) ---
-//
-// When `resizable` is truthy, the user can drag the bottom-right grip to
-// resize the card. Size is stored per-instance at `/modules/<id>/size` and
-// patched on drag end. Bounds come from the plugin manifest (or sensible
-// defaults). Non-resizable plugins use a fixed width + content-driven height.
+const inputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'input') ?? []);
+const outputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'output') ?? []);
 
-const DEFAULT_WIDTH = 200;
-const DEFAULT_BOUNDS = { minWidth: 160, minHeight: 80, maxWidth: 600, maxHeight: 600 };
-
-const resizable = computed(() => !!props.data.resizable);
-const bounds = computed(() => {
-    const r = props.data.resizable;
-    const custom = typeof r === 'object' && r !== null ? r : {};
-    return { ...DEFAULT_BOUNDS, ...custom };
+// Resizable card composable handles drag math + size persistence
+const { resizable, cardWidth, cardHeight, cardMinHeight, onResizeStart } = useResizableCard({
+    moduleId: computed(() => props.data.instanceId),
+    resizable: computed(() => props.data.resizable),
+    storedSize: computed(() => props.data.size),
+    portCount: computed(() => Math.max(inputPorts.value.length, outputPorts.value.length)),
+    onPersist: (size) => {
+        if (engineId) patch.moduleSize(engineId, props.data.instanceId, size);
+    },
 });
-
-// Optimistic local override while the user drags — replaces the stored size
-// until drag-end persists. Falls back to the stored size, then the default.
-const dragSize = ref<{ width: number; height: number } | null>(null);
-const cardWidth = computed(() => {
-    if (dragSize.value) return dragSize.value.width;
-    return props.data.size?.width ?? DEFAULT_WIDTH;
-});
-const cardHeight = computed(() => {
-    if (dragSize.value) return dragSize.value.height;
-    if (props.data.size?.height != null) return props.data.size.height;
-    // Resizable plugins need an explicit starting height so the card isn't
-    // content-driven. Without it, text-size changes (e.g. the note plugin's
-    // auto-fit) silently grow the card. Fall back to the manifest's minHeight.
-    return resizable.value ? bounds.value.minHeight : undefined;
-});
-// The non-resizable floor: enough space for the declared ports.
-const cardMinHeight = computed(
-    () => 36 + Math.max(inputPorts.value.length, outputPorts.value.length, 1) * 24 + 8,
-);
-
-function clamp(n: number, min: number, max: number) {
-    return Math.max(min, Math.min(max, n));
-}
-
-const { updateNodeInternals } = useVueFlow();
-
-// When the stored size changes (e.g. patched from another browser), tell
-// Vue Flow to re-measure so edge anchors follow.
-watch(
-    () => [props.data.size?.width, props.data.size?.height],
-    () => updateNodeInternals([props.data.instanceId]),
-);
-
-function onResizeStart(event: MouseEvent | TouchEvent) {
-    const startX = 'touches' in event ? event.touches[0].clientX : event.clientX;
-    const startY = 'touches' in event ? event.touches[0].clientY : event.clientY;
-    const startW = cardWidth.value;
-    const startH = cardHeight.value ?? cardMinHeight.value;
-    const b = bounds.value;
-
-    const move = (e: MouseEvent | TouchEvent) => {
-        const cx = 'touches' in e ? e.touches[0].clientX : e.clientX;
-        const cy = 'touches' in e ? e.touches[0].clientY : e.clientY;
-        dragSize.value = {
-            width: clamp(startW + (cx - startX), b.minWidth!, b.maxWidth!),
-            height: clamp(startH + (cy - startY), b.minHeight!, b.maxHeight!),
-        };
-        // Nudge Vue Flow so edge anchor points follow the resized node live.
-        updateNodeInternals([props.data.instanceId]);
-    };
-    const end = () => {
-        const final = dragSize.value;
-        window.removeEventListener('mousemove', move);
-        window.removeEventListener('mouseup', end);
-        window.removeEventListener('touchmove', move);
-        window.removeEventListener('touchend', end);
-        // patch.moduleSize applies optimistically (synchronous), so by the
-        // time we clear `dragSize`, props.data.size already matches `final` —
-        // cardWidth/cardHeight fall through to the stored size, no snap-back.
-        if (final && engineId) patch.moduleSize(engineId, props.data.instanceId, final);
-        dragSize.value = null;
-        updateNodeInternals([props.data.instanceId]);
-    };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', end);
-    window.addEventListener('touchmove', move, { passive: false });
-    window.addEventListener('touchend', end);
-}
 
 /** Interpolate a status-line template: "{key}" replaced with statusData values. */
 function interpolateFaceWidget(widget: Record<string, unknown>): string {
@@ -185,9 +109,6 @@ function getFaceWidgetValue(widget: Record<string, unknown>): number {
 
 const hasStats = computed(() => allStatusSections.value.length > 0);
 
-const inputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'input') ?? []);
-const outputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'output') ?? []);
-
 // Show VU meters if the module has any audio/pcm ports
 const hasAudio = computed(
     () => props.data.ports?.some((p) => p.streamType === 'audio/pcm') ?? false,
@@ -200,34 +121,7 @@ const vuChannels = computed(() => {
 });
 
 // Long-press for mobile context menu
-const emit = defineEmits<{ longpress: [event: TouchEvent] }>();
-let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-
-function onTouchStart(e: TouchEvent) {
-    longPressTimer = setTimeout(() => {
-        longPressTimer = null;
-        emit('longpress', e);
-    }, 500);
-}
-function onTouchEnd() {
-    if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-    }
-}
-function onTouchMove() {
-    if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-    }
-}
-
-onUnmounted(() => {
-    if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-    }
-});
+const { onTouchStart, onTouchEnd, onTouchMove } = useLongPress((e) => emit('longpress', e));
 
 /**
  * Resolve a Lucide icon component by name.
@@ -262,13 +156,6 @@ const portColorMap: Record<string, string> = {
     'text/subtitle': '#9b59b6',
     'data/generic': '#7f8c8d',
 };
-
-function formatStatusValue(value: unknown, unit?: string): string {
-    if (value === undefined || value === null) return '—';
-    if (typeof value === 'object') return JSON.stringify(value);
-    const str = typeof value === 'number' ? value.toLocaleString() : String(value);
-    return unit ? `${str} ${unit}` : str;
-}
 </script>
 
 <template>
@@ -409,79 +296,14 @@ function formatStatusValue(value: unknown, unit?: string): string {
         </div>
 
         <!-- Stats modal (full overlay) -->
-        <Teleport to="body">
-            <div
-                v-if="showStats && hasStats"
-                class="fixed inset-0 flex items-center justify-center"
-                style="z-index: 10000"
-            >
-                <div
-                    class="absolute inset-0 bg-black/50 backdrop-blur-sm"
-                    @click="showStats = false"
-                />
-                <div
-                    class="relative w-full max-w-lg max-h-[80vh] overflow-auto rounded-xl shadow-2xl mx-4 bg-card border border-border"
-                >
-                    <!-- Header -->
-                    <div
-                        class="flex items-center justify-between px-5 py-3 sticky top-0 bg-card border-b border-border-alt"
-                    >
-                        <div class="flex items-center gap-2">
-                            <component
-                                v-if="iconComponent"
-                                :is="iconComponent"
-                                :size="18"
-                                :color="moduleColor ?? 'var(--text-muted)'"
-                            />
-                            <h2 class="text-sm font-semibold text-foreground">
-                                {{ data.displayName }} — Stats
-                            </h2>
-                        </div>
-                        <button
-                            @click="showStats = false"
-                            class="p-1 rounded-md hover:bg-white/10 text-muted"
-                        >
-                            <svg
-                                class="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M6 18L18 6M6 6l12 12"
-                                />
-                            </svg>
-                        </button>
-                    </div>
-                    <!-- Sections (static from manifest + dynamic from runtime) -->
-                    <div class="p-5 space-y-4">
-                        <div v-for="section in allStatusSections" :key="section.id">
-                            <h3
-                                class="text-xs font-semibold uppercase tracking-wide mb-2 text-muted"
-                            >
-                                {{ section.label }}
-                            </h3>
-                            <div class="grid grid-cols-2 gap-x-4 gap-y-1">
-                                <template v-for="field in section.fields" :key="field.key">
-                                    <span class="text-xs text-muted">{{ field.label }}</span>
-                                    <span class="text-xs tabular-nums text-right text-foreground">
-                                        {{
-                                            formatStatusValue(
-                                                data.statusData?.[section.id]?.[field.key],
-                                                field.unit,
-                                            )
-                                        }}
-                                    </span>
-                                </template>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </Teleport>
+        <ModuleNodeStatsModal
+            v-model:open="showStats"
+            :display-name="data.displayName"
+            :icon-component="iconComponent"
+            :icon-color="moduleColor"
+            :sections="allStatusSections"
+            :status-data="data.statusData"
+        />
 
         <!-- Badges -->
         <div v-if="moduleBadges.length > 0" class="px-3 py-0.5 flex flex-wrap gap-1">

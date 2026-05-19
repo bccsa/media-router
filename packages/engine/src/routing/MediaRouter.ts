@@ -5,6 +5,9 @@ import type { ModuleInstance } from '../modules/ModuleInstance.js';
 import { UdpPortManager } from './UdpPortManager.js';
 import { PortRegistry } from './PortRegistry.js';
 import { ConnectionExecutor } from './ConnectionExecutor.js';
+import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
+import { PcmAudioExecutor } from './PcmAudioExecutor.js';
+import { MpegTsUdpExecutor } from './MpegTsUdpExecutor.js';
 
 const log = createLogger('MediaRouter');
 
@@ -23,8 +26,7 @@ export interface Connection {
 
 export interface ActiveHandle {
     connectionId: string;
-    type: 'loopback' | 'udp' | 'pw-link';
-    paModuleId?: number;
+    type: 'udp' | 'pw-link';
     udpPort?: number;
     pwLinkIds?: number[];
     /** Port name pairs for pw-link teardown (fallback when link IDs are 0). */
@@ -47,6 +49,13 @@ export class MediaRouter {
 
     readonly portRegistry = new PortRegistry();
     readonly udpPorts = new UdpPortManager();
+    /**
+     * Pluggable per-stream-type executor registry. Pre-populated with the two
+     * built-in executors (`audio/pcm`, `muxed/mpegts`) during `setDependencies`;
+     * plugins can add more via `services.mediaRouter.streamExecutors.register(...)`
+     * from their static `registerServices` hook.
+     */
+    readonly streamExecutors = new StreamTypeExecutorRegistry();
 
     // --- Setup ---
 
@@ -56,15 +65,21 @@ export class MediaRouter {
         displayNameResolver?: (id: string) => string,
     ): void {
         this.moduleGetter = moduleGetter;
-        this.executor = new ConnectionExecutor(
-            pipeWire,
-            moduleGetter,
-            (moduleId, portId) =>
-                this.udpPorts.get(this.udpPortKey(moduleId, portId)) ??
-                this.udpPorts.get(moduleId),
-            MULTICAST_ADDR,
-            displayNameResolver,
+        const connLabel = makeConnLabel(displayNameResolver);
+        this.streamExecutors.register(
+            new PcmAudioExecutor(pipeWire, moduleGetter, connLabel),
         );
+        this.streamExecutors.register(
+            new MpegTsUdpExecutor(
+                moduleGetter,
+                (moduleId, portId) =>
+                    this.udpPorts.get(this.udpPortKey(moduleId, portId)) ??
+                    this.udpPorts.get(moduleId),
+                MULTICAST_ADDR,
+                connLabel,
+            ),
+        );
+        this.executor = new ConnectionExecutor(this.streamExecutors);
     }
 
     // --- Port delegation ---
@@ -240,7 +255,13 @@ export class MediaRouter {
         }
     }
 
-    // --- Encoder UDP port management ---
+    // --- UDP port management ---
+    //
+    // The UDP port pool is generic infrastructure used by any plugin that
+    // needs an allocated multicast port for muxed/mpegts traffic — MPEG-TS
+    // muxers/demuxers, SRT in/out, RIST in/out, video/audio encoders. Plugins
+    // call `assignUdpPort(instanceId[, portId])` during pipeline build and
+    // `releaseUdpPort` / `releaseAllUdpPortsFor` on teardown.
 
     /**
      * Owner key for the UDP port pool. When a module exposes multiple muxed/mpegts
@@ -257,7 +278,7 @@ export class MediaRouter {
         return portId ? `${moduleId}:${portId}` : moduleId;
     }
 
-    assignEncoderPort(
+    assignUdpPort(
         moduleId: string,
         portId?: string,
     ): { host: string; port: number } | null {
@@ -265,7 +286,7 @@ export class MediaRouter {
         return port !== null ? { host: MULTICAST_ADDR, port } : null;
     }
 
-    getEncoderEndpoint(
+    getUdpEndpoint(
         moduleId: string,
         portId?: string,
     ): { host: string; port: number } | undefined {
@@ -273,12 +294,12 @@ export class MediaRouter {
         return port !== undefined ? { host: MULTICAST_ADDR, port } : undefined;
     }
 
-    releaseEncoderPort(moduleId: string, portId?: string): void {
+    releaseUdpPort(moduleId: string, portId?: string): void {
         this.udpPorts.release(this.udpPortKey(moduleId, portId));
     }
 
     /** Release every UDP port owned by a module — primary slot plus any per-port sub-slots. */
-    releaseAllEncoderPortsFor(moduleId: string): void {
+    releaseAllUdpPortsFor(moduleId: string): void {
         this.udpPorts.releaseAllForOwner(moduleId);
     }
 

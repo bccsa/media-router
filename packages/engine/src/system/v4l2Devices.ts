@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import type { Device } from '@media-router/engine';
+import type { Device } from '@media-router/shared-types';
 
 const execFileAsync = promisify(execFile);
 

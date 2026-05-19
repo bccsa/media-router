@@ -276,11 +276,11 @@ describe('VideoEncoderModule', () => {
     describe('buildPipeline', () => {
         function makeModule() {
             const module = new VideoEncoderModule();
-            const assignEncoderPort = vi.fn(() => ({ host: '239.255.0.1', port: 5000 }));
-            const getEncoderEndpoint = vi.fn(() => ({ host: '239.255.0.1', port: 5000 }));
+            const assignUdpPort = vi.fn(() => ({ host: '239.255.0.1', port: 5000 }));
+            const getUdpEndpoint = vi.fn(() => ({ host: '239.255.0.1', port: 5000 }));
             (module as any).services = {
                 instanceId: 'video-enc-1',
-                mediaRouter: { assignEncoderPort, getEncoderEndpoint },
+                mediaRouter: { assignUdpPort, getUdpEndpoint },
             };
             return module;
         }

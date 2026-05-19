@@ -10,6 +10,10 @@ export type {
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
+export { registerPipeWireDeviceProvider } from './system/pipeWireDeviceProvider.js';
+export type { PipeWireDeviceProviderOptions } from './system/pipeWireDeviceProvider.js';
+export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
+export { listDrmConnectors, resolveConnectorId } from './system/drmConnectors.js';
 export { probeGstElement, gstInspectMaxChannels } from './plugins/gstInspect.js';
 export { buildUdpSrc, buildUdpSink, isMulticast } from './plugins/udpHelpers.js';
 export type { UdpSrcOpts, UdpSinkOpts } from './plugins/udpHelpers.js';
@@ -19,9 +23,13 @@ export {
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
+export { formatBytes, SrtStatPoller } from './plugins/srtHelpers.js';
+export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
+export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';
+export type { DeviceWatchdogOptions, DeviceWatchdogPipeWire } from './plugins/DeviceWatchdog.js';
 export { PaCommandQueue } from './audio/PaCommandQueue.js';
 export { ModuleManager } from './modules/ModuleManager.js';
 export { ModuleInstance } from './modules/ModuleInstance.js';
@@ -43,5 +51,13 @@ export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
-export { probeMpegTsStream } from './routing/MpegTsProbe.js';
-export type { ProbeResult } from './routing/MpegTsProbe.js';
+export {
+    probeMpegTsStream,
+    classifyCaps,
+    registerCodecClassifier,
+} from './routing/MpegTsProbe.js';
+export type { ProbeResult, CodecClassifier } from './routing/MpegTsProbe.js';
+export { StreamTypeExecutorRegistry, makeConnLabel } from './routing/StreamTypeExecutor.js';
+export type { StreamTypeExecutor } from './routing/StreamTypeExecutor.js';
+export { PcmAudioExecutor } from './routing/PcmAudioExecutor.js';
+export { MpegTsUdpExecutor } from './routing/MpegTsUdpExecutor.js';

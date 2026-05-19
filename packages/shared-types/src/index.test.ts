@@ -50,17 +50,19 @@ describe('shared-types', () => {
     });
 
     it('PluginManifest shape is correct', () => {
+        // Synthetic manifest — not resolved against the filesystem. Field
+        // shape is what's under test, not the engine path.
         const manifest: PluginManifest = {
-            pluginId: 'example',
-            displayName: 'Example',
-            description: 'An example plugin',
+            pluginId: 'note',
+            displayName: 'Note',
+            description: 'A plugin manifest fixture used to validate the type shape',
             category: 'utility',
             architectures: ['arm64', 'x86_64'],
             ports: [],
             configSchema: {},
-            engine: './engine/ExampleModule.ts',
+            engine: './engine/NoteModule.ts',
         };
-        expect(manifest.pluginId).toBe('example');
+        expect(manifest.pluginId).toBe('note');
     });
 });
 

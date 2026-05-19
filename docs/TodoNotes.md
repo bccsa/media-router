@@ -133,4 +133,4 @@
 - [x] !!!! When srt fails to connect, device cpu spikes quite heavely
 - [ ] !!! engine ID is used for authentication, can we make the engineID editable?
 - [ ] After changeing profiles, i need to restart the engine, other wise it does not start, 
--[ ] Build a reboot command into the media-router manager dashboard (8080)
+- [ ] Build a reboot command into the media-router manager dashboard (8080)

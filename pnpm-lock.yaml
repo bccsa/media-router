@@ -272,8 +272,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
-  plugins/example-plugin: {}
-
   plugins/mpegts-demuxer:
     dependencies:
       '@media-router/engine':

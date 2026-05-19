@@ -1,12 +1,12 @@
 import {
     GstPluginBase,
     buildUdpSink,
+    listV4l2Devices,
     probeGstElement,
     type EngineServices,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { listV4l2Devices } from './v4l2Devices.js';
 import {
     ENCODER_ELEMENTS,
     buildEncoderBranch,
@@ -106,7 +106,7 @@ export class VideoEncoderModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         const instanceId = this.services?.instanceId ?? '';
-        this.services?.mediaRouter?.assignEncoderPort(instanceId);
+        this.services?.mediaRouter?.assignUdpPort(instanceId);
 
         await super.onStart();
         this.updateStatusData();
@@ -157,7 +157,7 @@ export class VideoEncoderModule extends GstPluginBase {
         const encoder = buildEncoderBranch(codec, impl, bitrateKbps, kif);
 
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(instanceId);
+        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
         const udpSink = endpoint
             ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';
@@ -219,7 +219,7 @@ export class VideoEncoderModule extends GstPluginBase {
             framerate: `${fps} fps`,
         });
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(instanceId);
+        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
         this.setStatusData('udp', {
             host: endpoint?.host ?? '—',
             port: endpoint?.port ?? 0,

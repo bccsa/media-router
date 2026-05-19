@@ -6,10 +6,15 @@ import type { PluginLoader } from '../plugins/PluginLoader.js';
 
 const log = createLogger('ConnectionApplier');
 
-/** Time to wait for MPEG-TS pipelines to settle before creating audio connections. */
-const MPEGTS_SETTLE_MS = 1000;
+/**
+ * Time to wait after applying parent-before-child connections before applying
+ * the rest. Lets newly-started pipelines (Python runner spawn + GStreamer
+ * pipeline construction) reach PLAYING so downstream pw-link connections
+ * find the producer's PipeWire nodes ready.
+ */
+const ORDERED_APPLY_SETTLE_MS = 1000;
 
-/** Max retries for failed audio connections. */
+/** Max retries for failed connections. */
 const MAX_RETRIES = 2;
 /** Delay between retries (doubles each attempt). */
 const RETRY_BASE_MS = 1000;
@@ -20,6 +25,16 @@ export type RawPort = {
     streamType: string;
     label?: string;
     maxConnections?: number;
+    /**
+     * When set on an output port, connections from this port are applied in
+     * topological order before other connections and a settle delay is
+     * inserted afterwards. Used by plugins whose downstream consumers can
+     * only be wired up once *their* pipeline has started — e.g. UDP-multicast
+     * transports where the producer's port number is allocated lazily on
+     * pipeline start. Previously hard-coded to `streamType === 'muxed/mpegts'`;
+     * now any plugin opting in via this flag participates.
+     */
+    requiresOrderedApply?: boolean;
 };
 
 export interface StoredConnection {
@@ -32,16 +47,16 @@ export interface StoredConnection {
 }
 
 /**
- * Topologically sort MPEG-TS connections so that for every connection
- * `A → B`, all connections `_ → A` (i.e. connections whose sink is *this*
- * connection's source module) come first. Applying a parent connection
- * triggers the sink module's pipeline to start, which is what assigns the
- * dynamic UDP ports the child connection needs.
+ * Topologically sort the ordered-apply connections so that for every
+ * connection `A → B`, all connections `_ → A` (i.e. connections whose sink
+ * is *this* connection's source module) come first. Applying a parent
+ * connection triggers the sink module's pipeline to start, which is what
+ * assigns the dynamic UDP ports the child connection needs.
  *
  * Cycles (impossible by construction for a DAG of media flow but defended
  * against here) are placed at the end in arbitrary order.
  */
-export function topoSortMpegtsConns(conns: StoredConnection[]): StoredConnection[] {
+export function topoSortOrderedConns(conns: StoredConnection[]): StoredConnection[] {
     const sorted: StoredConnection[] = [];
     const remaining = [...conns];
     while (remaining.length > 0) {
@@ -75,19 +90,25 @@ export class ConnectionApplier {
 
     /**
      * Apply stored connections after all modules have started.
-     * MPEG-TS connections are applied first (they may restart decoder pipelines),
-     * then audio connections after a settle delay.
      *
-     * MPEG-TS connections are applied in topological order: a connection
-     * `A.out → B.in` is applied before `B.out → C.in`, because applying
-     * `A.out → B.in` is what triggers B's pipeline to start and assign B's
-     * output ports. Without this ordering, a child connection fails with
-     * "encoder has no assigned port yet" (see ConnectionExecutor.executeUdp)
-     * and the per-connection retry can't recover because the unblocker
-     * (parent connection) is queued behind it in storage order. This bit
-     * the mpegts-demuxer chain: srt-input → demuxer → decoder applied the
-     * demuxer→decoder leg before srt-input→demuxer, and the decoder stayed
-     * stuck on "no encoder connected" until manual restart.
+     * Connections whose source port carries the manifest flag
+     * `requiresOrderedApply: true` are applied first (typically UDP-transport
+     * pipelines that need to restart on each connection), in topological
+     * order so parent connections complete before children that depend on
+     * them. The remaining connections (mostly pw-link audio routing) wait a
+     * settle window so the just-started pipelines are PLAYING before their
+     * PipeWire nodes are queried.
+     *
+     * Ordered-apply connections are sorted so a connection `A.out → B.in`
+     * runs before `B.out → C.in`, because applying `A.out → B.in` is what
+     * triggers B's pipeline to start and assign B's output ports. Without
+     * this ordering, the child connection fails with "no assigned port yet"
+     * (see `ConnectionExecutor.executeUdp`) and the per-connection retry
+     * can't recover because the unblocker is queued behind it in storage
+     * order. This bit the mpegts-demuxer chain: srt-input → demuxer →
+     * decoder applied the demuxer→decoder leg before srt-input→demuxer, and
+     * the decoder stayed stuck on "no encoder connected" until manual
+     * restart.
      */
     async applyConnections(
         connections: StoredConnection[],
@@ -95,27 +116,30 @@ export class ConnectionApplier {
     ): Promise<void> {
         log.info({ count: connections.length }, 'Applying connections');
 
-        // MPEG-TS first (may restart decoder pipelines)
-        const mpegtsConns = connections.filter((c) => {
+        // Pipelines that need to start before their downstream consumers go
+        // first. Identified by the source port's `requiresOrderedApply` flag
+        // (previously hard-coded as `streamType === 'muxed/mpegts'`; now any
+        // plugin can opt in by setting the flag on its producing ports).
+        const orderedConns = connections.filter((c) => {
             const srcMod = modules[c.sourceModuleId];
             const pluginId = srcMod?.pluginId as string | undefined;
             const ports = pluginId
                 ? this.resolvePortsForInstance(c.sourceModuleId, srcMod!, pluginId)
                 : [];
-            return ports.find((p) => p.id === c.sourcePortId)?.streamType === 'muxed/mpegts';
+            return ports.find((p) => p.id === c.sourcePortId)?.requiresOrderedApply === true;
         });
-        const audioConns = connections.filter((c) => !mpegtsConns.includes(c));
+        const remainingConns = connections.filter((c) => !orderedConns.includes(c));
 
-        const ordered = topoSortMpegtsConns(mpegtsConns);
-        for (const conn of ordered) {
+        const sorted = topoSortOrderedConns(orderedConns);
+        for (const conn of sorted) {
             await this.connectWithRetry(conn);
         }
 
-        if (mpegtsConns.length > 0 && audioConns.length > 0) {
-            await new Promise((r) => setTimeout(r, MPEGTS_SETTLE_MS));
+        if (orderedConns.length > 0 && remainingConns.length > 0) {
+            await new Promise((r) => setTimeout(r, ORDERED_APPLY_SETTLE_MS));
         }
 
-        for (const conn of audioConns) {
+        for (const conn of remainingConns) {
             await this.connectWithRetry(conn);
         }
     }

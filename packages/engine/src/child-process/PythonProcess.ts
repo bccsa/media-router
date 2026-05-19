@@ -1,0 +1,233 @@
+import { spawn, type ChildProcess } from 'child_process';
+import type { PadLinkRule } from '../plugins/PluginModule.js';
+
+export type PythonEventHandler = (event: Record<string, unknown>) => void;
+
+export interface PythonProcessOptions {
+    pythonRunnerPath: string;
+    /**
+     * Data-pipe mode: parent stdin/stdout carry binary MPEG-TS, commands go on
+     * fd 3, events come on fd 4. Bus-messages mode: commands go on stdin,
+     * events come on stderr (GST_JSON: prefix).
+     */
+    useStdioForData: boolean;
+    onEvent: PythonEventHandler;
+    /** Fires once the spawned process exits. */
+    onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+    /** Spawn-time failure (ENOENT, etc.). */
+    onSpawnError: (err: Error) => void;
+}
+
+/**
+ * Owns one `gst-pipeline-runner.py` child: spawn + stdio wiring, JSON event
+ * parsing, command writing, kill. One Python lifetime per instance — the
+ * `GstRunner` constructs a fresh `PythonProcess` for every (re)start.
+ *
+ * Late events from a stopped/replaced instance still fire callbacks; the
+ * caller decides whether to ignore them by tracking which instance is current
+ * (the `pyProcess !== myProc` guard previously inside `GstRunner`).
+ */
+export class PythonProcess {
+    private proc: ChildProcess | null = null;
+
+    constructor(private readonly options: PythonProcessOptions) {}
+
+    get pid(): number | undefined {
+        return this.proc?.pid;
+    }
+
+    /**
+     * Spawn the Python runner and send the initial `start` command. Returns
+     * once the process is spawned (not when GStreamer reaches PLAYING).
+     */
+    start(pipeline: string, padLinkRules: PadLinkRule[]): void {
+        if (this.proc) throw new Error('PythonProcess already started');
+
+        const mode = this.options.useStdioForData ? 'data-pipe' : 'bus-messages';
+        // Log the full pipeline string — truncating it hides the failing element
+        // when a plugin's pipeline is rejected by parse_launch.
+        console.error(`[gst-runner] Starting pipeline (${mode}): ${pipeline}`);
+        if (padLinkRules.length > 0) {
+            console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(padLinkRules)}`);
+        }
+
+        if (this.options.useStdioForData) {
+            this.proc = spawn('python3', [this.options.pythonRunnerPath], {
+                stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+            });
+
+            // Error handlers — Python can exit between our `.writable` check
+            // and the actual `write()`, surfacing EPIPE async on the stream.
+            // Without these the unhandled 'error' event crashes the runner.
+            this.proc.stdin!.on('error', () => {});
+            this.proc.stdout?.on('error', () => {});
+            this.proc.stderr?.on('error', () => {});
+            const cmdStream = (this.proc.stdio as Array<NodeJS.WritableStream | null>)[3];
+            cmdStream?.on('error', () => {});
+            const eventStream = (this.proc.stdio as Array<NodeJS.ReadableStream | null>)[4];
+            eventStream?.on('error', () => {});
+            process.stdin.on('error', () => {});
+            process.stdout.on('error', () => {});
+
+            // Relay MPEG-TS data: parent stdin ↔ python stdin, python stdout ↔ parent stdout
+            process.stdin.pipe(this.proc.stdin!);
+            this.proc.stdout?.pipe(process.stdout);
+
+            // Events on fd 4
+            if (eventStream) eventStream.on('data', this.parseEventFd);
+            // Also watch stderr for fallback/debug
+            this.proc.stderr?.on('data', this.parseStderr);
+        } else {
+            this.proc = spawn('python3', [this.options.pythonRunnerPath], {
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+
+            // Mirror the data-mode error handlers (EPIPE during the narrow window
+            // between sendCommand and Python exit used to crash the runner).
+            this.proc.stdin?.on('error', () => {});
+            this.proc.stdout?.on('error', () => {});
+            this.proc.stderr?.on('error', () => {});
+
+            // Events come on stderr (GST_JSON: prefix)
+            this.proc.stderr?.on('data', this.parseStderr);
+        }
+
+        this.proc.on('exit', (code, signal) => {
+            console.error(`[gst-runner] Python runner exited: code=${code} signal=${signal}`);
+            this.options.onExit(code, signal);
+        });
+        this.proc.on('error', (err) => this.options.onSpawnError(err));
+
+        this.sendCommand({
+            cmd: 'start',
+            pipeline,
+            useStdioForData: this.options.useStdioForData,
+            linkOnPadAdded: padLinkRules,
+        });
+    }
+
+    sendCommand(cmd: Record<string, unknown>): void {
+        if (!this.proc) return;
+        const line = JSON.stringify(cmd) + '\n';
+
+        // Wrap the write so an EPIPE during the narrow window between Python's
+        // `exit` and the engine's bookkeeping reassignment doesn't escape as
+        // an uncaught synchronous throw. The async path is handled by the
+        // `.on('error', ...)` listeners installed in `start`.
+        try {
+            if (this.options.useStdioForData) {
+                const cmdStream = (this.proc.stdio as Array<NodeJS.WritableStream | null>)[3];
+                if (cmdStream?.writable) cmdStream.write(line);
+            } else if (this.proc.stdin?.writable) {
+                this.proc.stdin.write(line);
+            }
+        } catch (err) {
+            console.error('[gst-runner] sendToPython failed:', err);
+        }
+    }
+
+    /**
+     * Send `stop`, unpipe binary streams, then SIGKILL after 2s if Python
+     * hasn't exited. Caller is responsible for not calling `start` again on
+     * this instance — construct a new `PythonProcess` for the next pipeline.
+     */
+    stop(): void {
+        if (!this.proc) return;
+        const proc = this.proc;
+        console.error('[gst-runner] Stopping pipeline...');
+
+        try {
+            process.stdin.unpipe(proc.stdin!);
+        } catch {
+            /* nothing piped */
+        }
+        try {
+            proc.stdout?.unpipe(process.stdout);
+        } catch {
+            /* nothing piped */
+        }
+
+        this.sendCommand({ cmd: 'stop' });
+
+        const killTimer = setTimeout(() => {
+            if (proc.pid) {
+                console.error('[gst-runner] Force killing Python runner...');
+                this.killProcess(proc, 'SIGKILL');
+            }
+        }, 2000);
+
+        proc.once('exit', () => clearTimeout(killTimer));
+    }
+
+    kill(signal: NodeJS.Signals): void {
+        if (this.proc) this.killProcess(this.proc, signal);
+    }
+
+    /** Last-ditch sync cleanup from `process.on('exit')`. */
+    emergencyKill(): void {
+        if (this.proc?.pid) {
+            try {
+                process.kill(this.proc.pid, 'SIGKILL');
+            } catch (err) {
+                console.error('[gst-runner] Emergency SIGKILL on exit failed:', err);
+            }
+        }
+    }
+
+    private killProcess(proc: ChildProcess, signal: NodeJS.Signals): void {
+        if (!proc.pid) return;
+        try {
+            proc.kill(signal);
+        } catch {
+            /* already dead */
+        }
+    }
+
+    // --- event parsing ---
+
+    private parseStderr = (data: Buffer): void => {
+        const text = data.toString();
+        for (const line of text.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            if (trimmed.startsWith('GST_JSON:')) {
+                try {
+                    const json = JSON.parse(trimmed.substring(9));
+                    this.options.onEvent(json);
+                } catch {
+                    /* not valid JSON — ignore */
+                }
+            } else {
+                // Forward raw GStreamer / Python stderr to engine logs so plugin
+                // pipeline errors are visible. Without this, anything that doesn't
+                // come through the bus (parse errors, GStreamer warnings, Python
+                // tracebacks) is silently dropped.
+                console.error(`[gst-py] ${trimmed}`);
+            }
+        }
+    };
+
+    private parseEventFd = (data: Buffer): void => {
+        const text = data.toString();
+        for (const line of text.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            if (trimmed.startsWith('GST_JSON:')) {
+                try {
+                    const json = JSON.parse(trimmed.substring(9));
+                    this.options.onEvent(json);
+                } catch {
+                    /* ignore */
+                }
+            } else {
+                // Plain JSON line (no prefix on fd 4)
+                try {
+                    const json = JSON.parse(trimmed);
+                    this.options.onEvent(json);
+                } catch {
+                    /* ignore */
+                }
+            }
+        }
+    };
+}

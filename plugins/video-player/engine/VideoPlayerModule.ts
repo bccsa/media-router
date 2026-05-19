@@ -8,7 +8,7 @@ import {
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { listDrmConnectors } from './drmConnectors.js';
+import { listDrmConnectors, resolveConnectorId } from '@media-router/engine';
 
 type SinkAvailability = { wayland: boolean; kms: boolean };
 
@@ -63,6 +63,20 @@ export class VideoPlayerModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
+        // If waylandsink is installed (i.e. this host is *expected* to render
+        // through a Wayland compositor) but the wayland socket isn't here
+        // yet, give the compositor a brief window to come up. Without this
+        // an engine that boots before labwc/Weston picks the KMS fallback
+        // and stays there for the lifetime of the pyProcess — even when the
+        // compositor appears 2s later. Seen in production after a power
+        // outage on 10.9.1.166: kmssink then either parse-errors (older
+        // builds without `connector-name`) or loses the DRM master fight
+        // with the compositor. 10s is plenty of headroom for a normal boot
+        // and bounded enough that genuinely-headless hosts still fall
+        // through promptly.
+        if (VideoPlayerModule.sinks.wayland) {
+            await waitForWaylandSocket(10_000);
+        }
         await super.onStart();
         this.updateStatusData();
     }
@@ -71,7 +85,9 @@ export class VideoPlayerModule extends GstPluginBase {
         Object.assign(this.config, changes);
         if ('fallbackText' in changes) {
             const text = changes.fallbackText as string;
-            await this.setElementProperty('nov', 'text', text).catch(() => {});
+            await this.setElementProperty('nov', 'text', text).catch((err) =>
+                this.log.debug({ err }, 'Failed to update fallback text overlay'),
+            );
         }
         this.updateStatusData();
     }
@@ -79,9 +95,11 @@ export class VideoPlayerModule extends GstPluginBase {
     buildPipeline(config: Record<string, unknown>): PipelineDescription {
         const fallback = (config.fallbackText as string) ?? 'No video detected';
         const display = (config.display as string) ?? '';
+        const connectorId = display ? resolveConnectorId(display) : undefined;
         const sinkElement = buildSink(display, {
             ...VideoPlayerModule.sinks,
             waylandSession: hasWaylandSession(),
+            connectorId,
         });
 
         const instanceId = this.services?.instanceId ?? '';
@@ -156,6 +174,14 @@ export interface SinkSelectionEnv {
     kms: boolean;
     /** Whether a Wayland compositor socket is reachable from this process. */
     waylandSession: boolean;
+    /**
+     * Numeric DRM connector id for the user-selected display, resolved from
+     * sysfs. `kmssink` takes `connector-id` (a number) — older GStreamer
+     * builds (1.22 / Yocto) don't expose a `connector-name` property at all,
+     * so passing the name directly produced "no property connector-name in
+     * element kmssink" parse errors. Falls back to auto-pick when undefined.
+     */
+    connectorId?: number;
 }
 
 /**
@@ -163,17 +189,17 @@ export interface SinkSelectionEnv {
  *   1. Wayland (waylandsink, no connector picking — compositor decides output).
  *      Preferred when a compositor is running because kmssink can't take the
  *      DRM master while Weston/labwc holds it.
- *   2. KMS direct, targeting a specific connector (user picked one and we're
- *      not in a compositor session).
- *   3. KMS direct, auto-pick connector.
+ *   2. KMS direct, targeting a specific connector by numeric id.
+ *   3. KMS direct, auto-pick connector (used when the user picked a name we
+ *      can't resolve to an id, or didn't pick at all).
  *   4. autovideosink (dev machines without DRM, last resort).
  */
 export function buildSink(display: string, env: SinkSelectionEnv): string {
     if (env.wayland && env.waylandSession) {
         return 'waylandsink name=sink sync=false';
     }
-    if (display && env.kms) {
-        return `kmssink name=sink connector-name=${display} sync=false`;
+    if (display && env.kms && env.connectorId !== undefined) {
+        return `kmssink name=sink connector-id=${env.connectorId} sync=false`;
     }
     if (env.kms) {
         return 'kmssink name=sink sync=false';
@@ -201,13 +227,29 @@ export function hasWaylandSession(): boolean {
 }
 
 /**
+ * Poll until a Wayland socket appears in the user runtime dir, or `timeoutMs`
+ * elapses. Re-runs `ensureWaylandEnv` between polls so `XDG_RUNTIME_DIR` /
+ * `WAYLAND_DISPLAY` get set as soon as the compositor is ready. Returns
+ * `true` if Wayland became available, `false` if the timeout was hit.
+ */
+export async function waitForWaylandSocket(timeoutMs: number, intervalMs = 250): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        ensureWaylandEnv();
+        if (hasWaylandSession()) return true;
+        await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return false;
+}
+
+/**
  * Best-effort: if a Wayland socket is present in the user runtime dir but
  * `WAYLAND_DISPLAY` isn't exported (e.g. systemd-user launch with no inherited
  * session env), set it on the parent process so child gst-runner inherits.
  * Also seeds `XDG_RUNTIME_DIR` if missing — we use `/run/user/<uid>` which
  * exists for any logged-in user.
  */
-function ensureWaylandEnv(): void {
+export function ensureWaylandEnv(): void {
     if (!process.env.XDG_RUNTIME_DIR && typeof process.getuid === 'function') {
         const candidate = `/run/user/${process.getuid()}`;
         try {

@@ -91,7 +91,7 @@ export class AudioEncoderModule extends GstPluginBase {
 
     private updateStatusData(): void {
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(instanceId);
+        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
         this.setStatusData('encoder', {
             codec: (this.config.codec as string) ?? 'opus',
             bitrate: (this.config.bitrate as number) ?? 128,
@@ -165,7 +165,7 @@ export class AudioEncoderModule extends GstPluginBase {
 
         // Encoder always gets a UDP multicast port assigned at startup.
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.assignEncoderPort(instanceId);
+        const endpoint = this.services?.mediaRouter?.assignUdpPort(instanceId);
         const udpSink = endpoint
             ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';

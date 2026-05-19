@@ -21,7 +21,8 @@
                 "direction": "output",
                 "streamType": "muxed/mpegts",
                 "label": "MPEG-TS Out",
-                "maxConnections": -1
+                "maxConnections": -1,
+                "requiresOrderedApply": true
             }
         ],
         "configSchema": {

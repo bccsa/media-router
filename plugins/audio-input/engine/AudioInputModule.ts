@@ -3,10 +3,10 @@ import {
     detectDeviceFormat,
     resolveDeviceFormat,
     tryResolveDeviceFormat,
+    registerPipeWireDeviceProvider,
     type PipelineDescription,
     type EngineServices,
     type ModuleServices,
-    type Device,
 } from '@media-router/engine';
 
 /**
@@ -30,24 +30,7 @@ export class AudioInputModule extends GstPluginBase {
     private remapModuleId: number | null = null;
 
     static registerServices(services: EngineServices): void {
-        services.deviceProviders.register({
-            type: 'audio-source',
-            list: () =>
-                services.pipeWire
-                    .listDevices()
-                    .filter((d) => d.direction === 'source')
-                    .map(
-                        (d): Device => ({
-                            name: d.name,
-                            label: `${d.description || d.name} (${d.channels ?? '?'}ch, ${d.sampleRate ?? '?'}Hz)`,
-                            meta: {
-                                direction: d.direction,
-                                channels: d.channels,
-                                sampleRate: d.sampleRate,
-                            },
-                        }),
-                    ),
-        });
+        registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
     }
 
     protected getWatchedDeviceName(): string | null {

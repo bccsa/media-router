@@ -26,10 +26,10 @@ export class RistInputModule extends GstPluginBase {
     async onStart(): Promise<void> {
         // Assign UDP port for local multicast output
         if (this.services?.mediaRouter) {
-            this.services.mediaRouter.assignEncoderPort(this.services.instanceId);
+            this.services.mediaRouter.assignUdpPort(this.services.instanceId);
         }
 
-        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(this.services.instanceId);
+        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(this.services.instanceId);
         if (!endpoint) {
             this.log.warn('No UDP port assigned — cannot output MPEG-TS');
             return;

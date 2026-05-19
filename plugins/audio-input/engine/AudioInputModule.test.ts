@@ -5,12 +5,10 @@ import { AudioInputModule } from './AudioInputModule.js';
  * Helper that drives the device watchdog directly rather than waiting for
  * its 2-second `setInterval` to fire. Fake timers don't interleave cleanly
  * with the multi-`await` chain inside `onDeviceReconnected`, so we just
- * invoke the protected hook on a recoverable instance.
+ * invoke the watchdog's `tick()` method.
  */
 async function tickWatchdog(module: AudioInputModule): Promise<void> {
-    // checkDevice is private — invoke through any-cast. This is what the
-    // setInterval would have done at the next tick.
-    await (module as any).checkDevice();
+    await (module as any).deviceWatchdog?.tick();
 }
 
 function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; sampleRate?: number } = { devicePresent: true, channels: 1, sampleRate: 48000 }) {

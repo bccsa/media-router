@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type { ModuleRuntimeState, ModuleHealth } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
+import { DeviceWatchdog } from './DeviceWatchdog.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -317,21 +318,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     // --- Device presence watchdog (hardware hot-plug) ---
     //
-    // Plugins bound to a hardware audio device start the watchdog in onStart.
-    // Every 2s we check whether the bound device is still enumerated in PipeWire;
-    // on disconnect/reconnect we delegate to subclass hooks so each plugin
-    // can teardown/rebuild its own remap-source or remap-sink.
+    // The polling, transition, and concurrency logic lives in `DeviceWatchdog`
+    // (so non-Gst plugins can use it too); this base class just wires its
+    // callbacks to the subclass hooks (`getWatchedDeviceName`,
+    // `onDeviceDisconnected`, `onDeviceReconnected`) and the base's own
+    // `setHealth` / `setVuData`.
 
-    private deviceWatchdog: ReturnType<typeof setInterval> | null = null;
-    private deviceConnected = true;
-    /**
-     * In-flight `checkDevice` promise, if any. Tracked so `stopDeviceWatchdog`
-     * can await a tick that's mid-`onDeviceReconnected`. Without this, a stop
-     * racing a reconnect can leak a freshly-loaded PA module: the tick calls
-     * `loadRemap*` after `ModuleInstance.stop`'s `releaseAll` has already run,
-     * so the new ID is tracked but never unloaded.
-     */
-    private deviceCheckInFlight: Promise<void> | null = null;
+    private deviceWatchdog: DeviceWatchdog | null = null;
 
     /**
      * Subclasses bound to a hardware device return its PipeWire name (e.g.
@@ -364,68 +357,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      */
     protected startDeviceWatchdog(initiallyConnected = true): void {
         if (this.deviceWatchdog) return;
-        this.deviceConnected = initiallyConnected;
-        this.deviceWatchdog = setInterval(() => {
-            // Skip overlapping ticks — a slow PipeWire query or a long
-            // reconnect must not pile up concurrent runs.
-            if (this.deviceCheckInFlight) return;
-            const p = this.checkDevice().catch(() => {
-                /* swallowed — next tick retries */
-            });
-            this.deviceCheckInFlight = p.finally(() => {
-                if (this.deviceCheckInFlight === p) this.deviceCheckInFlight = null;
-            });
-        }, 2000);
+        if (!this.services?.pipeWire) return;
+        this.deviceWatchdog = new DeviceWatchdog({
+            getDeviceName: () => this.getWatchedDeviceName(),
+            pipeWire: this.services.pipeWire,
+            log: this.log,
+            onDisconnect: () => this.onDeviceDisconnected(),
+            onReconnect: () => this.onDeviceReconnected(),
+            onHealthChange: (h, m) => this.setHealth(h, m),
+            onClear: () => this.setVuData([]),
+        });
+        this.deviceWatchdog.start(initiallyConnected);
     }
 
-    /**
-     * Stop the watchdog and wait for an in-flight tick to settle. Awaiting
-     * matters: a tick mid-`onDeviceReconnected` might still be about to call
-     * `loadRemap*` after this returns; the awaiting caller (`onStop`) then
-     * runs `releaseAll` knowing the tick has finished registering ownership.
-     */
+    /** Stop the watchdog and wait for an in-flight tick to settle. */
     protected async stopDeviceWatchdog(): Promise<void> {
         if (this.deviceWatchdog) {
-            clearInterval(this.deviceWatchdog);
+            await this.deviceWatchdog.stop();
             this.deviceWatchdog = null;
-        }
-        if (this.deviceCheckInFlight) {
-            await this.deviceCheckInFlight;
-        }
-    }
-
-    private async checkDevice(): Promise<void> {
-        const deviceName = this.getWatchedDeviceName();
-        if (!deviceName || !this.services?.pipeWire) return;
-        // Watchdog only needs presence — no channel/rate info — so use
-        // `hasDevice` rather than `getDeviceInfo()` for clarity.
-        const present = this.services.pipeWire.hasDevice(deviceName);
-
-        if (this.deviceConnected && !present) {
-            this.deviceConnected = false;
-            this.setHealth('error', 'Device disconnected');
-            this.setVuData([]);
-            try {
-                await this.onDeviceDisconnected();
-            } catch (err) {
-                this.log.debug({ err }, 'onDeviceDisconnected hook failed');
-            }
-            return;
-        }
-        if (!this.deviceConnected && present) {
-            // Only flip `deviceConnected` after a successful reconnect — a
-            // throw leaves it false so the next watchdog tick retries (e.g.
-            // the device returned but format wasn't probeable yet).
-            try {
-                await this.onDeviceReconnected();
-                this.deviceConnected = true;
-                this.setHealth('ok');
-            } catch (err) {
-                this.setHealth(
-                    'warning',
-                    `Reconnect pending: ${err instanceof Error ? err.message : String(err)}`,
-                );
-            }
         }
     }
 }

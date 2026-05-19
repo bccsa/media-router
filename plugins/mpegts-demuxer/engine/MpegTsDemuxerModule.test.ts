@@ -150,7 +150,7 @@ describe('MpegTsDemuxerModule', () => {
         );
         let nextPort = 41000;
         const allocated: Record<string, number> = {};
-        const assignEncoderPort = vi.fn((modId: string, portId?: string) => {
+        const assignUdpPort = vi.fn((modId: string, portId?: string) => {
             const key = portId ? `${modId}:${portId}` : modId;
             if (!(key in allocated)) {
                 allocated[key] = nextPort++;
@@ -159,9 +159,9 @@ describe('MpegTsDemuxerModule', () => {
         });
         (module as any).services = {
             instanceId: 'demux-1',
-            mediaRouter: { getModuleUdpSource, assignEncoderPort },
+            mediaRouter: { getModuleUdpSource, assignUdpPort },
         };
-        return { module, getModuleUdpSource, assignEncoderPort, allocated };
+        return { module, getModuleUdpSource, assignUdpPort, allocated };
     }
 
     beforeEach(() => {
@@ -188,15 +188,15 @@ describe('MpegTsDemuxerModule', () => {
         });
 
         it('allocates one UDP port per output with the matching portId key', () => {
-            const { module, assignEncoderPort } = makeModule();
+            const { module, assignUdpPort } = makeModule();
             (module as any).config = { videoStreamCount: 1, audioStreamCount: 2 };
             (module as any).setHealth = vi.fn();
             (module as any).setStatusData = vi.fn();
             const desc = module.buildPipeline((module as any).config);
             expect(desc).not.toBeNull();
-            expect(assignEncoderPort).toHaveBeenCalledWith('demux-1', 'video-0');
-            expect(assignEncoderPort).toHaveBeenCalledWith('demux-1', 'audio-0');
-            expect(assignEncoderPort).toHaveBeenCalledWith('demux-1', 'audio-1');
+            expect(assignUdpPort).toHaveBeenCalledWith('demux-1', 'video-0');
+            expect(assignUdpPort).toHaveBeenCalledWith('demux-1', 'audio-0');
+            expect(assignUdpPort).toHaveBeenCalledWith('demux-1', 'audio-1');
             const audioRule = desc!.linkOnPadAdded!.find((r) => r.media === 'audio')!;
             expect(audioRule.branches).toHaveLength(2);
         });

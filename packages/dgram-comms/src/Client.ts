@@ -88,30 +88,6 @@ export class Client extends EventEmitter {
         const udpSocket = dgram.createSocket('udp4');
         const reassembler = new Reassembler(this.connectionTimeout * 2);
 
-        const socket = new Socket({
-            port: path.port,
-            address: path.host,
-            udpSocket,
-            isClient: true,
-            clientID: this.clientId,
-            encryptionKey: this.encryptionKey,
-            connectionTimeout: this.connectionTimeout,
-            missedKeepaliveThreshold: this.missedKeepaliveThreshold,
-            onDisconnect: () => {
-                const ps = this.pathStates[index];
-                if (!ps) return;
-                ps.connected = false;
-                if (ps.alive) {
-                    ps.alive = false;
-                    this.emit('pathDown', index);
-                }
-                // Check if ALL paths down
-                if (!this.connected) {
-                    this.emit('disconnected');
-                }
-            },
-        });
-
         // Listen for raw UDP packets on this path
         udpSocket.on('message', (msg) => {
             this.onPacket(msg, index);
@@ -129,7 +105,8 @@ export class Client extends EventEmitter {
         const pathState: PathState = {
             path,
             udpSocket,
-            socket,
+            // socket: filled in below by buildPathSocket
+            socket: undefined as unknown as Socket,
             reassembler,
             connected: false,
             lastReceived: 0,
@@ -139,32 +116,7 @@ export class Client extends EventEmitter {
         };
 
         this.pathStates.push(pathState);
-
-        // Handle connection (only emit once per connect cycle)
-        socket.on('connected', () => {
-            if (pathState.connected) return; // Already connected — ignore duplicate
-            pathState.connected = true;
-            if (!pathState.alive) {
-                pathState.alive = true;
-                this.emit('pathUp', index);
-            }
-            this.emit('connected');
-        });
-
-        // Forward data events (deduped within a short window)
-        socket.on('data', (topic: string, message: unknown) => {
-            // Dedup across paths — use topic + content hash + timestamp bucket (500ms windows)
-            // This prevents duplicate delivery from multi-path bonding while allowing
-            // repeated identical messages (e.g. mute→unmute→mute) to get through
-            const timeBucket = Math.floor(Date.now() / 500);
-            const dedupKey = crypto
-                .createHash('md5')
-                .update(`${timeBucket}:${topic}:${JSON.stringify(message)}`)
-                .digest('hex');
-            if (this.seenMessages.has(dedupKey)) return;
-            this.seenMessages.add(dedupKey);
-            this.emit('data', topic, message);
-        });
+        pathState.socket = this.buildPathSocket(index);
 
         // Send connect immediately, then retry every 1s until connected
         this.connectPath(index);
@@ -178,9 +130,81 @@ export class Client extends EventEmitter {
         }, 1000); // Retry every 1s (not every 5s)
     }
 
+    /**
+     * Construct a fresh `Socket` for the given path and wire up its handlers.
+     * Used both for initial path setup and to replace a destroyed Socket on
+     * reconnect — without the replacement, the path-level reconnect would
+     * call `send()` on the dead Socket forever (returns early when destroyed)
+     * and the path could only recover when the higher-level (e.g.
+     * ManagerConnection) rebuilt the whole Client. Reuses the path's UDP
+     * socket and reassembler (those don't need a fresh OS handle).
+     */
+    private buildPathSocket(index: number): Socket {
+        const ps = this.pathStates[index];
+        const socket = new Socket({
+            port: ps.path.port,
+            address: ps.path.host,
+            udpSocket: ps.udpSocket,
+            isClient: true,
+            clientID: this.clientId,
+            encryptionKey: this.encryptionKey,
+            connectionTimeout: this.connectionTimeout,
+            missedKeepaliveThreshold: this.missedKeepaliveThreshold,
+            onDisconnect: () => {
+                const cur = this.pathStates[index];
+                if (!cur) return;
+                cur.connected = false;
+                if (cur.alive) {
+                    cur.alive = false;
+                    this.emit('pathDown', index);
+                }
+                if (!this.connected) {
+                    this.emit('disconnected');
+                }
+            },
+        });
+
+        // Handle connection (only emit once per connect cycle)
+        socket.on('connected', () => {
+            const cur = this.pathStates[index];
+            if (!cur || cur.connected) return; // already-connected guard
+            cur.connected = true;
+            if (!cur.alive) {
+                cur.alive = true;
+                this.emit('pathUp', index);
+            }
+            this.emit('connected');
+        });
+
+        // Forward data events (deduped within a short window)
+        socket.on('data', (topic: string, message: unknown) => {
+            // Dedup across paths — topic + content hash + 500ms timestamp bucket.
+            // Prevents duplicate delivery from multi-path bonding while allowing
+            // repeated identical messages (e.g. mute→unmute→mute) to get through.
+            const timeBucket = Math.floor(Date.now() / 500);
+            const dedupKey = crypto
+                .createHash('md5')
+                .update(`${timeBucket}:${topic}:${JSON.stringify(message)}`)
+                .digest('hex');
+            if (this.seenMessages.has(dedupKey)) return;
+            this.seenMessages.add(dedupKey);
+            this.emit('data', topic, message);
+        });
+
+        return socket;
+    }
+
     private connectPath(index: number): void {
         const ps = this.pathStates[index];
         if (!ps || ps.connected || this.destroyed) return;
+        // Recreate the Socket if missed-keepalive watchdog destroyed it.
+        // Reusing the dead Socket would have `send()` log "socket destroyed"
+        // and drop the message — the path would never recover until the
+        // higher-level reconnect rebuilt the whole Client.
+        if (ps.socket.destroyed) {
+            ps.socket.removeAllListeners();
+            ps.socket = this.buildPathSocket(index);
+        }
         // Send connect message
         ps.socket.send(null, null, { type: 'connect' });
     }

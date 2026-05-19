@@ -20,6 +20,32 @@ export interface PluginManifest {
 }
 
 /**
+ * Runtime shape of a plugin class as seen from the manager side: we only ever
+ * call `initManifest` here. (The engine side has its own typed surface that
+ * also includes `registerServices`.)
+ */
+interface PluginClass {
+    initManifest?(manifest: PluginManifest): void | Promise<void>;
+}
+
+/**
+ * Heuristic — is this exported value a class (or class-like constructor)?
+ *
+ * The manager doesn't need the full plugin contract that the engine enforces
+ * (`onInit` + `onStart` instance methods on the prototype); it only needs
+ * something it can probe for an optional static `initManifest`. So this
+ * accepts any function with a prototype object — narrower checks would
+ * exclude legitimate plugin classes that omit `initManifest`.
+ */
+function isClassLike(v: unknown): v is PluginClass {
+    return (
+        typeof v === 'function' &&
+        typeof (v as { prototype?: unknown }).prototype === 'object' &&
+        (v as { prototype: object }).prototype !== null
+    );
+}
+
+/**
  * Scans the plugins directory and returns manifest data for each valid plugin.
  * Results are cached after first scan. Call refresh() to re-scan.
  */
@@ -58,7 +84,7 @@ export class PluginRegistry {
                 );
                 const jsPath = enginePath.replace(/\.ts$/, '.js');
 
-                let mod: any;
+                let mod: Record<string, unknown> | undefined;
                 for (const tryPath of [distJsPath, jsPath, enginePath]) {
                     if (fs.existsSync(tryPath)) {
                         mod = await import(tryPath);
@@ -67,9 +93,7 @@ export class PluginRegistry {
                 }
                 if (!mod) continue;
 
-                const cls = Object.values(mod).find(
-                    (v) => typeof v === 'function' && v.prototype,
-                ) as any;
+                const cls = Object.values(mod).find(isClassLike);
                 if (cls?.initManifest) {
                     await cls.initManifest(plugin);
                 }

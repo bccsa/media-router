@@ -2,13 +2,25 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { PluginManifest } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
-import type { PluginModule, EngineServices } from './PluginModule.js';
+import type { PluginConstructor, EngineServices } from './PluginModule.js';
 
 const log = createLogger('PluginLoader');
 
 export interface LoadedPlugin {
     manifest: PluginManifest;
-    ModuleClass: (new () => PluginModule) | null;
+    ModuleClass: PluginConstructor | null;
+}
+
+/**
+ * Type guard for the runtime shape of a plugin class. We rely on prototype
+ * methods rather than `instanceof PluginModule` because each plugin builds
+ * against its own copy of `@media-router/engine` and an `instanceof` check
+ * across copies would always fail.
+ */
+function isPluginConstructor(v: unknown): v is PluginConstructor {
+    if (typeof v !== 'function') return false;
+    const proto = (v as { prototype?: Record<string, unknown> }).prototype;
+    return typeof proto?.onInit === 'function' && typeof proto?.onStart === 'function';
 }
 
 /**
@@ -75,7 +87,7 @@ export class PluginLoader {
 
                 // Try to load the engine module class via dynamic import()
                 // Each plugin is isolated — one bad import doesn't break others
-                let ModuleClass: (new () => PluginModule) | null = null;
+                let ModuleClass: PluginConstructor | null = null;
                 const enginePath = path.resolve(pluginDir, manifest.engine);
                 const tsPath = enginePath;
                 const jsPath = enginePath.replace(/\.ts$/, '.js');
@@ -85,7 +97,7 @@ export class PluginLoader {
                     path.basename(manifest.engine).replace(/\.ts$/, '.js'),
                 );
 
-                let mod: any;
+                let mod: Record<string, unknown> | undefined;
                 for (const tryPath of [distJsPath, jsPath, tsPath]) {
                     if (!fs.existsSync(tryPath)) continue;
                     try {
@@ -100,21 +112,12 @@ export class PluginLoader {
                 }
 
                 if (mod) {
-                    // Classes and plain functions both have `.prototype`, so
-                    // detect the plugin class by requiring it implements the
-                    // `PluginModule` contract (onInit + onStart on the proto).
-                    // This skips any helper functions a plugin exports.
-                    const exportedClass = Object.values(mod).find(
-                        (v) =>
-                            typeof v === 'function' &&
-                            typeof (v as any).prototype?.onInit === 'function' &&
-                            typeof (v as any).prototype?.onStart === 'function',
-                    ) as (new () => PluginModule) | undefined;
+                    const exportedClass = Object.values(mod).find(isPluginConstructor);
                     if (exportedClass) {
                         ModuleClass = exportedClass;
-                        if (typeof (exportedClass as any).initManifest === 'function') {
+                        if (exportedClass.initManifest) {
                             try {
-                                await (exportedClass as any).initManifest(manifest);
+                                await exportedClass.initManifest(manifest);
                             } catch (err) {
                                 log.warn(
                                     { err, pluginId: manifest.pluginId },
@@ -122,12 +125,9 @@ export class PluginLoader {
                                 );
                             }
                         }
-                        if (
-                            services &&
-                            typeof (exportedClass as any).registerServices === 'function'
-                        ) {
+                        if (services && exportedClass.registerServices) {
                             try {
-                                await (exportedClass as any).registerServices(services);
+                                await exportedClass.registerServices(services);
                             } catch (err) {
                                 log.warn(
                                     { err, pluginId: manifest.pluginId },

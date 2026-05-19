@@ -211,12 +211,12 @@ describe('MpegTsMuxerModule', () => {
                 sinkPortId: s.sinkPortId,
             })),
         );
-        const assignEncoderPort = vi.fn(() => ({ host: '239.255.0.1', port: 41000 }));
+        const assignUdpPort = vi.fn(() => ({ host: '239.255.0.1', port: 41000 }));
         (module as any).services = {
             instanceId: 'mux-1',
-            mediaRouter: { getModuleUdpSources, assignEncoderPort },
+            mediaRouter: { getModuleUdpSources, assignUdpPort },
         };
-        return { module, getModuleUdpSources, assignEncoderPort };
+        return { module, getModuleUdpSources, assignUdpPort };
     }
 
     beforeEach(() => {
@@ -251,7 +251,7 @@ describe('MpegTsMuxerModule', () => {
         });
 
         it('produces one branch per connected input and uses the assigned encoder port', () => {
-            const { module, assignEncoderPort } = makeModule({
+            const { module, assignUdpPort } = makeModule({
                 sources: [
                     { sinkPortId: 'video-0', port: 40001 },
                     { sinkPortId: 'audio-0', port: 40002 },
@@ -271,7 +271,7 @@ describe('MpegTsMuxerModule', () => {
             expect(desc!.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
             // 1 video rule (for video-0) + 1 audio rule (for audio-0)
             expect(desc!.linkOnPadAdded).toHaveLength(2);
-            expect(assignEncoderPort).toHaveBeenCalledWith('mux-1');
+            expect(assignUdpPort).toHaveBeenCalledWith('mux-1');
         });
 
         it('ignores connections that arrive on unknown port ids (e.g. the output)', () => {

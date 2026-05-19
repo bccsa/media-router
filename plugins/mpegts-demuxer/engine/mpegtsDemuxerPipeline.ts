@@ -24,6 +24,13 @@ export interface DynamicPort {
     streamType: 'muxed/mpegts';
     label: string;
     maxConnections: number;
+    /**
+     * Marks output ports whose downstream consumers must wait for this
+     * pipeline to be PLAYING before they can be wired. Read by
+     * `ConnectionApplier` to apply such connections first with a settle
+     * delay (replaces the pre-extraction hardcoded `streamType === 'muxed/mpegts'`).
+     */
+    requiresOrderedApply?: boolean;
 }
 
 const VIDEO_OUT_PREFIX = 'video-';
@@ -58,6 +65,7 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
             streamType: 'muxed/mpegts',
             label: `Video ${i + 1}`,
             maxConnections: -1,
+            requiresOrderedApply: true,
         });
     }
     for (let i = 0; i < audioCount; i++) {
@@ -67,6 +75,7 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
             streamType: 'muxed/mpegts',
             label: `Audio ${i + 1}`,
             maxConnections: -1,
+            requiresOrderedApply: true,
         });
     }
     return ports;

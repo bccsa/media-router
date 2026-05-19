@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { parseFormats } from './v4l2Devices.js';
+import { parseFormats } from '@media-router/engine';
 
 export type CodecId = 'h264' | 'h265' | 'av1';
 export type ImplId = 'v4l2' | 'software';

@@ -3,22 +3,64 @@ import { createLogger } from '@media-router/shared-types';
 
 const log = createLogger('MpegTsProbe');
 
+/**
+ * Probe result for an MPEG-TS audio stream.
+ *
+ * `codec` is a string (not a closed union) so plugins can introduce their
+ * own codec identifiers via `registerCodecClassifier`. Consumers typically
+ * switch on the value with a `default` branch for unknown codecs.
+ */
 export interface ProbeResult {
-    codec: 'opus' | 'aac' | 'mp2' | 'ac3' | 'unknown';
+    /** Codec id from the matching classifier, or `'unknown'` if none matched. */
+    codec: string;
     sampleRate?: number;
     channels?: number;
     rawCaps: string;
 }
 
 /**
+ * Pluggable codec classifier for MPEG-TS caps. Registered classifiers are
+ * tested in registration order; the first match wins. Engine code no longer
+ * hardcodes any codec mappings — plugins (typically `mpegts-demuxer` via its
+ * static `registerServices`) provide them.
+ */
+export interface CodecClassifier {
+    /** Returns true when this classifier should handle the given caps string. */
+    test(rawCaps: string): boolean;
+    /** Returns the codec id to expose on `ProbeResult.codec`. */
+    classify(rawCaps: string): string;
+}
+
+const classifiers: CodecClassifier[] = [];
+let warnedAboutEmptyRegistry = false;
+
+/**
+ * Register a codec classifier. Safe to call from a plugin's static
+ * `registerServices` (runs during engine startup, before any module starts
+ * so `probeMpegTsStream` calls during module `onStart` see the classifier).
+ *
+ * Duplicate registrations are tolerated — later entries are tried first, so
+ * a plugin can override an earlier classifier without forcing the engine
+ * to dedupe.
+ */
+export function registerCodecClassifier(c: CodecClassifier): void {
+    // Unshift so newer registrations take priority — useful when an override
+    // plugin replaces a built-in classifier.
+    classifiers.unshift(c);
+}
+
+/** Test-only: clear the classifier list. Not exported from the package index. */
+export function _resetCodecClassifiersForTests(): void {
+    classifiers.length = 0;
+    warnedAboutEmptyRegistry = false;
+}
+
+/**
  * Probes an MPEG-TS UDP multicast stream to detect the audio codec.
  *
- * Runs a short gst-launch pipeline with `-v` flag and parses the negotiated
- * caps from tsdemux to identify the codec type.
- *
- * @param host Multicast group address
- * @param port UDP port
- * @param timeoutMs Max time to wait for detection (default 3000ms)
+ * Runs a short `gst-launch` pipeline with `-v` and parses the negotiated
+ * caps from `tsdemux`. Codec identification is delegated to the registered
+ * classifiers — see `registerCodecClassifier`.
  */
 export function probeMpegTsStream(
     host: string,
@@ -65,7 +107,7 @@ export function probeMpegTsStream(
                 }
 
                 const rawCaps = capsMatch[1].trim();
-                const result = parseCaps(rawCaps);
+                const result = classifyCaps(rawCaps);
                 log.info(
                     { host, port, codec: result.codec, channels: result.channels, rawCaps },
                     'Detected codec',
@@ -86,32 +128,36 @@ export function probeMpegTsStream(
     });
 }
 
-function parseCaps(rawCaps: string): ProbeResult {
-    // Extract sample rate and channels if present
+/**
+ * Map a raw GStreamer caps string to a `ProbeResult`. Exposed so callers that
+ * already have caps (e.g. live pipeline introspection) can run the same
+ * classification logic `probeMpegTsStream` uses without spawning gst-launch.
+ */
+export function classifyCaps(rawCaps: string): ProbeResult {
+    // Extract sample rate and channels generically — every well-formed
+    // GStreamer audio caps string carries them, regardless of codec.
     const rateMatch = rawCaps.match(/rate=\(int\)(\d+)/);
     const chMatch = rawCaps.match(/channels=\(int\)(\d+)/);
     const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : undefined;
     const channels = chMatch ? parseInt(chMatch[1], 10) : undefined;
 
-    if (rawCaps.startsWith('audio/x-opus')) {
-        return { codec: 'opus', sampleRate, channels, rawCaps };
-    }
-
-    if (rawCaps.startsWith('audio/mpeg')) {
-        const versionMatch = rawCaps.match(/mpegversion=\(int\)(\d+)/);
-        const version = versionMatch ? parseInt(versionMatch[1], 10) : 0;
-
-        if (version === 4) {
-            return { codec: 'aac', sampleRate, channels, rawCaps };
-        }
-        if (version === 1) {
-            return { codec: 'mp2', sampleRate, channels, rawCaps };
+    // Codec identification is plugin-provided — see `registerCodecClassifier`.
+    let codec = 'unknown';
+    for (const c of classifiers) {
+        if (c.test(rawCaps)) {
+            codec = c.classify(rawCaps);
+            break;
         }
     }
-
-    if (rawCaps.startsWith('audio/x-ac3')) {
-        return { codec: 'ac3', sampleRate, channels, rawCaps };
+    if (codec === 'unknown' && classifiers.length === 0 && !warnedAboutEmptyRegistry) {
+        // Latch the warning so a probe-heavy module doesn't fill the journal
+        // when the host shipped without the mpegts-demuxer plugin. One log
+        // per process is enough to surface the misconfiguration.
+        warnedAboutEmptyRegistry = true;
+        log.warn(
+            { rawCaps },
+            'No codec classifiers registered — install a plugin that registers them (e.g. mpegts-demuxer). This warning fires once per process.',
+        );
     }
-
-    return { codec: 'unknown', sampleRate, channels, rawCaps };
+    return { codec, sampleRate, channels, rawCaps };
 }

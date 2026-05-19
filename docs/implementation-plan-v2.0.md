@@ -91,7 +91,7 @@ This plan builds Media Router v2.0 from scratch in 15 sequential phases. Each ph
 | 0.6 | CI pipeline | GitHub Actions: lint → type-check → test → build on every PR. Cache pnpm store. Fail fast | UR-TST-006 | §12.4 |
 | 0.7 | Tailwind CSS v4 setup | Install `tailwindcss`, `@tailwindcss/vite` for `manager-ui`, `local-panel`, `profile-manager`. Verify PostCSS works in Vite dev server | UR-UI-001 | §5.1 |
 | 0.8 | Protocol-style dark theme | Create `main.css` with CSS custom properties for dark mode (primary) and light mode. Define all colour tokens per FDS §5.5.1: bg, text, accent, ports, health, VU. Use `.dark` class toggle | UR-UI-006 | §5.5.1 |
-| 0.9 | Plugin directory structure | `v2/plugins/` with `example-plugin/` containing `package.json` (with `mediaRouter` manifest), `engine/ExampleModule.ts`, `tsconfig.json`. Shared `tsconfig.plugin.json` base config | UR-PLG-001 | §9.1 |
+| 0.9 | Plugin directory structure | `v2/plugins/` with each plugin in its own folder containing `package.json` (with `mediaRouter` manifest), `engine/<Name>Module.ts`, `tsconfig.json`. Shared `tsconfig.plugin.json` base config. (Historical: scaffolded against `example-plugin/`, removed once the real plugins shipped) | UR-PLG-001 | §9.1 |
 | 0.10 | `shared-types` package | Define all shared TypeScript interfaces: `StreamType`, `ModulePort`, `ModuleRuntimeState`, `DgramMessage`, `ManagerConnectionProfile`, `MpegTsStreamInfo`, `AudioDeviceSettings`, `ControlIpcMessage`, `PluginManifest`. Include JSDoc on every type | — | §3.2, §9.2 |
 
 #### Files to create
@@ -143,10 +143,10 @@ v2/
 │       └── src/...
 └── plugins/
     ├── tsconfig.plugin.json         # shared plugin TS config
-    └── example-plugin/
+    └── <plugin-name>/               # one folder per plugin
         ├── package.json             # with mediaRouter manifest
         ├── tsconfig.json
-        └── engine/ExampleModule.ts
+        └── engine/<Name>Module.ts
 ```
 
 #### Acceptance criteria
@@ -227,7 +227,7 @@ v2/
 - [ ] `node v2/packages/engine/dist/index.js` starts without errors
 - [ ] Local API serves on port 3001: `/api/v1/health`, `/api/v1/system`, `/api/v1/profiles`
 - [ ] Profile CRUD works: create → list → activate → delete
-- [ ] PluginLoader discovers `example-plugin` and reports its manifest
+- [ ] PluginLoader discovers each plugin in `plugins/` and reports its manifest
 - [ ] ModuleManager can create/start/stop a module instance (no-op plugin)
 - [ ] LcpServer accepts Socket.IO connections on port 8081
 - [ ] Engine auto-connects to manager if active profile configured

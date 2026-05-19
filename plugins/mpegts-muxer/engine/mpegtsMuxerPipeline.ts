@@ -21,6 +21,13 @@ export interface DynamicPort {
     streamType: 'muxed/mpegts';
     label: string;
     maxConnections: number;
+    /**
+     * Marks output ports whose downstream consumers must wait for this
+     * pipeline to be PLAYING before they can be wired. Read by
+     * `ConnectionApplier` to apply such connections first with a settle
+     * delay (replaces the pre-extraction hardcoded `streamType === 'muxed/mpegts'`).
+     */
+    requiresOrderedApply?: boolean;
 }
 
 export interface UdpInputSource {
@@ -79,6 +86,7 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
         streamType: 'muxed/mpegts',
         label: 'MPEG-TS Out',
         maxConnections: -1,
+        requiresOrderedApply: true,
     });
     return ports;
 }

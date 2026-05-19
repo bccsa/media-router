@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ConnectionExecutor } from './ConnectionExecutor.js';
+import { PcmAudioExecutor } from './PcmAudioExecutor.js';
+import { MpegTsUdpExecutor } from './MpegTsUdpExecutor.js';
+import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
 import type { Connection, ActiveHandle } from './MediaRouter.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
@@ -55,13 +58,17 @@ describe('ConnectionExecutor', () => {
         pw = makeMockPipeWire();
         modules = new Map();
         udpPorts = new Map();
-        executor = new ConnectionExecutor(
-            pw as unknown as PipeWireManager,
-            (id) => modules.get(id),
-            (id) => udpPorts.get(id),
-            '239.0.0.1',
-            (id) => id.toUpperCase(),
+        const moduleGetter = (id: string) => modules.get(id);
+        const getUdpPort = (id: string) => udpPorts.get(id);
+        const connLabel = makeConnLabel((id) => id.toUpperCase());
+        const registry = new StreamTypeExecutorRegistry();
+        registry.register(
+            new PcmAudioExecutor(pw as unknown as PipeWireManager, moduleGetter, connLabel),
         );
+        registry.register(
+            new MpegTsUdpExecutor(moduleGetter, getUdpPort, '239.0.0.1', connLabel),
+        );
+        executor = new ConnectionExecutor(registry);
     });
 
     // --- execute() dispatch ---
@@ -624,12 +631,21 @@ describe('ConnectionExecutor', () => {
         });
 
         it('works without displayNameResolver', async () => {
-            const execNoResolver = new ConnectionExecutor(
-                pw as unknown as PipeWireManager,
-                (id) => modules.get(id),
-                (id) => udpPorts.get(id),
-                '239.0.0.1',
+            const moduleGetter = (id: string) => modules.get(id);
+            const getUdpPort = (id: string) => udpPorts.get(id);
+            const connLabel = makeConnLabel(); // no resolver
+            const registry = new StreamTypeExecutorRegistry();
+            registry.register(
+                new PcmAudioExecutor(
+                    pw as unknown as PipeWireManager,
+                    moduleGetter,
+                    connLabel,
+                ),
             );
+            registry.register(
+                new MpegTsUdpExecutor(moduleGetter, getUdpPort, '239.0.0.1', connLabel),
+            );
+            const execNoResolver = new ConnectionExecutor(registry);
 
             modules.set(
                 'src-mod',

@@ -140,4 +140,14 @@ export class Manager {
         await new Promise<void>((resolve) => this.httpServer.close(() => resolve()));
         this.configStore.close();
     }
+
+    /**
+     * Alias for `stop()`. Deployed `start-manager.js` entrypoints (laid down
+     * by the Yocto recipe) call `manager.shutdown()` from their SIGTERM/SIGINT
+     * handlers — without this alias every restart logs a TypeError before
+     * `process.exit(0)` runs and skips cleanup. Keep both names supported.
+     */
+    async shutdown(): Promise<void> {
+        await this.stop();
+    }
 }

@@ -57,7 +57,6 @@ All config changes (settings, rename, position, connections, etc.) flow through 
 | RIST Input | `plugins/rist-input` | Receives RIST streams via `ristreceiver` CLI |
 | RIST Output | `plugins/rist-output` | Sends RIST streams via `ristsender` CLI |
 | N-1 Mixer | `plugins/n1-mixer` | Mix-minus routing — each output gets all inputs except its own |
-| Example Plugin | `plugins/example-plugin` | Template for creating new plugins |
 
 See [plugins/README.md](plugins/README.md) for the full plugin development guide.
 
@@ -187,7 +186,6 @@ media-router/
     rist-input/       # RIST receiver
     rist-output/      # RIST sender
     n1-mixer/         # N-1 mix-minus (dynamic pair count)
-    example-plugin/   # Plugin template
   docs/
     URS-v2.0.md       # User Requirements Specification
     FDS-v2.0.md       # Functional Design Specification

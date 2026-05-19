@@ -1,11 +1,10 @@
-import { GstPluginBase, buildUdpSink, type PipelineDescription } from '@media-router/engine';
-
-function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
+import {
+    GstPluginBase,
+    buildUdpSink,
+    SrtStatPoller,
+    type PipelineDescription,
+    type SrtStatPollerHost,
+} from '@media-router/engine';
 
 /**
  * SRT Input plugin.
@@ -19,18 +18,30 @@ function formatBytes(bytes: number): string {
  */
 export class SrtInputModule extends GstPluginBase {
     private statsTimer: ReturnType<typeof setInterval> | null = null;
-    // Per-caller delta tracking for packet loss
-    private callerStats = new Map<
-        number,
-        { prevLost: number; prevRecv: number; lossAvg: number }
-    >();
-    /** Previous bytes-received total — used to detect stalled connections in caller mode. */
-    private lastRecvBytes = 0;
+    private statPoller: SrtStatPoller;
+
+    constructor() {
+        super();
+        // The host bridges the poller's needs to GstPluginBase's protected
+        // surface. `setSections` writes the mutable array directly because
+        // `dynamicStatusSections` is exposed as a protected field.
+        const host: SrtStatPollerHost = {
+            isRunning: () => this.running,
+            getElementStats: () => this.getElementStats('src'),
+            setStatusData: (section, data) => this.setStatusData(section, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setSections: (sections) => {
+                this.dynamicStatusSections = sections;
+            },
+        };
+        this.statPoller = new SrtStatPoller(host, 'receive');
+    }
 
     async onStart(): Promise<void> {
         // SRT input gets a UDP port for local multicast output (same as encoders)
         if (this.services?.mediaRouter) {
-            this.services.mediaRouter.assignEncoderPort(this.services.instanceId);
+            this.services.mediaRouter.assignUdpPort(this.services.instanceId);
         }
 
         await super.onStart();
@@ -49,13 +60,11 @@ export class SrtInputModule extends GstPluginBase {
                 });
                 this.clearBadge('callers');
                 this.dynamicStatusSections = [];
-                this.lastRecvBytes = 0;
-                this.callerStats.clear();
+                this.statPoller.reset();
             }
         });
 
-        // Start polling SRT stats
-        this.statsTimer = setInterval(() => this.pollStats(), 2000);
+        this.statsTimer = setInterval(() => this.statPoller.poll(), 2000);
         this.updateStatusData();
     }
 
@@ -64,6 +73,7 @@ export class SrtInputModule extends GstPluginBase {
             clearInterval(this.statsTimer);
             this.statsTimer = null;
         }
+        this.statPoller.reset();
         await super.onStop();
     }
 
@@ -85,7 +95,7 @@ export class SrtInputModule extends GstPluginBase {
         uri += '?' + params.join('&');
 
         // Get assigned UDP port for local multicast output
-        const endpoint = this.services?.mediaRouter?.getEncoderEndpoint(this.services.instanceId);
+        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(this.services.instanceId);
         const udpPort = endpoint?.port;
         if (!udpPort) {
             this.log.warn('No UDP port assigned — cannot output MPEG-TS');
@@ -110,117 +120,6 @@ export class SrtInputModule extends GstPluginBase {
             restartOnError: true,
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
         };
-    }
-
-    private async pollStats(): Promise<void> {
-        if (!this.running) return;
-        try {
-            const stats = await this.getElementStats('src');
-            if (!stats) return;
-
-            const callers = stats['callers'] as Array<Record<string, unknown>> | undefined;
-            const callerCount = callers?.length ?? 0;
-
-            const callerFields = [
-                { key: 'bitrate', label: 'Bitrate', unit: 'Mbps' },
-                { key: 'rtt', label: 'RTT', unit: 'ms' },
-                { key: 'packetLoss', label: 'Packet Loss' },
-                { key: 'bytesReceived', label: 'Bytes Received' },
-            ];
-
-            const processCallerStats = (c: Record<string, unknown>, idx: number): void => {
-                if (!this.callerStats.has(idx)) {
-                    this.callerStats.set(idx, { prevLost: 0, prevRecv: 0, lossAvg: 0 });
-                }
-                const tracker = this.callerStats.get(idx)!;
-
-                const rtt = (c['rtt-ms'] ?? '—') as string | number;
-                const bitrate = (c['receive-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as
-                    | string
-                    | number;
-                const rawBytes = Number(c['bytes-received'] ?? 0);
-                const bytesReceived = rawBytes > 0 ? formatBytes(rawBytes) : '—';
-
-                const currLost = Number(c['packets-received-lost'] ?? 0);
-                const currRecv = Number(c['packets-received'] ?? 0);
-                const deltaLost = currLost - tracker.prevLost;
-                const deltaRecv = currRecv - tracker.prevRecv;
-                let packetLoss: string | number = '—';
-
-                if (deltaRecv > 0) {
-                    const instantLoss = (deltaLost / (deltaRecv + deltaLost)) * 100;
-                    tracker.lossAvg = tracker.lossAvg * 0.7 + instantLoss * 0.3;
-                    packetLoss = `${tracker.lossAvg.toFixed(2)}%`;
-                } else if (tracker.prevRecv > 0) {
-                    packetLoss = `${tracker.lossAvg.toFixed(2)}%`;
-                }
-
-                tracker.prevLost = currLost;
-                tracker.prevRecv = currRecv;
-
-                return this.setStatusData(`caller-${idx}`, {
-                    bitrate,
-                    rtt,
-                    packetLoss,
-                    bytesReceived,
-                });
-            };
-
-            if (callers && callers.length > 0) {
-                // Listener mode — per-caller dynamic sections
-                const sections = callers.map((_, i) => ({
-                    id: `caller-${i}`,
-                    label: `Caller ${i + 1}`,
-                    fields: callerFields,
-                }));
-                this.dynamicStatusSections = sections;
-                for (let i = 0; i < callers.length; i++) processCallerStats(callers[i], i);
-                // Clean up stale trackers
-                for (const [idx] of this.callerStats) {
-                    if (idx >= callers.length) this.callerStats.delete(idx);
-                }
-                this.setStatusData('stats', { callers: callerCount });
-                this.setBadge('callers', {
-                    icon: 'users',
-                    text: String(callerCount),
-                    color: callerCount > 0 ? '#10b981' : '#6b7280',
-                });
-                if (callerCount === 0) {
-                    this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
-                } else {
-                    this.clearBadge('status');
-                }
-            } else {
-                // Caller mode — check if actually connected by looking at recv bytes delta
-                this.dynamicStatusSections = [];
-                processCallerStats(stats, 0);
-                const rawBytes = Number(
-                    stats['bytes-received-total'] ?? stats['bytes-received'] ?? 0,
-                );
-                const prevBytes = this.lastRecvBytes ?? 0;
-                const isConnected = rawBytes > 0 && rawBytes > prevBytes;
-                this.lastRecvBytes = rawBytes;
-
-                this.setStatusData('stats', {
-                    ...(this.statusData['caller-0'] ?? {}),
-                    bytesReceived: rawBytes > 0 ? formatBytes(rawBytes) : '—',
-                    callers: callerCount || '—',
-                });
-                if (isConnected) {
-                    this.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
-                    this.clearBadge('callers');
-                } else {
-                    this.setBadge('status', {
-                        icon: 'radio',
-                        text: rawBytes > 0 ? 'Stalled' : 'Connecting',
-                        color: '#f59e0b',
-                    });
-                    this.clearBadge('callers');
-                }
-            }
-        } catch {
-            /* best-effort */
-        }
     }
 
     private updateStatusData(): void {

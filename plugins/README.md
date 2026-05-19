@@ -94,6 +94,24 @@ The plugin will automatically appear in the Manager UI's "Add Module" panel.
 
 ---
 
+## Picking a Starting Point
+
+Don't start from a blank file — copy an existing plugin whose architecture matches what you're building, then change the parts you need. Each row below points to a plugin that's already wired to the right base patterns:
+
+| Building... | Start from | Why |
+|---|---|---|
+| A GStreamer pipeline that consumes/produces audio | `audio-decoder` or `audio-encoder` | Simple `buildPipeline` + UDP I/O + stats polling |
+| A network ingress/egress plugin | `srt-input` / `srt-output` | UDP-port allocation, per-caller stats, badges |
+| A plugin that owns a hardware device (audio source/sink, V4L2, DRM) | `audio-input` / `audio-output` | `static registerServices` for device provider, watchdog hooks |
+| A CLI-tool wrapper (returns `null` from `buildPipeline`) | `rist-input` / `rist-output` | `ProcessManager` lifecycle, stderr parsing |
+| A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
+| A multi-port plugin with variable port count | `mpegts-demuxer` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
+| A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
+
+The Quick Start example above is a minimal skeleton — for anything non-trivial, copying a real plugin will save more time than reading docs.
+
+---
+
 ## Manifest Reference (`package.json` → `mediaRouter`)
 
 | Field | Type | Required | Description |
@@ -510,9 +528,25 @@ Your module class extends `GstPluginBase` which handles GStreamer child process 
 onInit(config, services) → onStart() → [running] → onStop() → onDestroy()
 ```
 
+### Plugin Architecture Variants
+
+Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three architectural patterns. Pick the one that fits, then copy the matching starter (see "Picking a Starting Point" above).
+
+| Variant | `buildPipeline` returns | Process model | Examples |
+|---|---|---|---|
+| **GStreamer pipeline** | a `PipelineDescription` | Python `gst-pipeline-runner.py` child process spawned by `GstChildProcess` | `audio-decoder`, `audio-encoder`, `srt-input`, `srt-output`, `mpegts-demuxer`, `mpegts-muxer`, `video-encoder`, `video-player`, `audio-input`, `audio-output` |
+| **External CLI tool** | `null` | A long-running CLI managed by `services.processManager` (auto-killed on stop) | `rist-input` (`ristreceiver`), `rist-output` (`ristsender`) |
+| **PipeWire-only** | `null` | No subprocess — pure PipeWire null-sinks/loopbacks via `services.pipeWire` | `n1-mixer` |
+
+For the two "no-pipeline" variants:
+
+- `super.onStart()` is still safe to call — it skips the child-process setup and returns. You still get health/badge/status-data plumbing and (if the subclass implements `getWatchedDeviceName`) the device watchdog.
+- `setElementProperty` / `getElementProperty` / `getElementStats` are no-ops — there's no GStreamer pipeline to read from. Use `processManager` events or PipeWire queries instead.
+- `vuData` won't be populated by the base. If you want VU, drive it yourself by reading PipeWire monitor levels.
+
 ### Required: `buildPipeline(config)`
 
-Returns a GStreamer pipeline string, or `null` if the module should be idle (e.g. decoder with no encoder connected).
+Returns a GStreamer pipeline string, or `null` if the module should be idle (e.g. decoder with no encoder connected, or a no-pipeline plugin per the variants table above).
 
 ```typescript
 buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -606,6 +640,171 @@ this.setHealth('ok');
 Health values: `'ok'` (green dot), `'warning'` (amber dot), `'error'` (red dot), `'stopped'` (grey dot).
 
 The pipeline automatically sets health to `'ok'` when playing and `'stopped'` when null. Plugins override this for custom status (e.g. decoder with no connection → warning).
+
+### Static Hooks (Class-Level, Not Instance-Level)
+
+Two optional **static** methods on the module class run **once per plugin class** during engine startup — before any module instances exist. They let a plugin probe the host for capabilities and contribute engine-wide services.
+
+#### `static initManifest(manifest)` — Probe host capabilities
+
+Use when the manifest depends on what the host machine actually supports. The method is called once after the manifest is parsed; mutate `manifest` in place to surface detected capabilities (codec lists, encoder enums, hardware presence flags).
+
+```typescript
+import { GstPluginBase, probeGstElement, type PluginManifest } from '@media-router/engine';
+
+export class VideoEncoderModule extends GstPluginBase {
+    static async initManifest(manifest: PluginManifest): Promise<void> {
+        const encoders: string[] = [];
+        if (await probeGstElement('v4l2h264enc')) encoders.push('v4l2h264enc');
+        if (await probeGstElement('x264enc')) encoders.push('x264enc');
+        // Reflect detected encoders into the manifest's configSchema so the
+        // settings panel shows only the ones available on this host.
+        const schema = manifest.configSchema as { properties?: Record<string, unknown> };
+        if (schema.properties?.encoder) {
+            (schema.properties.encoder as { enum?: string[] }).enum = encoders;
+        }
+    }
+
+    // ...rest of the class
+}
+```
+
+Real examples: [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts) (HW encoder probing), [`audio-encoder`](audio-encoder/engine/AudioEncoderModule.ts) (codec capability), [`video-player`](video-player/engine/VideoPlayerModule.ts) (sink probing).
+
+#### `static registerServices(services)` — Contribute engine-wide services
+
+Use when the plugin **owns** a device type that the manager-UI dropdown should populate from. The method is called once with the full `EngineServices` bundle; register a `DeviceProvider` so any other plugin can target devices of that type via `x-deviceType` in its config schema.
+
+For PipeWire source/sink devices the engine ships a one-line helper:
+
+```typescript
+import {
+    GstPluginBase,
+    registerPipeWireDeviceProvider,
+    type EngineServices,
+} from '@media-router/engine';
+
+export class AudioInputModule extends GstPluginBase {
+    static registerServices(services: EngineServices): void {
+        registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
+    }
+}
+```
+
+For non-PipeWire devices (V4L2, DRM, custom hardware), register a raw provider:
+
+```typescript
+static registerServices(services: EngineServices): void {
+    services.deviceProviders.register({
+        type: 'drm-connector',
+        pollMs: 0, // disable polling — DRM connectors don't hot-plug
+        list: () => listDrmConnectors(),
+    });
+}
+```
+
+Any plugin's config schema can then point at the registered type:
+
+```json
+"configSchema": {
+    "properties": {
+        "display": { "type": "string", "x-deviceType": "drm-connector" }
+    }
+}
+```
+
+Real examples: [`audio-input`](audio-input/engine/AudioInputModule.ts) / [`audio-output`](audio-output/engine/AudioOutputModule.ts) (audio-source/sink), [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts) (V4L2), [`video-player`](video-player/engine/VideoPlayerModule.ts) (DRM connectors).
+
+### Dynamic Ports (`getDynamicPorts`)
+
+When a plugin's port count depends on its config (e.g. an N→M mixer where the user controls N and M), override `getDynamicPorts()` on the instance. The engine calls it every time the module's ports are queried — leave the manifest's `ports` field empty, and `getDynamicPorts` becomes the source of truth.
+
+```typescript
+getDynamicPorts(): Array<{
+    id: string;
+    direction: 'input' | 'output';
+    streamType: string;
+    label: string;
+    maxConnections?: number;
+}> {
+    const pairCount = (this.config.pairCount as number) ?? 4;
+    const ports: ReturnType<typeof this.getDynamicPorts> = [];
+    for (let i = 0; i < pairCount; i++) {
+        ports.push({ id: `in-${i}`, direction: 'input', streamType: 'audio/pcm', label: `In ${i + 1}` });
+        ports.push({ id: `out-${i}`, direction: 'output', streamType: 'audio/pcm', label: `Out ${i + 1}` });
+    }
+    return ports;
+}
+```
+
+Triggering regeneration: changing a config field that affects port count (e.g. `pairCount`) is enough — the `patchRules` cascade re-emits the dynamic ports and prunes any connections to ports that no longer exist.
+
+For plugins where each port maps to a distinct PipeWire node (rather than one shared null-sink for the whole module), also implement `getPipeWireNodeForPort(portId)`:
+
+```typescript
+getPipeWireNodeForPort(portId: string): { source?: string; sink?: string } {
+    // e.g. each output port has its own remap-sink named MR_PW_<instanceId>_<portId>
+    return { sink: `${this.pwNodeName}_${portId}` };
+}
+```
+
+Real examples: [`n1-mixer`](n1-mixer/engine/N1MixerModule.ts) (per-port PipeWire nodes), [`mpegts-demuxer`](mpegts-demuxer/engine/MpegTsDemuxerModule.ts) and [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts) (dynamic outputs/inputs based on stream counts).
+
+### Device Watchdog (Hardware Hot-Plug)
+
+Plugins bound to a specific hardware device (USB mic, HDMI display, V4L2 camera) can opt into a hot-plug watchdog that polls PipeWire every 2 s and calls subclass hooks on disconnect/reconnect. Override `getWatchedDeviceName()` to enable; the base class handles the polling.
+
+```typescript
+export class AudioInputModule extends GstPluginBase {
+    private deviceName = '';
+
+    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
+        await super.onInit(config, services);
+        this.deviceName = (config.device as string) ?? '';
+    }
+
+    // Return the PipeWire device name to watch (or null to disable).
+    protected getWatchedDeviceName(): string | null {
+        return this.deviceName || null;
+    }
+
+    // Called when the device disappears — teardown PipeWire nodes etc.
+    protected async onDeviceDisconnected(): Promise<void> {
+        if (this.remapModuleId !== null) {
+            await this.services!.pipeWire.unloadModule(this.remapModuleId);
+            this.remapModuleId = null;
+        }
+    }
+
+    // Called when the device reappears — rebuild whatever onDeviceDisconnected tore down.
+    protected async onDeviceReconnected(): Promise<void> {
+        this.remapModuleId = await this.services!.pipeWire.loadRemapSource(/* ... */);
+    }
+
+    async onStart(): Promise<void> {
+        await super.onStart();
+        this.startDeviceWatchdog(/* initiallyConnected */ true);
+    }
+
+    async onStop(): Promise<void> {
+        await this.stopDeviceWatchdog();
+        await super.onStop();
+    }
+}
+```
+
+The base class flips `health` to `'error'` on disconnect and back to `'ok'` once `onDeviceReconnected` resolves. If reconnection throws (e.g. the device returned but format probing failed), the watchdog stays in "disconnected" mode so the next tick retries.
+
+Real examples: [`audio-input`](audio-input/engine/AudioInputModule.ts), [`audio-output`](audio-output/engine/AudioOutputModule.ts), [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts).
+
+### Live-Updatable Settings: `liveUpdatableParams` vs `x-liveUpdatable`
+
+Two paths exist for marking a setting as live-updatable (changeable without restarting the pipeline). Use **both** for clarity, or prefer the manifest flag.
+
+- **Manifest flag** — `"x-liveUpdatable": true` (or `"x-live": true`) on the field in `configSchema`. This is the declarative default; the manager-UI uses it to skip the Apply button and the engine uses it to route the change to `onLiveConfigUpdate` rather than restarting.
+- **Code property** — `protected liveUpdatableParams: string[] = ['volume', 'bitrate']` on the module class. This is the runtime override path. `GstPluginBase.getLiveUpdatableParams()` returns this array; subclasses can override the method to compute it dynamically (e.g. `video-encoder` only marks `bitrate` live when the current codec supports it).
+
+When the two disagree, the runtime `getLiveUpdatableParams()` result wins for behaviour, but the manifest flag still controls UI affordances. Keep them aligned unless you have a runtime reason to diverge.
 
 ### Interacting with the GStreamer Pipeline
 
@@ -871,18 +1070,24 @@ Volume is in percentage (0-500+).
 
 ---
 
-## UDP Multicast (MPEG-TS Modules)
+## UDP Multicast (Generic Plugin Infrastructure)
 
-MPEG-TS connections use UDP multicast on loopback (`239.255.0.x`, ports 40000-50000). The `UdpPortManager` assigns ports per-encoder at startup.
+Inter-module routing of `muxed/mpegts` streams uses UDP multicast on loopback (`239.255.0.x`, ports 40000-50000). `MediaRouter` exposes a generic UDP-port pool used by **any** plugin that produces or consumes a muxed/mpegts stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
-### Encoder Pattern
+| Method on `services.mediaRouter` | Purpose |
+|---|---|
+| `assignUdpPort(instanceId, portId?)` | Acquire a port for this module (or a specific output port for multi-port plugins). Returns `{ host, port }` or `null` if the pool is exhausted. |
+| `getUdpEndpoint(instanceId, portId?)` | Re-read a previously-assigned endpoint (e.g. when the same plugin builds the pipeline a second time). |
+| `releaseUdpPort(instanceId, portId?)` | Release one specific slot. |
+| `releaseAllUdpPortsFor(instanceId)` | Release the bare slot **and** every per-port sub-slot. Called automatically on module stop. |
+| `getModuleUdpSource(sinkModuleId, sinkPortId?)` | From the *consumer* side: find the upstream encoder's port for a given input port. Returns `undefined` if no connection. |
 
-Encoders always output to their assigned UDP port. Decoders subscribe when connected.
+### Producer pattern (encoder, muxer, SRT-in re-broadcasting…)
 
 ```typescript
 buildPipeline(config: Record<string, unknown>): PipelineDescription {
     const instanceId = this.services?.instanceId ?? '';
-    const endpoint = this.services?.mediaRouter?.assignEncoderPort(instanceId);
+    const endpoint = this.services?.mediaRouter?.assignUdpPort(instanceId);
     const udpSink = endpoint
         ? `udpsink host=${endpoint.host} port=${endpoint.port} multicast-iface=lo auto-multicast=true sync=false`
         : 'fakesink sync=false';
@@ -891,9 +1096,15 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription {
 }
 ```
 
-### Decoder Pattern
+For per-output-port allocation (e.g. MPEG-TS demuxer with N outputs), pass a `portId`:
 
-Decoders return `null` from `buildPipeline` when no encoder is connected. The MediaRouter restarts them when a connection is made.
+```typescript
+const ep = router.assignUdpPort(instanceId, 'audio-0');
+```
+
+### Consumer pattern (decoder, muxer input, SRT-out…)
+
+Consumers return `null` from `buildPipeline` when no upstream is connected. The router restarts them when a connection is made.
 
 ```typescript
 buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -913,9 +1124,10 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks |
-| `mediaRouter` | `MediaRouter` | Query UDP endpoints, assign encoder ports, probe streams |
-| `processManager` | `ProcessManager` | Spawn and manage external CLI tools (see below) |
+| `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices |
+| `mediaRouter` | `MediaRouter` | Assign/release UDP ports (`assignUdpPort` / `releaseUdpPort`), look up upstream UDP sources (`getModuleUdpSource`) |
+| `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
+| `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |
 | `instanceId` | `string` | Unique module instance ID |
 
 ### ProcessManager — Spawning External Processes
@@ -1019,11 +1231,18 @@ export class RistReceiverModule extends GstPluginBase {
 
 ## Example Plugins
 
-See these directories for complete working examples:
+Complete working plugins to copy from. Each one demonstrates a distinct subset of the contract:
 
-| Plugin | Path | Features |
-|--------|------|----------|
-| Audio Input | `plugins/audio-input/` | Device picker, volume slider, PipeWire null-sink, VU metering |
-| Audio Output | `plugins/audio-output/` | Device picker, VU monitoring loopback |
-| Audio Encoder | `plugins/audio-encoder/` | Codec selection, frame size, live bitrate, UDP multicast output |
-| Audio Decoder | `plugins/audio-decoder/` | Stream probing, auto-detect codec, idle state when disconnected |
+| Plugin | Path | Patterns demonstrated |
+|--------|------|----------------------|
+| Audio Input | `plugins/audio-input/` | Device picker, `registerPipeWireDeviceProvider`, device watchdog, native `module-remap-source`, VU process |
+| Audio Output | `plugins/audio-output/` | Symmetric to audio-input but for sinks; `registerPipeWireDeviceProvider` with `direction: 'sink'` |
+| Audio Encoder | `plugins/audio-encoder/` | `static initManifest` for codec capability probing, live bitrate via `setElementProperty`, UDP-port allocation |
+| Audio Decoder | `plugins/audio-decoder/` | Stream probing (`probeMpegTsStream`), idle when no upstream connected (`null` from `buildPipeline`). **Requires `mpegts-demuxer` to be installed** — that plugin's `static registerServices` provides the opus/aac/mp2/ac3 codec classifiers `probeMpegTsStream` consults. Without it, `probeResult.codec` always reports `'unknown'` and the decoder silently falls back to `decodebin`. |
+| SRT Input / Output | `plugins/srt-input/`, `plugins/srt-output/` | Per-caller stat polling, dynamic `statusSections` for multi-peer state, badges, `restartBackoffMs` tuning |
+| RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | **No GStreamer pipeline** — `ProcessManager` driving `ristreceiver` / `ristsender`, stderr-JSON stat parsing |
+| MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignUdpPort(instanceId, portId)`, `linkOnPadAdded` rules |
+| MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
+| N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
+| Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
+| Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates |

@@ -114,7 +114,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
             return null;
         }
 
-        const endpoint = router.assignEncoderPort(instanceId);
+        const endpoint = router.assignUdpPort(instanceId);
         if (!endpoint) {
             this.setHealth('error', 'No free UDP ports available');
             return null;

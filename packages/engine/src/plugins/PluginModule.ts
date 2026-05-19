@@ -1,3 +1,4 @@
+import type { PluginManifest } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
@@ -11,6 +12,25 @@ export interface EngineServices {
     processManager: ProcessManager;
     deviceProviders: DeviceProviderRegistry;
 }
+
+/**
+ * Optional static hooks a plugin class may expose. Both run at most once per
+ * plugin class during load:
+ * - `initManifest(manifest)` — probe the host for runtime capabilities and
+ *   mutate the manifest before any module instances are created (used by
+ *   video-encoder to detect available HW encoders, audio-encoder to detect
+ *   supported codecs, etc.).
+ * - `registerServices(services)` — register engine-wide contributions like
+ *   device providers (used by audio-input/output to expose source/sink
+ *   lists to the manager-UI).
+ */
+export interface PluginClassStatics {
+    initManifest?(manifest: PluginManifest): void | Promise<void>;
+    registerServices?(services: EngineServices): void | Promise<void>;
+}
+
+/** Runtime-discovered plugin class: a constructable PluginModule with optional static hooks. */
+export type PluginConstructor = (new () => PluginModule) & PluginClassStatics;
 
 /** Services passed to each module instance's `onInit` — `EngineServices` plus the instance id. */
 export interface ModuleServices extends EngineServices {

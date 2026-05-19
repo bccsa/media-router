@@ -23,9 +23,17 @@ describe('VideoPlayerModule helpers', () => {
                 'waylandsink name=sink sync=false',
             );
         });
-        it('falls through to kmssink connector when no compositor is present', () => {
+        it('targets kmssink by numeric connector-id (older kmssink builds reject connector-name)', () => {
+            expect(
+                buildSink('HDMI-A-1', { ...both, waylandSession: false, connectorId: 32 }),
+            ).toBe('kmssink name=sink connector-id=32 sync=false');
+        });
+        it('falls back to auto-pick kmssink when the connector id can not be resolved', () => {
+            // Picked a display but sysfs lookup returned undefined — better to
+            // auto-pick than emit `connector-name=...` which older kmssink
+            // builds reject with a parse error.
             expect(buildSink('HDMI-A-1', { ...both, waylandSession: false })).toBe(
-                'kmssink name=sink connector-name=HDMI-A-1 sync=false',
+                'kmssink name=sink sync=false',
             );
         });
         it('uses kmssink without a connector when display is unset', () => {
@@ -40,8 +48,13 @@ describe('VideoPlayerModule helpers', () => {
         });
         it('uses kmssink even with a compositor present when waylandsink is missing', () => {
             expect(
-                buildSink('HDMI-A-1', { wayland: false, kms: true, waylandSession: true }),
-            ).toBe('kmssink name=sink connector-name=HDMI-A-1 sync=false');
+                buildSink('HDMI-A-1', {
+                    wayland: false,
+                    kms: true,
+                    waylandSession: true,
+                    connectorId: 32,
+                }),
+            ).toBe('kmssink name=sink connector-id=32 sync=false');
         });
     });
 
@@ -142,7 +155,10 @@ describe('VideoPlayerModule helpers', () => {
             expect(desc.pipeline).toContain('udpsrc multicast-group=239.255.0.1');
             expect(desc.pipeline).toContain('tsdemux');
             expect(desc.pipeline).toContain('decodebin');
-            expect(desc.pipeline).toContain('kmssink name=sink connector-name=HDMI-A-1');
+            // On a test machine without /sys/class/drm, resolveConnectorId returns
+            // undefined → kmssink falls back to auto-pick (no connector-id prop).
+            expect(desc.pipeline).toContain('kmssink name=sink');
+            expect(desc.pipeline).not.toContain('connector-name=');
             expect(desc.pipeline).not.toContain('videotestsrc');
             expect(desc.liveElements).toEqual({});
         });

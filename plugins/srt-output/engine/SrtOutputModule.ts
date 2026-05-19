@@ -2,16 +2,10 @@ import {
     GstPluginBase,
     buildLeakyQueue,
     buildUdpSrc,
+    SrtStatPoller,
     type PipelineDescription,
-    type ModuleServices,
+    type SrtStatPollerHost,
 } from '@media-router/engine';
-
-function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
 
 /**
  * SRT Output plugin.
@@ -24,13 +18,22 @@ function formatBytes(bytes: number): string {
  */
 export class SrtOutputModule extends GstPluginBase {
     private statsTimer: ReturnType<typeof setInterval> | null = null;
-    // Per-caller delta tracking for packet loss
-    private callerStats = new Map<
-        number,
-        { prevLost: number; prevSent: number; lossAvg: number }
-    >();
-    /** Previous bytes-sent total — used to detect stalled connections in caller mode. */
-    private lastSentBytes = 0;
+    private statPoller: SrtStatPoller;
+
+    constructor() {
+        super();
+        const host: SrtStatPollerHost = {
+            isRunning: () => this.running,
+            getElementStats: () => this.getElementStats('sink'),
+            setStatusData: (section, data) => this.setStatusData(section, data),
+            setBadge: (id, badge) => this.setBadge(id, badge),
+            clearBadge: (id) => this.clearBadge(id),
+            setSections: (sections) => {
+                this.dynamicStatusSections = sections;
+            },
+        };
+        this.statPoller = new SrtStatPoller(host, 'send');
+    }
 
     async onStart(): Promise<void> {
         await super.onStart();
@@ -49,13 +52,11 @@ export class SrtOutputModule extends GstPluginBase {
                 });
                 this.clearBadge('callers');
                 this.dynamicStatusSections = [];
-                this.lastSentBytes = 0;
-                this.callerStats.clear();
+                this.statPoller.reset();
             }
         });
 
-        // Start polling SRT stats
-        this.statsTimer = setInterval(() => this.pollStats(), 2000);
+        this.statsTimer = setInterval(() => this.statPoller.poll(), 2000);
         this.updateStatusData();
     }
 
@@ -64,6 +65,7 @@ export class SrtOutputModule extends GstPluginBase {
             clearInterval(this.statsTimer);
             this.statsTimer = null;
         }
+        this.statPoller.reset();
         await super.onStop();
     }
 
@@ -110,147 +112,6 @@ export class SrtOutputModule extends GstPluginBase {
             restartOnError: true,
             restartBackoffMs: { baseMs: 5000, maxMs: 10000 },
         };
-    }
-
-    private async pollStats(): Promise<void> {
-        if (!this.running) return;
-        try {
-            const stats = await this.getElementStats('sink');
-            if (!stats) return;
-
-            const callers = stats['callers'] as Array<Record<string, unknown>> | undefined;
-            const callerCount = callers?.length ?? 0;
-
-            if (callers && callers.length > 0) {
-                // Listener mode — per-caller stats as dynamic sections
-                const sections: Array<{
-                    id: string;
-                    label: string;
-                    fields: Array<{ key: string; label: string; unit?: string }>;
-                }> = [];
-                const callerFields = [
-                    { key: 'bitrate', label: 'Bitrate', unit: 'Mbps' },
-                    { key: 'rtt', label: 'RTT', unit: 'ms' },
-                    { key: 'packetLoss', label: 'Packet Loss' },
-                    { key: 'bytesSent', label: 'Bytes Sent' },
-                ];
-
-                for (let i = 0; i < callers.length; i++) {
-                    const c = callers[i];
-                    const sectionId = `caller-${i}`;
-                    sections.push({
-                        id: sectionId,
-                        label: `Caller ${i + 1}`,
-                        fields: callerFields,
-                    });
-
-                    // Get or create per-caller tracking
-                    if (!this.callerStats.has(i)) {
-                        this.callerStats.set(i, { prevLost: 0, prevSent: 0, lossAvg: 0 });
-                    }
-                    const tracker = this.callerStats.get(i)!;
-
-                    const rtt = (c['rtt-ms'] ?? '—') as string | number;
-                    const bitrate = (c['send-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as
-                        | string
-                        | number;
-                    const rawBytes = Number(c['bytes-sent'] ?? 0);
-                    const bytesSent = rawBytes > 0 ? formatBytes(rawBytes) : '—';
-
-                    const currLost = Number(c['packets-sent-lost'] ?? 0);
-                    const currSent = Number(c['packets-sent'] ?? 0);
-                    const deltaLost = currLost - tracker.prevLost;
-                    const deltaSent = currSent - tracker.prevSent;
-                    let packetLoss: string | number = '—';
-
-                    if (deltaSent > 0) {
-                        const instantLoss = (deltaLost / (deltaSent + deltaLost)) * 100;
-                        tracker.lossAvg = tracker.lossAvg * 0.7 + instantLoss * 0.3;
-                        packetLoss = `${tracker.lossAvg.toFixed(2)}%`;
-                    } else if (tracker.prevSent > 0) {
-                        packetLoss = `${tracker.lossAvg.toFixed(2)}%`;
-                    }
-
-                    tracker.prevLost = currLost;
-                    tracker.prevSent = currSent;
-
-                    this.setStatusData(sectionId, { bitrate, rtt, packetLoss, bytesSent });
-                }
-
-                // Update dynamic sections and summary
-                this.dynamicStatusSections = sections;
-                this.setStatusData('stats', { callers: callerCount });
-                this.setBadge('callers', {
-                    icon: 'users',
-                    text: String(callerCount),
-                    color: callerCount > 0 ? '#10b981' : '#6b7280',
-                });
-                if (callerCount === 0) {
-                    this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
-                } else {
-                    this.clearBadge('status');
-                }
-
-                // Clean up stale caller trackers
-                for (const [idx] of this.callerStats) {
-                    if (idx >= callers.length) this.callerStats.delete(idx);
-                }
-            } else {
-                // Caller mode — check if actually sending by looking at bytes delta
-                const c = stats;
-                const rtt = (c['rtt-ms'] ?? '—') as string | number;
-                const bitrate = (c['send-rate-mbps'] ?? c['bandwidth-mbps'] ?? '—') as
-                    | string
-                    | number;
-                const rawBytes = Number(c['bytes-sent'] ?? stats['bytes-sent-total'] ?? 0);
-                const bytesSent = rawBytes > 0 ? formatBytes(rawBytes) : '—';
-                const prevBytes = this.lastSentBytes;
-                const isSending = rawBytes > 0 && rawBytes > prevBytes;
-                this.lastSentBytes = rawBytes;
-
-                if (!this.callerStats.has(0)) {
-                    this.callerStats.set(0, { prevLost: 0, prevSent: 0, lossAvg: 0 });
-                }
-                const tracker = this.callerStats.get(0)!;
-                const currLost = Number(c['packets-sent-lost'] ?? 0);
-                const currSent = Number(c['packets-sent'] ?? 0);
-                const deltaLost = currLost - tracker.prevLost;
-                const deltaSent = currSent - tracker.prevSent;
-                let packetLoss: string | number = '—';
-
-                if (deltaSent > 0) {
-                    const instantLoss = (deltaLost / (deltaSent + deltaLost)) * 100;
-                    tracker.lossAvg = tracker.lossAvg * 0.7 + instantLoss * 0.3;
-                    packetLoss = `${tracker.lossAvg.toFixed(2)}%`;
-                } else if (tracker.prevSent > 0) {
-                    packetLoss = `${tracker.lossAvg.toFixed(2)}%`;
-                }
-
-                tracker.prevLost = currLost;
-                tracker.prevSent = currSent;
-
-                this.dynamicStatusSections = [];
-                this.setStatusData('stats', {
-                    bitrate,
-                    rtt,
-                    packetLoss,
-                    bytesSent,
-                    callers: callerCount || '—',
-                });
-                if (isSending) {
-                    this.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
-                } else {
-                    this.setBadge('status', {
-                        icon: 'radio',
-                        text: rawBytes > 0 ? 'Stalled' : 'Connecting',
-                        color: '#f59e0b',
-                    });
-                }
-                this.clearBadge('callers');
-            }
-        } catch {
-            /* best-effort */
-        }
     }
 
     private updateStatusData(): void {

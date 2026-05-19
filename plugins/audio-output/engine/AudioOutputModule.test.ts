@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { AudioOutputModule } from './AudioOutputModule.js';
 
 async function tickWatchdog(module: AudioOutputModule): Promise<void> {
-    await (module as any).checkDevice();
+    await (module as any).deviceWatchdog?.tick();
 }
 
 function createMockPipeWire(opts: { devicePresent: boolean; channels?: number; sampleRate?: number } = { devicePresent: true, channels: 2, sampleRate: 48000 }) {

@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-audio-encoder",
     "version": "2.0.0",
     "private": true,
-    "description": "Audio encoder \u2014 PCM input to MPEG-TS output (Opus/AAC/PCM)",
+    "description": "Audio encoder — PCM input to MPEG-TS output (Opus/AAC/PCM)",
     "mediaRouter": {
         "pluginId": "audio-encoder",
         "displayName": "Audio Encoder",
@@ -28,7 +28,8 @@
                 "direction": "output",
                 "streamType": "muxed/mpegts",
                 "label": "MPEG-TS Out",
-                "maxConnections": -1
+                "maxConnections": -1,
+                "requiresOrderedApply": true
             }
         ],
         "configSchema": {
@@ -125,7 +126,7 @@
                         50
                     ],
                     "default": 10,
-                    "description": "Expected packet loss % \u2014 encoder adds more redundancy at higher values",
+                    "description": "Expected packet loss % — encoder adds more redundancy at higher values",
                     "x-showWhen": "codec=opus"
                 },
                 "tsAlignment": {
