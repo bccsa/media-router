@@ -12,10 +12,9 @@ import type { Device } from '@media-router/shared-types';
  * component (settings panels, add-module dialogs, future UI) can render
  * device options without knowing which plugin owns the type.
  *
- * Initial snapshot: components do one HTTP `GET
- * /api/v1/engines/:id/system/devices/:type` on mount and feed the result into
- * `set()`. After that, live updates arrive via `applyPush()` from the socket
- * store — no polling timers.
+ * Initial snapshot: components emit the `device:list` Socket.IO RPC on mount
+ * and feed the ack response into `set()`. After that, live updates arrive
+ * via `applyPush()` from the socket store — no polling timers.
  */
 export const useDeviceStore = defineStore('devices', () => {
     // Map reassigned as a whole on change so Vue's reactivity tracks it.
@@ -46,5 +45,27 @@ export const useDeviceStore = defineStore('devices', () => {
         lists.value = new Map(lists.value);
     }
 
-    return { get, set, applyPush, clear };
+    /**
+     * Re-key all `${oldEngineId}::*` entries to `${newEngineId}::*` after a
+     * server-side rename. Without this the renamed engine's settings panels
+     * render empty dropdowns until the engine republishes — possibly never
+     * if the engine just sits idle.
+     */
+    function rename(oldEngineId: string, newEngineId: string): void {
+        if (oldEngineId === newEngineId) return;
+        const prefix = `${oldEngineId}::`;
+        let changed = false;
+        for (const k of Array.from(lists.value.keys())) {
+            if (k.startsWith(prefix)) {
+                const suffix = k.slice(prefix.length);
+                const value = lists.value.get(k)!;
+                lists.value.delete(k);
+                lists.value.set(`${newEngineId}::${suffix}`, value);
+                changed = true;
+            }
+        }
+        if (changed) lists.value = new Map(lists.value);
+    }
+
+    return { get, set, applyPush, clear, rename };
 });

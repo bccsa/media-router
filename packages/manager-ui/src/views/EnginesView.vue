@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useEngineStore } from '@/stores/engines';
+import { useSocketStore } from '@/stores/socket';
 import MrButton from '@/components/common/MrButton.vue';
 import MrModal from '@/components/common/MrModal.vue';
 
 const engineStore = useEngineStore();
+const socket = useSocketStore();
 const search = ref('');
 const filteredEngines = computed(() => {
     if (!search.value) return engineStore.engineList;
@@ -27,20 +29,11 @@ async function register() {
     loading.value = true;
     error.value = '';
     try {
-        const res = await fetch('/api/v1/engines', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(form.value),
-        });
-        if (!res.ok) {
-            const data = await res.json();
-            error.value = data.error ?? 'Failed';
-            return;
-        }
+        await socket.request('engine:create', { ...form.value });
         showRegister.value = false;
         form.value = { engineId: '', displayName: '', password: '' };
-    } catch {
-        error.value = 'Network error';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed';
     } finally {
         loading.value = false;
     }

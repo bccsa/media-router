@@ -360,6 +360,27 @@ export const useEngineStore = defineStore('engines', () => {
         engines.value = new Map(engines.value);
     }
 
+    /**
+     * Swap an engine's Map key + internal `engineId` after a server-side
+     * rename. Insertion order is preserved across all engines so the sidebar
+     * doesn't reshuffle as a side effect of the rekey — we rebuild the Map
+     * in the original sequence with the renamed entry substituted in place.
+     */
+    function renameEngine(oldEngineId: string, newEngineId: string) {
+        if (oldEngineId === newEngineId) return;
+        const engine = engines.value.get(oldEngineId);
+        if (!engine || engines.value.has(newEngineId)) return;
+        const next = new Map<string, EngineState>();
+        for (const [key, value] of engines.value) {
+            if (key === oldEngineId) {
+                next.set(newEngineId, { ...value, engineId: newEngineId });
+            } else {
+                next.set(key, value);
+            }
+        }
+        engines.value = next;
+    }
+
     /** Remove a connection from an engine's local state. */
     function removeConnection(engineId: string, connectionId: string) {
         const engine = engines.value.get(engineId);
@@ -425,5 +446,6 @@ export const useEngineStore = defineStore('engines', () => {
         setSystemStats,
         setEngineInfo,
         touchEngine,
+        renameEngine,
     };
 });

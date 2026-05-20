@@ -61,30 +61,152 @@ export const PatchEnvelopeSchema = z.object({
     ops: PatchOpsSchema,
 });
 
-// --- Manager HTTP Payloads --------------------------------------------------
+// --- Manager Socket RPC Payloads --------------------------------------------
+//
+// All manager mutations + reads flow through Socket.IO with an ack callback.
+// The HTTP API was retired — only `/health` and the SPA's static assets are
+// served over HTTP now. Each event accepts a payload and returns
+// `Ack<T> = { ok: true; data?: T } | { ok: false; error: string; details? }`
+// via the ack callback.
+//
+// Schemas below are shared between the manager (which validates incoming
+// payloads with `safeParse`) and the manager-ui (which builds payloads of
+// the same shape).
 
-/** POST /api/v1/engines */
+/**
+ * Engine identifier — also the dgram-comms `clientId` and the SQLite PK across
+ * `engines`, `engine_profiles`, `engine_config_history`. Restricted to a safe
+ * URL-token charset so the id is round-trippable through log lines,
+ * filesystem paths (engine-side `profile.name`), and Socket.IO room names
+ * (`watch:<engineId>`) without needing escaping anywhere. Length cap matches what a typical operator
+ * deployment will use (e.g. `studio-a-engine`) without being so long that it
+ * pollutes log output.
+ */
+export const EngineIdSchema = z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(
+        /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+        'Engine ID must start with a letter or digit and contain only letters, digits, dot, dash, underscore',
+    );
+// First char alphanumeric on purpose — keeps `..`, `.hidden`, `-flag` out of
+// id space. The engine writes `profile.name` to `~/.media-router/profiles.json`
+// so any path-traversal-looking id would be more confusing than useful.
+
+const ProfileNameSchema = z.string().min(1).max(64);
+const HexColor = z
+    .string()
+    .regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
+// Group ids are server-generated (`grp_*`), but the schema is permissive
+// because the special `ungrouped` id and any future seeded groups must also
+// round-trip. Same charset rationale as EngineIdSchema.
+const GroupIdSchema = z
+    .string()
+    .min(1)
+    .max(80)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+
+/** `engine:create` */
 export const CreateEngineSchema = z.object({
-    engineId: z.string().min(1),
+    engineId: EngineIdSchema,
     displayName: z.string().min(1),
     password: z.string().min(1),
 });
 
-/** PUT /api/v1/engines/:id */
+/**
+ * `engine:update` — `engineId` is the current row's PK. If `newEngineId` is
+ * provided and differs, the row is renamed atomically along with display_name
+ * and password (see `ConfigStore.renameEngine`).
+ */
 export const UpdateEngineSchema = z.object({
+    engineId: EngineIdSchema,
     displayName: z.string().min(1),
     password: z.string().optional(),
+    newEngineId: EngineIdSchema.optional(),
 });
 
-/** POST /api/v1/engines/:id/profiles */
+/** `engine:delete` */
+export const DeleteEngineSchema = z.object({ engineId: EngineIdSchema });
+
+/** `engine:reorder` */
+export const ReorderEnginesSchema = z.object({
+    updates: z
+        .array(
+            z.object({
+                engineId: EngineIdSchema,
+                groupId: GroupIdSchema,
+                sortOrder: z.number().int().nonnegative(),
+            }),
+        )
+        .min(1),
+});
+
+/** `engine-group:create` */
+export const CreateGroupSchema = z.object({
+    name: z.string().min(1).max(64),
+    color: HexColor.optional(),
+});
+
+/** `engine-group:update` */
+export const UpdateGroupSchema = z.object({
+    groupId: GroupIdSchema,
+    name: z.string().min(1).max(64).optional(),
+    collapsed: z.boolean().optional(),
+    color: HexColor.nullable().optional(),
+});
+
+/** `engine-group:delete` */
+export const DeleteGroupSchema = z.object({ groupId: GroupIdSchema });
+
+/** `engine-group:reorder` */
+export const ReorderGroupsSchema = z.object({
+    orderedIds: z.array(GroupIdSchema).min(1),
+});
+
+/** `profile:list` */
+export const ListProfilesSchema = z.object({ engineId: EngineIdSchema });
+
+/** `profile:create` */
 export const CreateManagerProfileSchema = z.object({
-    profileName: z.string().min(1),
+    engineId: EngineIdSchema,
+    profileName: ProfileNameSchema,
     config: z.record(z.string(), z.unknown()).optional(),
 });
 
-/** POST /api/v1/engines/:id/profiles/:profile/rollback */
+/** `profile:delete` */
+export const DeleteProfileSchema = z.object({
+    engineId: EngineIdSchema,
+    profileName: ProfileNameSchema,
+});
+
+/** `profile:activate` */
+export const ActivateProfileSchema = z.object({
+    engineId: EngineIdSchema,
+    profileName: ProfileNameSchema,
+});
+
+/** `profile:config` / `profile:history` */
+export const ProfileQuerySchema = z.object({
+    engineId: EngineIdSchema,
+    profileName: ProfileNameSchema,
+});
+
+/** `profile:rollback` */
 export const RollbackSchema = z.object({
+    engineId: EngineIdSchema,
+    profileName: ProfileNameSchema,
     versionId: z.number().int().positive(),
+});
+
+/** `device:list` — initial-snapshot read for plugin-registered device types. */
+export const DeviceListSchema = z.object({
+    engineId: EngineIdSchema,
+    type: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
 });
 
 // --- Engine HTTP Payloads ---------------------------------------------------

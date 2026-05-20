@@ -367,6 +367,62 @@ describe('useEngineStore', () => {
         });
     });
 
+    describe('renameEngine', () => {
+        it('swaps Map key + internal engineId while preserving state', () => {
+            const store = useEngineStore();
+            store.addEngine({
+                engine_id: 'old-id',
+                display_name: 'Studio',
+                online: true,
+                running: true,
+                modules: { 'mod-1': { pluginId: 'p', displayName: 'M1' } },
+                connections: [],
+            });
+
+            store.renameEngine('old-id', 'new-id');
+
+            expect(store.getEngine('old-id')).toBeUndefined();
+            const renamed = store.getEngine('new-id');
+            expect(renamed).toBeDefined();
+            expect(renamed!.engineId).toBe('new-id');
+            expect(renamed!.name).toBe('Studio');
+            expect(renamed!.online).toBe(true);
+            expect(renamed!.running).toBe(true);
+            // Module identity is independent of the engine PK — modules must
+            // survive the rename so the routing editor doesn't blank out.
+            expect(renamed!.modules['mod-1']).toBeDefined();
+        });
+
+        it('preserves insertion order across the rename so the sidebar does not reshuffle', () => {
+            const store = useEngineStore();
+            store.addEngine({ engine_id: 'a', display_name: 'A', modules: {}, connections: [] });
+            store.addEngine({ engine_id: 'b', display_name: 'B', modules: {}, connections: [] });
+            store.addEngine({ engine_id: 'c', display_name: 'C', modules: {}, connections: [] });
+
+            store.renameEngine('b', 'b2');
+
+            // Rename should not move 'b2' to the end of the Map.
+            expect(store.engineList.map((e) => e.engineId)).toEqual(['a', 'b2', 'c']);
+        });
+
+        it('is a no-op when the target id already exists (avoids data clobber)', () => {
+            const store = useEngineStore();
+            store.addEngine({ engine_id: 'a', display_name: 'A', modules: {}, connections: [] });
+            store.addEngine({ engine_id: 'b', display_name: 'B', modules: {}, connections: [] });
+            store.renameEngine('a', 'b');
+            // Both originals untouched — 'a' still exists, 'b' keeps its name.
+            expect(store.getEngine('a')!.name).toBe('A');
+            expect(store.getEngine('b')!.name).toBe('B');
+        });
+
+        it('is a no-op when old and new ids match', () => {
+            const store = useEngineStore();
+            store.addEngine({ engine_id: 'a', display_name: 'A', modules: {}, connections: [] });
+            store.renameEngine('a', 'a');
+            expect(store.getEngine('a')!.name).toBe('A');
+        });
+    });
+
     describe('clearEngineRuntime', () => {
         it('preserves engine.running across an offline blip', () => {
             const store = useEngineStore();

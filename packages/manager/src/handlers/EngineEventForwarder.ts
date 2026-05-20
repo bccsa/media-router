@@ -204,4 +204,30 @@ export class EngineEventForwarder {
     getLogBuffer(engineId: string): unknown[] {
         return this.logBuffers.get(engineId) ?? [];
     }
+
+    /**
+     * Re-key cached per-engine state after an engine_id rename. Without this
+     * the live UDP session keeps emitting events under `oldId` and the
+     * manager's caches accumulate two parallel sets — the rename's
+     * `engine:renamed` payload would even report `online: false` against
+     * `newId` while the engine is still actively talking under `oldId`.
+     */
+    notifyRename(oldId: string, newId: string): void {
+        if (oldId === newId) return;
+        const moduleStates = this.cachedModuleStates.get(oldId);
+        if (moduleStates !== undefined) {
+            this.cachedModuleStates.delete(oldId);
+            this.cachedModuleStates.set(newId, moduleStates);
+        }
+        const engineData = this.engineData.get(oldId);
+        if (engineData !== undefined) {
+            this.engineData.delete(oldId);
+            this.engineData.set(newId, engineData);
+        }
+        const logBuffer = this.logBuffers.get(oldId);
+        if (logBuffer !== undefined) {
+            this.logBuffers.delete(oldId);
+            this.logBuffers.set(newId, logBuffer);
+        }
+    }
 }

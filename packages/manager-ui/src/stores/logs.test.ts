@@ -104,6 +104,31 @@ describe('useLogStore', () => {
             expect(() => store.clear('nonexistent')).not.toThrow();
         });
     });
+
+    describe('rename', () => {
+        it('moves the buffer from oldEngineId to newEngineId', () => {
+            const store = useLogStore();
+            const batch = [
+                { level: 30, time: 't', name: 'n', msg: 'hello' },
+                { level: 40, time: 't', name: 'n', msg: 'warn' },
+            ];
+            store.addEntries('old-id', batch);
+
+            store.rename('old-id', 'new-id');
+
+            expect(store.getEntries('new-id')).toEqual(batch);
+            // The old key must not be left pointing at the same buffer — that
+            // would leak rename-time logs into a future engine that
+            // re-registers under `old-id`.
+            expect(store.entries.has('old-id')).toBe(false);
+        });
+
+        it('is a no-op on unknown engine', () => {
+            const store = useLogStore();
+            expect(() => store.rename('unknown', 'new-id')).not.toThrow();
+            expect(store.entries.has('new-id')).toBe(false);
+        });
+    });
 });
 
 describe('LEVEL_LABELS', () => {

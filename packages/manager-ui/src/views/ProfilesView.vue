@@ -24,11 +24,11 @@ const error = ref('');
 async function loadProfiles() {
     error.value = '';
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/profiles`);
-        if (res.ok) profiles.value = await res.json();
-        else error.value = 'Failed to load profiles';
-    } catch {
-        error.value = 'Network error loading profiles';
+        profiles.value = await socket.request<Array<{ profile_name: string }>>('profile:list', {
+            engineId: props.engineId,
+        });
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to load profiles';
     }
 }
 
@@ -36,57 +36,51 @@ async function createProfile() {
     if (!newProfileName.value.trim()) return;
     error.value = '';
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/profiles`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ profileName: newProfileName.value.trim() }),
+        await socket.request('profile:create', {
+            engineId: props.engineId,
+            profileName: newProfileName.value.trim(),
         });
-        if (!res.ok) {
-            error.value = 'Failed to create profile';
-            return;
-        }
         newProfileName.value = '';
         showCreate.value = false;
         await loadProfiles();
-    } catch {
-        error.value = 'Network error creating profile';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to create profile';
     }
 }
 
 async function switchProfile(name: string) {
     error.value = '';
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/profiles/${name}/activate`, {
-            method: 'POST',
-        });
-        if (!res.ok) {
-            error.value = 'Failed to activate profile';
-            return;
-        }
+        // Activate involves a guaranteed-delivery config push to the engine
+        // plus per-module manifest enrichment — give it more headroom than
+        // the default 10s so a loaded Pi with SQLite contention doesn't
+        // spuriously fail the call.
+        await socket.request(
+            'profile:activate',
+            { engineId: props.engineId, profileName: name },
+            { timeoutMs: 30_000 },
+        );
         showSwitchConfirm.value = null;
         if (engine.value?.running) {
             socket.emit('engine:stop', { engineId: props.engineId });
         }
         await loadProfiles();
-    } catch {
-        error.value = 'Network error activating profile';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to activate profile';
     }
 }
 
 async function deleteProfile(name: string) {
     error.value = '';
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/profiles/${name}`, {
-            method: 'DELETE',
+        await socket.request('profile:delete', {
+            engineId: props.engineId,
+            profileName: name,
         });
-        if (!res.ok) {
-            error.value = 'Failed to delete profile';
-            return;
-        }
         showDeleteConfirm.value = null;
         await loadProfiles();
-    } catch {
-        error.value = 'Network error deleting profile';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to delete profile';
     }
 }
 
@@ -103,10 +97,9 @@ async function loadHistory(profileName: string) {
     }
     showHistory.value = profileName;
     try {
-        const res = await fetch(
-            `/api/v1/engines/${props.engineId}/profiles/${profileName}/history`,
-        );
-        if (res.ok) history.value = await res.json();
+        history.value = await socket.request<
+            Array<{ id: number; saved_at: string; config: string }>
+        >('profile:history', { engineId: props.engineId, profileName });
     } catch {
         history.value = [];
     }
@@ -116,35 +109,26 @@ async function rollback(versionId: number) {
     if (!showHistory.value) return;
     error.value = '';
     try {
-        const res = await fetch(
-            `/api/v1/engines/${props.engineId}/profiles/${showHistory.value}/rollback`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ versionId }),
-            },
-        );
-        if (!res.ok) {
-            error.value = 'Failed to rollback';
-            return;
-        }
+        await socket.request('profile:rollback', {
+            engineId: props.engineId,
+            profileName: showHistory.value,
+            versionId,
+        });
         showRollbackConfirm.value = null;
         previewVersion.value = null;
         await loadHistory(showHistory.value);
-    } catch {
-        error.value = 'Network error during rollback';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to rollback';
     }
 }
 
 async function exportProfile(name: string) {
     error.value = '';
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/profiles/${name}/config`);
-        if (!res.ok) {
-            error.value = 'Failed to export profile';
-            return;
-        }
-        const config = await res.json();
+        const config = await socket.request<unknown>('profile:config', {
+            engineId: props.engineId,
+            profileName: name,
+        });
         const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -152,37 +136,33 @@ async function exportProfile(name: string) {
         a.download = `${props.engineId}-${name}.json`;
         a.click();
         URL.revokeObjectURL(url);
-    } catch {
-        error.value = 'Network error exporting profile';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to export profile';
     }
 }
 
 async function importProfile() {
     if (!importName.value.trim() || !importData.value.trim()) return;
     error.value = '';
-    let config: unknown;
+    let config: Record<string, unknown>;
     try {
-        config = JSON.parse(importData.value);
+        config = JSON.parse(importData.value) as Record<string, unknown>;
     } catch {
         error.value = 'Invalid JSON in import data';
         return;
     }
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}/profiles`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ profileName: importName.value.trim(), config }),
+        await socket.request('profile:create', {
+            engineId: props.engineId,
+            profileName: importName.value.trim(),
+            config,
         });
-        if (!res.ok) {
-            error.value = 'Failed to import profile';
-            return;
-        }
         showImport.value = false;
         importName.value = '';
         importData.value = '';
         await loadProfiles();
-    } catch {
-        error.value = 'Network error importing profile';
+    } catch (err) {
+        error.value = err instanceof Error ? err.message : 'Failed to import profile';
     }
 }
 

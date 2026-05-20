@@ -98,4 +98,21 @@ describe('useVuStore', () => {
 
         vi.useRealTimers();
     });
+
+    describe('rename', () => {
+        it('moves all keys for an engine to the new id without losing values', () => {
+            const store = useVuStore();
+            store.update('old-id', 'mod-1', [3, 4]);
+            store.update('old-id', 'mod-2', [7, 8]);
+            store.update('other-engine', 'mod-x', [1, 2]);
+
+            store.rename('old-id', 'new-id');
+
+            expect(store.get('new-id', 'mod-1')).toEqual([3, 4]);
+            expect(store.get('new-id', 'mod-2')).toEqual([7, 8]);
+            expect(store.get('old-id', 'mod-1')).toBeUndefined();
+            // Other engines' meters must not be touched.
+            expect(store.get('other-engine', 'mod-x')).toEqual([1, 2]);
+        });
+    });
 });

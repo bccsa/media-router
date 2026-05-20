@@ -77,10 +77,11 @@ async function fetchSnapshot(type: string) {
     if (fetchedKeys.has(cacheKey)) return;
     fetchedKeys.add(cacheKey);
     try {
-        const res = await fetch(
-            `/api/v1/engines/${props.engineId}/system/devices/${encodeURIComponent(type)}`,
-        );
-        if (res.ok) deviceStore.set(props.engineId, type, await res.json());
+        const devices = await socket.request<unknown[]>('device:list', {
+            engineId: props.engineId,
+            type,
+        });
+        deviceStore.set(props.engineId, type, devices as never);
     } catch (err) {
         console.warn('[ModuleSettings] Failed to load device list', type, err);
         fetchedKeys.delete(cacheKey); // retry on next change

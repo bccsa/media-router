@@ -382,4 +382,32 @@ describe('EngineEventForwarder', () => {
             expect(forwarder.getLogBuffer('unknown')).toEqual([]);
         });
     });
+
+    describe('notifyRename', () => {
+        it('moves cached module states, engine data, and log buffer to the new id', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineState', 'old-id', { 'mod-1': { running: true } });
+            forwarder.setEngineData('old-id', 'ip', '10.0.0.5');
+            engineManager.emit('engineLogs', 'old-id', [{ level: 30, msg: 'hello' }]);
+
+            forwarder.notifyRename('old-id', 'new-id');
+
+            // The renamed engine inherits everything the old session had cached.
+            expect(forwarder.getCachedStates('new-id')).toEqual({ 'mod-1': { running: true } });
+            expect(forwarder.getEngineData('new-id', 'ip')).toBe('10.0.0.5');
+            expect(forwarder.getLogBuffer('new-id')).toEqual([{ level: 30, msg: 'hello' }]);
+            // …and the old id no longer points to ghost data that would leak
+            // into a future engine that happens to claim the same id.
+            expect(forwarder.getCachedStates('old-id')).toEqual({});
+            expect(forwarder.getEngineData('old-id', 'ip')).toBeUndefined();
+            expect(forwarder.getLogBuffer('old-id')).toEqual([]);
+        });
+
+        it('is a no-op when old and new ids match', () => {
+            const { forwarder } = createMocks();
+            forwarder.setEngineData('eng-1', 'ip', '10.0.0.5');
+            forwarder.notifyRename('eng-1', 'eng-1');
+            expect(forwarder.getEngineData('eng-1', 'ip')).toBe('10.0.0.5');
+        });
+    });
 });

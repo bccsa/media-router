@@ -44,6 +44,83 @@ describe('ConfigStore', () => {
             expect(store.getEngine('eng-1')).toBeUndefined();
             expect(store.getProfiles('eng-1')).toHaveLength(0);
         });
+
+        it('renames the primary key and carries profiles + active_profile across', () => {
+            store.createEngine('old-id', 'Test', 'pass');
+            store.createProfile('old-id', 'default', { modules: { m1: {} } });
+            store.setActiveProfile('old-id', 'default');
+
+            store.renameEngine('old-id', 'new-id');
+
+            expect(store.getEngine('old-id')).toBeUndefined();
+            const renamed = store.getEngine('new-id');
+            expect(renamed!.engine_id).toBe('new-id');
+            expect(renamed!.display_name).toBe('Test');
+            expect(renamed!.password).toBe('pass');
+            expect(renamed!.active_profile).toBe('default');
+            // Profile rows must follow the new PK so the engine's config is
+            // not orphaned by the rename.
+            expect(store.getProfiles('new-id')).toHaveLength(1);
+            expect(store.getProfile('new-id', 'default')).toBeDefined();
+            expect(store.getProfiles('old-id')).toHaveLength(0);
+        });
+
+        it('renameEngine rejects collisions with an existing engine id', () => {
+            store.createEngine('eng-1', 'One', 'p1');
+            store.createEngine('eng-2', 'Two', 'p2');
+            expect(() => store.renameEngine('eng-1', 'eng-2')).toThrow();
+            // Both engines should be intact after the rejected rename.
+            expect(store.getEngine('eng-1')).toBeDefined();
+            expect(store.getEngine('eng-2')!.display_name).toBe('Two');
+        });
+
+        it('renameEngine is a no-op when old and new ids match', () => {
+            store.createEngine('eng-1', 'One', 'p1');
+            store.renameEngine('eng-1', 'eng-1');
+            expect(store.getEngine('eng-1')!.display_name).toBe('One');
+        });
+
+        it('renameEngine applies meta atomically — display_name + password land with the PK swap', () => {
+            store.createEngine('old-id', 'Old Name', 'old-pw');
+            store.createProfile('old-id', 'default', {});
+            store.renameEngine('old-id', 'new-id', {
+                displayName: 'New Name',
+                password: 'new-pw',
+            });
+            const row = store.getEngine('new-id');
+            expect(row!.display_name).toBe('New Name');
+            expect(row!.password).toBe('new-pw');
+            // Profiles must follow the same transaction.
+            expect(store.getProfiles('new-id')).toHaveLength(1);
+        });
+
+        it('renameEngine with same id + meta still applies the metadata change', () => {
+            store.createEngine('eng-1', 'Old', 'old-pw');
+            store.renameEngine('eng-1', 'eng-1', { displayName: 'New', password: 'new-pw' });
+            const row = store.getEngine('eng-1');
+            expect(row!.display_name).toBe('New');
+            expect(row!.password).toBe('new-pw');
+        });
+
+        it('renameEngine applies password-only meta without requiring displayName', () => {
+            // Regression: previously the same-id shortcut only fired when
+            // displayName was supplied, silently dropping password rotations.
+            // The rename path also gated the metadata UPDATE on displayName,
+            // so this case lost data through both routes.
+            store.createEngine('eng-1', 'Original', 'old-pw');
+            store.renameEngine('eng-1', 'eng-1', { password: 'new-pw' });
+            const row = store.getEngine('eng-1');
+            expect(row!.display_name).toBe('Original');
+            expect(row!.password).toBe('new-pw');
+        });
+
+        it('renameEngine applies password-only meta on an actual rename', () => {
+            store.createEngine('old-id', 'Original', 'old-pw');
+            store.renameEngine('old-id', 'new-id', { password: 'new-pw' });
+            const row = store.getEngine('new-id');
+            expect(row!.display_name).toBe('Original');
+            expect(row!.password).toBe('new-pw');
+        });
     });
 
     describe('Profile CRUD', () => {

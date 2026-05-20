@@ -290,11 +290,11 @@ v2/
 | 4.9 | Module management handlers | `module:add` — look up plugin manifest, build default settings from configSchema, store in profile config (with ports, configSchema, settings), broadcast patch. `module:delete` — remove from config + remove related connections, broadcast patches. `module:position` — update position in config (no broadcast needed, just persist) | — | §5.3 |
 | 4.10 | Routing connection handlers | `routing:connect` — validate, store connection in profile config under `connections[]`, broadcast patch. `routing:disconnect` — remove, broadcast. Connection ID format: `sourceModule:sourcePort-sinkModule:sinkPort` | — | §5.3.2 |
 | 4.11 | Module control handlers | `module:toggle` (start/stop), `module:restart` — forward to engine via dgram-comms. `module:config` — update settings in profile config, forward to engine, broadcast patch | — | §5.3.3 |
-| **REST API** | | | | |
-| 4.12 | Engine CRUD endpoints | `POST /api/v1/engines` (register — creates engine + default profile + sets active), `PUT /api/v1/engines/:id` (update name/password), `DELETE /api/v1/engines/:id`. Broadcast Socket.IO events on change | — | §4.1 |
-| 4.13 | Profile endpoints | `GET /api/v1/engines/:id/profiles`, `POST .../profiles` (create), `DELETE .../profiles/:name`, `POST .../profiles/:name/activate`. Version history: `GET .../profiles/:name/history` | UR-MGR-004 | §4.2.3 |
-| 4.14 | Plugin listing endpoint | `GET /api/v1/plugins` — scan `plugins/` directory, read `package.json` manifests, return array of `{ pluginId, displayName, description, category, ports, configSchema }` | UR-PLG-001 | §9.6 |
-| 4.15 | Static file serving | Serve `manager-ui/dist/` as static files. SPA fallback: all non-`/api` routes return `index.html`. If dist doesn't exist: show "run pnpm build" message | — | §5.1 |
+| **Application API** | | | | |
+| 4.12 | Engine CRUD RPCs | Socket.IO RPC events with ack callbacks: `engine:create` (register — creates engine + default profile + sets active), `engine:update` (display name / password / rename), `engine:delete`, `engine:reorder`. Each handler also broadcasts the matching `engine:added` / `engine:updated` / `engine:removed` event so all browsers stay in sync. _(Originally planned as REST routes; consolidated onto Socket.IO during the v2.0 API migration — see `packages/manager/src/socket/rpcHandlers.ts`.)_ | — | §4.1 |
+| 4.13 | Profile RPCs | Socket.IO RPC events: `profile:list`, `profile:create`, `profile:delete`, `profile:activate`, `profile:config`, `profile:history`, `profile:rollback`. Same broadcast-on-mutation pattern. | UR-MGR-004 | §4.2.3 |
+| 4.14 | Plugin listing RPC | Socket.IO RPC `plugin:list` — scans `plugins/` at boot, reads `package.json` manifests, returns array of `{ pluginId, displayName, description, category, ports, configSchema }`. | UR-PLG-001 | §9.6 |
+| 4.15 | HTTP surface | Only `GET /health` (external monitoring) + static assets for `manager-ui/dist/`. SPA fallback returns `index.html` for non-API paths. The HTTP API was retired in favour of Socket.IO RPC. | — | §5.1 |
 | **Process** | | | | |
 | 4.16 | Manager entry point | `src/index.ts`. Creates Manager, starts dgram-comms on port 3000, starts HTTP+Socket.IO on port 8080. Graceful shutdown: stop dgram-comms → close Socket.IO → close HTTP → close SQLite | UR-MGR-001 | §4.1 |
 | 4.17 | Unit tests | ConfigStore CRUD, EngineConnectionManager (mock dgram), Socket.IO handlers (mock socket). ≥80% coverage | UR-TST-003 | §12.2 |
@@ -310,7 +310,7 @@ v2/
 
 - [ ] `node v2/packages/manager/dist/index.js` starts without errors
 - [ ] Manager serves on port 8080, dgram-comms on 3000
-- [ ] `POST /api/v1/engines` registers an engine with default profile
+- [ ] `engine:create` RPC registers an engine with default profile (was originally `POST /api/v1/engines`; HTTP retired)
 - [ ] Engine connects to manager via dgram-comms, shows as online
 - [ ] Browser connects via Socket.IO, receives `engine:list` with modules
 - [ ] Add module from browser → persists in SQLite → broadcast to all browsers → survives page reload
@@ -585,7 +585,7 @@ Channel mapping on MPEG-TS connections is not applicable (the encoded stream is 
 | 9.21 | Connection interaction | `@connect` event on VueFlow → add edge locally + emit `routing:connect`. Drag from output handle to input handle. Connection line colour = accent while dragging. Port compatibility: highlight valid targets (TODO: Phase 12) | UR-UI-012, UR-UI-014 | §5.3.2 |
 | 9.22 | Context menu | `@node-context-menu` event on VueFlow (NOT composable). Items: Start/Stop, Restart, Settings, Copy, Delete. Handle both MouseEvent and TouchEvent. Long-press for mobile (500ms timeout) | UR-UI-016b | §5.3.3 |
 | 9.23 | Settings panel | Fixed-position right panel (not absolute — must not scroll with canvas). Opens on double-click or context menu → Settings. Generates form from module's `configSchema`: dropdowns for enums, toggles for booleans, number inputs, text inputs. Shows description per field. Lightning bolt for `x-liveUpdatable` fields. Apply All button | — | §5.3.3 |
-| 9.24 | Add Module panel | Fixed-position right panel. Fetches `/api/v1/plugins`. Groups by category. Search filter. Click plugin → detail view with ports and config info. "Add Module" button emits `module:add` | — | — |
+| 9.24 | Add Module panel | Fixed-position right panel. Calls `plugin:list` Socket.IO RPC on mount. Groups by category. Search filter. Click plugin → detail view with ports and config info. "Add Module" button emits `module:add` | — | — |
 | 9.25 | Module finder | Toolbar dropdown showing all modules by name. Click to `setCenter()` on that module's position. Shows module count badge | — | §5.3.3 |
 | 9.26 | Zoom controls | Fit View button, Reset button, zoom slider (20%–200%). Prevent browser zoom on canvas (Ctrl+wheel intercept via non-passive wheel listener). Auto-fitView on first load (with 200ms retry) | UR-UI-015 | §5.3.3 |
 | 9.27 | VU meter in nodes | Receive vuData from engine state. Render with MrVuMeter in module node body. Click → popup MrSlider for volume (emits `module:config` with volume change) | UR-UI-016, UR-UI-016c | §5.3.3 |

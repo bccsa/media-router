@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
@@ -17,18 +17,27 @@ const showDelete = ref(false);
 const deleting = ref(false);
 
 const showEdit = ref(false);
-const editForm = ref({ displayName: '', password: '' });
+const editForm = ref({ engineId: '', displayName: '', password: '' });
 const editLoading = ref(false);
 const editError = ref('');
 const showPassword = ref(false);
 
+const engineIdChanged = computed(
+    () => editForm.value.engineId.trim() !== '' && editForm.value.engineId !== props.engineId,
+);
+
 function openEdit() {
     // Password stays blank: the server never round-trips the dgram-comms
-    // shared secret to the client. Empty `password` on PUT means "keep
-    // current" (httpRoutes UpdateEngineSchema treats it as optional).
+    // shared secret to the client. Omitting `password` from the
+    // `engine:update` RPC payload means "keep current" — the schema in
+    // shared-types/validation.ts (UpdateEngineSchema) treats it as optional.
     editError.value = '';
     showPassword.value = false;
-    editForm.value = { displayName: engine.value?.name ?? '', password: '' };
+    editForm.value = {
+        engineId: props.engineId,
+        displayName: engine.value?.name ?? '',
+        password: '',
+    };
     showEdit.value = true;
 }
 
@@ -37,26 +46,40 @@ async function saveEdit() {
         editError.value = 'Display name is required';
         return;
     }
+    if (!editForm.value.engineId.trim()) {
+        editError.value = 'Engine ID is required';
+        return;
+    }
     editLoading.value = true;
     editError.value = '';
     try {
-        const body: { displayName: string; password?: string } = {
+        const payload: {
+            engineId: string;
+            displayName: string;
+            password?: string;
+            newEngineId?: string;
+        } = {
+            engineId: props.engineId,
             displayName: editForm.value.displayName,
         };
-        if (editForm.value.password) body.password = editForm.value.password;
-        const res = await fetch(`/api/v1/engines/${props.engineId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            editError.value = data.error ?? 'Failed to update';
-            return;
-        }
+        if (editForm.value.password) payload.password = editForm.value.password;
+        if (engineIdChanged.value) payload.newEngineId = editForm.value.engineId.trim();
+
+        await socket.request('engine:update', payload);
+
+        // The ack and the `engine:renamed` broadcast travel on the same
+        // socket, but Socket.IO doesn't guarantee the broadcast handler has
+        // fired by the time the ack callback returns. Yield one tick so the
+        // socket store's `engine:renamed` handler can rekey the engine Map
+        // first — otherwise `router.replace(/engines/${newId})` would briefly
+        // render the "Engine not found" empty state against the new id.
+        await nextTick();
+
+        const newId = engineIdChanged.value ? editForm.value.engineId.trim() : null;
         showEdit.value = false;
-    } catch {
-        editError.value = 'Network error';
+        if (newId) router.replace(`/engines/${newId}`);
+    } catch (err) {
+        editError.value = err instanceof Error ? err.message : 'Failed to update';
     } finally {
         editLoading.value = false;
     }
@@ -65,10 +88,10 @@ async function saveEdit() {
 async function deleteEngine() {
     deleting.value = true;
     try {
-        const res = await fetch(`/api/v1/engines/${props.engineId}`, { method: 'DELETE' });
-        if (res.ok) router.push('/engines');
-    } catch {
-        /* network error */
+        await socket.request('engine:delete', { engineId: props.engineId });
+        router.push('/engines');
+    } catch (err) {
+        console.warn('[EngineDetail] delete failed', err);
     }
     deleting.value = false;
     showDelete.value = false;
@@ -168,6 +191,19 @@ const infoRows = computed(() => {
     <MrModal v-if="showEdit" title="Edit Engine" @close="showEdit = false">
         <form @submit.prevent="saveEdit" class="space-y-3">
             <MrInput v-model="editForm.displayName" label="Display Name" type="text" />
+            <MrInput v-model="editForm.engineId" label="Engine ID" type="text" />
+            <div
+                v-if="engineIdChanged"
+                class="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200"
+            >
+                <strong class="block mb-1">Changing the Engine ID will disconnect this engine.</strong>
+                The engine authenticates using its locally-stored profile name. After saving,
+                update the active profile's <code>name</code> in
+                <code>~/.media-router/profiles.json</code> on the engine host (or via the
+                engine's local panel) to <code>{{ editForm.engineId }}</code>, then restart the
+                engine service. Until then it will keep reconnecting under the old ID and auth
+                will fail.
+            </div>
             <div>
                 <div class="flex items-center justify-between mb-1">
                     <label class="block text-xs font-medium text-foreground">Password</label>

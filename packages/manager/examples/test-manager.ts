@@ -6,11 +6,13 @@
  *
  * Then in another terminal:
  *   curl http://localhost:8080/health
- *   curl http://localhost:8080/api/v1/engines
- *   curl -X POST http://localhost:8080/api/v1/engines -H 'Content-Type: application/json' -d '{"engineId":"sdr","displayName":"SDR Engine","password":"secret"}'
- *   curl http://localhost:8080/api/v1/engines
  *   curl http://localhost:8080/api/v1/plugins
+ *   curl -X POST http://localhost:8080/api/v1/engines -H 'Content-Type: application/json' -d '{"engineId":"sdr","displayName":"SDR Engine","password":"secret"}'
  *   curl http://localhost:8080/api/v1/engines/sdr/profiles
+ *
+ * NOTE: there is no `GET /api/v1/engines` listing route — engine + group
+ * snapshots are pushed over Socket.IO on connect (`engine:list`,
+ * `engine-group:list`). The UI is the only client and it consumes those.
  */
 import { Manager } from '../src/Manager.js';
 
@@ -25,7 +27,6 @@ manager.start().then(() => {
     console.log('dgram:  UDP port 3000');
     console.log('\nTry:');
     console.log('  curl http://localhost:8080/health');
-    console.log('  curl http://localhost:8080/api/v1/engines');
     console.log('  curl http://localhost:8080/api/v1/plugins');
     console.log('\nPress Ctrl+C to stop.\n');
 });

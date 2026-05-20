@@ -12,6 +12,7 @@ import type { PluginRegistry } from '../plugins/PluginRegistry.js';
 import type { EngineCommandService } from '../handlers/EngineCommandService.js';
 import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
 import type { PatchRouter } from '../PatchRouter.js';
+import { registerRpcHandlers } from './rpcHandlers.js';
 
 const log = createLogger('SocketIO');
 
@@ -80,8 +81,13 @@ export function setupSocketIO(deps: SocketDeps): void {
                     }
                 }
 
+                // `password` is the dgram-comms shared secret — strip it
+                // before the row ever reaches a browser. This is the only
+                // initial-state path now (the old GET listing was removed),
+                // so dropping it here is what stops the leak.
+                const { password: _password, ...safe } = e as Record<string, unknown>;
                 return {
-                    ...e,
+                    ...safe,
                     online: engineManager.isEngineOnline(e.engine_id as string),
                     running: engineCommands.isRunning(e.engine_id as string),
                     ip: eventForwarder.getEngineData(e.engine_id as string, 'ip'),
@@ -187,6 +193,18 @@ export function setupSocketIO(deps: SocketDeps): void {
                 patchRouter.onPatch(socket.id, engineId, ops);
             }),
         );
+
+        // --- Application RPC (engines, groups, profiles, plugins, devices) ---
+        // The HTTP API was retired — every mutation + read now flows through
+        // Socket.IO with an ack callback. See rpcHandlers.ts for the per-event
+        // logic.
+        registerRpcHandlers(socket, {
+            io,
+            configStore,
+            engineManager,
+            pluginRegistry,
+            eventForwarder,
+        });
 
         socket.on('disconnect', () => {
             log.info({ socketId: socket.id }, 'browser disconnected');

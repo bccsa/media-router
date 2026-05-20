@@ -1,9 +1,13 @@
 /**
- * Thin REST wrappers for the sidebar grouping endpoints. Centralised here so
- * the sidebar and any future caller share one shape, and so the URL set is
- * easy to audit. All endpoints broadcast a Socket.IO event on success — the
- * caller doesn't need to mutate stores; the socket layer does it for free.
+ * Sidebar grouping + ordering operations.
+ *
+ * Routes through Socket.IO RPC (`engine-group:*` / `engine:reorder` events on
+ * the manager). The manager's success ack carries no data for mutations —
+ * state propagation reaches every browser via the matching broadcast event
+ * (`engine-group:added`, `engine-group:updated`, etc.), which the socket
+ * store applies to the relevant Pinia store.
  */
+import { useSocketStore } from '@/stores/socket';
 
 interface ReorderEnginesUpdate {
     engineId: string;
@@ -11,29 +15,27 @@ interface ReorderEnginesUpdate {
     sortOrder: number;
 }
 
-async function send(path: string, method: string, body?: unknown): Promise<Response> {
-    return fetch(path, {
-        method,
-        headers: body ? { 'Content-Type': 'application/json' } : {},
-        body: body ? JSON.stringify(body) : undefined,
-    });
-}
-
 export const engineGroupsApi = {
     create(name: string, color?: string | null) {
-        return send('/api/v1/engine-groups', 'POST', { name, color: color ?? undefined });
+        return useSocketStore().request<{ id: string }>('engine-group:create', {
+            name,
+            color: color ?? undefined,
+        });
     },
-    update(groupId: string, fields: { name?: string; collapsed?: boolean; color?: string | null }) {
-        return send(`/api/v1/engine-groups/${groupId}`, 'PUT', fields);
+    update(
+        groupId: string,
+        fields: { name?: string; collapsed?: boolean; color?: string | null },
+    ) {
+        return useSocketStore().request('engine-group:update', { groupId, ...fields });
     },
     remove(groupId: string) {
-        return send(`/api/v1/engine-groups/${groupId}`, 'DELETE');
+        return useSocketStore().request('engine-group:delete', { groupId });
     },
     reorderGroups(orderedIds: string[]) {
-        return send('/api/v1/engine-groups/reorder', 'PUT', { orderedIds });
+        return useSocketStore().request('engine-group:reorder', { orderedIds });
     },
     reorderEngines(updates: ReorderEnginesUpdate[]) {
-        return send('/api/v1/engines/reorder', 'PUT', { updates });
+        return useSocketStore().request('engine:reorder', { updates });
     },
 };
 

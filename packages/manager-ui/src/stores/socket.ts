@@ -174,6 +174,30 @@ export const useSocketStore = defineStore('socket', () => {
         s.on('engine:updated', (data: any) => {
             useEngineStore().updateEngineInfo(data);
         });
+        s.on(
+            'engine:renamed',
+            (data: {
+                oldEngineId: string;
+                newEngineId: string;
+                engine: Record<string, unknown>;
+            }) => {
+                // Rekey first, then merge the freshly-stored metadata under
+                // the new key. The server bundles both onto one event so the
+                // order is local — there's no race where engine:updated could
+                // arrive before the rekey.
+                //
+                // Auxiliary stores are keyed by engineId too and would otherwise
+                // hold their data under the orphan old key — the detail view
+                // would render empty logs / device dropdowns / VU meters until
+                // the engine republished (which it might not, if idle).
+                const store = useEngineStore();
+                store.renameEngine(data.oldEngineId, data.newEngineId);
+                store.updateEngineInfo(data.engine);
+                useLogStore().rename(data.oldEngineId, data.newEngineId);
+                useDeviceStore().rename(data.oldEngineId, data.newEngineId);
+                useVuStore().rename(data.oldEngineId, data.newEngineId);
+            },
+        );
         s.on('engine:removed', (data: { engineId: string }) => {
             useEngineStore().removeEngine(data.engineId);
         });
@@ -230,11 +254,55 @@ export const useSocketStore = defineStore('socket', () => {
         socket.value?.emit('logs:history', { engineId });
     }
 
+    /**
+     * Manager RPC: emit an event with a payload and resolve with the server's
+     * ack response. Replaces the old `fetch('/api/v1/...')` calls now that
+     * the HTTP API has been retired in favour of a single Socket.IO channel.
+     *
+     * Rejects on server-reported errors (404, 409, validation, internal) and
+     * on transport-level failures (socket not connected, ack timeout). The
+     * caller's catch block deals with both the same way — there's no useful
+     * client-side distinction between "server said no" and "network said no".
+     *
+     * `timeoutMs` lets the caller widen the default for slow paths (e.g.
+     * `profile:activate` does a guaranteed-delivery config push plus plugin
+     * enrichment over every module; on a loaded Pi with SQLite contention
+     * that can take several seconds). The default of 10s suits read-shaped
+     * RPCs (`plugin:list`, `device:list`) and quick mutations.
+     */
+    function request<T = void>(
+        event: string,
+        payload?: unknown,
+        opts?: { timeoutMs?: number },
+    ): Promise<T> {
+        return new Promise((resolve, reject) => {
+            const s = socket.value;
+            if (!s) {
+                reject(new Error('Socket not connected'));
+                return;
+            }
+            const timer = setTimeout(() => {
+                reject(new Error(`Request '${event}' timed out`));
+            }, opts?.timeoutMs ?? 10_000);
+            s.emit(event, payload ?? null, (ack: unknown) => {
+                clearTimeout(timer);
+                if (!ack || typeof ack !== 'object') {
+                    reject(new Error(`Malformed ack for '${event}'`));
+                    return;
+                }
+                const a = ack as { ok: boolean; data?: T; error?: string };
+                if (a.ok) resolve(a.data as T);
+                else reject(new Error(a.error ?? 'Unknown error'));
+            });
+        });
+    }
+
     return {
         connected: readonly(connected),
         connect,
         disconnect,
         emit,
         requestLogHistory,
+        request,
     };
 });

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import MrButton from '@/components/common/MrButton.vue';
 import { getLucideIcon } from '@/composables/useLucideIcons';
+import { useSocketStore } from '@/stores/socket';
 
 interface PluginInfo {
     pluginId: string;
@@ -29,10 +30,11 @@ const searchQuery = ref('');
 const selectedPlugin = ref<PluginInfo | null>(null);
 const moduleName = ref('');
 
+const socket = useSocketStore();
+
 onMounted(async () => {
     try {
-        const res = await fetch('/api/v1/plugins');
-        if (res.ok) plugins.value = await res.json();
+        plugins.value = await socket.request<PluginInfo[]>('plugin:list');
     } catch (err) {
         console.warn('[AddModulePanel] Failed to load plugins', err);
     } finally {

@@ -11,14 +11,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { useEngineStore } from '@/stores/engines';
 import { useEngineGroupsStore } from '@/stores/engineGroups';
+import { useSocketStore } from '@/stores/socket';
 import { useEngineSidebarMenu } from './useEngineSidebarMenu';
 
-// engineGroupsApi.update is called for collapse/toggle; stub fetch so it's a no-op.
+// engineGroupsApi.update routes through useSocketStore().request() since the
+// HTTP API was retired — stub that to a resolved promise so collapse/toggle
+// tests don't hang on the 10s "Socket not connected" timeout.
 beforeEach(() => {
     setActivePinia(createPinia());
-    (globalThis as unknown as { fetch: typeof fetch }).fetch = vi
-        .fn()
-        .mockResolvedValue({ ok: true, json: async () => ({}) }) as unknown as typeof fetch;
+    const socket = useSocketStore();
+    socket.request = vi.fn().mockResolvedValue(undefined) as typeof socket.request;
 });
 
 function seedStores() {

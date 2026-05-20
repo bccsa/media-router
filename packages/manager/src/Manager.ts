@@ -30,7 +30,9 @@ export interface ManagerConfig {
  * - handlers/EngineCommandService — engine start/stop with retry
  * - handlers/EngineEventForwarder — engine→browser event streaming
  * - plugins/PluginRegistry.ts     — plugin manifest scanning
- * - routes/httpRoutes.ts          — REST API endpoints
+ * - routes/httpRoutes.ts          — /health + static SPA serving (application
+ *                                    API lives on Socket.IO RPC, see
+ *                                    socket/rpcHandlers.ts)
  */
 export class Manager {
     private readonly config: Required<ManagerConfig>;
@@ -101,14 +103,9 @@ export class Manager {
             eventForwarder,
             patchRouter,
         });
-        registerHttpRoutes({
-            app,
-            configStore: this.configStore,
-            engineManager: this.engineManager,
-            pluginRegistry,
-            io: this.io,
-            eventForwarder,
-        });
+        // After the v2.0 API consolidation, HTTP only serves /health + the
+        // SPA static bundle. Application API lives on Socket.IO RPC.
+        registerHttpRoutes({ app });
 
         log.info(
             { httpPort: this.config.httpPort, dgramPort: this.config.dgramPort },

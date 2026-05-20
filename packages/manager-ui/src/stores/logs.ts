@@ -56,9 +56,22 @@ export const useLogStore = defineStore('logs', () => {
         entries.value.set(engineId, []);
     }
 
+    /**
+     * Re-key cached entries after a server-side engine rename. Without this
+     * the detail view under the new id renders empty while the old buffer
+     * sits orphaned in the Map.
+     */
+    function rename(oldEngineId: string, newEngineId: string) {
+        if (oldEngineId === newEngineId) return;
+        const buf = entries.value.get(oldEngineId);
+        if (buf === undefined) return;
+        entries.value.delete(oldEngineId);
+        entries.value.set(newEngineId, buf);
+    }
+
     function getEntries(engineId: string): LogEntry[] {
         return entries.value.get(engineId) ?? [];
     }
 
-    return { entries, addEntries, setHistory, clear, getEntries };
+    return { entries, addEntries, setHistory, clear, rename, getEntries };
 });

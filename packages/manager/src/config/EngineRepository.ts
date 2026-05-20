@@ -75,6 +75,68 @@ export class EngineRepository {
     }
 
     /**
+     * Rename the primary key, optionally folding a display_name/password
+     * change into the same transaction.
+     *
+     * `engine_profiles` has an FK without ON UPDATE CASCADE (sqlite
+     * ALTER TABLE can't add it after the fact), so we update all three tables
+     * manually. `defer_foreign_keys` defers FK checking until COMMIT so the
+     * parent UPDATE doesn't fire a transient FK violation against
+     * engine_profiles rows that we're about to repoint in the same
+     * transaction — better-sqlite3 enables `PRAGMA foreign_keys = ON` by
+     * default and would otherwise reject the parent update.
+     *
+     * Folding the metadata update in: rename is an HTTP operation that also
+     * carries an updated display name (and optionally a new password). Doing
+     * those as a separate UPDATE after rename would let the rename commit
+     * while the metadata change still throws — leaving the UI keyed by the
+     * old id (no rename event was emitted yet) and the row under the new id
+     * with stale fields. One transaction = either both land or neither does.
+     *
+     * Caller must ensure `newId` is unique — the underlying PK constraint
+     * will throw otherwise, the transaction rolls back, and nothing changes.
+     */
+    rename(
+        oldId: string,
+        newId: string,
+        meta?: { displayName?: string; password?: string },
+    ): void {
+        // Build the parent UPDATE dynamically so display_name and password can
+        // be set independently — earlier versions required `displayName` to be
+        // present before either would land, which silently dropped a
+        // password-only rename.
+        const setClauses = ['engine_id = ?', "updated_at = datetime('now')"];
+        const params: unknown[] = [newId];
+        if (meta?.displayName !== undefined) {
+            setClauses.push('display_name = ?');
+            params.push(meta.displayName);
+        }
+        if (meta?.password) {
+            setClauses.push('password = ?');
+            params.push(meta.password);
+        }
+        params.push(oldId);
+        const parentUpdate = `UPDATE engines SET ${setClauses.join(', ')} WHERE engine_id = ?`;
+
+        const txn = this.db.transaction(() => {
+            this.db.pragma('defer_foreign_keys = 1');
+            this.db.prepare(parentUpdate).run(...params);
+            this.db
+                .prepare('UPDATE engine_profiles SET engine_id = ? WHERE engine_id = ?')
+                .run(newId, oldId);
+            this.db
+                .prepare('UPDATE engine_config_history SET engine_id = ? WHERE engine_id = ?')
+                .run(newId, oldId);
+        });
+        try {
+            txn();
+        } catch (err) {
+            log.error({ err, oldId, newId }, 'Failed to rename engine');
+            throw err;
+        }
+    }
+
+    /**
      * Bulk-assign engines to groups + positions. The full updates array is
      * applied in one transaction so a partial failure doesn't leave the list
      * half-reordered.

@@ -151,6 +151,50 @@ export class EngineConnectionManager extends EventEmitter {
         this.server.refreshEncryptionKeys(this.buildEncryptionKeys());
     }
 
+    /**
+     * Close out any live session under `oldId` after an engine_id rename.
+     *
+     * The engine doesn't know about the rename — it still authenticates as
+     * `oldId` from its local `profile.name`. Two reasons we can't just
+     * leave the existing socket running:
+     *
+     *  1. **Operator UX.** The engine *isn't* online under `newId` until
+     *     they update `profile.name` on the engine host and restart the
+     *     service. If we moved the socket from `oldId` to `newId` to keep
+     *     `isEngineOnline(newId)` truthy, the detail view would lie about
+     *     reachability and the operator would have no signal that they
+     *     still need to act on the engine side.
+     *  2. **Orphan events.** Each `Socket` captures its `encryptionKey` at
+     *     `handleConnect` and the Server's per-packet decryption rejects
+     *     messages from removed keys (see `Server.handleMessage`) — so
+     *     `engineState` / `engineLogs` listeners stop firing once
+     *     `refreshEncryptionKeys` runs. But keepalive packets are
+     *     unencrypted, so the session would stay technically alive
+     *     forever. Destroying the socket closes that loose end.
+     *
+     * Net result: rename → engine flips offline immediately, operator
+     * updates `profile.name` + restarts engine → engine reconnects as
+     * `newId` through the normal onboarding path. Historical state
+     * (cached states, logs, devices, VU) is preserved across the gap by
+     * `EngineEventForwarder.notifyRename` so the detail view doesn't
+     * blank out while the operator is verifying the rename took effect.
+     */
+    notifyRename(oldId: string, newId: string): void {
+        if (oldId === newId) return;
+        this.onlineEngines.delete(oldId);
+        const socket = this.engineSockets.get(oldId);
+        if (socket !== undefined) {
+            this.engineSockets.delete(oldId);
+            // `Socket.destroy()` fires the Server's `onDisconnect` →
+            // `disconnection(oldId)` event, which routes through the
+            // existing offline handler. We've already removed oldId from
+            // the local caches above, so that handler's deletes are
+            // no-ops and the engine:offline broadcast lands on a key the
+            // browser has already let go of — harmless.
+            (socket as { destroy?: () => void }).destroy?.();
+        }
+    }
+
     private buildEncryptionKeys(): Record<string, string> {
         const keys: Record<string, string> = {};
         for (const engine of this.configStore.getAllEngines()) {

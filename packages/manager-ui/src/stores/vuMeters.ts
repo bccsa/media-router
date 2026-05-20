@@ -58,5 +58,25 @@ export const useVuStore = defineStore('vuMeters', () => {
         }
     }
 
-    return { levels, update, get, clear };
+    /**
+     * Move all `${oldEngineId}/*` keys to `${newEngineId}/*` after a
+     * server-side rename. VU sampling is high-frequency (~15Hz) so a
+     * clear-and-wait would visibly flatline the meters; rekeying preserves
+     * the in-flight values.
+     */
+    function rename(oldEngineId: string, newEngineId: string) {
+        if (oldEngineId === newEngineId) return;
+        const prefix = `${oldEngineId}/`;
+        for (const key of Object.keys(levels)) {
+            if (key.startsWith(prefix)) {
+                const newKey = `${newEngineId}/${key.slice(prefix.length)}`;
+                levels[newKey] = levels[key];
+                lastUpdate[newKey] = lastUpdate[key];
+                delete levels[key];
+                delete lastUpdate[key];
+            }
+        }
+    }
+
+    return { levels, update, get, clear, rename };
 });

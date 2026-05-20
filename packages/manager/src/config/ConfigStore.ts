@@ -68,6 +68,33 @@ export class ConfigStore {
         this.engines.update(engineId, displayName, password);
     }
 
+    /**
+     * Rename an engine's primary key, optionally applying a display_name +
+     * password change in the same transaction. Caller must verify `newId` is
+     * free — we re-check here defensively so callers can't race themselves,
+     * and the underlying transaction would throw on the PK collision anyway.
+     *
+     * NOTE: this changes the identity the engine authenticates with. The
+     * engine itself reads its identity from `profile.name` in its local
+     * `profiles.json` — until that's updated to match, the engine will
+     * reconnect under the old name and auth will fail. The HTTP layer
+     * exposes this to the operator as a warning.
+     */
+    renameEngine(
+        oldId: string,
+        newId: string,
+        meta?: { displayName?: string; password?: string },
+    ): void {
+        if (oldId !== newId && this.engines.get(newId)) {
+            throw new Error(`Engine ID already exists: ${newId}`);
+        }
+        // Same-id case flows through the same code path — the PK update is a
+        // no-op, the FK cascades are no-ops, and any meta fields apply.
+        // Avoids a separate shortcut that historically silently dropped
+        // password-only updates.
+        this.engines.rename(oldId, newId, meta);
+    }
+
     /** Cascades through `engine_profiles` and `engine_config_history`. */
     deleteEngine(engineId: string): void {
         try {
