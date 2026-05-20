@@ -124,6 +124,7 @@ export class Engine {
             startModules: () => this.startModules(),
             stopModules: () => this.stopModules(),
             resetEngine: () => this.resetEngine(),
+            rebootHost: () => this.rebootHost(),
             restartModule: (id) => this.lifecycle.restart(id),
             startSingleModule: (id) => this.lifecycle.startSingle(id),
             deleteSingleModule: (id) => this.lifecycle.deleteSingle(id),
@@ -300,6 +301,59 @@ export class Engine {
             log.info('Stop requested during reset — skipping module restart');
         }
         log.info({ wasRunning }, 'Engine reset complete');
+    }
+
+    /**
+     * Reboot the host OS. Stops modules through the lifecycle lock first so
+     * GStreamer pipelines / PipeWire links / child processes release cleanly
+     * instead of being SIGTERM'd by systemd mid-flight. Needs polkit
+     * permission for `org.freedesktop.login1.reboot` on the engine user;
+     * failures (typically a missing rule) round-trip back via the
+     * `rebootFailed` topic with the captured stderr so the dashboard can
+     * surface the actual reason.
+     */
+    async rebootHost(): Promise<void> {
+        log.warn('Host reboot requested — stopping modules then invoking systemctl reboot');
+        // Stop modules first so audio devices release cleanly. If this throws
+        // we still attempt the reboot — the operator asked for it, urgency
+        // outweighs cleanliness.
+        try {
+            await this.runController.stop();
+        } catch (err) {
+            log.warn(
+                { err: formatError(err) },
+                'Module stop before reboot failed — continuing to systemctl reboot',
+            );
+        }
+
+        const { execFile } = await import('child_process');
+        try {
+            await new Promise<void>((resolve, reject) => {
+                execFile(
+                    'systemctl',
+                    ['reboot'],
+                    { timeout: 10000 },
+                    (err, _stdout, stderr) => {
+                        if (err) {
+                            // `err.message` is just "Command failed: systemctl
+                            // reboot"; the actionable reason ("Interactive
+                            // authentication required.", etc.) lives in stderr.
+                            const detail = (stderr || '').trim() || err.message;
+                            reject(new Error(detail));
+                        } else {
+                            resolve();
+                        }
+                    },
+                );
+            });
+        } catch (err) {
+            this.managerConnection.send(
+                'rebootFailed',
+                { reason: formatError(err) },
+                { guaranteeDelivery: true },
+            );
+            throw err;
+        }
     }
 
     async reconnectManager(): Promise<void> {

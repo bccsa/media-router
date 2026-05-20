@@ -21,6 +21,7 @@ function createMockContext(): CommandContext {
         startModules: vi.fn().mockResolvedValue(undefined),
         stopModules: vi.fn().mockResolvedValue(undefined),
         resetEngine: vi.fn().mockResolvedValue(undefined),
+        rebootHost: vi.fn().mockResolvedValue(undefined),
         restartModule: vi.fn().mockResolvedValue(undefined),
         startSingleModule: vi.fn().mockResolvedValue(undefined),
         deleteSingleModule: vi.fn().mockResolvedValue(undefined),
@@ -61,6 +62,43 @@ describe('CommandDispatcher', () => {
             dispatcher.dispatch({ command: 'reset' });
             await flush();
             expect(ctx.resetEngine).toHaveBeenCalledOnce();
+        });
+
+        it('dispatch reboot calls rebootHost', async () => {
+            dispatcher.dispatch({ command: 'reboot' });
+            await flush();
+            expect(ctx.rebootHost).toHaveBeenCalledOnce();
+        });
+
+        it('reboot does not block subsequent lifecycle commands on the queue', async () => {
+            // If reboot were on commandLock and rebootHost hung (polkit
+            // dialog, slow systemctl, whatever), a queued start would wait
+            // forever. Fire-and-forget at the dispatcher means start runs
+            // even while reboot is still pending.
+            let resolveReboot!: () => void;
+            (ctx.rebootHost as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+                new Promise<void>((r) => {
+                    resolveReboot = r;
+                }),
+            );
+
+            dispatcher.dispatch({ command: 'reboot' });
+            dispatcher.dispatch({ command: 'start' });
+            await flush();
+
+            expect(ctx.startModules).toHaveBeenCalledOnce();
+
+            resolveReboot();
+            await flush();
+        });
+
+        it('dispatch reboot swallows rebootHost rejection (so the queue keeps moving)', async () => {
+            (ctx.rebootHost as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+                new Error('polkit denied'),
+            );
+            expect(() => dispatcher.dispatch({ command: 'reboot' })).not.toThrow();
+            await flush();
+            expect(ctx.rebootHost).toHaveBeenCalledOnce();
         });
 
         it('rapid start/stop/start — only last pending runs after current finishes', async () => {

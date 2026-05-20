@@ -12,6 +12,7 @@ export {
     EngineRunningStateSchema,
     LcpEngineCommandSchema,
     DynamicPortsSchema,
+    RebootFailedSchema,
     PatchEnvelopeSchema,
     // Manager Socket RPC payloads — every event in rpcHandlers.ts has its
     // schema exported here so the manager-ui can build matching payloads.

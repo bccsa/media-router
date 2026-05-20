@@ -168,6 +168,20 @@ export function setupSocketIO(deps: SocketDeps): void {
             }),
         );
         socket.on(
+            'engine:reboot',
+            validated(EngineIdPayloadSchema, log, ({ engineId }) => {
+                if (!validEngine(engineId)) return;
+                if (engineManager.isEngineOnline(engineId)) {
+                    engineManager.sendToEngine(
+                        engineId,
+                        'command',
+                        { command: 'reboot' },
+                        { guaranteeDelivery: true },
+                    );
+                }
+            }),
+        );
+        socket.on(
             'module:restart',
             validated(ModuleRestartPayloadSchema, log, ({ engineId, moduleId }) => {
                 if (!validEngine(engineId)) return;

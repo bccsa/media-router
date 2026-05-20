@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import draggable from 'vuedraggable';
 import { useEngineStore } from '@/stores/engines';
 import { useEngineGroupsStore } from '@/stores/engineGroups';
+import { useSocketStore } from '@/stores/socket';
 import { engineGroupsApi } from '@/api/engineGroups';
 import { useEngineSidebarMenu } from '@/composables/useEngineSidebarMenu';
 import EngineGroup from './EngineGroup.vue';
@@ -17,6 +18,7 @@ const route = useRoute();
 const router = useRouter();
 const engineStore = useEngineStore();
 const groupsStore = useEngineGroupsStore();
+const socket = useSocketStore();
 
 const open = ref(false);
 watch(() => route.path, () => (open.value = false));
@@ -101,6 +103,34 @@ async function confirmDeleteGroup() {
     await engineGroupsApi.remove(id);
 }
 
+const rebootModal = ref<{ engineId: string; engineName: string } | null>(null);
+function confirmRebootEngine() {
+    if (!rebootModal.value) return;
+    const engineId = rebootModal.value.engineId;
+    rebootModal.value = null;
+    socket.emit('engine:reboot', { engineId });
+}
+
+// Failure notification driven by the engine reporting `rebootFailed`
+// (e.g. polkit denied). The socket store holds the shared ref so this
+// works even if the sidebar is unmounted mid-flight on a route change.
+const rebootFailureModal = ref<{ engineName: string; reason: string } | null>(null);
+watch(
+    () => socket.rebootFailure,
+    (next) => {
+        if (!next) return;
+        const engine = engineStore.getEngine(next.engineId);
+        rebootFailureModal.value = {
+            engineName: engine?.name || next.engineId,
+            reason: next.reason,
+        };
+    },
+);
+function dismissRebootFailure() {
+    rebootFailureModal.value = null;
+    socket.clearRebootFailure();
+}
+
 // --- Context menu (delegated to composable) ---
 const {
     menu: contextMenu,
@@ -113,6 +143,7 @@ const {
     requestRename: (id) => (renameTarget.value = id),
     requestEdit: openEditModal,
     requestDelete: (target) => (deleteModal.value = target),
+    requestReboot: (target) => (rebootModal.value = target),
 });
 
 function onMenuAction(action: string) {
@@ -285,6 +316,39 @@ const totalEngines = computed(() => engineStore.engineList.length);
         <template #footer>
             <MrButton variant="secondary" @click="deleteModal = null">Cancel</MrButton>
             <MrButton variant="danger" @click="confirmDeleteGroup">Delete</MrButton>
+        </template>
+    </MrModal>
+
+    <MrModal
+        v-if="rebootModal"
+        :title="`Reboot ${rebootModal.engineName}?`"
+        @close="rebootModal = null"
+    >
+        <p class="text-sm text-muted">
+            The engine host will run <code>systemctl reboot</code>. All routing on this engine
+            stops until the box comes back up — usually under a minute.
+        </p>
+        <template #footer>
+            <MrButton variant="secondary" @click="rebootModal = null">Cancel</MrButton>
+            <MrButton variant="danger" @click="confirmRebootEngine">Reboot</MrButton>
+        </template>
+    </MrModal>
+
+    <MrModal
+        v-if="rebootFailureModal"
+        :title="`Reboot of ${rebootFailureModal.engineName} failed`"
+        @close="dismissRebootFailure"
+    >
+        <p class="text-sm text-muted">
+            The engine could not invoke <code>systemctl reboot</code>:
+        </p>
+        <pre class="mt-2 px-3 py-2 rounded-md bg-bg-primary text-xs whitespace-pre-wrap text-foreground">{{ rebootFailureModal.reason }}</pre>
+        <p class="text-xs text-muted mt-2">
+            Most likely the engine user lacks polkit permission for
+            <code>org.freedesktop.login1.reboot</code>.
+        </p>
+        <template #footer>
+            <MrButton @click="dismissRebootFailure">Close</MrButton>
         </template>
     </MrModal>
 </template>

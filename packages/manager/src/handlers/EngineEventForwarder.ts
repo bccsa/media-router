@@ -5,6 +5,7 @@ import {
     EngineRunningStateSchema,
     LcpEngineCommandSchema,
     DynamicPortsSchema,
+    RebootFailedSchema,
 } from '@media-router/shared-types';
 import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
@@ -152,6 +153,14 @@ export class EngineEventForwarder {
             const running = command === 'start';
             this.engineCommands.setRunning(engineId, running);
             this.io.emit('engine:running', { engineId, running });
+        });
+
+        // Host reboot failed — typically a polkit denial. Surface to browsers
+        // so the operator gets feedback instead of a silent non-reboot.
+        this.engineManager.on('engineRebootFailed', (engineId: string, data: unknown) => {
+            const parsed = safeParse(RebootFailedSchema, data, 'engineRebootFailed', log);
+            if (!parsed) return;
+            this.io.emit('engine:rebootFailed', { engineId, reason: parsed.reason });
         });
 
         // Dynamic port updates — persist to config + broadcast to browsers

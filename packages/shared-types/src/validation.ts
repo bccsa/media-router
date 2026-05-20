@@ -56,6 +56,11 @@ export const DynamicPortsSchema = z.object({
     ports: z.array(z.unknown()),
 });
 
+/** Engine reports a host-reboot failure (typically a polkit denial). */
+export const RebootFailedSchema = z.object({
+    reason: z.string(),
+});
+
 /** Patch envelope (ops wrapper). */
 export const PatchEnvelopeSchema = z.object({
     ops: PatchOpsSchema,

@@ -328,6 +328,28 @@ describe('EngineEventForwarder', () => {
         });
     });
 
+    describe('engineRebootFailed', () => {
+        it('forwards a typed engine:rebootFailed broadcast to every browser', () => {
+            const { engineManager, io } = createMocks();
+            engineManager.emit('engineRebootFailed', 'eng-1', {
+                reason: 'Interactive authentication required.',
+            });
+            expect(io.emit).toHaveBeenCalledWith('engine:rebootFailed', {
+                engineId: 'eng-1',
+                reason: 'Interactive authentication required.',
+            });
+        });
+
+        it('drops malformed payloads (no reason field) without throwing', () => {
+            const { engineManager, io } = createMocks();
+            engineManager.emit('engineRebootFailed', 'eng-1', {});
+            expect(io.emit).not.toHaveBeenCalledWith(
+                'engine:rebootFailed',
+                expect.anything(),
+            );
+        });
+    });
+
     describe('engineDynamicPorts', () => {
         it('updates config and broadcasts port changes', () => {
             const { engineManager, configStore, io } = createMocks();

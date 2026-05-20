@@ -108,6 +108,12 @@ export class EngineConnectionManager extends EventEmitter {
                 this.emit('enginePatch', clientId, data);
             });
 
+            // Host reboot failed (typically a polkit denial) — relayed so the
+            // dashboard can surface the failure instead of silently swallowing it.
+            socket.on('rebootFailed', (data: unknown) => {
+                this.emit('engineRebootFailed', clientId, data);
+            });
+
             // Socket-level disconnect is handled by server.on('disconnection') below
         });
 

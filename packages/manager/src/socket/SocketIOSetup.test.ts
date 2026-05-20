@@ -9,9 +9,12 @@ import { setupSocketIO } from './SocketIOSetup.js';
  * /api/v1/engines` listing was removed, so the guard has to live here.
  */
 describe('setupSocketIO', () => {
-    function mockDeps(configStore: ConfigStore) {
-        // Capture the 'connection' handler so the test can drive it directly
-        // without standing up a real Socket.IO server.
+    /**
+     * Spin up `setupSocketIO` with throwaway mocks and capture the connection
+     * handler. `online` controls `engineManager.isEngineOnline`; other deps
+     * use default no-op behaviour and are returned for per-test overrides.
+     */
+    function mockDeps(configStore: ConfigStore, { online = false }: { online?: boolean } = {}) {
         let connectionHandler: ((socket: any) => void) | undefined;
         const io = {
             on: vi.fn((event: string, handler: (socket: any) => void) => {
@@ -22,22 +25,17 @@ describe('setupSocketIO', () => {
         } as any;
 
         const engineManager = {
-            isEngineOnline: vi.fn().mockReturnValue(false),
+            isEngineOnline: vi.fn().mockReturnValue(online),
+            sendToEngine: vi.fn(),
         } as any;
-        const pluginRegistry = {
-            overlayManifest: vi.fn(),
-        } as any;
-        const engineCommands = {
-            isRunning: vi.fn().mockReturnValue(false),
-        } as any;
+        const pluginRegistry = { overlayManifest: vi.fn() } as any;
+        const engineCommands = { isRunning: vi.fn().mockReturnValue(false) } as any;
         const eventForwarder = {
             getCachedStates: vi.fn().mockReturnValue({}),
             getEngineData: vi.fn().mockReturnValue(undefined),
             getLogBuffer: vi.fn().mockReturnValue([]),
         } as any;
-        const patchRouter = {
-            onPatch: vi.fn(),
-        } as any;
+        const patchRouter = { onPatch: vi.fn() } as any;
 
         setupSocketIO({
             io,
@@ -49,8 +47,55 @@ describe('setupSocketIO', () => {
             patchRouter,
         });
 
-        return { io, fireConnect: () => connectionHandler };
+        /** Drive the connection handler with a captured socket; returns the
+         *  per-event handler map the test can fire against. */
+        function connectSocket() {
+            const handlers: Record<string, (payload: unknown) => void> = {};
+            const socket = {
+                id: 'sock-1',
+                emit: vi.fn(),
+                on: vi.fn((event: string, handler: (payload: unknown) => void) => {
+                    handlers[event] = handler;
+                }),
+                rooms: new Set<string>(),
+                join: vi.fn(),
+                leave: vi.fn(),
+            };
+            connectionHandler!(socket as any);
+            return { socket, handlers };
+        }
+
+        return { io, engineManager, connectSocket, fireConnect: () => connectionHandler };
     }
+
+    it('engine:reboot forwards a reboot command to the online engine', () => {
+        const store = new ConfigStore(':memory:');
+        store.createEngine('eng-1', 'Engine One', 'pw');
+        const { engineManager, connectSocket } = mockDeps(store, { online: true });
+        const { handlers } = connectSocket();
+
+        handlers['engine:reboot']!({ engineId: 'eng-1' });
+
+        expect(engineManager.sendToEngine).toHaveBeenCalledWith(
+            'eng-1',
+            'command',
+            { command: 'reboot' },
+            { guaranteeDelivery: true },
+        );
+        store.close();
+    });
+
+    it('engine:reboot is a no-op when the engine is offline', () => {
+        const store = new ConfigStore(':memory:');
+        store.createEngine('eng-1', 'Engine One', 'pw');
+        const { engineManager, connectSocket } = mockDeps(store, { online: false });
+        const { handlers } = connectSocket();
+
+        handlers['engine:reboot']!({ engineId: 'eng-1' });
+
+        expect(engineManager.sendToEngine).not.toHaveBeenCalled();
+        store.close();
+    });
 
     it('engine:list strips password from every engine row before emitting', () => {
         const store = new ConfigStore(':memory:');

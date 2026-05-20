@@ -64,6 +64,7 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
             requestRename: vi.fn(),
             requestEdit: vi.fn(),
             requestDelete: vi.fn(),
+            requestReboot: vi.fn(),
         });
         // Open the menu for e1 (currently in 'studio').
         menu.openEngineMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'e1');
@@ -96,6 +97,7 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
             requestRename: vi.fn(),
             requestEdit: vi.fn(),
             requestDelete: vi.fn(),
+            requestReboot: vi.fn(),
         });
         menu.openEngineMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'e1');
 
@@ -118,6 +120,7 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
             requestRename: vi.fn(),
             requestEdit: vi.fn(),
             requestDelete: vi.fn(),
+            requestReboot: vi.fn(),
         });
         menu.openEngineMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'e1');
 
@@ -135,10 +138,31 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
             requestRename,
             requestEdit: vi.fn(),
             requestDelete: vi.fn(),
+            requestReboot: vi.fn(),
         });
         menu.openGroupMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'studio');
         await menu.dispatch('group:rename', { navigate: vi.fn(), packGroup: vi.fn() });
         expect(requestRename).toHaveBeenCalledWith('studio');
+    });
+
+    it('engine:reboot routes through requestReboot with the engine name (no direct socket emit)', async () => {
+        seedStores();
+        const requestReboot = vi.fn();
+        const socket = useSocketStore();
+        const emit = vi.spyOn(socket, 'emit');
+        const menu = useEngineSidebarMenu({
+            requestRename: vi.fn(),
+            requestEdit: vi.fn(),
+            requestDelete: vi.fn(),
+            requestReboot,
+        });
+        menu.openEngineMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'e1');
+        await menu.dispatch('engine:reboot', { navigate: vi.fn(), packGroup: vi.fn() });
+        // Host owns the confirmation modal — the composable must NOT emit
+        // engine:reboot directly, otherwise a stray right-click would reboot
+        // the host without warning.
+        expect(requestReboot).toHaveBeenCalledWith({ engineId: 'e1', engineName: 'E1' });
+        expect(emit).not.toHaveBeenCalledWith('engine:reboot', expect.anything());
     });
 
     it('group:delete routes through requestDelete with name', async () => {
@@ -148,6 +172,7 @@ describe('useEngineSidebarMenu — move-to dispatch', () => {
             requestRename: vi.fn(),
             requestEdit: vi.fn(),
             requestDelete,
+            requestReboot: vi.fn(),
         });
         menu.openGroupMenu({ clientX: 0, clientY: 0 } as MouseEvent, 'studio');
         await menu.dispatch('group:delete', { navigate: vi.fn(), packGroup: vi.fn() });

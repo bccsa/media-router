@@ -14,6 +14,7 @@ export interface CommandContext {
     startModules: () => Promise<void>;
     stopModules: () => Promise<void>;
     resetEngine: () => Promise<void>;
+    rebootHost: () => Promise<void>;
     restartModule: (moduleId: string) => Promise<void>;
     startSingleModule: (moduleId: string) => Promise<void>;
     deleteSingleModule: (moduleId: string) => Promise<void>;
@@ -100,6 +101,16 @@ export class CommandDispatcher {
 
             case 'reset':
                 this.scheduleLifecycle('reset');
+                break;
+
+            case 'reboot':
+                // Host reboot — fire-and-forget. The system goes down with
+                // the engine process, so there's nothing meaningful to await
+                // here; just log if the systemctl call rejects (typically a
+                // polkit permission error the operator needs to fix).
+                this.ctx
+                    .rebootHost()
+                    .catch((err) => log.error({ err }, 'Host reboot failed'));
                 break;
 
             case 'moduleConfig': {

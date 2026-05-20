@@ -11,6 +11,13 @@ import type { Device } from '@media-router/shared-types';
 export const useSocketStore = defineStore('socket', () => {
     const connected = ref(false);
     const socket = shallowRef<Socket | null>(null);
+    /**
+     * Latest unread engine→browser failure notification. Currently only set
+     * by `engine:rebootFailed` (typically a polkit denial). Components watch
+     * this and clear it when they've shown the message — keeps the failure
+     * from rotting silently in engine logs.
+     */
+    const rebootFailure = ref<{ engineId: string; reason: string } | null>(null);
 
     function connect() {
         // Clean up old socket listeners to prevent accumulation on reconnect
@@ -159,6 +166,12 @@ export const useSocketStore = defineStore('socket', () => {
             },
         );
 
+        // Host reboot failure (typically polkit denial) — push to the
+        // sidebar's notification surface so the operator sees the reason.
+        s.on('engine:rebootFailed', (data: { engineId: string; reason: string }) => {
+            rebootFailure.value = { engineId: data.engineId, reason: data.reason };
+        });
+
         // Log streaming
         s.on('engine:logs', (data: { engineId: string; entries: any[] }) => {
             useLogStore().addEntries(data.engineId, data.entries);
@@ -196,10 +209,21 @@ export const useSocketStore = defineStore('socket', () => {
                 useLogStore().rename(data.oldEngineId, data.newEngineId);
                 useDeviceStore().rename(data.oldEngineId, data.newEngineId);
                 useVuStore().rename(data.oldEngineId, data.newEngineId);
+                if (rebootFailure.value?.engineId === data.oldEngineId) {
+                    rebootFailure.value = {
+                        engineId: data.newEngineId,
+                        reason: rebootFailure.value.reason,
+                    };
+                }
             },
         );
         s.on('engine:removed', (data: { engineId: string }) => {
             useEngineStore().removeEngine(data.engineId);
+            // Drop a dangling failure notice for this engine — the modal
+            // would otherwise render with a now-unknown engineId in the title.
+            if (rebootFailure.value?.engineId === data.engineId) {
+                rebootFailure.value = null;
+            }
         });
 
         // Engine groups + sidebar ordering. Initial set arrives once on
@@ -297,8 +321,14 @@ export const useSocketStore = defineStore('socket', () => {
         });
     }
 
+    function clearRebootFailure() {
+        rebootFailure.value = null;
+    }
+
     return {
         connected: readonly(connected),
+        rebootFailure: readonly(rebootFailure),
+        clearRebootFailure,
         connect,
         disconnect,
         emit,

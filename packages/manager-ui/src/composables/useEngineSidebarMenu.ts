@@ -8,20 +8,17 @@ import { engineGroupsApi } from '@/api/engineGroups';
 /**
  * Hosts the sidebar context-menu state (which row was right-clicked, where to
  * draw the menu, what items to show) and the dispatcher that turns menu
- * actions into store mutations + REST calls. Extracted from AppSidebar.vue so
+ * actions into store mutations + RPC calls. Extracted from AppSidebar.vue so
  * the sidebar template only deals with layout.
  *
- * Two callbacks are needed from the host:
- *   - `requestRename(groupId)` — the host owns the group component refs and
- *     calls `.startRename()` to enter inline-edit mode.
- *   - `requestEdit(groupId)`   — opens the host's name+color modal.
- *   - `requestDelete({groupId, groupName})` — opens the host's confirmation
- *     modal (host knows how to render it).
+ * The host supplies callbacks for anything that needs DOM ownership the
+ * composable doesn't have — see the parameter type for the current set.
  */
 export function useEngineSidebarMenu(callbacks: {
     requestRename: (groupId: string) => void;
     requestEdit: (groupId: string) => void;
     requestDelete: (target: { groupId: string; groupName: string }) => void;
+    requestReboot: (target: { engineId: string; engineName: string }) => void;
 }) {
     const engineStore = useEngineStore();
     const groupsStore = useEngineGroupsStore();
@@ -61,6 +58,12 @@ export function useEngineSidebarMenu(callbacks: {
                     disabled: !engine.online,
                 },
                 { label: 'Reset', action: 'engine:reset', disabled: !engine.online },
+                {
+                    label: 'Reboot host',
+                    action: 'engine:reboot',
+                    disabled: !engine.online,
+                    danger: true,
+                },
                 { label: '', action: 'div', divider: true },
                 ...moveItems,
                 { label: '', action: 'div2', divider: true },
@@ -101,6 +104,13 @@ export function useEngineSidebarMenu(callbacks: {
             const engineId = ctx.engineId;
             if (action === 'engine:start' || action === 'engine:stop' || action === 'engine:reset') {
                 socket.emit(action, { engineId });
+            } else if (action === 'engine:reboot') {
+                // Confirm before firing — rebooting kills the engine host.
+                const engine = engineStore.getEngine(engineId);
+                callbacks.requestReboot({
+                    engineId,
+                    engineName: engine?.name || engineId,
+                });
             } else if (action.startsWith('move:')) {
                 const targetGroupId = action.slice('move:'.length);
                 // Snapshot source group BEFORE any await — the first packGroup
