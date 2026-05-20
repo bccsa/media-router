@@ -40,8 +40,21 @@ function captureHandlers(configStore: ConfigStore) {
         getAll: vi.fn().mockReturnValue([{ id: 'audio-input' }, { id: 'audio-output' }]),
         enrichModule: vi.fn(),
     } as any;
+    const engineCommands = {
+        isRunning: vi.fn().mockReturnValue(false),
+        setRunning: vi.fn(),
+        sendCommand: vi.fn(),
+        cancelAll: vi.fn(),
+    } as any;
 
-    registerRpcHandlers(socket, { io, configStore, engineManager, pluginRegistry, eventForwarder });
+    registerRpcHandlers(socket, {
+        io,
+        configStore,
+        engineManager,
+        pluginRegistry,
+        eventForwarder,
+        engineCommands,
+    });
 
     /** Invoke a handler and return the ack response synchronously. */
     function call<T = unknown>(event: string, payload: unknown): Promise<{ ok: boolean } & T> {
@@ -52,7 +65,7 @@ function captureHandlers(configStore: ConfigStore) {
         });
     }
 
-    return { call, io, engineManager, eventForwarder, pluginRegistry };
+    return { call, io, engineManager, eventForwarder, pluginRegistry, engineCommands };
 }
 
 describe('rpcHandlers — engines', () => {
@@ -370,6 +383,69 @@ describe('rpcHandlers — profiles', () => {
                 expect.objectContaining({ path: '/activeProfile', value: 'p1' }),
             ]),
         );
+    });
+
+    it('profile:activate routes through sendCommand("start") when the new profile is running', async () => {
+        store.createProfile('eng-1', 'p1', {
+            modules: { 'mod-a': { pluginId: 'audio-input' } },
+            connections: [],
+            running: true,
+        });
+        const { call, engineManager, engineCommands } = captureHandlers(store);
+        (engineManager.isEngineOnline as any).mockReturnValue(true);
+        (engineCommands.isRunning as any).mockReturnValue(true);
+
+        const res = await call('profile:activate', { engineId: 'eng-1', profileName: 'p1' });
+        expect(res.ok).toBe(true);
+
+        // sendCommand handles config push + start with retry/dedupe — no
+        // raw sendToEngine duplication from the handler.
+        expect(engineCommands.sendCommand).toHaveBeenCalledWith('eng-1', 'start');
+        expect(engineCommands.sendCommand).not.toHaveBeenCalledWith('eng-1', 'stop');
+    });
+
+    it('profile:activate stops the engine when switching from a running profile to a stopped one', async () => {
+        // Old profile running; new profile last-known stopped — without the
+        // explicit stop, the old profile's modules would keep running.
+        store.createProfile('eng-1', 'old', { modules: {}, connections: [], running: true });
+        store.setActiveProfile('eng-1', 'old');
+        store.createProfile('eng-1', 'new', { modules: {}, connections: [], running: false });
+        const { call, engineManager, engineCommands } = captureHandlers(store);
+        (engineManager.isEngineOnline as any).mockReturnValue(true);
+        // Reflect the active profile's stored running flag — true before
+        // setActiveProfile fires, false after.
+        (engineCommands.isRunning as any).mockImplementation((id: string) => {
+            const engine = store.getEngine(id);
+            if (!engine?.active_profile) return false;
+            const cfg = store.getProfile(id, engine.active_profile as string);
+            return (cfg?.running as boolean) ?? false;
+        });
+
+        const res = await call('profile:activate', { engineId: 'eng-1', profileName: 'new' });
+        expect(res.ok).toBe(true);
+
+        expect(engineCommands.sendCommand).toHaveBeenCalledWith('eng-1', 'stop');
+        // Config still pushed so a later start uses the new profile's modules.
+        const configCall = (engineManager.sendToEngine as any).mock.calls.find(
+            (c: unknown[]) => c[1] === 'config',
+        );
+        expect(configCall).toBeDefined();
+    });
+
+    it('profile:activate just syncs config when both old and new profiles are stopped', async () => {
+        store.createProfile('eng-1', 'p1', { modules: {}, connections: [], running: false });
+        const { call, engineManager, engineCommands } = captureHandlers(store);
+        (engineManager.isEngineOnline as any).mockReturnValue(true);
+        (engineCommands.isRunning as any).mockReturnValue(false);
+
+        const res = await call('profile:activate', { engineId: 'eng-1', profileName: 'p1' });
+        expect(res.ok).toBe(true);
+
+        expect(engineCommands.sendCommand).not.toHaveBeenCalled();
+        const configCall = (engineManager.sendToEngine as any).mock.calls.find(
+            (c: unknown[]) => c[1] === 'config',
+        );
+        expect(configCall).toBeDefined();
     });
 
     it('profile:config returns the stored config; 404 when missing', async () => {

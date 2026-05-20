@@ -22,6 +22,7 @@ import type { ConfigStore } from '../config/ConfigStore.js';
 import type { EngineConnectionManager } from '../engines/EngineConnectionManager.js';
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
 import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
+import type { EngineCommandService } from '../handlers/EngineCommandService.js';
 
 const log = createLogger('RpcHandlers');
 
@@ -95,6 +96,7 @@ export interface RpcDeps {
     engineManager: EngineConnectionManager;
     pluginRegistry: PluginRegistry;
     eventForwarder: EngineEventForwarder;
+    engineCommands: EngineCommandService;
 }
 
 /**
@@ -103,7 +105,7 @@ export interface RpcDeps {
  * picks up the change, not just the originator.
  */
 export function registerRpcHandlers(socket: IOSocket, deps: RpcDeps): void {
-    const { io, configStore, engineManager, pluginRegistry, eventForwarder } = deps;
+    const { io, configStore, engineManager, pluginRegistry, eventForwarder, engineCommands } = deps;
 
     /** Throws RpcError(404) if the engine is missing. Use as a guard at the top of handlers. */
     function requireEngine(engineId: string): Record<string, unknown> {
@@ -321,12 +323,30 @@ export function registerRpcHandlers(socket: IOSocket, deps: RpcDeps): void {
             requireEngine(engineId);
             const profile = configStore.getProfile(engineId, profileName);
             if (!profile) throw new RpcError('Profile not found');
+
+            // `isRunning` resolves through the engine's *active* profile, so
+            // capture the pre-switch state before we swap.
+            const wasRunning = engineCommands.isRunning(engineId);
             configStore.setActiveProfile(engineId, profileName);
+            const willBeRunning = engineCommands.isRunning(engineId);
 
             if (engineManager.isEngineOnline(engineId)) {
-                engineManager.sendToEngine(engineId, 'config', profile, {
-                    guaranteeDelivery: true,
-                });
+                if (willBeRunning) {
+                    // sendCommand pushes config then start; startAll destroys
+                    // the old profile's modules before creating the new ones.
+                    engineCommands.sendCommand(engineId, 'start');
+                } else if (wasRunning) {
+                    // New profile is stopped but the engine was running the
+                    // old one — push config and stop so old modules clear.
+                    engineManager.sendToEngine(engineId, 'config', profile, {
+                        guaranteeDelivery: true,
+                    });
+                    engineCommands.sendCommand(engineId, 'stop');
+                } else {
+                    engineManager.sendToEngine(engineId, 'config', profile, {
+                        guaranteeDelivery: true,
+                    });
+                }
             }
 
             const modules = (profile.modules ?? {}) as Record<string, Record<string, unknown>>;

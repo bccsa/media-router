@@ -204,6 +204,7 @@ export function setupSocketIO(deps: SocketDeps): void {
             engineManager,
             pluginRegistry,
             eventForwarder,
+            engineCommands,
         });
 
         socket.on('disconnect', () => {
