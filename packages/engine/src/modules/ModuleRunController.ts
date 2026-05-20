@@ -35,19 +35,31 @@ export class ModuleRunController {
     /**
      * Start all modules.
      *
-     * Two ordering rules:
+     * Ordering rules:
      *  - Flag set *before* awaiting `startAll` so a concurrent patch handler
      *    reading `isRunning` mid-flight sees the new intent and doesn't drop
      *    a freshly-added module on the floor.
-     *  - `onChange` fires only on success. The flag tracks user intent (will
-     *    survive a failed startAll so the next retry/reset still knows what
-     *    the user asked for), but the broadcast tracks observable state — if
-     *    startAll threw, modules aren't actually running and we shouldn't tell
-     *    the LCP otherwise.
+     *  - `onChange` fires only on success — broadcasting "running" while
+     *    startAll threw would misrepresent reality to the LCP.
+     *  - **On throw, roll the flag back to `false`.** The flag is reported to
+     *    the manager via the `engineRunningState` handshake on every
+     *    reconnect; `EngineEventForwarder` interprets `engine.running=true`
+     *    as "already running, just push config" and skips the `start`
+     *    command. If we left the flag at `true` after a failed startAll,
+     *    the engine would be permanently locked out of retries (manager
+     *    sees claim, doesn't send start; engine never re-attempts) with
+     *    zero modules actually running. Better to drop the claim, let the
+     *    manager re-issue `start` on the next reconnect, and re-attempt
+     *    startAll from a clean slate.
      */
     async start(): Promise<void> {
         this._running = true;
-        await this.lifecycle.startAll();
+        try {
+            await this.lifecycle.startAll();
+        } catch (err) {
+            this._running = false;
+            throw err;
+        }
         this.onChange(true);
     }
 

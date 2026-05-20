@@ -52,11 +52,12 @@ describe('ModuleRunController', () => {
             );
         });
 
-        it('preserves intent on startAll failure but does NOT broadcast', async () => {
-            // Intent survives a failure so a future retry/reset still knows
-            // what the user asked for. But the broadcast tracks observable
-            // state — telling the LCP "running" when startAll threw would
-            // misrepresent reality.
+        it('rolls back isRunning and does NOT broadcast when startAll throws', async () => {
+            // The flag is reported to the manager via the engineRunningState
+            // handshake — if we left it true after a failed startAll, the
+            // manager would see "already running, just push config" forever
+            // and never re-issue the start command. Roll back to false so
+            // the next reconnect prompts a fresh start attempt.
             const err = new Error('start failed');
             const { controller, onChange } = makeController({
                 startAll: async () => {
@@ -64,8 +65,26 @@ describe('ModuleRunController', () => {
                 },
             });
             await expect(controller.start()).rejects.toThrow('start failed');
-            expect(controller.isRunning).toBe(true);
+            expect(controller.isRunning).toBe(false);
             expect(onChange).not.toHaveBeenCalled();
+        });
+
+        it('reverts cleanly so a follow-up start() attempt can run startAll again', async () => {
+            // The rollback makes retries meaningful — without it, `_running`
+            // would short-circuit certain callers and a second start() call
+            // wouldn't reach startAll at all.
+            let calls = 0;
+            const { controller, startAll } = makeController({
+                startAll: async () => {
+                    calls++;
+                    if (calls === 1) throw new Error('first attempt failed');
+                },
+            });
+            await expect(controller.start()).rejects.toThrow('first attempt failed');
+            expect(controller.isRunning).toBe(false);
+            await controller.start();
+            expect(controller.isRunning).toBe(true);
+            expect(startAll).toHaveBeenCalledTimes(2);
         });
     });
 
