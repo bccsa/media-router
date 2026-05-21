@@ -211,7 +211,7 @@ const totalEngines = computed(() => engineStore.engineList.length);
                     v-model="localGroups"
                     item-key="id"
                     handle=".group-header"
-                    class="space-y-2"
+                    class="space-y-3"
                     ghost-class="opacity-40"
                     @end="onGroupsReorder"
                 >

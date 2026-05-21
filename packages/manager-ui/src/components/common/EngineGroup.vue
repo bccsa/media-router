@@ -83,7 +83,7 @@ defineExpose({ startRename });
 </script>
 
 <template>
-    <div class="engine-group">
+    <div class="engine-group pt-3 border-t border-border first:border-t-0 first:pt-0">
         <div
             class="group-header flex items-center justify-between px-3 py-1 mb-1 text-muted select-none cursor-pointer"
             @click="emit('toggle-collapsed', group.id, !group.collapsed)"
