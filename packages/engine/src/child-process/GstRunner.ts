@@ -100,13 +100,15 @@ export class GstRunner {
 
             case 'setProperty': {
                 const d = msg.data as { element: string; property: string; value: unknown };
+                const reqId = this.makeRequestId('setprop');
+                this.ipc.trackPending(reqId, msg.id, 'set_property');
                 this.python?.sendCommand({
                     cmd: 'set_property',
                     element: d.element,
                     property: d.property,
                     value: d.value,
+                    id: reqId,
                 });
-                this.ipc.sendResponse(msg.id, { ok: true });
                 break;
             }
 
@@ -133,12 +135,14 @@ export class GstRunner {
 
             case 'trackThroughput': {
                 const d = msg.data as { element: string; pad?: string };
+                const reqId = this.makeRequestId('track');
+                this.ipc.trackPending(reqId, msg.id, 'track_throughput');
                 this.python?.sendCommand({
                     cmd: 'track_throughput',
                     element: d.element,
                     pad: d.pad ?? 'src',
+                    id: reqId,
                 });
-                this.ipc.sendResponse(msg.id, { ok: true });
                 break;
             }
 
@@ -218,6 +222,9 @@ export class GstRunner {
                 break;
 
             case 'error':
+                // Fatal pipeline-lifecycle failure (bus ERROR, parse-fail,
+                // PLAYING-fail, udpsrc timeout). Tear down + restart per
+                // policy. RPC-handler failures use `command_error` (below).
                 this.currentState = 'error';
                 console.error(
                     `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
@@ -226,6 +233,20 @@ export class GstRunner {
                 this.ipc.sendEvent('stateChange', { state: 'error' });
                 if (this.restartOnError) this.scheduleRestart();
                 break;
+
+            case 'command_error': {
+                // Non-fatal RPC-handler failure (element not found, get/set
+                // exception, unknown cmd). Reject the pending RPC and leave
+                // the live pipeline alone — without this, a stale element
+                // name in a `setElementProperty` call tore the pipeline down
+                // via the bus-error path.
+                console.error(`[gst-runner] Command error: ${eventJson.message}`);
+                const reqId = eventJson.id as string | undefined;
+                if (reqId) {
+                    this.ipc.resolvePending(reqId, { error: eventJson.message });
+                }
+                break;
+            }
 
             case 'eos':
                 console.error('[gst-runner] Pipeline EOS');
@@ -243,13 +264,16 @@ export class GstRunner {
             case 'property':
             case 'stats':
             case 'throughput':
-                // Round-trip response from a tracked Python request.
-                this.ipc.resolvePending(eventJson.id as string, eventJson);
-                break;
-
             case 'property_set':
             case 'tracking':
-                // Confirmations — nothing to relay
+                // Round-trip response from a tracked Python request. The
+                // confirmation-only emissions (property_set, tracking) also
+                // carry an id now so the parent's setProperty/trackThroughput
+                // RPCs can resolve on the actual Python outcome instead of an
+                // optimistic immediate ack.
+                if (eventJson.id) {
+                    this.ipc.resolvePending(eventJson.id as string, eventJson);
+                }
                 break;
         }
     }

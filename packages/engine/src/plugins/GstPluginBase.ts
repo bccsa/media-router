@@ -257,7 +257,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         Object.assign(this.config, changes);
     }
 
-    // --- Live element control (delegates to GstChildProcess → Python runner) ---
+    // --- Live element control (delegates to GstChildProcess → Python runner)
+    //
+    // These wrappers swallow RPC failures (command_error from Python, IPC
+    // timeouts) and log at debug. Plugin authors get a forgiving
+    // fire-and-forget contract — a stale element name or a wedged Python
+    // child can't take a plugin down. The engine-level GstChildProcess
+    // surface still throws so engine internals can react if they need to.
 
     /** Set a property on a named GStreamer element (live, no restart). */
     protected async setElementProperty(
@@ -265,23 +271,32 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         property: string,
         value: unknown,
     ): Promise<void> {
-        if (this.childProcess?.isRunning) {
+        if (!this.childProcess?.isRunning) return;
+        try {
             await this.childProcess.setProperty(element, property, value);
+        } catch (err) {
+            this.log.debug({ err, element, property }, 'setElementProperty failed');
         }
     }
 
     /** Get a property from a named GStreamer element. */
     protected async getElementProperty(element: string, property: string): Promise<unknown> {
-        if (this.childProcess?.isRunning) {
-            return this.childProcess.getProperty(element, property);
+        if (!this.childProcess?.isRunning) return undefined;
+        try {
+            return await this.childProcess.getProperty(element, property);
+        } catch (err) {
+            this.log.debug({ err, element, property }, 'getElementProperty failed');
+            return undefined;
         }
-        return undefined;
     }
 
     /** Start tracking throughput on a named element's pad. */
     protected async trackThroughput(element: string, pad = 'src'): Promise<void> {
-        if (this.childProcess?.isRunning) {
+        if (!this.childProcess?.isRunning) return;
+        try {
             await this.childProcess.trackThroughput(element, pad);
+        } catch (err) {
+            this.log.debug({ err, element, pad }, 'trackThroughput failed');
         }
     }
 
@@ -289,18 +304,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     protected async getThroughput(): Promise<
         Record<string, { total_bytes: number; bitrate_kbps: number; bitrate_mbps: number }>
     > {
-        if (this.childProcess?.isRunning) {
-            return this.childProcess.getThroughput();
+        if (!this.childProcess?.isRunning) return {};
+        try {
+            return await this.childProcess.getThroughput();
+        } catch (err) {
+            this.log.debug({ err }, 'getThroughput failed');
+            return {};
         }
-        return {};
     }
 
     /** Read the 'stats' property from a named element (e.g. srtsrc). */
     protected async getElementStats(element: string): Promise<Record<string, unknown>> {
-        if (this.childProcess?.isRunning) {
-            return this.childProcess.getStats(element);
+        if (!this.childProcess?.isRunning) return {};
+        try {
+            return await this.childProcess.getStats(element);
+        } catch (err) {
+            this.log.debug({ err, element }, 'getElementStats failed');
+            return {};
         }
-        return {};
     }
 
     /** Update VU data (called by child process in Phase 3). */

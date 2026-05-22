@@ -82,6 +82,20 @@ def emit_event(obj):
         except (BrokenPipeError, OSError):
             pass
 
+def emit_command_error(req_id, message):
+    """Emit a non-fatal RPC handler failure.
+
+    Distinct from `event: error` (which is reserved for pipeline-lifecycle
+    failures — bus ERROR, parse-fail, PLAYING-fail, udpsrc timeout — and
+    triggers gst-runner's restart path). `command_error` carries the
+    originating request id so the parent resolves the pending RPC instead
+    of letting it time out, and the live pipeline keeps running.
+    """
+    evt = {"event": "command_error", "message": message}
+    if req_id:
+        evt["id"] = req_id
+    emit_event(evt)
+
 # ---------------------------------------------------------------------------
 # GstStructure → dict converter
 # ---------------------------------------------------------------------------
@@ -424,8 +438,9 @@ def handle_stop(data=None):
 
 def handle_set_property(data):
     """Set a property on a named element."""
+    req_id = data.get("id")
     if not pipeline:
-        emit_event({"event": "error", "message": "No pipeline running"})
+        emit_command_error(req_id, "No pipeline running")
         return
 
     element_name = data.get("element", "")
@@ -434,7 +449,7 @@ def handle_set_property(data):
 
     element = pipeline.get_by_name(element_name)
     if not element:
-        emit_event({"event": "error", "message": f"Element not found: {element_name}"})
+        emit_command_error(req_id, f"Element not found: {element_name}")
         return
 
     try:
@@ -449,23 +464,26 @@ def handle_set_property(data):
             value = bool(value)
 
         element.set_property(prop, value)
-        emit_event({"event": "property_set", "element": element_name, "property": prop, "value": value})
+        result = {"event": "property_set", "element": element_name, "property": prop, "value": value}
+        if req_id:
+            result["id"] = req_id
+        emit_event(result)
     except Exception as e:
-        emit_event({"event": "error", "message": f"set_property failed: {e}"})
+        emit_command_error(req_id, f"set_property failed: {e}")
 
 def handle_get_property(data):
     """Get a property from a named element."""
+    req_id = data.get("id")  # For request/response correlation
     if not pipeline:
-        emit_event({"event": "error", "message": "No pipeline running"})
+        emit_command_error(req_id, "No pipeline running")
         return
 
     element_name = data.get("element", "")
     prop = data.get("property", "")
-    req_id = data.get("id")  # For request/response correlation
 
     element = pipeline.get_by_name(element_name)
     if not element:
-        emit_event({"event": "error", "message": f"Element not found: {element_name}"})
+        emit_command_error(req_id, f"Element not found: {element_name}")
         return
 
     try:
@@ -478,20 +496,20 @@ def handle_get_property(data):
             result["id"] = req_id
         emit_event(result)
     except Exception as e:
-        emit_event({"event": "error", "message": f"get_property failed: {e}"})
+        emit_command_error(req_id, f"get_property failed: {e}")
 
 def handle_get_stats(data):
     """Read the 'stats' property from a named element (e.g. srtsrc, srtserversrc)."""
+    req_id = data.get("id")
     if not pipeline:
-        emit_event({"event": "error", "message": "No pipeline running"})
+        emit_command_error(req_id, "No pipeline running")
         return
 
     element_name = data.get("element", "")
-    req_id = data.get("id")
 
     element = pipeline.get_by_name(element_name)
     if not element:
-        emit_event({"event": "error", "message": f"Element not found: {element_name}"})
+        emit_command_error(req_id, f"Element not found: {element_name}")
         return
 
     try:
@@ -502,7 +520,7 @@ def handle_get_stats(data):
             result["id"] = req_id
         emit_event(result)
     except Exception as e:
-        emit_event({"event": "error", "message": f"get_stats failed: {e}"})
+        emit_command_error(req_id, f"get_stats failed: {e}")
 
 def _pad_probe_cb(pad, info, element_name):
     """Pad probe callback — counts bytes flowing through."""
@@ -516,8 +534,9 @@ def _pad_probe_cb(pad, info, element_name):
 
 def handle_track_throughput(data):
     """Start tracking throughput on a named element's src pad."""
+    req_id = data.get("id")
     if not pipeline:
-        emit_event({"event": "error", "message": "No pipeline running"})
+        emit_command_error(req_id, "No pipeline running")
         return
 
     element_name = data.get("element", "")
@@ -525,12 +544,12 @@ def handle_track_throughput(data):
 
     element = pipeline.get_by_name(element_name)
     if not element:
-        emit_event({"event": "error", "message": f"Element not found: {element_name}"})
+        emit_command_error(req_id, f"Element not found: {element_name}")
         return
 
     pad = element.get_static_pad(pad_name)
     if not pad:
-        emit_event({"event": "error", "message": f"Pad not found: {element_name}.{pad_name}"})
+        emit_command_error(req_id, f"Pad not found: {element_name}.{pad_name}")
         return
 
     with throughput_lock:
@@ -541,7 +560,13 @@ def handle_track_throughput(data):
                 'last_time': time.monotonic(), 'bps': 0,
             }
             pad.add_probe(Gst.PadProbeType.BUFFER, _pad_probe_cb, element_name)
-            emit_event({"event": "tracking", "element": element_name, "pad": pad_name})
+
+    # Always ack — second call for an already-tracked element is a no-op but
+    # the parent's pending RPC still needs to resolve.
+    result = {"event": "tracking", "element": element_name, "pad": pad_name}
+    if req_id:
+        result["id"] = req_id
+    emit_event(result)
 
 def handle_get_throughput(data):
     """Get current throughput stats for tracked elements."""
@@ -585,7 +610,9 @@ def dispatch_command(line):
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
-        emit_event({"event": "error", "message": f"Invalid JSON command: {line}"})
+        # No id available — log only; don't tear the pipeline down for a bad
+        # parent message.
+        emit_command_error(None, f"Invalid JSON command: {line}")
         return
 
     cmd = data.get("cmd", "")
@@ -594,7 +621,7 @@ def dispatch_command(line):
         # Run handler on GLib main context for thread safety
         GLib.idle_add(lambda: (handler(data), False)[1])
     else:
-        emit_event({"event": "error", "message": f"Unknown command: {cmd}"})
+        emit_command_error(data.get("id"), f"Unknown command: {cmd}")
 
 # ---------------------------------------------------------------------------
 # Command reader thread

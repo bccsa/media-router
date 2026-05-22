@@ -4,9 +4,9 @@
 
 - [ ] Screen goes black after changing browser URL to background1 and back
 - [ ] High RAM usage on Pi — 1.5GB available; index.js, start-engine.js, and Pipewire consuming significant memory; Python vs C++ contributing (not actively an issue, revisit if it regresses)
-- [ ] Splash image not showing when connecting a monitor
-- [ ] Check that auto gain control is off
-- [ ] gst-runner treats every Python-side error event as a fatal bus error and triggers `restartOnError`. A `set_property` against a missing element name therefore tears the live pipeline down (see VideoPlayerModule nov-guard fix). Plan: split Python emissions into `bus_error` (fatal — keep restart) vs `command_error` (non-fatal — log + propagate as RPC failure), update GstRunner.handlePythonEvent to only schedule a restart on `bus_error`. Every plugin doing live property control is one stale element name from the same regression.
+- [x] Splash image not showing when connecting a monitor
+- [x] Check that auto gain control is off
+- [x] gst-runner treats every Python-side error event as a fatal bus error and triggers `restartOnError`. A `set_property` against a missing element name therefore tears the live pipeline down (see VideoPlayerModule nov-guard fix). Plan: split Python emissions into `bus_error` (fatal — keep restart) vs `command_error` (non-fatal — log + propagate as RPC failure), update GstRunner.handlePythonEvent to only schedule a restart on `bus_error`. Every plugin doing live property control is one stale element name from the same regression.
 
 ## Done
 

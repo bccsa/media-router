@@ -54,6 +54,79 @@ export function listDrmConnectors(dir: string = DRM_DIR): Device[] {
     return results;
 }
 
+export interface ActiveDisplayChoice {
+    /** Connector name to actually render on (may differ from the requested one). */
+    name: string;
+    /** Numeric DRM connector id for `name`, when sysfs exposes it. */
+    connectorId: number | undefined;
+    /**
+     * True when `name !== preferred` because the preferred connector wasn't
+     * `connected`. Callers should surface this to the user — they asked for
+     * one display and we're rendering on another.
+     */
+    substituted: boolean;
+}
+
+/**
+ * DRM connector types that aren't user-facing displays and so must not be
+ * picked as a substitute when the user's preferred output is disconnected.
+ * `Writeback-*` is the common offender: it's the kernel's virtual capture
+ * sink for compositor screencast / screen-record, and sysfs reports it as
+ * `connected` whenever the writeback subsystem is wired up — sending video
+ * there is invisible to the operator. Add others here as they surface.
+ */
+const NON_DISPLAY_CONNECTOR_RE = /^Writeback-/;
+
+/**
+ * Pick the DRM connector to render on given the user's preferred selection.
+ *
+ * - Empty `preferred` → returns an empty choice (caller keeps its existing
+ *   "no display configured" behaviour: kmssink auto-picks, waylandsink lets
+ *   the compositor decide).
+ * - Preferred connector is `connected` → use it (honoured even if it's a
+ *   non-display type like Writeback — the user asked for it explicitly).
+ * - Preferred connector isn't connected but another *physical-output*
+ *   connector is → return that one with `substituted: true`. Writeback-style
+ *   virtual connectors are skipped so substitution lands on something the
+ *   operator can actually see.
+ * - Nothing connected → return the preferred name as-is so the rest of the
+ *   pipeline still has something to target; the caller can warn separately.
+ */
+export function pickActiveDisplay(
+    preferred: string,
+    dir: string = DRM_DIR,
+): ActiveDisplayChoice {
+    if (!preferred) {
+        return { name: '', connectorId: undefined, substituted: false };
+    }
+    const all = listDrmConnectors(dir);
+    const requested = all.find((c) => c.name === preferred);
+    if ((requested?.meta?.status as string | undefined) === 'connected') {
+        return {
+            name: preferred,
+            connectorId: requested?.meta?.connectorId as number | undefined,
+            substituted: false,
+        };
+    }
+    const alt = all.find(
+        (c) =>
+            (c.meta?.status as string | undefined) === 'connected' &&
+            !NON_DISPLAY_CONNECTOR_RE.test(c.name),
+    );
+    if (alt) {
+        return {
+            name: alt.name,
+            connectorId: alt.meta?.connectorId as number | undefined,
+            substituted: true,
+        };
+    }
+    return {
+        name: preferred,
+        connectorId: requested?.meta?.connectorId as number | undefined,
+        substituted: false,
+    };
+}
+
 /**
  * Look up the numeric DRM connector id for a given connector name
  * (e.g. `"HDMI-A-1"`). Returns `undefined` when the name isn't found or

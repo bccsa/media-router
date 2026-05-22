@@ -8,7 +8,7 @@ import {
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { listDrmConnectors, resolveConnectorId } from '@media-router/engine';
+import { listDrmConnectors, pickActiveDisplay } from '@media-router/engine';
 
 type SinkAvailability = { wayland: boolean; kms: boolean };
 
@@ -90,14 +90,11 @@ export class VideoPlayerModule extends GstPluginBase {
         Object.assign(this.config, changes);
         if ('fallbackText' in changes) {
             // The `nov` text overlay only exists in the *fallback* pipeline
-            // (videotestsrc branch when no source is connected). When the
-            // live pipeline is running, attempting to set its `text` property
-            // would surface as a Python `Element not found` error — and the
-            // gst-runner's `restartOnError` treats any error event as fatal,
-            // tearing the live pipeline down for a setProperty miss. So skip
-            // the live push entirely when a source is connected; the new
-            // text takes effect automatically the next time the fallback
-            // pipeline is built (e.g. source disconnects, module restarts).
+            // (videotestsrc branch when no source is connected). Skip the
+            // live push when a source is connected — the property doesn't
+            // exist on the live pipeline, and the new text takes effect the
+            // next time the fallback pipeline is built (source disconnect,
+            // module restart).
             const instanceId = this.services?.instanceId ?? '';
             const hasSource = !!this.services?.mediaRouter?.getModuleUdpSource(instanceId);
             if (!hasSource) {
@@ -112,21 +109,37 @@ export class VideoPlayerModule extends GstPluginBase {
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription {
         const fallback = (config.fallbackText as string) ?? 'No video detected';
-        const display = (config.display as string) ?? '';
-        const connectorId = display ? resolveConnectorId(display) : undefined;
+        const requestedDisplay = (config.display as string) ?? '';
+        // If the user-picked connector isn't `connected`, fall through to the
+        // first connector that is. Both kmssink (via connector-id) and
+        // waylandsink (via the MR_GLIB_PRGNAME app_id that kiosk-shell pins
+        // to per-output `app-ids=` in weston.ini) need the *active* display
+        // name, otherwise the surface lands on an output that isn't lit and
+        // looks the same to the user as "video player won't start".
+        const active = pickActiveDisplay(requestedDisplay);
         const sinkEnv: SinkSelectionEnv = {
             ...VideoPlayerModule.sinks,
             waylandSession: hasWaylandSession(),
-            connectorId,
+            connectorId: active.connectorId,
         };
-        const sinkElement = buildSink(display, sinkEnv);
-        const env = buildPipelineEnv(display, sinkEnv);
+        const sinkElement = buildSink(active.name, sinkEnv);
+        const env = buildPipelineEnv(active.name, sinkEnv);
 
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
 
-        if (!udpSource) {
+        if (active.substituted) {
+            this.setHealth(
+                'warning',
+                `Display "${requestedDisplay}" not connected — using "${active.name}"`,
+            );
+        } else if (!udpSource) {
             this.setHealth('warning', 'No video connected');
+        } else {
+            this.setHealth('ok');
+        }
+
+        if (!udpSource) {
             return {
                 pipeline: buildFallbackOnlyPipeline(fallback, sinkElement),
                 liveElements: { nov: ['text'] },
@@ -135,7 +148,6 @@ export class VideoPlayerModule extends GstPluginBase {
             };
         }
 
-        this.setHealth('ok');
         return {
             pipeline: buildLivePipeline(sinkElement, udpSource),
             liveElements: {},
@@ -154,7 +166,14 @@ export class VideoPlayerModule extends GstPluginBase {
 
         // Mirror the selection logic in `buildSink` so the user sees the
         // render path that's actually being used, not a stale DRM assumption.
-        const display = (this.config.display as string) ?? '';
+        // `status` carries only the renderer-reachability state (compositor /
+        // connected / no display / unavailable). Target-mismatch is conveyed
+        // by the optional `requested` field, only set when the user picked a
+        // display and we substituted a different one — the substitution is
+        // implicit in the presence of `requested`, so there's no separate
+        // boolean to render as a noisy "substituted: —" row.
+        const requestedDisplay = (this.config.display as string) ?? '';
+        const active = pickActiveDisplay(requestedDisplay);
         const env = {
             ...VideoPlayerModule.sinks,
             waylandSession: hasWaylandSession(),
@@ -164,13 +183,12 @@ export class VideoPlayerModule extends GstPluginBase {
         let status = 'unavailable';
         if (env.wayland && env.waylandSession) {
             renderPath = 'waylandsink';
-            target = process.env.WAYLAND_DISPLAY ?? 'wayland';
+            target = active.name || process.env.WAYLAND_DISPLAY || 'wayland';
             status = 'compositor';
-        } else if (display && env.kms) {
-            const connector = listDrmConnectors().find((c) => c.name === display);
+        } else if (active.name && env.kms) {
             renderPath = 'kmssink';
-            target = display;
-            status = (connector?.meta?.status as string) ?? 'unknown';
+            target = active.name;
+            status = 'connected';
         } else if (env.kms) {
             const firstConnected = listDrmConnectors().find(
                 (c) => (c.meta?.status as string) === 'connected',
@@ -179,11 +197,13 @@ export class VideoPlayerModule extends GstPluginBase {
             target = firstConnected?.name ?? '(auto)';
             status = firstConnected ? 'connected' : 'no display';
         }
-        this.setStatusData('display', {
+        const displayStatus: Record<string, string> = {
             renderer: renderPath,
             target,
             status,
-        });
+        };
+        if (active.substituted) displayStatus.requested = requestedDisplay;
+        this.setStatusData('display', displayStatus);
     }
 }
 
@@ -213,7 +233,7 @@ export interface SinkSelectionEnv {
  *      sink itself doesn't take a connector argument — output pinning is
  *      delegated to kiosk-shell's per-output `app-ids=` whitelists in
  *      weston.ini, which match the surface's wayland `app_id`. The engine
- *      sets `MR_WAYLAND_APP_ID=local.mr.<connector>` on the runner spawn so
+ *      sets `MR_GLIB_PRGNAME=local.mr.<connector>` on the runner spawn so
  *      the child's `GLib.set_prgname` lands the surface on the user-picked
  *      output. See `buildPipelineEnv` and the pre-`Gst.init` block in
  *      `gst-pipeline-runner.py`.

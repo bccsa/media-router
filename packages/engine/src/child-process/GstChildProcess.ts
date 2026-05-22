@@ -11,6 +11,21 @@ const log = createLogger('GstChildProcess');
 const MAX_RESTARTS = 10;
 
 /**
+ * Reject when a Python-side RPC handler emitted `command_error` (surfaced by
+ * the gst-runner as `{ error: "..." }` on the response). Without this the
+ * caller silently gets `undefined` / `{}` and never knows the call failed.
+ *
+ * Exported for direct testing — the production callers are the wrappers in
+ * this file (setProperty / getProperty / getStats / trackThroughput /
+ * getThroughput), but the contract belongs to its own unit test so the
+ * bridge between Python command_error and a thrown Error is locked in.
+ */
+export function throwIfRpcError(result: unknown, label: string): void {
+    const err = (result as { error?: unknown } | null | undefined)?.error;
+    if (typeof err === 'string') throw new Error(`${label}: ${err}`);
+}
+
+/**
  * Wraps a forked gst-runner child process.
  *
  * Manages lifecycle (start, stop, restart), monitors health,
@@ -204,13 +219,19 @@ export class GstChildProcess extends EventEmitter {
     /** Set a property on a named GStreamer element (live, no restart). */
     async setProperty(element: string, property: string, value: unknown): Promise<void> {
         if (!this.ipc || !this.running) return;
-        await this.ipc.sendRequest('setProperty', { element, property, value }, 2000);
+        const result = await this.ipc.sendRequest(
+            'setProperty',
+            { element, property, value },
+            2000,
+        );
+        throwIfRpcError(result, `setProperty(${element}.${property})`);
     }
 
     /** Get a property from a named GStreamer element. */
     async getProperty(element: string, property: string): Promise<unknown> {
         if (!this.ipc || !this.running) return undefined;
         const result = await this.ipc.sendRequest('getProperty', { element, property });
+        throwIfRpcError(result, `getProperty(${element}.${property})`);
         return (result as any)?.value;
     }
 
@@ -218,13 +239,15 @@ export class GstChildProcess extends EventEmitter {
     async getStats(element: string): Promise<Record<string, unknown>> {
         if (!this.ipc || !this.running) return {};
         const result = await this.ipc.sendRequest('getStats', { element });
+        throwIfRpcError(result, `getStats(${element})`);
         return (result as any)?.data ?? {};
     }
 
     /** Start tracking throughput on a named element's pad. */
     async trackThroughput(element: string, pad = 'src'): Promise<void> {
         if (!this.ipc || !this.running) return;
-        await this.ipc.sendRequest('trackThroughput', { element, pad });
+        const result = await this.ipc.sendRequest('trackThroughput', { element, pad });
+        throwIfRpcError(result, `trackThroughput(${element})`);
     }
 
     /** Get current throughput for all tracked elements. */
@@ -233,6 +256,7 @@ export class GstChildProcess extends EventEmitter {
     > {
         if (!this.ipc || !this.running) return {};
         const result = await this.ipc.sendRequest('getThroughput', {});
+        throwIfRpcError(result, 'getThroughput');
         return (result as any)?.data ?? {};
     }
 
