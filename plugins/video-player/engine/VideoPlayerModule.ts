@@ -34,6 +34,22 @@ export class VideoPlayerModule extends GstPluginBase {
     /** Probed once at plugin load — set by `initManifest`. */
     private static sinks: SinkAvailability = { wayland: false, kms: false };
 
+    // Wayland-restart tracking. When Weston/labwc restarts the wayland socket
+    // is replaced (new inode, possibly new name). gst-runner children built
+    // against the old socket keep "playing" against a dead connection — the
+    // pipeline doesn't report an error because waylandsink doesn't observe
+    // the broken socket until it tries to draw the next buffer, by which
+    // time the compositor restart has reattached our surface to nothing.
+    // Watching the runtime dir for socket replacement lets us proactively
+    // restart the pipeline against the fresh session.
+    private static runningInstances = new Set<VideoPlayerModule>();
+    private static waylandWatcher: fs.FSWatcher | null = null;
+    private static waylandDebounceTimer: NodeJS.Timeout | null = null;
+    /** `<filename>:<inode>` of the currently-known compositor socket. Empty when none. */
+    private static waylandSessionIdent: string = '';
+    /** Per-instance latch so concurrent socket events don't stack restarts. */
+    private waylandRestartInProgress = false;
+
     static registerServices(services: EngineServices): void {
         services.deviceProviders.register({
             type: 'drm-connector',
@@ -84,6 +100,124 @@ export class VideoPlayerModule extends GstPluginBase {
         }
         await super.onStart();
         this.updateStatusData();
+        VideoPlayerModule.registerForWaylandRestartWatch(this);
+    }
+
+    async onStop(): Promise<void> {
+        VideoPlayerModule.unregisterForWaylandRestartWatch(this);
+        await super.onStop();
+    }
+
+    /**
+     * Trigger a clean pipeline restart against the *current* wayland session.
+     * Invoked by the runtime-dir watcher when the compositor socket is
+     * replaced. Latched so a flurry of file events during a Weston restart
+     * only kicks off one cycle.
+     */
+    private async restartForWaylandSessionChange(): Promise<void> {
+        if (this.waylandRestartInProgress) return;
+        this.waylandRestartInProgress = true;
+        try {
+            this.log.info('Wayland session changed — restarting video pipeline');
+            await this.onStop();
+            await this.onStart();
+        } catch (err) {
+            this.log.warn({ err }, 'Wayland-restart cycle failed');
+        } finally {
+            this.waylandRestartInProgress = false;
+        }
+    }
+
+    private static registerForWaylandRestartWatch(instance: VideoPlayerModule): void {
+        VideoPlayerModule.runningInstances.add(instance);
+        VideoPlayerModule.installWaylandWatcher();
+    }
+
+    private static unregisterForWaylandRestartWatch(instance: VideoPlayerModule): void {
+        VideoPlayerModule.runningInstances.delete(instance);
+        if (VideoPlayerModule.runningInstances.size === 0) {
+            VideoPlayerModule.teardownWaylandWatcher();
+        }
+    }
+
+    /**
+     * Watch the user runtime dir for wayland socket replacement. We can't use
+     * the *socket file itself* as the watch target — when Weston restarts the
+     * old inode is unlinked and fs.watch silently goes mute. Watching the
+     * containing directory survives that.
+     *
+     * Exposed for tests via the public `_test_*` helpers below.
+     */
+    private static installWaylandWatcher(): void {
+        if (VideoPlayerModule.waylandWatcher) return;
+        const runtime = process.env.XDG_RUNTIME_DIR;
+        if (!runtime) return;
+        VideoPlayerModule.waylandSessionIdent = currentWaylandSessionIdent(runtime);
+        try {
+            VideoPlayerModule.waylandWatcher = fs.watch(runtime, (_event, filename) => {
+                if (!filename || !/^wayland-\d+/.test(String(filename))) return;
+                VideoPlayerModule.scheduleWaylandRestartCheck();
+            });
+            VideoPlayerModule.waylandWatcher.on('error', () => {
+                /* runtime dir disappeared — watcher will be reinstalled on next start */
+                VideoPlayerModule.teardownWaylandWatcher();
+            });
+        } catch {
+            /* runtime dir not watchable — silently skip; pipeline still works,
+               it just won't self-heal across a compositor restart */
+        }
+    }
+
+    private static teardownWaylandWatcher(): void {
+        if (VideoPlayerModule.waylandDebounceTimer) {
+            clearTimeout(VideoPlayerModule.waylandDebounceTimer);
+            VideoPlayerModule.waylandDebounceTimer = null;
+        }
+        if (VideoPlayerModule.waylandWatcher) {
+            try { VideoPlayerModule.waylandWatcher.close(); } catch { /* already closed */ }
+            VideoPlayerModule.waylandWatcher = null;
+        }
+        VideoPlayerModule.waylandSessionIdent = '';
+    }
+
+    /**
+     * Debounce socket events: Weston's restart sequence usually fires
+     * delete + create within a few hundred ms, sometimes with an intermediate
+     * `.lock` rename. Coalescing to a single restart-decision avoids
+     * tearing the pipeline down twice.
+     */
+    private static scheduleWaylandRestartCheck(): void {
+        if (VideoPlayerModule.waylandDebounceTimer) {
+            clearTimeout(VideoPlayerModule.waylandDebounceTimer);
+        }
+        VideoPlayerModule.waylandDebounceTimer = setTimeout(() => {
+            VideoPlayerModule.waylandDebounceTimer = null;
+            const runtime = process.env.XDG_RUNTIME_DIR;
+            if (!runtime) return;
+            const ident = currentWaylandSessionIdent(runtime);
+            // No socket present (mid-restart) → wait for the next event.
+            if (!ident) return;
+            // Same session we already know about → spurious event, ignore.
+            if (ident === VideoPlayerModule.waylandSessionIdent) return;
+            VideoPlayerModule.waylandSessionIdent = ident;
+            for (const inst of [...VideoPlayerModule.runningInstances]) {
+                inst.restartForWaylandSessionChange().catch(() => {
+                    /* logged in the per-instance handler */
+                });
+            }
+        }, 500);
+    }
+
+    // --- test-only hooks ---
+    static _test_getRunningInstances(): ReadonlySet<VideoPlayerModule> {
+        return VideoPlayerModule.runningInstances;
+    }
+    static _test_resetWaylandWatcher(): void {
+        VideoPlayerModule.teardownWaylandWatcher();
+        VideoPlayerModule.runningInstances.clear();
+    }
+    static _test_triggerWaylandCheck(): void {
+        VideoPlayerModule.scheduleWaylandRestartCheck();
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -272,6 +406,26 @@ export function buildPipelineEnv(display: string, env: SinkSelectionEnv): Record
     if (!display) return {};
     if (!(env.wayland && env.waylandSession)) return {};
     return { MR_GLIB_PRGNAME: `local.mr.${display}` };
+}
+
+/**
+ * Identity string for the wayland session that's currently reachable from
+ * this runtime dir: `<socket-filename>:<inode>`. Empty string when no socket
+ * is present. Inode is in the identity because Weston restarts often reuse
+ * the same `wayland-1` filename — only the inode changes, and that's the
+ * signal that the underlying compositor process is different.
+ */
+export function currentWaylandSessionIdent(runtimeDir: string): string {
+    try {
+        const sock = fs
+            .readdirSync(runtimeDir)
+            .find((entry) => /^wayland-\d+$/.test(entry));
+        if (!sock) return '';
+        const st = fs.statSync(path.join(runtimeDir, sock));
+        return `${sock}:${st.ino}`;
+    } catch {
+        return '';
+    }
 }
 
 /**

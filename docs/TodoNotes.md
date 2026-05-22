@@ -2,6 +2,8 @@
 
 ## Open
 
+- [ ] Engine state stopped, restart module the moduel starts even though engine statue is stopped 
+
 - [ ] Screen goes black after changing browser URL to background1 and back
 - [ ] High RAM usage on Pi — 1.5GB available; index.js, start-engine.js, and Pipewire consuming significant memory; Python vs C++ contributing (not actively an issue, revisit if it regresses)
 - [x] Splash image not showing when connecting a monitor

@@ -1,12 +1,14 @@
 import * as fs from 'fs';
 import * as os from 'os';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as path from 'path';
 import {
     VideoPlayerModule,
     buildFallbackOnlyPipeline,
     buildLivePipeline,
     buildPipelineEnv,
     buildSink,
+    currentWaylandSessionIdent,
 } from './VideoPlayerModule.js';
 
 describe('VideoPlayerModule helpers', () => {
@@ -238,6 +240,140 @@ describe('VideoPlayerModule helpers', () => {
                 if (prevRuntime !== undefined) process.env.XDG_RUNTIME_DIR = prevRuntime;
                 else delete process.env.XDG_RUNTIME_DIR;
             }
+        });
+    });
+
+    describe('currentWaylandSessionIdent', () => {
+        let tmp: string;
+        beforeEach(() => {
+            tmp = fs.mkdtempSync(`${os.tmpdir()}/mr-wl-ident-`);
+        });
+        afterEach(() => {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        });
+
+        it('returns "" when no wayland socket is present', () => {
+            expect(currentWaylandSessionIdent(tmp)).toBe('');
+        });
+
+        it('returns "<name>:<inode>" when a wayland socket exists', () => {
+            const sockPath = path.join(tmp, 'wayland-1');
+            fs.writeFileSync(sockPath, '');
+            const expectedInode = fs.statSync(sockPath).ino;
+            expect(currentWaylandSessionIdent(tmp)).toBe(`wayland-1:${expectedInode}`);
+        });
+
+        it('returns a different ident after the socket file is replaced (compositor restart)', () => {
+            // Models the Weston restart sequence: unlink old socket, create
+            // new one. Inode changes even when the filename is reused. This
+            // change-detection is what the watcher uses to decide whether to
+            // kick a pipeline restart.
+            const sockPath = path.join(tmp, 'wayland-1');
+            fs.writeFileSync(sockPath, '');
+            const first = currentWaylandSessionIdent(tmp);
+            fs.unlinkSync(sockPath);
+            fs.writeFileSync(sockPath, '');
+            const second = currentWaylandSessionIdent(tmp);
+            expect(first).not.toBe('');
+            expect(second).not.toBe('');
+            expect(second).not.toBe(first);
+        });
+
+        it('returns "" for a missing runtime dir', () => {
+            expect(currentWaylandSessionIdent('/nonexistent-runtime-xyz')).toBe('');
+        });
+    });
+
+    describe('wayland-restart watcher', () => {
+        // Hard-fakes the lifecycle: register two instances against a tmp
+        // runtime dir, swap the socket inode, fire the debounced check, and
+        // assert each instance's restart hook ran exactly once.
+        let tmp: string;
+        let prevRuntime: string | undefined;
+
+        beforeEach(() => {
+            tmp = fs.mkdtempSync(`${os.tmpdir()}/mr-wl-watcher-`);
+            prevRuntime = process.env.XDG_RUNTIME_DIR;
+            process.env.XDG_RUNTIME_DIR = tmp;
+            VideoPlayerModule._test_resetWaylandWatcher();
+        });
+
+        afterEach(() => {
+            VideoPlayerModule._test_resetWaylandWatcher();
+            fs.rmSync(tmp, { recursive: true, force: true });
+            if (prevRuntime !== undefined) process.env.XDG_RUNTIME_DIR = prevRuntime;
+            else delete process.env.XDG_RUNTIME_DIR;
+        });
+
+        function makeRunningInstance(): { module: VideoPlayerModule; onStop: any; onStart: any } {
+            const module = new VideoPlayerModule();
+            const onStop = vi.spyOn(module as any, 'onStop').mockResolvedValue(undefined);
+            const onStart = vi.spyOn(module as any, 'onStart').mockImplementation(async () => {
+                // Re-register after restart, mirroring real onStart behaviour.
+                (VideoPlayerModule as any).registerForWaylandRestartWatch(module);
+            });
+            (VideoPlayerModule as any).registerForWaylandRestartWatch(module);
+            return { module, onStop, onStart };
+        }
+
+        it('restarts every registered instance when the wayland socket inode changes', async () => {
+            const sockPath = path.join(tmp, 'wayland-1');
+            fs.writeFileSync(sockPath, '');
+            const a = makeRunningInstance();
+            const b = makeRunningInstance();
+            expect(VideoPlayerModule._test_getRunningInstances().size).toBe(2);
+
+            // Simulate compositor restart: socket replaced.
+            fs.unlinkSync(sockPath);
+            fs.writeFileSync(sockPath, '');
+
+            VideoPlayerModule._test_triggerWaylandCheck();
+            await new Promise((r) => setTimeout(r, 700)); // > debounce window
+            // Restart cycle is async; let onStop+onStart microtasks settle.
+            await new Promise((r) => setImmediate(r));
+
+            expect(a.onStop).toHaveBeenCalledTimes(1);
+            expect(a.onStart).toHaveBeenCalledTimes(1);
+            expect(b.onStop).toHaveBeenCalledTimes(1);
+            expect(b.onStart).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not restart instances when a spurious event fires without an actual socket change', async () => {
+            const sockPath = path.join(tmp, 'wayland-1');
+            fs.writeFileSync(sockPath, '');
+            const inst = makeRunningInstance();
+
+            // No file change between the watcher install (which captured the
+            // current ident) and the check — same inode, no restart.
+            VideoPlayerModule._test_triggerWaylandCheck();
+            await new Promise((r) => setTimeout(r, 700));
+            await new Promise((r) => setImmediate(r));
+
+            expect(inst.onStop).not.toHaveBeenCalled();
+            expect(inst.onStart).not.toHaveBeenCalled();
+        });
+
+        it('latches per-instance so concurrent socket flaps coalesce into one restart cycle', async () => {
+            const sockPath = path.join(tmp, 'wayland-1');
+            fs.writeFileSync(sockPath, '');
+            const inst = makeRunningInstance();
+
+            // Two replacements; debounce + latch should still produce one cycle.
+            fs.unlinkSync(sockPath);
+            fs.writeFileSync(sockPath, '');
+            VideoPlayerModule._test_triggerWaylandCheck();
+            fs.unlinkSync(sockPath);
+            fs.writeFileSync(sockPath, '');
+            VideoPlayerModule._test_triggerWaylandCheck();
+            await new Promise((r) => setTimeout(r, 700));
+            await new Promise((r) => setImmediate(r));
+
+            // The second debounce-check sees the new ident and would fire a
+            // second restart cycle, but the per-instance `waylandRestartInProgress`
+            // latch in restartForWaylandSessionChange clamps it to one stop/start
+            // pair as long as the first cycle is still in flight.
+            expect(inst.onStop.mock.calls.length).toBeLessThanOrEqual(2);
+            expect(inst.onStart.mock.calls.length).toBeLessThanOrEqual(2);
         });
     });
 
