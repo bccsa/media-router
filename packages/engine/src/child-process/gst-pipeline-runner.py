@@ -29,6 +29,19 @@ import signal
 import sys
 import threading
 
+# Generic pre-`Gst.init` prgname hook. If a plugin's `PipelineDescription.env`
+# carried `MR_GLIB_PRGNAME`, apply it now — the env is locked in at fork time
+# so this runs before any GStreamer/GLib bookkeeping touches the prgname.
+# Plugins decide what to do with this. Today the video-player plugin uses it
+# to pin the Wayland surface app_id (waylandsink derives the surface app_id
+# from GLib's program name; kiosk-shell uses per-output `app-ids=` whitelists
+# in weston.ini to route fullscreen surfaces to a specific DRM connector).
+# The engine intentionally does not know about app_ids or wayland — it's a
+# generic "set prgname if asked" contract.
+_prgname = os.environ.get('MR_GLIB_PRGNAME')
+if _prgname:
+    GLib.set_prgname(_prgname)
+
 Gst.init(None)
 
 # ---------------------------------------------------------------------------

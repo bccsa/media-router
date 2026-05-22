@@ -24,6 +24,11 @@ type SinkAvailability = { wayland: boolean; kms: boolean };
  * Owns the `drm-connector` device type.
  */
 export class VideoPlayerModule extends GstPluginBase {
+    // `fallbackText` is "live" only in the *fallback* pipeline — the `nov`
+    // textoverlay element doesn't exist in the live (udpsrc → decodebin)
+    // pipeline. With a source connected, a fallbackText change is silently
+    // deferred to the next fallback render. See onLiveConfigUpdate for the
+    // hasSource guard that enforces this.
     protected liveUpdatableParams = ['fallbackText'];
 
     /** Probed once at plugin load — set by `initManifest`. */
@@ -84,10 +89,23 @@ export class VideoPlayerModule extends GstPluginBase {
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
         Object.assign(this.config, changes);
         if ('fallbackText' in changes) {
-            const text = changes.fallbackText as string;
-            await this.setElementProperty('nov', 'text', text).catch((err) =>
-                this.log.debug({ err }, 'Failed to update fallback text overlay'),
-            );
+            // The `nov` text overlay only exists in the *fallback* pipeline
+            // (videotestsrc branch when no source is connected). When the
+            // live pipeline is running, attempting to set its `text` property
+            // would surface as a Python `Element not found` error — and the
+            // gst-runner's `restartOnError` treats any error event as fatal,
+            // tearing the live pipeline down for a setProperty miss. So skip
+            // the live push entirely when a source is connected; the new
+            // text takes effect automatically the next time the fallback
+            // pipeline is built (e.g. source disconnects, module restarts).
+            const instanceId = this.services?.instanceId ?? '';
+            const hasSource = !!this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+            if (!hasSource) {
+                const text = changes.fallbackText as string;
+                await this.setElementProperty('nov', 'text', text).catch((err) =>
+                    this.log.debug({ err }, 'Failed to update fallback text overlay'),
+                );
+            }
         }
         this.updateStatusData();
     }
@@ -96,11 +114,13 @@ export class VideoPlayerModule extends GstPluginBase {
         const fallback = (config.fallbackText as string) ?? 'No video detected';
         const display = (config.display as string) ?? '';
         const connectorId = display ? resolveConnectorId(display) : undefined;
-        const sinkElement = buildSink(display, {
+        const sinkEnv: SinkSelectionEnv = {
             ...VideoPlayerModule.sinks,
             waylandSession: hasWaylandSession(),
             connectorId,
-        });
+        };
+        const sinkElement = buildSink(display, sinkEnv);
+        const env = buildPipelineEnv(display, sinkEnv);
 
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
@@ -111,6 +131,7 @@ export class VideoPlayerModule extends GstPluginBase {
                 pipeline: buildFallbackOnlyPipeline(fallback, sinkElement),
                 liveElements: { nov: ['text'] },
                 restartOnError: true,
+                env,
             };
         }
 
@@ -119,6 +140,7 @@ export class VideoPlayerModule extends GstPluginBase {
             pipeline: buildLivePipeline(sinkElement, udpSource),
             liveElements: {},
             restartOnError: true,
+            env,
         };
     }
 
@@ -186,9 +208,15 @@ export interface SinkSelectionEnv {
 
 /**
  * Sink-selection priority:
- *   1. Wayland (waylandsink, no connector picking — compositor decides output).
- *      Preferred when a compositor is running because kmssink can't take the
- *      DRM master while Weston/labwc holds it.
+ *   1. Wayland (waylandsink). Preferred when a compositor is running because
+ *      kmssink can't take the DRM master while Weston/labwc holds it. The
+ *      sink itself doesn't take a connector argument — output pinning is
+ *      delegated to kiosk-shell's per-output `app-ids=` whitelists in
+ *      weston.ini, which match the surface's wayland `app_id`. The engine
+ *      sets `MR_WAYLAND_APP_ID=local.mr.<connector>` on the runner spawn so
+ *      the child's `GLib.set_prgname` lands the surface on the user-picked
+ *      output. See `buildPipelineEnv` and the pre-`Gst.init` block in
+ *      `gst-pipeline-runner.py`.
  *   2. KMS direct, targeting a specific connector by numeric id.
  *   3. KMS direct, auto-pick connector (used when the user picked a name we
  *      can't resolve to an id, or didn't pick at all).
@@ -205,6 +233,25 @@ export function buildSink(display: string, env: SinkSelectionEnv): string {
         return 'kmssink name=sink sync=false';
     }
     return 'autovideosink sync=false';
+}
+
+/**
+ * Build the per-pipeline env for the GStreamer runner. The engine exposes a
+ * generic `MR_GLIB_PRGNAME` hook (applied via `GLib.set_prgname` before
+ * `Gst.init`); video-player uses it to set the Wayland surface app_id,
+ * because waylandsink derives the surface app_id from the GLib program
+ * name. Kiosk-shell then matches that app_id against the per-output
+ * `app-ids=` whitelist in weston.ini to pin the surface to the user-
+ * selected DRM connector — see the comment on `buildSink`. Gated on the
+ * wayland branch of the sink selection: on KMS or autovideosink hosts
+ * the prgname has no useful effect and would only show up confusingly in
+ * process listings. Returns an empty object when no display is configured,
+ * or when the pipeline isn't going to render via a Wayland compositor.
+ */
+export function buildPipelineEnv(display: string, env: SinkSelectionEnv): Record<string, string> {
+    if (!display) return {};
+    if (!(env.wayland && env.waylandSession)) return {};
+    return { MR_GLIB_PRGNAME: `local.mr.${display}` };
 }
 
 /**

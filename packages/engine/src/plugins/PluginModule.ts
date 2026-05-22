@@ -104,6 +104,18 @@ export interface PipelineDescription {
      * matched pad — capped by the length of `branches`. See `PadLinkRule`.
      */
     linkOnPadAdded?: PadLinkRule[];
+    /**
+     * Extra environment variables for the Python runner that hosts this
+     * pipeline. Merged into `spawn`'s env at fork time, so the values are
+     * visible *before* any GStreamer / GLib init runs in the child —
+     * required for things that have to be set pre-`Gst.init()`. The engine
+     * honours one such hook directly: `MR_GLIB_PRGNAME`, if present, is
+     * applied via `GLib.set_prgname` in the Python child before init. Any
+     * other entries are plugin-defined and just get passed through. Per-
+     * pipeline (not per-runner) so a fresh spawn for a different config
+     * picks up a different value.
+     */
+    env?: Record<string, string>;
 }
 
 export interface PadLinkRule {

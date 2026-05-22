@@ -281,7 +281,7 @@ function onApplyAll() {
         </div>
 
         <div class="px-4 pt-3 pb-16 md:pb-3 flex items-center gap-2 border-t border-border">
-            <MrButton size="sm" @click="onApplyAll">Apply All</MrButton>
+            <MrButton size="sm" @click="onApplyAll">Save</MrButton>
             <MrButton variant="secondary" size="sm" @click="$emit('close')">Close</MrButton>
             <span v-if="saved" class="text-xs ml-auto flex items-center gap-1 text-ok">
                 <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">

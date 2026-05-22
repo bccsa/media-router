@@ -24,6 +24,7 @@ interface StartPipelineMessage {
     restartOnError?: boolean;
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
     linkOnPadAdded?: PadLinkRule[];
+    env?: Record<string, string>;
 }
 
 /**
@@ -45,6 +46,7 @@ export class GstRunner {
     private lastPipelineString = '';
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private lastPadLinkRules: PadLinkRule[] = [];
+    private lastEnv: Record<string, string> = {};
     private readonly restartBackoff = new ExponentialBackoff(
         DEFAULT_RESTART_BASE_MS,
         DEFAULT_RESTART_MAX_MS,
@@ -67,7 +69,13 @@ export class GstRunner {
                     d.restartBackoffMs?.maxMs ?? DEFAULT_RESTART_MAX_MS,
                 );
                 this.restartBackoff.reset();
-                this.startPipeline(d.pipeline, msg.id, d.useStdioForData, d.linkOnPadAdded ?? []);
+                this.startPipeline(
+                    d.pipeline,
+                    msg.id,
+                    d.useStdioForData,
+                    d.linkOnPadAdded ?? [],
+                    d.env ?? {},
+                );
                 break;
             }
 
@@ -263,6 +271,7 @@ export class GstRunner {
                     `restart-${this.restartBackoff.attempts}`,
                     this.useStdioForData,
                     this.lastPadLinkRules,
+                    this.lastEnv,
                 );
             }
         }, delay);
@@ -273,6 +282,7 @@ export class GstRunner {
         requestId: string,
         stdioForData = false,
         padLinkRules: PadLinkRule[] = [],
+        env: Record<string, string> = {},
     ): void {
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
@@ -282,6 +292,7 @@ export class GstRunner {
 
         this.lastPipelineString = pipeline;
         this.lastPadLinkRules = padLinkRules;
+        this.lastEnv = env;
         this.useStdioForData = stdioForData;
 
         // Capture this instance locally — `this.python` may already point to a
@@ -297,7 +308,7 @@ export class GstRunner {
             onSpawnError: (err) => this.handlePythonSpawnError(py, err),
         });
         this.python = py;
-        py.start(pipeline, padLinkRules);
+        py.start(pipeline, padLinkRules, env);
 
         this.ipc.sendResponse(requestId, { ok: true });
     }

@@ -39,8 +39,15 @@ export class PythonProcess {
     /**
      * Spawn the Python runner and send the initial `start` command. Returns
      * once the process is spawned (not when GStreamer reaches PLAYING).
+     *
+     * `env` is merged on top of the inherited process env — values that
+     * must be visible *before* `Gst.init()` runs in the child (e.g. the
+     * runner's `MR_GLIB_PRGNAME` hook for pre-init `GLib.set_prgname`).
+     * The contents are plugin-defined; the engine just passes them through.
+     * A fresh `PythonProcess` is constructed for every pipeline (re)start,
+     * so each spawn sees the env intended for that specific pipeline.
      */
-    start(pipeline: string, padLinkRules: PadLinkRule[]): void {
+    start(pipeline: string, padLinkRules: PadLinkRule[], env: Record<string, string> = {}): void {
         if (this.proc) throw new Error('PythonProcess already started');
 
         const mode = this.options.useStdioForData ? 'data-pipe' : 'bus-messages';
@@ -51,9 +58,12 @@ export class PythonProcess {
             console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(padLinkRules)}`);
         }
 
+        const spawnEnv = { ...process.env, ...env };
+
         if (this.options.useStdioForData) {
             this.proc = spawn('python3', [this.options.pythonRunnerPath], {
                 stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+                env: spawnEnv,
             });
 
             // Error handlers — Python can exit between our `.writable` check
@@ -80,6 +90,7 @@ export class PythonProcess {
         } else {
             this.proc = spawn('python3', [this.options.pythonRunnerPath], {
                 stdio: ['pipe', 'pipe', 'pipe'],
+                env: spawnEnv,
             });
 
             // Mirror the data-mode error handlers (EPIPE during the narrow window

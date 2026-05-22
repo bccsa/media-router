@@ -121,6 +121,7 @@ export class GstChildProcess extends EventEmitter {
                 restartOnError: this.pipelineDesc.restartOnError ?? false,
                 restartBackoffMs: this.pipelineDesc.restartBackoffMs,
                 linkOnPadAdded: this.pipelineDesc.linkOnPadAdded ?? [],
+                env: this.pipelineDesc.env ?? {},
             });
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });
