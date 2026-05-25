@@ -2,14 +2,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
+import { VideoPlayerModule } from './VideoPlayerModule.js';
+import { currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
+import { getWestonOutputTransform, westonTransformToGstRotate } from './helpers/weston.js';
 import {
-    VideoPlayerModule,
     buildFallbackOnlyPipeline,
     buildLivePipeline,
     buildPipelineEnv,
     buildSink,
-    currentWaylandSessionIdent,
-} from './VideoPlayerModule.js';
+    resolveFallbackImagePath,
+} from './helpers/pipelines.js';
 
 describe('VideoPlayerModule helpers', () => {
     beforeEach(() => {
@@ -61,15 +63,208 @@ describe('VideoPlayerModule helpers', () => {
                 }),
             ).toBe('kmssink name=sink connector-id=32 sync=false');
         });
+
+        it('returns plain waylandsink regardless of output rotation (rotation goes into the pipeline body, not the sink)', () => {
+            // The earlier attempt baked `rotate-method=X` onto waylandsink,
+            // but that only rotates pixel content — the xdg_surface geometry
+            // stays at the source caps size, so kiosk-shell rejected the
+            // surface as too large on rotated outputs. Rotation is now
+            // applied via a `videoflip` element prepended to the sink
+            // (see `rotationElement`) which rotates *and* swaps caps,
+            // producing a surface of the correct rotated dimensions.
+            expect(
+                buildSink('DSI-2', {
+                    ...both,
+                    waylandSession: true,
+                    outputTransform: 'rotate-90',
+                }),
+            ).toBe('waylandsink name=sink sync=false');
+            expect(
+                buildSink('HDMI-A-1', {
+                    ...both,
+                    waylandSession: true,
+                    outputTransform: 'normal',
+                }),
+            ).toBe('waylandsink name=sink sync=false');
+        });
+    });
+
+    describe('rotation handling in pipelines', () => {
+        it('injects videoflip before waylandsink in the live pipeline on rotated outputs', () => {
+            // weston `transform=rotate-90` → buffer needs a counterclockwise
+            // flip to compensate, producing 720×1280 caps that fit the
+            // apparent 1080×1920 output. Without this the kiosk-shell
+            // xdg_surface check fails with "geometry (1280 x 720) is larger
+            // than the configured fullscreen state (1080 x 1920)".
+            const live = buildLivePipeline(
+                'waylandsink name=sink sync=false',
+                { host: '239.255.0.1', port: 5500 },
+                'rotate-90',
+            );
+            expect(live).toContain('videoflip method=clockwise ! waylandsink name=sink');
+        });
+
+        it('injects videoflip in the fallback pipeline too on rotated outputs', () => {
+            const fb = buildFallbackOnlyPipeline(
+                'Standby',
+                'waylandsink name=sink sync=false',
+                undefined,
+                'rotate-270',
+            );
+            expect(fb).toContain('videoflip method=counterclockwise ! waylandsink name=sink');
+            expect(fb).toContain('videotestsrc');
+        });
+
+        it('omits videoflip on normal outputs (pipeline byte-identical to the un-rotated case)', () => {
+            const live = buildLivePipeline(
+                'waylandsink name=sink sync=false',
+                { host: '239.255.0.1', port: 5500 },
+                'normal',
+            );
+            expect(live).not.toContain('videoflip');
+        });
+    });
+
+    describe('westonTransformToGstRotate', () => {
+        it('maps each weston transform to the inverse videoflip method name', () => {
+            // The mapping is the *inverse* of weston's output rotation so the
+            // two cancel out at display time. Names come from the videoflip
+            // GstVideoFlipMethod enum (not waylandsink's rotate-method enum,
+            // which uses 90l/90r). Identity for un-rotated / unrecognised.
+            expect(westonTransformToGstRotate(undefined)).toBe('identity');
+            expect(westonTransformToGstRotate('')).toBe('identity');
+            expect(westonTransformToGstRotate('normal')).toBe('identity');
+            expect(westonTransformToGstRotate('rotate-90')).toBe('clockwise');
+            expect(westonTransformToGstRotate('rotate-180')).toBe('rotate-180');
+            expect(westonTransformToGstRotate('rotate-270')).toBe('counterclockwise');
+            expect(westonTransformToGstRotate('flipped')).toBe('horizontal-flip');
+            expect(westonTransformToGstRotate('flipped-rotate-180')).toBe('vertical-flip');
+        });
+    });
+
+    describe('getWestonOutputTransform', () => {
+        let tmp: string;
+        let iniPath: string;
+        beforeEach(() => {
+            tmp = fs.mkdtempSync(`${os.tmpdir()}/mr-weston-`);
+            iniPath = `${tmp}/weston.ini`;
+        });
+        afterEach(() => {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        });
+
+        it('returns "normal" when the ini does not exist', () => {
+            expect(getWestonOutputTransform('DSI-2', `${tmp}/nope.ini`)).toBe('normal');
+        });
+
+        it('returns the transform for a matched output (last in file — exercises the trailing-block flush)', () => {
+            // The parser flushes the last [output] block after the loop ends;
+            // make sure that path returns the transform too (vs. only flushing
+            // on the *next* section header).
+            fs.writeFileSync(
+                iniPath,
+                [
+                    '[output]',
+                    'name=HDMI-A-1',
+                    'transform=normal',
+                    '',
+                    '[output]',
+                    'name=DSI-2',
+                    'transform=rotate-90',
+                ].join('\n'),
+            );
+            expect(getWestonOutputTransform('DSI-2', iniPath)).toBe('rotate-90');
+            expect(getWestonOutputTransform('HDMI-A-1', iniPath)).toBe('normal');
+        });
+
+        it('returns "normal" for an output that is not in the ini', () => {
+            fs.writeFileSync(iniPath, '[output]\nname=HDMI-A-1\ntransform=rotate-90\n');
+            expect(getWestonOutputTransform('DSI-2', iniPath)).toBe('normal');
+        });
+
+        it('ignores comments and other section blocks', () => {
+            fs.writeFileSync(
+                iniPath,
+                [
+                    '# top-level comment',
+                    '[autolaunch]',
+                    'path=/usr/libexec/foo',
+                    '',
+                    '[output]',
+                    '# this output is rotated',
+                    'name=DSI-2',
+                    'transform=rotate-180',
+                ].join('\n'),
+            );
+            expect(getWestonOutputTransform('DSI-2', iniPath)).toBe('rotate-180');
+        });
     });
 
     describe('buildFallbackOnlyPipeline', () => {
-        it('renders videotestsrc + textoverlay into the sink', () => {
+        it('renders videotestsrc + textoverlay into the sink (no image path)', () => {
             const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false');
             expect(s).toContain('videotestsrc');
             expect(s).toContain('pattern=smpte');
             expect(s).toContain('textoverlay name=nov text="No video"');
             expect(s).toContain('autovideosink');
+            expect(s).not.toContain('filesrc');
+        });
+
+        it('renders filesrc + imagefreeze when an image path is provided', () => {
+            // Custom-image branch: a single decoded frame held by imagefreeze
+            // and scaled to the same 1280×720 the SMPTE branch uses, so the
+            // overlay and sink chain are identical between the two variants.
+            const s = buildFallbackOnlyPipeline(
+                'Standby',
+                'autovideosink sync=false',
+                '/data/media-router/no-signal.png',
+            );
+            expect(s).toContain('filesrc location="/data/media-router/no-signal.png"');
+            expect(s).toContain('decodebin');
+            expect(s).toContain('imagefreeze');
+            expect(s).toContain('width=1280,height=720');
+            expect(s).toContain('textoverlay name=nov text="Standby"');
+            expect(s).not.toContain('videotestsrc');
+        });
+    });
+
+    describe('resolveFallbackImagePath', () => {
+        let tmp: string;
+        let imageFile: string;
+
+        beforeEach(() => {
+            tmp = fs.mkdtempSync(`${os.tmpdir()}/mr-fbimg-`);
+            imageFile = `${tmp}/no-signal.png`;
+            fs.writeFileSync(imageFile, 'fake-png-bytes');
+        });
+        afterEach(() => {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        });
+
+        it('returns undefined for an empty path', () => {
+            expect(resolveFallbackImagePath('')).toBeUndefined();
+        });
+
+        it('returns undefined for a relative path', () => {
+            // Relative paths resolve against the engine's CWD which is not
+            // a stable contract for operators — reject to fail loudly.
+            expect(resolveFallbackImagePath('images/foo.png')).toBeUndefined();
+        });
+
+        it('returns undefined when the file does not exist', () => {
+            expect(resolveFallbackImagePath('/nonexistent/no-signal.png')).toBeUndefined();
+        });
+
+        it('returns the path for a readable absolute file', () => {
+            expect(resolveFallbackImagePath(imageFile)).toBe(imageFile);
+        });
+
+        it('rejects paths containing characters that would break the gst-launch string', () => {
+            // `"`, `\`, `\r`, `\n` would terminate the location="…" clause or
+            // inject parser tokens. Real kiosk paths don't need them.
+            const dangerous = `${tmp}/has"quote.png`;
+            fs.writeFileSync(dangerous, '');
+            expect(resolveFallbackImagePath(dangerous)).toBeUndefined();
         });
     });
 
@@ -284,6 +479,63 @@ describe('VideoPlayerModule helpers', () => {
         });
     });
 
+    describe('findCogPidForDisplay', () => {
+        let tmp: string;
+        beforeEach(() => {
+            tmp = fs.mkdtempSync(`${os.tmpdir()}/mr-cog-`);
+        });
+        afterEach(() => {
+            fs.rmSync(tmp, { recursive: true, force: true });
+        });
+
+        function fakeProc(pid: number, cmdline: string): void {
+            const dir = path.join(tmp, String(pid));
+            fs.mkdirSync(dir);
+            // Kernel /proc/$pid/cmdline uses NUL separators between argv items,
+            // not spaces — match that so the helper's substring search behaves
+            // the same here as on a real Linux box.
+            fs.writeFileSync(path.join(dir, 'cmdline'), cmdline.replace(/ /g, '\0'));
+        }
+
+        it('returns undefined for an empty display name', () => {
+            fakeProc(123, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            expect(findCogPidForDisplay('', tmp)).toBeUndefined();
+        });
+
+        it('returns the PID of the cog instance pinned to the given connector', () => {
+            fakeProc(101, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            fakeProc(202, '/usr/bin/cog http://localhost:8083/background --gapplication-app-id=local.cog.HDMI-A-1');
+            expect(findCogPidForDisplay('HDMI-A-1', tmp)).toBe(202);
+            expect(findCogPidForDisplay('DSI-2', tmp)).toBe(101);
+        });
+
+        it('returns undefined when no cog is running for the requested display', () => {
+            fakeProc(101, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            expect(findCogPidForDisplay('HDMI-A-2', tmp)).toBeUndefined();
+        });
+
+        it('ignores WPE helper subprocesses (they do not carry the app-id arg)', () => {
+            // The WPENetworkProcess / WPEWebProcess children inherit a different
+            // argv that lacks `--gapplication-app-id`, so the substring match
+            // naturally skips them. Verify a cmdline that mentions cog but not
+            // the right connector is not picked up.
+            fakeProc(300, '/usr/libexec/wpe-webkit-2.0/WPEWebProcess 11 21 23');
+            fakeProc(301, '/usr/libexec/wpe-webkit-2.0/WPENetworkProcess 1 7 10');
+            expect(findCogPidForDisplay('HDMI-A-1', tmp)).toBeUndefined();
+        });
+
+        it('skips non-numeric /proc entries (devices, self, etc.)', () => {
+            fs.mkdirSync(path.join(tmp, 'self'));
+            fs.writeFileSync(path.join(tmp, 'self', 'cmdline'), 'irrelevant');
+            fakeProc(404, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            expect(findCogPidForDisplay('DSI-2', tmp)).toBe(404);
+        });
+
+        it('returns undefined for a missing /proc root', () => {
+            expect(findCogPidForDisplay('DSI-2', '/nonexistent-proc-xyz')).toBeUndefined();
+        });
+    });
+
     describe('wayland-restart watcher', () => {
         // Hard-fakes the lifecycle: register two instances against a tmp
         // runtime dir, swap the socket inode, fire the debounced check, and
@@ -369,11 +621,73 @@ describe('VideoPlayerModule helpers', () => {
             await new Promise((r) => setImmediate(r));
 
             // The second debounce-check sees the new ident and would fire a
-            // second restart cycle, but the per-instance `waylandRestartInProgress`
+            // second restart cycle, but the per-instance `pipelineRestartInProgress`
             // latch in restartForWaylandSessionChange clamps it to one stop/start
             // pair as long as the first cycle is still in flight.
             expect(inst.onStop.mock.calls.length).toBeLessThanOrEqual(2);
             expect(inst.onStart.mock.calls.length).toBeLessThanOrEqual(2);
+        });
+    });
+
+    describe('UDP-stall fallback', () => {
+        function makeModule() {
+            const module = new VideoPlayerModule();
+            (module as any).services = {
+                instanceId: 'video-player-1',
+                mediaRouter: { getModuleUdpSource: vi.fn() },
+            };
+            (module as any).setHealth = vi.fn();
+            return module;
+        }
+
+        it('returns the live pipeline by default when a source is connected', () => {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+            const module = makeModule();
+            (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue({
+                host: '239.255.0.1',
+                port: 5500,
+            });
+            const desc = module.buildPipeline({ display: '' });
+            // Sanity: with no stall latched, live wins.
+            expect(desc.pipeline).toContain('udpsrc');
+            expect(desc.pipeline).not.toContain('videotestsrc');
+        });
+
+        it('returns the colour-bars fallback even with a UDP source connected when the stall flag is latched', () => {
+            // This is the user-visible behaviour we want: the source has
+            // a UDP mapping (so getModuleUdpSource returns a real host:port)
+            // but it stopped sending data and the runner posted a
+            // GstUDPSrcTimeout. The latched flag flips the next pipeline
+            // build over to videotestsrc + textoverlay so the display
+            // shows colour bars instead of a frozen frame.
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+            const module = makeModule();
+            (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue({
+                host: '239.255.0.1',
+                port: 5500,
+            });
+            (module as any).udpStallDetected = true;
+            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
+            expect(desc.pipeline).toContain('videotestsrc');
+            expect(desc.pipeline).toContain('Source down');
+            expect(desc.pipeline).not.toContain('udpsrc');
+            expect((module as any).setHealth).toHaveBeenCalledWith(
+                'warning',
+                expect.stringContaining('Source silent'),
+            );
+        });
+
+        it('clears the stall flag and the UDP resume probe in clearUdpStallState (used on external stop)', () => {
+            const module = makeModule();
+            (module as any).udpStallDetected = true;
+            // Stand-in for an open dgram socket — close() is the only method
+            // clearUdpStallState() touches.
+            const fakeSock = { close: vi.fn() };
+            (module as any).udpResumeProbe = fakeSock;
+            (module as any).clearUdpStallState();
+            expect((module as any).udpStallDetected).toBe(false);
+            expect((module as any).udpResumeProbe).toBeNull();
+            expect(fakeSock.close).toHaveBeenCalled();
         });
     });
 
@@ -416,6 +730,18 @@ describe('VideoPlayerModule helpers', () => {
             const { module, setProperty } = makeRunningModule({ hasSource: true });
             await module.onLiveConfigUpdate({ fallbackText: 'New text' });
             expect(setProperty).not.toHaveBeenCalled();
+        });
+
+        it('updates the nov text overlay when source is silent (stall fallback active)', async () => {
+            // Reported bug: user typed in the live-updatable "Fallback Text"
+            // field while the source was down (colour bars showing) and the
+            // overlay didn't refresh. The fallback pipeline owns `nov` in
+            // *both* "no source" and "source-silent" states; the guard now
+            // pushes the live update in either case.
+            const { module, setProperty } = makeRunningModule({ hasSource: true });
+            (module as any).udpStallDetected = true;
+            await module.onLiveConfigUpdate({ fallbackText: 'Whats sup' });
+            expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
         });
     });
 });

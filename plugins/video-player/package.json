@@ -38,6 +38,12 @@
                     "default": "No video detected",
                     "description": "Overlay text when no stream is connected",
                     "x-live": true
+                },
+                "fallbackImagePath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Image shown as fallback when no stream (otherwise SMPTE colour bars).",
+                    "x-widget": "imageUpload"
                 }
             }
         },

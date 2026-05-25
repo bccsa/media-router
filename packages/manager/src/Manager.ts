@@ -12,6 +12,7 @@ import { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
 import { PatchRouter, engineSenderId } from './PatchRouter.js';
 import { setupSocketIO } from './socket/SocketIOSetup.js';
 import { registerHttpRoutes } from './routes/httpRoutes.js';
+import { PluginUploadService } from './services/PluginUploadService.js';
 
 const log = createLogger('Manager');
 
@@ -94,6 +95,8 @@ export class Manager {
             this.io.emit('engine:update', { engineId, patch: ops });
         });
 
+        const pluginUploads = new PluginUploadService(pluginRegistry);
+
         setupSocketIO({
             io: this.io,
             configStore: this.configStore,
@@ -102,9 +105,11 @@ export class Manager {
             engineCommands,
             eventForwarder,
             patchRouter,
+            pluginUploads,
         });
-        // After the v2.0 API consolidation, HTTP only serves /health + the
-        // SPA static bundle. Application API lives on Socket.IO RPC.
+        // HTTP now only serves /health + the SPA static bundle. Every plugin
+        // and application API — including upload + preview — lives on
+        // Socket.IO RPC.
         registerHttpRoutes({ app });
 
         log.info(

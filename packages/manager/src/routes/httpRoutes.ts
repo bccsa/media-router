@@ -11,16 +11,15 @@ export interface HttpRouteDeps {
 }
 
 /**
- * Register the HTTP surface. After the v2.0 API consolidation this is just:
+ * Register the HTTP surface. After the v2.0 API consolidation + the
+ * all-socket move for plugin uploads (previews fetched via the
+ * `plugin:upload-get` RPC and rendered as `data:` URLs), HTTP is now just:
  *
  *   - `GET /health` for external monitoring
  *   - Static asset serving for the built manager-ui SPA
  *   - SPA fallback for client-side router paths
  *
- * The application API (engines, groups, profiles, plugins, devices) moved
- * to Socket.IO RPC events with ack callbacks — see `socket/rpcHandlers.ts`.
- * One channel, one auth boundary, one place for the state-change broadcasts
- * that the same channel was already doing.
+ * Every application + plugin API lives on Socket.IO.
  */
 export function registerHttpRoutes(deps: HttpRouteDeps): void {
     const { app } = deps;
@@ -39,17 +38,35 @@ export function registerHttpRoutes(deps: HttpRouteDeps): void {
                 immutable: true,
             }),
         );
-        // index.html — never cache (so browser always gets latest asset references).
-        app.use(express.static(uiDistPath, { maxAge: 0, etag: false }));
+        // Non-hashed root files (favicon.svg, logo_*.svg, index.html). We
+        // tag *index.html* with `Cache-Control: no-store` so a redeploy
+        // can't leave a stale index pointing at chunk hashes that have
+        // since changed — that's what burned us when the new
+        // `plugin:upload-get` watcher shipped but cached routing bundles
+        // were still being loaded. Other root files revalidate each load
+        // (their content can change but their URL doesn't, so we can't
+        // use the immutable trick that the hashed assets get).
+        app.use(
+            express.static(uiDistPath, {
+                etag: false,
+                setHeaders: (res, filePath) => {
+                    if (path.basename(filePath) === 'index.html') {
+                        res.setHeader('Cache-Control', 'no-store');
+                    } else {
+                        res.setHeader('Cache-Control', 'no-cache');
+                    }
+                },
+            }),
+        );
+        // SPA fallback for client-side routes (`/routing`, `/profiles/…`).
         app.get('/{*path}', (req, res) => {
-            // /socket.io is served by the Socket.IO engine, not us — let
-            // 404 surface there if anything else hits the prefix. Health
-            // stays the only HTTP API endpoint.
             if (req.path.startsWith('/health') || req.path.startsWith('/socket.io')) {
+                // /socket.io is served by the Socket.IO engine, not us — let
+                // 404 surface there if anything else hits the prefix.
                 res.status(404).json({ error: 'Not found' });
                 return;
             }
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Cache-Control', 'no-store');
             res.sendFile(path.join(uiDistPath, 'index.html'));
         });
     } else {

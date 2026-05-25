@@ -229,7 +229,14 @@ export class GstRunner {
                 console.error(
                     `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
                 );
-                this.ipc.sendEvent('error', { message: eventJson.message });
+                this.ipc.sendEvent('error', {
+                    message: eventJson.message,
+                    // Pass through `kind` so consumers can distinguish recoverable
+                    // failures (e.g. udpsrc timeout when the source goes silent)
+                    // from hard bus errors. Plugins use this to switch to a
+                    // fallback pipeline instead of looping on the failing one.
+                    kind: eventJson.kind,
+                });
                 this.ipc.sendEvent('stateChange', { state: 'error' });
                 if (this.restartOnError) this.scheduleRestart();
                 break;

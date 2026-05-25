@@ -292,7 +292,7 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 | Extension | Type | Description |
 |-----------|------|-------------|
 | `x-deviceType` | `string` | Device type to populate dropdown from (e.g. `"audio-source"`, `"audio-sink"`, `"video"`, `"drm-connector"`). Plugin must register a matching `DeviceProvider` via `registerServices`. |
-| `x-widget` | `"slider"` | Renders a range slider instead of number input |
+| `x-widget` | `"slider"` \| `"imageUpload"` | `"slider"` renders a range slider instead of a number input. `"imageUpload"` (string-valued field) renders a file picker that uploads via the `plugin:upload` RPC and stores the resulting absolute path; preview thumbnail loaded back through `plugin:upload-get`. |
 | `x-step` | `number` | Step value for slider |
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
 | `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |

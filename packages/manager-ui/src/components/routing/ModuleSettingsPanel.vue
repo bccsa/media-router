@@ -276,6 +276,8 @@ function onApplyAll() {
                 :get-enum="getFieldEnum"
                 :get-max="getFieldMax"
                 :device-options="deviceOptions"
+                :engine-id="engineId"
+                :module-id="moduleId"
                 @update="updateSetting"
             />
         </div>

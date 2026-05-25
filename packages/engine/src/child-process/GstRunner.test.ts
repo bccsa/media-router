@@ -96,6 +96,20 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { message: string }).message).toMatch(/internal data stream/);
     });
 
+    it('forwards the `kind` discriminator on pipeline error events', () => {
+        // udpsrc timeout, GstUDPSrcTimeout-derived events, etc. are tagged
+        // `kind` in the Python runner so plugins can distinguish recoverable
+        // source-silent conditions from hard bus errors. Verify the field
+        // survives the GstRunner → parent IPC hop.
+        emit({
+            event: 'error',
+            kind: 'udp_timeout',
+            message: 'UDP source timeout (no data received)',
+        });
+        const errEvent = lastByType('event', 'error');
+        expect((errEvent?.data as { kind?: string }).kind).toBe('udp_timeout');
+    });
+
     it('resolves getProperty pending RPC with the property value', () => {
         runner.handleControlMessage({
             id: 'rpc-2',

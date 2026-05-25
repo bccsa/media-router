@@ -36,6 +36,7 @@ describe('setupSocketIO', () => {
             getLogBuffer: vi.fn().mockReturnValue([]),
         } as any;
         const patchRouter = { onPatch: vi.fn() } as any;
+        const pluginUploads = { save: vi.fn(), read: vi.fn() } as any;
 
         setupSocketIO({
             io,
@@ -45,6 +46,7 @@ describe('setupSocketIO', () => {
             engineCommands,
             eventForwarder,
             patchRouter,
+            pluginUploads,
         });
 
         /** Drive the connection handler with a captured socket; returns the

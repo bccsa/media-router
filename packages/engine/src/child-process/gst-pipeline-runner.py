@@ -200,10 +200,13 @@ def on_bus_message(bus, message):
             # udpsrc has not received data within its configured timeout.
             # Surface this as an error so the gst-runner's restart path
             # triggers — udpsrc itself does not stop the pipeline on
-            # timeout, it just posts the message.
+            # timeout, it just posts the message. `kind` discriminates this
+            # from generic bus errors so consumers (e.g. video-player) can
+            # treat the source-silent case differently from a hard failure.
             emit_event(
                 {
                     "event": "error",
+                    "kind": "udp_timeout",
                     "message": "UDP source timeout (no data received)",
                 }
             )

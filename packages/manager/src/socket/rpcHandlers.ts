@@ -23,6 +23,29 @@ import type { EngineConnectionManager } from '../engines/EngineConnectionManager
 import type { PluginRegistry } from '../plugins/PluginRegistry.js';
 import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
 import type { EngineCommandService } from '../handlers/EngineCommandService.js';
+import type { PluginUploadService } from '../services/PluginUploadService.js';
+
+/**
+ * Socket.IO carries binary payloads natively (the wire format is MessagePack
+ * with Buffer support), so plugin uploads flow over the same RPC channel as
+ * everything else rather than a dedicated HTTP route. Static GETs for preview
+ * thumbnails still need HTTP because `<img src>` is HTTP-only; those live in
+ * `httpRoutes.ts` and read from the same on-disk root.
+ */
+const PluginUploadSchema = z.object({
+    pluginId: z.string().min(1),
+    moduleId: z.string().min(1),
+    filename: z.string().min(1),
+    // Socket.IO's server-side parser always materialises incoming binary
+    // payloads as Node `Buffer` — there's no ArrayBuffer path on this side
+    // of the wire even when the client sent a `Uint8Array` / `ArrayBuffer`.
+    bytes: z.instanceof(Buffer),
+});
+
+const PluginUploadGetSchema = z.object({
+    pluginId: z.string().min(1),
+    filename: z.string().min(1),
+});
 
 const log = createLogger('RpcHandlers');
 
@@ -97,6 +120,7 @@ export interface RpcDeps {
     pluginRegistry: PluginRegistry;
     eventForwarder: EngineEventForwarder;
     engineCommands: EngineCommandService;
+    pluginUploads: PluginUploadService;
 }
 
 /**
@@ -105,7 +129,7 @@ export interface RpcDeps {
  * picks up the change, not just the originator.
  */
 export function registerRpcHandlers(socket: IOSocket, deps: RpcDeps): void {
-    const { io, configStore, engineManager, pluginRegistry, eventForwarder, engineCommands } = deps;
+    const { io, configStore, engineManager, pluginRegistry, eventForwarder, engineCommands, pluginUploads } = deps;
 
     /** Throws RpcError(404) if the engine is missing. Use as a guard at the top of handlers. */
     function requireEngine(engineId: string): Record<string, unknown> {
@@ -389,4 +413,26 @@ export function registerRpcHandlers(socket: IOSocket, deps: RpcDeps): void {
             configStore.updateProfileConfig(engineId, profileName, version);
         },
     );
+
+    // Generic plugin upload — any plugin whose schema declares an upload
+    // widget can hit this. The service handles validation, dedup-by-module
+    // and on-disk layout; this binding is just the transport.
+    respond(socket, 'plugin:upload', PluginUploadSchema, ({ pluginId, moduleId, filename, bytes }) => {
+        try {
+            return pluginUploads.save({ pluginId, moduleId, filename, bytes });
+        } catch (err) {
+            throw new RpcError((err as Error).message);
+        }
+    });
+
+    // Read-back for previews. Socket.IO encodes the returned Buffer as a
+    // binary frame on the wire — the UI wraps it in a `data:` URL so
+    // <img> can render it without a parallel HTTP route.
+    respond(socket, 'plugin:upload-get', PluginUploadGetSchema, ({ pluginId, filename }) => {
+        try {
+            return pluginUploads.read(pluginId, filename);
+        } catch (err) {
+            throw new RpcError((err as Error).message);
+        }
+    });
 }

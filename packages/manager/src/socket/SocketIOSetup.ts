@@ -12,6 +12,7 @@ import type { PluginRegistry } from '../plugins/PluginRegistry.js';
 import type { EngineCommandService } from '../handlers/EngineCommandService.js';
 import type { EngineEventForwarder } from '../handlers/EngineEventForwarder.js';
 import type { PatchRouter } from '../PatchRouter.js';
+import type { PluginUploadService } from '../services/PluginUploadService.js';
 import { registerRpcHandlers } from './rpcHandlers.js';
 
 const log = createLogger('SocketIO');
@@ -24,6 +25,7 @@ export interface SocketDeps {
     engineCommands: EngineCommandService;
     eventForwarder: EngineEventForwarder;
     patchRouter: PatchRouter;
+    pluginUploads: PluginUploadService;
 }
 
 /**
@@ -41,6 +43,7 @@ export function setupSocketIO(deps: SocketDeps): void {
         engineCommands,
         eventForwarder,
         patchRouter,
+        pluginUploads,
     } = deps;
 
     io.on('connection', (socket: IOSocket) => {
@@ -219,6 +222,7 @@ export function setupSocketIO(deps: SocketDeps): void {
             pluginRegistry,
             eventForwarder,
             engineCommands,
+            pluginUploads,
         });
 
         socket.on('disconnect', () => {
