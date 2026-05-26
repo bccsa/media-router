@@ -27,6 +27,18 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
         private getUdpPort: (moduleId: string, portId?: string) => number | undefined,
         private multicastAddr: string,
         private connLabel: (conn: Connection) => string,
+        /**
+         * Invoked after the consumer module has been restarted in `execute`.
+         * Wired by `MediaRouter.setConsumerRestartCallback` to
+         * `ConnectionApplier.reapplyModuleConnections`, so the consumer's
+         * *outgoing* connections (which may have been removed earlier when
+         * the consumer hadn't allocated its UDP ports yet) get a fresh
+         * attempt now that those ports exist. Without this hook, a chain
+         * with a disabled upstream at engine startup left every
+         * downstream-of-the-downstream connection permanently dead until
+         * the operator manually toggled a module.
+         */
+        private onConsumerRestarted?: (consumerId: string) => Promise<void>,
     ) {}
 
     async execute(conn: Connection): Promise<ActiveHandle | null> {
@@ -62,6 +74,28 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
             log.info({ udpPort }, `Restarted consumer with udpsrc ${this.connLabel(conn)}`);
         } catch (err) {
             log.error({ err }, 'Failed to start consumer');
+        }
+
+        // The consumer's pipeline build runs inside `start()` above and may
+        // have allocated UDP output ports of its own (e.g. mpegts-demuxer
+        // does this once it has an input source). Give downstream connections
+        // that were previously removed for "producer has no UDP port yet" a
+        // fresh attempt now that those ports exist.
+        if (this.onConsumerRestarted) {
+            try {
+                await this.onConsumerRestarted(conn.sinkModuleId);
+            } catch (err) {
+                // Bumped to warn: this hook *is* the cascade-recovery path
+                // for downstream connections that were removed earlier by
+                // retry exhaustion. A failure here means we may have just
+                // silently left part of the graph orphaned (the exact bug
+                // the hook exists to fix), so make sure it shows up in
+                // normal log scans.
+                log.warn(
+                    { err, moduleId: conn.sinkModuleId },
+                    'onConsumerRestarted cascade failed — downstream of this module may stay disconnected',
+                );
+            }
         }
 
         return {

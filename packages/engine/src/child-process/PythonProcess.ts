@@ -47,7 +47,11 @@ export class PythonProcess {
      * A fresh `PythonProcess` is constructed for every pipeline (re)start,
      * so each spawn sees the env intended for that specific pipeline.
      */
-    start(pipeline: string, padLinkRules: PadLinkRule[], env: Record<string, string> = {}): void {
+    start(
+        pipeline: string,
+        padLinkRules: PadLinkRule[],
+        env: Record<string, string> = {},
+    ): void {
         if (this.proc) throw new Error('PythonProcess already started');
 
         const mode = this.options.useStdioForData ? 'data-pipe' : 'bus-messages';

@@ -63,6 +63,13 @@ export interface ModuleState {
      * Object form carries min/max bounds the plugin set.
      */
     resizable?: boolean | ResizableBounds;
+    /**
+     * Manifest-declared upload policy. The `imageUpload` widget reads this
+     * to set the file picker's `accept` attribute and to decide whether to
+     * render the preview as `<img>` (image MIME) or `<video>` (video MIME).
+     * Plugins without an upload policy don't get to upload at all.
+     */
+    uploads?: { extensions: string[]; maxBytes: number };
 }
 
 /** Mirrors @media-router/shared-types ChannelMapEntry (browser can't import Node packages). */
@@ -176,6 +183,7 @@ export const useEngineStore = defineStore('engines', () => {
             interlock: mod.interlock === true,
             size: mod.size as ModuleSize | undefined,
             resizable: mod.resizable as ModuleState['resizable'],
+            uploads: mod.uploads as ModuleState['uploads'],
             liveUpdatableParams: mod.liveUpdatableParams as string[] | undefined,
         };
     }

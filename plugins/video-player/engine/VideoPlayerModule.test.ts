@@ -223,6 +223,15 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('decodebin');
             expect(s).toContain('imagefreeze');
             expect(s).toContain('width=1280,height=720');
+            // Aspect-preserving: `add-borders=true` letterboxes / pillarboxes
+            // instead of stretching a non-16:9 image to fill the surface.
+            expect(s).toContain('videoscale add-borders=true');
+            // PAR=1/1 is paired with add-borders so the bars are real
+            // square-pixel space — without it `videoscale` would satisfy
+            // the requested display AR by emitting non-square pixels, and
+            // the downstream textoverlay would render at the same skewed
+            // PAR (regression: portrait-image squashed-text bug).
+            expect(s).toContain('pixel-aspect-ratio=1/1');
             expect(s).toContain('textoverlay name=nov text="Standby"');
             expect(s).not.toContain('videotestsrc');
         });

@@ -61,6 +61,14 @@ export class Manager {
         this.io = new SocketIOServer(this.httpServer, {
             cors: { origin: '*' },
             perMessageDeflate: true,
+            // Default is 1 MB, which silently disconnects the socket on
+            // anything bigger — including a `plugin:upload` for a chunky
+            // image. Sized generously above the largest per-plugin upload
+            // policy any plugin manifest declares, so we don't have to
+            // bump this every time a new plugin opts into uploads.
+            // Memory-bound: a single in-flight upload occupies this much
+            // per client.
+            maxHttpBufferSize: 200 * 1024 * 1024,
         });
 
         // Services

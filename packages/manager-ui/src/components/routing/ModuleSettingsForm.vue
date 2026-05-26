@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue';
+import { computed, ref, watch, onBeforeUnmount } from 'vue';
 import MrInput from '@/components/common/MrInput.vue';
 import MrSelect from '@/components/common/MrSelect.vue';
 import MrSlider from '@/components/common/MrSlider.vue';
@@ -73,6 +73,37 @@ function uploadPreviewUrl(absolutePath: unknown): string {
     return uploadPreviewCache.value[absolutePath] ?? '';
 }
 
+/**
+ * `accept=` value for the file picker, derived from the plugin's manifest
+ * policy. The HTML spec calls for case-insensitive extension matching, but
+ * Safari (and some Chromium builds) don't honour that for casing variants
+ * like `.JPG` / `.HEIC` — so we also emit the `image/*` MIME wildcard. The
+ * server still enforces the strict lowercased-extension allowlist before
+ * accepting the bytes.
+ */
+/**
+ * Extensions that warrant adding the `image/*` MIME wildcard to `accept=`.
+ * Kept tight to what plugin manifests actually declare today — Safari and
+ * a few Chromium builds don't case-insensitive-match `.PNG` against
+ * `.png`, and the MIME wildcard sidesteps that. The server still enforces
+ * the strict lowercased-extension allowlist before accepting the bytes.
+ */
+const IMAGE_FILE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
+
+/**
+ * `accept=` value for the file picker. Reactive on the module/plugin so
+ * it recomputes only when the upload policy actually changes, not on
+ * every unrelated render.
+ */
+const uploadAccept = computed(() => {
+    const policy = engineStore.getEngine(props.engineId)?.modules[props.moduleId]?.uploads;
+    if (!policy?.extensions?.length) return '';
+    const lower = policy.extensions.map((e) => e.toLowerCase());
+    const tokens = new Set<string>(lower);
+    if (lower.some((e) => IMAGE_FILE_EXTS.has(e))) tokens.add('image/*');
+    return [...tokens].join(',');
+});
+
 onBeforeUnmount(() => {
     for (const url of Object.values(uploadPreviewCache.value)) URL.revokeObjectURL(url);
 });
@@ -140,9 +171,14 @@ async function onUploadImage(field: FormField, event: Event): Promise<void> {
         // Socket.IO encodes Uint8Array as a binary frame on the wire — no
         // base64 round-trip, same channel as the rest of the app's RPC.
         const bytes = new Uint8Array(await file.arrayBuffer());
+        // Generous timeout for uploads — even a multi-megabyte image over
+        // a slow link can push past the default 10 s RPC cap, and a
+        // timeout here would leave the UI showing "disconnected" while
+        // the server is still happily receiving bytes.
         const result = await socket.request<{ path: string; filename: string }>(
             'plugin:upload',
             { pluginId, moduleId: props.moduleId, filename: file.name, bytes },
+            { timeoutMs: 5 * 60 * 1000 },
         );
         if (result?.path) {
             // Prime the preview from the bytes already in memory — same
@@ -262,10 +298,10 @@ function clearUpload(field: FormField): void {
                     class="relative rounded-md border border-border-alt bg-surface-alt overflow-hidden"
                 >
                     <!-- Render the img only after `loadPreview()` populates
-                         the cache. Earlier we rendered with an empty src and
-                         a hide-on-error handler — the empty src fired the
-                         error before the async fetch resolved, leaving the
-                         img permanently invisible. -->
+                         the cache. Earlier we rendered with an empty src
+                         and a hide-on-error handler — the empty src fired
+                         the error before the async fetch resolved, leaving
+                         the img permanently invisible. -->
                     <img
                         v-if="uploadPreviewUrl(settings[field.key])"
                         :src="uploadPreviewUrl(settings[field.key])"
@@ -311,7 +347,7 @@ function clearUpload(field: FormField): void {
                     {{ settings[field.key] ? 'Replace image' : 'Upload image' }}
                     <input
                         type="file"
-                        accept="image/*"
+                        :accept="uploadAccept"
                         class="hidden"
                         @change="onUploadImage(field, $event)"
                     />

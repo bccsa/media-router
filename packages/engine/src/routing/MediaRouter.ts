@@ -59,6 +59,18 @@ export class MediaRouter {
 
     // --- Setup ---
 
+    /**
+     * Optional hook invoked after `MpegTsUdpExecutor` restarts a consumer
+     * module. Registered (lazily) by `ModuleLifecycle` once it has its
+     * `ConnectionApplier` constructed, so the consumer's outgoing
+     * connections can be re-applied. See `MpegTsUdpExecutor.onConsumerRestarted`.
+     */
+    private consumerRestartCallback: ((id: string) => Promise<void>) | null = null;
+
+    setConsumerRestartCallback(cb: (id: string) => Promise<void>): void {
+        this.consumerRestartCallback = cb;
+    }
+
     setDependencies(
         pipeWire: PipeWireManager,
         moduleGetter: (id: string) => ModuleInstance | undefined,
@@ -77,6 +89,7 @@ export class MediaRouter {
                     this.udpPorts.get(moduleId),
                 MULTICAST_ADDR,
                 connLabel,
+                (id) => this.consumerRestartCallback?.(id) ?? Promise.resolve(),
             ),
         );
         this.executor = new ConnectionExecutor(this.streamExecutors);

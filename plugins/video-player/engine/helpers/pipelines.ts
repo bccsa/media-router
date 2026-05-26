@@ -121,20 +121,33 @@ export function resolveFallbackImagePath(raw: string): string | undefined {
     return raw;
 }
 
+/**
+ * Fallback pipeline for SMPTE bars OR a still image. Aspect-preserving:
+ * `videoscale add-borders=true` letterboxes / pillarboxes the image into
+ * the 1280×720 surface instead of stretching it (a 9:16 portrait shot
+ * stays portrait with black bars on the sides). `decodebin` covers PNG /
+ * JPEG / WebP / etc.; `imagefreeze` turns a single decoded frame into a
+ * continuous live stream so the rest of the chain (sink, text overlay)
+ * doesn't have to handle EOS.
+ *
+ * For *video* fallback, use `buildFallbackVideoPipeline` instead — that
+ * path needs decodebin dynamic-pad linking and a `loopOnEos` flag on the
+ * containing `PipelineDescription`.
+ */
 export function buildFallbackOnlyPipeline(
     fallbackText: string,
     sinkElement: string,
     imagePath?: string,
     outputTransform?: string,
 ): string {
-    // Image branch: a single decoded frame held by `imagefreeze` and scaled to
-    // the same 1280×720 surface size the SMPTE pattern uses, so swapping
-    // between the two doesn't reconfigure the rest of the chain (sink, text
-    // overlay) or the downstream wayland surface. `decodebin` covers PNG /
-    // JPEG / WebP / etc. so the operator can drop whatever they have.
+    // pixel-aspect-ratio=1/1 in the caps is what makes `add-borders=true`
+    // actually emit square-pixel black bars. Without it, videoscale satisfies
+    // the requested DAR by emitting non-square pixels, and everything drawn
+    // downstream (textoverlay) gets stretched to match — operators see the
+    // image look right but the overlay text horizontally squashed.
     const source = imagePath
-        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale ! video/x-raw,width=1280,height=720,framerate=30/1`
-        : `videotestsrc is-live=true pattern=smpte ! video/x-raw,width=1280,height=720,framerate=30/1`;
+        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! video/x-raw,width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1`
+        : `videotestsrc is-live=true pattern=smpte ! video/x-raw,width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1`;
     return (
         `${source} ` +
         `! textoverlay name=nov text="${fallbackText}" valignment=center halignment=center font-desc="Sans Bold 48" ` +

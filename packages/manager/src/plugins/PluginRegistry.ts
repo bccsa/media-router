@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ResizableBounds } from '@media-router/shared-types';
+import type { ResizableBounds, UploadsPolicy } from '@media-router/shared-types';
 
 export interface PluginManifest {
     pluginId: string;
@@ -17,6 +17,8 @@ export interface PluginManifest {
     interlock?: boolean;
     /** User can resize the module card. `true` for defaults, object for bounds. */
     resizable?: boolean | ResizableBounds;
+    /** Manifest-declared upload policy — see PluginUploadService. */
+    uploads?: UploadsPolicy;
 }
 
 /**
@@ -129,6 +131,7 @@ export class PluginRegistry {
         mod.faceWidgets = manifest.faceWidgets;
         mod.interlock = manifest.interlock === true;
         mod.resizable = manifest.resizable ?? false;
+        mod.uploads = manifest.uploads;
     }
 
     /**
@@ -180,6 +183,7 @@ export class PluginRegistry {
                         faceWidgets: pkg.mediaRouter.faceWidgets,
                         interlock: pkg.mediaRouter.interlock === true,
                         resizable: pkg.mediaRouter.resizable,
+                        uploads: pkg.mediaRouter.uploads,
                     });
                 }
             } catch {

@@ -47,6 +47,10 @@
                 }
             }
         },
+        "uploads": {
+            "extensions": [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"],
+            "maxBytes": 10485760
+        },
         "statusSections": [
             {
                 "id": "input",

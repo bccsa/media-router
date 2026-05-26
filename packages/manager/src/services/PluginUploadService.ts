@@ -11,11 +11,12 @@ const log = createLogger('PluginUploadService');
  *
  *   1. Marking the schema field with a widget that emits an upload —
  *      e.g. `"x-widget": "imageUpload"` — and storing the result as a
- *      string path. The widget POSTs / emits to this service and writes
- *      the returned absolute path back into the field.
- *   2. Optionally declaring `x-uploads` on the manifest to widen the
- *      extension whitelist or raise the size cap for that plugin
- *      (future work — defaults cover the image-upload case today).
+ *      string path. The widget emits to this service via `plugin:upload`
+ *      and writes the returned absolute path back into the field.
+ *   2. Declaring `uploads: { extensions, maxBytes }` on the manifest.
+ *      This is mandatory: without it the service rejects every upload
+ *      request for that plugin, so adding video support to one plugin
+ *      doesn't widen the policy for any other plugin in the registry.
  *
  * Storage layout: `<root>/<pluginId>/<moduleId>.<ext>`. One file per module
  * — re-uploading overwrites; switching extension on re-upload deletes the
@@ -30,13 +31,13 @@ const log = createLogger('PluginUploadService');
 
 const DEFAULT_UPLOAD_ROOT = '/data/media-router/uploads';
 
-/** Sensible default for the `imageUpload` widget. Widen per-plugin via manifest later. */
-const DEFAULT_EXTENSIONS = new Set([
-    '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp',
-]);
-
-/** 10 MB — generous for a "no signal" card, tight enough to fail loudly on accidents. */
-const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
+/**
+ * Per-plugin upload policy is sourced exclusively from each plugin's manifest
+ * (`uploads: { extensions, maxBytes }`). The service holds no built-in
+ * allowlist — a plugin without an `uploads` block on its manifest simply
+ * can't upload. Keeps the service plugin-agnostic and lets a video plugin
+ * accept `.mp4` without widening every other plugin's whitelist.
+ */
 
 /** Used to gate IDs that go into filesystem paths. No slashes, no dots leading. */
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -88,18 +89,22 @@ export class PluginUploadService {
 
     /**
      * Validate, persist, and return the absolute path. Throws on:
-     *   - unknown / unsafe pluginId or moduleId,
+     *   - unsafe pluginId or moduleId (filesystem traversal guards),
+     *   - pluginId with no `uploads` block on its manifest,
      *   - empty body,
-     *   - extension not in the (per-plugin or default) whitelist,
-     *   - body larger than the (per-plugin or default) cap,
+     *   - extension not in the plugin's declared whitelist,
+     *   - body larger than the plugin's declared cap,
      *   - filesystem failure.
      */
     save(req: UploadRequest): UploadResult {
         if (!SAFE_ID_RE.test(req.pluginId)) {
             throw new Error(`unsafe pluginId: ${req.pluginId}`);
         }
-        if (!this.pluginRegistry.find(req.pluginId)) {
-            throw new Error(`unknown plugin: ${req.pluginId}`);
+        const policy = this.policyFor(req.pluginId);
+        if (!policy) {
+            throw new Error(
+                `plugin "${req.pluginId}" has no uploads policy on its manifest`,
+            );
         }
         if (!SAFE_ID_RE.test(req.moduleId)) {
             throw new Error(`unsafe moduleId: ${req.moduleId}`);
@@ -107,14 +112,13 @@ export class PluginUploadService {
         if (!req.bytes || req.bytes.length === 0) {
             throw new Error('empty body');
         }
-        const { extensions, maxBytes } = this.policyFor(req.pluginId);
-        if (req.bytes.length > maxBytes) {
-            throw new Error(`body too large: ${req.bytes.length} > ${maxBytes}`);
+        if (req.bytes.length > policy.maxBytes) {
+            throw new Error(`body too large: ${req.bytes.length} > ${policy.maxBytes}`);
         }
         const ext = path.extname(req.filename).toLowerCase();
-        if (!extensions.has(ext)) {
+        if (!policy.extensions.has(ext)) {
             throw new Error(
-                `unsupported extension: ${ext || '(none)'} — accepted: ${[...extensions].join(', ')}`,
+                `unsupported extension: ${ext || '(none)'} — accepted: ${[...policy.extensions].join(', ')}`,
             );
         }
 
@@ -158,8 +162,10 @@ export class PluginUploadService {
         if (!SAFE_ID_RE.test(pluginId)) {
             throw new Error(`unsafe pluginId: ${pluginId}`);
         }
-        if (!this.pluginRegistry.find(pluginId)) {
-            throw new Error(`unknown plugin: ${pluginId}`);
+        if (!this.policyFor(pluginId)) {
+            throw new Error(
+                `plugin "${pluginId}" has no uploads policy on its manifest`,
+            );
         }
         if (!filename || filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
             throw new Error(`unsafe filename: ${filename}`);
@@ -172,15 +178,25 @@ export class PluginUploadService {
     }
 
     /**
-     * Per-plugin policy: future hook for manifest-driven extension lists and
-     * size caps via `x-uploads` on the plugin manifest. For now the defaults
-     * cover the image-upload widget; switch on the manifest when the second
-     * upload widget arrives.
+     * Resolve the per-plugin upload policy from the manifest. Returns
+     * `undefined` when the plugin isn't registered or hasn't declared an
+     * `uploads` block — both treated as "uploads disabled for this plugin"
+     * at the call sites. Extensions are normalised to lowercase here so
+     * the manifest doesn't have to.
      */
-    private policyFor(_pluginId: string): {
-        extensions: Set<string>;
-        maxBytes: number;
-    } {
-        return { extensions: DEFAULT_EXTENSIONS, maxBytes: DEFAULT_MAX_BYTES };
+    private policyFor(
+        pluginId: string,
+    ): { extensions: Set<string>; maxBytes: number } | undefined {
+        const manifest = this.pluginRegistry.find(pluginId) as
+            | { uploads?: { extensions?: string[]; maxBytes?: number } }
+            | undefined;
+        const declared = manifest?.uploads;
+        if (!declared || !declared.extensions || declared.extensions.length === 0) {
+            return undefined;
+        }
+        return {
+            extensions: new Set(declared.extensions.map((e) => e.toLowerCase())),
+            maxBytes: declared.maxBytes ?? 10 * 1024 * 1024,
+        };
     }
 }

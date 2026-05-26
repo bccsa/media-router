@@ -99,6 +99,13 @@ export class VideoPlayerModule extends GstPluginBase {
      * cycle and leave a black gap during the 5s udpsrc probe).
      */
     private udpResumeProbe: dgram.Socket | null = null;
+    /**
+     * Watchdog interval — checks once a second that the resume probe is
+     * still alive while we're latched in fallback, recreating it if not.
+     * Runs on all hosts (not just wayland), since UDP stall can happen on
+     * any sink path.
+     */
+    private udpResumeWatchdog: NodeJS.Timeout | null = null;
 
     static registerServices(services: EngineServices): void {
         services.deviceProviders.register({
@@ -157,6 +164,7 @@ export class VideoPlayerModule extends GstPluginBase {
 
     async onStop(): Promise<void> {
         this.stopCogPollWatch();
+        this.stopUdpResumeWatchdog();
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
         // we deliberately keep the UDP-stall latch + its resume probe alive so
         // the rebuilt pipeline picks the fallback path that triggered this
@@ -183,6 +191,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.log.info('UDP source went silent — switching to fallback pattern');
             this.udpStallDetected = true;
             this.startUdpResumeProbe();
+            this.startUdpResumeWatchdog();
             // gst-runner's restartOnError will replay the *same* live pipeline
             // desc — it doesn't ask the plugin for a new one. Trigger a full
             // restart so buildPipeline is re-called with udpStallDetected set
@@ -213,9 +222,16 @@ export class VideoPlayerModule extends GstPluginBase {
         const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
         if (!udpSource) return;
         const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+        // Don't close the probe on a transient socket error. Reported bug:
+        // player ran for hours on fallback, source resumed, player stayed
+        // on fallback until manually restarted. Cause: a stray dgram
+        // `error` (e.g. an ICMP unreachable echo on another mcast member)
+        // tore down the probe; we then sat permanently deaf with no
+        // recovery. Logging keeps the visibility; the watchdog
+        // (`ensureUdpResumeProbe`, ticking every second alongside the
+        // cog watcher) re-creates the probe if it really did die.
         sock.on('error', (err) => {
-            this.log.debug({ err }, 'UDP resume probe socket error');
-            this.stopUdpResumeProbe();
+            this.log.debug({ err }, 'UDP resume probe socket error (keeping probe alive)');
         });
         let resumed = false;
         sock.on('message', () => {
@@ -231,13 +247,52 @@ export class VideoPlayerModule extends GstPluginBase {
         sock.bind(udpSource.port, () => {
             try {
                 if (isMulticast(udpSource.host)) {
-                    sock.addMembership(udpSource.host);
+                    // Engine-internal mcast traffic flows on loopback
+                    // (`multicast-iface=lo` in the engine's udpsrc/udpsink
+                    // pipelines). Calling `addMembership` without an
+                    // interface picks the default route's interface
+                    // (eth0/wlan0) and misses every packet — the probe
+                    // sits silent forever and the player never returns
+                    // from fallback. Join explicitly on 127.0.0.1.
+                    sock.addMembership(udpSource.host, '127.0.0.1');
                 }
             } catch (err) {
                 this.log.debug({ err, host: udpSource.host }, 'addMembership failed on resume probe');
             }
         });
         this.udpResumeProbe = sock;
+    }
+
+    /**
+     * Watchdog: when we're latched in fallback (`udpStallDetected`) but
+     * the probe socket is gone — e.g. the dgram subsystem closed it
+     * outside our control, or an addMembership renew failed — recreate
+     * it. Without this safety net, a single missed probe meant the
+     * player stayed on fallback forever, and the operator had to manually
+     * restart the module to recover.
+     */
+    private ensureUdpResumeProbe(): void {
+        if (!this.udpStallDetected) return;
+        if (this.udpResumeProbe) return;
+        this.startUdpResumeProbe();
+    }
+
+    private startUdpResumeWatchdog(): void {
+        if (this.udpResumeWatchdog) return;
+        // 1 Hz is plenty — worst case is one extra second of fallback
+        // after a transient probe loss. Lifetime is bounded to "we're
+        // latched in fallback": started in the udp-timeout listener
+        // alongside `startUdpResumeProbe`, stopped in `stopUdpResumeProbe`.
+        this.udpResumeWatchdog = setInterval(() => {
+            this.ensureUdpResumeProbe();
+        }, 1000);
+    }
+
+    private stopUdpResumeWatchdog(): void {
+        if (this.udpResumeWatchdog) {
+            clearInterval(this.udpResumeWatchdog);
+            this.udpResumeWatchdog = null;
+        }
     }
 
     private stopUdpResumeProbe(): void {
@@ -248,6 +303,10 @@ export class VideoPlayerModule extends GstPluginBase {
             /* already closed */
         }
         this.udpResumeProbe = null;
+        // The watchdog only exists to keep the probe alive while we're
+        // latched in fallback. Once the probe is intentionally closed
+        // (resume detected or external stop) there's nothing for it to do.
+        this.stopUdpResumeWatchdog();
     }
 
     /** Wipe stall state on an external stop — fresh start should never inherit a stale fallback decision. */

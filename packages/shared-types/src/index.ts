@@ -583,6 +583,27 @@ export interface PluginManifest {
      * When enabled, per-instance size is stored at `config.modules.<id>.size`.
      */
     resizable?: boolean | ResizableBounds;
+    /**
+     * Opt-in upload policy used by the generic `plugin:upload` RPC + the
+     * `imageUpload` widget. Plugins set their own allowlist and size cap
+     * here so manager + engine stay agnostic — adding video support to
+     * one plugin doesn't widen the policy for every other plugin in the
+     * registry. Absent ⇒ the plugin can't upload (the service rejects).
+     */
+    uploads?: UploadsPolicy;
+}
+
+/**
+ * Upload policy declared on a plugin manifest. Both fields are concrete,
+ * the field names dropped the `x-` prefix when migrating from schema-ext
+ * to the manifest top-level (it lives next to ports/configSchema, not
+ * inside the JSON Schema).
+ */
+export interface UploadsPolicy {
+    /** Allowed file extensions, leading dot, lowercase. E.g. `[".png", ".mp4"]`. */
+    extensions: string[];
+    /** Max upload size in bytes. */
+    maxBytes: number;
 }
 
 /** User-resizable plugin bounds (pixels). All fields optional. */

@@ -10,9 +10,37 @@ describe('PluginUploadService', () => {
 
     beforeEach(() => {
         tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-uploads-'));
+        // The manifest-driven policy means the registry has to surface an
+        // `uploads` block per plugin — the service no longer has built-in
+        // extension defaults. `logo-plugin` gets a stricter (image-only)
+        // policy so the cross-plugin isolation test still has something
+        // meaningful to assert.
         registry = {
-            find: (id: string) =>
-                id === 'video-player' || id === 'logo-plugin' ? { pluginId: id } : undefined,
+            find: (id: string) => {
+                if (id === 'video-player') {
+                    return {
+                        pluginId: id,
+                        uploads: {
+                            extensions: ['.png', '.jpg', '.jpeg', '.mp4'],
+                            maxBytes: 50 * 1024 * 1024,
+                        },
+                    };
+                }
+                if (id === 'logo-plugin') {
+                    return {
+                        pluginId: id,
+                        uploads: {
+                            extensions: ['.png'],
+                            maxBytes: 1 * 1024 * 1024,
+                        },
+                    };
+                }
+                if (id === 'no-upload-plugin') {
+                    // Registered but didn't opt in — must be rejected.
+                    return { pluginId: id };
+                }
+                return undefined;
+            },
         };
     });
 
@@ -68,7 +96,53 @@ describe('PluginUploadService', () => {
                 filename: 'evil.png',
                 bytes: Buffer.from('x'),
             }),
-        ).toThrow(/unknown plugin/);
+        ).toThrow(/no uploads policy/);
+    });
+
+    it('rejects a plugin that is registered but has no uploads policy on its manifest', () => {
+        // Plugins opt in via the manifest. Registration alone doesn't grant
+        // upload access — that would let any future plugin store arbitrary
+        // files just by existing.
+        const svc = makeService();
+        expect(() =>
+            svc.save({
+                pluginId: 'no-upload-plugin',
+                moduleId: 'mod',
+                filename: 'evil.png',
+                bytes: Buffer.from('x'),
+            }),
+        ).toThrow(/no uploads policy/);
+    });
+
+    it('honours the per-plugin extension allowlist and size cap from the manifest', () => {
+        // logo-plugin declares image-only + 1 MB; video-player allows mp4
+        // and 50 MB. Same service, different policies, no cross-talk.
+        const svc = makeService();
+        expect(() =>
+            svc.save({
+                pluginId: 'logo-plugin',
+                moduleId: 'mod',
+                filename: 'foo.mp4',
+                bytes: Buffer.from('x'),
+            }),
+        ).toThrow(/unsupported extension/);
+        expect(() =>
+            svc.save({
+                pluginId: 'logo-plugin',
+                moduleId: 'mod',
+                filename: 'big.png',
+                bytes: Buffer.alloc(2 * 1024 * 1024), // 2 MB > 1 MB cap
+            }),
+        ).toThrow(/body too large/);
+        // video-player accepts both
+        expect(
+            svc.save({
+                pluginId: 'video-player',
+                moduleId: 'mod',
+                filename: 'standby.mp4',
+                bytes: Buffer.from('vid'),
+            }).path,
+        ).toMatch(/video-player\/mod\.mp4$/);
     });
 
     it('rejects unsafe pluginId / moduleId values that would escape the storage root', () => {
