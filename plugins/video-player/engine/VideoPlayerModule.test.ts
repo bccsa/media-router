@@ -4,7 +4,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import { VideoPlayerModule } from './VideoPlayerModule.js';
 import { currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
-import { getWestonOutputTransform, westonTransformToGstRotate } from './helpers/weston.js';
 import {
     buildFallbackOnlyPipeline,
     buildLivePipeline,
@@ -21,13 +20,16 @@ describe('VideoPlayerModule helpers', () => {
 
     describe('buildSink', () => {
         const both = { wayland: true, kms: true };
-        it('prefers waylandsink when a compositor session is reachable', () => {
+        it('prefers waylandsink (fullscreen) when a compositor session is reachable', () => {
+            // fullscreen=true is what makes kiosk-shell (a) raise the video
+            // above an interactive cog browser on the same output, and
+            // (b) apply the output's transform itself, so we don't pre-rotate.
             expect(buildSink('', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false',
+                'waylandsink name=sink sync=false fullscreen=true',
             );
             // ignores `display` config: compositor decides output
             expect(buildSink('HDMI-A-1', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false',
+                'waylandsink name=sink sync=false fullscreen=true',
             );
         });
         it('targets kmssink by numeric connector-id (older kmssink builds reject connector-name)', () => {
@@ -64,139 +66,13 @@ describe('VideoPlayerModule helpers', () => {
             ).toBe('kmssink name=sink connector-id=32 sync=false');
         });
 
-        it('returns plain waylandsink regardless of output rotation (rotation goes into the pipeline body, not the sink)', () => {
-            // The earlier attempt baked `rotate-method=X` onto waylandsink,
-            // but that only rotates pixel content — the xdg_surface geometry
-            // stays at the source caps size, so kiosk-shell rejected the
-            // surface as too large on rotated outputs. Rotation is now
-            // applied via a `videoflip` element prepended to the sink
-            // (see `rotationElement`) which rotates *and* swaps caps,
-            // producing a surface of the correct rotated dimensions.
-            expect(
-                buildSink('DSI-2', {
-                    ...both,
-                    waylandSession: true,
-                    outputTransform: 'rotate-90',
-                }),
-            ).toBe('waylandsink name=sink sync=false');
-            expect(
-                buildSink('HDMI-A-1', {
-                    ...both,
-                    waylandSession: true,
-                    outputTransform: 'normal',
-                }),
-            ).toBe('waylandsink name=sink sync=false');
-        });
-    });
-
-    describe('rotation handling in pipelines', () => {
-        it('injects videoflip before waylandsink in the live pipeline on rotated outputs', () => {
-            // weston `transform=rotate-90` → buffer needs a counterclockwise
-            // flip to compensate, producing 720×1280 caps that fit the
-            // apparent 1080×1920 output. Without this the kiosk-shell
-            // xdg_surface check fails with "geometry (1280 x 720) is larger
-            // than the configured fullscreen state (1080 x 1920)".
-            const live = buildLivePipeline(
-                'waylandsink name=sink sync=false',
-                { host: '239.255.0.1', port: 5500 },
-                'rotate-90',
+        it('always returns the fullscreen waylandsink for wayland (rotation is the compositor’s job)', () => {
+            // No client-side rotation any more: as a fullscreen surface the
+            // compositor applies the output transform. So the sink string is
+            // the same regardless of the physical output orientation.
+            expect(buildSink('DSI-2', { ...both, waylandSession: true })).toBe(
+                'waylandsink name=sink sync=false fullscreen=true',
             );
-            expect(live).toContain('videoflip method=clockwise ! waylandsink name=sink');
-        });
-
-        it('injects videoflip in the fallback pipeline too on rotated outputs', () => {
-            const fb = buildFallbackOnlyPipeline(
-                'Standby',
-                'waylandsink name=sink sync=false',
-                undefined,
-                'rotate-270',
-            );
-            expect(fb).toContain('videoflip method=counterclockwise ! waylandsink name=sink');
-            expect(fb).toContain('videotestsrc');
-        });
-
-        it('omits videoflip on normal outputs (pipeline byte-identical to the un-rotated case)', () => {
-            const live = buildLivePipeline(
-                'waylandsink name=sink sync=false',
-                { host: '239.255.0.1', port: 5500 },
-                'normal',
-            );
-            expect(live).not.toContain('videoflip');
-        });
-    });
-
-    describe('westonTransformToGstRotate', () => {
-        it('maps each weston transform to the inverse videoflip method name', () => {
-            // The mapping is the *inverse* of weston's output rotation so the
-            // two cancel out at display time. Names come from the videoflip
-            // GstVideoFlipMethod enum (not waylandsink's rotate-method enum,
-            // which uses 90l/90r). Identity for un-rotated / unrecognised.
-            expect(westonTransformToGstRotate(undefined)).toBe('identity');
-            expect(westonTransformToGstRotate('')).toBe('identity');
-            expect(westonTransformToGstRotate('normal')).toBe('identity');
-            expect(westonTransformToGstRotate('rotate-90')).toBe('clockwise');
-            expect(westonTransformToGstRotate('rotate-180')).toBe('rotate-180');
-            expect(westonTransformToGstRotate('rotate-270')).toBe('counterclockwise');
-            expect(westonTransformToGstRotate('flipped')).toBe('horizontal-flip');
-            expect(westonTransformToGstRotate('flipped-rotate-180')).toBe('vertical-flip');
-        });
-    });
-
-    describe('getWestonOutputTransform', () => {
-        let tmp: string;
-        let iniPath: string;
-        beforeEach(() => {
-            tmp = fs.mkdtempSync(`${os.tmpdir()}/mr-weston-`);
-            iniPath = `${tmp}/weston.ini`;
-        });
-        afterEach(() => {
-            fs.rmSync(tmp, { recursive: true, force: true });
-        });
-
-        it('returns "normal" when the ini does not exist', () => {
-            expect(getWestonOutputTransform('DSI-2', `${tmp}/nope.ini`)).toBe('normal');
-        });
-
-        it('returns the transform for a matched output (last in file — exercises the trailing-block flush)', () => {
-            // The parser flushes the last [output] block after the loop ends;
-            // make sure that path returns the transform too (vs. only flushing
-            // on the *next* section header).
-            fs.writeFileSync(
-                iniPath,
-                [
-                    '[output]',
-                    'name=HDMI-A-1',
-                    'transform=normal',
-                    '',
-                    '[output]',
-                    'name=DSI-2',
-                    'transform=rotate-90',
-                ].join('\n'),
-            );
-            expect(getWestonOutputTransform('DSI-2', iniPath)).toBe('rotate-90');
-            expect(getWestonOutputTransform('HDMI-A-1', iniPath)).toBe('normal');
-        });
-
-        it('returns "normal" for an output that is not in the ini', () => {
-            fs.writeFileSync(iniPath, '[output]\nname=HDMI-A-1\ntransform=rotate-90\n');
-            expect(getWestonOutputTransform('DSI-2', iniPath)).toBe('normal');
-        });
-
-        it('ignores comments and other section blocks', () => {
-            fs.writeFileSync(
-                iniPath,
-                [
-                    '# top-level comment',
-                    '[autolaunch]',
-                    'path=/usr/libexec/foo',
-                    '',
-                    '[output]',
-                    '# this output is rotated',
-                    'name=DSI-2',
-                    'transform=rotate-180',
-                ].join('\n'),
-            );
-            expect(getWestonOutputTransform('DSI-2', iniPath)).toBe('rotate-180');
         });
     });
 
@@ -290,6 +166,31 @@ describe('VideoPlayerModule helpers', () => {
             // No fallback branch when a source is connected.
             expect(s).not.toContain('input-selector');
             expect(s).not.toContain('videotestsrc');
+        });
+
+        it('passes native resolution through on the KMS/auto path (constrainSurface=false)', () => {
+            // Forcing 1280×720 here would downscale a native-res broadcast
+            // panel — only the wayland-fullscreen path needs the fixed size.
+            const s = buildLivePipeline('kmssink name=sink sync=false', {
+                host: '239.255.0.1',
+                port: 5000,
+            });
+            expect(s).toContain('videoconvert ! videoscale ! kmssink');
+            expect(s).not.toContain('width=1280,height=720');
+        });
+
+        it('pins the surface to 1280×720 on the wayland-fullscreen path (constrainSurface=true)', () => {
+            // Must match the fallback surface dimensions, else kiosk-shell
+            // rejects the mismatched fullscreen surface and weston logs
+            // `libwayland: error in client communication`.
+            const s = buildLivePipeline(
+                'waylandsink name=sink sync=false fullscreen=true',
+                { host: '239.255.0.1', port: 5000 },
+                true,
+            );
+            expect(s).toContain('videoscale add-borders=true');
+            expect(s).toContain('width=1280,height=720');
+            expect(s).toContain('pixel-aspect-ratio=1/1');
         });
 
         it('drops multicast-group for unicast sources', () => {

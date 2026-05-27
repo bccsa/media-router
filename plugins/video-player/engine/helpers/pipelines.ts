@@ -1,6 +1,23 @@
 import * as fs from 'fs';
 import { buildTsUdpInput } from '@media-router/engine';
-import { westonTransformToGstRotate } from './weston.js';
+
+/**
+ * Single source of truth for the rendered surface size. The wayland
+ * fullscreen path (kiosk-shell) requires every surface committed to an
+ * output to agree on dimensions — if the live path and the fallback path
+ * disagree, kiosk-shell rejects the second one and weston logs
+ * `libwayland: error in client communication`. Keeping the caps in one
+ * constant is what enforces that invariant; do not inline the literals.
+ */
+const SURFACE_WIDTH = 1280;
+const SURFACE_HEIGHT = 720;
+/**
+ * `pixel-aspect-ratio=1/1` is load-bearing: it makes `videoscale
+ * add-borders=true` emit real square-pixel black bars rather than
+ * satisfying the display aspect ratio with non-square pixels (which would
+ * stretch everything drawn downstream, e.g. the text overlay).
+ */
+const SURFACE_CAPS = `video/x-raw,width=${SURFACE_WIDTH},height=${SURFACE_HEIGHT},pixel-aspect-ratio=1/1`;
 
 export interface SinkSelectionEnv {
     /** Whether `waylandsink` is installed. */
@@ -17,11 +34,6 @@ export interface SinkSelectionEnv {
      * element kmssink" parse errors. Falls back to auto-pick when undefined.
      */
     connectorId?: number;
-    /**
-     * Per-output transform string from weston.ini (e.g. `rotate-90`). The
-     * default `'normal'` (or empty) means no compensation needed.
-     */
-    outputTransform?: string;
 }
 
 /**
@@ -42,14 +54,18 @@ export interface SinkSelectionEnv {
  */
 export function buildSink(display: string, env: SinkSelectionEnv): string {
     if (env.wayland && env.waylandSession) {
-        // Note on rotation: previously we tried waylandsink's `rotate-method`
-        // but that only rotates pixel content — the xdg_surface geometry
-        // stays at the source caps size, so kiosk-shell errored on rotated
-        // outputs with `xdg_surface geometry (1280 x 720) is larger than
-        // the configured fullscreen state (1080 x 1920)`. The actual rotation
-        // happens with a `videoflip` element prepended to the sink (see
-        // `rotationElement`) so the caps also swap and the surface fits.
-        return 'waylandsink name=sink sync=false';
+        // `fullscreen=true` does two things we need on a kiosk-shell output:
+        //  1. Z-order — it takes the xdg_toplevel fullscreen role, prompting
+        //     kiosk-shell to raise the video to the output's active/top slot.
+        //     Without it the video renders *behind* an interactive cog
+        //     browser (the local-panel LCP) that holds input focus. A passive
+        //     `background` cog doesn't hold focus, so video won there already
+        //     — this makes the behaviour consistent across both.
+        //  2. Rotation — as the fullscreen surface, the compositor applies
+        //     the output's `transform=` (e.g. rotate-90) itself. So we do
+        //     NOT pre-rotate client-side; an earlier `videoflip` approach
+        //     double-rotated once fullscreen was in play.
+        return 'waylandsink name=sink sync=false fullscreen=true';
     }
     if (display && env.kms && env.connectorId !== undefined) {
         return `kmssink name=sink connector-id=${env.connectorId} sync=false`;
@@ -58,24 +74,6 @@ export function buildSink(display: string, env: SinkSelectionEnv): string {
         return 'kmssink name=sink sync=false';
     }
     return 'autovideosink sync=false';
-}
-
-/**
- * GStreamer pipeline fragment that pre-rotates the buffer to compensate for
- * a rotated weston output. Returns an empty string when no rotation is
- * needed so the pipeline string is byte-identical to before on normal
- * outputs.
- *
- * Uses `videoflip` rather than waylandsink's `rotate-method` because the
- * latter rotates pixels but keeps the surface geometry at the source caps
- * size — kiosk-shell then rejects the surface as too large for the rotated
- * fullscreen state. `videoflip` rotates AND swaps the WxH caps, producing
- * a buffer (and surface) of the correct rotated dimensions.
- */
-export function rotationElement(outputTransform: string | undefined): string {
-    const method = westonTransformToGstRotate(outputTransform);
-    if (method === 'identity') return '';
-    return `videoflip method=${method} ! `;
 }
 
 /**
@@ -138,20 +136,19 @@ export function buildFallbackOnlyPipeline(
     fallbackText: string,
     sinkElement: string,
     imagePath?: string,
-    outputTransform?: string,
 ): string {
-    // pixel-aspect-ratio=1/1 in the caps is what makes `add-borders=true`
-    // actually emit square-pixel black bars. Without it, videoscale satisfies
-    // the requested DAR by emitting non-square pixels, and everything drawn
-    // downstream (textoverlay) gets stretched to match — operators see the
-    // image look right but the overlay text horizontally squashed.
+    // Fixed surface size (+ explicit framerate, since neither videotestsrc
+    // nor a single imagefreeze frame implies one). Always constrained: the
+    // fallback is a static card, so downscaling it to the surface size is
+    // free of quality concerns even on a native-res KMS panel, and the
+    // wayland path needs the fixed size to match the live path.
     const source = imagePath
-        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! video/x-raw,width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1`
-        : `videotestsrc is-live=true pattern=smpte ! video/x-raw,width=1280,height=720,framerate=30/1,pixel-aspect-ratio=1/1`;
+        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${SURFACE_CAPS},framerate=30/1`
+        : `videotestsrc is-live=true pattern=smpte ! ${SURFACE_CAPS},framerate=30/1`;
     return (
         `${source} ` +
         `! textoverlay name=nov text="${fallbackText}" valignment=center halignment=center font-desc="Sans Bold 48" ` +
-        `! videoconvert ! ${rotationElement(outputTransform)}${sinkElement}`
+        `! videoconvert ! ${sinkElement}`
     );
 }
 
@@ -175,16 +172,28 @@ const UDP_STREAM_TIMEOUT_NS = 5_000_000_000;
 export function buildLivePipeline(
     sinkElement: string,
     udpSource: { host: string; port: number },
-    outputTransform?: string,
+    constrainSurface = false,
 ): string {
     const tsInput = buildTsUdpInput({
         host: udpSource.host,
         port: udpSource.port,
         timeoutNs: UDP_STREAM_TIMEOUT_NS,
     });
+    // `constrainSurface` pins the live output to the same surface dimensions
+    // the fallback uses (NOT full caps parity — fallback also sets a framerate;
+    // live deliberately omits it since there's no videorate element). This is
+    // only wanted on the wayland-fullscreen path: kiosk-shell rejects a
+    // fullscreen surface whose dimensions don't match the one the fallback
+    // committed, logging `libwayland: error in client communication`. On
+    // KMS-direct / autovideosink there's no such constraint and forcing 720p
+    // would needlessly downscale a native-res broadcast panel, so we pass the
+    // source resolution straight through.
+    const scale = constrainSurface
+        ? `videoscale add-borders=true ! ${SURFACE_CAPS}`
+        : 'videoscale';
     return (
         `${tsInput} ! tsdemux latency=0 ` +
         `! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! decodebin ` +
-        `! videoconvert ! videoscale ! ${rotationElement(outputTransform)}${sinkElement}`
+        `! videoconvert ! ${scale} ! ${sinkElement}`
     );
 }

@@ -17,7 +17,6 @@ import {
     hasWaylandSession,
     waitForWaylandSocket,
 } from './helpers/wayland.js';
-import { getWestonOutputTransform } from './helpers/weston.js';
 import {
     buildFallbackOnlyPipeline,
     buildLivePipeline,
@@ -528,10 +527,13 @@ export class VideoPlayerModule extends GstPluginBase {
             ...VideoPlayerModule.sinks,
             waylandSession: hasWaylandSession(),
             connectorId: active.connectorId,
-            outputTransform: getWestonOutputTransform(active.name),
         };
         const sinkElement = buildSink(active.name, sinkEnv);
         const env = buildPipelineEnv(active.name, sinkEnv);
+        // The wayland (kiosk-shell fullscreen) path needs the live surface
+        // pinned to a fixed size so it matches the fallback surface; KMS /
+        // autovideosink should keep native resolution. See buildLivePipeline.
+        const waylandFullscreen = sinkEnv.wayland && sinkEnv.waylandSession;
 
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
@@ -553,7 +555,7 @@ export class VideoPlayerModule extends GstPluginBase {
 
         if (useFallback) {
             return {
-                pipeline: buildFallbackOnlyPipeline(fallback, sinkElement, fallbackImage, sinkEnv.outputTransform),
+                pipeline: buildFallbackOnlyPipeline(fallback, sinkElement, fallbackImage),
                 liveElements: { nov: ['text'] },
                 restartOnError: true,
                 env,
@@ -561,7 +563,7 @@ export class VideoPlayerModule extends GstPluginBase {
         }
 
         return {
-            pipeline: buildLivePipeline(sinkElement, udpSource, sinkEnv.outputTransform),
+            pipeline: buildLivePipeline(sinkElement, udpSource, waylandFullscreen),
             liveElements: {},
             restartOnError: true,
             env,
