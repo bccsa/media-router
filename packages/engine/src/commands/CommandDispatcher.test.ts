@@ -18,6 +18,7 @@ function createMockContext(): CommandContext {
             broadcastConfigUpdate: vi.fn(),
         } as any,
         currentConfig: { modules: {}, connections: [] },
+        isEngineRunning: vi.fn().mockReturnValue(true),
         startModules: vi.fn().mockResolvedValue(undefined),
         stopModules: vi.fn().mockResolvedValue(undefined),
         resetEngine: vi.fn().mockResolvedValue(undefined),
@@ -232,7 +233,7 @@ describe('CommandDispatcher', () => {
             expect(ctx.restartModule).toHaveBeenCalledWith('mod-1');
         });
 
-        it('starts a non-running module instead of restarting', async () => {
+        it('starts a non-running module instead of restarting when the engine is running', async () => {
             (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue({ running: false });
 
             dispatcher.dispatch({ command: 'moduleRestart', moduleId: 'mod-1' });
@@ -240,6 +241,19 @@ describe('CommandDispatcher', () => {
 
             expect(ctx.restartModule).not.toHaveBeenCalled();
             expect(ctx.startSingleModule).toHaveBeenCalledWith('mod-1');
+        });
+
+        it('does not start a dormant module when the engine is stopped', async () => {
+            // After a stop, instances linger in the map with running=false.
+            // Restarting one must NOT spawn a pipeline on a stopped engine.
+            (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue({ running: false });
+            (ctx.isEngineRunning as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+            dispatcher.dispatch({ command: 'moduleRestart', moduleId: 'mod-1' });
+            await flush();
+
+            expect(ctx.restartModule).not.toHaveBeenCalled();
+            expect(ctx.startSingleModule).not.toHaveBeenCalled();
         });
 
         it('skips restart for a module that does not exist', async () => {
@@ -301,6 +315,16 @@ describe('CommandDispatcher', () => {
 
         it('moduleStart skips when module already running', async () => {
             (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue({ running: true });
+            dispatcher.dispatch({ command: 'moduleStart', moduleId: 'mod-1' });
+            await flush();
+            expect(ctx.startSingleModule).not.toHaveBeenCalled();
+        });
+
+        it('moduleStart refuses to start a module when the engine is stopped', async () => {
+            // A module added while stopped is never created (auto-start skipped),
+            // so get() is undefined — the gate must still block the start.
+            (ctx.moduleManager.get as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+            (ctx.isEngineRunning as ReturnType<typeof vi.fn>).mockReturnValue(false);
             dispatcher.dispatch({ command: 'moduleStart', moduleId: 'mod-1' });
             await flush();
             expect(ctx.startSingleModule).not.toHaveBeenCalled();

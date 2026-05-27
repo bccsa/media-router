@@ -11,6 +11,8 @@ export interface CommandContext {
     mediaRouter: MediaRouter;
     lcpServer: LcpServer;
     currentConfig: Record<string, unknown> | null;
+    /** Engine-level run intent (ModuleRunController.isRunning). Gates single-module starts. */
+    isEngineRunning: () => boolean;
     startModules: () => Promise<void>;
     stopModules: () => Promise<void>;
     resetEngine: () => Promise<void>;
@@ -179,12 +181,21 @@ export class CommandDispatcher {
                     this.commandLock = this.commandLock
                         .then(() => this.ctx.restartModule(moduleId))
                         .catch((err) => log.error({ err, moduleId }, 'Module restart failed'));
-                } else {
-                    // Module exists but failed to start — try starting it fresh
+                } else if (this.ctx.isEngineRunning()) {
+                    // Module exists but failed to start — try starting it fresh.
+                    // Only when the engine itself is running: after a stop, dormant
+                    // instances linger in the map with running=false, and starting
+                    // one would spawn a live pipeline on a stopped engine (broadcast
+                    // hazard). The run intent is the gate — see ModuleRunController.
                     log.info({ moduleId }, 'moduleRestart: module not running — attempting start');
                     this.commandLock = this.commandLock
                         .then(() => this.ctx.startSingleModule(moduleId))
                         .catch((err) => log.error({ err, moduleId }, 'Module start failed'));
+                } else {
+                    log.info(
+                        { moduleId },
+                        'moduleRestart: engine stopped — refusing to start a single module',
+                    );
                 }
                 break;
             }
@@ -201,6 +212,17 @@ export class CommandDispatcher {
                 const moduleId = cmd.moduleId as string;
                 if (this.ctx.moduleManager.get(moduleId)) {
                     log.warn({ moduleId }, 'moduleStart: module already running');
+                    break;
+                }
+                // Same broadcast hazard as moduleRestart: a module added while
+                // stopped is never created (EnginePatchRouter skips auto-start),
+                // so get() is undefined here — without this gate it would spawn a
+                // live pipeline on a stopped engine. Run intent is the gate.
+                if (!this.ctx.isEngineRunning()) {
+                    log.info(
+                        { moduleId },
+                        'moduleStart: engine stopped — refusing to start a single module',
+                    );
                     break;
                 }
                 this.commandLock = this.commandLock

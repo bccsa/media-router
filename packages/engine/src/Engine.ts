@@ -121,6 +121,9 @@ export class Engine {
             get currentConfig() {
                 return engine.currentConfig;
             },
+            // Lazy: runController is assigned further down in this constructor,
+            // and this closure is only invoked at command-dispatch time.
+            isEngineRunning: () => this.runController.isRunning,
             startModules: () => this.startModules(),
             stopModules: () => this.stopModules(),
             resetEngine: () => this.resetEngine(),
