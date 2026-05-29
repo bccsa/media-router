@@ -281,6 +281,65 @@ def _parser_for_caps(caps):
         return parser if parser is not None else ''
     return None
 
+_DECODER_MAX_THREADS = max(1, os.cpu_count() or 1)
+
+
+def _set_decoder_threads(element):
+    """If `element` is an avdec_* decoder, set its `max-threads` property.
+
+    Called from both branches of decoder discovery — explicit elements in the
+    parsed graph and elements auto-plugged later by decodebin. Guards with
+    `find_property` because not every avdec_* has the prop and `try/except`
+    on a 1-line set would be noisier. `thread-type` is left at its default
+    (0 = ffmpeg picks slice/frame combo) — the win is in `max-threads`.
+    """
+    factory = element.get_factory()
+    name = factory.get_name() if factory else ""
+    if not name.startswith("avdec_"):
+        return
+    if element.find_property("max-threads") is None:
+        return
+    try:
+        element.set_property("max-threads", _DECODER_MAX_THREADS)
+        sys.stderr.write(f"[gst-runner.py] decoder threads: {name} max-threads={_DECODER_MAX_THREADS}\n")
+        sys.stderr.flush()
+    except GLib.Error as e:
+        sys.stderr.write(f"[gst-runner.py] decoder threads: {name} set failed: {e.message}\n")
+        sys.stderr.flush()
+
+
+def _install_decoder_thread_hook(pipe):
+    """Set max-threads on every avdec_* in the pipeline — both the elements
+    that exist at parse time (explicit `avdec_aac` etc.) and the ones plugged
+    later by decodebin once caps are negotiated.
+
+    Two hooks because they cover disjoint cases:
+      1. Walk current children and set the property on any avdec_* already
+         present — catches explicit decoders in the parsed graph.
+      2. Connect `deep-element-added` on the pipeline root — fires for every
+         element added to any descendant bin (including decodebin's
+         auto-plugged decoder), one signal connect for all nesting.
+    `element-setup` would be cleaner but doesn't exist on this GStreamer
+    version's `decodebin`; `deep-element-added` is the portable equivalent.
+    """
+    def visit(bin_):
+        it = bin_.iterate_elements()
+        while True:
+            result, element = it.next()
+            if result == Gst.IteratorResult.OK:
+                _set_decoder_threads(element)
+                if isinstance(element, Gst.Bin):
+                    visit(element)
+            elif result == Gst.IteratorResult.DONE:
+                break
+            else:
+                break
+    visit(pipe)
+    pipe.connect("deep-element-added", lambda _root, _bin, el: _set_decoder_threads(el))
+    sys.stderr.write(f"[gst-runner.py] decoder-threads hook installed (cpu={_DECODER_MAX_THREADS})\n")
+    sys.stderr.flush()
+
+
 def _install_pad_link_rule(pipe, rule):
     """
     Install one `linkOnPadAdded` rule.
@@ -413,6 +472,17 @@ def handle_start(data):
     _pad_link_counts = {}
     for rule in pad_link_rules:
         _install_pad_link_rule(pipeline, rule)
+
+    # Crank software decoders to all available cores. avdec_* defaults to 1
+    # thread (or whatever ffmpeg picks at runtime, often conservative) which
+    # leaves 3 of the Pi 5's 4 A76 cores idle. With multi-threaded slice/frame
+    # decode the same workload finishes in a fraction of the wall-clock time,
+    # turning a borderline 1080p H.264 stream from "every IDR is a hiccup" into
+    # comfortable headroom. The pipeline string can't set this property when
+    # the decoder is plugged by `decodebin` (the element doesn't exist at parse
+    # time), so we hook every avdec_* as it shows up — see the function for
+    # the two-pronged tree-walk + `deep-element-added` strategy.
+    _install_decoder_thread_hook(pipeline)
 
     # Set up bus watch
     bus = pipeline.get_bus()

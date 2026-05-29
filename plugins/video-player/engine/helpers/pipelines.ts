@@ -62,10 +62,37 @@ export interface SinkOpts {
      * GStreamer's own default — existing instances keep their current behaviour.
      */
     qos?: boolean;
+    /**
+     * Honour buffer PTS on the sink. When `true` the sink waits to present each
+     * frame at its PTS against the pipeline clock — required when the upstream
+     * feed has accurate timestamps (HLS via tsparse) and you want playback
+     * at the media's intended rate. When `false` the sink presents frames as
+     * fast as upstream delivers them: that's right for live SRT/RIST where
+     * latency dominates, but on a paced HLS feed it surfaces as periods of
+     * "too fast" (segment burst arrives → sink renders the burst) followed by
+     * "too slow" (segment gap → sink stalls waiting). Default `false`
+     * preserves the pre-existing low-latency behaviour for SRT/RIST instances.
+     */
+    sync?: boolean;
 }
 
 export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts = {}): string {
     const qosClause = ` qos=${opts.qos ?? true}`;
+    const sync = opts.sync ?? false;
+    // Pair `max-lateness` with `sync=true` between two failure modes:
+    //   - basesink default (20 ms) is tight enough that software-decoded 1080p
+    //     on Pi 5 (per-frame decode 30-50 ms, IDR frames 60-80 ms) loses every
+    //     GOP-boundary frame — surfaces as a low frame rate even with QoS off.
+    //   - `-1` (disabled) never drops, so any sustained decode lag (consistent
+    //     5 %-slow software decode) accumulates as growing latency that doesn't
+    //     recover — surfaces as "smooth at first then progressively laggy".
+    // 1 s is the compromise: the sink absorbs IDR-frame jitter without dropping
+    // (50-80 ms ≪ 1 s) but caps unbounded lag from sustained decode shortfall.
+    // QoS stays off so the decoder isn't asked to drop per-frame — drops only
+    // happen at the sink, only when a buffer is genuinely 1 s late.
+    // `sync=false` (the live SRT/RIST default) has no clock anchor, so the
+    // basesink's late-drop logic doesn't apply — leave it unspecified.
+    const syncClause = sync ? ' sync=true max-lateness=1000000000' : ' sync=false';
     if (env.wayland && env.waylandSession) {
         // `fullscreen=true` does two things we need on a kiosk-shell output:
         //  1. Z-order — it takes the xdg_toplevel fullscreen role, prompting
@@ -78,15 +105,15 @@ export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts
         //     the output's `transform=` (e.g. rotate-90) itself. So we do
         //     NOT pre-rotate client-side; an earlier `videoflip` approach
         //     double-rotated once fullscreen was in play.
-        return `waylandsink name=sink sync=false fullscreen=true${qosClause}`;
+        return `waylandsink name=sink${syncClause} fullscreen=true${qosClause}`;
     }
     if (display && env.kms && env.connectorId !== undefined) {
-        return `kmssink name=sink connector-id=${env.connectorId} sync=false${qosClause}`;
+        return `kmssink name=sink connector-id=${env.connectorId}${syncClause}${qosClause}`;
     }
     if (env.kms) {
-        return `kmssink name=sink sync=false${qosClause}`;
+        return `kmssink name=sink${syncClause}${qosClause}`;
     }
-    return `autovideosink sync=false${qosClause}`;
+    return `autovideosink${syncClause}${qosClause}`;
 }
 
 /**
@@ -194,10 +221,18 @@ export function buildLivePipeline(
      */
     bufferMs = 200,
 ): string {
+    // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
+    // a busy Node loop (hls-pipe runner transmuxing the next segment), the
+    // event-loop stalls for 50–100 ms and `drainLoop` catches up by bursting
+    // datagrams. The default 200 ms queue leaks under that burst → frames lost
+    // at every segment join. Tracking `bufferMs` (up to `buildLeakyQueue`'s 5 s
+    // cap) gives HLS chains a multi-second jitter buffer that absorbs sender
+    // bursts; SRT/RIST (`bufferMs=200`) keeps the original tight latency.
     const tsInput = buildTsUdpInput({
         host: udpSource.host,
         port: udpSource.port,
         timeoutNs: UDP_STREAM_TIMEOUT_NS,
+        jitterMs: bufferMs,
     });
     // `constrainSurface` pins the live output to the same surface dimensions
     // the fallback uses (NOT full caps parity — fallback also sets a framerate;

@@ -10,8 +10,8 @@ describe('buildLeakyQueue', () => {
     it('clamps negative values to 0', () => {
         expect(buildLeakyQueue(-10)).toContain('max-size-time=0');
     });
-    it('clamps absurdly large values to 2 seconds', () => {
-        expect(buildLeakyQueue(99_999)).toContain('max-size-time=2000000000');
+    it('clamps absurdly large values to 5 seconds', () => {
+        expect(buildLeakyQueue(99_999)).toContain('max-size-time=5000000000');
     });
 });
 

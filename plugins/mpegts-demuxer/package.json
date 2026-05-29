@@ -35,7 +35,7 @@
                 "bufferMs": {
                     "type": "number",
                     "minimum": 0,
-                    "maximum": 2000,
+                    "maximum": 5000,
                     "default": 50,
                     "description": "Per-pad queue size in milliseconds — lower = lower latency, higher = more jitter tolerance",
                     "x-widget": "slider",

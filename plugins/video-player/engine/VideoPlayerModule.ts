@@ -530,6 +530,7 @@ export class VideoPlayerModule extends GstPluginBase {
         };
         const sinkElement = buildSink(active.name, sinkEnv, {
             qos: (this.config.qos as boolean | undefined) ?? true,
+            sync: (this.config.sync as boolean | undefined) ?? false,
         });
         const env = buildPipelineEnv(active.name, sinkEnv);
         // The wayland (kiosk-shell fullscreen) path needs the live surface

@@ -23,7 +23,11 @@ export const DEFAULT_MPEGTS_ALIGNMENT = 7;
  * upstream — that's the right policy for live broadcast pipelines.
  */
 export function buildLeakyQueue(bufferMs: number): string {
-    const clamped = Math.max(0, Math.min(2000, bufferMs));
+    // 5000 ms cap matches the demuxer's slider ceiling. The cap is only there
+    // to keep a runaway caller from queuing tens of seconds of latency; for
+    // HLS chains the operator legitimately wants 2-3 s of jitter buffer here
+    // to absorb sender-side event-loop stalls at segment boundaries.
+    const clamped = Math.max(0, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
     return `queue leaky=2 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
 }

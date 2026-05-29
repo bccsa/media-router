@@ -161,8 +161,8 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 bufferMs: 999_999,
             });
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
-            // 2000ms cap → 2_000_000_000 ns
-            expect(audioRule.branches[0]).toContain('max-size-time=2000000000');
+            // 5000ms cap → 5_000_000_000 ns (matches the demuxer's slider ceiling)
+            expect(audioRule.branches[0]).toContain('max-size-time=5000000000');
         });
         it('emits a frame-bounded leaky queue on the video branch (parser is injected ahead of it by the runner so drops land on whole frames)', () => {
             const result = buildPipeline({

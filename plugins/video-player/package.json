@@ -59,6 +59,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Sink QoS. When ON (default), the sink can ask the decoder to drop frames if it falls behind — right for live SRT/RIST where keeping up matters more than completeness. Turn OFF for HLS so every decoded frame is presented; pairs with a larger bufferMs."
+                },
+                "sync": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Honour buffer PTS. OFF (default): the sink presents frames as fast as they arrive — right for live SRT/RIST where latency dominates. ON: the sink waits to present each frame at its PTS — turn on for HLS so playback flows at the media's intended rate instead of speeding up on segment bursts and stalling between segments."
                 }
             }
         },

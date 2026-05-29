@@ -74,6 +74,59 @@ describe('VideoPlayerModule helpers', () => {
                 'waylandsink name=sink sync=false fullscreen=true qos=true',
             );
         });
+
+        // sync=true is the HLS branch — paired with max-lateness=1 s (1e9 ns) to
+        // sit between two failure modes: the basesink 20 ms default loses every
+        // GOP-boundary frame on Pi 5 software-decoded 1080p (low fps), and `-1`
+        // (disabled) lets sustained decode shortfall accumulate as unbounded lag.
+        // 1 s absorbs IDR-frame jitter while capping latency. The pair must
+        // appear on every sink variant or the HLS path silently regresses.
+        describe('with sync=true (HLS branch)', () => {
+            it('emits sync=true max-lateness=1000000000 on waylandsink', () => {
+                expect(
+                    buildSink('', { ...both, waylandSession: true }, { sync: true }),
+                ).toBe(
+                    'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=true',
+                );
+            });
+            it('emits sync=true max-lateness=1000000000 on kmssink with connector-id', () => {
+                expect(
+                    buildSink(
+                        'HDMI-A-1',
+                        { ...both, waylandSession: false, connectorId: 32 },
+                        { sync: true },
+                    ),
+                ).toBe('kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 qos=true');
+            });
+            it('emits sync=true max-lateness=1000000000 on auto-pick kmssink', () => {
+                expect(
+                    buildSink('', { ...both, waylandSession: false }, { sync: true }),
+                ).toBe('kmssink name=sink sync=true max-lateness=1000000000 qos=true');
+            });
+            it('emits sync=true max-lateness=1000000000 on autovideosink', () => {
+                expect(
+                    buildSink(
+                        '',
+                        { wayland: false, kms: false, waylandSession: false },
+                        { sync: true },
+                    ),
+                ).toBe('autovideosink sync=true max-lateness=1000000000 qos=true');
+            });
+            it('composes with qos=false (the full HLS knob combo)', () => {
+                // sync=true qos=false is what the operator picks for HLS — the
+                // sink honours PTS (no fast/slow oscillation) AND doesn't ask
+                // the decoder to drop. max-lateness=1000000000 covers the third leg.
+                expect(
+                    buildSink(
+                        '',
+                        { ...both, waylandSession: true },
+                        { sync: true, qos: false },
+                    ),
+                ).toBe(
+                    'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=false',
+                );
+            });
+        });
     });
 
     describe('buildFallbackOnlyPipeline', () => {
