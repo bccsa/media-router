@@ -2,6 +2,7 @@
 import { computed, ref, watch, onBeforeUnmount } from 'vue';
 import MrInput from '@/components/common/MrInput.vue';
 import MrSelect from '@/components/common/MrSelect.vue';
+import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
 import MrSlider from '@/components/common/MrSlider.vue';
 import MrToggle from '@/components/common/MrToggle.vue';
 import MrArrayField from '@/components/common/MrArrayField.vue';
@@ -46,6 +47,15 @@ function onUpdate(key: string, value: unknown): void {
  */
 function modulePluginId(): string {
     return engineStore.getEngine(props.engineId)?.modules[props.moduleId]?.pluginId ?? '';
+}
+
+/**
+ * Options for an `x-optionsFrom` multi-select — read from the module's pushed
+ * `fieldOptions` (e.g. audio / subtitle languages a plugin detected from a
+ * stream). Empty until the engine has probed the source.
+ */
+function optionsFromState(key: string): Array<{ value: string; label: string }> {
+    return engineStore.getEngine(props.engineId)?.modules[props.moduleId]?.fieldOptions?.[key] ?? [];
 }
 
 /**
@@ -257,6 +267,24 @@ function clearUpload(field: FormField): void {
                         label: field.enumLabels?.[String(opt)] ?? String(opt),
                     }))
                 "
+                @update:model-value="onUpdate(field.key, $event)"
+            />
+            <!-- Discovery-driven multi-select (for x-optionsFrom fields, e.g. detected languages) -->
+            <!-- `.filter(...)` is self-healing: a stored array from an older
+                 schema rev can hold objects (e.g. `[{}, {}]` left over when
+                 this field rendered as a generic MrArrayField). Stripping them
+                 here means the next toggle persists a clean primitive-only
+                 array, so the "[object Object]" placeholder never sticks. -->
+            <MrMultiSelect
+                v-else-if="field.optionsFrom"
+                :model-value="
+                    ((settings[field.key] as unknown[]) ?? []).filter(
+                        (v): v is string | number =>
+                            typeof v === 'string' || typeof v === 'number',
+                    )
+                "
+                :options="optionsFromState(field.optionsFrom)"
+                :disabled="field.readOnly"
                 @update:model-value="onUpdate(field.key, $event)"
             />
             <!-- Array field -->

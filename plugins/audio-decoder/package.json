@@ -81,6 +81,16 @@
                     "default": 0,
                     "description": "PulseAudio sync mode (0 = resample \u2014 prevents latency drift, 1 = skew)"
                 },
+                "bufferMs": {
+                    "type": "number",
+                    "default": 100,
+                    "minimum": 0,
+                    "maximum": 5000,
+                    "x-widget": "slider",
+                    "x-step": 50,
+                    "x-unit": "ms",
+                    "description": "Post-tsdemux jitter buffer. Keep low (100) for live SRT/RIST; raise (e.g. 1500) for HLS to absorb mid-stream join + decoder CPU spikes. Adds end-to-end latency."
+                },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,

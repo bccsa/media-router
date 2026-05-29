@@ -38,7 +38,15 @@ export interface UdpSrcOpts {
 }
 
 export function buildUdpSrc(opts: UdpSrcOpts): string {
-    const buf = opts.bufferSize ?? 2_097_152;
+    // 4 MB default — picked as a compromise:
+    //   - Producer-restart UX: stale data buffered here plays out before the
+    //     new stream's keyframe arrives. At 5 Mbps, 4 MB holds ~6 s, vs ~25 s
+    //     at 16 MB. Smaller = shorter "old frames on top of new" window.
+    //   - Loss tolerance: 2 MB showed ~10 RcvbufErrors/s even with hls-player's
+    //     PacedUdpTsSink (pacing is approximate — micro-bursts still spike).
+    //     4 MB absorbs those without growing the stale-restart window much.
+    // Plugins with bursty sources can still pass an explicit larger `bufferSize`.
+    const buf = opts.bufferSize ?? 4 * 1024 * 1024;
     const nameClause = opts.name ? ` name=${opts.name}` : '';
     const capsClause = opts.caps ? ` caps="${opts.caps}"` : '';
     const timeoutClause = opts.timeoutNs ? ` timeout=${opts.timeoutNs}` : '';
@@ -60,7 +68,10 @@ export interface UdpSinkOpts {
 }
 
 export function buildUdpSink(opts: UdpSinkOpts): string {
-    const buf = opts.bufferSize ?? 2_097_152;
+    // 4 MB SO_SNDBUF default, matching buildUdpSrc — symmetric with the
+    // receiver-side default so the sender can absorb brief kernel scheduling
+    // hiccups without blocking.
+    const buf = opts.bufferSize ?? 4 * 1024 * 1024;
     const nameClause = opts.name ? ` name=${opts.name}` : '';
     const sync = opts.sync === true ? 'true' : 'false';
     if (isMulticast(opts.host)) {

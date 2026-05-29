@@ -2,7 +2,8 @@
 
 ## Open
 
-- [ ] Screen goes black after changing browser URL to background1 and back
+- [ ] Verify HLS Player on a Pi against a live HLS stream — language auto-detect, multi-language inline audio + subtitles, ABR, and MPEG-TS routing to a downstream module
+- [x] Screen goes black after changing browser URL to background1 and back
 - [ ] High RAM usage on Pi — 1.5GB available; index.js, start-engine.js, and Pipewire consuming significant memory; Python vs C++ contributing (not actively an issue, revisit if it regresses)
 - [x] Splash image not showing when connecting a monitor
 - [x] Check that auto gain control is off
@@ -52,7 +53,8 @@
 - [x] SRT/RIST latency growth
 
 ### Features
-- [x] MPEG-TS muxer/demuxer plugins
+- [x] HLS Player plugin (hls-pipe submodule) — pulls HLS → MPEG-TS, auto-detects audio/subtitle languages from the playlist, multi-language inline mux + inline WebVTT subtitles, ABR + live-latency controls (built + unit-tested; live-stream verification pending)
+- [ ] MPEG-TS muxer/demuxer plugins revamp that it detect the input streams and make outputs acordingly
 - [x] DB seeded with dummy data on first start
 
 ### LCP

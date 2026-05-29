@@ -25,35 +25,35 @@ describe('VideoPlayerModule helpers', () => {
             // above an interactive cog browser on the same output, and
             // (b) apply the output's transform itself, so we don't pre-rotate.
             expect(buildSink('', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false fullscreen=true',
+                'waylandsink name=sink sync=false fullscreen=true qos=true',
             );
             // ignores `display` config: compositor decides output
             expect(buildSink('HDMI-A-1', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false fullscreen=true',
+                'waylandsink name=sink sync=false fullscreen=true qos=true',
             );
         });
         it('targets kmssink by numeric connector-id (older kmssink builds reject connector-name)', () => {
             expect(
                 buildSink('HDMI-A-1', { ...both, waylandSession: false, connectorId: 32 }),
-            ).toBe('kmssink name=sink connector-id=32 sync=false');
+            ).toBe('kmssink name=sink connector-id=32 sync=false qos=true');
         });
         it('falls back to auto-pick kmssink when the connector id can not be resolved', () => {
             // Picked a display but sysfs lookup returned undefined — better to
             // auto-pick than emit `connector-name=...` which older kmssink
             // builds reject with a parse error.
             expect(buildSink('HDMI-A-1', { ...both, waylandSession: false })).toBe(
-                'kmssink name=sink sync=false',
+                'kmssink name=sink sync=false qos=true',
             );
         });
         it('uses kmssink without a connector when display is unset', () => {
             expect(buildSink('', { ...both, waylandSession: false })).toBe(
-                'kmssink name=sink sync=false',
+                'kmssink name=sink sync=false qos=true',
             );
         });
         it('falls back to autovideosink when neither sink is installed', () => {
             expect(
                 buildSink('', { wayland: false, kms: false, waylandSession: false }),
-            ).toBe('autovideosink sync=false');
+            ).toBe('autovideosink sync=false qos=true');
         });
         it('uses kmssink even with a compositor present when waylandsink is missing', () => {
             expect(
@@ -63,7 +63,7 @@ describe('VideoPlayerModule helpers', () => {
                     waylandSession: true,
                     connectorId: 32,
                 }),
-            ).toBe('kmssink name=sink connector-id=32 sync=false');
+            ).toBe('kmssink name=sink connector-id=32 sync=false qos=true');
         });
 
         it('always returns the fullscreen waylandsink for wayland (rotation is the compositor’s job)', () => {
@@ -71,14 +71,14 @@ describe('VideoPlayerModule helpers', () => {
             // compositor applies the output transform. So the sink string is
             // the same regardless of the physical output orientation.
             expect(buildSink('DSI-2', { ...both, waylandSession: true })).toBe(
-                'waylandsink name=sink sync=false fullscreen=true',
+                'waylandsink name=sink sync=false fullscreen=true qos=true',
             );
         });
     });
 
     describe('buildFallbackOnlyPipeline', () => {
         it('renders videotestsrc + textoverlay into the sink (no image path)', () => {
-            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false');
+            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false qos=true');
             expect(s).toContain('videotestsrc');
             expect(s).toContain('pattern=smpte');
             expect(s).toContain('textoverlay name=nov text="No video"');
@@ -92,7 +92,7 @@ describe('VideoPlayerModule helpers', () => {
             // overlay and sink chain are identical between the two variants.
             const s = buildFallbackOnlyPipeline(
                 'Standby',
-                'autovideosink sync=false',
+                'autovideosink sync=false qos=true',
                 '/data/media-router/no-signal.png',
             );
             expect(s).toContain('filesrc location="/data/media-router/no-signal.png"');
@@ -155,7 +155,7 @@ describe('VideoPlayerModule helpers', () => {
 
     describe('buildLivePipeline', () => {
         it('wires udpsrc → tsdemux → decodebin → sink for multicast', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false', {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
                 host: '239.255.0.1',
                 port: 5000,
             });
@@ -171,7 +171,7 @@ describe('VideoPlayerModule helpers', () => {
         it('passes native resolution through on the KMS/auto path (constrainSurface=false)', () => {
             // Forcing 1280×720 here would downscale a native-res broadcast
             // panel — only the wayland-fullscreen path needs the fixed size.
-            const s = buildLivePipeline('kmssink name=sink sync=false', {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
                 host: '239.255.0.1',
                 port: 5000,
             });
@@ -184,7 +184,7 @@ describe('VideoPlayerModule helpers', () => {
             // rejects the mismatched fullscreen surface and weston logs
             // `libwayland: error in client communication`.
             const s = buildLivePipeline(
-                'waylandsink name=sink sync=false fullscreen=true',
+                'waylandsink name=sink sync=false fullscreen=true qos=true',
                 { host: '239.255.0.1', port: 5000 },
                 true,
             );
@@ -194,7 +194,7 @@ describe('VideoPlayerModule helpers', () => {
         });
 
         it('drops multicast-group for unicast sources', () => {
-            const s = buildLivePipeline('autovideosink sync=false', {
+            const s = buildLivePipeline('autovideosink sync=false qos=true', {
                 host: '127.0.0.1',
                 port: 6000,
             });
@@ -202,14 +202,14 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('multicast-group');
         });
         it('arms udpsrc with a 5s timeout so a stalled stream triggers restart', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false', {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
                 host: '239.255.0.1',
                 port: 5000,
             });
             expect(s).toContain('timeout=5000000000');
         });
         it('inserts tsparse between udpsrc and tsdemux to re-anchor PCR to the local clock', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false', {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
                 host: '239.255.0.1',
                 port: 5000,
             });

@@ -528,7 +528,9 @@ export class VideoPlayerModule extends GstPluginBase {
             waylandSession: hasWaylandSession(),
             connectorId: active.connectorId,
         };
-        const sinkElement = buildSink(active.name, sinkEnv);
+        const sinkElement = buildSink(active.name, sinkEnv, {
+            qos: (this.config.qos as boolean | undefined) ?? true,
+        });
         const env = buildPipelineEnv(active.name, sinkEnv);
         // The wayland (kiosk-shell fullscreen) path needs the live surface
         // pinned to a fixed size so it matches the fallback surface; KMS /
@@ -563,7 +565,12 @@ export class VideoPlayerModule extends GstPluginBase {
         }
 
         return {
-            pipeline: buildLivePipeline(sinkElement, udpSource, waylandFullscreen),
+            pipeline: buildLivePipeline(
+                sinkElement,
+                udpSource,
+                waylandFullscreen,
+                Number(this.config.bufferMs ?? 200),
+            ),
             liveElements: {},
             restartOnError: true,
             env,

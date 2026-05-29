@@ -13,6 +13,7 @@ interface SchemaProperty {
     'x-live'?: boolean;
     'x-liveUpdatable'?: boolean;
     'x-deviceType'?: string;
+    'x-optionsFrom'?: string;
     'x-widget'?: string;
     'x-step'?: number;
     'x-maxFrom'?: string;
@@ -37,6 +38,8 @@ export interface FormField {
     enumLabels?: Record<string, string>;
     liveUpdatable: boolean;
     deviceType?: string;
+    /** Key into the module's pushed `fieldOptions` for a discovery-driven multi-select. */
+    optionsFrom?: string;
     widget?: string;
     minimum?: number;
     maximum?: number;
@@ -94,6 +97,7 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
                 ? runtimeLive.includes(key)
                 : !!prop['x-live'] || !!prop['x-liveUpdatable'],
             deviceType: prop['x-deviceType'],
+            optionsFrom: prop['x-optionsFrom'],
             widget: prop['x-widget'],
             minimum: prop.minimum,
             maximum: prop.maximum,

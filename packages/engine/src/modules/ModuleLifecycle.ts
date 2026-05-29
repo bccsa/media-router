@@ -23,7 +23,7 @@ function moduleLabel(modConfig: Record<string, unknown>): string {
 }
 
 /** Map raw port config to typed ModulePort for MediaRouter registration. */
-function mapPorts(raw: RawPort[]) {
+export function mapPorts(raw: RawPort[]) {
     return raw.map((p) => ({
         id: p.id,
         direction: p.direction as 'input' | 'output',
@@ -289,7 +289,19 @@ export class ModuleLifecycle {
         const instance = this.moduleManager.get(moduleId);
         if (!instance) return;
 
-        // Tear down connections
+        // Tear down connections without restarting sinks (`skipModuleRestart:
+        // true`). The cascade-restart approach (false) tried previously over-
+        // restarts each consumer multiple times during one producer restart:
+        // teardown stops+starts the sink, then `reapplyModuleConnections` does
+        // it again, plus `onConsumerRestarted` cascades downstream. Each cycle
+        // unloads + recreates the audio-decoder's null-sink, but the pw-link
+        // to the audio-output is created against an intermediate null-sink and
+        // then orphaned when the *next* cycle replaces it — and MediaRouter's
+        // "connection already exists" short-circuit prevents a re-link to the
+        // final null-sink. Net effect: silent audio-output after restart until
+        // the operator manually restarts it. Solving buffer-stale-data on
+        // producer restart needs a different mechanism (flush the direct
+        // consumer only, or invalidate stale handles in MediaRouter).
         const connections = this.mediaRouter.getModuleConnections(moduleId);
         for (const conn of connections) {
             await this.mediaRouter.removeConnection(conn.id, true);

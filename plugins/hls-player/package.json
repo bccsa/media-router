@@ -1,0 +1,139 @@
+{
+    "name": "@media-router/plugin-hls-player",
+    "version": "2.0.0",
+    "private": true,
+    "description": "HLS Player — pulls an HLS stream and outputs MPEG-TS (powered by hls-pipe)",
+    "mediaRouter": {
+        "pluginId": "hls-player",
+        "displayName": "HLS Player",
+        "description": "Pulls an HLS stream (live or VOD) via hls-pipe and outputs MPEG-TS. ABR with mid-fragment abandon, fMP4/CMAF + MPEG-TS sources, AES-128, multi-language audio and inline WebVTT subtitles. Audio and subtitle languages are auto-detected from the playlist.",
+        "color": "#0ea5e9",
+        "icon": "tv",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "mpegts-out",
+                "direction": "output",
+                "streamType": "muxed/mpegts",
+                "label": "MPEG-TS Out",
+                "maxConnections": -1,
+                "requiresOrderedApply": true
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "default": "",
+                    "x-live": true,
+                    "x-debounceMs": 800,
+                    "description": "HLS playlist URL (master or media .m3u8). Paste to auto-detect available languages."
+                },
+                "quality": {
+                    "type": "string",
+                    "enum": ["auto", "highest", "lowest"],
+                    "default": "auto",
+                    "x-enumLabels": {
+                        "auto": "Auto (ABR)",
+                        "highest": "Highest variant",
+                        "lowest": "Lowest variant"
+                    },
+                    "description": "Adaptive bitrate (auto) or pin a single variant"
+                },
+                "capBitrate": {
+                    "type": "number",
+                    "default": 0,
+                    "x-unit": "kbps",
+                    "x-showWhen": "quality=auto",
+                    "description": "Max variant bitrate ABR may pick (kbps; 0 = no cap)"
+                },
+                "abrPreset": {
+                    "type": "string",
+                    "enum": ["default", "unstable"],
+                    "default": "default",
+                    "x-enumLabels": {
+                        "default": "Default",
+                        "unstable": "Unstable network"
+                    },
+                    "x-showWhen": "quality=auto",
+                    "description": "ABR tuning — 'unstable' tightens reactivity for slow / lossy networks"
+                },
+                "audioLanguages": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "x-optionsFrom": "audio",
+                    "description": "Audio languages to include (none selected = all detected). Apply + restart to take effect."
+                },
+                "subtitleLanguages": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "default": [],
+                    "x-optionsFrom": "subtitles",
+                    "description": "Subtitle languages to multiplex inline (none = off). Apply + restart to take effect."
+                },
+                "allowMonoAudio": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Permit mono-only audio groups (default prefers stereo+)"
+                },
+                "liveStartSegments": {
+                    "type": "number",
+                    "default": 6,
+                    "description": "Segments behind the live edge to start at"
+                },
+                "liveSyncSec": {
+                    "type": "number",
+                    "default": 0,
+                    "x-unit": "s",
+                    "description": "Target latency from the live edge (0 = auto-tune to 2× target duration)"
+                },
+                "liveMaxLagSec": {
+                    "type": "number",
+                    "default": 30,
+                    "x-unit": "s",
+                    "description": "Max tolerated live-edge lag before skip-on-stall acts"
+                },
+                "skipOnStall": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Jump to the live edge when max lag is exceeded (introduces visible jumps)"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "source",
+                "label": "Source",
+                "fields": [
+                    { "key": "playlist", "label": "Playlist" },
+                    { "key": "quality", "label": "Quality" },
+                    { "key": "audio", "label": "Audio" },
+                    { "key": "subtitles", "label": "Subtitles" }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    { "key": "bitrate", "label": "Bitrate", "unit": "Mbps" },
+                    { "key": "data", "label": "Data Sent" }
+                ]
+            }
+        ],
+        "engine": "./engine/HlsPlayerModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*",
+        "hls-pipe": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

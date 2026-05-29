@@ -52,7 +52,20 @@ export interface SinkSelectionEnv {
  *      can't resolve to an id, or didn't pick at all).
  *   4. autovideosink (dev machines without DRM, last resort).
  */
-export function buildSink(display: string, env: SinkSelectionEnv): string {
+export interface SinkOpts {
+    /**
+     * GStreamer QoS — when `true`, sinks send QoS events upstream telling the
+     * decoder to drop frames if it's late. Useful for live (SRT/RIST) where
+     * keeping up with the clock matters more than presenting every frame. For
+     * HLS / paced sources where you want every frame, set `false` so the
+     * decoder isn't pressured to skip frames mid-GOP. Default `true` matches
+     * GStreamer's own default — existing instances keep their current behaviour.
+     */
+    qos?: boolean;
+}
+
+export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts = {}): string {
+    const qosClause = ` qos=${opts.qos ?? true}`;
     if (env.wayland && env.waylandSession) {
         // `fullscreen=true` does two things we need on a kiosk-shell output:
         //  1. Z-order — it takes the xdg_toplevel fullscreen role, prompting
@@ -65,15 +78,15 @@ export function buildSink(display: string, env: SinkSelectionEnv): string {
         //     the output's `transform=` (e.g. rotate-90) itself. So we do
         //     NOT pre-rotate client-side; an earlier `videoflip` approach
         //     double-rotated once fullscreen was in play.
-        return 'waylandsink name=sink sync=false fullscreen=true';
+        return `waylandsink name=sink sync=false fullscreen=true${qosClause}`;
     }
     if (display && env.kms && env.connectorId !== undefined) {
-        return `kmssink name=sink connector-id=${env.connectorId} sync=false`;
+        return `kmssink name=sink connector-id=${env.connectorId} sync=false${qosClause}`;
     }
     if (env.kms) {
-        return 'kmssink name=sink sync=false';
+        return `kmssink name=sink sync=false${qosClause}`;
     }
-    return 'autovideosink sync=false';
+    return `autovideosink sync=false${qosClause}`;
 }
 
 /**
@@ -173,6 +186,13 @@ export function buildLivePipeline(
     sinkElement: string,
     udpSource: { host: string; port: number },
     constrainSurface = false,
+    /**
+     * Pre-decode buffer (ms). 200 ms is right for live SRT/RIST where latency
+     * is the dominant constraint. Bump on HLS/VOD chains (e.g. 1500 ms) where
+     * the source bursts a segment at a time and the decoder needs lookahead
+     * until the next I-frame after a mid-stream join.
+     */
+    bufferMs = 200,
 ): string {
     const tsInput = buildTsUdpInput({
         host: udpSource.host,
@@ -193,7 +213,7 @@ export function buildLivePipeline(
         : 'videoscale';
     return (
         `${tsInput} ! tsdemux latency=0 ` +
-        `! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0 ! decodebin ` +
+        `! queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! decodebin ` +
         `! videoconvert ! ${scale} ! ${sinkElement}`
     );
 }

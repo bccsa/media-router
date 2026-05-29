@@ -351,6 +351,12 @@ export interface ModuleRuntimeState {
     }>;
     /** Small icon+text indicators shown on the module face. */
     badges?: ModuleBadge[];
+    /**
+     * Probe-discovered option lists for config fields, keyed by the field's
+     * `x-optionsFrom` value (e.g. an HLS player reports detected audio /
+     * subtitle languages). The settings panel renders these as multi-selects.
+     */
+    fieldOptions?: Record<string, Array<{ value: string; label: string }>>;
     /** Error message if health is "error". */
     error?: string;
     /** Non-fatal warnings (e.g. stream layout mismatches). */

@@ -195,6 +195,8 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }> = [];
     /** Badges shown on the module face — small icon+text indicators. */
     private badges = new Map<string, { id: string; icon?: string; text: string; color?: string }>();
+    /** Probe-discovered option lists for config fields, keyed by `x-optionsFrom`. */
+    protected fieldOptions: Record<string, Array<{ value: string; label: string }>> = {};
 
     getState(): ModuleRuntimeState {
         return {
@@ -211,7 +213,19 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             statusData: this.statusData,
             dynamicStatusSections: this.dynamicStatusSections,
             badges: Array.from(this.badges.values()),
+            ...(Object.keys(this.fieldOptions).length ? { fieldOptions: this.fieldOptions } : {}),
         };
+    }
+
+    /**
+     * Publish discovered option lists for a config field (keyed by the field's
+     * `x-optionsFrom`). Pushes state so the settings panel can populate the
+     * matching selector — e.g. audio / subtitle languages detected from an HLS
+     * playlist.
+     */
+    protected setFieldOptions(key: string, options: Array<{ value: string; label: string }>): void {
+        this.fieldOptions[key] = options;
+        this.emit('stateChange', this.getState());
     }
 
     /** Update status data for a section and emit state change. Values are coerced to primitives. */

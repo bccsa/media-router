@@ -147,8 +147,11 @@ export class AudioDecoderModule extends GstPluginBase {
         const slaveMethod = (config.slaveMethod as number) ?? 0;
 
         const parts = [
-            // queue after tsdemux: drop oldest if decoder can't keep up — prevents latency accumulation
-            `${udpSrc} ! tsdemux latency=0 ! queue leaky=2 max-size-time=100000000 max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            // Post-tsdemux jitter buffer (leaky=2 drops oldest when full). Size
+            // is per-instance via `bufferMs` — default 100 ms keeps live
+            // SRT/RIST latency-tight; raise (e.g. 1500 ms) on HLS chains where
+            // mid-stream joins and CPU spikes need lookahead to avoid scratch.
+            `${udpSrc} ! tsdemux latency=0 ! queue leaky=2 max-size-time=${Number(config.bufferMs ?? 100) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',

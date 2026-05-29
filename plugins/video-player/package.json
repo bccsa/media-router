@@ -44,6 +44,21 @@
                     "default": "",
                     "description": "Image shown as fallback when no stream (otherwise SMPTE colour bars).",
                     "x-widget": "imageUpload"
+                },
+                "bufferMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 0,
+                    "maximum": 5000,
+                    "x-widget": "slider",
+                    "x-step": 50,
+                    "x-unit": "ms",
+                    "description": "Pre-decode buffer. Keep low (200) for live SRT/RIST; raise (e.g. 1500) for HLS so the decoder has lookahead until the next I-frame after a mid-stream join. Adds end-to-end latency."
+                },
+                "qos": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Sink QoS. When ON (default), the sink can ask the decoder to drop frames if it falls behind — right for live SRT/RIST where keeping up matters more than completeness. Turn OFF for HLS so every decoded frame is presented; pairs with a larger bufferMs."
                 }
             }
         },

@@ -54,6 +54,8 @@ export interface ModuleState {
     statusData?: Record<string, Record<string, string | number | boolean>>;
     dynamicStatusSections?: StatusSectionDef[];
     badges?: Array<{ id: string; icon?: string; text: string; color?: string }>;
+    /** Probe-discovered option lists for config fields, keyed by `x-optionsFrom`. */
+    fieldOptions?: Record<string, Array<{ value: string; label: string }>>;
     faceWidgets?: Array<Record<string, unknown>>;
     focused?: boolean;
     /** Plugin manifest opts into interlock (exclusive-mute) groups. */
@@ -340,6 +342,7 @@ export const useEngineStore = defineStore('engines', () => {
             mod.error = undefined;
             mod.statusData = undefined;
             mod.badges = undefined;
+            mod.fieldOptions = undefined;
         }
         engines.value = new Map(engines.value);
     }

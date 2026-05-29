@@ -19,7 +19,7 @@ import { SystemStatsCollector } from './system/SystemStatsCollector.js';
 import { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 import { wireEngineEvents } from './EngineEventWiring.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
-import { ModuleLifecycle } from './modules/ModuleLifecycle.js';
+import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
 
 const log = createLogger('Engine');
@@ -150,6 +150,15 @@ export class Engine {
                 { moduleId, portCount: ports.length },
                 'Dynamic ports resolved — pushing to manager',
             );
+            // Keep the engine's runtime PortRegistry in lock-step with the
+            // newly-resolved port list. Without this, a plugin that changes its
+            // dynamic port count after start (e.g. mpegts-demuxer's
+            // audioStreamCount bumped from 1 → 2) updates the stored config and
+            // the UI, but `ConnectionApplier` still fails to find the new ports
+            // with "Source port not found" until the module is manually
+            // restarted. Registry is keyed by moduleId, so this overwrites the
+            // prior entry — safe for both grow and shrink.
+            this.mediaRouter.registerPorts(moduleId, mapPorts(ports));
             const ops = [
                 { op: 'replace' as const, path: `/modules/${moduleId}/ports`, value: ports },
             ];

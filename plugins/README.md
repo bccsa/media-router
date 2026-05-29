@@ -104,6 +104,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | A network ingress/egress plugin | `srt-input` / `srt-output` | UDP-port allocation, per-caller stats, badges |
 | A plugin that owns a hardware device (audio source/sink, V4L2, DRM) | `audio-input` / `audio-output` | `static registerServices` for device provider, watchdog hooks |
 | A CLI-tool wrapper (returns `null` from `buildPipeline`) | `rist-input` / `rist-output` | `ProcessManager` lifecycle, stderr parsing |
+| A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, multicasts MPEG-TS over a `dgram` socket, probes the source and reports `fieldOptions` |
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
 | A multi-port plugin with variable port count | `mpegts-demuxer` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
@@ -292,6 +293,7 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 | Extension | Type | Description |
 |-----------|------|-------------|
 | `x-deviceType` | `string` | Device type to populate dropdown from (e.g. `"audio-source"`, `"audio-sink"`, `"video"`, `"drm-connector"`). Plugin must register a matching `DeviceProvider` via `registerServices`. |
+| `x-optionsFrom` | `string` | Renders the field as a **multi-select** whose options come from the module's pushed `fieldOptions[<key>]` (set at runtime via `this.setFieldOptions(key, options)`). Use for options discovered from the configured source rather than a fixed enum — e.g. `hls-player` probes the playlist and reports detected audio / subtitle languages. The stored value is a string array. |
 | `x-widget` | `"slider"` \| `"imageUpload"` | `"slider"` renders a range slider instead of a number input. `"imageUpload"` (string-valued field) renders a file picker that uploads via the `plugin:upload` RPC and stores the resulting absolute path; preview thumbnail loaded back through `plugin:upload-get`. |
 | `x-step` | `number` | Step value for slider |
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
