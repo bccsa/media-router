@@ -146,6 +146,18 @@ export class MediaRouter {
         const compat = this.portRegistry.validateCompatibility(sourcePort, sinkPort);
         if (!compat.compatible) throw new Error(`Incompatible ports: ${compat.reason}`);
 
+        const connId = `${sourceModuleId}:${sourcePortId}-${sinkModuleId}:${sinkPortId}`;
+
+        // If this exact connection already exists, skip (idempotent). This must
+        // run BEFORE the maxConnections check: a re-apply of an existing edge
+        // would otherwise trip the capacity guard on single-slot ports (e.g.
+        // mpegts-in, cap 1), throwing "already has 1/1 connections" instead of
+        // being recognised as a harmless duplicate.
+        if (this.connections.has(connId)) {
+            log.info({ connectionId: connId }, 'Connection already exists — skipping');
+            return connId;
+        }
+
         // Validate maxConnections
         const sourceMax = sourcePort.maxConnections ?? -1;
         const sinkMax = sinkPort.maxConnections ?? -1;
@@ -171,14 +183,6 @@ export class MediaRouter {
             );
             if (count >= sinkMax)
                 throw new Error(`Port ${sinkPortId} already has ${count}/${sinkMax} connections`);
-        }
-
-        const connId = `${sourceModuleId}:${sourcePortId}-${sinkModuleId}:${sinkPortId}`;
-
-        // If this exact connection already exists, skip (idempotent)
-        if (this.connections.has(connId)) {
-            log.info({ connectionId: connId }, 'Connection already exists — skipping');
-            return connId;
         }
 
         const conn: Connection = {

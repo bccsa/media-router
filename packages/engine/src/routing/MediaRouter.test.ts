@@ -426,4 +426,68 @@ describe('MediaRouter', () => {
         expect(id1).toBe(id2);
         expect(router.getConnections()).toHaveLength(1);
     });
+
+    it('createConnection is idempotent on a single-slot port (mpegts-in, cap 1)', async () => {
+        // Regression guard: re-applying an existing edge into a maxConnections:1
+        // port must short-circuit on the idempotency check, NOT trip the capacity
+        // guard. The double-apply happens in production because connections are
+        // registered live (manager patch) and then again by ConnectionApplier at
+        // startup. The capacity check used to run first, so the second apply threw
+        // "Port mpegts-in already has 1/1 connections" instead of skipping.
+        router.registerPorts('srt-input', [
+            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'Out' },
+        ]);
+        router.registerPorts('audio-decoder', [
+            {
+                id: 'mpegts-in',
+                direction: 'input',
+                streamType: 'muxed/mpegts',
+                label: 'In',
+                maxConnections: 1,
+            },
+        ]);
+
+        const id1 = await router.createConnection(
+            'srt-input',
+            'mpegts-out',
+            'audio-decoder',
+            'mpegts-in',
+        );
+        // Second identical apply must not throw and must return the same ID.
+        const id2 = await router.createConnection(
+            'srt-input',
+            'mpegts-out',
+            'audio-decoder',
+            'mpegts-in',
+        );
+        expect(id2).toBe(id1);
+        expect(router.getConnections()).toHaveLength(1);
+    });
+
+    it('createConnection still enforces capacity for a DIFFERENT source on a cap-1 port', async () => {
+        // The idempotency fix must not weaken the capacity guard: a genuinely
+        // different source targeting an already-full single-slot port must
+        // still be rejected.
+        router.registerPorts('srt-input-a', [
+            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'Out' },
+        ]);
+        router.registerPorts('srt-input-b', [
+            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'Out' },
+        ]);
+        router.registerPorts('audio-decoder', [
+            {
+                id: 'mpegts-in',
+                direction: 'input',
+                streamType: 'muxed/mpegts',
+                label: 'In',
+                maxConnections: 1,
+            },
+        ]);
+
+        await router.createConnection('srt-input-a', 'mpegts-out', 'audio-decoder', 'mpegts-in');
+        await expect(
+            router.createConnection('srt-input-b', 'mpegts-out', 'audio-decoder', 'mpegts-in'),
+        ).rejects.toThrow('already has 1/1 connections');
+        expect(router.getConnections()).toHaveLength(1);
+    });
 });
