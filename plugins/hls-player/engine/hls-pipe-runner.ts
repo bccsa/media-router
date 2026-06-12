@@ -2,33 +2,20 @@
  * hls-pipe runner — spawned by HlsPlayerModule as an isolated Node child.
  *
  * Embeds hls-pipe's Extractor and writes canonical MPEG-TS to a UDP multicast
- * group (UdpTsSink) instead of stdout, so stdout stays free for one-line JSON
- * stats the parent parses. hls-pipe is ESM-only; this file compiles to CJS
- * (like the rest of the plugin) and loads it via dynamic `import()`, which
+ * group (PacedUdpTsSink) instead of stdout, so stdout stays free for one-line
+ * JSON stats the parent parses. hls-pipe is ESM-only; this file compiles to
+ * CJS (like the rest of the plugin) and loads it via dynamic `import()`, which
  * NodeNext preserves natively for CJS→ESM interop.
  *
  * Config arrives as a JSON blob in the HLS_CONFIG env var. Exit codes drive the
  * parent's ManagedProcess restart policy: 0 = clean (VOD end / SIGTERM, no
  * restart), non-zero = error (auto-restart with backoff).
  */
-import type { AbrConfig, ExtractorOptions, LatencyConfig, QualityHint, StdoutSink } from 'hls-pipe';
-import { PacedUdpTsSink } from './udpTsSink.js';
-
-interface RunnerConfig {
-    url: string;
-    host: string;
-    port: number;
-    quality: 'auto' | 'highest' | 'lowest';
-    capBitrateBps: number;
-    abrPreset: 'default' | 'unstable';
-    inlineAudio: string[]; // [] = all
-    inlineSubtitles: string[]; // [] = off
-    allowMonoAudio: boolean;
-    liveStartSegments: number;
-    liveSyncSec: number;
-    liveMaxLagSec: number;
-    skipOnStall: boolean;
-}
+import type { ExtractorOptions } from 'hls-pipe';
+// Deep import: this child only needs the sink — pulling in the engine's index
+// would load the whole engine (Fastify, comms, …) into every runner process.
+import { PacedUdpTsSink } from '@media-router/engine/dist/plugins/PacedUdpTsSink.js';
+import { buildExtractorOverrides, type RunnerConfig } from './runnerOptions.js';
 
 function emitStats(bitrateMbps: number, bytesSent: number): void {
     process.stdout.write(JSON.stringify({ stats: { bitrateMbps, bytesSent } }) + '\n');
@@ -46,8 +33,7 @@ async function main(): Promise<void> {
         await import('hls-pipe');
 
     // Paced multicast sink — releases each segment's datagrams at the media
-    // rate so the receiver's UDP buffer doesn't overflow. Satisfies the
-    // StdoutSink write/end contract hls-pipe expects (hence the cast).
+    // rate so the receiver's UDP buffer doesn't overflow.
     const sink = new PacedUdpTsSink(cfg.port, cfg.host);
 
     const abort = new AbortController();
@@ -55,35 +41,15 @@ async function main(): Promise<void> {
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
 
-    const abr: Partial<AbrConfig> = {
-        ...(cfg.abrPreset === 'unstable' ? UNSTABLE_NETWORK_ABR_CONFIG : DEFAULT_ABR_CONFIG),
-        ...(cfg.capBitrateBps > 0 ? { capBitrate: cfg.capBitrateBps } : {}),
-    };
-
-    const latency: Partial<LatencyConfig> = {};
-    if (cfg.liveSyncSec > 0) latency.liveSyncTargetSec = cfg.liveSyncSec;
-    if (cfg.liveMaxLagSec > 0) latency.liveMaxLatencySec = cfg.liveMaxLagSec;
-    if (cfg.skipOnStall) latency.skipOnStall = true;
-
-    const fixedQuality: QualityHint | undefined =
-        cfg.quality === 'highest'
-            ? { kind: 'highest' }
-            : cfg.quality === 'lowest'
-              ? { kind: 'lowest' }
-              : undefined;
-
     const options: ExtractorOptions = {
         url: cfg.url,
-        sink: sink as unknown as StdoutSink,
+        sink,
         signal: abort.signal,
         outputMode: makeOutputMode('ts-canonical'),
-        abr,
-        inlineAudioLanguages: cfg.inlineAudio.length ? cfg.inlineAudio : 'all',
-        liveStartOffsetSegments: cfg.liveStartSegments,
-        ...(fixedQuality ? { fixedQuality } : {}),
-        ...(Object.keys(latency).length ? { latency } : {}),
-        ...(cfg.inlineSubtitles.length ? { inlineSubtitleLanguages: cfg.inlineSubtitles } : {}),
-        ...(cfg.allowMonoAudio ? { allowMonoAudio: true } : {}),
+        ...buildExtractorOverrides(cfg, {
+            default: DEFAULT_ABR_CONFIG,
+            unstable: UNSTABLE_NETWORK_ABR_CONFIG,
+        }),
         log: (msg: string) => process.stderr.write(`${msg}\n`),
     };
 

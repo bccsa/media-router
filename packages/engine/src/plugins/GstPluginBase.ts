@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type { ModuleRuntimeState, ModuleHealth } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
+import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
@@ -255,6 +256,47 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     getLiveUpdatableParams(): string[] {
         return this.liveUpdatableParams;
+    }
+
+    /**
+     * Spawn an external runner via ProcessManager with standardized health
+     * wiring — the shared contract for process-backed producer plugins
+     * (hls-player, rist-input, rist-output):
+     *   - spawn failure / restart attempts exhausted → health `error`
+     *   - crash-backoff restart pending / unexpected clean exit → `warning`
+     *   - `clearBadges` are removed whenever the process goes down, so stale
+     *     stats badges don't show green on a dead stream.
+     * The plugin restores `ok` itself once the runner proves live (next
+     * parsed stats line, or the process `started` event where spawn ≈ live).
+     */
+    protected spawnRunnerProcess(
+        opts: ManagedProcessOptions & { clearBadges?: string[] },
+    ): ManagedProcess {
+        if (!this.services?.processManager) {
+            throw new Error('processManager service unavailable');
+        }
+        const { clearBadges = [], ...spawnOpts } = opts;
+        const proc = this.services.processManager.spawn(this.services.instanceId, spawnOpts);
+        const down = (): void => clearBadges.forEach((id) => this.clearBadge(id));
+        proc.on('error', (msg: string) => {
+            down();
+            this.setHealth('error', msg);
+        });
+        proc.on('restarting', (attempt: number) => {
+            if (!this.running) return;
+            down();
+            this.setHealth('warning', `${opts.label} crashed — restarting (attempt ${attempt})`);
+        });
+        proc.on('stopped', (code: number | null) => {
+            // Killed deliberately (module stop / relaunch) — not a health event.
+            if (proc.destroyed || !this.running) return;
+            down();
+            // Non-zero exits are followed by 'restarting' (or 'error' once
+            // attempts are exhausted); a clean exit means the runner ended on
+            // its own (e.g. a VOD stream ran out) — surface it.
+            if (code === 0) this.setHealth('warning', `${opts.label} exited`);
+        });
+        return proc;
     }
 
     /**

@@ -1,10 +1,11 @@
-import { performance } from 'node:perf_hooks';
 import { createSocket, type Socket } from 'node:dgram';
+import { DEFAULT_MPEGTS_ALIGNMENT } from './tsHelpers.js';
+import { MULTICAST_IFACE_ADDR } from './udpHelpers.js';
 
 /** One MPEG-TS packet. */
 export const TS_PACKET_BYTES = 188;
 /** 7 TS packets = 1316 bytes — the classic TS-over-UDP datagram size (fits a 1500-byte MTU). */
-export const TS_PACKETS_PER_DATAGRAM = 7;
+export const TS_PACKETS_PER_DATAGRAM = DEFAULT_MPEGTS_ALIGNMENT;
 export const TS_DATAGRAM_BYTES = TS_PACKET_BYTES * TS_PACKETS_PER_DATAGRAM;
 
 /**
@@ -30,8 +31,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 /**
  * Read-ahead buffer: how much downloaded media to hold before back-pressuring
- * hls-pipe. Generous — for HLS the user trades latency for smoothness, so we
- * keep ~60 s of downloaded media on hand to ride out CDN / network jitter.
+ * the producer. Generous — for HLS the user trades latency for smoothness, so
+ * we keep ~60 s of downloaded media on hand to ride out CDN / network jitter.
  */
 const MAX_BUFFER_SEC = 60;
 const MAX_BUFFER_BYTES = 128 * 1024 * 1024;
@@ -59,25 +60,33 @@ interface Scheduled {
 
 /**
  * MPEG-TS → UDP multicast sink that **paces output to the media rate** while
- * letting hls-pipe download ahead into a buffer.
+ * letting the producer download ahead into a buffer. The generic egress for
+ * non-GStreamer Node sources (hls-player today) onto the local multicast bus.
  *
- * Implements hls-pipe's sink contract (`write(chunk, mediaSeconds)` + `end()`).
- * hls-pipe delivers a whole segment per `write`; sending those bytes to the
- * socket at once overruns the receiver's UDP buffer (udpsrc, default 4 MB) and
- * shreds the stream — the other producers avoid this only because a real-time
- * source (srtsrc, pulsesrc) paces them. We reconstruct that pacing:
+ * Implements the sink contract `write(chunk, mediaSeconds)` + `end()` (see
+ * hls-pipe's `SegmentSink`). Producers deliver a whole segment per `write`;
+ * sending those bytes to the socket at once overruns the receiver's UDP buffer
+ * (udpsrc, see `buildUdpSrc`'s default) and shreds the stream — the other
+ * producers avoid this only because a real-time source (srtsrc, pulsesrc)
+ * paces them. We reconstruct that pacing:
  *
  *  - `write` packetizes the chunk, stamps each datagram with a cumulative media
  *    time (spread across the segment's EXTINF), and enqueues it — returning fast
- *    so hls-pipe keeps fetching, up to a ~60 s read-ahead buffer (see
+ *    so the producer keeps fetching, up to a ~60 s read-ahead buffer (see
  *    `MAX_BUFFER_SEC`; back-pressure beyond that). The buffer absorbs download
  *    jitter so the egress never starves — without it, one slow segment fetch
  *    stutters playback.
  *  - a background drain loop sends each datagram at its scheduled wall-clock
- *    time (anchored to the first send), so egress flows at ~the stream bitrate.
+ *    time (anchored to the head of the queue, re-anchored whenever the queue
+ *    runs dry), so egress flows at ~the stream bitrate.
+ *
+ * Chunks are queued zero-copy (views over the caller's buffer, held up to
+ * ~60 s) — callers must hand over ownership and never mutate the buffer after
+ * `write` (hls-pipe's `SegmentSink` contract states this).
  *
  * Wire format matches GStreamer `udpsink`: raw 188-byte-aligned TS in 1316-byte
- * datagrams to `239.x.x.x` on `lo`, read by `udpsrc ! tsdemux` downstream.
+ * datagrams to the engine's multicast group on `lo`, read by `udpsrc ! tsdemux`
+ * downstream.
  */
 export class PacedUdpTsSink {
     private readonly socket: Socket;
@@ -97,8 +106,8 @@ export class PacedUdpTsSink {
 
     constructor(
         private readonly port: number,
-        private readonly host = '239.255.0.1',
-        private readonly iface = '127.0.0.1',
+        private readonly host: string,
+        private readonly iface = MULTICAST_IFACE_ADDR,
     ) {
         this.socket = createSocket({ type: 'udp4', reuseAddr: true });
         // Loss is tolerated for live TS — never let a socket error kill the run.
@@ -134,9 +143,9 @@ export class PacedUdpTsSink {
     }
 
     /**
-     * hls-pipe sink contract. `mediaSeconds` is this chunk's media duration
-     * (segment EXTINF; 0 for init sections). Enqueues paced datagrams and
-     * blocks only once the read-ahead buffer is full.
+     * Sink contract. `mediaSeconds` is this chunk's media duration (segment
+     * EXTINF; 0 for init sections). Enqueues paced datagrams and blocks only
+     * once the read-ahead buffer is full.
      */
     async write(chunk: Uint8Array, mediaSeconds: number): Promise<void> {
         if (this.closed) return;
@@ -158,7 +167,7 @@ export class PacedUdpTsSink {
 
         this.startDrain();
 
-        // Back-pressure: let hls-pipe race ahead only until the buffer is full.
+        // Back-pressure: let the producer race ahead only until the buffer is full.
         while (
             !this.closed &&
             (this.bufferedSec() > MAX_BUFFER_SEC || this.queueBytes > MAX_BUFFER_BYTES)
@@ -178,10 +187,21 @@ export class PacedUdpTsSink {
             const item = this.queue[0];
             if (!item) {
                 if (this.closed || this.ending) break;
+                // Queue ran dry (source stalled longer than the buffered
+                // media, or a skip-on-stall jump advanced wall time without
+                // media time) — drop the anchor so the next datagram
+                // re-anchors. Keeping the old anchor would compute every
+                // subsequent datagram as "late" and burst-send whole
+                // segments: the exact udpsrc overflow this sink prevents.
+                this.wallStartMs = 0;
                 await sleep(10); // idle — wait for more input
                 continue;
             }
-            if (this.wallStartMs === 0) this.wallStartMs = performance.now() - PREFILL_MS;
+            if (this.wallStartMs === 0) {
+                // Anchor relative to the head datagram's media time,
+                // back-dated by PREFILL_MS so the first bytes drain quickly.
+                this.wallStartMs = performance.now() - PREFILL_MS - item.atSec * 1000;
+            }
             const waitMs = this.wallStartMs + item.atSec * 1000 - performance.now();
             if (waitMs > 2) {
                 await sleep(Math.min(waitMs, 250));

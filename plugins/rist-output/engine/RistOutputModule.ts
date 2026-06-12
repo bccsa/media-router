@@ -73,30 +73,27 @@ export class RistOutputModule extends GstPluginBase {
         }
         if (npd) args.push('-n');
 
-        // Spawn ristsender via ProcessManager
+        // Set running state immediately (no GStreamer pipeline — CLI is our process)
+        this.running = true;
+        this.ready = true;
+        this.setHealth('ok');
+
+        // Spawn ristsender via ProcessManager (shared health wiring:
+        // restarting → warning, exhausted/spawn-fail → error, badges cleared)
         if (this.services?.processManager) {
-            this.sender = this.services.processManager.spawn(this.services.instanceId, {
+            this.sender = this.spawnRunnerProcess({
                 label: 'ristsender',
                 command: 'ristsender',
                 args,
                 autoRestart: true,
+                clearBadges: ['quality', 'connections'],
                 onStderr: (line) => {
                     if (line.includes('-stats"')) this.parseStats(line);
                     // Non-stats lines are logged by ManagedProcess at warn level
                 },
             });
-            this.sender.on('started', () => {
-                this.running = true;
-                this.ready = true;
-                this.setHealth('ok');
-            });
-            this.sender.on('error', (msg) => this.setHealth('error', msg));
+            this.sender.on('started', () => this.setHealth('ok'));
         }
-
-        // Set running state immediately (no GStreamer pipeline — CLI is our process)
-        this.running = true;
-        this.ready = true;
-        this.setHealth('ok');
 
         // Update status display
         this.setStatusData('connection', {

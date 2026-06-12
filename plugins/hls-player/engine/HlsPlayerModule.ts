@@ -1,10 +1,21 @@
 import { GstPluginBase, formatBytes, type PipelineDescription } from '@media-router/engine';
 import type { ManagedProcess } from '@media-router/engine';
 import type { AlternateRendition } from 'hls-pipe';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const MULTICAST_HOST = '239.255.0.1';
-const RUNNER_PATH = join(__dirname, 'hls-pipe-runner.js');
+/**
+ * Locate the compiled runner. `__dirname` is `dist/` in production, but the
+ * `engine/` source dir when PluginLoader falls back to importing the `.ts`
+ * under tsx — the compiled runner then lives in the sibling `dist/`.
+ */
+function resolveRunnerPath(): string | null {
+    const candidates = [
+        join(__dirname, 'hls-pipe-runner.js'),
+        join(__dirname, '..', 'dist', 'hls-pipe-runner.js'),
+    ];
+    return candidates.find((p) => existsSync(p)) ?? null;
+}
 
 type Option = { value: string; label: string };
 
@@ -56,6 +67,8 @@ function asArray(v: unknown): string[] {
 export class HlsPlayerModule extends GstPluginBase {
     private runner: ManagedProcess | null = null;
     private playlistKind = '—';
+    /** Serializes live config updates — see `onLiveConfigUpdate`. */
+    private updateLock: Promise<void> = Promise.resolve();
 
     async onStart(): Promise<void> {
         this.log.info(
@@ -101,7 +114,7 @@ export class HlsPlayerModule extends GstPluginBase {
             this.setHealth('error', 'processManager service unavailable — cannot spawn runner');
             return;
         }
-        this.spawnRunner(url, endpoint.port);
+        if (!this.spawnRunner(url, endpoint.host, endpoint.port)) return;
         this.setHealth('ok');
         this.updateSourceStatus();
         // No GStreamer pipeline — the runner handles HLS → UDP.
@@ -126,7 +139,19 @@ export class HlsPlayerModule extends GstPluginBase {
         return ['url'];
     }
 
+    /**
+     * Serialized: `probe()` awaits the network mid-flow, and two rapid URL
+     * changes interleaving here could each see `runner === null` and spawn two
+     * runners onto the same multicast port — corrupting the TS for every
+     * consumer. Each update runs strictly after the previous one settles.
+     */
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        const run = this.updateLock.then(() => this.applyLiveUpdate(changes));
+        this.updateLock = run.catch(() => {});
+        return run;
+    }
+
+    private async applyLiveUpdate(changes: Record<string, unknown>): Promise<void> {
         // Snapshot the URL *before* merging so we can tell whether it actually
         // changed. Without this, every config push with `url` present (even
         // unchanged) would re-probe and relaunch the runner — the manager
@@ -134,13 +159,10 @@ export class HlsPlayerModule extends GstPluginBase {
         const prevUrl = String(this.config.url ?? '').trim();
         await super.onLiveConfigUpdate(changes); // merges into this.config
         const url = String(this.config.url ?? '').trim();
-        const urlChanged = 'url' in changes && url !== prevUrl;
-
-        if (urlChanged && url) await this.probe(url);
 
         // Only relaunch on a real URL change. Other live params don't reach us
         // (`getLiveUpdatableParams` returns just `['url']`), but be explicit.
-        if (!urlChanged) return;
+        if (!('url' in changes) || url === prevUrl) return;
         if (!this.running || !this.services?.mediaRouter || !this.services.processManager) {
             this.log.warn(
                 {
@@ -152,39 +174,57 @@ export class HlsPlayerModule extends GstPluginBase {
             );
             return;
         }
-        if (!url) return;
-        this.services.mediaRouter.assignUdpPort(this.services.instanceId); // idempotent
-        const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
-        if (!endpoint) return;
 
         if (this.runner) {
             await this.services.processManager.kill(this.services.instanceId, this.runner);
             this.runner = null;
         }
-        this.spawnRunner(url, endpoint.port);
+
+        if (!url) {
+            // URL cleared — stop multicasting the old stream and go back to idle.
+            this.clearBadge('bitrate');
+            this.setHealth('warning', 'Waiting for HLS URL');
+            this.updateSourceStatus();
+            return;
+        }
+
+        await this.probe(url);
+        this.services.mediaRouter.assignUdpPort(this.services.instanceId); // idempotent
+        const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
+        if (!endpoint) return;
+        if (!this.spawnRunner(url, endpoint.host, endpoint.port)) return;
         this.setHealth('ok');
         this.updateSourceStatus();
     }
 
-    private spawnRunner(url: string, port: number): void {
-        const services = this.services!;
-        this.runner = services.processManager.spawn(services.instanceId, {
+    /** @returns false when the runner could not be spawned (health already set to error). */
+    private spawnRunner(url: string, host: string, port: number): boolean {
+        const runnerPath = resolveRunnerPath();
+        if (!runnerPath) {
+            this.setHealth(
+                'error',
+                'hls-pipe-runner.js not found — build the hls-player plugin (pnpm build)',
+            );
+            return false;
+        }
+        this.runner = this.spawnRunnerProcess({
             label: 'hls-pipe',
             command: process.execPath,
-            args: [RUNNER_PATH],
-            env: { HLS_CONFIG: JSON.stringify(this.buildRunnerConfig(url, port)) },
+            args: [runnerPath],
+            env: { HLS_CONFIG: JSON.stringify(this.buildRunnerConfig(url, host, port)) },
             autoRestart: true,
+            clearBadges: ['bitrate'],
             onStdout: (line) => this.parseStats(line),
             onStderr: (line) => this.log.info(line),
         });
-        this.runner.on('error', (msg: string) => this.setHealth('error', msg));
+        return true;
     }
 
-    private buildRunnerConfig(url: string, port: number): Record<string, unknown> {
+    private buildRunnerConfig(url: string, host: string, port: number): Record<string, unknown> {
         const capKbps = Number(this.config.capBitrate ?? 0);
         return {
             url,
-            host: MULTICAST_HOST,
+            host,
             port,
             quality: (this.config.quality as string) ?? 'auto',
             capBitrateBps: capKbps > 0 ? Math.round(capKbps * 1000) : 0,
@@ -225,6 +265,11 @@ export class HlsPlayerModule extends GstPluginBase {
                 'probe: detected languages',
             );
         } catch (err) {
+            // A failed probe means we know nothing about this URL's renditions —
+            // drop the previous stream's languages rather than showing stale options.
+            this.playlistKind = '—';
+            this.setFieldOptions('audio', []);
+            this.setFieldOptions('subtitles', []);
             this.log.warn({ err: err instanceof Error ? err.message : err }, 'HLS probe failed');
         }
     }
@@ -249,6 +294,9 @@ export class HlsPlayerModule extends GstPluginBase {
             };
             const s = msg.stats;
             if (!s) return;
+            // A stats line proves the runner is alive — clear the warning set
+            // while it was crash-looping / restarting.
+            if (this.running && this.health !== 'ok') this.setHealth('ok');
             this.setStatusData('stats', {
                 bitrate: typeof s.bitrateMbps === 'number' ? s.bitrateMbps.toFixed(2) : '—',
                 data: typeof s.bytesSent === 'number' ? formatBytes(s.bytesSent) : '—',

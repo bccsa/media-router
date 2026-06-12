@@ -129,3 +129,5 @@ doc/gstreamer notes
 
 # Claude Code runtime files
 .claude/scheduled_tasks.lock
+
+graphify-out/

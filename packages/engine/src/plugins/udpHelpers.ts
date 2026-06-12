@@ -13,6 +13,12 @@
 
 const MULTICAST_PREFIX = '239.';
 const MULTICAST_IFACE = 'lo';
+/**
+ * Dotted-quad address of `MULTICAST_IFACE` for Node `dgram` sockets —
+ * GStreamer takes the interface name, dgram takes its address. Flip both
+ * together when moving beyond local-loop multicast.
+ */
+export const MULTICAST_IFACE_ADDR = '127.0.0.1';
 
 export function isMulticast(host: string): boolean {
     return host.startsWith(MULTICAST_PREFIX);

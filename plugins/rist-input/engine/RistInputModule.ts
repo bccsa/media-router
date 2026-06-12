@@ -73,29 +73,26 @@ export class RistInputModule extends GstPluginBase {
             args.push('-e', String(encType));
         }
 
-        // Spawn ristreceiver via ProcessManager
-        if (this.services?.processManager) {
-            this.receiver = this.services.processManager.spawn(this.services.instanceId, {
-                label: 'ristreceiver',
-                command: 'ristreceiver',
-                args,
-                autoRestart: true,
-                onStderr: (line) => {
-                    if (line.includes('-stats"')) this.parseStats(line);
-                },
-            });
-            this.receiver.on('started', () => {
-                this.running = true;
-                this.ready = true;
-                this.setHealth('ok');
-            });
-            this.receiver.on('error', (msg) => this.setHealth('error', msg));
-        }
-
         // Set running state immediately (no GStreamer pipeline — CLI is our process)
         this.running = true;
         this.ready = true;
         this.setHealth('ok');
+
+        // Spawn ristreceiver via ProcessManager (shared health wiring:
+        // restarting → warning, exhausted/spawn-fail → error, badges cleared)
+        if (this.services?.processManager) {
+            this.receiver = this.spawnRunnerProcess({
+                label: 'ristreceiver',
+                command: 'ristreceiver',
+                args,
+                autoRestart: true,
+                clearBadges: ['quality', 'connections'],
+                onStderr: (line) => {
+                    if (line.includes('-stats"')) this.parseStats(line);
+                },
+            });
+            this.receiver.on('started', () => this.setHealth('ok'));
+        }
 
         // Update status display
         this.setStatusData('connection', {

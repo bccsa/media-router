@@ -54,6 +54,7 @@
 
 ### Features
 - [x] HLS Player plugin (hls-pipe submodule) — pulls HLS → MPEG-TS, auto-detects audio/subtitle languages from the playlist, multi-language inline mux + inline WebVTT subtitles, ABR + live-latency controls (built + unit-tested; live-stream verification pending)
+- [x] HLS Player review fixes — URL-clear stops the runner, pacing re-anchors after stalls, crash-loop visibility (shared `spawnRunnerProcess` health wiring, also rist-in/out), serialized live URL updates; `PacedUdpTsSink` moved into the engine; structural `SegmentSink` in hls-pipe
 - [ ] MPEG-TS muxer/demuxer plugins revamp that it detect the input streams and make outputs acordingly
 - [x] DB seeded with dummy data on first start
 

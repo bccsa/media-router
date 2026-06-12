@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'events';
 import { isMasterPlaylist } from 'hls-pipe';
+import { existsSync } from 'node:fs';
 
 // hls-pipe is ESM and the probe loads it via dynamic import — mock it so tests
-// neither hit the network nor depend on the built library.
+// neither hit the network nor depend on the built library. The fetch mock is
+// URL-driven: '…fail…' rejects (probe-failure paths), '…slow…' resolves late
+// (live-update serialization).
 vi.mock('hls-pipe', () => {
     const rendition = (type: string, name: string, language: string) => ({
         type,
@@ -15,7 +19,11 @@ vi.mock('hls-pipe', () => {
     });
     return {
         NodeLoader: vi.fn().mockImplementation(() => ({
-            fetch: vi.fn(async () => ({ body: Buffer.from('#EXTM3U') })),
+            fetch: vi.fn(async ({ url }: { url: string }) => {
+                if (url.includes('fail')) throw new Error('fetch failed');
+                if (url.includes('slow')) await new Promise((r) => setTimeout(r, 25));
+                return { body: Buffer.from('#EXTM3U') };
+            }),
         })),
         isMasterPlaylist: vi.fn(() => true),
         parseMaster: vi.fn(() => ({
@@ -28,10 +36,17 @@ vi.mock('hls-pipe', () => {
     };
 });
 
+// The module resolves the compiled runner with existsSync — pretend it's built.
+vi.mock('node:fs', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('node:fs')>()),
+    existsSync: vi.fn(() => true),
+}));
+
 import { HlsPlayerModule } from './HlsPlayerModule.js';
 
 function makeModule() {
-    const spawn = vi.fn(() => ({ on: vi.fn() }));
+    // Real emitter so tests can fire ManagedProcess lifecycle events.
+    const spawn = vi.fn(() => Object.assign(new EventEmitter(), { destroyed: false }));
     const kill = vi.fn(async () => {});
     const module = new HlsPlayerModule() as any;
     module.services = {
@@ -45,6 +60,7 @@ function makeModule() {
     module.config = {};
     module.setStatusData = vi.fn();
     module.setBadge = vi.fn();
+    module.clearBadge = vi.fn();
     module.setHealth = vi.fn();
     module.setFieldOptions = vi.fn();
     module.log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
@@ -53,7 +69,12 @@ function makeModule() {
 
 /** Parse the HLS_CONFIG JSON handed to the spawned runner. */
 function runnerConfig(spawn: ReturnType<typeof vi.fn>): Record<string, unknown> {
-    return JSON.parse(spawn.mock.calls[0][1].env.HLS_CONFIG);
+    return runnerConfigAt(spawn, 0);
+}
+
+/** HLS_CONFIG from the Nth spawn call. */
+function runnerConfigAt(spawn: ReturnType<typeof vi.fn>, n: number): Record<string, unknown> {
+    return JSON.parse(spawn.mock.calls[n][1].env.HLS_CONFIG);
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -102,6 +123,18 @@ describe('HlsPlayerModule.onStart', () => {
         expect(module.setHealth).toHaveBeenCalledWith('ok');
     });
 
+    it('reports an error when the runner is not built (dev tsx fallback without dist)', async () => {
+        const { module, spawn } = makeModule();
+        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
+        module.config = { url: 'https://example.com/master.m3u8' };
+        await module.onStart();
+        expect(spawn).not.toHaveBeenCalled();
+        expect(module.setHealth).toHaveBeenCalledWith('error', expect.stringContaining('build'));
+        // The error must be the FINAL health — onStart must not paper over it with 'ok'.
+        expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
+        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    });
+
     it('probes the playlist and publishes detected languages as fieldOptions', async () => {
         const { module } = makeModule();
         module.config = { url: 'https://example.com/master.m3u8' };
@@ -138,8 +171,9 @@ describe('HlsPlayerModule.buildRunnerConfig', () => {
             subtitleLanguages: ['eng'],
             skipOnStall: true,
         };
-        const cfg = module.buildRunnerConfig('u', 41000);
+        const cfg = module.buildRunnerConfig('u', '239.255.0.1', 41000);
         expect(cfg).toMatchObject({
+            host: '239.255.0.1',
             capBitrateBps: 2_500_000,
             abrPreset: 'unstable',
             inlineAudio: ['eng', 'zul'],
@@ -151,7 +185,7 @@ describe('HlsPlayerModule.buildRunnerConfig', () => {
     it('treats 0 cap bitrate as no cap', () => {
         const { module } = makeModule();
         module.config = { capBitrate: 0 };
-        expect(module.buildRunnerConfig('u', 1).capBitrateBps).toBe(0);
+        expect(module.buildRunnerConfig('u', 'h', 1).capBitrateBps).toBe(0);
     });
 });
 
@@ -178,6 +212,79 @@ describe('HlsPlayerModule.onLiveConfigUpdate', () => {
         expect(spawn).toHaveBeenCalledTimes(2);
         expect(runnerConfigAt(spawn, 1).url).toBe('https://example.com/b.m3u8');
     });
+
+    it('does not respawn when the pushed URL is unchanged (manager config re-sync)', async () => {
+        const { module, spawn, kill } = makeModule();
+        module.config = { url: 'https://example.com/a.m3u8' };
+        await module.onStart();
+        expect(spawn).toHaveBeenCalledOnce();
+
+        await module.onLiveConfigUpdate({ url: 'https://example.com/a.m3u8' });
+        expect(kill).not.toHaveBeenCalled();
+        expect(spawn).toHaveBeenCalledOnce();
+    });
+
+    it('clearing the URL kills the runner and returns to idle', async () => {
+        const { module, spawn, kill } = makeModule();
+        module.config = { url: 'https://example.com/a.m3u8' };
+        await module.onStart();
+
+        await module.onLiveConfigUpdate({ url: '' });
+        expect(kill).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledOnce(); // no respawn
+        expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
+        expect(module.setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('URL'));
+    });
+
+    it('serializes rapid URL changes — last update wins, runners never overlap', async () => {
+        const { module, spawn, kill } = makeModule();
+        await module.onStart(); // idle
+
+        // First URL probes slowly; without the update lock the second update
+        // would interleave and both could spawn onto the same multicast port.
+        const p1 = module.onLiveConfigUpdate({ url: 'https://example.com/slow.m3u8' });
+        const p2 = module.onLiveConfigUpdate({ url: 'https://example.com/b.m3u8' });
+        await Promise.all([p1, p2]);
+
+        expect(spawn).toHaveBeenCalledTimes(2);
+        expect(kill).toHaveBeenCalledOnce(); // first runner killed before the second spawned
+        expect(runnerConfigAt(spawn, 1).url).toBe('https://example.com/b.m3u8');
+    });
+
+    it('a failed probe clears the previous stream’s language options', async () => {
+        const { module } = makeModule();
+        module.config = { url: 'https://example.com/a.m3u8' };
+        await module.onStart();
+        module.setFieldOptions.mockClear();
+
+        await module.onLiveConfigUpdate({ url: 'https://example.com/fail.m3u8' });
+        expect(module.setFieldOptions).toHaveBeenCalledWith('audio', []);
+        expect(module.setFieldOptions).toHaveBeenCalledWith('subtitles', []);
+    });
+});
+
+describe('HlsPlayerModule runner health', () => {
+    it('crash-loop restart surfaces as warning with the bitrate badge cleared', async () => {
+        const { module, spawn } = makeModule();
+        module.config = { url: 'https://example.com/a.m3u8' };
+        await module.onStart();
+
+        const proc = spawn.mock.results[0]!.value as EventEmitter;
+        proc.emit('restarting', 2, 6000);
+        expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
+        expect(module.setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining('restarting'),
+        );
+    });
+
+    it('a stats line restores health to ok after a warning', () => {
+        const { module } = makeModule();
+        module.running = true;
+        module.health = 'warning';
+        module.parseStats(JSON.stringify({ stats: { bitrateMbps: 1.0, bytesSent: 1 } }));
+        expect(module.setHealth).toHaveBeenCalledWith('ok');
+    });
 });
 
 describe('HlsPlayerModule.parseStats', () => {
@@ -200,8 +307,3 @@ describe('HlsPlayerModule.parseStats', () => {
         expect(module.setStatusData).not.toHaveBeenCalled();
     });
 });
-
-/** HLS_CONFIG from the Nth spawn call. */
-function runnerConfigAt(spawn: ReturnType<typeof vi.fn>, n: number): Record<string, unknown> {
-    return JSON.parse(spawn.mock.calls[n][1].env.HLS_CONFIG);
-}

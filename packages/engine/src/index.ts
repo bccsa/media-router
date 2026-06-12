@@ -26,6 +26,13 @@ export {
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
 export { formatBytes, SrtStatPoller } from './plugins/srtHelpers.js';
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
+export {
+    PacedUdpTsSink,
+    packetizeTs,
+    TS_PACKET_BYTES,
+    TS_PACKETS_PER_DATAGRAM,
+    TS_DATAGRAM_BYTES,
+} from './plugins/PacedUdpTsSink.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';

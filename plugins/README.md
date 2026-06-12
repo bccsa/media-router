@@ -1104,6 +1104,20 @@ For per-output-port allocation (e.g. MPEG-TS demuxer with N outputs), pass a `po
 const ep = router.assignUdpPort(instanceId, 'audio-0');
 ```
 
+### Producer pattern from Node (no GStreamer): `PacedUdpTsSink`
+
+When the MPEG-TS bytes originate in Node (not in a GStreamer pipeline — e.g. hls-player's hls-pipe runner), use `PacedUdpTsSink` from `@media-router/engine`. It packetizes a byte stream into 1316-byte datagrams and **paces egress at the media rate** so the receiver's `udpsrc` buffer doesn't overflow when whole segments arrive in bursts — the `udpsrc` defaults in `buildUdpSrc` are tuned around this sink. It buffers up to ~60 s of read-ahead (back-pressuring `write`), pre-fills 2 s on start, and re-anchors its pacing clock after a source stall.
+
+```typescript
+import { PacedUdpTsSink } from '@media-router/engine';
+
+const sink = new PacedUdpTsSink(endpoint.port, endpoint.host); // iface defaults to loopback
+await sink.write(tsBytes, segmentDurationSec); // blocks only when the read-ahead buffer is full
+await sink.end(); // flush whole packets at media rate, then close
+```
+
+Pass the `host` from `assignUdpPort` / `getUdpEndpoint` — never hardcode the multicast group. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
+
 ### Consumer pattern (decoder, muxer input, SRT-out…)
 
 Consumers return `null` from `buildPipeline` when no upstream is connected. The router restarts them when a connection is made.
@@ -1136,30 +1150,28 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 
 Plugins can spawn arbitrary external processes (CLI tools like `ristreceiver`, `srt-live-transmit`, `ffmpeg`, etc.) via the `ProcessManager` service. Processes are automatically killed when the module stops — no manual cleanup needed.
 
-**Basic usage:**
+**Preferred: `this.spawnRunnerProcess(opts)`** (on `GstPluginBase`). Wraps `processManager.spawn` with the standardized health wiring every process-backed producer needs — written once so plugins can't forget the failure modes:
+
+- spawn failure or restart attempts exhausted → health `error`
+- crash-backoff restart pending or unexpected clean exit → health `warning`
+- `clearBadges: [...]` — badge IDs removed whenever the process goes down, so a stale stats badge never shows green on a dead stream
+
+The plugin restores `ok` itself once the runner proves live — on the process `started` event (CLI tools where spawn ≈ live), or on the next parsed stats line (runners that can crash-loop after spawning, like hls-player).
 
 ```typescript
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
-
 export class RistReceiverModule extends GstPluginBase {
     private receiver?: ManagedProcess;
 
     async onStart(): Promise<void> {
-        // Spawn an external process owned by this module
-        this.receiver = this.services!.processManager.spawn(
-            this.services!.instanceId,
-            {
-                label: 'ristreceiver',
-                command: 'ristreceiver',
-                args: ['-p', '2088:2089', '-o', 'udp://127.0.0.1:5000'],
-                autoRestart: true,    // auto-restart on crash
-                onStdout: (line) => this.log.info(line),
-                onStderr: (line) => this.parseRistStats(line),
-            },
-        );
-
-        // Listen for health changes
-        this.receiver.on('error', (msg) => this.setHealth('error', msg));
+        this.receiver = this.spawnRunnerProcess({
+            label: 'ristreceiver',
+            command: 'ristreceiver',
+            args: ['-p', '2088:2089', '-o', 'udp://127.0.0.1:5000'],
+            autoRestart: true,    // auto-restart on crash
+            clearBadges: ['quality', 'connections'],
+            onStdout: (line) => this.log.info(line),
+            onStderr: (line) => this.parseRistStats(line),
+        });
         this.receiver.on('started', () => this.setHealth('ok'));
 
         await super.onStart();
@@ -1168,6 +1180,8 @@ export class RistReceiverModule extends GstPluginBase {
     // No need to override onStop() — ProcessManager auto-kills on module stop
 }
 ```
+
+For processes that aren't the module's health-defining producer (auxiliary tools), `this.services.processManager.spawn(instanceId, opts)` is still available directly — same options, no health wiring.
 
 **ManagedProcessOptions:**
 
@@ -1212,6 +1226,7 @@ export class RistReceiverModule extends GstPluginBase {
 | `this.running` | `boolean` | Whether the pipeline is running |
 | `this.health` | `ModuleHealth` | Current health status |
 | `setHealth(health, error?)` | method | Set module health + optional error message |
+| `spawnRunnerProcess(opts)` | method | Spawn an external runner with standardized health wiring (see ProcessManager section) |
 | `setElementProperty(el, prop, val)` | method | Set GStreamer element property (live) |
 | `getElementProperty(el, prop)` | method | Get GStreamer element property |
 | `getElementStats(el)` | method | Read element `stats` GstStructure as dict |
