@@ -53,6 +53,14 @@ export interface PluginModule {
     getState(): import('@media-router/shared-types').ModuleRuntimeState;
     /** Return list of config params that can be changed without restart. */
     getLiveUpdatableParams(): string[];
+    /**
+     * Refine live-updatability per change. Only consulted for params already in
+     * `getLiveUpdatableParams()`; returning false routes that change down the
+     * pending-restart path instead. Lets a structured param be live for some
+     * edits but not others — e.g. the mpegts-muxer's stream arrays, where a
+     * rename is a live KLV push but adding/removing an entry needs a rebuild.
+     */
+    isLiveChange?(key: string, newValue: unknown, oldValue: unknown): boolean;
     /** Apply live config changes (only for params in getLiveUpdatableParams). */
     onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void>;
     /** Return PipeWire node names for audio routing (single-port modules). */
@@ -105,6 +113,16 @@ export interface PipelineDescription {
      */
     linkOnPadAdded?: PadLinkRule[];
     /**
+     * When true, the runner attaches a `queue ! appsink` to every `meta/x-klv`
+     * pad a `tsdemux` exposes, parses the payload off it, and emits a
+     * `stream_names` event with the raw bytes (mpegts demuxer in-band name
+     * channel, Phase 2). The mandatory `queue` is the Phase 0 finding — an
+     * appsink straight on a tsdemux pad back-pressures the streaming loop and
+     * stalls the whole TS. Off by default; only the demuxer sets it. Per plan
+     * D6 the reader never affects routing or pipeline health.
+     */
+    readKlvNames?: boolean;
+    /**
      * Extra environment variables for the Python runner that hosts this
      * pipeline. Merged into `spawn`'s env at fork time, so the values are
      * visible *before* any GStreamer / GLib init runs in the child —
@@ -136,4 +154,25 @@ export interface PadLinkRule {
      * dynamically-built branches into a named muxer.
      */
     linkTo?: string;
+    /**
+     * Optional — explicit request-pad name(s) to ask `linkTo` for instead of
+     * the implicit `sink_%d`. The Nth matched pad requests
+     * `requestedPadNames[N]`; if the list is shorter than the number of pads,
+     * pads beyond it fall back to `sink_%d`. Generic by design — any element
+     * whose request-pad template derives behaviour from the pad name can use
+     * it. `mpegtsmux` is the first consumer: a `sink_<pid>` name pins that
+     * stream's PID (plan D3 deterministic-PID scheme).
+     */
+    requestedPadNames?: string[];
+    /**
+     * Optional — match pads to branches by PID instead of pad-added order.
+     * `branches[N]` is linked to the pad whose PID equals `matchPids[N]` (the
+     * PID is read from the demux pad name `<media>_<prog>_<pidhex>`). A pad
+     * whose PID isn't in the list is ignored. This fixes the positional
+     * fragility of the default Nth-pad → Nth-branch contract: with stable
+     * PID-based ports (mpegts-demuxer, plan Phase 3) a source can add or
+     * reorder streams without misrouting. When absent, the positional
+     * contract is used unchanged.
+     */
+    matchPids?: number[];
 }

@@ -4,7 +4,12 @@ import {
     buildDynamicPorts,
     buildOutputBranch,
     buildPipeline,
+    discoveredPortLabel,
+    discoveredStreams,
     inputPortId,
+    legacyPortIdToPid,
+    pidFromPortId,
+    pidPortId,
     videoPortId,
 } from './mpegtsDemuxerPipeline.js';
 import { MpegTsDemuxerModule } from './MpegTsDemuxerModule.js';
@@ -59,6 +64,52 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50);
             expect(s).toMatch(/mpegtsmux name=mux_v0[^!]+! udpsink/);
         });
+
+        describe('output smoothing (opt-in outputBufferMs — Phase 5)', () => {
+            // Default OFF must be byte-identical to the live path: capture the
+            // exact current strings, then assert outputBufferMs=0 (and the
+            // arg-omitted default) reproduce them character-for-character.
+            it('emits BYTE-IDENTICAL strings when outputBufferMs is 0 or omitted (live path unchanged)', () => {
+                const out = { portId: 'video-0', host: '239.255.0.1', port: 41005 };
+                const videoBaseline = buildOutputBranch(out, 'v0', 'video', 50);
+                const audioBaseline = buildOutputBranch(
+                    { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50);
+                // Omitted arg.
+                expect(buildOutputBranch(out, 'v0', 'video', 50)).toBe(videoBaseline);
+                // Explicit 0.
+                expect(buildOutputBranch(out, 'v0', 'video', 50, 0)).toBe(videoBaseline);
+                expect(
+                    buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50, 0),
+                ).toBe(audioBaseline);
+                // And no smoothing element leaked into the default path.
+                expect(videoBaseline).not.toContain('leaky=0');
+                expect(audioBaseline).not.toContain('leaky=0');
+            });
+
+            it('prepends a deep NON-leaky smoothing queue with the right window on the video branch', () => {
+                const s = buildOutputBranch(
+                    { portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50, 2000);
+                // Smoothing queue is first, non-leaky, sized to the window.
+                expect(s).toMatch(/^queue leaky=0 max-size-time=2000000000 max-size-buffers=0 max-size-bytes=0 !/);
+                // The original branch is preserved after it.
+                expect(s).toContain('queue leaky=2 max-size-buffers=2');
+                expect(s).toContain('alignment=7');
+            });
+
+            it('prepends the smoothing queue on the audio branch too, keeping alignment=1', () => {
+                const s = buildOutputBranch(
+                    { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50, 800);
+                expect(s).toMatch(/^queue leaky=0 max-size-time=800000000 max-size-buffers=0 max-size-bytes=0 !/);
+                expect(s).toContain('queue leaky=2 max-size-time=50000000');
+                expect(s).toContain('alignment=1');
+            });
+
+            it('clamps the smoothing window to the 5000 ms ceiling', () => {
+                const s = buildOutputBranch(
+                    { portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50, 999999);
+                expect(s).toContain('queue leaky=0 max-size-time=5000000000');
+            });
+        });
     });
 
     describe('buildPipeline', () => {
@@ -95,6 +146,30 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
         });
+        it('threads outputBufferMs into both video and audio branches (Phase 5)', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+                outputBufferMs: 1500,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(videoRule.branches[0]).toContain('queue leaky=0 max-size-time=1500000000');
+            expect(audioRule.branches[0]).toContain('queue leaky=0 max-size-time=1500000000');
+        });
+        it('emits no smoothing queue when outputBufferMs is omitted (default OFF)', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+            });
+            for (const rule of result!.linkOnPadAdded) {
+                for (const branch of rule.branches) {
+                    expect(branch).not.toContain('leaky=0');
+                }
+            }
+        });
         it('emits tsdemux latency=0 on the input', () => {
             const result = buildPipeline({
                 input: { host: '239.255.0.1', port: 40001 },
@@ -102,6 +177,14 @@ describe('mpegtsDemuxerPipeline helpers', () => {
                 audioOutputs: [],
             });
             expect(result!.pipeline).toContain('tsdemux latency=0 name=demux');
+        });
+        it('adds a udpsrc timeout so a silent upstream restarts instead of hanging tsdemux', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
+                audioOutputs: [],
+            });
+            expect(result!.pipeline).toContain('timeout=5000000000');
         });
         it('goes straight from udpsrc to tsdemux with no tsparse — re-anchoring PCR mid-pipeline causes mpegtsmux PCR re-emit to surface as packet loss', () => {
             const result = buildPipeline({
@@ -132,6 +215,131 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             ]);
         });
     });
+
+    describe('PID-based port ids (Phase 3)', () => {
+        it('formats a PID as a stable hex port id and round-trips it back', () => {
+            expect(pidPortId(0x141)).toBe('pid-0x141');
+            expect(pidPortId(0x100)).toBe('pid-0x100');
+            expect(pidFromPortId('pid-0x141')).toBe(0x141);
+            expect(pidFromPortId('pid-0x100')).toBe(0x100);
+        });
+        it('returns null for a non-PID port id', () => {
+            expect(pidFromPortId('video-0')).toBeNull();
+            expect(pidFromPortId('mpegts-in')).toBeNull();
+        });
+    });
+
+    describe('discoveredStreams config parsing', () => {
+        it('keeps only video/audio entries with a numeric PID, sorted video-then-audio by PID', () => {
+            const cfg = {
+                discoveredStreams: [
+                    { pid: 0x141, media: 'audio', codec: 'aac' },
+                    { pid: 0x1f0, media: 'metadata' }, // dropped — not routable
+                    { pid: 0x100, media: 'video', codec: 'h264', name: 'Cam 1' },
+                    { media: 'audio' }, // dropped — no PID
+                    { pid: 0x101, media: 'video' },
+                ],
+            };
+            const out = discoveredStreams(cfg);
+            expect(out.map((s) => s.pid)).toEqual([0x100, 0x101, 0x141]);
+            expect(out[0]).toMatchObject({ media: 'video', codec: 'h264', name: 'Cam 1' });
+        });
+        it('returns [] when discoveredStreams is absent or not an array', () => {
+            expect(discoveredStreams({})).toEqual([]);
+            expect(discoveredStreams({ discoveredStreams: 'nope' })).toEqual([]);
+        });
+    });
+
+    describe('discoveredPortLabel — offline label fallback', () => {
+        it('prefers the persisted name', () => {
+            expect(discoveredPortLabel({ pid: 0x100, media: 'video', name: 'Cam 1' })).toBe('Cam 1');
+        });
+        it('falls back to generated codec+PID, matching the live generated form', () => {
+            expect(discoveredPortLabel({ pid: 0x141, media: 'audio', codec: 'aac' })).toBe(
+                'Audio (aac, PID 0x141)',
+            );
+            expect(discoveredPortLabel({ pid: 0x100, media: 'video' })).toBe('Video (PID 0x100)');
+        });
+    });
+
+    describe('buildDynamicPorts with discovered streams', () => {
+        it('emits PID-based ports for discovered streams alongside the legacy positional ports', () => {
+            const ports = buildDynamicPorts(1, 1, [
+                { pid: 0x100, media: 'video', name: 'Cam 1' },
+                { pid: 0x141, media: 'audio', codec: 'aac' },
+            ]);
+            const ids = ports.map((p) => p.id);
+            expect(ids).toContain('pid-0x100');
+            expect(ids).toContain('pid-0x141');
+            // Legacy positional ports kept so existing connections never dangle.
+            expect(ids).toContain('video-0');
+            expect(ids).toContain('audio-0');
+            expect(ports.find((p) => p.id === 'pid-0x100')?.label).toBe('Cam 1');
+        });
+    });
+
+    describe('legacyPortIdToPid — migration mapping', () => {
+        const discovered = [
+            { pid: 0x100, media: 'video' as const },
+            { pid: 0x141, media: 'audio' as const },
+            { pid: 0x142, media: 'audio' as const },
+        ];
+        it('maps the Nth positional id to the Nth discovered PID of that media', () => {
+            expect(legacyPortIdToPid('video-0', discovered)).toBe('pid-0x100');
+            expect(legacyPortIdToPid('audio-0', discovered)).toBe('pid-0x141');
+            expect(legacyPortIdToPid('audio-1', discovered)).toBe('pid-0x142');
+        });
+        it('returns null for an out-of-range ordinal or a non-positional id', () => {
+            expect(legacyPortIdToPid('video-1', discovered)).toBeNull();
+            expect(legacyPortIdToPid('pid-0x100', discovered)).toBeNull();
+            expect(legacyPortIdToPid('mpegts-in', discovered)).toBeNull();
+        });
+    });
+
+    describe('buildPipeline PID routing (Phase 3)', () => {
+        it('routes discovered streams by PID (matchPids), fanning a legacy port onto its mapped PID', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                // One PID-based video output + the legacy video-0 mapped to the same PID.
+                videoOutputs: [
+                    { portId: 'pid-0x100', host: '239.255.0.1', port: 41001, pid: 0x100 },
+                    { portId: 'video-0', host: '239.255.0.1', port: 41010, pid: 0x100 },
+                ],
+                audioOutputs: [
+                    { portId: 'pid-0x141', host: '239.255.0.1', port: 41002, pid: 0x141 },
+                ],
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            // Same PID twice → tee fan-out in the runner.
+            expect(videoRule.matchPids).toEqual([0x100, 0x100]);
+            expect(videoRule.branches).toHaveLength(2);
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(audioRule.matchPids).toEqual([0x141]);
+        });
+        it('keeps positional routing (no matchPids) when no output carries a PID (pre-discovery)', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            expect(videoRule.matchPids).toBeUndefined();
+        });
+        it('drops an unmapped legacy port (no discovered stream) rather than misrouting it', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [
+                    { portId: 'pid-0x100', host: '239.255.0.1', port: 41001, pid: 0x100 },
+                    { portId: 'video-1', host: '239.255.0.1', port: 41011 }, // unmapped, no pid
+                ],
+                audioOutputs: [],
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            // Only the pinned output gets a branch + matchPids entry.
+            expect(videoRule.matchPids).toEqual([0x100]);
+            expect(videoRule.branches).toHaveLength(1);
+        });
+    });
 });
 
 describe('MpegTsDemuxerModule', () => {
@@ -157,11 +365,12 @@ describe('MpegTsDemuxerModule', () => {
             }
             return { host: '239.255.0.1', port: allocated[key] };
         });
+        const getPortConnectionCount = vi.fn((_moduleId: string, _portId: string) => 0);
         (module as any).services = {
             instanceId: 'demux-1',
-            mediaRouter: { getModuleUdpSource, assignUdpPort },
+            mediaRouter: { getModuleUdpSource, assignUdpPort, getPortConnectionCount },
         };
-        return { module, getModuleUdpSource, assignUdpPort, allocated };
+        return { module, getModuleUdpSource, assignUdpPort, getPortConnectionCount, allocated };
     }
 
     beforeEach(() => {
@@ -174,6 +383,167 @@ describe('MpegTsDemuxerModule', () => {
             (module as any).config = { videoStreamCount: 1, audioStreamCount: 2 };
             const ports = module.getDynamicPorts();
             expect(ports).toHaveLength(1 + 1 + 2);
+        });
+        it('adds PID-based ports for persisted discovered streams (Phase 3)', () => {
+            const { module } = makeModule();
+            (module as any).config = {
+                videoStreamCount: 1,
+                audioStreamCount: 1,
+                discoveredStreams: [
+                    { pid: 0x100, media: 'video', name: 'Cam 1' },
+                    { pid: 0x141, media: 'audio', codec: 'aac' },
+                ],
+            };
+            const ports = module.getDynamicPorts();
+            const ids = ports.map((p) => p.id);
+            expect(ids).toContain('pid-0x100');
+            expect(ids).toContain('pid-0x141');
+            // Legacy ports are ALWAYS registered (dropping them from the
+            // registry based on the engine's transient connection view
+            // orphaned live edges) — post-discovery they carry the
+            // hideWhenUnconnected display hint and the UI hides idle ones.
+            expect(ids).toContain('video-0');
+            expect(ids).toContain('audio-0');
+            const legacy = ports.find((p) => p.id === 'video-0')!;
+            expect(legacy.hideWhenUnconnected).toBe(true);
+            const pidPort = ports.find((p) => p.id === 'pid-0x100')!;
+            expect(pidPort.hideWhenUnconnected).toBeUndefined();
+        });
+        it('legacy ports carry no display hint before discovery (pre-wiring a fresh demuxer)', () => {
+            const { module } = makeModule();
+            (module as any).config = { videoStreamCount: 1, audioStreamCount: 1 };
+            const ports = module.getDynamicPorts();
+            const legacy = ports.find((p) => p.id === 'video-0')!;
+            expect(legacy.hideWhenUnconnected).toBeUndefined();
+        });
+    });
+
+    describe('persistDiscovered (Phase 3 — discovery writes config, diffed)', () => {
+        function running() {
+            const { module } = makeModule();
+            (module as any).config = { videoStreamCount: 1, audioStreamCount: 1 };
+            (module as any).setStatusData = vi.fn();
+            return module as any;
+        }
+
+        it('emits discoveredStreams from the inspector and skips when unchanged', () => {
+            const module = running();
+            const emit = vi.fn();
+            module.emitConfigUpdate = emit;
+            module.inspector.record({ pid: 0x100, media: 'video', caps: 'video/x-h264' });
+            module.inspector.record({ pid: 0x141, media: 'audio', caps: 'audio/mpeg, mpegversion=(int)4' });
+            module.persistDiscovered();
+            expect(emit).toHaveBeenCalledTimes(1);
+            const written = emit.mock.calls[0][0].discoveredStreams;
+            expect(written.map((s: any) => s.pid)).toEqual([0x100, 0x141]);
+            // Mirror the write into config (the real emitConfigUpdate does this).
+            module.config.discoveredStreams = written;
+            // Same inspector state → diff returns null → no second emit.
+            module.persistDiscovered();
+            expect(emit).toHaveBeenCalledTimes(1);
+        });
+
+        it('never auto-removes a persisted stream that is no longer present (D5)', () => {
+            const module = running();
+            module.config.discoveredStreams = [
+                { pid: 0x100, media: 'video', codec: 'h264' },
+                { pid: 0x141, media: 'audio', codec: 'aac' },
+            ];
+            const emit = vi.fn();
+            module.emitConfigUpdate = emit;
+            // Only one stream live this run — the other should survive in config.
+            module.inspector.record({ pid: 0x100, media: 'video', caps: 'video/x-h264' });
+            module.persistDiscovered();
+            // Set unchanged (0x141 retained) → no emit.
+            expect(emit).not.toHaveBeenCalled();
+        });
+
+        it('does not route discovered streams as metadata (D6)', () => {
+            const module = running();
+            const emit = vi.fn();
+            module.emitConfigUpdate = emit;
+            module.inspector.record({ pid: 0x1f0, media: 'metadata', caps: 'meta/x-klv' });
+            module.persistDiscovered();
+            // Metadata-only discovery yields an empty routable set === prior ([]) → no emit.
+            expect(emit).not.toHaveBeenCalled();
+        });
+
+        it('shows a red stale badge for persisted-but-absent streams, clears it on recovery', () => {
+            const module = running();
+            module.config.discoveredStreams = [
+                { pid: 0x100, media: 'video', codec: 'h264' },
+                { pid: 0x141, media: 'audio', codec: 'aac' },
+            ];
+            const setBadge = vi.fn();
+            const clearBadge = vi.fn();
+            module.setBadge = setBadge;
+            module.clearBadge = clearBadge;
+            // Only the video PID seen live this run → one stale stream.
+            module.inspector.record({ pid: 0x100, media: 'video', caps: 'video/x-h264' });
+            module.publishStreamStatus();
+            expect(setBadge).toHaveBeenCalledWith('stale', {
+                icon: 'alert-triangle',
+                text: '1 stale stream',
+                color: '#ef4444',
+            });
+            // The audio PID comes back → badge cleared.
+            module.inspector.record({ pid: 0x141, media: 'audio', caps: 'audio/mpeg, mpegversion=(int)4' });
+            module.publishStreamStatus();
+            expect(clearBadge).toHaveBeenCalledWith('stale');
+        });
+
+        it('cleanupStaleStreams persists the tracker verdict and feeds it connection state', () => {
+            // Hysteresis semantics themselves are covered in
+            // staleStreamTracker.test.ts — this checks the module wiring:
+            // sweep verdict → emitConfigUpdate, connection lookup by PID port.
+            const { module: m, getPortConnectionCount } = makeModule();
+            const module = m as any;
+            module.config = {
+                discoveredStreams: [
+                    { pid: 0x100, media: 'video', codec: 'h264' },
+                    { pid: 0x142, media: 'audio', codec: 'aac' },
+                ],
+            };
+            module.setStatusData = vi.fn();
+            module.setBadge = vi.fn();
+            module.clearBadge = vi.fn();
+            const emit = vi.fn();
+            module.emitConfigUpdate = emit;
+            getPortConnectionCount.mockReturnValue(0);
+            const sweep = vi.fn(
+                (
+                    persisted: any[],
+                    _live: Set<number>,
+                    isConnected: (pid: number) => boolean,
+                ): any[] | null => {
+                    // The module must hand the tracker a PID-port connection probe.
+                    isConnected(0x142);
+                    return persisted.filter((s) => s.pid !== 0x142);
+                },
+            );
+            module.staleTracker = { sweep, reset: vi.fn() };
+            module.cleanupStaleStreams();
+            expect(getPortConnectionCount).toHaveBeenCalledWith('demux-1', 'pid-0x142');
+            expect(emit).toHaveBeenCalledTimes(1);
+            expect(emit.mock.calls[0][0].discoveredStreams.map((s: any) => s.pid)).toEqual([0x100]);
+            // Null verdict → no config write.
+            sweep.mockReturnValue(null);
+            module.cleanupStaleStreams();
+            expect(emit).toHaveBeenCalledTimes(1);
+        });
+
+        it('cleanup is a no-op when every persisted stream is live or connected', () => {
+            const { module: m, getPortConnectionCount } = makeModule();
+            const module = m as any;
+            module.config = {
+                discoveredStreams: [{ pid: 0x100, media: 'video', codec: 'h264' }],
+            };
+            const emit = vi.fn();
+            module.emitConfigUpdate = emit;
+            module.inspector.record({ pid: 0x100, media: 'video', caps: 'video/x-h264' });
+            getPortConnectionCount.mockReturnValue(0);
+            module.cleanupStaleStreams();
+            expect(emit).not.toHaveBeenCalled();
         });
     });
 
@@ -208,6 +578,62 @@ describe('MpegTsDemuxerModule', () => {
             (module as any).setHealth = setHealth;
             expect(module.buildPipeline((module as any).config)).toBeNull();
             expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('No outputs'));
+        });
+
+        it('requests the in-band name reader (readKlvNames) but never routes the metadata PID', () => {
+            const { module } = makeModule();
+            (module as any).config = { videoStreamCount: 1, audioStreamCount: 1 };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const desc = module.buildPipeline((module as any).config)!;
+            expect(desc.readKlvNames).toBe(true);
+            // No rule (= no routing branch / UDP output) for the metadata PID (D6).
+            const medias = desc.linkOnPadAdded!.map((r) => r.media);
+            expect(medias).not.toContain('metadata');
+            expect(new Set(medias)).toEqual(new Set(['video', 'audio']));
+        });
+    });
+
+    describe('in-band stream names (Phase 2)', () => {
+        function primed() {
+            const { module } = makeModule();
+            (module as any).setStatusData = vi.fn();
+            (module as any).log = { warn: vi.fn() };
+            // Two discovered streams so labels have something to attach to.
+            const insp = (module as any).inspector;
+            insp.record({ pid: 0x100, media: 'video', caps: 'video/x-h264' });
+            insp.record({ pid: 0x141, media: 'audio', caps: 'audio/mpeg, mpegversion=(int)4' });
+            return module;
+        }
+
+        it('merges KLV names onto the inspector streams and resolves labels', () => {
+            const module = primed();
+            (module as any).handleStreamNames({
+                payload: '{"v":1,"streams":[{"pid":256,"name":"Cam 1"},{"pid":321,"name":"FOH"}]}',
+                malformed: false,
+            });
+            expect((module as any).klvNames.get(0x100)).toBe('Cam 1');
+            const sections = (module as any).dynamicStatusSections as Array<{ label: string }>;
+            expect(sections.map((s) => s.label)).toEqual(['Cam 1', 'FOH']);
+        });
+
+        it('keeps last-known labels when metadata disappears (absence is a non-event)', () => {
+            const module = primed();
+            (module as any).handleStreamNames({
+                payload: '{"v":1,"streams":[{"pid":256,"name":"Cam 1"}]}',
+            });
+            (module as any).handleStreamNames({ payload: undefined });
+            expect((module as any).klvNames.get(0x100)).toBe('Cam 1');
+        });
+
+        it('warns once on malformed payloads and never throws', () => {
+            const module = primed();
+            const warn = (module as any).log.warn as ReturnType<typeof vi.fn>;
+            expect(() => {
+                (module as any).handleStreamNames({ payload: '{bad json' });
+                (module as any).handleStreamNames({ payload: 'still bad' });
+            }).not.toThrow();
+            expect(warn).toHaveBeenCalledTimes(1);
         });
     });
 });

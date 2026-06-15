@@ -29,6 +29,9 @@ export interface EngineEventContext {
     getCurrentConfig: () => Record<string, unknown> | null;
     setCurrentConfig: (config: Record<string, unknown>) => void;
     enrichConfigForLcp: (config: Record<string, unknown>) => Record<string, unknown>;
+    /** Re-resolve a module's dynamic ports after a plugin auto-writes config
+     *  that changes its port set (mpegts-demuxer discovery, plan Phase 3). */
+    refreshModulePorts: (moduleId: string) => void;
 }
 
 export function wireEngineEvents(ctx: EngineEventContext): void {
@@ -53,6 +56,12 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
                 value,
             }));
             ctx.managerConnection.send('patch', { ops });
+            // A plugin auto-write can change its dynamic port set (mpegts-
+            // demuxer persisting discovered streams, plan Phase 3). Re-resolve
+            // unconditionally — refreshPorts diffs the resolved list and
+            // skips the patch when nothing changed, so the engine doesn't
+            // need to know which plugin config keys are port-affecting.
+            ctx.refreshModulePorts(instanceId);
         },
     );
 

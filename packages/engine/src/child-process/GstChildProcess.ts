@@ -34,6 +34,7 @@ export function throwIfRpcError(result: unknown, label: string): void {
  * Emits:
  *   - 'stateChange' (state) — pipeline state change
  *   - 'vuData' (data) — VU meter data
+ *   - 'streamDiscovered' (data) — a tsdemux pad appeared (PID, caps, media)
  *   - 'error' (data) — error from pipeline
  *   - 'exit' (code) — child process exited
  */
@@ -112,6 +113,19 @@ export class GstChildProcess extends EventEmitter {
             this.emit('vuData', data);
         });
 
+        // Stream inspection (mpegts demuxer): per-pad discovery. Pure
+        // passthrough — the module decides what to do with it.
+        this.ipc.on('streamDiscovered', (data) => {
+            this.emit('streamDiscovered', data);
+        });
+
+        // In-band name channel (mpegts demuxer, Phase 2): the runner parsed a
+        // KLV name payload off the metadata PID. Pure passthrough — the module
+        // merges it onto its inspector; never affects routing or health (D6).
+        this.ipc.on('streamNames', (data) => {
+            this.emit('streamNames', data);
+        });
+
         this.ipc.on('error', (data) => {
             this.emit('error', data);
         });
@@ -136,6 +150,7 @@ export class GstChildProcess extends EventEmitter {
                 restartOnError: this.pipelineDesc.restartOnError ?? false,
                 restartBackoffMs: this.pipelineDesc.restartBackoffMs,
                 linkOnPadAdded: this.pipelineDesc.linkOnPadAdded ?? [],
+                readKlvNames: this.pipelineDesc.readKlvNames ?? false,
                 env: this.pipelineDesc.env ?? {},
             });
         } catch (err) {
@@ -215,6 +230,18 @@ export class GstChildProcess extends EventEmitter {
     }
 
     // --- Live element control ---
+
+    /**
+     * Push the KLV name carousel payload to the runner (mpegts muxer, Phase 2).
+     * Fire-and-forget: the runner stores it and (re)starts the ~1 s carousel on
+     * the metadata appsrc, so a name edit updates downstream labels without a
+     * pipeline rebuild. No ack needed — the channel is report-only (D6), and a
+     * dropped update is corrected by the next carousel tick.
+     */
+    sendKlvPayload(element: string, payload: string): void {
+        if (!this.ipc || !this.running) return;
+        this.ipc.sendEvent('setKlvPayload', { element, payload });
+    }
 
     /** Set a property on a named GStreamer element (live, no restart). */
     async setProperty(element: string, property: string, value: unknown): Promise<void> {

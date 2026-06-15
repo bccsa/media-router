@@ -337,6 +337,74 @@ describe('ModuleLifecycle', () => {
         });
     });
 
+    describe('refreshPorts (live port re-resolution on plugin config auto-write)', () => {
+        // A stable config object (not a fresh literal per call) so the
+        // `modConfig.ports` cache resolvePortsForInstance writes persists
+        // between refreshPorts calls — mirrors the live engine config.
+        function makeLifecycle() {
+            const config = {
+                modules: {
+                    'demux-1': {
+                        pluginId: 'example',
+                        displayName: 'Demux',
+                        enabled: true,
+                        settings: {},
+                        ports: [] as unknown[],
+                    },
+                },
+                connections: [] as unknown[],
+            };
+            const lc = new ModuleLifecycle(moduleManager, mediaRouter, mockPipeWire, () => config);
+            return { lc, config };
+        }
+
+        const pidPort = {
+            id: 'pid-0x100',
+            direction: 'output' as const,
+            streamType: 'muxed/mpegts',
+            label: 'Video',
+            maxConnections: -1,
+        };
+
+        it('re-resolves and pushes ports when the dynamic set changed', async () => {
+            const { lc } = makeLifecycle();
+            await lc.startAll();
+            const instance = moduleManager.get('demux-1')!;
+            vi.spyOn(instance, 'getDynamicPorts').mockReturnValue([pidPort] as never);
+            const resolved = vi.fn();
+            lc.onDynamicPortsResolved = resolved;
+
+            lc.refreshPorts('demux-1');
+
+            expect(resolved).toHaveBeenCalledWith('demux-1', [pidPort]);
+            expect(mediaRouter.portRegistry.get('demux-1', 'pid-0x100')).toBeDefined();
+        });
+
+        it('is a no-op when the resolved port set is unchanged', async () => {
+            const { lc } = makeLifecycle();
+            await lc.startAll();
+            const instance = moduleManager.get('demux-1')!;
+            vi.spyOn(instance, 'getDynamicPorts').mockReturnValue([pidPort] as never);
+            lc.refreshPorts('demux-1'); // first call stores modConfig.ports
+            const resolved = vi.fn();
+            lc.onDynamicPortsResolved = resolved;
+
+            lc.refreshPorts('demux-1'); // identical set → diff matches → skip
+
+            expect(resolved).not.toHaveBeenCalled();
+        });
+
+        it('is a no-op for a module that is not running', () => {
+            const { lc } = makeLifecycle();
+            const resolved = vi.fn();
+            lc.onDynamicPortsResolved = resolved;
+
+            lc.refreshPorts('demux-1'); // never started
+
+            expect(resolved).not.toHaveBeenCalled();
+        });
+    });
+
     describe('startSingle — port fallback', () => {
         it('uses manifest ports when config has none', async () => {
             const mockPluginLoader = {

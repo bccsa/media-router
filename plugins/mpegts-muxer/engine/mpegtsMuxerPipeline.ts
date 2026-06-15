@@ -7,11 +7,16 @@
 
 import {
     DEFAULT_MPEGTS_ALIGNMENT,
+    TS_METADATA_PID,
+    audioStreamPid,
     buildLeakyQueue,
     buildUdpSink,
     buildUdpSrc,
+    muxSinkPadName,
+    videoStreamPid,
     type PadLinkRule,
 } from '@media-router/engine';
+import type { NamedStreamInput } from './klvPayload.js';
 
 export type PortDirection = 'input' | 'output';
 
@@ -35,11 +40,67 @@ export interface UdpInputSource {
     sinkPortId: string;
     host: string;
     port: number;
+    /** Operator-set name for this input (live-updatable). Blank → fall back. */
+    name?: string | null;
+    /** Connected source module id (D4 name fallback when no operator name). */
+    sourceModuleId?: string | null;
 }
 
 const VIDEO_PORT_PREFIX = 'video-';
 const AUDIO_PORT_PREFIX = 'audio-';
 const OUTPUT_PORT_ID = 'mpegts-out';
+
+/** Element name of the metadata `appsrc` the runner pushes the KLV carousel
+ *  onto (plan D2/Phase 2). The module references this when wiring live name
+ *  updates to the `set_klv_payload` runner command. */
+export const KLV_APPSRC_NAME = 'klvsrc';
+
+/**
+ * udpsrc timeout (5 s, in ns). A silent input — encoder dead, multicast
+ * group never joined — is otherwise invisible: udpsrc posts no bus error, so
+ * the muxer's aggregator quietly stalls its output with no signal to trigger
+ * `restartOnError`. The runner turns the resulting `GstUDPSrcTimeout` element
+ * message into an error event, so this makes a dark source recover via the
+ * normal restart path instead of hanging until manually restarted.
+ */
+const UDP_INPUT_TIMEOUT_NS = 5_000_000_000;
+
+/** One configured input stream: just its operator-set name (blank = unset). */
+export interface StreamEntry {
+    name: string;
+}
+
+const MAX_STREAMS: Record<'video' | 'audio', number> = { video: 8, audio: 16 };
+
+/**
+ * Read the per-media stream list from config. Current shape: `videoStreams` /
+ * `audioStreams` arrays of `{ name }` — one entry per input port, length is
+ * the port count ("+ Add" in the UI appends an entry). Legacy shape (counts +
+ * a `streamNames` map keyed by port id) is still honoured so deployed configs
+ * keep their ports and labels until next edited.
+ */
+export function streamEntries(
+    config: Record<string, unknown>,
+    media: 'video' | 'audio',
+): StreamEntry[] {
+    const arr = config[media === 'video' ? 'videoStreams' : 'audioStreams'];
+    if (Array.isArray(arr)) {
+        return arr.slice(0, MAX_STREAMS[media]).map((e) => ({
+            name:
+                typeof (e as { name?: unknown } | null)?.name === 'string'
+                    ? ((e as { name: string }).name)
+                    : '',
+        }));
+    }
+    const count = Math.max(
+        0,
+        (config[media === 'video' ? 'videoStreamCount' : 'audioStreamCount'] as number) ?? 1,
+    );
+    const legacyNames = (config.streamNames as Record<string, string> | undefined) ?? {};
+    return Array.from({ length: Math.min(count, MAX_STREAMS[media]) }, (_, i) => ({
+        name: legacyNames[`${media}-${i}`] ?? '',
+    }));
+}
 
 export function videoPortId(index: number): string {
     return `${VIDEO_PORT_PREFIX}${index}`;
@@ -109,8 +170,21 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
         host: source.host,
         port: source.port,
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
+        timeoutNs: UDP_INPUT_TIMEOUT_NS,
     });
-    // `tsdemux latency=0` removes its default 700 ms input buffer — the
+    // The udpsrc `timeout` is load-bearing on a MULTI-source mux, not just a
+    // nicety: `mpegtsmux` aggregates all its sink pads and CANNOT distinguish a
+    // late pad from a dead one, so when any single input goes dark it stalls
+    // the WHOLE combined output indefinitely (spike: `multi_source_dark_input.py`
+    // — 1 output buffer in the 6.5 s after one of two inputs was killed). With
+    // no timeout that stall is silent and unrecoverable. The timeout turns it
+    // into a `GstUDPSrcTimeout` → runner error → `restartOnError` rebuild, which
+    // is the only available recovery: the healthy inputs are already frozen by
+    // the stall, so the restart disrupts nothing that was still flowing. The
+    // restart does loop while a source stays permanently dark — making the mux
+    // survive a dead input without a rebuild needs per-pad keepalive/fallback
+    // (a real feature, not a tuning knob), since mpegtsmux has no drop-dead-pad
+    // mode. `tsdemux latency=0` removes its default 700 ms input buffer — the
     // per-pad leaky queue downstream provides flow control.
     return `${udpsrc} ! tsdemux latency=0 name=demux_${branchId}`;
 }
@@ -127,6 +201,10 @@ export interface MuxerPipelineInputs {
 export interface MuxerPipelineResult {
     pipeline: string;
     linkOnPadAdded: PadLinkRule[];
+    /** Per-stream identity for the in-band name carousel (plan D2/Phase 2),
+     *  PID-keyed and in the same per-media ordinal order used for PID pinning.
+     *  The module turns this into the KLV payload pushed to the runner. */
+    namedStreams: NamedStreamInput[];
 }
 
 /**
@@ -164,36 +242,78 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
     // payload) and corrupts decode at the receiver. The 2 MB kernel UDP
     // send buffer (≈4 s @ 4 Mbps) absorbs typical bursts on its own.
-    const pipeline = `${muxer} ! ${sink} ${branches.join(' ')}`;
+    //
+    // In-band name channel (plan D2/Phase 2): a metadata `appsrc` pinned to the
+    // fixed metadata PID feeds `mpegtsmux`. The runner pushes the KLV name
+    // carousel onto `${KLV_APPSRC_NAME}` on a ~1 s timer (and re-pushes on every
+    // live name edit). Per D6 this branch never affects routing or pipeline
+    // health: it's a static element that simply carries labels, and the demuxer
+    // treats its absence as a non-event. `do-timestamp=true` lets mpegtsmux
+    // schedule the packets without the pusher computing PTS.
+    const klvSrc =
+        `appsrc name=${KLV_APPSRC_NAME} caps=meta/x-klv,parsed=true ` +
+        `format=time is-live=true do-timestamp=true ! mux.${muxSinkPadName(TS_METADATA_PID)}`;
+    const pipeline = `${muxer} ! ${sink} ${branches.join(' ')} ${klvSrc}`;
 
     // Per-source pad-link rules: each tsdemux gets one rule per media type.
     // No codec parser in the branch — the Python pad-link runner injects the
     // matching parser at pad-added time from the actual pad caps, which
     // means upstream codec changes (or audio-only sources signalling video
     // by mistake) don't take this plugin's pipeline-build path down.
+    // PID pinning (plan D3): each muxer input gets a deterministic PID via the
+    // `mpegtsmux` request-pad name `sink_<pid>`. video-N → 0x100+N,
+    // audio-N → 0x140+N, where N is the 0-based ordinal *within* that media
+    // type — counted here in source-sort order so the same wiring always maps
+    // to the same PIDs across restarts. The demuxer on the far end then keeps
+    // stable port identity, and the PID is the join key for in-band naming
+    // (Phase 2). Without this, mpegtsmux auto-numbers PIDs and they drift.
     const linkOnPadAdded: PadLinkRule[] = [];
+    // Same per-media ordinal walk as the PID pinning above, recording each
+    // stream's pinned PID + identity so the module can build the name carousel
+    // (plan D2/D4). PID is the join key the demuxer matches names against.
+    const namedStreams: NamedStreamInput[] = [];
+    let videoOrdinal = 0;
+    let audioOrdinal = 0;
     for (let i = 0; i < input.sources.length; i++) {
         const demux = `demux_${i}`;
         const source = input.sources[i];
         if (isVideoInputPort(source.sinkPortId)) {
+            const pid = videoStreamPid(videoOrdinal++);
             linkOnPadAdded.push({
                 from: demux,
                 media: 'video',
                 branches: [videoQueue],
                 linkTo: 'mux',
+                requestedPadNames: [muxSinkPadName(pid)],
+            });
+            namedStreams.push({
+                pid,
+                media: 'video',
+                sinkPortId: source.sinkPortId,
+                name: source.name,
+                sourceModuleId: source.sourceModuleId,
             });
         }
         if (isAudioInputPort(source.sinkPortId)) {
+            const pid = audioStreamPid(audioOrdinal++);
             linkOnPadAdded.push({
                 from: demux,
                 media: 'audio',
                 branches: [audioQueue],
                 linkTo: 'mux',
+                requestedPadNames: [muxSinkPadName(pid)],
+            });
+            namedStreams.push({
+                pid,
+                media: 'audio',
+                sinkPortId: source.sinkPortId,
+                name: source.name,
+                sourceModuleId: source.sourceModuleId,
             });
         }
     }
 
-    return { pipeline, linkOnPadAdded };
+    return { pipeline, linkOnPadAdded, namedStreams };
 }
 
 /** Sort a list of input sources so the resulting pipeline is deterministic. */

@@ -321,6 +321,17 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     // child can't take a plugin down. The engine-level GstChildProcess
     // surface still throws so engine internals can react if they need to.
 
+    /**
+     * Push the KLV name carousel payload to the runner (mpegts muxer, Phase 2).
+     * Fire-and-forget — the runner stores it and drives the ~1 s carousel on
+     * the metadata appsrc, so a name edit updates downstream labels without a
+     * pipeline rebuild. Report-only channel (plan D6): a no-op when the pipeline
+     * isn't running, and a dropped update self-corrects on the next tick.
+     */
+    protected setKlvPayload(element: string, payload: string): void {
+        this.childProcess?.sendKlvPayload(element, payload);
+    }
+
     /** Set a property on a named GStreamer element (live, no restart). */
     protected async setElementProperty(
         element: string,

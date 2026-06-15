@@ -610,6 +610,10 @@ return {
 
 Each branch's first element's sink pad is auto-ghosted, so the rule only needs the downstream elements. Pads beyond the supplied list are ignored.
 
+**Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This is the mpegts-demuxer's PID-based port routing (plan Phase 3); without `matchPids` the positional contract is unchanged.
+
+**Pinning an outer muxer's request-pad name (`requestedPadNames`).** With `linkTo`, the runner asks the target for an implicit `sink_%d` pad by default. Pass `requestedPadNames: ['sink_256', …]` to request an exact pad per branch index — the mpegts-muxer uses `sink_<pid>` to pin each stream's PID (plan D3). Indices past the list end fall back to `sink_%d`.
+
 **Bridging branches into an outer named muxer (`linkTo`).** When several dynamic branches need to fan into one shared muxer at the top of the pipeline, the branch can't reference that outer element by name (parse_bin scope is local to the branch). Add `linkTo: '<outer element name>'` and the runner will request a fresh sink pad on that element and link the branch's auto-ghosted src pad to it:
 
 ```typescript
@@ -623,6 +627,32 @@ return {
     ],
 };
 ```
+
+#### In-band metadata carousel (`appsrc` + `setKlvPayload` / `readKlvNames`)
+
+Generic runner mechanism for riding a low-rate metadata buffer alongside a TS,
+built for the MPEG-TS muxer/demuxer in-band name channel but not tied to it.
+Two halves, both fire-and-forget and report-only — neither can affect routing
+or pipeline health:
+
+- **Sender.** Put an `appsrc` (e.g. `appsrc name=klvsrc caps=meta/x-klv,parsed=true format=time is-live=true do-timestamp=true`)
+  in the pipeline and call `this.setKlvPayload('klvsrc', payloadString)`. The
+  runner stores the payload and re-pushes it onto that appsrc on a ~1 s
+  carousel, so late-joining receivers and live edits both converge. Re-call to
+  swap the payload (a live config edit), or with an empty string to stop.
+  `do-timestamp=true` lets the muxer schedule the packets without you computing
+  PTS; never push a zero-length buffer (it aborts). Push once from a
+  `stateChange → playing` handler so the first payload appears immediately.
+- **Reader.** Set `readKlvNames: true` on the `PipelineDescription`. The runner
+  attaches a `queue ! appsink` (the queue is mandatory — an appsink straight on
+  a tsdemux pad stalls the whole TS) to every `meta/x-klv` pad and emits a
+  `stream_names` event with the raw payload string plus a `malformed` hint.
+  Subscribe with `this.childProcess?.on('streamNames', …)` and parse Node-side.
+  Parsing must be total — a malformed payload can never throw out of the
+  handler (warn once, ignore).
+
+The MPEG-TS muxer (`setKlvPayload`) and demuxer (`readKlvNames`) are the
+reference consumers; the payload format itself is plugin-defined.
 
 ### Health Status
 
@@ -740,6 +770,8 @@ getDynamicPorts(): Array<{
 ```
 
 Triggering regeneration: changing a config field that affects port count (e.g. `pairCount`) is enough — the `patchRules` cascade re-emits the dynamic ports and prunes any connections to ports that no longer exist.
+
+**Plugin-driven port changes (`emitConfigUpdate` → live refresh).** A plugin can write its own config to persist runtime discoveries (mpegts-demuxer writing the streams it detects into a `discoveredStreams` array, plan Phase 3) via `this.emitConfigUpdate({ key: value })` — this persists to SQLite and broadcasts to the UI. When the changed key affects the port set, the engine re-resolves `getDynamicPorts` off the back of that update and pushes a `/modules/<id>/ports` patch, so the new ports appear on the open Vue Flow node **without a reload**. Debounce these writes (only `emitConfigUpdate` when the discovered set actually changed) so a steady detection loop doesn't spam SQLite. Discovery should populate config, never replace it: don't auto-remove an entry when its stream disappears — keep it and render the port stale, so downstream connections survive a source going dark.
 
 For plugins where each port maps to a distinct PipeWire node (rather than one shared null-sink for the whole module), also implement `getPipeWireNodeForPort(portId)`:
 
@@ -1230,6 +1262,7 @@ For processes that aren't the module's health-defining producer (auxiliary tools
 | `setElementProperty(el, prop, val)` | method | Set GStreamer element property (live) |
 | `getElementProperty(el, prop)` | method | Get GStreamer element property |
 | `getElementStats(el)` | method | Read element `stats` GstStructure as dict |
+| `setKlvPayload(el, payload)` | method | Push a metadata payload to a named `appsrc`; runner carousels it (~1 s). Fire-and-forget, report-only (see In-band metadata carousel) |
 
 ---
 

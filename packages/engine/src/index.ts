@@ -20,6 +20,12 @@ export { buildUdpSrc, buildUdpSink, isMulticast } from './plugins/udpHelpers.js'
 export type { UdpSrcOpts, UdpSinkOpts } from './plugins/udpHelpers.js';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
+    TS_VIDEO_PID_BASE,
+    TS_AUDIO_PID_BASE,
+    TS_METADATA_PID,
+    videoStreamPid,
+    audioStreamPid,
+    muxSinkPadName,
     buildLeakyQueue,
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';

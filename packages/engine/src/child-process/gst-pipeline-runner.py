@@ -63,6 +63,15 @@ VU_HEARTBEAT_MS = 1000
 throughput_trackers = {}  # element_name → { bytes: int, last_bytes: int, last_time: float, bps: float }
 throughput_lock = threading.Lock()
 
+# In-band KLV name carousel (mpegts muxer, Phase 2). The parent pushes a JSON
+# payload via the `set_klv_payload` command; we re-push it onto the named
+# `appsrc` once per second so late-joining receivers and live name edits both
+# converge. Per plan D6 this never affects pipeline health — a push failure is
+# swallowed, an empty payload simply stops pushing.
+KLV_CAROUSEL_INTERVAL_S = 1
+klv_payloads = {}        # appsrc element name → bytes to carousel
+klv_timer_id = None      # GLib source id of the running carousel timer
+
 # ---------------------------------------------------------------------------
 # Event emission (JSON on stderr or fd 4, prefixed with GST_JSON:)
 # ---------------------------------------------------------------------------
@@ -238,6 +247,151 @@ def _pad_caps_media(pad):
         return 'audio'
     return None
 
+
+def _stream_media_from_caps_name(caps_name):
+    """Classify a tsdemux pad's media type from its caps structure name.
+
+    Covers the elementary-stream pads (video/audio) plus the private metadata
+    pad (`meta/x-klv`) the in-band name channel rides on (Phase 2) and DVB
+    subtitles (Phase 4). Anything else is `data` — the stream inspector still
+    lists it, it just has no specialised handling.
+    """
+    if caps_name.startswith('video/'):
+        return 'video'
+    if caps_name.startswith('audio/'):
+        return 'audio'
+    if caps_name == 'meta/x-klv':
+        return 'metadata'
+    if caps_name.startswith('subpicture/') or caps_name == 'application/x-teletext':
+        return 'subtitle'
+    return 'data'
+
+
+def _pid_from_tsdemux_pad_name(pad_name):
+    """Parse the PID from a tsdemux pad name.
+
+    tsdemux names pads `<media>_<programhex>_<pidhex>` (e.g. `audio_0_0141`,
+    `private_0_012c`) — confirmed on 1.22, see the plan's Phase 0 findings.
+    The PID is the last `_`-delimited field, hex. Returns the int PID, or None
+    if the name doesn't match (so callers degrade to "unknown PID" rather than
+    crash on an unexpected pad-name scheme).
+    """
+    if not pad_name:
+        return None
+    tail = pad_name.rsplit('_', 1)[-1]
+    try:
+        return int(tail, 16)
+    except ValueError:
+        return None
+
+
+# Decoded-text cap on a KLV buffer before we even try to JSON-parse it (plan
+# D6 / section 3 — "a few KB"). A larger buffer is garbage; we emit a malformed
+# `stream_names` once rather than parsing megabytes of junk. The JS-side parser
+# enforces the same cap; this is the runner's first line of defence.
+_KLV_MAX_BYTES = 4096
+# One-shot guard so a persistently-bad metadata stream doesn't spam a warning
+# every carousel tick — keyed by demux element name.
+_klv_garbage_warned = set()
+
+
+def _attach_klv_reader(pipe, pad, source_name):
+    """Attach `queue ! appsink` to a `meta/x-klv` demux pad and forward payloads.
+
+    The `queue` is mandatory (Phase 0 finding): an appsink linked straight onto
+    a tsdemux pad back-pressures the streaming loop and stalls the whole TS.
+    Per plan D6 this path is report-only — a parse/link failure is swallowed so
+    the name channel can never disturb the media pipeline. The appsink hands
+    the raw bytes up as a `stream_names` event with a `malformed` hint; the
+    actual JSON parse + name merge happens Node-side.
+    """
+    try:
+        q = Gst.ElementFactory.make("queue", None)
+        sink = Gst.ElementFactory.make("appsink", None)
+        if q is None or sink is None:
+            return
+        sink.set_property("emit-signals", True)
+        sink.set_property("sync", False)
+        # Bound the appsink's own queue so a wedged consumer can't grow memory;
+        # drop oldest, never block upstream (D6 — must not affect TS health).
+        sink.set_property("max-buffers", 4)
+        sink.set_property("drop", True)
+
+        def on_sample(s):
+            smp = s.emit("pull-sample")
+            if not smp:
+                return Gst.FlowReturn.OK
+            buf = smp.get_buffer()
+            ok, mi = buf.map(Gst.MapFlags.READ)
+            if not ok:
+                return Gst.FlowReturn.OK
+            try:
+                size = mi.size
+                if size == 0 or size > _KLV_MAX_BYTES:
+                    if source_name not in _klv_garbage_warned:
+                        _klv_garbage_warned.add(source_name)
+                        emit_event({"event": "stream_names", "payload": None,
+                                    "malformed": True})
+                    return Gst.FlowReturn.OK
+                try:
+                    payload = bytes(mi.data).decode("utf-8")
+                except (UnicodeDecodeError, ValueError):
+                    if source_name not in _klv_garbage_warned:
+                        _klv_garbage_warned.add(source_name)
+                        emit_event({"event": "stream_names", "payload": None,
+                                    "malformed": True})
+                    return Gst.FlowReturn.OK
+                emit_event({"event": "stream_names", "payload": payload,
+                            "malformed": False})
+            finally:
+                buf.unmap(mi)
+            return Gst.FlowReturn.OK
+
+        sink.connect("new-sample", on_sample)
+        pipe.add(q)
+        pipe.add(sink)
+        q.sync_state_with_parent()
+        sink.sync_state_with_parent()
+        q.link(sink)
+        pad.link(q.get_static_pad("sink"))
+    except Exception:  # noqa: BLE001 — name channel must never crash the runner (D6)
+        pass
+
+
+def _install_stream_discovery(element, source_name, read_klv_names=False):
+    """Emit a `stream_discovered` event for every pad tsdemux exposes.
+
+    Separate from the pad-link rules: link rules filter by media and only fire
+    for the streams a module routes, whereas the stream inspector wants *all*
+    streams in the TS — including the private metadata PID and any extra
+    audio/subtitle PIDs the source carries that aren't wired to an output.
+    Discovery never links or routes anything; it only reports (plan D6 — the
+    metadata/inspection path must not affect routing or pipeline health).
+
+    When `read_klv_names` is set (mpegts demuxer, Phase 2), a `meta/x-klv` pad
+    additionally gets a `queue ! appsink` reader so the in-band name carousel is
+    surfaced as `stream_names` events. The metadata PID is still never linked to
+    a routing branch — only read for labels.
+    """
+    pipe = element.get_parent()
+
+    def on_pad(_el, pad):
+        caps = pad.get_current_caps() or pad.query_caps(None)
+        caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ''
+        emit_event({
+            "event": "stream_discovered",
+            "from": source_name,
+            "pid": _pid_from_tsdemux_pad_name(pad.get_name()),
+            "media": _stream_media_from_caps_name(caps_name or ''),
+            "caps": caps.to_string() if caps else '',
+            "padName": pad.get_name(),
+        })
+        if read_klv_names and caps_name == 'meta/x-klv' and pipe is not None:
+            _attach_klv_reader(pipe, pad, source_name)
+
+    element.connect("pad-added", on_pad)
+
+
 # Caps-name → parser element used between `tsdemux` and a downstream `mpegtsmux`.
 # `mpegtsmux` rejects unparsed sink caps for AAC / AC-3 / MPEG-audio (no
 # `codec_data`, framed=false) and surfaces upstream as `udpsrc` emitting
@@ -340,6 +494,85 @@ def _install_decoder_thread_hook(pipe):
     sys.stderr.flush()
 
 
+def _parser_prefix_for_pad(pad, rule_id):
+    """Return the codec-parser prefix string (`'aacparse ! '`, or '') to prepend
+    to a branch for this pad's caps, warning once per unknown codec. Shared by
+    the single-branch and tee fan-out link paths."""
+    caps = pad.get_current_caps() or pad.query_caps(None)
+    parser = _parser_for_caps(caps)
+    if parser is None:
+        caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else 'unknown'
+        warn_key = f"{rule_id}::{caps_name}"
+        if warn_key not in _unknown_codec_warned:
+            _unknown_codec_warned.add(warn_key)
+            emit_event({"event": "warning",
+                        "message": f"linkOnPadAdded: no parser registered for caps '{caps_name}' on rule {rule_id} — linking passthrough; mpegtsmux may refuse if codec needs framing"})
+        return ''
+    return f"{parser} ! " if parser != '' else ''
+
+
+def _link_pad_to_branches_via_tee(pipe, pad, rule_id, indices, branches,
+                                  link_to_name):
+    """Fan one demux pad out to several branches through a `tee`.
+
+    Used when a PID appears more than once in `matchPids` — e.g. the mpegts-
+    demuxer migration, where a PID-based output port and the legacy positional
+    port that maps to the same stream both need the pad's data. One pad can
+    only link once, so we insert a `tee` and feed each branch from its own
+    requested tee src pad. The shared codec parser is applied once, before the
+    tee, so every branch receives parsed frames. `linkTo` is not supported on
+    this path (the demuxer branches are self-contained `queue ! mpegtsmux !
+    udpsink`); a rule that needs both is a configuration error.
+    """
+    if link_to_name:
+        emit_event({"event": "error",
+                    "message": f"linkOnPadAdded: duplicate-PID fan-out with linkTo is unsupported ({rule_id})"})
+        return
+    try:
+        # Build the optional parser + tee as explicit elements added directly to
+        # the pipeline (not wrapped in a bin): a tee's request src pads aren't
+        # ghosted out of a bin, so linking them to a sibling branch bin fails
+        # with WRONG_HIERARCHY. As direct pipeline children they share the
+        # branch bins' hierarchy and link cleanly. The parser (if any) sits
+        # before the tee so every branch receives muxer-ready frames.
+        prefix = _parser_prefix_for_pad(pad, rule_id).removesuffix(" ! ")
+        head = Gst.parse_bin_from_description(prefix, True) if prefix else None
+        tee = Gst.ElementFactory.make("tee", None)
+        pipe.add(tee)
+        tee.sync_state_with_parent()
+        if head:
+            # parser bin in front of the tee: pad ! parser ! tee.
+            pipe.add(head)
+            head.sync_state_with_parent()
+            if pad.link(head.get_static_pad("sink")) != Gst.PadLinkReturn.OK or \
+               head.get_static_pad("src").link(tee.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+                emit_event({"event": "error",
+                            "message": f"linkOnPadAdded: tee fan-out parser link failed ({rule_id})"})
+                return
+        elif pad.link(tee.get_static_pad("sink")) != Gst.PadLinkReturn.OK:
+            emit_event({"event": "error",
+                        "message": f"linkOnPadAdded: tee fan-out link failed ({rule_id})"})
+            return
+        for index in indices:
+            if index >= len(branches):
+                continue
+            leaf = Gst.parse_bin_from_description(branches[index], True)
+            leaf.set_name(f"branch_{rule_id.replace('::','_')}_{index}")
+            pipe.add(leaf)
+            leaf.sync_state_with_parent()
+            tee_src = tee.request_pad_simple("src_%u")
+            link_ret = tee_src.link(leaf.get_static_pad("sink")) if tee_src else None
+            if link_ret != Gst.PadLinkReturn.OK:
+                emit_event({"event": "error",
+                            "message": f"linkOnPadAdded: tee branch link failed ({rule_id}, {index}, {link_ret})"})
+                continue
+            emit_event({"event": "pad_linked", "rule": rule_id, "index": index,
+                        "padName": pad.get_name()})
+    except GLib.Error as e:
+        emit_event({"event": "error",
+                    "message": f"linkOnPadAdded: tee fan-out parse failed: {e.message}"})
+
+
 def _install_pad_link_rule(pipe, rule):
     """
     Install one `linkOnPadAdded` rule.
@@ -353,9 +586,24 @@ def _install_pad_link_rule(pipe, rule):
                                         # outer-pipeline element and link the bin's
                                         # src ghost pad to it. Used to bridge bins
                                         # to an outer named muxer.
+      "requestedPadNames": ["sink_256", ...],  # optional — explicit request-pad
+                                        # names to ask `linkTo` for, one per
+                                        # matched pad. Index N uses entry N; past
+                                        # the list end we fall back to "sink_%d".
+                                        # Generic: mpegtsmux uses "sink_<pid>" to
+                                        # pin a stream's PID (plan D3).
+      "matchPids": [256, 321, ...],     # optional — match pads to branches by
+                                        # PID instead of pad-added order. branch N
+                                        # links to the pad whose PID == matchPids[N]
+                                        # (PID read from the pad name); a pad whose
+                                        # PID isn't listed is ignored. Fixes the
+                                        # positional fragility for PID-based ports
+                                        # (mpegts-demuxer, plan Phase 3).
     }
 
-    The Nth pad of the matching media type is connected to `branches[N]`.
+    By default the Nth pad of the matching media type is connected to
+    `branches[N]`. When `matchPids` is supplied, the pad's PID picks the branch
+    index instead, so pad-added order and unrouted extra streams don't misroute.
     Branches beyond the supplied list are ignored — caller controls fan-out
     by choosing the list length.
     """
@@ -373,31 +621,43 @@ def _install_pad_link_rule(pipe, rule):
     _pad_link_counts[rule_id] = 0
     media_filter = rule.get("media")
     link_to_name = rule.get("linkTo")
+    requested_pad_names = rule.get("requestedPadNames") or []
+    # Optional PID→branch matching (plan Phase 3). When present, the pad's PID
+    # picks the branch index; absent, we fall back to pad-added order.
+    match_pids = rule.get("matchPids") or []
 
     def on_pad_added(_element, pad):
         if media_filter and _pad_caps_media(pad) != media_filter:
             return
-        index = _pad_link_counts[rule_id]
+        if match_pids:
+            # Match this pad to its branch(es) by PID rather than arrival order.
+            # A pad whose PID isn't wired to an output (extra source stream)
+            # is simply ignored — never misrouted onto another branch.
+            pad_pid = _pid_from_tsdemux_pad_name(pad.get_name())
+            indices = [i for i, p in enumerate(match_pids) if p == pad_pid]
+            if pad_pid is None or not indices:
+                return
+            # A PID can appear more than once in matchPids when several output
+            # ports carry the same stream (mpegts-demuxer migration: a PID-based
+            # port and the legacy positional port that maps to it). One pad can
+            # only link once, so fan it out through a `tee` and feed each branch
+            # from its own tee src pad.
+            if len(indices) > 1:
+                _link_pad_to_branches_via_tee(pipe, pad, rule_id, indices, branches,
+                                              link_to_name)
+                return
+            index = indices[0]
+        else:
+            index = _pad_link_counts[rule_id]
         if index >= len(branches):
             return
         _pad_link_counts[rule_id] = index + 1
-        branch_str = branches[index]
         # Auto-prepend the right codec parser based on the pad's actual caps.
         # Centralising parser selection here means JS-side branches stay
         # codec-agnostic (`queue ! mpegtsmux ! udpsink`) and the same demuxer
         # can serve mixed-codec streams (e.g. one AAC pad + one Opus pad)
         # without per-pad config.
-        caps = pad.get_current_caps() or pad.query_caps(None)
-        parser = _parser_for_caps(caps)
-        if parser is None:
-            caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else 'unknown'
-            warn_key = f"{rule_id}::{caps_name}"
-            if warn_key not in _unknown_codec_warned:
-                _unknown_codec_warned.add(warn_key)
-                emit_event({"event": "warning",
-                            "message": f"linkOnPadAdded: no parser registered for caps '{caps_name}' on rule {rule_id} — linking passthrough; mpegtsmux may refuse if codec needs framing"})
-        elif parser != '':
-            branch_str = f"{parser} ! {branch_str}"
+        branch_str = _parser_prefix_for_pad(pad, rule_id) + branches[index]
         try:
             bin_ = Gst.parse_bin_from_description(branch_str, True)
             bin_.set_name(f"branch_{rule_id.replace('::','_')}_{index}")
@@ -427,8 +687,17 @@ def _install_pad_link_rule(pipe, rule):
                     emit_event({"event": "error",
                                 "message": f"linkOnPadAdded: branch has no src pad to link to {link_to_name} ({rule_id})"})
                     return
-                # Request a fresh sink pad on the target (works for muxers / aggregators)
-                req_pad = target.request_pad_simple("sink_%d")
+                # Request a sink pad on the target (works for muxers /
+                # aggregators). If the rule pinned an explicit name for this
+                # pad index (e.g. mpegtsmux "sink_<pid>" to fix the PID per
+                # D3), ask for that exact pad; otherwise fall back to the
+                # implicit auto-numbered "sink_%d".
+                pad_name = (
+                    requested_pad_names[index]
+                    if index < len(requested_pad_names)
+                    else "sink_%d"
+                )
+                req_pad = target.request_pad_simple(pad_name)
                 if not req_pad:
                     emit_event({"event": "error",
                                 "message": f"linkOnPadAdded: could not request sink pad on {link_to_name} ({rule_id})"})
@@ -453,10 +722,21 @@ def _install_pad_link_rule(pipe, rule):
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
+    global klv_payloads, klv_timer_id
+
+    # Drop any carousel state from a prior run; the parent re-pushes after the
+    # pipeline is PLAYING. Stale payloads pointing at the old element graph
+    # would just no-op, but clearing keeps the carousel deterministic.
+    klv_payloads = {}
+    if klv_timer_id is not None:
+        GLib.source_remove(klv_timer_id)
+        klv_timer_id = None
 
     pipeline_str = data.get("pipeline", "")
     use_stdio_for_data = data.get("useStdioForData", False)
     pad_link_rules = data.get("linkOnPadAdded", []) or []
+    read_klv_names = data.get("readKlvNames", False)
+    _klv_garbage_warned.clear()
 
     if not pipeline_str:
         emit_event({"event": "error", "message": "No pipeline string provided"})
@@ -472,6 +752,16 @@ def handle_start(data):
     _pad_link_counts = {}
     for rule in pad_link_rules:
         _install_pad_link_rule(pipeline, rule)
+
+    # Install stream discovery on every distinct demux element the rules
+    # reference, so the owning module sees an unfiltered `stream_discovered`
+    # event per pad (PID + caps + media type) regardless of what's routed.
+    # Connected once per element even when a tsdemux has both a video and an
+    # audio rule.
+    for src_name in {rule.get("from") for rule in pad_link_rules if rule.get("from")}:
+        el = pipeline.get_by_name(src_name)
+        if el:
+            _install_stream_discovery(el, src_name, read_klv_names)
 
     # Crank software decoders to all available cores. avdec_* defaults to 1
     # thread (or whatever ffmpeg picks at runtime, often conservative) which
@@ -667,6 +957,58 @@ def handle_get_throughput(data):
         evt["id"] = req_id
     emit_event(evt)
 
+def _push_klv_carousel():
+    """Re-push every stored KLV payload onto its appsrc. Runs on the GLib loop.
+
+    One buffer per appsrc per tick. Never raises — a missing element, a NULL
+    pipeline, or a push that returns non-OK is swallowed so the name channel
+    can't disturb the media pipeline (plan D6). `Gst.Buffer.new_wrapped(b"")`
+    aborts on null data (Phase 0 finding), so empty payloads are skipped at
+    the source (`handle_set_klv_payload` never stores an empty payload).
+    """
+    if not klv_payloads or pipeline is None:
+        return True
+    for name, payload in klv_payloads.items():
+        try:
+            src = pipeline.get_by_name(name)
+            if src is None:
+                continue
+            buf = Gst.Buffer.new_wrapped(payload)
+            src.emit("push-buffer", buf)
+        except Exception:  # noqa: BLE001 — name channel must never crash the runner
+            pass
+    return True  # keep the timer alive
+
+
+def _ensure_klv_timer():
+    """Start the carousel timer once there's at least one payload to push."""
+    global klv_timer_id
+    if klv_timer_id is None and klv_payloads:
+        klv_timer_id = GLib.timeout_add_seconds(
+            KLV_CAROUSEL_INTERVAL_S, _push_klv_carousel
+        )
+
+
+def handle_set_klv_payload(data):
+    """Store/replace the KLV name payload for an appsrc and (re)start the carousel.
+
+    Fire-and-forget from the parent (no `id`/ack). An empty payload clears the
+    stored entry — we never push a zero-length buffer (it aborts on 1.22). The
+    payload is pushed immediately so a live name edit converges without waiting
+    a full carousel interval.
+    """
+    name = data.get("element", "")
+    payload = data.get("payload", "")
+    if not name:
+        return
+    if not payload:
+        klv_payloads.pop(name, None)
+        return
+    klv_payloads[name] = payload.encode("utf-8") if isinstance(payload, str) else payload
+    _ensure_klv_timer()
+    _push_klv_carousel()
+
+
 # Command dispatch
 CMD_HANDLERS = {
     "start": handle_start,
@@ -676,6 +1018,7 @@ CMD_HANDLERS = {
     "get_stats": handle_get_stats,
     "track_throughput": handle_track_throughput,
     "get_throughput": handle_get_throughput,
+    "set_klv_payload": handle_set_klv_payload,
 }
 
 def dispatch_command(line):

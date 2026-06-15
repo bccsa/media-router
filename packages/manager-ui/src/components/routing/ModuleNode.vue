@@ -61,8 +61,32 @@ const faceWidgets = computed(() => props.data.faceWidgets ?? []);
 // still work alongside for simpler cases.
 const pluginFace = computed(() => getFaceComponent(props.data.pluginId));
 
-const inputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'input') ?? []);
-const outputPorts = computed(() => props.data.ports?.filter((p) => p.direction === 'output') ?? []);
+/** Port ids of this module that have at least one edge attached. Driven by
+ *  the engine store's connection list, so it tracks live wiring. */
+const connectedPortIds = computed(() => {
+    const conns = engineStore.getEngine(engineId)?.connections ?? [];
+    const id = props.data.instanceId;
+    const set = new Set<string>();
+    for (const c of conns) {
+        if (c.sourceModuleId === id) set.add(c.sourcePortId);
+        if (c.sinkModuleId === id) set.add(c.sinkPortId);
+    }
+    return set;
+});
+
+/** `hideWhenUnconnected` ports are display-noise while nothing is wired to
+ *  them (legacy positional ports after PID discovery). Connected ones always
+ *  render — hiding is purely visual, the port stays registered engine-side. */
+function isVisiblePort(p: { id: string; hideWhenUnconnected?: boolean }): boolean {
+    return !p.hideWhenUnconnected || connectedPortIds.value.has(p.id);
+}
+
+const inputPorts = computed(
+    () => props.data.ports?.filter((p) => p.direction === 'input').filter(isVisiblePort) ?? [],
+);
+const outputPorts = computed(
+    () => props.data.ports?.filter((p) => p.direction === 'output').filter(isVisiblePort) ?? [],
+);
 
 // Resizable card composable handles drag math + size persistence
 const { resizable, cardWidth, cardHeight, cardMinHeight, onResizeStart } = useResizableCard({

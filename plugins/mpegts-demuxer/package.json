@@ -18,20 +18,6 @@
         "configSchema": {
             "type": "object",
             "properties": {
-                "videoStreamCount": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 8,
-                    "default": 1,
-                    "description": "Number of video output streams"
-                },
-                "audioStreamCount": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 16,
-                    "default": 1,
-                    "description": "Number of audio output streams"
-                },
                 "bufferMs": {
                     "type": "number",
                     "minimum": 0,
@@ -40,6 +26,17 @@
                     "description": "Per-pad queue size in milliseconds — lower = lower latency, higher = more jitter tolerance",
                     "x-widget": "slider",
                     "x-step": 5,
+                    "x-unit": "ms",
+                    "x-liveUpdatable": false
+                },
+                "outputBufferMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 5000,
+                    "default": 0,
+                    "description": "Output smoothing buffer (ms). 0 = OFF (lowest latency — keep for SRT/RIST live sources). Raise to absorb bursty sources (e.g. an HLS player that emits at segment boundaries): a non-leaky queue holds up to this much per output and re-feeds it steadily instead of dropping packets mid-frame. Adds this much latency; pick the largest delay you can tolerate for HLS, leave at 0 for low-latency live.",
+                    "x-widget": "slider",
+                    "x-step": 50,
                     "x-unit": "ms",
                     "x-liveUpdatable": false
                 }
@@ -60,6 +57,14 @@
                 "fields": [
                     { "key": "video", "label": "Video Streams" },
                     { "key": "audio", "label": "Audio Streams" }
+                ]
+            },
+            {
+                "id": "streams",
+                "label": "Detected Streams",
+                "fields": [
+                    { "key": "detected", "label": "Count" },
+                    { "key": "stale", "label": "Stale" }
                 ]
             }
         ],

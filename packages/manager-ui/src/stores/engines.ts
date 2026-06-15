@@ -20,6 +20,13 @@ export interface PortInfo {
     maxConnections?: number;
     /** Whether user can change maxConnections at runtime. */
     userConfigurable?: boolean;
+    /**
+     * Display hint from the engine: hide this port while no edge references
+     * it (e.g. mpegts-demuxer legacy positional ports once PID ports exist).
+     * Visibility only — the port stays registered engine-side, so existing
+     * connections always remain valid.
+     */
+    hideWhenUnconnected?: boolean;
 }
 
 export interface StatusSectionDef {

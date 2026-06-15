@@ -272,6 +272,32 @@ describe('ModuleInstance', () => {
         expect(instance.getState().pendingRestart).toBe(false);
     });
 
+    it('routes a live param through pendingRestart when isLiveChange rejects it', async () => {
+        plugin.getLiveUpdatableParams.mockReturnValue(['streams']);
+        plugin.isLiveChange = vi.fn().mockReturnValue(false);
+        await instance.start();
+        await instance.applyConfigUpdate({ streams: [{ name: 'a' }, { name: 'b' }] });
+        expect(plugin.isLiveChange).toHaveBeenCalledWith(
+            'streams',
+            [{ name: 'a' }, { name: 'b' }],
+            undefined,
+        );
+        expect(plugin.onLiveConfigUpdate).not.toHaveBeenCalled();
+        expect(instance.getState().pendingRestart).toBe(true);
+        expect(instance.config.streams).toEqual([{ name: 'a' }, { name: 'b' }]);
+    });
+
+    it('applies a live param normally when isLiveChange accepts it', async () => {
+        plugin.getLiveUpdatableParams.mockReturnValue(['streams']);
+        plugin.isLiveChange = vi.fn().mockReturnValue(true);
+        await instance.start();
+        await instance.applyConfigUpdate({ streams: [{ name: 'renamed' }] });
+        expect(plugin.onLiveConfigUpdate).toHaveBeenCalledWith({
+            streams: [{ name: 'renamed' }],
+        });
+        expect(instance.getState().pendingRestart).toBe(false);
+    });
+
     // ---- Delegation methods ----
 
     it('getPipeWireNodes delegates to plugin', () => {

@@ -190,7 +190,13 @@ export class ModuleInstance extends EventEmitter {
         let hasNonLive = false;
 
         for (const [key, value] of Object.entries(changes)) {
-            if (liveParams.includes(key)) {
+            // A param can opt out of live application per-change via
+            // `isLiveChange` (e.g. renaming a muxer stream is live, adding
+            // one is not) — see the hook's doc in PluginModule.
+            const live =
+                liveParams.includes(key) &&
+                (this.plugin.isLiveChange?.(key, value, this.config[key]) ?? true);
+            if (live) {
                 liveChanges[key] = value;
             } else {
                 hasNonLive = true;

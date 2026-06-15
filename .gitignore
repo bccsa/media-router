@@ -131,3 +131,7 @@ doc/gstreamer notes
 .claude/scheduled_tasks.lock
 
 graphify-out/
+
+# Python bytecode (gst-pipeline-runner imports during spikes/tests)
+__pycache__/
+*.pyc

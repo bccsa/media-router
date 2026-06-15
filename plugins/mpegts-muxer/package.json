@@ -18,19 +18,31 @@
         "configSchema": {
             "type": "object",
             "properties": {
-                "videoStreamCount": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 8,
-                    "default": 1,
-                    "description": "Number of video input streams"
+                "videoStreams": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "default": [{ "name": "" }],
+                    "description": "Video input streams — \"+ Add\" creates another input port. Each name is broadcast in-band so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" }
+                        }
+                    },
+                    "x-liveUpdatable": true
                 },
-                "audioStreamCount": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 16,
-                    "default": 1,
-                    "description": "Number of audio input streams"
+                "audioStreams": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "default": [{ "name": "" }],
+                    "description": "Audio input streams — \"+ Add\" creates another input port. Each name is broadcast in-band so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" }
+                        }
+                    },
+                    "x-liveUpdatable": true
                 },
                 "alignment": {
                     "type": "number",

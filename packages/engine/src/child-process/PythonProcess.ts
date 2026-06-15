@@ -51,6 +51,7 @@ export class PythonProcess {
         pipeline: string,
         padLinkRules: PadLinkRule[],
         env: Record<string, string> = {},
+        readKlvNames = false,
     ): void {
         if (this.proc) throw new Error('PythonProcess already started');
 
@@ -118,6 +119,7 @@ export class PythonProcess {
             pipeline,
             useStdioForData: this.options.useStdioForData,
             linkOnPadAdded: padLinkRules,
+            readKlvNames,
         });
     }
 

@@ -110,6 +110,59 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { kind?: string }).kind).toBe('udp_timeout');
     });
 
+    it('forwards stream_discovered to the parent as a streamDiscovered event', () => {
+        emit({
+            event: 'stream_discovered',
+            from: 'demux',
+            pid: 0x141,
+            media: 'audio',
+            caps: 'audio/mpeg, mpegversion=(int)4',
+            padName: 'audio_0_0141',
+        });
+        const evt = lastByType('event', 'streamDiscovered');
+        expect(evt?.data).toMatchObject({ pid: 0x141, media: 'audio', from: 'demux' });
+    });
+
+    it('does NOT schedule a restart or surface an error for stream_discovered (D6 report-only)', () => {
+        vi.useFakeTimers();
+        emit({ event: 'stream_discovered', from: 'demux', pid: 0x100, media: 'video', caps: '' });
+        expect((runner as unknown as { restartTimer: unknown }).restartTimer).toBeNull();
+        expect(lastByType('event', 'error')).toBeUndefined();
+    });
+
+    it('forwards stream_names to the parent as a streamNames event (Phase 2)', () => {
+        emit({
+            event: 'stream_names',
+            payload: '{"v":1,"streams":[{"pid":256,"name":"Cam 1"}]}',
+            malformed: false,
+        });
+        const evt = lastByType('event', 'streamNames');
+        expect(evt?.data).toMatchObject({
+            payload: '{"v":1,"streams":[{"pid":256,"name":"Cam 1"}]}',
+            malformed: false,
+        });
+    });
+
+    it('does NOT restart or error on stream_names (D6 report-only)', () => {
+        vi.useFakeTimers();
+        emit({ event: 'stream_names', payload: null, malformed: true });
+        expect((runner as unknown as { restartTimer: unknown }).restartTimer).toBeNull();
+        expect(lastByType('event', 'error')).toBeUndefined();
+    });
+
+    it('accepts a setKlvPayload action without sending a stray response (fire-and-forget)', () => {
+        expect(() =>
+            runner.handleControlMessage({
+                id: 'evt-1',
+                type: 'event',
+                action: 'setKlvPayload',
+                data: { element: 'klvsrc', payload: '{"v":1,"streams":[]}' },
+            }),
+        ).not.toThrow();
+        // No pipeline-lifecycle response/event should leak from a fire-and-forget.
+        expect(lastByType('response')).toBeUndefined();
+    });
+
     it('resolves getProperty pending RPC with the property value', () => {
         runner.handleControlMessage({
             id: 'rpc-2',

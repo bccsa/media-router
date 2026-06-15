@@ -103,6 +103,44 @@ export class ModuleLifecycle {
         return (modConfig.ports ?? []) as RawPort[];
     }
 
+    /**
+     * Re-resolve a running module's dynamic ports and push them out, without a
+     * restart. Called when a plugin auto-writes config that changes its port
+     * set (mpegts-demuxer persisting discovered streams, plan Phase 3): the
+     * `configUpdated` patch persists the settings, but the port list only
+     * refreshes if we re-run resolution. We re-register the resolved ports in
+     * the engine's PortRegistry (so a connection to a freshly-discovered port
+     * validates) and `resolvePortsForInstance` fires `onDynamicPortsResolved`
+     * (which patches `/modules/{id}/ports` to the manager + LCP), so the new
+     * ports reach the open UI's Vue Flow node without a reload. No-op for a
+     * module with no dynamic ports.
+     */
+    refreshPorts(moduleId: string): void {
+        const config = this.getConfig();
+        const modConfig = (config?.modules as Record<string, Record<string, unknown>> | undefined)?.[
+            moduleId
+        ];
+        if (!modConfig) return;
+        const instance = this.moduleManager.get(moduleId);
+        if (!instance?.running) return;
+        // Cheap no-op detection: this runs on EVERY plugin config auto-write
+        // (the engine deliberately doesn't know which keys are port-affecting)
+        // — diff against the last resolved list (`modConfig.ports`, written by
+        // resolvePortsForInstance) and skip the registry update + manager
+        // patch when the port set is unchanged.
+        const next = instance.getDynamicPorts();
+        if (!next || next.length === 0) return;
+        if (JSON.stringify(next) === JSON.stringify(modConfig.ports)) return;
+        // Register in the routing PortRegistry (resolvePortsForInstance only
+        // resolves + caches + fires the UI patch — registration is the caller's
+        // job, same as the start path) so connections to a new port validate,
+        // then the onDynamicPortsResolved patch reaches the UI.
+        this.mediaRouter.registerPorts(
+            moduleId,
+            mapPorts(this.resolvePortsForInstance(moduleId, modConfig, modConfig.pluginId as string)),
+        );
+    }
+
     /** Run an operation under the lifecycle lock — prevents concurrent lifecycle transitions. */
     private serialize(fn: () => Promise<void>): Promise<void> {
         this.lock = this.lock.then(fn, fn);

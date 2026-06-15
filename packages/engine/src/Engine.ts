@@ -205,6 +205,7 @@ export class Engine {
                 this.currentConfig = config;
             },
             enrichConfigForLcp: (config) => this.enrichConfigForLcp(config),
+            refreshModulePorts: (moduleId) => this.lifecycle.refreshPorts(moduleId),
         });
     }
 

@@ -24,6 +24,7 @@ interface StartPipelineMessage {
     restartOnError?: boolean;
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
     linkOnPadAdded?: PadLinkRule[];
+    readKlvNames?: boolean;
     env?: Record<string, string>;
 }
 
@@ -46,6 +47,7 @@ export class GstRunner {
     private lastPipelineString = '';
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private lastPadLinkRules: PadLinkRule[] = [];
+    private lastReadKlvNames = false;
     private lastEnv: Record<string, string> = {};
     private readonly restartBackoff = new ExponentialBackoff(
         DEFAULT_RESTART_BASE_MS,
@@ -75,6 +77,7 @@ export class GstRunner {
                     d.useStdioForData,
                     d.linkOnPadAdded ?? [],
                     d.env ?? {},
+                    d.readKlvNames ?? false,
                 );
                 break;
             }
@@ -150,6 +153,19 @@ export class GstRunner {
                 const reqId = this.makeRequestId('tp');
                 this.ipc.trackPending(reqId, msg.id, 'throughput');
                 this.python?.sendCommand({ cmd: 'get_throughput', id: reqId });
+                break;
+            }
+
+            case 'setKlvPayload': {
+                // In-band name carousel (mpegts muxer, Phase 2). Fire-and-forget
+                // from the parent — the Python side stores the payload and
+                // drives the ~1 s carousel itself, so there's no RPC to resolve.
+                const d = msg.data as { element: string; payload: string };
+                this.python?.sendCommand({
+                    cmd: 'set_klv_payload',
+                    element: d.element,
+                    payload: d.payload,
+                });
                 break;
             }
 
@@ -268,6 +284,31 @@ export class GstRunner {
                 );
                 break;
 
+            case 'stream_discovered':
+                // A tsdemux pad appeared — forward the PID/codec/media to the
+                // owning module's stream inspector. Pure report (plan D6): it
+                // never affects routing or health, so it's not gated on
+                // restartOnError or currentState.
+                this.ipc.sendEvent('streamDiscovered', {
+                    from: eventJson.from,
+                    pid: eventJson.pid,
+                    media: eventJson.media,
+                    caps: eventJson.caps,
+                    padName: eventJson.padName,
+                });
+                break;
+
+            case 'stream_names':
+                // KLV name payload parsed off the metadata PID (Phase 2).
+                // Forward the raw payload + a parsed/malformed hint to the
+                // owning module's name merge. Pure report (plan D6) — never
+                // gates on restartOnError or currentState.
+                this.ipc.sendEvent('streamNames', {
+                    payload: eventJson.payload,
+                    malformed: eventJson.malformed,
+                });
+                break;
+
             case 'property':
             case 'stats':
             case 'throughput':
@@ -303,6 +344,7 @@ export class GstRunner {
                     this.useStdioForData,
                     this.lastPadLinkRules,
                     this.lastEnv,
+                    this.lastReadKlvNames,
                 );
             }
         }, delay);
@@ -314,6 +356,7 @@ export class GstRunner {
         stdioForData = false,
         padLinkRules: PadLinkRule[] = [],
         env: Record<string, string> = {},
+        readKlvNames = false,
     ): void {
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
@@ -323,6 +366,7 @@ export class GstRunner {
 
         this.lastPipelineString = pipeline;
         this.lastPadLinkRules = padLinkRules;
+        this.lastReadKlvNames = readKlvNames;
         this.lastEnv = env;
         this.useStdioForData = stdioForData;
 
@@ -339,7 +383,7 @@ export class GstRunner {
             onSpawnError: (err) => this.handlePythonSpawnError(py, err),
         });
         this.python = py;
-        py.start(pipeline, padLinkRules, env);
+        py.start(pipeline, padLinkRules, env, readKlvNames);
 
         this.ipc.sendResponse(requestId, { ok: true });
     }

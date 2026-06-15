@@ -1,5 +1,35 @@
 import { describe, it, expect } from 'vitest';
-import { buildLeakyQueue, buildTsUdpInput } from './tsHelpers.js';
+import {
+    audioStreamPid,
+    buildLeakyQueue,
+    buildTsUdpInput,
+    muxSinkPadName,
+    TS_AUDIO_PID_BASE,
+    TS_VIDEO_PID_BASE,
+    videoStreamPid,
+} from './tsHelpers.js';
+
+describe('deterministic PID scheme (D3)', () => {
+    it('places video PIDs at 0x100 + index', () => {
+        expect(TS_VIDEO_PID_BASE).toBe(0x100);
+        expect(videoStreamPid(0)).toBe(0x100);
+        expect(videoStreamPid(3)).toBe(0x103);
+    });
+    it('places audio PIDs at 0x140 + index', () => {
+        expect(TS_AUDIO_PID_BASE).toBe(0x140);
+        expect(audioStreamPid(0)).toBe(0x140);
+        expect(audioStreamPid(1)).toBe(0x141);
+    });
+    it('keeps video and audio ranges from colliding for realistic counts', () => {
+        // 0x100..0x13f is 64 video slots before the audio base — far more than
+        // any real stream count, so the two media types never overlap.
+        expect(videoStreamPid(63)).toBeLessThan(audioStreamPid(0));
+    });
+    it('formats the mpegtsmux request-pad name as sink_<pid>', () => {
+        expect(muxSinkPadName(0x100)).toBe('sink_256');
+        expect(muxSinkPadName(audioStreamPid(1))).toBe('sink_321');
+    });
+});
 
 describe('buildLeakyQueue', () => {
     it('emits a leaky=2 queue with byte/buffer caps disabled', () => {
