@@ -128,11 +128,13 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         { immediate: true, deep: true },
     );
 
-    /** Visibility rule for `x-showWhen` — format "key=value". */
+    /** Visibility rule for `x-showWhen` — format "key=value" (or
+     *  "key=v1,v2" to match any of several values). */
     function isFieldVisible(field: FormField): boolean {
         if (!field.showWhen) return true;
         const [key, value] = field.showWhen.split('=');
-        return String(localSettings.value[key] ?? '') === value;
+        const allowed = (value ?? '').split(',');
+        return allowed.includes(String(localSettings.value[key] ?? ''));
     }
 
     /** Resolve effective enum values — checks x-enumBy first, falls back to plain enum. */

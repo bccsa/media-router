@@ -92,6 +92,14 @@ export interface TsUdpInputOpts {
      *  `GstUDPSrcTimeout` element message into a bus error so the restart path
      *  triggers when a stream goes silent. */
     timeoutNs?: number;
+    /**
+     * `tsparse set-timestamps` (default true). True re-anchors PTS/DTS from PCR
+     * to the local timeline — the right default for single-pipeline playout and
+     * re-mux chains. Set **false** for cross-pipeline A/V sync (shared net
+     * clock): re-anchoring resets this pipeline to its own start, diverging it
+     * from its sibling; preserving the source PTS keeps both on one timeline.
+     */
+    setTimestamps?: boolean;
 }
 
 /**
@@ -120,5 +128,6 @@ export function buildTsUdpInput(opts: TsUdpInputOpts): string {
         timeoutNs: opts.timeoutNs,
     });
     const queue = buildLeakyQueue(opts.jitterMs ?? 200);
-    return `${udpsrc} ! ${queue} ! tsparse set-timestamps=true`;
+    const setTs = opts.setTimestamps ?? true;
+    return `${udpsrc} ! ${queue} ! tsparse set-timestamps=${setTs}`;
 }

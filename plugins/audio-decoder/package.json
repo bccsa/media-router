@@ -91,6 +91,11 @@
                     "x-unit": "ms",
                     "description": "Post-tsdemux jitter buffer. Keep low (100) for live SRT/RIST; raise (e.g. 1500) for HLS to absorb mid-stream join + decoder CPU spikes. Adds end-to-end latency."
                 },
+                "clockSync": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Lock to the shared engine clock so audio stays in sync with a video-player fed from the same source (no drift over time). Turn ON for both this decoder and the matching video-player when you split one stream into separate audio + video playout. Leave OFF for standalone/low-latency audio."
+                },
                 "lcpVisible": {
                     "type": "boolean",
                     "default": true,

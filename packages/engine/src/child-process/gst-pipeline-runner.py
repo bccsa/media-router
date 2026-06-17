@@ -719,6 +719,57 @@ def _install_pad_link_rule(pipe, rule):
     src.connect("pad-added", on_pad_added)
 
 
+# GstNet is optional: only sync-enabled pipelines carry a `clock` config. If
+# the typelib is missing we log once and run on the default clock (unsynced) —
+# never fatal, so a box without GstNet still plays, just without cross-pipeline
+# lock.
+_GstNet = None
+_net_clock_warned = False
+
+
+def _apply_net_clock(pipe, clock_cfg):
+    """Slave `pipe` to the shared net clock for cross-pipeline A/V sync.
+
+    `clock_cfg` = {host, port} from the engine's clock authority. None / falsy
+    → no-op (the pipeline keeps its auto-selected clock, today's behaviour).
+    Every pipeline in a sync group gets the SAME host/port; sharing the clock
+    (same rate) removes the drift. Base-time is anchored naturally at PLAYING
+    (no shared base-time), leaving a small constant start offset. Buffers must
+    carry the shared source PTS (no per-consumer re-anchoring) for the
+    running-times to line up.
+    """
+    global _GstNet, _net_clock_warned
+    if not clock_cfg:
+        return
+    host = clock_cfg.get("host")
+    port = clock_cfg.get("port")
+    if not host or not port:
+        return
+    if _GstNet is None:
+        try:
+            gi.require_version("GstNet", "1.0")
+            from gi.repository import GstNet
+            _GstNet = GstNet
+        except (ValueError, ImportError):
+            if not _net_clock_warned:
+                _net_clock_warned = True
+                emit_event({"event": "warning",
+                            "message": "GstNet unavailable — pipeline runs unsynced (no cross-pipeline clock)"})
+            return
+    clock = _GstNet.NetClientClock.new(None, host, int(port), 0)
+    # Block briefly for the first clock sync so the first buffers are stamped
+    # against a settled clock; a slow sync just means a short startup delay.
+    clock.wait_for_sync(2 * Gst.SECOND)
+    pipe.use_clock(clock)
+    # Sharing the clock (same rate) is what kills the DRIFT — that's the whole
+    # point. Base-time is left to anchor naturally at PLAYING: every pipeline
+    # lands within a moment of the others on the SAME clock, so the residual is
+    # a small CONSTANT offset (trim with a sink ts-offset if needed), never
+    # growing. We deliberately do NOT force a shared base-time — coordinating
+    # one in this clock's time domain across processes is fragile and a stale
+    # value would make every buffer "late" and break playback.
+
+
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
@@ -747,6 +798,12 @@ def handle_start(data):
     except GLib.Error as e:
         emit_event({"event": "error", "message": f"Pipeline parse error: {e.message}"})
         return
+
+    # Cross-pipeline A/V sync (opt-in): slave this pipeline to a shared net
+    # clock + base-time so it presents on the SAME timeline as its sibling
+    # pipelines (e.g. video-player ↔ audio-decoder). Applied before PLAYING so
+    # the pipeline never runs on its own auto-selected clock first.
+    _apply_net_clock(pipeline, data.get("clock"))
 
     # Reset per-run pad counters and install dynamic-pad-link rules
     _pad_link_counts = {}

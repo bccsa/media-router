@@ -79,6 +79,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             return;
         }
 
+        // Cross-pipeline A/V sync (opt-in): resolve the shared clock from the
+        // engine's clock authority and stamp it onto the description. Best-
+        // effort — if the authority can't be brought up the pipeline runs
+        // unsynced (today's behaviour) rather than failing to start.
+        if (desc.clockSync && this.services?.clockAuthority) {
+            const clock = await this.services.clockAuthority.getClockConfig();
+            if (clock) desc.clock = clock;
+        }
+
         // Spawn child process
         this.childProcess = new GstChildProcess();
 

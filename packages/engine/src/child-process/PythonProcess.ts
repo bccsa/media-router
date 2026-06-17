@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import type { PadLinkRule } from '../plugins/PluginModule.js';
+import type { ClockConfig } from './ClockAuthority.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
 
@@ -52,6 +53,7 @@ export class PythonProcess {
         padLinkRules: PadLinkRule[],
         env: Record<string, string> = {},
         readKlvNames = false,
+        clock?: ClockConfig,
     ): void {
         if (this.proc) throw new Error('PythonProcess already started');
 
@@ -120,6 +122,7 @@ export class PythonProcess {
             useStdioForData: this.options.useStdioForData,
             linkOnPadAdded: padLinkRules,
             readKlvNames,
+            ...(clock ? { clock } : {}),
         });
     }
 

@@ -64,6 +64,22 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Honour buffer PTS. OFF (default): the sink presents frames as fast as they arrive — right for live SRT/RIST where latency dominates. ON: the sink waits to present each frame at its PTS — turn on for HLS so playback flows at the media's intended rate instead of speeding up on segment bursts and stalling between segments."
+                },
+                "clockSync": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Lock to the shared engine clock so video stays in sync with an audio-decoder fed from the same source — the fix for audio/video drift when one stream is split into separate video + audio playout. Turn ON here AND on the matching audio-decoder. Forces PTS-accurate playback. Leave OFF for standalone/low-latency video."
+                },
+                "lipSyncMs": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": -2000,
+                    "maximum": 2000,
+                    "x-widget": "slider",
+                    "x-step": 50,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "description": "Lip-sync trim. Positive DELAYS video to meet audio that's playing late (the audio path usually carries more buffering latency); negative advances it. Adjust live while watching until lips match. Only applies with Clock sync (or Sync) on."
                 }
             }
         },

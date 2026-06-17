@@ -10,6 +10,7 @@ import { ProfileStore } from './api/ProfileStore.js';
 import { PipeWireManager } from './audio/PipeWireManager.js';
 import { requirePwLink } from './audio/PwLinkOps.js';
 import { ProcessManager } from './child-process/ProcessManager.js';
+import { ClockAuthority } from './child-process/ClockAuthority.js';
 import { PaCommandQueue } from './audio/PaCommandQueue.js';
 import { createApiServer } from './api/server.js';
 import { LogForwarder } from './logging/LogForwarder.js';
@@ -52,6 +53,7 @@ export class Engine {
     readonly processManager: ProcessManager;
     readonly paQueue: PaCommandQueue;
     readonly deviceProviders: DeviceProviderRegistry;
+    readonly clockAuthority: ClockAuthority;
 
     private apiServer: FastifyInstance | null = null;
     private config: EngineConfig;
@@ -86,6 +88,7 @@ export class Engine {
         this.pipeWire = new PipeWireManager(this.paQueue);
         this.processManager = new ProcessManager();
         this.deviceProviders = new DeviceProviderRegistry();
+        this.clockAuthority = new ClockAuthority(this.processManager);
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
@@ -95,6 +98,7 @@ export class Engine {
             this.mediaRouter,
             this.processManager,
             this.deviceProviders,
+            this.clockAuthority,
         );
         this.managerConnection = new ManagerConnection();
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
@@ -221,6 +225,7 @@ export class Engine {
             mediaRouter: this.mediaRouter,
             processManager: this.processManager,
             deviceProviders: this.deviceProviders,
+            clockAuthority: this.clockAuthority,
         });
         log.info({ pluginCount }, 'Loaded plugins');
 

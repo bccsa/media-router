@@ -1,5 +1,6 @@
 import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
 import type { PadLinkRule } from '../plugins/PluginModule.js';
+import type { ClockConfig } from './ClockAuthority.js';
 import { PythonProcess } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
 
@@ -26,6 +27,7 @@ interface StartPipelineMessage {
     linkOnPadAdded?: PadLinkRule[];
     readKlvNames?: boolean;
     env?: Record<string, string>;
+    clock?: ClockConfig;
 }
 
 /**
@@ -49,6 +51,7 @@ export class GstRunner {
     private lastPadLinkRules: PadLinkRule[] = [];
     private lastReadKlvNames = false;
     private lastEnv: Record<string, string> = {};
+    private lastClock: ClockConfig | undefined = undefined;
     private readonly restartBackoff = new ExponentialBackoff(
         DEFAULT_RESTART_BASE_MS,
         DEFAULT_RESTART_MAX_MS,
@@ -78,6 +81,7 @@ export class GstRunner {
                     d.linkOnPadAdded ?? [],
                     d.env ?? {},
                     d.readKlvNames ?? false,
+                    d.clock,
                 );
                 break;
             }
@@ -345,6 +349,7 @@ export class GstRunner {
                     this.lastPadLinkRules,
                     this.lastEnv,
                     this.lastReadKlvNames,
+                    this.lastClock,
                 );
             }
         }, delay);
@@ -357,6 +362,7 @@ export class GstRunner {
         padLinkRules: PadLinkRule[] = [],
         env: Record<string, string> = {},
         readKlvNames = false,
+        clock?: ClockConfig,
     ): void {
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
@@ -368,6 +374,7 @@ export class GstRunner {
         this.lastPadLinkRules = padLinkRules;
         this.lastReadKlvNames = readKlvNames;
         this.lastEnv = env;
+        this.lastClock = clock;
         this.useStdioForData = stdioForData;
 
         // Capture this instance locally — `this.python` may already point to a
@@ -383,7 +390,7 @@ export class GstRunner {
             onSpawnError: (err) => this.handlePythonSpawnError(py, err),
         });
         this.python = py;
-        py.start(pipeline, padLinkRules, env, readKlvNames);
+        py.start(pipeline, padLinkRules, env, readKlvNames, clock);
 
         this.ipc.sendResponse(requestId, { ok: true });
     }

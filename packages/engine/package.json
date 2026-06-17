@@ -16,7 +16,7 @@
         }
     },
     "scripts": {
-        "build": "tsc && cp src/child-process/gst-pipeline-runner.py dist/child-process/",
+        "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst-net-clock.py dist/child-process/",
         "typecheck": "tsc --noEmit",
         "dev": "tsx watch --inspect=9230 examples/test-engine.ts"
     },

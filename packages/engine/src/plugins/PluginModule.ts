@@ -4,6 +4,7 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
+import type { ClockAuthority } from '../child-process/ClockAuthority.js';
 
 /** Services passed to a plugin's static `registerServices` hook (once per plugin class). */
 export interface EngineServices {
@@ -11,6 +12,10 @@ export interface EngineServices {
     mediaRouter: MediaRouter;
     processManager: ProcessManager;
     deviceProviders: DeviceProviderRegistry;
+    /** Shared net-clock for cross-pipeline A/V sync (see `PipelineDescription.clockSync`).
+     *  Optional: absent in test harnesses and on engines built before this; a
+     *  `clockSync` pipeline then simply runs unsynced. */
+    clockAuthority?: ClockAuthority;
 }
 
 /**
@@ -134,6 +139,35 @@ export interface PipelineDescription {
      * picks up a different value.
      */
     env?: Record<string, string>;
+    /**
+     * Shared net-clock for cross-pipeline A/V sync. When set, the runner slaves
+     * this pipeline to the given clock so it presents on the same timeline as
+     * its sibling pipelines (e.g. video-player ↔ audio-decoder fed from one
+     * source), eliminating the drift two independent pipelines get from their
+     * own clocks. Plugins don't build this themselves — they set
+     * `clockSync: true` and `GstPluginBase` resolves it from the engine's clock
+     * authority. Off by default → today's per-pipeline behaviour.
+     */
+    clock?: ClockConfig;
+    /**
+     * Opt into cross-pipeline sync: `GstPluginBase.onStart` resolves the shared
+     * clock from the engine's clock authority and fills `clock` before handing
+     * the description to the runner. Requires the pipeline's sinks to be
+     * `sync=true` and the buffers to carry the shared source PTS (no
+     * per-consumer re-anchoring) for the lock to hold.
+     */
+    clockSync?: boolean;
+}
+
+/**
+ * Where to reach the shared net clock for cross-pipeline A/V sync — the single
+ * source of truth for this shape (the runner protocol + ClockAuthority import
+ * it). No base-time: pipelines anchor naturally on the shared clock (same rate
+ * ⇒ no drift, small constant start offset).
+ */
+export interface ClockConfig {
+    host: string;
+    port: number;
 }
 
 export interface PadLinkRule {

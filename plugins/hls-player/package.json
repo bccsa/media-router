@@ -36,21 +36,17 @@
                 },
                 "quality": {
                     "type": "string",
-                    "enum": ["auto", "highest", "lowest"],
+                    "enum": ["auto", "max1080", "max720", "max480", "max360", "lowest"],
                     "default": "auto",
                     "x-enumLabels": {
-                        "auto": "Auto (ABR)",
-                        "highest": "Highest variant",
-                        "lowest": "Lowest variant"
+                        "auto": "Auto — best available",
+                        "max1080": "Auto — up to 1080p",
+                        "max720": "Auto — up to 720p",
+                        "max480": "Auto — up to 480p",
+                        "max360": "Auto — up to 360p",
+                        "lowest": "Lowest (data saver)"
                     },
-                    "description": "Adaptive bitrate (auto) or pin a single variant"
-                },
-                "capBitrate": {
-                    "type": "number",
-                    "default": 0,
-                    "x-unit": "kbps",
-                    "x-showWhen": "quality=auto",
-                    "description": "Max variant bitrate ABR may pick (kbps; 0 = no cap)"
+                    "description": "Picture quality. Auto adapts to bandwidth; the 'up to' options cap how high it goes — pick the highest your playback device handles smoothly (≤720p on a Raspberry Pi 5, which has no hardware H.264 decoder). Adapts smoothly below the cap. Lowest forces the smallest variant."
                 },
                 "abrPreset": {
                     "type": "string",

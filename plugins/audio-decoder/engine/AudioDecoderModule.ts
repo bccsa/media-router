@@ -146,6 +146,17 @@ export class AudioDecoderModule extends GstPluginBase {
         // Resample prevents latency buildup over hours — proven stable in v1 over 12+ hour sessions.
         const slaveMethod = (config.slaveMethod as number) ?? 0;
 
+        // Cross-pipeline A/V sync (opt-in, plan: shared net clock). When on, the
+        // sink honours PTS against the engine's shared clock so this pipeline
+        // presents on the same timeline as the video-player. `provide-clock=false`
+        // stops pulsesink imposing the DAC clock over the shared net clock the
+        // engine sets, and `sync=true` makes it present at PTS. The input chain
+        // is already `tsdemux` with no `tsparse set-timestamps`, so the source
+        // PTS is preserved (required for the lock). Off → today's exact string.
+        const clockSync = (config.clockSync as boolean) === true;
+        const sinkSync = clockSync ? 'true' : 'false';
+        const provideClock = clockSync ? ' provide-clock=false' : '';
+
         const parts = [
             // Post-tsdemux jitter buffer (leaky=2 drops oldest when full). Size
             // is per-instance via `bufferMs` — default 100 ms keeps live
@@ -162,7 +173,7 @@ export class AudioDecoderModule extends GstPluginBase {
             // latency (pulsesink only drops/skips when an arriving frame is
             // *already* this late) but they let pulsesink tolerate transient
             // delivery jitter that was previously surfacing as scratchy audio.
-            `pulsesink device=${this.pwNodeName} sync=false slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=50000 max-lateness=200000000`,
+            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=50000 max-lateness=200000000`,
         ];
         const pipeline = parts.join(' ! ');
 
@@ -170,6 +181,7 @@ export class AudioDecoderModule extends GstPluginBase {
             pipeline,
             liveElements: { vol: ['volume'] },
             restartOnError: true,
+            ...(clockSync ? { clockSync: true } : {}),
         };
     }
 }

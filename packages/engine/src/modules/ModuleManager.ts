@@ -8,6 +8,7 @@ import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
+import type { ClockAuthority } from '../child-process/ClockAuthority.js';
 import { ModuleInstance } from './ModuleInstance.js';
 
 const log = createLogger('ModuleManager');
@@ -29,6 +30,7 @@ export class ModuleManager extends EventEmitter {
     private mediaRouter: MediaRouter | null = null;
     private processManager: ProcessManager | null = null;
     private deviceProviders: DeviceProviderRegistry | null = null;
+    private clockAuthority: ClockAuthority | null = null;
 
     constructor(
         pluginLoader: PluginLoader,
@@ -36,6 +38,7 @@ export class ModuleManager extends EventEmitter {
         mediaRouter?: MediaRouter,
         processManager?: ProcessManager,
         deviceProviders?: DeviceProviderRegistry,
+        clockAuthority?: ClockAuthority,
     ) {
         super();
         this.pluginLoader = pluginLoader;
@@ -43,6 +46,7 @@ export class ModuleManager extends EventEmitter {
         this.mediaRouter = mediaRouter ?? null;
         this.processManager = processManager ?? null;
         this.deviceProviders = deviceProviders ?? null;
+        this.clockAuthority = clockAuthority ?? null;
     }
 
     /** Create a new module instance. Does NOT start it. */
@@ -103,6 +107,7 @@ export class ModuleManager extends EventEmitter {
                       mediaRouter: this.mediaRouter,
                       processManager: this.processManager,
                       deviceProviders: this.deviceProviders,
+                      ...(this.clockAuthority ? { clockAuthority: this.clockAuthority } : {}),
                       instanceId,
                   }
                 : undefined;

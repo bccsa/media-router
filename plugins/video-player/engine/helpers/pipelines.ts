@@ -74,6 +74,14 @@ export interface SinkOpts {
      * preserves the pre-existing low-latency behaviour for SRT/RIST instances.
      */
     sync?: boolean;
+    /**
+     * Lip-sync trim in nanoseconds applied to the video sink's `ts-offset`.
+     * Positive **delays** video (to meet audio that's playing late — the audio
+     * path carries more buffering latency than video). Only has effect with
+     * `sync=true` (the sink must honour timing for ts-offset to mean anything).
+     * 0 = no trim. The named `sink` element makes it live-updatable.
+     */
+    tsOffsetNs?: number;
 }
 
 export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts = {}): string {
@@ -93,6 +101,10 @@ export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts
     // `sync=false` (the live SRT/RIST default) has no clock anchor, so the
     // basesink's late-drop logic doesn't apply — leave it unspecified.
     const syncClause = sync ? ' sync=true max-lateness=1000000000' : ' sync=false';
+    // Lip-sync trim — only meaningful with sync=true (a non-syncing sink
+    // ignores timing). `autovideosink` is a bin, not a basesink, so it has no
+    // ts-offset; skip it there.
+    const tsOffset = opts.tsOffsetNs && sync ? ` ts-offset=${opts.tsOffsetNs}` : '';
     if (env.wayland && env.waylandSession) {
         // `fullscreen=true` does two things we need on a kiosk-shell output:
         //  1. Z-order — it takes the xdg_toplevel fullscreen role, prompting
@@ -105,13 +117,13 @@ export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts
         //     the output's `transform=` (e.g. rotate-90) itself. So we do
         //     NOT pre-rotate client-side; an earlier `videoflip` approach
         //     double-rotated once fullscreen was in play.
-        return `waylandsink name=sink${syncClause} fullscreen=true${qosClause}`;
+        return `waylandsink name=sink${syncClause}${tsOffset} fullscreen=true${qosClause}`;
     }
     if (display && env.kms && env.connectorId !== undefined) {
-        return `kmssink name=sink connector-id=${env.connectorId}${syncClause}${qosClause}`;
+        return `kmssink name=sink connector-id=${env.connectorId}${syncClause}${tsOffset}${qosClause}`;
     }
     if (env.kms) {
-        return `kmssink name=sink${syncClause}${qosClause}`;
+        return `kmssink name=sink${syncClause}${tsOffset}${qosClause}`;
     }
     return `autovideosink${syncClause}${qosClause}`;
 }
@@ -220,6 +232,13 @@ export function buildLivePipeline(
      * until the next I-frame after a mid-stream join.
      */
     bufferMs = 200,
+    /**
+     * Cross-pipeline A/V sync: preserve the source PTS (no `tsparse
+     * set-timestamps` re-anchoring) so this pipeline shares the timeline of the
+     * audio-decoder it's clock-locked to. Default false = today's re-anchored
+     * behaviour. The caller pairs this with a `sync=true` sink + `clockSync`.
+     */
+    preserveSourcePts = false,
 ): string {
     // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
@@ -233,6 +252,9 @@ export function buildLivePipeline(
         port: udpSource.port,
         timeoutNs: UDP_STREAM_TIMEOUT_NS,
         jitterMs: bufferMs,
+        // Keep source PTS when clock-locked to the audio pipeline; re-anchor
+        // otherwise (the load-bearing default for standalone playout).
+        setTimestamps: !preserveSourcePts,
     });
     // `constrainSurface` pins the live output to the same surface dimensions
     // the fallback uses (NOT full caps parity — fallback also sets a framerate;
@@ -243,12 +265,16 @@ export function buildLivePipeline(
     // KMS-direct / autovideosink there's no such constraint and forcing 720p
     // would needlessly downscale a native-res broadcast panel, so we pass the
     // source resolution straight through.
+    const q = `queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
     const scale = constrainSurface
         ? `videoscale add-borders=true ! ${SURFACE_CAPS}`
         : 'videoscale';
-    return (
-        `${tsInput} ! tsdemux latency=0 ` +
-        `! queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! decodebin ` +
-        `! videoconvert ! ${scale} ! ${sinkElement}`
-    );
+    // `decodebin3` (not decodebin): on an ABR/HLS source the resolution changes
+    // mid-stream at every variant switch. decodebin repluggs a fresh decoder on
+    // each change — a hard stall the viewer sees as a hitch. decodebin3 reuses
+    // the existing decoder across format changes, so switches are smooth. Paired
+    // with the fixed `${SURFACE_CAPS}` on the wayland-fullscreen path the sink
+    // surface also stays constant, so neither the decoder nor the compositor
+    // hitches on a switch.
+    return `${tsInput} ! tsdemux latency=0 ! ${q} ! decodebin3 ! videoconvert ! ${scale} ! ${sinkElement}`;
 }

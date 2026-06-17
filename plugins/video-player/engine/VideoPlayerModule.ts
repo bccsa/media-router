@@ -45,7 +45,7 @@ export class VideoPlayerModule extends GstPluginBase {
     // pipeline. With a source connected, a fallbackText change is silently
     // deferred to the next fallback render. See onLiveConfigUpdate for the
     // hasSource guard that enforces this.
-    protected liveUpdatableParams = ['fallbackText'];
+    protected liveUpdatableParams = ['fallbackText', 'lipSyncMs'];
 
     /** Probed once at plugin load — set by `initManifest`. */
     private static sinks: SinkAvailability = { wayland: false, kms: false };
@@ -499,6 +499,14 @@ export class VideoPlayerModule extends GstPluginBase {
                 );
             }
         }
+        if ('lipSyncMs' in changes) {
+            // Live lip-sync trim — push the new ts-offset to the running video
+            // `sink` (no rebuild). Only bites when the sink is sync=true.
+            const ns = Math.round(Number(changes.lipSyncMs ?? 0) * 1_000_000);
+            await this.setElementProperty('sink', 'ts-offset', ns).catch((err) =>
+                this.log.debug({ err }, 'Failed to update lip-sync ts-offset'),
+            );
+        }
         this.updateStatusData();
     }
 
@@ -528,9 +536,18 @@ export class VideoPlayerModule extends GstPluginBase {
             waylandSession: hasWaylandSession(),
             connectorId: active.connectorId,
         };
+        // Cross-pipeline A/V sync (opt-in): lock to the engine's shared clock so
+        // video stays with an audio-decoder fed from the same source. Forces the
+        // sink to sync=true and preserves source PTS (see buildLivePipeline);
+        // `clockSync` in the returned description makes GstPluginBase resolve and
+        // attach the shared clock. Off → today's behaviour.
+        const clockSync = (this.config.clockSync as boolean | undefined) === true;
         const sinkElement = buildSink(active.name, sinkEnv, {
             qos: (this.config.qos as boolean | undefined) ?? true,
-            sync: (this.config.sync as boolean | undefined) ?? false,
+            sync: clockSync || ((this.config.sync as boolean | undefined) ?? false),
+            // Positive lipSyncMs delays video to meet late audio (audio path has
+            // more buffering latency). Live-updatable via the named `sink`.
+            tsOffsetNs: Math.round(Number(this.config.lipSyncMs ?? 0) * 1_000_000),
         });
         const env = buildPipelineEnv(active.name, sinkEnv);
         // The wayland (kiosk-shell fullscreen) path needs the live surface
@@ -571,10 +588,12 @@ export class VideoPlayerModule extends GstPluginBase {
                 udpSource,
                 waylandFullscreen,
                 Number(this.config.bufferMs ?? 200),
+                clockSync,
             ),
             liveElements: {},
             restartOnError: true,
             env,
+            ...(clockSync ? { clockSync: true } : {}),
         };
     }
 

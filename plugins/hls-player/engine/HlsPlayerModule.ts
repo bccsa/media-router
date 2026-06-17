@@ -3,6 +3,7 @@ import type { ManagedProcess } from '@media-router/engine';
 import type { AlternateRendition } from 'hls-pipe';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolutionCapBitrateBps, resolveQuality } from './runnerOptions.js';
 
 /**
  * Locate the compiled runner. `__dirname` is `dist/` in production, but the
@@ -67,6 +68,10 @@ function asArray(v: unknown): string[] {
 export class HlsPlayerModule extends GstPluginBase {
     private runner: ManagedProcess | null = null;
     private playlistKind = '—';
+    /** Variant ladder from the last master-playlist probe (bitrate + height),
+     *  used to turn a `maxHeight` ceiling into a bitrate cap. Empty for media
+     *  playlists or a failed probe. */
+    private masterVariants: Array<{ bitrate: number; resolution?: { height: number } }> = [];
     /** Serializes live config updates — see `onLiveConfigUpdate`. */
     private updateLock: Promise<void> = Promise.resolve();
 
@@ -221,13 +226,24 @@ export class HlsPlayerModule extends GstPluginBase {
     }
 
     private buildRunnerConfig(url: string, host: string, port: number): Record<string, unknown> {
-        const capKbps = Number(this.config.capBitrate ?? 0);
+        // Effective ABR bitrate cap = the tightest of: the explicit capBitrate
+        // One "Quality" dropdown drives everything: resolveQuality maps it to an
+        // internal quality + resolution ceiling, which becomes a bitrate cap via
+        // the probed variant ladder so the box never picks a variant it can't
+        // decode. A legacy separate `maxHeight`/`capBitrate` (from before the
+        // dropdown was unified) is still honoured as a fallback.
+        const resolved = resolveQuality(String(this.config.quality ?? 'auto'));
+        const maxHeight = resolved.maxHeight || Number(this.config.maxHeight ?? 0);
+        const legacyCapKbps = Number(this.config.capBitrate ?? 0);
+        const explicitBps = legacyCapKbps > 0 ? Math.round(legacyCapKbps * 1000) : 0;
+        const resBps = resolutionCapBitrateBps(this.masterVariants, maxHeight);
+        const caps = [explicitBps, resBps].filter((c) => c > 0);
         return {
             url,
             host,
             port,
-            quality: (this.config.quality as string) ?? 'auto',
-            capBitrateBps: capKbps > 0 ? Math.round(capKbps * 1000) : 0,
+            quality: resolved.quality,
+            capBitrateBps: caps.length ? Math.min(...caps) : 0,
             abrPreset: (this.config.abrPreset as string) ?? 'default',
             inlineAudio: asArray(this.config.audioLanguages),
             inlineSubtitles: asArray(this.config.subtitleLanguages),
@@ -246,12 +262,19 @@ export class HlsPlayerModule extends GstPluginBase {
             const body = Buffer.from(res.body).toString('utf8');
             if (!isMasterPlaylist(body)) {
                 this.playlistKind = 'Media';
+                this.masterVariants = [];
                 this.setFieldOptions('audio', []);
                 this.setFieldOptions('subtitles', []);
                 this.log.info('probe: media playlist (no alternate renditions)');
                 return;
             }
             const master = parseMaster(body, url);
+            // Keep the variant ladder (bitrate + resolution) so a maxHeight
+            // ceiling can be translated to a bitrate cap at spawn time.
+            this.masterVariants = master.variants.map((v) => ({
+                bitrate: v.bitrate,
+                ...(v.resolution ? { resolution: { height: v.resolution.height } } : {}),
+            }));
             const audio = langOptions(master.audio);
             const subs = langOptions(master.subtitles);
             this.playlistKind = 'Master';
@@ -268,6 +291,7 @@ export class HlsPlayerModule extends GstPluginBase {
             // A failed probe means we know nothing about this URL's renditions —
             // drop the previous stream's languages rather than showing stale options.
             this.playlistKind = '—';
+            this.masterVariants = [];
             this.setFieldOptions('audio', []);
             this.setFieldOptions('subtitles', []);
             this.log.warn({ err: err instanceof Error ? err.message : err }, 'HLS probe failed');

@@ -81,6 +81,23 @@ describe('VideoPlayerModule helpers', () => {
         // (disabled) lets sustained decode shortfall accumulate as unbounded lag.
         // 1 s absorbs IDR-frame jitter while capping latency. The pair must
         // appear on every sink variant or the HLS path silently regresses.
+        describe('lip-sync trim (ts-offset)', () => {
+            const env = { wayland: false, kms: true, waylandSession: false, connectorId: 32 };
+            it('adds ts-offset to the sink when sync=true and an offset is set', () => {
+                const s = buildSink('HDMI-A-1', env, { sync: true, tsOffsetNs: 1_000_000_000 });
+                expect(s).toContain('ts-offset=1000000000');
+                expect(s).toContain('sync=true');
+            });
+            it('omits ts-offset when sync is off (a non-syncing sink ignores timing)', () => {
+                const s = buildSink('HDMI-A-1', env, { sync: false, tsOffsetNs: 1_000_000_000 });
+                expect(s).not.toContain('ts-offset');
+            });
+            it('omits ts-offset when the trim is 0', () => {
+                const s = buildSink('HDMI-A-1', env, { sync: true, tsOffsetNs: 0 });
+                expect(s).not.toContain('ts-offset');
+            });
+        });
+
         describe('with sync=true (HLS branch)', () => {
             it('emits sync=true max-lateness=1000000000 on waylandsink', () => {
                 expect(
@@ -219,6 +236,26 @@ describe('VideoPlayerModule helpers', () => {
             // No fallback branch when a source is connected.
             expect(s).not.toContain('input-selector');
             expect(s).not.toContain('videotestsrc');
+        });
+
+        it('re-anchors PTS by default (tsparse set-timestamps=true) — single-pipeline playout', () => {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
+                host: '239.255.0.1',
+                port: 5000,
+            });
+            expect(s).toContain('tsparse set-timestamps=true');
+        });
+
+        it('preserves source PTS when clock-locked (preserveSourcePts=true) so it shares the audio timeline', () => {
+            const s = buildLivePipeline(
+                'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                { host: '239.255.0.1', port: 5000 },
+                false,
+                200,
+                true,
+            );
+            expect(s).toContain('tsparse set-timestamps=false');
+            expect(s).not.toContain('set-timestamps=true');
         });
 
         it('passes native resolution through on the KMS/auto path (constrainSurface=false)', () => {

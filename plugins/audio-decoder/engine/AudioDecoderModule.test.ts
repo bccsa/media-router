@@ -68,6 +68,21 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('decodebin');
     });
 
+    it('plays sync=false with no clockSync by default (standalone/low-latency)', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({});
+        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=false');
+        expect(desc!.pipeline).not.toContain('provide-clock=false');
+        expect(desc!.clockSync).toBeUndefined();
+    });
+
+    it('clockSync=true → sync=true + provide-clock=false + clockSync flag (shared engine clock)', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({ clockSync: true });
+        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=true provide-clock=false');
+        expect(desc!.clockSync).toBe(true);
+    });
+
     it('uses the configured volume (volume=100% → gst volume=1.00)', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
