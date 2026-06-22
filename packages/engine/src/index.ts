@@ -12,12 +12,25 @@ export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
 export { registerPipeWireDeviceProvider } from './system/pipeWireDeviceProvider.js';
 export type { PipeWireDeviceProviderOptions } from './system/pipeWireDeviceProvider.js';
+export {
+    registerNetworkInterfaceDeviceProvider,
+    listNetworkInterfaces,
+    NETWORK_INTERFACE_DEVICE_TYPE,
+} from './system/networkInterfaceProvider.js';
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
 export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './system/drmConnectors.js';
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
 export { probeGstElement, gstInspectMaxChannels } from './plugins/gstInspect.js';
-export { buildUdpSrc, buildUdpSink, isMulticast } from './plugins/udpHelpers.js';
-export type { UdpSrcOpts, UdpSinkOpts } from './plugins/udpHelpers.js';
+export {
+    buildUdpSrc,
+    buildUdpSink,
+    buildNetUdpSrc,
+    buildNetUdpSink,
+    isMulticast,
+    isMulticastAddr,
+    NET_UDP_RCV_BUF,
+} from './plugins/udpHelpers.js';
+export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/udpHelpers.js';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_VIDEO_PID_BASE,

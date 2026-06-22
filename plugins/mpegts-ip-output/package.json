@@ -1,0 +1,118 @@
+{
+    "name": "@media-router/plugin-mpegts-ip-output",
+    "version": "2.0.0",
+    "private": true,
+    "description": "MPEG-TS over IP output — sends MPEG-TS over UDP/RTP to the network",
+    "mediaRouter": {
+        "pluginId": "mpegts-ip-output",
+        "displayName": "MPEG-TS IP Out",
+        "description": "Sends an MPEG-TS stream over plain UDP or RTP/TS to the network. One multicast destination serves unlimited receivers; add unicast destinations to fan out to specific hosts.",
+        "color": "#0284c7",
+        "icon": "arrow-up-from-line",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "mpegts-in",
+                "direction": "input",
+                "streamType": "muxed/mpegts",
+                "label": "MPEG-TS In",
+                "maxConnections": 1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "encapsulation": {
+                    "type": "string",
+                    "enum": [
+                        "raw",
+                        "rtp"
+                    ],
+                    "default": "raw",
+                    "description": "On-wire encapsulation: raw MPEG-TS in UDP, or RTP-wrapped TS"
+                },
+                "interface": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Network interface for multicast egress; empty = system default",
+                    "x-deviceType": "network-interface"
+                },
+                "ttl": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 255,
+                    "default": 16,
+                    "description": "Multicast/unicast TTL"
+                },
+                "destinations": {
+                    "type": "array",
+                    "default": [
+                        {
+                            "host": "239.1.1.1",
+                            "port": 5000
+                        }
+                    ],
+                    "description": "Destination host:port targets. One multicast entry serves unlimited receivers; add entries for unicast fan-out.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "default": "239.1.1.1",
+                                "description": "Destination host / multicast group"
+                            },
+                            "port": {
+                                "type": "number",
+                                "default": 5000,
+                                "description": "Destination port"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "connection",
+                "label": "Connection",
+                "fields": [
+                    {
+                        "key": "encapsulation",
+                        "label": "Encapsulation"
+                    },
+                    {
+                        "key": "destinations",
+                        "label": "Destinations"
+                    }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "Mbps"
+                    },
+                    {
+                        "key": "bytesSent",
+                        "label": "Bytes Sent"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/MpegTsIpOutputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

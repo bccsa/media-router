@@ -13,6 +13,7 @@ import {
     buildUdpSink,
     buildUdpSrc,
     muxSinkPadName,
+    NET_UDP_RCV_BUF,
     videoStreamPid,
     type PadLinkRule,
 } from '@media-router/engine';
@@ -171,6 +172,7 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
         port: source.port,
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
         timeoutNs: UDP_INPUT_TIMEOUT_NS,
+        bufferSize: NET_UDP_RCV_BUF,
     });
     // The udpsrc `timeout` is load-bearing on a MULTI-source mux, not just a
     // nicety: `mpegtsmux` aggregates all its sink pads and CANNOT distinguish a
@@ -245,7 +247,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     //
     // In-band name channel (plan D2/Phase 2): a metadata `appsrc` pinned to the
     // fixed metadata PID feeds `mpegtsmux`. The runner pushes the KLV name
-    // carousel onto `${KLV_APPSRC_NAME}` on a ~1 s timer (and re-pushes on every
+    // carousel onto `${KLV_APPSRC_NAME}` on a ~50 ms timer (and re-pushes on every
     // live name edit). Per D6 this branch never affects routing or pipeline
     // health: it's a static element that simply carries labels, and the demuxer
     // treats its absence as a non-event. `do-timestamp=true` lets mpegtsmux

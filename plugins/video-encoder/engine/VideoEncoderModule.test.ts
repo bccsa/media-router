@@ -124,19 +124,19 @@ describe('VideoEncoderModule', () => {
             expect(s).toContain('h265_i_frame_period=90');
             expect(s).toContain('h265parse');
         });
-        it('builds H.264 software with VBV cap (~1.2× target) so bursts do not overflow downstream UDP/jitter buffers', () => {
+        it('builds H.264 software as CBR (peak capped at target, nal-hrd=cbr) so motion bursts cannot overflow downstream UDP/jitter buffers', () => {
             const s = buildEncoderBranch('h264', 'software', 3500, 90);
             expect(s).toContain('x264enc name=venc0');
             expect(s).toContain('bitrate=3500');
             expect(s).toContain('key-int-max=90');
-            expect(s).toContain('option-string="vbv-maxrate=4200:vbv-bufsize=3500"');
+            expect(s).toContain('option-string="nal-hrd=cbr:vbv-maxrate=3500:vbv-bufsize=3500"');
             expect(s).toContain('h264parse');
         });
-        it('builds H.265 software with VBV cap proportional to target bitrate', () => {
+        it('builds H.265 software as CBR (strict-cbr, peak capped at target)', () => {
             const s = buildEncoderBranch('h265', 'software', 3000, 30);
             expect(s).toContain('x265enc name=venc0');
             expect(s).toContain('bitrate=3000');
-            expect(s).toContain('option-string="vbv-maxrate=3600:vbv-bufsize=3000"');
+            expect(s).toContain('option-string="vbv-maxrate=3000:vbv-bufsize=3000:strict-cbr=1"');
             expect(s).toContain('h265parse');
         });
         it('builds AV1 software with svtav1enc target-bitrate', () => {

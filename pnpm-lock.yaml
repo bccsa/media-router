@@ -299,6 +299,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/mpegts-ip-input:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/mpegts-ip-output:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/mpegts-muxer:
     dependencies:
       '@media-router/engine':

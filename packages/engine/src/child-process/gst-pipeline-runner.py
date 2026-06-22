@@ -65,10 +65,23 @@ throughput_lock = threading.Lock()
 
 # In-band KLV name carousel (mpegts muxer, Phase 2). The parent pushes a JSON
 # payload via the `set_klv_payload` command; we re-push it onto the named
-# `appsrc` once per second so late-joining receivers and live name edits both
-# converge. Per plan D6 this never affects pipeline health — a push failure is
-# swallowed, an empty payload simply stops pushing.
-KLV_CAROUSEL_INTERVAL_S = 1
+# `appsrc` so late-joining receivers and live name edits both converge.
+#
+# The push interval is SHORT (not 1 s) on purpose, and it is load-bearing for
+# video quality — not just a late-joiner nicety. `mpegtsmux` is a GstAggregator:
+# it can only advance its output up to the *oldest* timestamp present across ALL
+# its sink pads, including this metadata pad. With a 1 s carousel the metadata
+# pad's timestamp only advanced once per second, so the mux stalled the
+# video/audio output between KLV buffers; the per-pad leaky input queues then
+# dropped the backlog, and the muxed stream collapsed to ~8 % of the encoder
+# bitrate (measured: 2.2 Mbps encoder -> 0.18 Mbps muxed = ~92 % video loss,
+# seen as catastrophic "packet loss"/macroblocking downstream). Re-pushing the
+# (tiny) payload every 50 ms keeps the metadata pad's running-time within a
+# frame of the media pads, so the aggregator never gates and the full bitrate
+# passes through. The payload is small and unchanged between pushes, so the
+# extra rate is negligible. (A cleaner long-term fix is to mark the metadata
+# pad sparse so mpegtsmux never waits on it regardless of cadence.)
+KLV_CAROUSEL_INTERVAL_MS = 50
 klv_payloads = {}        # appsrc element name → bytes to carousel
 klv_timer_id = None      # GLib source id of the running carousel timer
 
@@ -1041,8 +1054,8 @@ def _ensure_klv_timer():
     """Start the carousel timer once there's at least one payload to push."""
     global klv_timer_id
     if klv_timer_id is None and klv_payloads:
-        klv_timer_id = GLib.timeout_add_seconds(
-            KLV_CAROUSEL_INTERVAL_S, _push_klv_carousel
+        klv_timer_id = GLib.timeout_add(
+            KLV_CAROUSEL_INTERVAL_MS, _push_klv_carousel
         )
 
 

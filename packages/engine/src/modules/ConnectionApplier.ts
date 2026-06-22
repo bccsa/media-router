@@ -145,13 +145,25 @@ export class ConnectionApplier {
     }
 
     /** Re-apply stored connections for a specific module after restart/enable. */
-    async reapplyModuleConnections(moduleId: string): Promise<void> {
+    async reapplyModuleConnections(moduleId: string, outgoingOnly = false): Promise<void> {
         const config = this.getConfig();
         if (!config) return;
 
         const storedConns = (config.connections ?? []) as StoredConnection[];
         for (const conn of storedConns) {
-            if (conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId) {
+            // `outgoingOnly` is used by the post-consumer-restart cascade
+            // (MpegTsUdpExecutor.onConsumerRestarted): re-applying the just-
+            // restarted module's *incoming* edges would restart it again,
+            // re-firing the cascade — an infinite restart loop. It bites
+            // multi-input consumers hardest (e.g. mpegts-muxer: 2 encoder
+            // inputs + 1 output), which then never settle and report "no
+            // inputs". Outgoing-only matches the hook's documented purpose:
+            // give the consumer's *downstream* connections a fresh attempt
+            // now that it has allocated its own UDP output ports.
+            const match = outgoingOnly
+                ? conn.sourceModuleId === moduleId
+                : conn.sourceModuleId === moduleId || conn.sinkModuleId === moduleId;
+            if (match) {
                 await this.connectWithRetry(conn);
             }
         }

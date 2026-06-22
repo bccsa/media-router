@@ -359,6 +359,53 @@ describe('ConnectionApplier', () => {
             expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
         });
 
+        it('outgoingOnly=true reapplies source edges but skips the module\'s incoming edges', async () => {
+            // The post-consumer-restart cascade path. Re-applying the just-
+            // restarted module's *incoming* edges would restart it again and
+            // re-fire the cascade — an infinite restart loop (mpegts-muxer:
+            // 2 encoder inputs + 1 output). Outgoing-only gives only the
+            // module's *downstream* connections a fresh attempt.
+            getConfig.mockReturnValue({
+                connections: [
+                    // incoming: target is the SINK — must be skipped
+                    makeConn({
+                        id: 'in',
+                        sourceModuleId: 'encoder',
+                        sourcePortId: 'mpegts-out',
+                        sinkModuleId: 'target',
+                        sinkPortId: 'video-0',
+                    }),
+                    // outgoing: target is the SOURCE — must be reapplied
+                    makeConn({
+                        id: 'out',
+                        sourceModuleId: 'target',
+                        sourcePortId: 'mpegts-out',
+                        sinkModuleId: 'ip-output',
+                        sinkPortId: 'mpegts-in',
+                    }),
+                ],
+            });
+
+            await applier.reapplyModuleConnections('target', true);
+
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledTimes(1);
+            expect(mockMediaRouter.createConnection).toHaveBeenCalledWith(
+                'target',
+                'mpegts-out',
+                'ip-output',
+                'mpegts-in',
+                undefined,
+            );
+            // the incoming edge (encoder -> target) was NOT reapplied
+            expect(mockMediaRouter.createConnection).not.toHaveBeenCalledWith(
+                'encoder',
+                'mpegts-out',
+                'target',
+                'video-0',
+                undefined,
+            );
+        });
+
         it('skips connections where source or sink is not running', async () => {
             getConfig.mockReturnValue({
                 connections: [makeConn({ sourceModuleId: 'mod-a', sinkModuleId: 'mod-b' })],

@@ -240,7 +240,15 @@ export class GstChildProcess extends EventEmitter {
      * dropped update is corrected by the next carousel tick.
      */
     sendKlvPayload(element: string, payload: string): void {
-        if (!this.ipc || !this.running) return;
+        // Gate only on the IPC channel — NOT on `running` (which flips true only
+        // on the 'playing' state change). mpegtsmux is an aggregator: it never
+        // reaches PLAYING until its KLV metadata pad receives a buffer, but that
+        // buffer can only be seeded via this call — so gating on `running` is a
+        // deadlock (no PLAYING → no send → no KLV → no PLAYING), and the whole
+        // A/V mux produces no output. The runner stores the payload the moment
+        // its IPC is up and its carousel pushes it onto the appsrc as soon as
+        // the element exists, unblocking the mux.
+        if (!this.ipc) return;
         this.ipc.sendEvent('setKlvPayload', { element, payload });
     }
 

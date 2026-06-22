@@ -1,0 +1,116 @@
+{
+    "name": "@media-router/plugin-mpegts-ip-input",
+    "version": "2.0.0",
+    "private": true,
+    "description": "MPEG-TS over IP input — receives MPEG-TS over UDP/RTP from the network",
+    "mediaRouter": {
+        "pluginId": "mpegts-ip-input",
+        "displayName": "MPEG-TS IP In",
+        "description": "Receives an MPEG-TS stream over plain UDP or RTP/TS from the network (multicast or unicast) and rebroadcasts it on the local bus for downstream modules.",
+        "color": "#0ea5e9",
+        "icon": "arrow-down-to-line",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "mpegts-out",
+                "direction": "output",
+                "streamType": "muxed/mpegts",
+                "label": "MPEG-TS Out",
+                "maxConnections": -1,
+                "requiresOrderedApply": true
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "number",
+                    "default": 5000,
+                    "description": "UDP port to listen on"
+                },
+                "address": {
+                    "type": "string",
+                    "default": "0.0.0.0",
+                    "description": "Multicast group to join (e.g. 239.1.1.1); 0.0.0.0 = unicast/any"
+                },
+                "interface": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Network interface for multicast join; empty = system default",
+                    "x-deviceType": "network-interface"
+                },
+                "encapsulation": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "raw",
+                        "rtp"
+                    ],
+                    "default": "auto",
+                    "description": "On-wire encapsulation: auto-detect, raw MPEG-TS in UDP, or RTP-wrapped TS"
+                },
+                "jitterMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 5000,
+                    "default": 200,
+                    "description": "Inbound jitter buffer (ms)",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "ms"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "connection",
+                "label": "Connection",
+                "fields": [
+                    {
+                        "key": "address",
+                        "label": "Address"
+                    },
+                    {
+                        "key": "port",
+                        "label": "Port"
+                    },
+                    {
+                        "key": "encapsulation",
+                        "label": "Encapsulation"
+                    },
+                    {
+                        "key": "multicast",
+                        "label": "Multicast"
+                    }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "Mbps"
+                    },
+                    {
+                        "key": "bytesReceived",
+                        "label": "Bytes Received"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/MpegTsIpInputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

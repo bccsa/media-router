@@ -37,12 +37,14 @@ export function buildEncoderBranch(
     kif: number,
 ): string {
     const bps = bitrateKbps * 1000;
-    // VBV caps hold short-term bursts close to the configured bitrate. Without
-    // them, fast-motion frames spike the wire well above target and overflow
-    // the downstream UDP / jitter buffer, which the receiver can only
-    // interpret as packet loss. `vbv-maxrate` = 1.2× target (~20% headroom
-    // for I-frames), `vbv-bufsize` = 1 s of bitrate (livestreaming default).
-    const vbvMaxKbps = Math.round(bitrateKbps * 1.2);
+    // CBR (constant bitrate). Fixed-bandwidth UDP/MPEG-TS can't absorb the
+    // bursts an ABR/VBR encoder emits on fast motion — they overrun the
+    // downstream UDP / jitter buffer and the receiver sees it as packet loss.
+    // CBR caps the *peak* at the target (vbv-maxrate = bitrate, no headroom)
+    // and pads to hold the rate constant (`nal-hrd=cbr` / `strict-cbr`), so
+    // heavy motion softens slightly instead of spiking the wire. This matches
+    // the V4L2 hardware path (`video_bitrate_mode=1`) and lets the receiver run
+    // a small, low-latency jitter buffer. `vbv-bufsize` = 1 s smoothing window.
     if (impl === 'v4l2') {
         // `video_bitrate_mode=1` selects CBR on the standard V4L2 H.264/H.265
         // encoder controls. Drivers that don't expose the control skip it
@@ -56,10 +58,10 @@ export function buildEncoderBranch(
     }
     if (impl === 'software') {
         if (codec === 'h264') {
-            return `x264enc name=venc0 tune=zerolatency bitrate=${bitrateKbps} speed-preset=superfast key-int-max=${kif} bframes=0 option-string="vbv-maxrate=${vbvMaxKbps}:vbv-bufsize=${bitrateKbps}" ! h264parse config-interval=1`;
+            return `x264enc name=venc0 tune=zerolatency bitrate=${bitrateKbps} speed-preset=superfast key-int-max=${kif} bframes=0 option-string="nal-hrd=cbr:vbv-maxrate=${bitrateKbps}:vbv-bufsize=${bitrateKbps}" ! h264parse config-interval=1`;
         }
         if (codec === 'h265') {
-            return `x265enc name=venc0 bitrate=${bitrateKbps} tune=zerolatency speed-preset=superfast key-int-max=${kif} option-string="vbv-maxrate=${vbvMaxKbps}:vbv-bufsize=${bitrateKbps}" ! h265parse config-interval=1`;
+            return `x265enc name=venc0 bitrate=${bitrateKbps} tune=zerolatency speed-preset=superfast key-int-max=${kif} option-string="vbv-maxrate=${bitrateKbps}:vbv-bufsize=${bitrateKbps}:strict-cbr=1" ! h265parse config-interval=1`;
         }
         if (codec === 'av1') {
             return `svtav1enc name=venc0 target-bitrate=${bitrateKbps} preset=10 ! av1parse`;

@@ -102,6 +102,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 |---|---|---|
 | A GStreamer pipeline that consumes/produces audio | `audio-decoder` or `audio-encoder` | Simple `buildPipeline` + UDP I/O + stats polling |
 | A network ingress/egress plugin | `srt-input` / `srt-output` | UDP-port allocation, per-caller stats, badges |
+| Plain MPEG-TS over IP (UDP/RTP) to/from a real NIC | `mpegts-ip-input` / `mpegts-ip-output` | `buildNetUdpSrc`/`buildNetUdpSink` (interface + TTL, full 224.–239. multicast), raw/RTP encapsulation, `tee` fan-out, `trackThroughput` bitrate |
 | A plugin that owns a hardware device (audio source/sink, V4L2, DRM) | `audio-input` / `audio-output` | `static registerServices` for device provider, watchdog hooks |
 | A CLI-tool wrapper (returns `null` from `buildPipeline`) | `rist-input` / `rist-output` | `ProcessManager` lifecycle, stderr parsing |
 | A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, multicasts MPEG-TS over a `dgram` socket, probes the source and reports `fieldOptions` |

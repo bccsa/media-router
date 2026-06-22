@@ -68,7 +68,7 @@ export class ModuleLifecycle {
         // exhaustion when those ports didn't exist yet (e.g. demuxer with
         // a disabled upstream at engine startup).
         mediaRouter.setConsumerRestartCallback((id) =>
-            this.connectionApplier.reapplyModuleConnections(id),
+            this.connectionApplier.reapplyModuleConnections(id, true),
         );
     }
 

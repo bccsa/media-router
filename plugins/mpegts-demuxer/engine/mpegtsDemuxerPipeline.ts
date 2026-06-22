@@ -13,6 +13,7 @@ import {
     buildLeakyQueue,
     buildUdpSink,
     buildUdpSrc,
+    NET_UDP_RCV_BUF,
     type PadLinkRule,
 } from '@media-router/engine';
 
@@ -381,6 +382,7 @@ export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResu
         port: input.input.port,
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
         timeoutNs: UDP_INPUT_TIMEOUT_NS,
+        bufferSize: NET_UDP_RCV_BUF,
     });
     const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;
 

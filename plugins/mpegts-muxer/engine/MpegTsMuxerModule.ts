@@ -68,12 +68,26 @@ export class MpegTsMuxerModule extends GstPluginBase {
         this.namedStreams = [];
         await super.onStart();
         // Push the name carousel once the appsrc exists (PLAYING). The runner's
-        // ~1 s carousel timer keeps re-pushing after that; this just makes the
+        // ~50 ms carousel timer keeps re-pushing after that; this just makes the
         // first labels appear without waiting a full tick. Re-pushed on every
         // PLAYING so a restartOnError re-spawn re-seeds the carousel.
         this.childProcess?.on('stateChange', (data: { state: string }) => {
             if (data.state === 'playing') this.pushKlvCarousel();
         });
+        // Seed the carousel directly here, not only on the `playing` edge.
+        // mpegtsmux is an aggregator: it produces no output until EVERY sink
+        // pad (video, audio, AND the KLV metadata appsrc) has delivered a
+        // buffer. The `playing` stateChange that drives the carousel is racy —
+        // if it's missed, the KLV appsrc never gets a buffer and the whole mux
+        // stalls (the "muxer outputs nothing" bug). Pushing here, right after
+        // the pipeline is built and the runner is up, guarantees the runner
+        // receives the payload; its ~50 ms carousel timer then re-pushes once
+        // the appsrc reaches PLAYING. (The carousel is 50 ms, NOT 1 s, because
+        // mpegtsmux gates its output on the oldest pad timestamp — a 1 s
+        // metadata cadence throttled the muxed A/V to ~8 % of bitrate. See the
+        // comment in gst-pipeline-runner.py.) namedStreams is populated by
+        // buildPipeline (run inside super.onStart above).
+        this.pushKlvCarousel();
         this.lastBytes = 0;
         this.lastPollTime = Date.now();
         this.statsTimer = setInterval(async () => {
