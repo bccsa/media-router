@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     audioStreamPid,
     buildLeakyQueue,
+    buildBackpressureQueue,
     buildTsUdpInput,
     muxSinkPadName,
     TS_AUDIO_PID_BASE,
@@ -42,6 +43,18 @@ describe('buildLeakyQueue', () => {
     });
     it('clamps absurdly large values to 5 seconds', () => {
         expect(buildLeakyQueue(99_999)).toContain('max-size-time=5000000000');
+    });
+});
+
+describe('buildBackpressureQueue', () => {
+    it('emits a NON-leaky (leaky=0) bounded queue — back-pressures instead of dropping', () => {
+        expect(buildBackpressureQueue(200)).toBe(
+            'queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0',
+        );
+    });
+    it('clamps negative values to 0 and huge values to 5 s, like buildLeakyQueue', () => {
+        expect(buildBackpressureQueue(-10)).toContain('max-size-time=0');
+        expect(buildBackpressureQueue(99_999)).toContain('max-size-time=5000000000');
     });
 });
 

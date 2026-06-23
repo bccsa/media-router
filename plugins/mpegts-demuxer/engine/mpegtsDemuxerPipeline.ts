@@ -11,6 +11,7 @@
 import {
     DEFAULT_MPEGTS_ALIGNMENT,
     buildLeakyQueue,
+    buildBackpressureQueue,
     buildUdpSink,
     buildUdpSrc,
     NET_UDP_RCV_BUF,
@@ -277,6 +278,15 @@ const DEMUX_NAME = 'demux';
  */
 const UDP_INPUT_TIMEOUT_NS = 5_000_000_000;
 
+/**
+ * Bound (ms) on each video output branch's NON-leaky back-pressure queue. This
+ * is a runaway/memory safety cap, NOT a latency budget: on the loopback path the
+ * udpsink always drains so the queue sits near-empty and adds ≈0 latency. It
+ * only matters if a consumer genuinely stalls, where back-pressuring (up to this
+ * bound) beats silently shedding frames. See `buildBackpressureQueue`.
+ */
+const VIDEO_BRANCH_QUEUE_MS = 200;
+
 export interface DemuxerPipelineResult {
     pipeline: string;
     linkOnPadAdded: PadLinkRule[];
@@ -308,19 +318,30 @@ export function buildOutputBranch(
     bufferMs: number,
     outputBufferMs = 0,
 ): string {
-    const sink = buildUdpSink({ name: `usink_${suffix}`, host: out.host, port: out.port });
+    // `async=false` is load-bearing: this branch is parsed and `add()`ed to an
+    // ALREADY-PLAYING pipeline at pad-added time, then `sync_state_with_parent`.
+    // A default (async) udpsink would hold its first buffer in preroll, stalling
+    // the shared tsdemux pad and freezing EVERY branch — the pipeline reaches
+    // PLAYING but pumps nothing (input socket backs up, all outputs stay silent).
+    const sink = buildUdpSink({ name: `usink_${suffix}`, host: out.host, port: out.port, async: false });
     // No leaky queue between mpegtsmux and udpsink: any drop here is a
     // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
     // payload) and corrupts decode at the receiver. The kernel UDP send
     // buffer absorbs typical bursts on its own.
     let branch: string;
     if (media === 'video') {
-        // Video queue placed AFTER the (runner-injected) parser so drops land
-        // on whole access units, not mid-NAL — losing a sub-frame buffer
-        // corrupts the AU and surfaces as packet loss until the next IDR.
-        // `leaky=2 max-size-buffers=2` keeps latency to ≤2 frames and drops
-        // a single complete frame under stall, which the decoder conceals.
-        const videoQueue = `queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0`;
+        // Video queue placed AFTER the (runner-injected) parser so back-pressure
+        // lands on whole access units, not mid-NAL. NON-leaky: the tail is a
+        // loopback `udpsink` to a `lo` multicast group which always drains (UDP
+        // send never blocks on the receiver), so this queue sits near-empty
+        // (≈0 latency) and merely buffers a transient burst — a big I-frame,
+        // mpegtsmux aggregation, a thread wakeup — instead of shedding the
+        // oldest access unit the way a `leaky=2` queue did. On a lossless link
+        // (wired, same switch) the old leaky queue dropped frames the wire never
+        // lost, surfacing as macroblocking; back-pressuring the burst into the
+        // udpsrc socket buffer keeps the re-mux lossless. The bound is a runaway
+        // safety cap a healthy clean-link path never approaches.
+        const videoQueue = buildBackpressureQueue(VIDEO_BRANCH_QUEUE_MS);
         branch = `${videoQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
     } else {
         // Audio queue after the (runner-injected) parser: drops land on whole

@@ -40,6 +40,7 @@ export {
     audioStreamPid,
     muxSinkPadName,
     buildLeakyQueue,
+    buildBackpressureQueue,
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';

@@ -78,6 +78,32 @@ export function buildLeakyQueue(bufferMs: number): string {
     return `queue leaky=2 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
 }
 
+/**
+ * Non-leaky bounded `queue` — back-pressures (blocks upstream) when full instead
+ * of dropping the oldest buffer.
+ *
+ * Use this on the LOOPBACK redistribution stages (the mpegts-ip relay and the
+ * demuxer's per-pad re-mux branches) where the tail is a `udpsink` to a `lo`
+ * multicast group. On loopback the sink always drains (UDP send never blocks on
+ * the receiver, and the kernel send path is effectively instant), so the queue
+ * sits near-empty — contributing ≈0 latency — and only buffers a transient
+ * burst (a big I-frame, mpegtsmux aggregation, a thread wakeup) instead of
+ * shedding a whole access unit the way `leaky=2` does. On a lossless link
+ * (wired, same switch) shedding frames is pure damage: the wire isn't dropping,
+ * so neither should we. The `bufferMs` bound is a memory/runaway safety cap that
+ * a healthy clean-link path never approaches; reaching it (a genuinely stuck
+ * consumer) back-pressures rather than silently corrupting the stream.
+ *
+ * Do NOT use this to feed a real decoder/render sink (e.g. the video-player's
+ * pre-decode queue): there the consumer can legitimately fall behind and
+ * dropping (leaky) is the correct bound — back-pressure would stall playout.
+ */
+export function buildBackpressureQueue(bufferMs: number): string {
+    const clamped = Math.max(0, Math.min(5000, bufferMs));
+    const ns = clamped * 1_000_000;
+    return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
+}
+
 export interface TsUdpInputOpts {
     host: string;
     port: number;

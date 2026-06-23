@@ -2,7 +2,7 @@ import {
     GstPluginBase,
     buildUdpSink,
     buildNetUdpSrc,
-    buildLeakyQueue,
+    buildBackpressureQueue,
     isMulticastAddr,
     formatBytes,
     NET_UDP_RCV_BUF,
@@ -83,6 +83,9 @@ export class MpegTsIpInputModule extends GstPluginBase {
      * sniff hasn't run or timed out.
      */
     private effectiveEncap(config: Record<string, unknown>): Encapsulation {
+        // An explicit raw/rtp wins; `auto` trusts the per-flow sniff. RTP (paired
+        // with an RTP sender) lets the rtpjitterbuffer reorder out-of-order UDP
+        // datagrams — the fix for reordering-induced macroblocking on this path.
         const configured = (config.encapsulation as string) ?? 'auto';
         if (configured === 'raw' || configured === 'rtp') return configured;
         return this.detectedEncap ?? 'raw';
@@ -164,10 +167,19 @@ export class MpegTsIpInputModule extends GstPluginBase {
         // does the parsing — no need to re-frame/re-timestamp here.
         const depay = encapsulation === 'rtp' ? ['rtpjitterbuffer', 'rtpmp2tdepay'] : [];
 
+        // Non-leaky (back-pressure, not drop): this is a pure loopback relay to
+        // a `lo` multicast group, so the udpsink always drains and the queue
+        // sits near-empty (≈0 added latency). A `leaky=2` queue here sheds whole
+        // TS packets when a plain-UDP sender (mpegts-ip) bursts a keyframe —
+        // which downstream surfaces as continuity errors / macroblocking even
+        // though the wire (wired, same switch) lost nothing. Back-pressuring a
+        // transient burst into the 8 MB udpsrc socket buffer keeps the relay
+        // lossless on a clean link. (SRT input doesn't hit this because its
+        // paced/recovered delivery never bursts the queue.)
         const pipeline = [
             netSrc,
             ...depay,
-            buildLeakyQueue(jitterMs),
+            buildBackpressureQueue(jitterMs),
             buildUdpSink({ host: '239.255.0.1', port: udpPort }),
         ].join(' ! ');
 

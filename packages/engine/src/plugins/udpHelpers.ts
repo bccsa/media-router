@@ -97,6 +97,19 @@ export interface UdpSinkOpts {
     bufferSize?: number;
     /** GStreamer `sync` flag — defaults to false (broadcast pipelines). */
     sync?: boolean;
+    /**
+     * GStreamer `async` flag. Defaults to GStreamer's own default (`true`) when
+     * unset. Set `false` for a sink that is added to an ALREADY-PLAYING pipeline
+     * at runtime (e.g. the demuxer's per-pad branches, attached on pad-added):
+     * an async sink holds its first buffer for preroll and emits
+     * ASYNC_START/ASYNC_DONE, which on a sub-bin synced into a running pipeline
+     * never completes — the sink stays in preroll and back-pressures the shared
+     * upstream pad, stalling every sibling branch (the pipeline reaches PLAYING
+     * but pumps nothing). `async=false` skips preroll so the sink renders
+     * immediately. Harmless for statically-built pipelines (they preroll once at
+     * startup), so callers that don't set it keep today's behaviour.
+     */
+    async?: boolean;
 }
 
 export function buildUdpSink(opts: UdpSinkOpts): string {
@@ -106,10 +119,11 @@ export function buildUdpSink(opts: UdpSinkOpts): string {
     const buf = opts.bufferSize ?? 4 * 1024 * 1024;
     const nameClause = opts.name ? ` name=${opts.name}` : '';
     const sync = opts.sync === true ? 'true' : 'false';
+    const asyncClause = opts.async === false ? ' async=false' : '';
     if (isMulticast(opts.host)) {
-        return `udpsink${nameClause} host=${opts.host} port=${opts.port} multicast-iface=${MULTICAST_IFACE} auto-multicast=true buffer-size=${buf} sync=${sync}`;
+        return `udpsink${nameClause} host=${opts.host} port=${opts.port} multicast-iface=${MULTICAST_IFACE} auto-multicast=true buffer-size=${buf} sync=${sync}${asyncClause}`;
     }
-    return `udpsink${nameClause} host=${opts.host} port=${opts.port} buffer-size=${buf} sync=${sync}`;
+    return `udpsink${nameClause} host=${opts.host} port=${opts.port} buffer-size=${buf} sync=${sync}${asyncClause}`;
 }
 
 /**

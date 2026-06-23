@@ -2,7 +2,7 @@ import {
     GstPluginBase,
     buildUdpSrc,
     buildNetUdpSink,
-    buildLeakyQueue,
+    buildBackpressureQueue,
     isMulticastAddr,
     formatBytes,
     registerNetworkInterfaceDeviceProvider,
@@ -57,6 +57,10 @@ export class MpegTsIpOutputModule extends GstPluginBase {
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        // Encapsulation is operator-configured. RTP (set per-flow) adds sequence
+        // numbers so the receiver's rtpjitterbuffer reorders out-of-order UDP
+        // datagrams — the fix for reordering-induced macroblocking on this path
+        // (measured raw≈12 CC/35s → rtp=0). Defaults to raw for back-compat.
         const encapsulation = (config.encapsulation as string) ?? 'raw';
         const iface = (config.interface as string) ?? '';
         const ttl = (config.ttl as number) ?? 16;
@@ -73,10 +77,17 @@ export class MpegTsIpOutputModule extends GstPluginBase {
             return null;
         }
 
-        // Loopback source → jitter queue → optional RTP payloader.
+        // Loopback source → back-pressure queue → optional RTP payloader.
+        // NON-leaky: on a clean link the network udpsink drains faster than the
+        // feed, so this queue sits near-empty (≈0 latency) and merely buffers a
+        // transient burst (a big I-frame off the loopback bus) instead of
+        // SHEDDING TS packets before they hit the wire. A leaky queue here
+        // corrupts the stream at the source — the receiver then sees continuity
+        // gaps / macroblocking it can never recover (plain MPEG-TS/UDP has no
+        // retransmit). Don't drop on the sender when the wire isn't dropping.
         const head = [
             buildUdpSrc({ name: 'busin', host: udpSource.host, port: udpSource.port }),
-            buildLeakyQueue(200),
+            buildBackpressureQueue(200),
         ];
         if (encapsulation === 'rtp') head.push('rtpmp2tpay');
 
@@ -95,7 +106,7 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         } else {
             // tee → one queued udpsink branch per destination.
             const branches = destinations
-                .map((d, i) => `t. ! ${buildLeakyQueue(200)} ! ${makeSink(d, `netsink${i}`)}`)
+                .map((d, i) => `t. ! ${buildBackpressureQueue(200)} ! ${makeSink(d, `netsink${i}`)}`)
                 .join(' ');
             pipeline = `${head.join(' ! ')} ! tee name=t ${branches}`;
         }

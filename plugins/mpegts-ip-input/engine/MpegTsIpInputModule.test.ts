@@ -42,8 +42,10 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
         // No tsparse: it aggregates TS into >64KB buffers that the loopback
         // udpsink can't send (UDP datagram limit) and drops. Pure passthrough.
         expect(desc!.pipeline).not.toContain('tsparse');
-        // udpsrc feeds straight into the leaky queue
-        expect(desc!.pipeline).toMatch(/udpsrc name=netsrc[^!]*! queue leaky=2/);
+        // udpsrc feeds straight into a NON-leaky back-pressure queue: on a clean
+        // loopback relay a leaky queue would shed TS packets on a sender burst →
+        // continuity errors / macroblocking downstream. See buildBackpressureQueue.
+        expect(desc!.pipeline).toMatch(/udpsrc name=netsrc[^!]*! queue leaky=0/);
         // rebroadcasts on the loopback bus at the assigned port
         expect(desc!.pipeline).toContain('host=239.255.0.1');
         expect(desc!.pipeline).toContain('port=41000');

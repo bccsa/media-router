@@ -140,4 +140,12 @@ describe('buildUdpSink', () => {
         const s = buildUdpSink({ host: '127.0.0.1', port: 1, sync: true });
         expect(s).toContain('sync=true');
     });
+    it('omits async clause by default (keeps GStreamer default async=true)', () => {
+        expect(buildUdpSink({ host: '127.0.0.1', port: 1 })).not.toContain('async');
+        expect(buildUdpSink({ host: '239.255.0.1', port: 1 })).not.toContain('async');
+    });
+    it('emits async=false when requested (runtime-added sinks must not preroll)', () => {
+        expect(buildUdpSink({ host: '127.0.0.1', port: 1, async: false })).toContain('async=false');
+        expect(buildUdpSink({ host: '239.255.0.1', port: 1, async: false })).toContain('async=false');
+    });
 });

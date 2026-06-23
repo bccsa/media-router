@@ -32,7 +32,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
     describe('buildOutputBranch', () => {
         it('produces a parser-free frame-bounded queue → mpegtsmux → udpsink branch for video (parser is injected by the runner per pad caps)', () => {
             const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20);
-            expect(s).toContain('queue leaky=2 max-size-buffers=2');
+            expect(s).toContain('queue leaky=0 max-size-time=200000000');
             expect(s).toContain('mpegtsmux name=mux_v0');
             expect(s).toContain('udpsink name=usink_v0 host=239.255.0.1 port=41005');
             // alignment=7: pack 7 TS packets into one UDP datagram (1316 B —
@@ -64,6 +64,10 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50);
             expect(s).toMatch(/mpegtsmux name=mux_v0[^!]+! udpsink/);
         });
+        it('marks branch udpsinks async=false — they are added to an already-PLAYING pipeline at pad-added time; a prerolling (async) sink stalls the shared tsdemux and freezes every branch', () => {
+            expect(buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20)).toContain('async=false');
+            expect(buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 20)).toContain('async=false');
+        });
 
         describe('output smoothing (opt-in outputBufferMs — Phase 5)', () => {
             // Default OFF must be byte-identical to the live path: capture the
@@ -81,9 +85,11 @@ describe('mpegtsDemuxerPipeline helpers', () => {
                 expect(
                     buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50, 0),
                 ).toBe(audioBaseline);
-                // And no smoothing element leaked into the default path.
-                expect(videoBaseline).not.toContain('leaky=0');
-                expect(audioBaseline).not.toContain('leaky=0');
+                // And no smoothing queue was prepended: the default path has
+                // exactly ONE queue per branch (the re-mux queue itself — which
+                // is now non-leaky on video), not a leading smoothing queue.
+                expect((videoBaseline.match(/queue leaky=/g) || []).length).toBe(1);
+                expect((audioBaseline.match(/queue leaky=/g) || []).length).toBe(1);
             });
 
             it('prepends a deep NON-leaky smoothing queue with the right window on the video branch', () => {
@@ -92,7 +98,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
                 // Smoothing queue is first, non-leaky, sized to the window.
                 expect(s).toMatch(/^queue leaky=0 max-size-time=2000000000 max-size-buffers=0 max-size-bytes=0 !/);
                 // The original branch is preserved after it.
-                expect(s).toContain('queue leaky=2 max-size-buffers=2');
+                expect(s).toContain('queue leaky=0 max-size-time=200000000');
                 expect(s).toContain('alignment=7');
             });
 
@@ -166,7 +172,8 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             });
             for (const rule of result!.linkOnPadAdded) {
                 for (const branch of rule.branches) {
-                    expect(branch).not.toContain('leaky=0');
+                    // No smoothing queue prepended → exactly one queue per branch.
+                    expect((branch.match(/queue leaky=/g) || []).length).toBe(1);
                 }
             }
         });

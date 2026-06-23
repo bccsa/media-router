@@ -85,6 +85,54 @@ KLV_CAROUSEL_INTERVAL_MS = 50
 klv_payloads = {}        # appsrc element name → bytes to carousel
 klv_timer_id = None      # GLib source id of the running carousel timer
 
+# "Reached PLAYING" watchdog. A pipeline told to go PLAYING transitions
+# asynchronously; if it stalls in PAUSED (sink waiting on a bad clock, caps that
+# never negotiate, a demux pad that never appears) nothing else notices — the
+# udpsrc timeout can't fire because the source task doesn't run until PLAYING.
+# We arm a timer at start and cancel it on the PLAYING state-change; if it
+# fires, the pipeline never came up, so we surface a restartable error (the
+# parent's restartOnError then rebuilds) instead of wedging silently forever.
+#
+# LOAD-BEARING INVARIANT: this blanket deadline is safe ONLY because every
+# source in this engine is a LIVE source (udpsrc/srtsrc/etc.), so the pipeline
+# reaches PLAYING with NO_PREROLL — it does NOT wait for data. A non-live path
+# that prerolls off a source which can be silent at startup would turn "waiting
+# for data" into a 10 s restart loop; such a path must pass `playingTimeoutMs:0`
+# (handle_start honours it) to opt out, or gate the watchdog on data arrival.
+PLAYING_WATCHDOG_MS = 10000
+playing_watchdog_id = None  # GLib source id of the running PLAYING watchdog
+
+
+def _cancel_playing_watchdog():
+    """Disarm the PLAYING watchdog (reached PLAYING, or pipeline torn down)."""
+    global playing_watchdog_id
+    if playing_watchdog_id is not None:
+        GLib.source_remove(playing_watchdog_id)
+        playing_watchdog_id = None
+
+
+def _on_playing_timeout():
+    """Watchdog fired: the pipeline never reached PLAYING. Treat as a fatal
+    lifecycle error so the gst-runner restart path recovers it."""
+    global playing_watchdog_id
+    playing_watchdog_id = None
+    # Defensive: if we somehow raced the state-change and are already PLAYING,
+    # do nothing.
+    if pipeline is not None:
+        _ret, state, _pending = pipeline.get_state(0)
+        if state == Gst.State.PLAYING:
+            return False
+    emit_event({
+        "event": "error",
+        "kind": "playing_timeout",
+        "message": f"pipeline did not reach PLAYING within {PLAYING_WATCHDOG_MS} ms",
+    })
+    if pipeline is not None:
+        pipeline.set_state(Gst.State.NULL)
+    if loop and loop.is_running():
+        loop.quit()
+    return False  # one-shot
+
 # ---------------------------------------------------------------------------
 # Event emission (JSON on stderr or fd 4, prefixed with GST_JSON:)
 # ---------------------------------------------------------------------------
@@ -211,6 +259,8 @@ def on_bus_message(bus, message):
         if message.src == pipeline:
             old, new, pending = message.parse_state_changed()
             state_name = new.value_nick  # 'playing', 'paused', 'ready', 'null'
+            if new == Gst.State.PLAYING:
+                _cancel_playing_watchdog()
             emit_event({"event": "state_change", "state": state_name})
 
     elif t == Gst.MessageType.ELEMENT:
@@ -413,8 +463,13 @@ def _install_stream_discovery(element, source_name, read_klv_names=False):
 # `audio/mpeg` covers both AAC (mpegversion=2|4) and MPEG-1/2 audio (mpegversion=1).
 # `_parser_for_caps` checks `mpegversion` to pick between aacparse and mpegaudioparse.
 _PARSER_FOR_CAPS_NAME = {
-    'video/x-h264': 'h264parse config-interval=1',
-    'video/x-h265': 'h265parse config-interval=1',
+    # config-interval=-1: re-emit SPS/PPS (h264) / VPS-SPS-PPS (h265) in-band
+    # before EVERY IDR rather than at most once per second. A frame dropped
+    # under jitter then recovers at the very next keyframe — without it the
+    # decoder can macroblock for up to a second waiting for the next parameter
+    # set. Negligible bandwidth cost; the right default for lossy/live links.
+    'video/x-h264': 'h264parse config-interval=-1',
+    'video/x-h265': 'h265parse config-interval=-1',
     'video/x-av1':  'av1parse',
     'audio/x-ac3':  'ac3parse',
     'audio/x-eac3': 'ac3parse',
@@ -772,7 +827,33 @@ def _apply_net_clock(pipe, clock_cfg):
     clock = _GstNet.NetClientClock.new(None, host, int(port), 0)
     # Block briefly for the first clock sync so the first buffers are stamped
     # against a settled clock; a slow sync just means a short startup delay.
-    clock.wait_for_sync(2 * Gst.SECOND)
+    #
+    # CRITICAL: sync is best-effort and must NEVER block playback. If the clock
+    # authority is unreachable (daemon down, stale/ephemeral port, cross-host),
+    # `wait_for_sync` returns False. Force-attaching an unsynced NetClientClock
+    # is what wedges the pipeline: a `sync=true` sink then waits on a clock that
+    # never advances, so the pipeline never reaches PLAYING, its source task
+    # never runs, and the upstream socket backs up until everything stalls.
+    # When sync fails we leave the auto-selected clock in place and run unsynced
+    # — degraded sync beats no playback. `_net_clock_warned` throttles the log.
+    if not clock.wait_for_sync(2 * Gst.SECOND):
+        if not _net_clock_warned:
+            _net_clock_warned = True
+            emit_event({"event": "warning",
+                        "message": f"net clock {host}:{port} did not sync — running unsynced (auto clock)"})
+        # The pipeline was built for the synced case: its sink is `sync=true` so
+        # it would present each frame at its (shared-clock) PTS. With no shared
+        # clock that sink waits on timestamps it can't honour and stalls. Relax
+        # the named `sink` to `sync=false` so it renders frames as they arrive —
+        # the same low-latency behaviour the unsynced (SRT/RIST) path uses, which
+        # plays reliably. Best-effort: skip silently if there's no such element.
+        sink = pipe.get_by_name("sink")
+        if sink is not None:
+            try:
+                sink.set_property("sync", False)
+            except (TypeError, AttributeError, GLib.Error):
+                pass
+        return
     pipe.use_clock(clock)
     # Sharing the clock (same rate) is what kills the DRIFT — that's the whole
     # point. Base-time is left to anchor naturally at PLAYING: every pipeline
@@ -786,7 +867,7 @@ def _apply_net_clock(pipe, clock_cfg):
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
-    global klv_payloads, klv_timer_id
+    global klv_payloads, klv_timer_id, playing_watchdog_id
 
     # Drop any carousel state from a prior run; the parent re-pushes after the
     # pipeline is PLAYING. Stale payloads pointing at the old element graph
@@ -856,12 +937,23 @@ def handle_start(data):
         pipeline.set_state(Gst.State.NULL)
         return
 
+    # Arm the "reached PLAYING" watchdog (cancelled by the PLAYING state-change
+    # on the bus). Caller may override the timeout; an explicit 0 disables it
+    # (e.g. a non-live preroll path that can sit waiting for data). Note: a bare
+    # `or` would treat 0 as falsy and keep the default, so test for None.
+    _cancel_playing_watchdog()
+    _pt = data.get("playingTimeoutMs")
+    timeout_ms = PLAYING_WATCHDOG_MS if _pt is None else int(_pt)
+    if timeout_ms > 0:
+        playing_watchdog_id = GLib.timeout_add(timeout_ms, _on_playing_timeout)
+
     running = True
     emit_event({"event": "started"})
 
 def handle_stop(data=None):
     """Stop the pipeline."""
     global pipeline, running
+    _cancel_playing_watchdog()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
