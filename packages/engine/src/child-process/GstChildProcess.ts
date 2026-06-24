@@ -153,6 +153,7 @@ export class GstChildProcess extends EventEmitter {
                 readKlvNames: this.pipelineDesc.readKlvNames ?? false,
                 env: this.pipelineDesc.env ?? {},
                 clock: this.pipelineDesc.clock,
+                decoderThreadType: this.pipelineDesc.decoderThreadType ?? 'auto',
             });
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });

@@ -19,6 +19,17 @@ const SURFACE_HEIGHT = 720;
  */
 const SURFACE_CAPS = `video/x-raw,width=${SURFACE_WIDTH},height=${SURFACE_HEIGHT},pixel-aspect-ratio=1/1`;
 
+/**
+ * Normalise the `cpuDecodeThreading` config value to the thread-type the runner
+ * understands. Only `'frame'` opts into multi-core (frame-parallel) software
+ * decode — which adds latency; anything else — unset or junk — resolves to the
+ * latency-safe `'auto'` default. Validating here keeps a bad config value from
+ * reaching GStreamer.
+ */
+export function resolveDecoderThreadType(value: unknown): 'auto' | 'frame' {
+    return value === 'frame' ? 'frame' : 'auto';
+}
+
 export interface SinkSelectionEnv {
     /** Whether `waylandsink` is installed. */
     wayland: boolean;

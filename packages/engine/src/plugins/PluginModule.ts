@@ -157,6 +157,20 @@ export interface PipelineDescription {
      * per-consumer re-anchoring) for the lock to hold.
      */
     clockSync?: boolean;
+    /**
+     * Software (`avdec_*`) decoder threading mode for this pipeline.
+     * `max-threads` is always the core count; this only controls ffmpeg's
+     * `thread-type`:
+     *   - `'auto'` (default / omitted): leave ffmpeg's choice — single-core on
+     *     the live path, zero added latency.
+     *   - `'frame'`: force frame-parallel decode across all cores — the mode
+     *     that actually relieves a pinned core on heavy 4K software decode, at
+     *     the cost of ~130-160 ms added latency (frames decoded ahead, then
+     *     reordered). Opt-in only; never default on a live/low-latency path.
+     * (Slice threading isn't offered — it gives no speedup on the single-slice
+     * broadcast streams these boxes carry.) Ignored by a HW (VAAPI) decoder.
+     */
+    decoderThreadType?: 'auto' | 'frame';
 }
 
 /**

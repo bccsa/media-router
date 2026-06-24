@@ -80,6 +80,16 @@
                     "x-unit": "ms",
                     "x-live": true,
                     "description": "Lip-sync trim. Positive DELAYS video to meet audio that's playing late (the audio path usually carries more buffering latency); negative advances it. Adjust live while watching until lips match. Only applies with Clock sync (or Sync) on."
+                },
+                "cpuDecodeThreading": {
+                    "type": "string",
+                    "enum": ["auto", "frame"],
+                    "default": "auto",
+                    "x-enumLabels": {
+                        "auto": "Auto (low latency)",
+                        "frame": "Multi-core (adds ~150ms latency)"
+                    },
+                    "description": "Software (CPU) decode threading — only matters when there's no GPU/VAAPI hardware decoder. AUTO (default): one core, zero added latency — right for live. But a heavy 4K stream can max that core and drop frames. MULTI-CORE: spreads the decode across all CPU cores so 4K keeps up, at the cost of ~130–160 ms added latency (it decodes several frames ahead). Turn this ON only when the CPU genuinely can't keep up AND you can spend the latency — otherwise leave it on AUTO for low-latency live."
                 }
             }
         },

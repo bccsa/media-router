@@ -9,6 +9,7 @@ import {
     buildLivePipeline,
     buildPipelineEnv,
     buildSink,
+    resolveDecoderThreadType,
     resolveFallbackImagePath,
 } from './helpers/pipelines.js';
 
@@ -220,6 +221,24 @@ describe('VideoPlayerModule helpers', () => {
             const dangerous = `${tmp}/has"quote.png`;
             fs.writeFileSync(dangerous, '');
             expect(resolveFallbackImagePath(dangerous)).toBeUndefined();
+        });
+    });
+
+    describe('resolveDecoderThreadType', () => {
+        it('opts into multi-core (frame) decode only for the explicit "frame" value', () => {
+            expect(resolveDecoderThreadType('frame')).toBe('frame');
+        });
+
+        it('defaults to latency-safe "auto" when unset', () => {
+            expect(resolveDecoderThreadType(undefined)).toBe('auto');
+        });
+
+        it('falls back to "auto" for "auto" and any unrecognised / junk value', () => {
+            expect(resolveDecoderThreadType('auto')).toBe('auto');
+            expect(resolveDecoderThreadType('slice')).toBe('auto');
+            expect(resolveDecoderThreadType('')).toBe('auto');
+            expect(resolveDecoderThreadType(1)).toBe('auto');
+            expect(resolveDecoderThreadType(null)).toBe('auto');
         });
     });
 

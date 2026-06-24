@@ -22,6 +22,7 @@ import {
     buildLivePipeline,
     buildPipelineEnv,
     buildSink,
+    resolveDecoderThreadType,
     resolveFallbackImagePath,
     type SinkSelectionEnv,
 } from './helpers/pipelines.js';
@@ -593,6 +594,7 @@ export class VideoPlayerModule extends GstPluginBase {
             liveElements: {},
             restartOnError: true,
             env,
+            decoderThreadType: resolveDecoderThreadType(this.config.cpuDecodeThreading),
             ...(clockSync ? { clockSync: true } : {}),
         };
     }

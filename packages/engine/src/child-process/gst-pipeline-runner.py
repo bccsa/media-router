@@ -506,14 +506,33 @@ def _parser_for_caps(caps):
 _DECODER_MAX_THREADS = max(1, os.cpu_count() or 1)
 
 
-def _set_decoder_threads(element):
-    """If `element` is an avdec_* decoder, set its `max-threads` property.
+# avdec_*'s `thread-type` GFlags (verified via gst-inspect on the Pi, and they
+# match libavcodec's FF_THREAD_*): 0x1 = frame, 0x2 = slice. Counter-intuitively
+# for these streams, FRAME is the mode that actually parallelises decode across
+# cores — measured on a 4K H.264 clip: thread-type=frame ~24s → ~14s and the
+# live decode goes from one pinned thread to ~5 busy. SLICE gives no speedup
+# (broadcast streams are single-slice, so there's nothing within a frame to
+# split). The catch: frame threading decodes several frames concurrently, so it
+# adds ~max-threads frames of latency (~130-160 ms at 25-30 fps). That breaks
+# the live-latency budget, so it is OPT-IN per pipeline (decoderThreadType),
+# never the default. Default 'auto' leaves ffmpeg's choice — single-core, zero
+# added latency, on the live path.
+_THREAD_TYPE_FRAME = 1
+
+
+def _set_decoder_threads(element, thread_type="auto"):
+    """If `element` is an avdec_* decoder, set its threading properties.
 
     Called from both branches of decoder discovery — explicit elements in the
     parsed graph and elements auto-plugged later by decodebin. Guards with
     `find_property` because not every avdec_* has the prop and `try/except`
-    on a 1-line set would be noisier. `thread-type` is left at its default
-    (0 = ffmpeg picks slice/frame combo) — the win is in `max-threads`.
+    on a 1-line set would be noisier.
+
+    `max-threads` is always cranked to the core count (a ceiling — harmless on
+    its own). `thread-type` is only forced to FRAME when `thread_type == 'frame'`
+    (the opt-in multi-core mode that adds latency); otherwise it's left at its
+    default 'auto'. The log reports the mode actually applied — an avdec_*
+    without the `thread-type` property stays 'auto' even when frame was asked.
     """
     factory = element.get_factory()
     name = factory.get_name() if factory else ""
@@ -523,17 +542,25 @@ def _set_decoder_threads(element):
         return
     try:
         element.set_property("max-threads", _DECODER_MAX_THREADS)
-        sys.stderr.write(f"[gst-runner.py] decoder threads: {name} max-threads={_DECODER_MAX_THREADS}\n")
+        applied = "auto"
+        if thread_type == "frame" and element.find_property("thread-type") is not None:
+            element.set_property("thread-type", _THREAD_TYPE_FRAME)
+            applied = "frame"
+        sys.stderr.write(
+            f"[gst-runner.py] decoder threads: {name} max-threads={_DECODER_MAX_THREADS} "
+            f"thread-type={applied}\n"
+        )
         sys.stderr.flush()
     except GLib.Error as e:
         sys.stderr.write(f"[gst-runner.py] decoder threads: {name} set failed: {e.message}\n")
         sys.stderr.flush()
 
 
-def _install_decoder_thread_hook(pipe):
-    """Set max-threads on every avdec_* in the pipeline — both the elements
-    that exist at parse time (explicit `avdec_aac` etc.) and the ones plugged
-    later by decodebin once caps are negotiated.
+def _install_decoder_thread_hook(pipe, thread_type="auto"):
+    """Apply decoder threading on every avdec_* in the pipeline — both the
+    elements that exist at parse time (explicit `avdec_aac` etc.) and the ones
+    plugged later by decodebin once caps are negotiated. `thread_type`
+    ('auto' | 'frame') is forwarded to `_set_decoder_threads` for every decoder.
 
     Two hooks because they cover disjoint cases:
       1. Walk current children and set the property on any avdec_* already
@@ -549,7 +576,7 @@ def _install_decoder_thread_hook(pipe):
         while True:
             result, element = it.next()
             if result == Gst.IteratorResult.OK:
-                _set_decoder_threads(element)
+                _set_decoder_threads(element, thread_type)
                 if isinstance(element, Gst.Bin):
                     visit(element)
             elif result == Gst.IteratorResult.DONE:
@@ -557,8 +584,14 @@ def _install_decoder_thread_hook(pipe):
             else:
                 break
     visit(pipe)
-    pipe.connect("deep-element-added", lambda _root, _bin, el: _set_decoder_threads(el))
-    sys.stderr.write(f"[gst-runner.py] decoder-threads hook installed (cpu={_DECODER_MAX_THREADS})\n")
+    pipe.connect(
+        "deep-element-added",
+        lambda _root, _bin, el: _set_decoder_threads(el, thread_type),
+    )
+    sys.stderr.write(
+        f"[gst-runner.py] decoder-threads hook installed "
+        f"(cpu={_DECODER_MAX_THREADS} thread-type={thread_type})\n"
+    )
     sys.stderr.flush()
 
 
@@ -881,6 +914,7 @@ def handle_start(data):
     use_stdio_for_data = data.get("useStdioForData", False)
     pad_link_rules = data.get("linkOnPadAdded", []) or []
     read_klv_names = data.get("readKlvNames", False)
+    decoder_thread_type = data.get("decoderThreadType", "auto")
     _klv_garbage_warned.clear()
 
     if not pipeline_str:
@@ -914,16 +948,15 @@ def handle_start(data):
         if el:
             _install_stream_discovery(el, src_name, read_klv_names)
 
-    # Crank software decoders to all available cores. avdec_* defaults to 1
-    # thread (or whatever ffmpeg picks at runtime, often conservative) which
-    # leaves 3 of the Pi 5's 4 A76 cores idle. With multi-threaded slice/frame
-    # decode the same workload finishes in a fraction of the wall-clock time,
-    # turning a borderline 1080p H.264 stream from "every IDR is a hiccup" into
-    # comfortable headroom. The pipeline string can't set this property when
-    # the decoder is plugged by `decodebin` (the element doesn't exist at parse
-    # time), so we hook every avdec_* as it shows up — see the function for
-    # the two-pronged tree-walk + `deep-element-added` strategy.
-    _install_decoder_thread_hook(pipeline)
+    # Set software-decoder threading. `max-threads` is always the core count;
+    # `decoderThreadType` (default 'auto') decides whether to force FRAME
+    # threading, the opt-in multi-core mode that relieves a pinned core on heavy
+    # 4K software decode at the cost of ~130-160 ms latency — so it's never the
+    # default on the live path. The pipeline string can't set this when the
+    # decoder is plugged by `decodebin` (the element doesn't exist at parse
+    # time), so we hook every avdec_* as it shows up — see the function for the
+    # two-pronged tree-walk + `deep-element-added` strategy.
+    _install_decoder_thread_hook(pipeline, decoder_thread_type)
 
     # Set up bus watch
     bus = pipeline.get_bus()
