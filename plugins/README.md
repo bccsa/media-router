@@ -1297,3 +1297,4 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates |
+| Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignUdpPort(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |

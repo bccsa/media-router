@@ -72,8 +72,18 @@ export interface PluginModule {
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
     getPipeWireNodeForPort?(portId: string): { source?: string; sink?: string };
-    /** Return dynamic ports based on config (overrides manifest ports). */
-    getDynamicPorts?(): Array<{
+    /**
+     * Return dynamic ports based on config (overrides manifest ports).
+     *
+     * `config` is the module instance's authoritative config, passed in by the
+     * engine. The engine resolves ports BEFORE a module starts (so connections
+     * can be registered up-front), at which point the plugin's own `this.config`
+     * is still empty — `onInit` only applies it during start. Reading the passed
+     * `config` therefore yields the correct port set even pre-start. Implementors
+     * should default the parameter to `this.config` so direct/test calls still
+     * work.
+     */
+    getDynamicPorts?(config?: Record<string, unknown>): Array<{
         id: string;
         direction: 'input' | 'output';
         streamType: string;

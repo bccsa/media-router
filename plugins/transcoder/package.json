@@ -1,0 +1,206 @@
+{
+    "name": "@media-router/plugin-transcoder",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Video transcoder — one MPEG-TS video input fanned out to N re-encoded quality renditions (ABR ladder)",
+    "mediaRouter": {
+        "pluginId": "transcoder",
+        "displayName": "Video Transcoder",
+        "description": "Decodes one muxed/mpegts video stream once and re-encodes it into several quality renditions — set width, height and bitrate per output, each on its own MPEG-TS port. Input must be H.264 (the decoder is a fixed h264parse ! avdec_h264); the OUTPUT codec is configurable (H.264/H.265/AV1). Feeding an H.265 source produces no video.",
+        "color": "#8b5cf6",
+        "icon": "layers",
+        "category": "codec",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "renditions": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "default": [
+                        { "name": "1080p", "width": 1920, "height": 1080, "bitrate": 5000 },
+                        { "name": "720p", "width": 1280, "height": 720, "bitrate": 2500 },
+                        { "name": "480p", "width": 854, "height": 480, "bitrate": 1200 }
+                    ],
+                    "description": "Output quality renditions — \"+ Add\" creates another MPEG-TS output port. Each is decoded once and re-encoded at the given size and bitrate.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "default": "", "description": "Label (optional)" },
+                            "width": { "type": "number", "default": 1280, "minimum": 16, "maximum": 7680, "description": "Width (px)" },
+                            "height": { "type": "number", "default": 720, "minimum": 16, "maximum": 4320, "description": "Height (px)" },
+                            "bitrate": { "type": "number", "default": 2500, "minimum": 128, "maximum": 50000, "description": "Bitrate (kbps)" }
+                        }
+                    },
+                    "x-liveUpdatable": false
+                },
+                "codec": {
+                    "type": "string",
+                    "enum": [
+                        "h264",
+                        "h265",
+                        "av1"
+                    ],
+                    "default": "h264",
+                    "description": "Output video codec (applied to every rendition)"
+                },
+                "rateControl": {
+                    "type": "string",
+                    "enum": ["cbr", "vbr"],
+                    "default": "cbr",
+                    "x-enumLabels": {
+                        "cbr": "CBR (constant — safest for UDP/SRT)",
+                        "vbr": "VBR (variable — better quality on motion)"
+                    },
+                    "description": "Encoder rate control for every rendition. CBR (default) holds a constant bitrate (peak = target) — best for fixed-bandwidth UDP/SRT/MPEG-TS, since bursts can overrun the receiver's buffer and read as packet loss. VBR targets the bitrate as an average and lets per-frame size vary for better quality on motion, with the peak capped at 1.5x to bound bursts."
+                },
+                "encoderImpl": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "v4l2",
+                        "va",
+                        "software"
+                    ],
+                    "default": "auto",
+                    "x-enumLabels": {
+                        "auto": "Auto",
+                        "v4l2": "V4L2 hardware (Pi)",
+                        "va": "VA-API hardware (Intel iGPU)",
+                        "software": "Software (x264/x265)"
+                    },
+                    "description": "Encoder implementation. Auto prefers a hardware block, then software. V4L2 is the Pi's SoC encoder; VA-API is the Intel iGPU (x86) — the only H.265 encoder on Intel boxes with no x265enc, and it offloads the CPU. Software (x264/x265) exposes the richest tuning (scene-cut, profiles) and runs many renditions at once. The dropdown only lists impls actually installed for the chosen codec."
+                },
+                "speedPreset": {
+                    "type": "string",
+                    "enum": [
+                        "ultrafast",
+                        "superfast",
+                        "veryfast",
+                        "faster",
+                        "fast",
+                        "medium",
+                        "slow"
+                    ],
+                    "default": "ultrafast",
+                    "x-enumLabels": {
+                        "ultrafast": "Ultrafast — lowest CPU, lowest quality",
+                        "superfast": "Superfast",
+                        "veryfast": "Very fast",
+                        "faster": "Faster",
+                        "fast": "Fast",
+                        "medium": "Medium — balanced",
+                        "slow": "Slow — highest CPU, best quality"
+                    },
+                    "description": "Software x264/x265 speed↔quality preset (ignored by V4L2 hardware and AV1). Faster presets use less CPU but block up on hard content — fast motion and fine/scrolling text; slower presets spend more CPU for cleaner quality at the same bitrate. Default 'ultrafast' suits a CPU-bound Pi; on a box with spare cores raise it (e.g. Fast/Medium) for cleaner motion. Applies to every rendition and rebuilds the pipeline."
+                },
+                "h264Profile": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "baseline",
+                        "main",
+                        "high"
+                    ],
+                    "default": "auto",
+                    "x-enumLabels": {
+                        "auto": "Auto — encoder default",
+                        "baseline": "Baseline — most compatible",
+                        "main": "Main",
+                        "high": "High — best efficiency"
+                    },
+                    "description": "H.264 output profile — constrains encoder features for decoder compatibility (H.264 only; ignored for H.265/AV1). Baseline is the most widely decodable (no CABAC or B-frames — best for old/embedded hardware decoders); Main adds CABAC; High adds the 8×8 transform for best efficiency. Auto lets the encoder choose. Applies to every rendition and rebuilds the pipeline."
+                },
+                "sceneCut": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 40,
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "description": "Scene-cut detection threshold for software x264/x265 (H.264/H.265 only). When the encoder detects a hard cut it inserts an adaptive keyframe there, so the picture snaps clean at the cut instead of blocking until the next scheduled keyframe. 40 is x264's default; higher = more sensitive (more keyframes, more bitrate); 0 = off (strict fixed-GOP — use for byte-aligned ABR renditions). Note: tune=zerolatency runs with no lookahead, so detection is reactive rather than optimally placed. Applies to every rendition and rebuilds the pipeline."
+                },
+                "framerate": {
+                    "type": "number",
+                    "enum": [
+                        24,
+                        25,
+                        30,
+                        50,
+                        60
+                    ],
+                    "default": 50,
+                    "description": "Output framerate (shared by all renditions, keeps keyframes aligned for ABR)"
+                },
+                "gopFrames": {
+                    "type": "number",
+                    "default": 50,
+                    "minimum": 1,
+                    "maximum": 600,
+                    "description": "Keyframe interval in frames (the standard encoder unit — x264/x265 key-int-max). A keyframe is forced every N frames; shorter = faster channel-join/recovery but more bitrate. At 50 fps, 50 = 1 s, 100 = 2 s.",
+                    "x-unit": "frames"
+                },
+                "cpuDecodeThreading": {
+                    "type": "string",
+                    "enum": ["multi", "single"],
+                    "default": "multi",
+                    "x-enumLabels": {
+                        "multi": "Multi-core (spread decode across cores)",
+                        "single": "Single core (lowest latency)"
+                    },
+                    "description": "Software decode threading. MULTI-CORE (default) forces FFmpeg frame threading (thread-type=frame) so the decode spreads across all CPU cores instead of pinning one at 100% — important on the Pi 5, which has no hardware H.264 decoder. Costs ~1 frame of latency per core. SINGLE CORE is GStreamer's default live behaviour (one core, lowest latency) — use if latency matters more than spreading the load."
+                },
+                "bufferMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2000,
+                    "default": 200,
+                    "description": "Pre-decode buffer (ms). Absorbs decode/encode timing jitter so a momentary stall drops fewer frames (less macroblocking) — same idea as the video player's pre-decode buffer. It does NOT add decode cores. 200 ms is a sane default; lower it for tighter latency, raise it if you still see drops. Costs this much latency.",
+                    "x-widget": "slider",
+                    "x-step": 50,
+                    "x-unit": "ms"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "input",
+                "label": "Input",
+                "fields": [
+                    { "key": "host", "label": "Multicast" },
+                    { "key": "port", "label": "Port" }
+                ]
+            },
+            {
+                "id": "encoder",
+                "label": "Encoder",
+                "fields": [
+                    { "key": "codec", "label": "Codec" },
+                    { "key": "impl", "label": "Implementation" },
+                    { "key": "framerate", "label": "Framerate" },
+                    { "key": "renditions", "label": "Renditions" }
+                ]
+            },
+            {
+                "id": "throughput",
+                "label": "Live Throughput",
+                "fields": [
+                    { "key": "Output Bitrate", "label": "Output Bitrate" },
+                    { "key": "Total Bytes", "label": "Total Bytes" }
+                ]
+            }
+        ],
+        "engine": "./engine/TranscoderModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

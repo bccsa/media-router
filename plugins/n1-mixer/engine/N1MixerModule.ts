@@ -26,13 +26,16 @@ export class N1MixerModule extends GstPluginBase {
     }
 
     /** Generate ports dynamically based on pairCount config. */
-    getDynamicPorts(): Array<{
+    getDynamicPorts(config: Record<string, unknown> = this.config): Array<{
         id: string;
         direction: 'input' | 'output';
         streamType: string;
         label: string;
         maxConnections: number;
     }> {
+        // Read from the passed config so the engine's pre-start port resolution
+        // (before onInit sets `this.pairCount`) still reflects the real count.
+        const pairCount = (config.pairCount as number) ?? this.pairCount;
         const ports: Array<{
             id: string;
             direction: 'input' | 'output';
@@ -40,7 +43,7 @@ export class N1MixerModule extends GstPluginBase {
             label: string;
             maxConnections: number;
         }> = [];
-        for (let i = 0; i < this.pairCount; i++) {
+        for (let i = 0; i < pairCount; i++) {
             ports.push({
                 id: `in-${i}`,
                 direction: 'input',
@@ -49,7 +52,7 @@ export class N1MixerModule extends GstPluginBase {
                 maxConnections: -1,
             });
         }
-        for (let i = 0; i < this.pairCount; i++) {
+        for (let i = 0; i < pairCount; i++) {
             ports.push({
                 id: `out-${i}`,
                 direction: 'output',

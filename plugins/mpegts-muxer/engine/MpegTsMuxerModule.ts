@@ -46,10 +46,10 @@ export class MpegTsMuxerModule extends GstPluginBase {
     }
 
     /** Generate one input port per configured video/audio stream + a single output port. */
-    getDynamicPorts(): DynamicPort[] {
+    getDynamicPorts(config: Record<string, unknown> = this.config): DynamicPort[] {
         return buildDynamicPorts(
-            streamEntries(this.config, 'video').length,
-            streamEntries(this.config, 'audio').length,
+            streamEntries(config, 'video').length,
+            streamEntries(config, 'audio').length,
         );
     }
 

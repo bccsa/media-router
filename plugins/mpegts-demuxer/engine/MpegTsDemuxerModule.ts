@@ -267,10 +267,10 @@ export class MpegTsDemuxerModule extends GstPluginBase {
      * `hideWhenUnconnected` instead: the UI, which has authoritative live
      * edge state, hides the unconnected ones visually.
      */
-    getDynamicPorts(): DynamicPort[] {
-        const v = Math.max(0, (this.config.videoStreamCount as number) ?? 1);
-        const a = Math.max(0, (this.config.audioStreamCount as number) ?? 1);
-        return buildDynamicPorts(v, a, discoveredStreams(this.config));
+    getDynamicPorts(config: Record<string, unknown> = this.config): DynamicPort[] {
+        const v = Math.max(0, (config.videoStreamCount as number) ?? 1);
+        const a = Math.max(0, (config.audioStreamCount as number) ?? 1);
+        return buildDynamicPorts(v, a, discoveredStreams(config));
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {

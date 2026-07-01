@@ -2,6 +2,8 @@
 
 ## Open
 
+- [x] Transcoder plugin (issue #650) — ABR-ready video transcoder: one MPEG-TS video input, decode-once → `tee` → N config-driven renditions (per-output width/height/bitrate), each its own MPEG-TS output port. Shared codec/framerate/GOP; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's). **TODO: validate on real hardware under load** (parallel software x264 on a Pi 5; HW encoder is single-instance, so use the Software impl for multi-rendition ABR).
+- [x] Engine fix (found while wiring the transcoder via API): `getDynamicPorts` now receives the module instance's authoritative config from `ModuleInstance`. The engine resolves ports *before* a module starts, when the plugin's own `this.config` is still empty (applied in `onInit`) — so a not-yet-running dynamic-port module previously resolved its port set from empty config and showed the wrong count. Latent for muxer/demuxer/n1-mixer (their defaults masked it); it surfaced on the transcoder because its manifest default (3 renditions) differs from an empty-config fallback.
 - [ ] Verify HLS Player on a Pi against a live HLS stream — language auto-detect, multi-language inline audio + subtitles, ABR, and MPEG-TS routing to a downstream module
 - [x] Screen goes black after changing browser URL to background1 and back
 - [ ] High RAM usage on Pi — 1.5GB available; index.js, start-engine.js, and Pipewire consuming significant memory; Python vs C++ contributing (not actively an issue, revisit if it regresses)

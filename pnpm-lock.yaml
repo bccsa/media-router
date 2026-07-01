@@ -353,6 +353,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/transcoder:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/video-encoder:
     dependencies:
       '@media-router/engine':

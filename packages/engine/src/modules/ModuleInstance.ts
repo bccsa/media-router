@@ -239,7 +239,11 @@ export class ModuleInstance extends EventEmitter {
               maxConnections?: number;
           }>
         | undefined {
-        return this.plugin.getDynamicPorts?.();
+        // Pass the instance's authoritative config: the engine resolves ports
+        // before start, when the plugin's own `this.config` is still empty
+        // (applied in onInit). Without this, a not-yet-running module resolves
+        // its port set from empty config and shows the wrong count.
+        return this.plugin.getDynamicPorts?.(this.config);
     }
 
     /** Get the GStreamer child process for MPEG-TS piping. */
