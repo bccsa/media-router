@@ -1,27 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// `initManifest` now delegates the element probing to the engine's shared
+// `probeEncoderAvailability` (which calls `probeGstElement` internally, not
+// through this barrel). Mock that helper to control availability; the real
+// `applyEncoderAvailabilityToManifest`, `buildEncoderBranch` and `resolveImpl`
+// come through from `...actual`. The element-probing logic itself is covered by
+// packages/engine/src/plugins/encoderManifest.test.ts.
 vi.mock('@media-router/engine', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@media-router/engine');
     return {
         ...actual,
-        probeGstElement: vi.fn(),
+        probeEncoderAvailability: vi.fn(),
     };
 });
 
 import * as engine from '@media-router/engine';
+import { buildEncoderBranch, resolveImpl } from '@media-router/engine';
 import { VideoEncoderModule } from './VideoEncoderModule.js';
-import {
-    buildEncoderBranch,
-    buildV4l2Source,
-    parseResolution,
-    resolveImpl,
-    supportsLiveBitrate,
-} from './videoEncoderPipeline.js';
+import { buildV4l2Source, parseResolution, supportsLiveBitrate } from './videoEncoderPipeline.js';
 
-const probeMock = engine.probeGstElement as unknown as ReturnType<typeof vi.fn>;
+const probeMock = engine.probeEncoderAvailability as unknown as ReturnType<typeof vi.fn>;
 
-function setProbe(available: Record<string, boolean>) {
-    probeMock.mockImplementation(async (name: string) => !!available[name]);
+function setAvailability(availability: Record<string, string[]>) {
+    probeMock.mockResolvedValue(availability);
 }
 
 describe('VideoEncoderModule', () => {
@@ -34,18 +35,12 @@ describe('VideoEncoderModule', () => {
 
     describe('initManifest', () => {
         it('narrows codec enum to installed encoders and populates encoderImpl x-enumBy', async () => {
-            setProbe({
-                v4l2h264enc: true,
-                x264enc: true,
-                v4l2h265enc: false,
-                x265enc: true,
-                svtav1enc: false,
-            });
+            setAvailability({ h264: ['v4l2', 'software'], h265: ['software'], av1: [] });
             const manifest: Record<string, any> = {
                 configSchema: {
                     properties: {
                         codec: { enum: ['h264', 'h265', 'av1'] },
-                        encoderImpl: { enum: ['auto', 'v4l2', 'software'] },
+                        encoderImpl: { enum: ['auto', 'v4l2', 'va', 'software'] },
                     },
                 },
             };
@@ -68,12 +63,12 @@ describe('VideoEncoderModule', () => {
         });
 
         it('leaves enum untouched when no encoders are installed', async () => {
-            setProbe({});
+            setAvailability({ h264: [], h265: [], av1: [] });
             const manifest: Record<string, any> = {
                 configSchema: {
                     properties: {
                         codec: { enum: ['h264'] },
-                        encoderImpl: { enum: ['auto', 'v4l2', 'software'] },
+                        encoderImpl: { enum: ['auto', 'v4l2', 'va', 'software'] },
                     },
                 },
             };
@@ -106,8 +101,14 @@ describe('VideoEncoderModule', () => {
     });
 
     describe('buildEncoderBranch', () => {
+        // Video Encoder passes name 'venc0' + speed-preset 'superfast'; the other
+        // knobs stay at the shared builder's defaults (CBR, auto profile,
+        // scenecut 40 — x264's own default, so it's behaviourally neutral).
+        const branch = (codec: 'h264' | 'h265' | 'av1', impl: 'v4l2' | 'software', bitrateKbps: number, kif: number) =>
+            buildEncoderBranch({ codec, impl, bitrateKbps, kif, name: 'venc0', speedPreset: 'superfast' });
+
         it('builds H.264 V4L2 with CBR mode (video_bitrate_mode=1), bitrate, and keyframe period', () => {
-            const s = buildEncoderBranch('h264', 'v4l2', 4000, 60);
+            const s = branch('h264', 'v4l2', 4000, 60);
             expect(s).toContain('v4l2h264enc name=venc0');
             expect(s).toContain('video_bitrate=4000000');
             // CBR mode is load-bearing — without it the V4L2 driver picks its
@@ -117,36 +118,40 @@ describe('VideoEncoderModule', () => {
             expect(s).toContain('h264parse');
         });
         it('builds H.265 V4L2 with CBR mode and the H.265 keyframe-period control', () => {
-            const s = buildEncoderBranch('h265', 'v4l2', 5000, 90);
+            const s = branch('h265', 'v4l2', 5000, 90);
             expect(s).toContain('v4l2h265enc name=venc0');
             expect(s).toContain('video_bitrate=5000000');
             expect(s).toContain('video_bitrate_mode=1');
             expect(s).toContain('h265_i_frame_period=90');
             expect(s).toContain('h265parse');
         });
-        it('builds H.264 software as CBR (peak capped at target, nal-hrd=cbr) so motion bursts cannot overflow downstream UDP/jitter buffers', () => {
-            const s = buildEncoderBranch('h264', 'software', 3500, 90);
+        it('builds H.264 software as CBR (peak capped at target, nal-hrd=cbr) with superfast preset and x264-default scenecut', () => {
+            const s = branch('h264', 'software', 3500, 90);
             expect(s).toContain('x264enc name=venc0');
+            expect(s).toContain('speed-preset=superfast');
             expect(s).toContain('bitrate=3500');
             expect(s).toContain('key-int-max=90');
-            expect(s).toContain('option-string="nal-hrd=cbr:vbv-maxrate=3500:vbv-bufsize=3500"');
+            // scenecut=40 is x264's own default → behaviourally neutral, now
+            // spelled out because the shared builder always emits it.
+            expect(s).toContain('option-string="nal-hrd=cbr:vbv-maxrate=3500:vbv-bufsize=3500:scenecut=40"');
             expect(s).toContain('h264parse');
         });
         it('builds H.265 software as CBR (strict-cbr, peak capped at target)', () => {
-            const s = buildEncoderBranch('h265', 'software', 3000, 30);
+            const s = branch('h265', 'software', 3000, 30);
             expect(s).toContain('x265enc name=venc0');
+            expect(s).toContain('speed-preset=superfast');
             expect(s).toContain('bitrate=3000');
-            expect(s).toContain('option-string="vbv-maxrate=3000:vbv-bufsize=3000:strict-cbr=1"');
+            expect(s).toContain('option-string="vbv-maxrate=3000:vbv-bufsize=3000:strict-cbr=1:scenecut=40"');
             expect(s).toContain('h265parse');
         });
         it('builds AV1 software with svtav1enc target-bitrate', () => {
-            const s = buildEncoderBranch('av1', 'software', 2000, 60);
+            const s = branch('av1', 'software', 2000, 60);
             expect(s).toContain('svtav1enc name=venc0');
             expect(s).toContain('target-bitrate=2000');
             expect(s).toContain('av1parse');
         });
         it('throws on an unsupported codec/impl combo (av1 v4l2)', () => {
-            expect(() => buildEncoderBranch('av1', 'v4l2', 1000, 60)).toThrow();
+            expect(() => branch('av1', 'v4l2', 1000, 60)).toThrow();
         });
     });
 

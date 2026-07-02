@@ -1,22 +1,25 @@
 import {
     GstPluginBase,
+    ThroughputPoller,
     buildUdpSink,
     listV4l2Devices,
-    probeGstElement,
-    type EngineServices,
-    type ModuleServices,
-    type PipelineDescription,
-} from '@media-router/engine';
-import {
     ENCODER_ELEMENTS,
     buildEncoderBranch,
+    resolveImpl,
+    probeEncoderAvailability,
+    applyEncoderAvailabilityToManifest,
+    type CodecId,
+    type EngineServices,
+    type ImplId,
+    type ModuleServices,
+    type PipelineDescription,
+    type ThroughputSample,
+} from '@media-router/engine';
+import {
     buildV4l2Source,
     liveElementProps,
     parseResolution,
-    resolveImpl,
     supportsLiveBitrate,
-    type CodecId,
-    type ImplId,
 } from './videoEncoderPipeline.js';
 
 /**
@@ -31,9 +34,11 @@ import {
  * plugin will later combine the two into one stream.
  */
 export class VideoEncoderModule extends GstPluginBase {
-    private statsTimer: ReturnType<typeof setInterval> | null = null;
-    private lastBytes = 0;
-    private lastPollTime = 0;
+    /** Output-bitrate poller on the single udpsink. */
+    private readonly throughput = new ThroughputPoller({
+        getBytes: () => this.readSinkBytes(),
+        publish: (sample) => this.publishThroughput(sample),
+    });
 
     /** Runtime availability map — populated by `initManifest` after probing each encoder element. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
@@ -47,36 +52,9 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        const availability: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
-        await Promise.all(
-            (Object.keys(ENCODER_ELEMENTS) as CodecId[]).flatMap((codec) =>
-                (Object.entries(ENCODER_ELEMENTS[codec]) as Array<[ImplId, string]>).map(
-                    async ([impl, element]) => {
-                        if (await probeGstElement(element)) availability[codec].push(impl);
-                    },
-                ),
-            ),
-        );
+        const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
         VideoEncoderModule.availableImpls = availability;
-
-        const props = (manifest.configSchema as any)?.properties;
-        if (!props) return;
-
-        const availableCodecs = (Object.keys(availability) as CodecId[]).filter(
-            (c) => availability[c].length > 0,
-        );
-        if (props.codec && availableCodecs.length > 0) {
-            props.codec.enum = availableCodecs;
-        }
-        // Narrow the impl dropdown to entries the UI can actually honour for
-        // the current codec.
-        if (props.encoderImpl) {
-            const implMap: Record<string, string[]> = {};
-            for (const c of Object.keys(availability) as CodecId[]) {
-                implMap[c] = ['auto', ...availability[c]];
-            }
-            props.encoderImpl['x-enumBy'] = { field: 'codec', map: implMap };
-        }
+        applyEncoderAvailabilityToManifest(manifest, availability);
     }
 
     /** Exposed for tests. */
@@ -110,14 +88,11 @@ export class VideoEncoderModule extends GstPluginBase {
 
         await super.onStart();
         this.updateStatusData();
-        this.startStatsTimer();
+        this.throughput.start();
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) {
-            clearInterval(this.statsTimer);
-            this.statsTimer = null;
-        }
+        this.throughput.stop();
         await super.onStop();
     }
 
@@ -154,7 +129,17 @@ export class VideoEncoderModule extends GstPluginBase {
         const kif = (config.keyframeInterval as number) ?? 60;
 
         const source = buildV4l2Source(device, width, height, framerate);
-        const encoder = buildEncoderBranch(codec, impl, bitrateKbps, kif);
+        // name 'venc0' + speed-preset 'superfast' keep the Video Encoder's
+        // established behaviour; the shared builder's other knobs stay at their
+        // defaults (CBR, auto profile, scenecut 40 — x264's own default).
+        const encoder = buildEncoderBranch({
+            codec,
+            impl,
+            bitrateKbps,
+            kif,
+            name: 'venc0',
+            speedPreset: 'superfast',
+        });
 
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
@@ -226,29 +211,15 @@ export class VideoEncoderModule extends GstPluginBase {
         });
     }
 
-    private startStatsTimer(): void {
-        this.lastBytes = 0;
-        this.lastPollTime = Date.now();
-        this.statsTimer = setInterval(async () => {
-            try {
-                const bytesServed = (await this.getElementProperty(
-                    'usink',
-                    'bytes-served',
-                )) as number;
-                if (typeof bytesServed !== 'number') return;
-                const now = Date.now();
-                const elapsed = (now - this.lastPollTime) / 1000;
-                const deltaBytes = bytesServed - this.lastBytes;
-                const bitrateKbps = elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
-                this.lastBytes = bytesServed;
-                this.lastPollTime = now;
-                this.setStatusData('throughput', {
-                    'Output Bitrate': `${bitrateKbps} kbps`,
-                    'Total Bytes': `${(bytesServed / 1024 / 1024).toFixed(1)} MB`,
-                });
-            } catch {
-                /* pipeline not running yet */
-            }
-        }, 2000);
+    private async readSinkBytes(): Promise<number | undefined> {
+        const served = await this.getElementProperty('usink', 'bytes-served');
+        return typeof served === 'number' ? served : undefined;
+    }
+
+    private publishThroughput(sample: ThroughputSample): void {
+        this.setStatusData('throughput', {
+            'Output Bitrate': `${sample.bitrateKbps} kbps`,
+            'Total Bytes': `${(sample.totalBytes / 1024 / 1024).toFixed(1)} MB`,
+        });
     }
 }

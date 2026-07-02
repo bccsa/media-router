@@ -1,8 +1,10 @@
 import {
     DEFAULT_MPEGTS_ALIGNMENT,
     GstPluginBase,
+    ThroughputPoller,
     type PipelineDescription,
     type ModuleServices,
+    type ThroughputSample,
 } from '@media-router/engine';
 import {
     KLV_APPSRC_NAME,
@@ -33,9 +35,11 @@ export class MpegTsMuxerModule extends GstPluginBase {
     // pending-restart path via `isLiveChange` below.
     protected liveUpdatableParams: string[] = ['videoStreams', 'audioStreams'];
 
-    private statsTimer: ReturnType<typeof setInterval> | null = null;
-    private lastBytes = 0;
-    private lastPollTime = 0;
+    /** Output-bitrate poller on the udpsink. */
+    private readonly throughput = new ThroughputPoller({
+        getBytes: () => this.readSinkBytes(),
+        publish: (sample) => this.publishThroughput(sample),
+    });
     /** PID-keyed identity of the streams currently muxed, captured at build
      *  time so a live name edit can rebuild the carousel without re-deriving
      *  the pipeline. Empty until the pipeline is built. */
@@ -88,44 +92,26 @@ export class MpegTsMuxerModule extends GstPluginBase {
         // comment in gst-pipeline-runner.py.) namedStreams is populated by
         // buildPipeline (run inside super.onStart above).
         this.pushKlvCarousel();
-        this.lastBytes = 0;
-        this.lastPollTime = Date.now();
-        this.statsTimer = setInterval(async () => {
-            try {
-                const bytesServed = (await this.getElementProperty(
-                    'usink',
-                    'bytes-served',
-                )) as number;
-                if (typeof bytesServed === 'number') {
-                    const now = Date.now();
-                    const elapsed = (now - this.lastPollTime) / 1000;
-                    // udpsink resets `bytes-served` to 0 each time the runner
-                    // re-spawns the Python process (restartOnError). Detect
-                    // that as `bytesServed < lastBytes` and treat the next
-                    // sample as a fresh baseline instead of reporting a
-                    // negative bitrate.
-                    const counterReset = bytesServed < this.lastBytes;
-                    const deltaBytes = counterReset ? 0 : bytesServed - this.lastBytes;
-                    const bitrateKbps =
-                        elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
-                    this.lastBytes = bytesServed;
-                    this.lastPollTime = now;
-                    this.setStatusData('throughput', {
-                        'Output Bitrate': `${bitrateKbps} kbps`,
-                        'Total Bytes': `${(bytesServed / 1024 / 1024).toFixed(1)} MB`,
-                    });
-                }
-            } catch {
-                /* ignore */
-            }
-        }, 2000);
+        // Poll udpsink bytes-served every 2s. The poller's counter-reset guard
+        // turns the udpsink counter resetting to 0 on a child re-spawn
+        // (restartOnError) into a fresh baseline instead of a negative rate.
+        this.throughput.start();
+    }
+
+    private async readSinkBytes(): Promise<number | undefined> {
+        const served = await this.getElementProperty('usink', 'bytes-served');
+        return typeof served === 'number' ? served : undefined;
+    }
+
+    private publishThroughput(sample: ThroughputSample): void {
+        this.setStatusData('throughput', {
+            'Output Bitrate': `${sample.bitrateKbps} kbps`,
+            'Total Bytes': `${(sample.totalBytes / 1024 / 1024).toFixed(1)} MB`,
+        });
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) {
-            clearInterval(this.statsTimer);
-            this.statsTimer = null;
-        }
+        this.throughput.stop();
         await super.onStop();
     }
 

@@ -22,6 +22,27 @@ export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './syst
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
 export { probeGstElement, gstInspectMaxChannels } from './plugins/gstInspect.js';
 export {
+    ENCODER_ELEMENTS,
+    SPEED_PRESETS,
+    H264_PROFILES,
+    resolveImpl,
+    buildEncoderBranch,
+} from './plugins/encoderElements.js';
+export type {
+    CodecId,
+    ImplId,
+    RateControl,
+    SpeedPreset,
+    H264Profile,
+    EncoderBranchOptions,
+} from './plugins/encoderElements.js';
+export {
+    probeEncoderAvailability,
+    applyEncoderAvailabilityToManifest,
+} from './plugins/encoderManifest.js';
+export { ThroughputPoller } from './plugins/ThroughputPoller.js';
+export type { ThroughputSample, ThroughputPollerOptions } from './plugins/ThroughputPoller.js';
+export {
     buildUdpSrc,
     buildUdpSink,
     buildNetUdpSrc,

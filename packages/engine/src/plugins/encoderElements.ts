@@ -1,12 +1,11 @@
 /**
- * Video encoder element selection + CBR-tuned branch builder for the transcoder.
+ * Shared video-encoder element selection + CBR/VBR-tuned branch builder.
  *
- * Codec/encoder element knowledge is plugin domain, so each codec plugin owns
- * its own copy rather than sharing engine-level code. The video-encoder plugin
- * carries an equivalent builder; keep the rate-control strings here in sync with
- * it if either changes.
- *
- * Kept free of GStreamer/engine imports so it unit-tests with plain inputs.
+ * Codec/encoder knowledge is common to every codec plugin (video-encoder,
+ * transcoder, …), so it lives here rather than being forked per plugin. Kept
+ * free of GStreamer/engine imports so it unit-tests with plain inputs — the
+ * runtime probing that needs `probeGstElement` lives next door in
+ * `encoderManifest.ts`.
  */
 
 export type CodecId = 'h264' | 'h265' | 'av1';
@@ -46,10 +45,6 @@ export function resolveImpl(
 }
 
 /**
- * Build one encoder fragment ending at the parsed elementary stream. `name`
- * lets the transcoder give each rendition's encoder a distinct element name
- * (`venc_0`, `venc_1`, …) so they coexist in one pipeline.
- *
  * CBR (constant bitrate): fixed-bandwidth UDP/MPEG-TS can't absorb the bursts a
  * VBR encoder emits on fast motion — they overrun the downstream jitter buffer
  * and read as packet loss. CBR caps the peak at the target (vbv-maxrate =
@@ -109,17 +104,41 @@ const VA_TARGET_USAGE: Record<SpeedPreset, number> = {
 export type H264Profile = 'auto' | 'baseline' | 'main' | 'high';
 export const H264_PROFILES: H264Profile[] = ['auto', 'baseline', 'main', 'high'];
 
-export function buildEncoderBranch(
-    codec: CodecId,
-    impl: ImplId,
-    bitrateKbps: number,
-    kif: number,
-    name: string,
-    rateControl: RateControl = 'cbr',
-    speedPreset: SpeedPreset = 'ultrafast',
-    h264Profile: H264Profile = 'auto',
-    sceneCut: number = 40,
-): string {
+/**
+ * Options for {@link buildEncoderBranch}. `codec`, `impl`, `bitrateKbps`, `kif`
+ * and `name` are required; the rest default to the transcoder's ABR-safe values
+ * (CBR, ultrafast, auto profile, scenecut 40). `name` lets each rendition's
+ * encoder get a distinct element name (`venc_0`, `venc_1`, …) so several coexist
+ * in one pipeline.
+ */
+export interface EncoderBranchOptions {
+    codec: CodecId;
+    impl: ImplId;
+    bitrateKbps: number;
+    /** Keyframe interval in FRAMES (x264/x265 key-int-max). */
+    kif: number;
+    name: string;
+    rateControl?: RateControl;
+    speedPreset?: SpeedPreset;
+    h264Profile?: H264Profile;
+    sceneCut?: number;
+}
+
+/**
+ * Build one encoder fragment ending at the parsed elementary stream.
+ */
+export function buildEncoderBranch(opts: EncoderBranchOptions): string {
+    const {
+        codec,
+        impl,
+        bitrateKbps,
+        kif,
+        name,
+        rateControl = 'cbr',
+        speedPreset = 'ultrafast',
+        h264Profile = 'auto',
+        sceneCut = 40,
+    } = opts;
     const bps = bitrateKbps * 1000;
     const cbr = rateControl !== 'vbr';
     // VBR targets `bitrate` as the AVERAGE and lets per-frame size vary for better
@@ -159,9 +178,7 @@ export function buildEncoderBranch(
     }
     if (impl === 'software') {
         if (codec === 'h264') {
-            // speed-preset trades CPU for quality: the `ultrafast` default suits a
-            // CPU-bound Pi, but a box with spare cores can pick a slower preset for
-            // cleaner motion at the same bitrate. `tune=zerolatency` stays put to
+            // speed-preset trades CPU for quality. `tune=zerolatency` stays put to
             // hold latency down (no lookahead / B-frames) regardless of preset.
             // CBR adds `nal-hrd=cbr` to pad to a constant rate; VBR omits it.
             // `scenecut` inserts an adaptive keyframe at detected cuts (x264

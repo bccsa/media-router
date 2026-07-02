@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { buildPipeline } from './transcoderPipeline.js';
 import {
     buildDynamicPorts,
-    buildPipeline,
     outputPortId,
     readRenditions,
     renditionLabel,
     type Rendition,
     type TranscoderOutput,
-} from './transcoderPipeline.js';
-import { resolveImpl } from './encoderBranch.js';
+} from './transcoderPorts.js';
+import { resolveImpl } from '@media-router/engine';
 
 const r = (over: Partial<Rendition> = {}): Rendition => ({
     name: '',
@@ -57,8 +57,8 @@ describe('readRenditions', () => {
 
 describe('renditionLabel', () => {
     it('prefers the operator name, else WxH', () => {
-        expect(renditionLabel(r({ name: ' Mobile ' }), 0)).toBe('Mobile');
-        expect(renditionLabel(r({ width: 854, height: 480 }), 1)).toBe('854x480');
+        expect(renditionLabel(r({ name: ' Mobile ' }))).toBe('Mobile');
+        expect(renditionLabel(r({ width: 854, height: 480 }))).toBe('854x480');
     });
 });
 
@@ -125,6 +125,10 @@ describe('buildPipeline', () => {
         expect(p).toContain('usink_1');
         expect(p).toContain('port=41000');
         expect(p).toContain('port=41001');
+
+        // sinkNames is the single source of truth for the udpsink names the
+        // module polls for throughput — one per rendition, in order.
+        expect(res.sinkNames).toEqual(['usink_0', 'usink_1']);
     });
 
     it('filters tsdemux to video only so an audio pad cannot reach the decoder', () => {

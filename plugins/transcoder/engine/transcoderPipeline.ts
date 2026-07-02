@@ -1,131 +1,21 @@
 /**
- * Pure pipeline-assembly helpers for the video transcoder.
- *
- * Kept free of GStreamer / engine-runtime imports (only types + the shared
- * encoder-branch builder) so they unit-test with plain inputs.
+ * GStreamer pipeline assembly for the video transcoder. The pure port/rendition
+ * config helpers live in `transcoderPorts.ts`; this file only builds the
+ * gst-launch string (with the shared UDP / TS / encoder helpers).
  */
 
-import { buildTsUdpInput, buildUdpSink, buildLeakyQueue } from '@media-router/engine';
 import {
+    buildTsUdpInput,
+    buildUdpSink,
+    buildLeakyQueue,
     buildEncoderBranch,
     type CodecId,
     type H264Profile,
     type ImplId,
     type RateControl,
     type SpeedPreset,
-} from './encoderBranch.js';
-
-export type PortDirection = 'input' | 'output';
-
-export interface DynamicPort {
-    id: string;
-    direction: PortDirection;
-    streamType: 'muxed/mpegts';
-    label: string;
-    maxConnections: number;
-    /** Output ports carry MPEG-TS, so downstream consumers must wait for this
-     *  pipeline to be PLAYING before they can be wired — same contract as the
-     *  encoder / muxer outputs. */
-    requiresOrderedApply?: boolean;
-}
-
-/** One configured output rendition. */
-export interface Rendition {
-    name: string;
-    width: number;
-    height: number;
-    bitrate: number;
-}
-
-/** A rendition with its allocated UDP endpoint + stable port id. */
-export interface TranscoderOutput {
-    portId: string;
-    host: string;
-    port: number;
-    rendition: Rendition;
-}
-
-const INPUT_PORT_ID = 'mpegts-in';
-const OUTPUT_PORT_PREFIX = 'out-';
-const MAX_RENDITIONS = 8;
-
-/**
- * Provisional rendition used only when config carries none. The engine resolves
- * `getDynamicPorts` once BEFORE the module starts — at which point the plugin's
- * `this.config` is still empty (config is applied in `onInit`, during start).
- * Returning at least one rendition here means the node shows an output port
- * immediately on add (the engine re-resolves with the real config once the
- * module is running, e.g. on connection-apply). Mirrors how the MPEG-TS muxer's
- * `?? 1` stream-count default keeps its ports visible pre-start. Kept in sync
- * with the first entry of the manifest's `renditions` default.
- */
-const DEFAULT_RENDITION: Rendition = { name: '720p', width: 1280, height: 720, bitrate: 2500 };
-
-export function outputPortId(index: number): string {
-    return `${OUTPUT_PORT_PREFIX}${index}`;
-}
-
-/**
- * Read + sanitise the rendition list from config. Coerces the numeric fields
- * and clamps the count, so a malformed config can never splice junk into the
- * gst-launch string. A blank/missing name is left empty (the caller falls back
- * to a positional label).
- */
-export function readRenditions(config: Record<string, unknown>): Rendition[] {
-    const arr = config.renditions;
-    // Key absent → unconfigured/pre-start: surface one provisional rendition so a
-    // port exists (see DEFAULT_RENDITION). An explicit array (even empty) is the
-    // operator's real choice and is honoured as-is.
-    if (!Array.isArray(arr)) return [{ ...DEFAULT_RENDITION }];
-    return arr.slice(0, MAX_RENDITIONS).map((raw, i) => {
-        const e = (raw ?? {}) as Record<string, unknown>;
-        return {
-            name: typeof e.name === 'string' ? e.name : '',
-            width: toPositiveInt(e.width, 1280),
-            height: toPositiveInt(e.height, 720),
-            bitrate: toPositiveInt(e.bitrate, 2500),
-        };
-    });
-}
-
-function toPositiveInt(value: unknown, fallback: number): number {
-    const n = Math.round(Number(value));
-    return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-/** Display label for a rendition's port: operator name, else `WxH`. */
-export function renditionLabel(r: Rendition, index: number): string {
-    if (r.name.trim()) return r.name.trim();
-    return `${r.width}x${r.height}`;
-}
-
-/**
- * Build the dynamic port list: one MPEG-TS input + one output per rendition.
- * The input is always present so a source can be wired before any rendition is
- * configured.
- */
-export function buildDynamicPorts(renditions: Rendition[]): DynamicPort[] {
-    const ports: DynamicPort[] = [
-        {
-            id: INPUT_PORT_ID,
-            direction: 'input',
-            streamType: 'muxed/mpegts',
-            label: 'MPEG-TS In',
-            maxConnections: 1,
-        },
-    ];
-    renditions.forEach((r, i) => {
-        ports.push({
-            id: outputPortId(i),
-            direction: 'output',
-            streamType: 'muxed/mpegts',
-            label: renditionLabel(r, i),
-            maxConnections: -1,
-            requiresOrderedApply: true,
-        });
-    });
-    return ports;
-}
+} from '@media-router/engine';
+import type { TranscoderOutput } from './transcoderPorts.js';
 
 export interface TranscoderPipelineInputs {
     input: { host: string; port: number };
@@ -139,8 +29,10 @@ export interface TranscoderPipelineInputs {
     /** udpsrc timeout (ns) — runner turns the timeout into a bus error so a
      *  silent source triggers `restartOnError`. */
     timeoutNs?: number;
-    /** Pre-decode buffer in ms (default 200). Jitter tolerance + lets the
-     *  frame-threaded decoder work a little ahead. The cost is this much latency. */
+    /** Buffer in ms (default 200): sizes the input jitter queue AND a post-decode
+     *  raw-frame queue that lets the frame-threaded decoder work ahead. The cost
+     *  is this much latency. Never buffered leakily on the compressed stream —
+     *  see buildPipeline. */
     bufferMs?: number;
     /** 'multi' (default) sets `avdec_h264 thread-type=frame max-threads=3` so the
      *  decode spreads across cores on the live feed; 'single' is GStreamer's
@@ -162,6 +54,10 @@ export interface TranscoderPipelineInputs {
 
 export interface TranscoderPipelineResult {
     pipeline: string;
+    /** udpsink element names (one per rendition, `usink_0`…) — the module polls
+     *  these for aggregate output throughput. Single source of truth for the
+     *  names constructed in the leaf builder. */
+    sinkNames: string[];
 }
 
 /**
@@ -201,13 +97,21 @@ export interface TranscoderPipelineResult {
  *
  * Buffering / multicore decode: unlike a passthrough remux, this pipeline
  * DECODES, and frame-threaded software H.264 decode only parallelises across
- * cores when it has frames queued ahead to work on. So — exactly like the
- * video-player — we put a real buffer in front of the decoder: `buildTsUdpInput`
- * (udpsrc → jitter queue → tsparse) plus a `bufferMs` leaky queue after the
- * demux. With no buffer the decode collapses onto one pinned core and falls
- * behind; with ~200 ms it spreads and keeps up. The cost is that much latency,
- * so `bufferMs` is configurable (lower it for tighter latency if the CPU can
- * keep up single-core).
+ * cores when it can run ahead of the consumers. `bufferMs` sizes two queues:
+ * the input jitter queue (`buildTsUdpInput`, udpsrc → queue → tsparse) and a
+ * leaky RAW-frame queue placed AFTER the decoder, in front of videorate/tee.
+ *
+ * The raw buffer must NOT sit on the compressed stream (an earlier version put
+ * a `bufferMs` leaky queue between tsdemux and h264parse): tsdemux output
+ * buffers carry sparse timestamps (PTS only at PES boundaries), so a
+ * time-bounded leaky queue cannot measure its fill level there — it treats
+ * itself as full and silently drops H.264 mid-GOP. On a long-GOP source every
+ * drop poisons the decode until the next keyframe. Measured on-box (2026-07-02,
+ * same live feed, simultaneous 30 s runs): compressed-side leaky queue ≈ 1.4 MB
+ * out; the identical pipeline with the buffer post-decode ≈ 19 MB (full CBR
+ * rate). Leaky shedding is only safe on decoded frames, where each buffer is an
+ * independent, correctly-timestamped picture. The jitter queue on the raw TS
+ * input is fine — udpsrc timestamps every buffer it emits.
  */
 export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipelineResult | null {
     if (input.outputs.length === 0) return null;
@@ -216,11 +120,20 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const kif = Math.max(1, Math.round(input.gopFrames));
     const bufferMs = input.bufferMs ?? 200;
 
+    // setTimestamps=false: `tsparse set-timestamps=true` re-stamps from PCR and
+    // must BUFFER until the next PCR arrives to interpolate. A spec-compliant
+    // mux sends PCR every ≤100 ms, but real-world feeds (measured: MediaMTX SRT
+    // relay, PCR every 2 s) turn that into 2-second batch-release — the whole
+    // transcode then freezes/bursts at the PCR cadence and the bursts overflow
+    // downstream receive buffers (visible as packet loss). The decode chain
+    // takes per-frame PTS from the PES headers via tsdemux, so PCR re-stamping
+    // buys nothing here.
     const tsInput = buildTsUdpInput({
         host: input.input.host,
         port: input.input.port,
         timeoutNs: input.timeoutNs,
         jitterMs: bufferMs,
+        setTimestamps: false,
     });
 
     // Per-rendition leaf: a short leaky queue (so a slow encoder sheds whole
@@ -231,16 +144,28 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // (e.g. 854x480) instead of the full 1080p source — a fraction of the cost.
     // Each leaf is its own thread (the leading queue), so the scale+convert+encode
     // of every rendition runs on its own core.
+    const sinkNames: string[] = [];
     const leaf = (out: TranscoderOutput, i: number): string => {
         const r = out.rendition;
         const q = 'queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0';
         const scale = `videoscale ! video/x-raw,width=${r.width},height=${r.height}`;
-        const encoder = buildEncoderBranch(
-            input.codec, input.impl, r.bitrate, kif, `venc_${i}`,
-            input.rateControl ?? 'cbr', input.speedPreset ?? 'ultrafast',
-            input.h264Profile ?? 'auto', input.sceneCut ?? 40,
-        );
-        const sink = buildUdpSink({ name: `usink_${i}`, host: out.host, port: out.port });
+        // Pass the tuning knobs straight through: buildEncoderBranch applies the
+        // same defaults (cbr, ultrafast, auto profile, scenecut 40) on undefined,
+        // so there's no second set of defaults to keep in sync here.
+        const encoder = buildEncoderBranch({
+            codec: input.codec,
+            impl: input.impl,
+            bitrateKbps: r.bitrate,
+            kif,
+            name: `venc_${i}`,
+            rateControl: input.rateControl,
+            speedPreset: input.speedPreset,
+            h264Profile: input.h264Profile,
+            sceneCut: input.sceneCut,
+        });
+        const sinkName = `usink_${i}`;
+        sinkNames.push(sinkName);
+        const sink = buildUdpSink({ name: sinkName, host: out.host, port: out.port });
         return `${q} ! ${scale} ! videoconvert ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
     };
 
@@ -249,7 +174,9 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // into the decode chain (otherwise it reaches videoconvert and the pipeline
     // dies with "Internal data stream error").
     const videoCaps = 'capsfilter caps="video/x-h264"';
-    const decodeQueue = buildLeakyQueue(bufferMs);
+    // Raw-frame work-ahead buffer (thread boundary decoder ↔ videorate/tee).
+    // Sits AFTER the decoder on purpose — see the buffering note above.
+    const rawBuffer = buildLeakyQueue(bufferMs);
 
     // EXPLICIT decoder with the threading set INLINE — this is what actually
     // spreads the decode across cores on a LIVE feed. GStreamer single-threads
@@ -268,13 +195,13 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
             : 'h264parse ! avdec_h264 thread-type=frame max-threads=3';
 
     const teeBranches = input.outputs.map((o, i) => `t. ! ${leaf(o, i)}`).join(' ');
-    // Shared pre-tee path: decode → (queue/thread boundary) → drop to the target
-    // framerate → tee. No videoconvert here (moved into the leaves so it runs on
-    // the small downscaled frame). videorate runs on its own thread via the queue.
-    const tq = 'queue max-size-buffers=4 max-size-time=0 max-size-bytes=0';
+    // Shared pre-tee path: demux → decode → raw buffer (thread boundary) → drop
+    // to the target framerate → tee. No videoconvert here (moved into the leaves
+    // so it runs on the small downscaled frame). videorate runs on its own
+    // thread via the raw buffer queue.
     const pipeline =
-        `${tsInput} ! tsdemux latency=0 ! ${videoCaps} ! ${decodeQueue} ! ${decoder} ! ${tq} ! ` +
+        `${tsInput} ! tsdemux latency=0 ! ${videoCaps} ! ${decoder} ! ${rawBuffer} ! ` +
         `videorate ! video/x-raw,framerate=${fps}/1 ! tee name=t ${teeBranches}`;
 
-    return { pipeline };
+    return { pipeline, sinkNames };
 }

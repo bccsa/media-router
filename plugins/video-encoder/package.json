@@ -49,10 +49,11 @@
                     "enum": [
                         "auto",
                         "v4l2",
+                        "va",
                         "software"
                     ],
                     "default": "auto",
-                    "description": "Encoder implementation — auto prefers V4L2 hardware when available"
+                    "description": "Encoder implementation — auto prefers a hardware block (V4L2 on Pi, VA-API on Intel iGPU), then software. The dropdown only lists impls actually installed for the chosen codec."
                 },
                 "resolution": {
                     "type": "string",

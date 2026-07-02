@@ -1,28 +1,28 @@
 import {
     GstPluginBase,
-    probeGstElement,
-    type ModuleServices,
-    type PipelineDescription,
-} from '@media-router/engine';
-import {
+    ThroughputPoller,
     ENCODER_ELEMENTS,
     H264_PROFILES,
-    resolveImpl,
     SPEED_PRESETS,
+    resolveImpl,
+    probeEncoderAvailability,
+    applyEncoderAvailabilityToManifest,
     type CodecId,
     type H264Profile,
     type ImplId,
+    type PipelineDescription,
     type SpeedPreset,
-} from './encoderBranch.js';
+    type ThroughputSample,
+} from '@media-router/engine';
+import { buildPipeline } from './transcoderPipeline.js';
 import {
     buildDynamicPorts,
-    buildPipeline,
     outputPortId,
     readRenditions,
     type DynamicPort,
     type Rendition,
     type TranscoderOutput,
-} from './transcoderPipeline.js';
+} from './transcoderPorts.js';
 
 /**
  * Video Transcoder plugin (ABR ladder).
@@ -37,51 +37,27 @@ import {
  * decoders: the shared `tee` fans the single decoded frame out to every
  * encoder. Encoder selection (codec + impl) reuses the same shared CBR-tuned
  * branch builder as the Video Encoder plugin.
+ *
+ * Nothing here is live-tweakable — renditions / codec / framerate all change the
+ * pipeline shape (or the port set), so every edit rebuilds. The base class's
+ * empty `liveUpdatableParams` default is exactly right, so it isn't overridden.
  */
 export class TranscoderModule extends GstPluginBase {
-    // Renditions / codec / framerate all change the pipeline shape (or the port
-    // set) — none are live-tweakable, so every edit rebuilds.
-    protected liveUpdatableParams: string[] = [];
-
-    private statsTimer: ReturnType<typeof setInterval> | null = null;
-    private lastBytes = 0;
-    private lastPollTime = 0;
     /** udpsink element names captured at build time, for the throughput poll. */
     private sinkNames: string[] = [];
+    /** Aggregate output-bitrate poller across every rendition's udpsink. */
+    private readonly throughput = new ThroughputPoller({
+        getBytes: () => this.sumSinkBytes(),
+        publish: (sample) => this.publishThroughput(sample),
+    });
 
     /** Runtime availability map — populated by `initManifest` after probing. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        const availability: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
-        await Promise.all(
-            (Object.keys(ENCODER_ELEMENTS) as CodecId[]).flatMap((codec) =>
-                (Object.entries(ENCODER_ELEMENTS[codec]) as Array<[ImplId, string]>).map(
-                    async ([impl, element]) => {
-                        if (await probeGstElement(element)) availability[codec].push(impl);
-                    },
-                ),
-            ),
-        );
+        const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
         TranscoderModule.availableImpls = availability;
-
-        const props = (manifest.configSchema as any)?.properties;
-        if (!props) return;
-
-        const availableCodecs = (Object.keys(availability) as CodecId[]).filter(
-            (c) => availability[c].length > 0,
-        );
-        if (props.codec && availableCodecs.length > 0) {
-            props.codec.enum = availableCodecs;
-        }
-        // Narrow the impl dropdown to entries the UI can actually honour per codec.
-        if (props.encoderImpl) {
-            const implMap: Record<string, string[]> = {};
-            for (const c of Object.keys(availability) as CodecId[]) {
-                implMap[c] = ['auto', ...availability[c]];
-            }
-            props.encoderImpl['x-enumBy'] = { field: 'codec', map: implMap };
-        }
+        applyEncoderAvailabilityToManifest(manifest, availability);
     }
 
     /** Exposed for tests. */
@@ -94,10 +70,6 @@ export class TranscoderModule extends GstPluginBase {
         TranscoderModule.availableImpls = availability;
     }
 
-    async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
-        await super.onInit(config, services);
-    }
-
     /** One MPEG-TS input + one MPEG-TS output per configured rendition. */
     getDynamicPorts(config: Record<string, unknown> = this.config): DynamicPort[] {
         return buildDynamicPorts(readRenditions(config));
@@ -107,14 +79,11 @@ export class TranscoderModule extends GstPluginBase {
         // super.onStart() invokes buildPipeline, which populates the input /
         // encoder status sections; no separate status push needed here.
         await super.onStart();
-        this.startStatsTimer();
+        this.throughput.start();
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) {
-            clearInterval(this.statsTimer);
-            this.statsTimer = null;
-        }
+        this.throughput.stop();
         await super.onStop();
     }
 
@@ -193,7 +162,7 @@ export class TranscoderModule extends GstPluginBase {
         });
         if (!result) return null;
 
-        this.sinkNames = outputs.map((_, i) => `usink_${i}`);
+        this.sinkNames = result.sinkNames;
         this.setStatusData('input', { host: upstream.host, port: upstream.port });
         this.setStatusData('encoder', {
             codec,
@@ -220,36 +189,26 @@ export class TranscoderModule extends GstPluginBase {
     }
 
     /**
-     * Sum `bytes-served` across every rendition's udpsink for an aggregate
-     * output bitrate. udpsink resets the counter to 0 when the runner re-spawns
-     * the child (restartOnError), so a sample below the last total is treated as
-     * a fresh baseline rather than reported as a negative rate.
+     * Sum `bytes-served` across every rendition's udpsink for the aggregate
+     * output bitrate — polled in parallel via Promise.all. Returns undefined
+     * (poller skips the tick) when the pipeline is idle or ANY sink's counter is
+     * unavailable: a partial total would read as a bitrate dip. The poller's
+     * counter-reset guard turns the udpsink counter resetting to 0 on a child
+     * re-spawn into a fresh baseline rather than a negative rate.
      */
-    private startStatsTimer(): void {
-        this.lastBytes = 0;
-        this.lastPollTime = Date.now();
-        this.statsTimer = setInterval(async () => {
-            try {
-                let total = 0;
-                for (const name of this.sinkNames) {
-                    const served = (await this.getElementProperty(name, 'bytes-served')) as number;
-                    if (typeof served === 'number') total += served;
-                }
-                const now = Date.now();
-                const elapsed = (now - this.lastPollTime) / 1000;
-                const counterReset = total < this.lastBytes;
-                const deltaBytes = counterReset ? 0 : total - this.lastBytes;
-                const bitrateKbps =
-                    elapsed > 0 ? Math.round((deltaBytes * 8) / elapsed / 1000) : 0;
-                this.lastBytes = total;
-                this.lastPollTime = now;
-                this.setStatusData('throughput', {
-                    'Output Bitrate': `${bitrateKbps} kbps`,
-                    'Total Bytes': `${(total / 1024 / 1024).toFixed(1)} MB`,
-                });
-            } catch {
-                /* pipeline not running yet */
-            }
-        }, 2000);
+    private async sumSinkBytes(): Promise<number | undefined> {
+        if (this.sinkNames.length === 0) return undefined;
+        const served = await Promise.all(
+            this.sinkNames.map((name) => this.getElementProperty(name, 'bytes-served')),
+        );
+        if (served.some((v) => typeof v !== 'number')) return undefined;
+        return (served as number[]).reduce((sum, v) => sum + v, 0);
+    }
+
+    private publishThroughput(sample: ThroughputSample): void {
+        this.setStatusData('throughput', {
+            'Output Bitrate': `${sample.bitrateKbps} kbps`,
+            'Total Bytes': `${(sample.totalBytes / 1024 / 1024).toFixed(1)} MB`,
+        });
     }
 }

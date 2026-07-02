@@ -704,6 +704,24 @@ export class VideoEncoderModule extends GstPluginBase {
 
 Real examples: [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts) (HW encoder probing), [`audio-encoder`](audio-encoder/engine/AudioEncoderModule.ts) (codec capability), [`video-player`](video-player/engine/VideoPlayerModule.ts) (sink probing).
 
+##### Shared video-encoder helpers
+
+Codec plugins that emit H.264/H.265/AV1 (video-encoder, transcoder) share the encoder-element knowledge from `@media-router/engine` rather than forking it — don't copy an encoder branch builder into a new plugin, reuse these:
+
+- `ENCODER_ELEMENTS` — the `{codec × impl}` → GStreamer element-name table (`impl` is `v4l2` \| `va` \| `software`).
+- `resolveImpl(codec, preference, available)` — pick the impl to use at runtime (`auto` prefers a hardware block, then software), given the probed availability.
+- `buildEncoderBranch(opts)` — build one CBR/VBR-tuned encoder fragment ending at the parsed elementary stream. Options: `{ codec, impl, bitrateKbps, kif, name, rateControl?, speedPreset?, h264Profile?, sceneCut? }` (defaults: CBR, `ultrafast`, `auto` profile, scenecut 40). `name` gives the encoder element a distinct name so several renditions can coexist in one pipeline.
+- `probeEncoderAvailability(ENCODER_ELEMENTS)` — probe every element with `gst-inspect` and return the installed impls per codec. Store the result for `resolveImpl`.
+- `applyEncoderAvailabilityToManifest(manifest, availability)` — narrow the manifest's `codec` enum to installed codecs and build the `encoderImpl` `x-enumBy` map. A codec plugin's `initManifest` is usually just these two calls:
+
+```typescript
+static async initManifest(manifest: Record<string, any>): Promise<void> {
+    const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
+    MyModule.availableImpls = availability;
+    applyEncoderAvailabilityToManifest(manifest, availability);
+}
+```
+
 #### `static registerServices(services)` — Contribute engine-wide services
 
 Use when the plugin **owns** a device type that the manager-UI dropdown should populate from. The method is called once with the full `EngineServices` bundle; register a `DeviceProvider` so any other plugin can target devices of that type via `x-deviceType` in its config schema.
@@ -949,45 +967,38 @@ this.setStatusData('udp', {
 });
 ```
 
-#### Polling Live Stats
+#### Polling Live Stats — `ThroughputPoller`
 
-For live-updating stats (throughput, connection info), use a timer that polls element properties:
+For output-bitrate stats, use the shared `ThroughputPoller` (from `@media-router/engine`) instead of hand-rolling a `setInterval` + `lastBytes`/`lastPollTime` bookkeeping. Construct it with a `getBytes` reader and a `publish` callback, then `start()` in `onStart` and `stop()` in `onStop`:
 
 ```typescript
-private statsTimer: ReturnType<typeof setInterval> | null = null;
-private lastBytes = 0;
-private lastPollTime = 0;
+import { GstPluginBase, ThroughputPoller, type ThroughputSample } from '@media-router/engine';
 
-async onStart(): Promise<void> {
-    await super.onStart();
+export class MyEncoderModule extends GstPluginBase {
+    private readonly throughput = new ThroughputPoller({
+        // Return the cumulative byte counter, or undefined when idle/unavailable.
+        getBytes: async () => {
+            const served = await this.getElementProperty('usink', 'bytes-served');
+            return typeof served === 'number' ? served : undefined;
+        },
+        publish: (s: ThroughputSample) =>
+            this.setStatusData('throughput', {
+                'Output Bitrate': `${s.bitrateKbps} kbps`,
+                'Total Bytes': `${(s.totalBytes / 1024 / 1024).toFixed(1)} MB`,
+            }),
+        // intervalMs defaults to 2000
+    });
 
-    // Start polling every 2s
-    this.lastPollTime = Date.now();
-    this.statsTimer = setInterval(async () => {
-        try {
-            // Read bytes-served from a named udpsink
-            const bytes = await this.getElementProperty('usink', 'bytes-served') as number;
-            if (typeof bytes === 'number') {
-                const now = Date.now();
-                const elapsed = (now - this.lastPollTime) / 1000;
-                const delta = bytes - this.lastBytes;
-                const kbps = elapsed > 0 ? Math.round((delta * 8) / elapsed / 1000) : 0;
-                this.lastBytes = bytes;
-                this.lastPollTime = now;
-                this.setStatusData('throughput', {
-                    'Output Bitrate': `${kbps} kbps`,
-                    'Total Bytes': `${(bytes / 1024 / 1024).toFixed(1)} MB`,
-                });
-            }
-        } catch { /* ignore errors during polling */ }
-    }, 2000);
-}
-
-async onStop(): Promise<void> {
-    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
-    await super.onStop();
+    async onStart(): Promise<void> { await super.onStart(); this.throughput.start(); }
+    async onStop(): Promise<void> { this.throughput.stop(); await super.onStop(); }
 }
 ```
+
+The poller owns the timing so every plugin gets the same correct behaviour:
+
+- **Idle skip** — when `getBytes` returns `undefined` (pipeline not playing yet), the tick is skipped and nothing is published, so an idle module stops emitting spurious "0 kbps" updates.
+- **Counter-reset guard** — if the byte counter drops below the previous sample (the child was re-spawned via `restartOnError` and `udpsink` reset `bytes-served` to 0), the delta clamps to 0 instead of reporting a negative rate.
+- **Multiple sinks** — read them with `Promise.all` and return `undefined` if *any* is unavailable (a partial total would read as a bitrate dip). See the transcoder's `sumSinkBytes`.
 
 **Important:** The `key` in `setStatusData` must match the `key` field in the manifest's `statusSections.fields[]`. Mismatched keys will show "—" in the UI.
 

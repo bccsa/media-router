@@ -648,6 +648,54 @@ describe('VideoPlayerModule helpers', () => {
         });
     });
 
+    describe('restartPipeline convergence', () => {
+        it('re-runs one follow-up cycle when a trigger lands mid-restart (stall→resume race)', async () => {
+            const module = new VideoPlayerModule();
+            let releaseFirstStop!: () => void;
+            const firstStopGate = new Promise<void>((r) => (releaseFirstStop = r));
+            const onStop = vi
+                .spyOn(module as any, 'onStop')
+                .mockImplementationOnce(async () => {
+                    await firstStopGate;
+                })
+                .mockResolvedValue(undefined);
+            const onStart = vi.spyOn(module as any, 'onStart').mockResolvedValue(undefined);
+
+            const first = (module as any).restartPipeline(); // stall → fallback build
+            await (module as any).restartPipeline(); // resume lands mid-flight — must queue
+            releaseFirstStop();
+            await first;
+
+            // Two full cycles: the queued resume trigger re-runs stop/start so
+            // buildPipeline sees the post-resume state instead of freezing on
+            // the stale fallback.
+            expect(onStop).toHaveBeenCalledTimes(2);
+            expect(onStart).toHaveBeenCalledTimes(2);
+        });
+
+        it('coalesces several mid-flight triggers into a single follow-up cycle', async () => {
+            const module = new VideoPlayerModule();
+            let releaseFirstStop!: () => void;
+            const firstStopGate = new Promise<void>((r) => (releaseFirstStop = r));
+            const onStop = vi
+                .spyOn(module as any, 'onStop')
+                .mockImplementationOnce(async () => {
+                    await firstStopGate;
+                })
+                .mockResolvedValue(undefined);
+            vi.spyOn(module as any, 'onStart').mockResolvedValue(undefined);
+
+            const first = (module as any).restartPipeline();
+            await (module as any).restartPipeline();
+            await (module as any).restartPipeline();
+            await (module as any).restartPipeline();
+            releaseFirstStop();
+            await first;
+
+            expect(onStop).toHaveBeenCalledTimes(2);
+        });
+    });
+
     describe('UDP-stall fallback', () => {
         function makeModule() {
             const module = new VideoPlayerModule();

@@ -528,11 +528,16 @@ def _set_decoder_threads(element, thread_type="auto"):
     `find_property` because not every avdec_* has the prop and `try/except`
     on a 1-line set would be noisier.
 
-    `max-threads` is always cranked to the core count (a ceiling — harmless on
-    its own). `thread-type` is only forced to FRAME when `thread_type == 'frame'`
-    (the opt-in multi-core mode that adds latency); otherwise it's left at its
-    default 'auto'. The log reports the mode actually applied — an avdec_*
-    without the `thread-type` property stays 'auto' even when frame was asked.
+    A decoder whose `max-threads` is already non-default (0 = auto) was
+    configured explicitly in the pipeline string — leave it entirely alone.
+    With frame threading, `max-threads` is NOT a harmless ceiling: it sets the
+    concurrent-decode depth, i.e. ~max-threads frames of added latency. The
+    transcoder pins `thread-type=frame max-threads=3` (~60 ms at 50 fps);
+    overriding that to the core count took a 16-core box to ~320 ms of decode
+    delay. Otherwise `max-threads` is cranked to the core count and
+    `thread-type` is only forced to FRAME when `thread_type == 'frame'` (the
+    opt-in multi-core mode that adds latency); an avdec_* without the
+    `thread-type` property stays 'auto' even when frame was asked.
     """
     factory = element.get_factory()
     name = factory.get_name() if factory else ""
@@ -541,6 +546,12 @@ def _set_decoder_threads(element, thread_type="auto"):
     if element.find_property("max-threads") is None:
         return
     try:
+        if element.get_property("max-threads") != 0:
+            sys.stderr.write(
+                f"[gst-runner.py] decoder threads: {name} configured in pipeline — left as-is\n"
+            )
+            sys.stderr.flush()
+            return
         element.set_property("max-threads", _DECODER_MAX_THREADS)
         applied = "auto"
         if thread_type == "frame" and element.find_property("thread-type") is not None:

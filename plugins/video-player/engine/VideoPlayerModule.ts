@@ -72,6 +72,9 @@ export class VideoPlayerModule extends GstPluginBase {
      * the UDP-stall latch.
      */
     private pipelineRestartInProgress = false;
+    /** A restart trigger arrived mid-cycle — run one follow-up cycle so the
+     *  pipeline converges on the latest state (see restartPipeline). */
+    private pipelineRestartPending = false;
     // Kiosk-browser (cog) PID tracking. Kiosk-shell stacks toplevels by
     // surface-creation time — when the cog browser on our output respawns
     // (URL change, crash, etc.) its new surface ends up above the video's,
@@ -368,19 +371,36 @@ export class VideoPlayerModule extends GstPluginBase {
 
     /**
      * Trigger a clean pipeline restart against the *current* wayland session.
-     * Used by both the runtime-dir watcher (compositor socket replaced) and
-     * the cog-PID watcher (kiosk browser respawned). Callers log their own
-     * trigger reason first; this method only logs failure. Latched so
-     * overlapping triggers collapse to a single cycle.
+     * Used by the runtime-dir watcher (compositor socket replaced), the
+     * cog-PID watcher (kiosk browser respawned), and the UDP stall/resume
+     * switches. Callers log their own trigger reason first; this method only
+     * logs failure.
+     *
+     * A trigger that lands while a cycle is mid-flight queues ONE follow-up
+     * cycle instead of being dropped. Dropping it froze the player on a stale
+     * build: source went silent → fallback restart started → source resumed
+     * 2 s later (clearing `udpStallDetected`) → the resume restart was
+     * discarded by the old in-progress latch → the fallback pipeline (built
+     * from the stale flag) stayed up forever with healthy data underneath.
+     * The follow-up cycle re-runs buildPipeline against the LATEST state, so
+     * back-to-back stall/resume flips always converge.
      */
     private async restartPipeline(): Promise<void> {
-        if (this.pipelineRestartInProgress) return;
+        if (this.pipelineRestartInProgress) {
+            this.pipelineRestartPending = true;
+            return;
+        }
         this.pipelineRestartInProgress = true;
         try {
-            await this.onStop();
-            await this.onStart();
-        } catch (err) {
-            this.log.warn({ err }, 'Pipeline restart cycle failed');
+            do {
+                this.pipelineRestartPending = false;
+                try {
+                    await this.onStop();
+                    await this.onStart();
+                } catch (err) {
+                    this.log.warn({ err }, 'Pipeline restart cycle failed');
+                }
+            } while (this.pipelineRestartPending);
         } finally {
             this.pipelineRestartInProgress = false;
         }
