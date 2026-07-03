@@ -16,6 +16,63 @@ export interface SystemStats {
     buildNumber?: string;
 }
 
+// Thermal-zone `type` values that correspond to a real CPU/SoC sensor,
+// in order of preference. On the Pi target thermal_zone0 is `cpu-thermal`;
+// on x86 hosts thermal_zone0 is often a phantom `acpitz` zone that reports
+// ~-273°C (0 Kelvin), so we must not blindly read thermal_zone0.
+const PREFERRED_ZONE_TYPES = [
+    'cpu-thermal',
+    'cpu_thermal',
+    'x86_pkg_temp',
+    'soc',
+    'soc_thermal',
+    'coretemp',
+];
+
+/**
+ * Read the CPU temperature (°C) from the kernel thermal zones.
+ * Scans every /sys/class/thermal/thermal_zone*, discards physically
+ * implausible readings (phantom ACPI zones report ~-273°C / 0 K), then
+ * prefers a known CPU sensor type, falling back to the hottest valid zone.
+ * Returns null when no usable sensor is found.
+ */
+export function readCpuTemp(thermalRoot = '/sys/class/thermal'): number | null {
+    let zones: string[];
+    try {
+        zones = fs.readdirSync(thermalRoot).filter((d) => d.startsWith('thermal_zone'));
+    } catch {
+        return null; // no thermal subsystem on this hardware
+    }
+
+    const readings: Array<{ type: string; celsius: number }> = [];
+    for (const zone of zones) {
+        let celsius: number;
+        try {
+            celsius = parseInt(fs.readFileSync(`${thermalRoot}/${zone}/temp`, 'utf-8'), 10) / 1000;
+        } catch {
+            continue; // zone unreadable
+        }
+        // Reject impossible readings: phantom zones report ~-273°C (0 K).
+        if (!Number.isFinite(celsius) || celsius <= -40 || celsius >= 150) continue;
+
+        let type = '';
+        try {
+            type = fs.readFileSync(`${thermalRoot}/${zone}/type`, 'utf-8').trim();
+        } catch {
+            /* type is optional */
+        }
+        readings.push({ type, celsius });
+    }
+
+    if (readings.length === 0) return null;
+
+    for (const preferred of PREFERRED_ZONE_TYPES) {
+        const match = readings.find((r) => r.type === preferred);
+        if (match) return Math.round(match.celsius);
+    }
+    return Math.round(Math.max(...readings.map((r) => r.celsius)));
+}
+
 /**
  * Periodically collects CPU, memory, and temperature stats.
  * Calls the provided callback with each sample.
@@ -54,15 +111,11 @@ export class SystemStatsCollector {
                 const freeMem = os.freemem();
                 const memPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
 
-                let cpuTemp: number | null = null;
-                try {
-                    const temp = fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf-8');
-                    cpuTemp = Math.round(parseInt(temp, 10) / 1000);
-                } catch {
-                    /* thermal zone not available on this hardware */
-                }
-
-                const stats: SystemStats = { cpu: cpuPercent, mem: memPercent, temp: cpuTemp };
+                const stats: SystemStats = {
+                    cpu: cpuPercent,
+                    mem: memPercent,
+                    temp: readCpuTemp(),
+                };
 
                 // Include IP + hostname + build on first sample and every 30 samples (~60s)
                 if (this.sampleCount % 30 === 0) {
