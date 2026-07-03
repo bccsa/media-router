@@ -118,7 +118,8 @@
                     { "key": "codec", "label": "Codec" },
                     { "key": "impl", "label": "Implementation" },
                     { "key": "resolution", "label": "Resolution" },
-                    { "key": "framerate", "label": "Framerate" }
+                    { "key": "framerate", "label": "Framerate" },
+                    { "key": "bitrate", "label": "Bitrate", "unit": "kbps" }
                 ]
             },
             {

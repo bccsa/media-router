@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { bitrateBadge } from '@media-router/engine';
 import { AudioEncoderModule } from './AudioEncoderModule.js';
 
 function makeModule(opts: { udpPort?: number | null } = {}) {
@@ -134,5 +135,41 @@ describe('AudioEncoderModule.getPipeWireNodes', () => {
     it('exposes the null-sink as the sink so audio sources loop back into it', () => {
         const { module } = makeModule();
         expect(module.getPipeWireNodes()).toEqual({ sink: 'MR_PW_enc-1' });
+    });
+});
+
+describe('bitrateBadge', () => {
+    it('shows kbps below 1 Mbps (audio scale), green when flowing', () => {
+        expect(bitrateBadge(128)).toEqual({ icon: 'activity', text: '128 kbps', color: '#10b981' });
+    });
+
+    it('switches to Mbps at/above 1000 kbps (video scale)', () => {
+        expect(bitrateBadge(4200)).toEqual({
+            icon: 'activity',
+            text: '4.2 Mbps',
+            color: '#10b981',
+        });
+    });
+
+    it('goes grey at zero throughput', () => {
+        expect(bitrateBadge(0)).toEqual({ icon: 'activity', text: '0 kbps', color: '#6b7280' });
+    });
+});
+
+describe('AudioEncoderModule.publishThroughput', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    it('puts the live rate in the popup and a bitrate badge on the face', () => {
+        const { module, setStatusData, setBadge } = makeModule();
+        (module as any).publishThroughput({ bitrateKbps: 132, totalBytes: 2 * 1024 * 1024 });
+        expect(setStatusData).toHaveBeenCalledWith(
+            'throughput',
+            expect.objectContaining({ 'Output Bitrate': '132 kbps' }),
+        );
+        expect(setBadge).toHaveBeenCalledWith('bitrate', {
+            icon: 'activity',
+            text: '132 kbps',
+            color: '#10b981',
+        });
     });
 });

@@ -23,6 +23,18 @@ type StatusSection = {
 };
 
 /**
+ * Live-bitrate face badge from a kbps figure. Adaptive units (kbps below
+ * 1 Mbps, Mbps above), green while flowing and grey at zero. The single home
+ * for every transport/encoder module's bitrate badge — callers working in Mbps
+ * pass `Math.round(mbps * 1000)`. Re-exported from the package index alongside
+ * `formatBytes`.
+ */
+export function bitrateBadge(kbps: number): Badge {
+    const text = kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`;
+    return { icon: 'activity', text, color: kbps > 0 ? '#10b981' : '#6b7280' };
+}
+
+/**
  * Callbacks the poller uses to push state into the host plugin. The plugin
  * binds these to its `setStatusData` / `setBadge` / `clearBadge` and the
  * `dynamicStatusSections` setter; the poller treats the plugin as an opaque
@@ -110,6 +122,15 @@ export class SrtStatPoller {
     reset(): void {
         this.callerStats.clear();
         this.lastBytes = 0;
+        // Drop the live-bitrate face badge too, so a stale rate doesn't linger
+        // next to the "Connecting" badge across the restart-backoff window.
+        this.host.clearBadge('bitrate');
+    }
+
+    /** Per-flow bitrate in Mbps from a stats/caller object; 0 when absent. */
+    private numericBitrate(c: Record<string, unknown>): number {
+        const v = Number(c[this.keys.bitrate] ?? c['bandwidth-mbps'] ?? 0);
+        return Number.isFinite(v) ? v : 0;
     }
 
     /** Read one set of stats and update the host. Safe to call when not running. */
@@ -134,6 +155,7 @@ export class SrtStatPoller {
 
     private handleListenerMode(callers: Array<Record<string, unknown>>): void {
         const sections: StatusSection[] = [];
+        let totalMbps = 0;
         for (let i = 0; i < callers.length; i++) {
             sections.push({
                 id: `caller-${i}`,
@@ -141,6 +163,7 @@ export class SrtStatPoller {
                 fields: this.callerFields,
             });
             this.host.setStatusData(`caller-${i}`, this.computeCallerFields(callers[i], i));
+            totalMbps += this.numericBitrate(callers[i]);
         }
         this.host.setSections(sections);
 
@@ -150,7 +173,11 @@ export class SrtStatPoller {
         }
 
         const callerCount = callers.length;
-        this.host.setStatusData('stats', { callers: callerCount });
+        // Only publish the caller count when there ARE callers. An idle listener
+        // otherwise shows a lone "Callers: 0" row; the stats modal hides fields
+        // with no value, so an empty object collapses the Live Stats section
+        // entirely until a caller connects.
+        this.host.setStatusData('stats', callerCount > 0 ? { callers: callerCount } : {});
         this.host.setBadge('callers', {
             icon: 'users',
             text: String(callerCount),
@@ -160,6 +187,13 @@ export class SrtStatPoller {
             this.host.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
         } else {
             this.host.clearBadge('status');
+        }
+        // Aggregate live bitrate on the face (sum across every caller). Cleared
+        // when nothing is flowing so it never lingers on an idle listener.
+        if (totalMbps > 0) {
+            this.host.setBadge('bitrate', bitrateBadge(Math.round(totalMbps * 1000)));
+        } else {
+            this.host.clearBadge('bitrate');
         }
     }
 
@@ -177,12 +211,16 @@ export class SrtStatPoller {
         });
         if (isActive) {
             this.host.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
+            const mbps = this.numericBitrate(stats);
+            if (mbps > 0) this.host.setBadge('bitrate', bitrateBadge(Math.round(mbps * 1000)));
+            else this.host.clearBadge('bitrate');
         } else {
             this.host.setBadge('status', {
                 icon: 'radio',
                 text: rawBytes > 0 ? 'Stalled' : 'Connecting',
                 color: '#f59e0b',
             });
+            this.host.clearBadge('bitrate');
         }
         this.host.clearBadge('callers');
     }

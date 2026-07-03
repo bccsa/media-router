@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     ThroughputPoller,
+    bitrateBadge,
     buildUdpSink,
     gstInspectMaxChannels,
     type PipelineDescription,
@@ -79,6 +80,7 @@ export class AudioEncoderModule extends GstPluginBase {
             'Output Bitrate': `${sample.bitrateKbps} kbps`,
             'Total Bytes': `${(sample.totalBytes / 1024 / 1024).toFixed(1)} MB`,
         });
+        this.setBadge('bitrate', bitrateBadge(sample.bitrateKbps));
     }
 
     private updateStatusData(): void {

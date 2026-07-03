@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, inject, ref, type Ref } from 'vue';
+import {
+    computed,
+    inject,
+    ref,
+    watch,
+    nextTick,
+    onMounted,
+    onUnmounted,
+    type Ref,
+} from 'vue';
 import { Handle, Position } from '@vue-flow/core';
 import type { ModuleState } from '@/stores/engines';
 import { useEngineStore } from '@/stores/engines';
@@ -55,6 +64,41 @@ const allStatusSections = computed(() => {
 
 const moduleBadges = computed(() => props.data.badges ?? []);
 const faceWidgets = computed(() => props.data.faceWidgets ?? []);
+
+// --- Port handle alignment ---
+// The connection dots are absolutely positioned, so their vertical offset must
+// track the port-label rows — which shift DOWN when a stats badge (or a face
+// widget) is shown above them. A fixed offset made the top dot ride up next to
+// the badge, looking like it belonged to it. Instead we measure the port-row
+// container's layout offset (offsetTop is layout-based, so it ignores the
+// canvas zoom transform) and drop each dot at its row centre, re-measuring
+// whenever the card body reflows. The fallback (30) keeps the first paint on
+// the old baseline (30 + 14 = the previous 44px), so there's no flicker.
+const portsEl = ref<HTMLElement | null>(null);
+const portsOffsetTop = ref(30);
+const ROW_STEP = 24; // h-5 row (20px) + space-y-1 gap (4px)
+const ROW_CENTER = 14; // container py-1 (4px) + half row height (10px)
+const handleTop = (i: number): string =>
+    `${portsOffsetTop.value + ROW_CENTER + i * ROW_STEP}px`;
+
+function measurePorts(): void {
+    if (portsEl.value) portsOffsetTop.value = portsEl.value.offsetTop;
+}
+
+let resizeObs: ResizeObserver | null = null;
+onMounted(() => {
+    measurePorts();
+    const parent = portsEl.value?.offsetParent;
+    if (parent && typeof ResizeObserver !== 'undefined') {
+        resizeObs = new ResizeObserver(() => measurePorts());
+        resizeObs.observe(parent);
+    }
+});
+onUnmounted(() => resizeObs?.disconnect());
+// Badges / face widgets arrive via runtime state pushes — re-measure on change.
+watch([moduleBadges, faceWidgets, () => props.data.ports], () => nextTick(measurePorts), {
+    deep: true,
+});
 
 // Plugin-provided face component: if the plugin ships a `ui/NodeFace.vue`,
 // it's rendered in the body of the card. Declarative widgets (`faceWidgets`)
@@ -391,7 +435,7 @@ const portColorMap: Record<string, string> = {
         </div>
 
         <!-- Port labels -->
-        <div class="px-3 py-1 flex justify-between">
+        <div ref="portsEl" class="px-3 py-1 flex justify-between">
             <div class="space-y-1">
                 <div v-for="port in inputPorts" :key="port.id" class="h-5 flex items-center">
                     <span
@@ -446,7 +490,7 @@ const portColorMap: Record<string, string> = {
             v-show="(port.maxConnections ?? -1) !== 0"
             class="!w-3 !h-3 !rounded-full !border-2 !border-surface"
             :style="{
-                top: 44 + i * 24 + 'px',
+                top: handleTop(i),
                 backgroundColor: portColorMap[port.streamType] ?? '#6b7280',
             }"
         />
@@ -461,7 +505,7 @@ const portColorMap: Record<string, string> = {
             v-show="(port.maxConnections ?? -1) !== 0"
             class="!w-3 !h-3 !rounded-full !border-2 !border-surface"
             :style="{
-                top: 44 + i * 24 + 'px',
+                top: handleTop(i),
                 backgroundColor: portColorMap[port.streamType] ?? '#6b7280',
             }"
         />

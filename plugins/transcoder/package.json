@@ -187,14 +187,6 @@
                     { "key": "framerate", "label": "Framerate" },
                     { "key": "renditions", "label": "Renditions" }
                 ]
-            },
-            {
-                "id": "throughput",
-                "label": "Live Throughput",
-                "fields": [
-                    { "key": "Output Bitrate", "label": "Output Bitrate" },
-                    { "key": "Total Bytes", "label": "Total Bytes" }
-                ]
             }
         ],
         "engine": "./engine/TranscoderModule.ts"

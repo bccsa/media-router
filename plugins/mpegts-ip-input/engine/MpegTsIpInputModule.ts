@@ -5,6 +5,7 @@ import {
     buildBackpressureQueue,
     isMulticastAddr,
     formatBytes,
+    bitrateBadge,
     NET_UDP_RCV_BUF,
     registerNetworkInterfaceDeviceProvider,
     type PipelineDescription,
@@ -58,12 +59,13 @@ export class MpegTsIpInputModule extends GstPluginBase {
         // rather than leaving a stale "flowing" badge across the restart backoff.
         this.childProcess?.on('stateChange', (data: { state: string }) => {
             if (data.state === 'stopped' || data.state === 'error') {
-                this.setBadge('status', { icon: 'radio', text: 'Idle', color: '#f59e0b' });
+                this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
+                this.clearBadge('bitrate');
             }
         });
 
-        // Track inbound throughput on the network udpsrc for live bitrate.
-        await this.trackThroughput('netsrc', 'src');
+        // Throughput tracking is established lazily by pollStats — registering
+        // it here races the PLAYING transition (see the note in pollStats).
         this.statsTimer = setInterval(() => void this.pollStats(), 2000);
         this.updateStatusData();
     }
@@ -194,17 +196,39 @@ export class MpegTsIpInputModule extends GstPluginBase {
         if (!this.running) return;
         const tp = await this.getThroughput();
         const t = tp['netsrc'];
-        if (!t) return;
+        if (!t) {
+            // No tracker yet. Registering once in onStart races the PLAYING
+            // transition — trackThroughput no-ops until the child pipeline is
+            // live, so the pad probe never attaches and stats stay blank. A
+            // pipeline restart likewise spawns a fresh Python child with an
+            // empty tracker map. (Re)establish it here on the live poll loop;
+            // the next tick reads the freshly-attached counter.
+            await this.trackThroughput('netsrc', 'src');
+            return;
+        }
         const flowing = t.bitrate_mbps > 0;
+        // Popup carries the exact bitrate/bytes. The face shows TWO badges when
+        // flowing: an SRT-style status word ("Connected") plus a live bitrate
+        // badge. UDP is connectionless, so "Connected" means packets are
+        // arriving; "Stalled" (amber) means we received before but it dried up;
+        // "Waiting" (grey) means nothing has arrived yet. The bitrate badge is
+        // cleared when not flowing so a stale rate never lingers next to a
+        // Stalled/Waiting status.
         this.setStatusData('stats', {
             bitrate: t.bitrate_mbps.toFixed(2),
             bytesReceived: formatBytes(t.total_bytes),
         });
-        this.setBadge('status', {
-            icon: 'radio',
-            text: flowing ? `${t.bitrate_mbps.toFixed(1)}M` : 'Idle',
-            color: flowing ? '#10b981' : '#f59e0b',
-        });
+        if (flowing) {
+            this.setBadge('status', { icon: 'radio', text: 'Connected', color: '#10b981' });
+            this.setBadge('bitrate', bitrateBadge(Math.round(t.bitrate_mbps * 1000)));
+        } else {
+            this.setBadge('status', {
+                icon: 'radio',
+                text: t.total_bytes > 0 ? 'Stalled' : 'Waiting',
+                color: t.total_bytes > 0 ? '#f59e0b' : '#6b7280',
+            });
+            this.clearBadge('bitrate');
+        }
     }
 
     private updateStatusData(): void {

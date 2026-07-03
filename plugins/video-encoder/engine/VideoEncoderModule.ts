@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     ThroughputPoller,
+    bitrateBadge,
     buildUdpSink,
     listV4l2Devices,
     ENCODER_ELEMENTS,
@@ -197,11 +198,13 @@ export class VideoEncoderModule extends GstPluginBase {
         const impl = this.resolveCurrentImpl();
         const resolution = (this.config.resolution as string) ?? '1920x1080';
         const fps = (this.config.framerate as number) ?? 30;
+        const bitrate = (this.config.bitrate as number) ?? 4000;
         this.setStatusData('encoder', {
             codec,
             impl: impl ?? 'unavailable',
             resolution,
             framerate: `${fps} fps`,
+            bitrate,
         });
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
@@ -221,5 +224,6 @@ export class VideoEncoderModule extends GstPluginBase {
             'Output Bitrate': `${sample.bitrateKbps} kbps`,
             'Total Bytes': `${(sample.totalBytes / 1024 / 1024).toFixed(1)} MB`,
         });
+        this.setBadge('bitrate', bitrateBadge(sample.bitrateKbps));
     }
 }

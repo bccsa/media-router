@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { bitrateBadge } from '@media-router/engine';
 import { TranscoderModule } from './TranscoderModule.js';
 
 function makeModule(opts: { upstream?: { host: string; port: number } | undefined } = {}) {
@@ -17,6 +18,7 @@ function makeModule(opts: { upstream?: { host: string; port: number } | undefine
     };
     (module as any).setHealth = vi.fn();
     (module as any).setStatusData = vi.fn();
+    (module as any).setBadge = vi.fn();
     return { module, getModuleUdpSource, assignUdpPort };
 }
 
@@ -105,5 +107,81 @@ describe('buildPipeline', () => {
             'encoder',
             expect.objectContaining({ codec: 'h264', impl: 'software' }),
         );
+    });
+
+    it('exposes per-rendition target bitrates in the encoder stats', () => {
+        const { module } = makeModule();
+        module.buildPipeline({
+            renditions: [
+                { width: 1280, height: 720, bitrate: 2500 },
+                { width: 640, height: 360, bitrate: 800 },
+            ],
+        });
+        expect((module as any).setStatusData).toHaveBeenCalledWith(
+            'encoder',
+            expect.objectContaining({ renditions: '1280x720@2500k, 640x360@800k' }),
+        );
+    });
+});
+
+describe('TranscoderModule.pollThroughput', () => {
+    afterEach(() => vi.useRealTimers());
+
+    function setup() {
+        const module = makeModule().module as any;
+        module.running = true;
+        module.sinkNames = ['usink_0', 'usink_1'];
+        module.renditions = [
+            { width: 1280, height: 720, bitrate: 2500 },
+            { width: 640, height: 360, bitrate: 800 },
+        ];
+        // Fixed clock: baseline 1s ago so elapsed is exactly 1.0s and the
+        // per-sink bitrate is deterministic.
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(10_000));
+        module.sinkStats = [
+            { lastBytes: 0, lastTime: 9_000 },
+            { lastBytes: 0, lastTime: 9_000 },
+        ];
+        return module;
+    }
+
+    it('publishes a PER-RENDITION live bitrate section, not a single sum', async () => {
+        const module = setup();
+        // 312500 B/s → 2.5 Mbps; 100000 B/s → 0.8 Mbps.
+        module.getElementProperty = vi.fn(async (name: string) =>
+            name === 'usink_0' ? 312_500 : 100_000,
+        );
+        await module.pollThroughput();
+
+        expect(module.dynamicStatusSections).toEqual([
+            {
+                id: 'throughput',
+                label: 'Live Throughput',
+                fields: [
+                    { key: 'r0', label: '1280x720 @ 2500k', unit: 'Mbps' },
+                    { key: 'r1', label: '640x360 @ 800k', unit: 'Mbps' },
+                    { key: 'total', label: 'Total', unit: 'Mbps' },
+                    { key: 'totalBytes', label: 'Total Bytes' },
+                ],
+            },
+        ]);
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'throughput',
+            expect.objectContaining({ r0: 2.5, r1: 0.8, total: 3.3 }),
+        );
+        // Face badge stays the aggregate headline.
+        expect(module.setBadge).toHaveBeenCalledWith('bitrate', bitrateBadge(3300));
+        expect(bitrateBadge(3300)).toEqual({ icon: 'activity', text: '3.3 Mbps', color: '#10b981' });
+    });
+
+    it('skips the tick when a sink counter is unavailable (idle / not playing)', async () => {
+        const module = setup();
+        module.getElementProperty = vi.fn(async (name: string) =>
+            name === 'usink_0' ? 312_500 : undefined,
+        );
+        await module.pollThroughput();
+        expect(module.setStatusData).not.toHaveBeenCalledWith('throughput', expect.anything());
+        expect(module.setBadge).not.toHaveBeenCalled();
     });
 });

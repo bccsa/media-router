@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, watch, type Component } from 'vue';
+import { computed, onUnmounted, watch, type Component } from 'vue';
 
 interface StatusField {
     key: string;
@@ -20,6 +20,29 @@ const props = defineProps<{
     sections: StatusSection[];
     statusData: Record<string, Record<string, unknown>> | undefined;
 }>();
+
+/** A field has a value worth showing (not unset and not the "—" placeholder). */
+function hasValue(v: unknown): boolean {
+    if (v === undefined || v === null) return false;
+    const s = typeof v === 'number' ? String(v) : String(v).trim();
+    return s !== '' && s !== '—';
+}
+
+/**
+ * Only render fields that actually carry a value, and drop any section left
+ * with none. Keeps the popup from showing rows of "—" (e.g. an SRT listener's
+ * aggregate Live Stats, whose per-flow numbers live in the per-caller sections).
+ */
+const visibleSections = computed(() =>
+    props.sections
+        .map((section) => ({
+            ...section,
+            fields: section.fields.filter((f) =>
+                hasValue(props.statusData?.[section.id]?.[f.key]),
+            ),
+        }))
+        .filter((section) => section.fields.length > 0),
+);
 
 const emit = defineEmits<{ 'update:open': [value: boolean] }>();
 
@@ -91,9 +114,10 @@ function formatStatusValue(value: unknown, unit?: string): string {
                         </svg>
                     </button>
                 </div>
-                <!-- Sections (static from manifest + dynamic from runtime) -->
+                <!-- Sections (static from manifest + dynamic from runtime).
+                     Empty fields/sections are filtered out — see visibleSections. -->
                 <div class="p-5 space-y-4">
-                    <div v-for="section in sections" :key="section.id">
+                    <div v-for="section in visibleSections" :key="section.id">
                         <h3 class="text-xs font-semibold uppercase tracking-wide mb-2 text-muted">
                             {{ section.label }}
                         </h3>

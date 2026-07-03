@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { formatBytes, bitrateBadge } from '@media-router/engine';
 import { MpegTsIpOutputModule } from './MpegTsIpOutputModule.js';
 
 function makeModule(opts: { hasSource?: boolean } = {}) {
@@ -15,6 +16,7 @@ function makeModule(opts: { hasSource?: boolean } = {}) {
     module.log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
     module.setStatusData = vi.fn();
     module.setBadge = vi.fn();
+    module.clearBadge = vi.fn();
     return { module, getModuleUdpSource };
 }
 
@@ -95,5 +97,90 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
         // only the one valid entry survives → single sink, no tee
         expect(desc!.pipeline).toContain('udpsink name=netsink ');
         expect(desc!.pipeline).not.toContain('tee');
+    });
+});
+
+describe('MpegTsIpOutputModule.pollStats', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    it('does nothing while the pipeline is not running', async () => {
+        const { module } = makeModule();
+        module.running = false;
+        module.getThroughput = vi.fn();
+        module.trackThroughput = vi.fn();
+        await module.pollStats();
+        expect(module.getThroughput).not.toHaveBeenCalled();
+        expect(module.setStatusData).not.toHaveBeenCalled();
+    });
+
+    it('registers the pad probe when no tracker exists yet, without setting stats', async () => {
+        // The tracker is missing until the child pipeline reaches PLAYING (and
+        // after a restart the fresh child starts empty) — pollStats must
+        // (re)register lazily rather than one-shot in onStart, else stats stay
+        // blank forever. Regression for the "live stats show —" bug.
+        const { module } = makeModule();
+        module.running = true;
+        module.getThroughput = vi.fn().mockResolvedValue({});
+        module.trackThroughput = vi.fn().mockResolvedValue(undefined);
+        await module.pollStats();
+        expect(module.trackThroughput).toHaveBeenCalledWith('busin', 'src');
+        expect(module.setStatusData).not.toHaveBeenCalled();
+    });
+
+    it('shows a green "Connected" badge + bitrate/bytes in the popup when flowing', async () => {
+        // Mirrors the SRT badge: the face shows a status word, the bitrate lives
+        // in the Live Stats popup (not the badge).
+        const { module } = makeModule();
+        module.running = true;
+        module.getThroughput = vi.fn().mockResolvedValue({
+            busin: { total_bytes: 4096, bitrate_kbps: 3200, bitrate_mbps: 3.2 },
+        });
+        module.trackThroughput = vi.fn();
+        await module.pollStats();
+        expect(module.trackThroughput).not.toHaveBeenCalled();
+        expect(module.setStatusData).toHaveBeenCalledWith('stats', {
+            bitrate: '3.20',
+            bytesSent: formatBytes(4096),
+        });
+        expect(module.setBadge).toHaveBeenCalledWith('status', {
+            icon: 'radio',
+            text: 'Connected',
+            color: '#10b981',
+        });
+        // Second face badge: the live bitrate (3.2 Mbps = 3200 kbps here).
+        expect(module.setBadge).toHaveBeenCalledWith('bitrate', bitrateBadge(3200));
+        expect(bitrateBadge(3200)).toEqual({ icon: 'activity', text: '3.2 Mbps', color: '#10b981' });
+    });
+
+    it('shows grey "Waiting" and clears the bitrate badge when nothing has been sent', async () => {
+        const { module } = makeModule();
+        module.running = true;
+        module.getThroughput = vi.fn().mockResolvedValue({
+            busin: { total_bytes: 0, bitrate_kbps: 0, bitrate_mbps: 0 },
+        });
+        module.trackThroughput = vi.fn();
+        await module.pollStats();
+        expect(module.setBadge).toHaveBeenCalledWith('status', {
+            icon: 'radio',
+            text: 'Waiting',
+            color: '#6b7280',
+        });
+        expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
+    });
+
+    it('shows amber "Stalled" and clears the bitrate badge when the feed dried up', async () => {
+        const { module } = makeModule();
+        module.running = true;
+        module.getThroughput = vi.fn().mockResolvedValue({
+            busin: { total_bytes: 8192, bitrate_kbps: 0, bitrate_mbps: 0 },
+        });
+        module.trackThroughput = vi.fn();
+        await module.pollStats();
+        expect(module.setBadge).toHaveBeenCalledWith('status', {
+            icon: 'radio',
+            text: 'Stalled',
+            color: '#f59e0b',
+        });
+        expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
     });
 });

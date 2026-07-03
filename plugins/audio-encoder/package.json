@@ -230,6 +230,30 @@
                 ]
             },
             {
+                "id": "encoder",
+                "label": "Encoder",
+                "fields": [
+                    {
+                        "key": "codec",
+                        "label": "Codec"
+                    },
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "kbps"
+                    },
+                    {
+                        "key": "sampleRate",
+                        "label": "Sample Rate",
+                        "unit": "Hz"
+                    },
+                    {
+                        "key": "channels",
+                        "label": "Channels"
+                    }
+                ]
+            },
+            {
                 "id": "throughput",
                 "label": "Live Throughput",
                 "fields": [

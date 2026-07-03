@@ -16,6 +16,7 @@ vi.mock('@media-router/engine', async () => {
 
 import * as engine from '@media-router/engine';
 import { buildEncoderBranch, resolveImpl } from '@media-router/engine';
+import { bitrateBadge } from '@media-router/engine';
 import { VideoEncoderModule } from './VideoEncoderModule.js';
 import { buildV4l2Source, parseResolution, supportsLiveBitrate } from './videoEncoderPipeline.js';
 
@@ -390,6 +391,48 @@ describe('VideoEncoderModule', () => {
                 'error',
                 expect.stringContaining('No encoder available'),
             );
+        });
+    });
+
+    describe('stats', () => {
+        function makeStatsModule() {
+            const module = new VideoEncoderModule() as any;
+            module.services = {
+                instanceId: 'video-enc-1',
+                mediaRouter: { getUdpEndpoint: vi.fn(() => ({ host: '239.255.0.1', port: 5000 })) },
+            };
+            module.config = { codec: 'h264', resolution: '1920x1080', framerate: 30, bitrate: 6000 };
+            module.setStatusData = vi.fn();
+            module.setBadge = vi.fn();
+            return module;
+        }
+
+        beforeEach(() =>
+            VideoEncoderModule.setAvailableImpls({ h264: ['software'], h265: [], av1: [] }),
+        );
+
+        it('shows the configured target bitrate in the encoder stats', () => {
+            const module = makeStatsModule();
+            module.updateStatusData();
+            expect(module.setStatusData).toHaveBeenCalledWith(
+                'encoder',
+                expect.objectContaining({ bitrate: 6000 }),
+            );
+        });
+
+        it('puts the live rate in the popup and a bitrate badge on the face', () => {
+            const module = makeStatsModule();
+            module.publishThroughput({ bitrateKbps: 5900, totalBytes: 10 * 1024 * 1024 });
+            expect(module.setStatusData).toHaveBeenCalledWith(
+                'throughput',
+                expect.objectContaining({ 'Output Bitrate': '5900 kbps' }),
+            );
+            expect(module.setBadge).toHaveBeenCalledWith('bitrate', bitrateBadge(5900));
+            expect(bitrateBadge(5900)).toEqual({
+                icon: 'activity',
+                text: '5.9 Mbps',
+                color: '#10b981',
+            });
         });
     });
 });

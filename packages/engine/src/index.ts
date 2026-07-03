@@ -65,7 +65,7 @@ export {
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
-export { formatBytes, SrtStatPoller } from './plugins/srtHelpers.js';
+export { formatBytes, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
 export {
     PacedUdpTsSink,

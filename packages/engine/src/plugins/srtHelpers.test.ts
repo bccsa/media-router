@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { formatBytes, SrtStatPoller, type SrtStatPollerHost } from './srtHelpers.js';
+import { formatBytes, bitrateBadge, SrtStatPoller, type SrtStatPollerHost } from './srtHelpers.js';
 
 describe('formatBytes', () => {
     it('renders bytes in the smallest fitting unit', () => {
@@ -48,6 +48,12 @@ describe('SrtStatPoller.poll (listener mode)', () => {
         expect(sections.map((s: { label: string }) => s.label)).toEqual(['Caller 1', 'Caller 2']);
         expect(sections[0].fields.find((f: { key: string }) => f.key === 'bytesReceived')).toBeDefined();
         expect(host.setBadge).toHaveBeenCalledWith('callers', expect.objectContaining({ text: '2' }));
+        // Aggregate live-bitrate face badge = sum across callers (4.5 + 2.1).
+        expect(host.setBadge).toHaveBeenCalledWith('bitrate', {
+            icon: 'activity',
+            text: '6.6 Mbps',
+            color: '#10b981',
+        });
     });
 
     it('uses send-side field names when direction is "send"', async () => {
@@ -80,6 +86,23 @@ describe('SrtStatPoller.poll (listener mode)', () => {
         );
         // No per-caller sections
         expect(host.setSections).toHaveBeenCalledWith([]);
+        // No traffic → no bitrate badge on the face.
+        expect(host.clearBadge).toHaveBeenCalledWith('bitrate');
+        // …and no "Callers: 0" row — stats is emptied so the modal collapses
+        // the whole Live Stats section for an idle listener.
+        expect(host.setStatusData).toHaveBeenCalledWith('stats', {});
+    });
+
+    it('publishes the caller count in stats once callers connect', async () => {
+        const host = makeHost({
+            callers: [
+                { 'receive-rate-mbps': 1, 'packets-received': 10, 'packets-received-lost': 0 },
+                { 'receive-rate-mbps': 1, 'packets-received': 10, 'packets-received-lost': 0 },
+            ],
+        });
+        const poller = new SrtStatPoller(host, 'receive');
+        await poller.poll();
+        expect(host.setStatusData).toHaveBeenCalledWith('stats', { callers: 2 });
     });
 
     it('clears the status badge once at least one caller is connected', async () => {
@@ -155,7 +178,7 @@ describe('SrtStatPoller.poll (caller mode)', () => {
         );
     });
 
-    it('shows "Connecting" before any bytes have arrived', async () => {
+    it('shows "Connecting" before any bytes have arrived, with no bitrate badge', async () => {
         const host = makeHost({ 'bytes-received-total': 0 });
         const poller = new SrtStatPoller(host, 'receive');
         await poller.poll();
@@ -163,6 +186,23 @@ describe('SrtStatPoller.poll (caller mode)', () => {
             'status',
             expect.objectContaining({ text: 'Connecting' }),
         );
+        expect(host.clearBadge).toHaveBeenCalledWith('bitrate');
+    });
+
+    it('shows a live-bitrate face badge while Connected', async () => {
+        const host = makeHost({
+            'bytes-received-total': 5000,
+            'receive-rate-mbps': 8.4,
+            'packets-received': 100,
+            'packets-received-lost': 0,
+        });
+        const poller = new SrtStatPoller(host, 'receive');
+        await poller.poll();
+        expect(host.setBadge).toHaveBeenCalledWith('bitrate', {
+            icon: 'activity',
+            text: '8.4 Mbps',
+            color: '#10b981',
+        });
     });
 
     it('clears caller-mode sections and the callers badge', async () => {
@@ -192,6 +232,18 @@ describe('SrtStatPoller.poll (caller mode)', () => {
                 callers: '—',
             }),
         );
+    });
+});
+
+describe('bitrateBadge', () => {
+    it('formats kbps below 1 Mbps and Mbps above, grey at zero', () => {
+        expect(bitrateBadge(512)).toEqual({ icon: 'activity', text: '512 kbps', color: '#10b981' });
+        expect(bitrateBadge(12500)).toEqual({
+            icon: 'activity',
+            text: '12.5 Mbps',
+            color: '#10b981',
+        });
+        expect(bitrateBadge(0)).toEqual({ icon: 'activity', text: '0 kbps', color: '#6b7280' });
     });
 });
 
@@ -242,5 +294,12 @@ describe('SrtStatPoller misc', () => {
             'status',
             expect.objectContaining({ text: 'Connected' }),
         );
+    });
+
+    it('reset() drops the live-bitrate face badge', async () => {
+        const host = makeHost();
+        const poller = new SrtStatPoller(host, 'receive');
+        poller.reset();
+        expect(host.clearBadge).toHaveBeenCalledWith('bitrate');
     });
 });
