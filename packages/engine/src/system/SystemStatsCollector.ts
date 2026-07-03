@@ -74,6 +74,31 @@ export function readCpuTemp(thermalRoot = '/sys/class/thermal'): number | null {
 }
 
 /**
+ * Fixed-size sliding window that returns the maximum of the last N values.
+ * The CPU package sensor reads the on-die junction temp, which sawtooths
+ * tens of degrees within a second under bursty load — a single 2s sample
+ * lands on a random point of that sawtooth and looks like it jumps around.
+ * Reporting the rolling max holds the true peak (it reacts up instantly and
+ * only eases down once the die has genuinely been cooler for the whole
+ * window), rather than averaging away real thermal spikes.
+ */
+export class RollingMax {
+    private readonly window: number[] = [];
+
+    constructor(private readonly size: number) {}
+
+    add(value: number): number {
+        this.window.push(value);
+        if (this.window.length > this.size) this.window.shift();
+        return Math.max(...this.window);
+    }
+
+    reset(): void {
+        this.window.length = 0;
+    }
+}
+
+/**
  * Periodically collects CPU, memory, and temperature stats.
  * Calls the provided callback with each sample.
  */
@@ -83,11 +108,16 @@ export class SystemStatsCollector {
     private prevCpuIdle = 0;
     private sampleCount = 0;
     private cachedBuildNumber: string | null = null;
+    private readonly tempMax: RollingMax;
 
     constructor(
         private onStats: (stats: SystemStats) => void,
         private intervalMs = 2000,
-    ) {}
+        tempWindowMs = 10000,
+    ) {
+        // Report the peak temperature over roughly the last `tempWindowMs`.
+        this.tempMax = new RollingMax(Math.max(1, Math.round(tempWindowMs / intervalMs)));
+    }
 
     start(): void {
         if (this.timer) return;
@@ -111,10 +141,21 @@ export class SystemStatsCollector {
                 const freeMem = os.freemem();
                 const memPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
 
+                // Smooth the volatile junction temp into a rolling peak so the
+                // UI shows the true high-water mark instead of a random point
+                // on the fast sawtooth (see RollingMax).
+                const rawTemp = readCpuTemp();
+                let temp: number | null = null;
+                if (rawTemp === null) {
+                    this.tempMax.reset();
+                } else {
+                    temp = this.tempMax.add(rawTemp);
+                }
+
                 const stats: SystemStats = {
                     cpu: cpuPercent,
                     mem: memPercent,
-                    temp: readCpuTemp(),
+                    temp,
                 };
 
                 // Include IP + hostname + build on first sample and every 30 samples (~60s)

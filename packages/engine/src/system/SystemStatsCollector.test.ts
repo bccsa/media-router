@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { readCpuTemp } from './SystemStatsCollector.js';
+import { readCpuTemp, RollingMax } from './SystemStatsCollector.js';
 
 describe('readCpuTemp', () => {
     const root = path.join(__dirname, '__test-thermal__');
@@ -56,5 +56,49 @@ describe('readCpuTemp', () => {
 
     it('returns null when the thermal subsystem is absent', () => {
         expect(readCpuTemp(path.join(root, 'does-not-exist'))).toBeNull();
+    });
+});
+
+describe('RollingMax', () => {
+    it('reacts up instantly to a spike', () => {
+        const rm = new RollingMax(5);
+        expect(rm.add(60)).toBe(60);
+        expect(rm.add(87)).toBe(87); // spike shows immediately
+    });
+
+    it('holds the peak until it ages out of the window', () => {
+        const rm = new RollingMax(3);
+        rm.add(90); // window: [90]
+        expect(rm.add(65)).toBe(90); // [90,65]
+        expect(rm.add(66)).toBe(90); // [90,65,66]
+        expect(rm.add(67)).toBe(67); // 90 dropped -> [65,66,67]
+    });
+
+    it('tracks a new higher peak', () => {
+        const rm = new RollingMax(3);
+        rm.add(70);
+        rm.add(80);
+        expect(rm.add(95)).toBe(95);
+    });
+
+    it('smooths a sawtooth to its upper envelope, not a random point', () => {
+        const rm = new RollingMax(5);
+        let last = 0;
+        for (const v of [65, 90, 66, 88, 67, 91, 65]) last = rm.add(v);
+        expect(last).toBe(91); // reports the peak, not the trailing 65
+    });
+
+    it('a window of size 1 is just the raw value (no smoothing)', () => {
+        const rm = new RollingMax(1);
+        expect(rm.add(60)).toBe(60);
+        expect(rm.add(87)).toBe(87);
+        expect(rm.add(61)).toBe(61);
+    });
+
+    it('reset clears the retained peak', () => {
+        const rm = new RollingMax(5);
+        rm.add(90);
+        rm.reset();
+        expect(rm.add(60)).toBe(60);
     });
 });
