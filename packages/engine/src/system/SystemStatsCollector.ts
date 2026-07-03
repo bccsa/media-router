@@ -29,14 +29,78 @@ const PREFERRED_ZONE_TYPES = [
     'coretemp',
 ];
 
+const isCoreLabel = (label: string): boolean => /^core\b/i.test(label);
+
 /**
- * Read the CPU temperature (°C) from the kernel thermal zones.
- * Scans every /sys/class/thermal/thermal_zone*, discards physically
- * implausible readings (phantom ACPI zones report ~-273°C / 0 K), then
- * prefers a known CPU sensor type, falling back to the hottest valid zone.
- * Returns null when no usable sensor is found.
+ * Average the per-core temperatures from the `coretemp` hwmon (x86/Intel).
+ * Averages every sensor labelled "Core N" and ignores "Package id 0" (which
+ * is the hottest-core peak, not a core) — the average is far steadier and more
+ * representative than the package sensor, which sawtooths tens of degrees under
+ * bursty load. Returns null when there is no coretemp device with core sensors
+ * (e.g. the Raspberry Pi, which exposes a single SoC zone instead).
  */
-export function readCpuTemp(thermalRoot = '/sys/class/thermal'): number | null {
+export function readCoretempAverage(hwmonRoot = '/sys/class/hwmon'): number | null {
+    let devices: string[];
+    try {
+        devices = fs.readdirSync(hwmonRoot);
+    } catch {
+        return null;
+    }
+
+    const coreTemps: number[] = [];
+    for (const dev of devices) {
+        const base = `${hwmonRoot}/${dev}`;
+        try {
+            if (fs.readFileSync(`${base}/name`, 'utf-8').trim() !== 'coretemp') continue;
+        } catch {
+            continue;
+        }
+        let entries: string[];
+        try {
+            entries = fs.readdirSync(base);
+        } catch {
+            continue;
+        }
+        for (const entry of entries) {
+            const m = entry.match(/^(temp\d+)_input$/);
+            if (!m) continue;
+            let label = '';
+            try {
+                label = fs.readFileSync(`${base}/${m[1]}_label`, 'utf-8').trim();
+            } catch {
+                /* label optional */
+            }
+            if (!isCoreLabel(label)) continue; // per-core sensors only, skip "Package id"
+            let celsius: number;
+            try {
+                celsius = parseInt(fs.readFileSync(`${base}/${entry}`, 'utf-8'), 10) / 1000;
+            } catch {
+                continue;
+            }
+            if (!Number.isFinite(celsius) || celsius <= -40 || celsius >= 150) continue;
+            coreTemps.push(celsius);
+        }
+    }
+
+    if (coreTemps.length === 0) return null;
+    return Math.round(coreTemps.reduce((a, b) => a + b, 0) / coreTemps.length);
+}
+
+/**
+ * Read the CPU temperature (°C).
+ * Prefers the average across all CPU cores (coretemp on x86) — steadier and
+ * more representative than the hottest-core package sensor. Falls back to the
+ * kernel thermal zones (e.g. the Pi's single `cpu-thermal`), discarding
+ * physically implausible readings (phantom ACPI zones report ~-273°C / 0 K)
+ * and preferring a known CPU sensor type. Returns null when nothing usable.
+ */
+export function readCpuTemp(
+    thermalRoot = '/sys/class/thermal',
+    hwmonRoot = '/sys/class/hwmon',
+): number | null {
+    const coreAvg = readCoretempAverage(hwmonRoot);
+    if (coreAvg !== null) return coreAvg;
+
     let zones: string[];
     try {
         zones = fs.readdirSync(thermalRoot).filter((d) => d.startsWith('thermal_zone'));
@@ -74,31 +138,6 @@ export function readCpuTemp(thermalRoot = '/sys/class/thermal'): number | null {
 }
 
 /**
- * Fixed-size sliding window that returns the maximum of the last N values.
- * The CPU package sensor reads the on-die junction temp, which sawtooths
- * tens of degrees within a second under bursty load — a single 2s sample
- * lands on a random point of that sawtooth and looks like it jumps around.
- * Reporting the rolling max holds the true peak (it reacts up instantly and
- * only eases down once the die has genuinely been cooler for the whole
- * window), rather than averaging away real thermal spikes.
- */
-export class RollingMax {
-    private readonly window: number[] = [];
-
-    constructor(private readonly size: number) {}
-
-    add(value: number): number {
-        this.window.push(value);
-        if (this.window.length > this.size) this.window.shift();
-        return Math.max(...this.window);
-    }
-
-    reset(): void {
-        this.window.length = 0;
-    }
-}
-
-/**
  * Periodically collects CPU, memory, and temperature stats.
  * Calls the provided callback with each sample.
  */
@@ -108,16 +147,11 @@ export class SystemStatsCollector {
     private prevCpuIdle = 0;
     private sampleCount = 0;
     private cachedBuildNumber: string | null = null;
-    private readonly tempMax: RollingMax;
 
     constructor(
         private onStats: (stats: SystemStats) => void,
         private intervalMs = 2000,
-        tempWindowMs = 10000,
-    ) {
-        // Report the peak temperature over roughly the last `tempWindowMs`.
-        this.tempMax = new RollingMax(Math.max(1, Math.round(tempWindowMs / intervalMs)));
-    }
+    ) {}
 
     start(): void {
         if (this.timer) return;
@@ -141,21 +175,10 @@ export class SystemStatsCollector {
                 const freeMem = os.freemem();
                 const memPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
 
-                // Smooth the volatile junction temp into a rolling peak so the
-                // UI shows the true high-water mark instead of a random point
-                // on the fast sawtooth (see RollingMax).
-                const rawTemp = readCpuTemp();
-                let temp: number | null = null;
-                if (rawTemp === null) {
-                    this.tempMax.reset();
-                } else {
-                    temp = this.tempMax.add(rawTemp);
-                }
-
                 const stats: SystemStats = {
                     cpu: cpuPercent,
                     mem: memPercent,
-                    temp,
+                    temp: readCpuTemp(),
                 };
 
                 // Include IP + hostname + build on first sample and every 30 samples (~60s)
