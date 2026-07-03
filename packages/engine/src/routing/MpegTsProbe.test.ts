@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
     classifyCaps,
+    selectAudioCaps,
     registerCodecClassifier,
     _resetCodecClassifiersForTests,
     type CodecClassifier,
@@ -67,6 +68,50 @@ describe('codec classifier registry', () => {
     it('preserves the rawCaps verbatim on the result', () => {
         const caps = 'audio/x-opus, rate=(int)44100';
         expect(classifyCaps(caps).rawCaps).toBe(caps);
+    });
+});
+
+describe('selectAudioCaps', () => {
+    // Real `gst-launch -v` output for a 4-channel AAC stream through the probe
+    // pipeline `tsdemux ! parsebin ! fakesink`: the bare tsdemux pad caps omit
+    // `channels`, the parsebin src pad carries it. selectAudioCaps must pick the
+    // parsed line so the decoder sizes its null-sink to 4, not the default 2.
+    const AAC_4CH_OUTPUT = [
+        '/GstPipeline:pipeline0/GstTSDemux:tsdemux0.GstPad:audio_0100: caps = audio/mpeg, mpegversion=(int)4, stream-format=(string)adts',
+        '/GstPipeline:pipeline0/GstAacParse:aacparse0.GstPad:src: caps = audio/mpeg, framed=(boolean)true, mpegversion=(int)4, level=(string)4, base-profile=(string)lc, profile=(string)lc, rate=(int)48000, channels=(int)4, stream-format=(string)adts',
+        '/GstPipeline:pipeline0/GstFakeSink:fakesink0.GstPad:sink: caps = audio/mpeg, framed=(boolean)true, mpegversion=(int)4, rate=(int)48000, channels=(int)4, stream-format=(string)adts',
+    ].join('\n');
+
+    it('prefers the parsed caps line that carries channels over the bare tsdemux caps', () => {
+        const caps = selectAudioCaps(AAC_4CH_OUTPUT);
+        expect(caps).not.toBeNull();
+        expect(classifyCaps(caps!).channels).toBe(4);
+        expect(classifyCaps(caps!).sampleRate).toBe(48000);
+    });
+
+    it('falls back to the first audio caps when none report channels', () => {
+        const output =
+            '/GstPipeline:pipeline0/GstTSDemux:tsdemux0.GstPad:audio_0100: caps = audio/mpeg, mpegversion=(int)4, stream-format=(string)adts';
+        expect(selectAudioCaps(output)).toBe(
+            'audio/mpeg, mpegversion=(int)4, stream-format=(string)adts',
+        );
+    });
+
+    it('returns null when no audio caps are present', () => {
+        const output =
+            '/GstPipeline:pipeline0/GstTSDemux:tsdemux0.GstPad:video_0101: caps = video/x-h264, stream-format=(string)byte-stream';
+        expect(selectAudioCaps(output)).toBeNull();
+    });
+
+    it('ignores video caps and selects the audio caps with channels', () => {
+        const output = [
+            '/GstPipeline:pipeline0/GstTSDemux:tsdemux0.GstPad:video_0101: caps = video/x-h264, stream-format=(string)byte-stream',
+            '/GstPipeline:pipeline0/GstAacParse:aacparse0.GstPad:src: caps = audio/mpeg, mpegversion=(int)4, rate=(int)48000, channels=(int)2, stream-format=(string)adts',
+        ].join('\n');
+        const caps = selectAudioCaps(output);
+        expect(caps).not.toBeNull();
+        expect(caps!.startsWith('audio/mpeg')).toBe(true);
+        expect(classifyCaps(caps!).channels).toBe(2);
     });
 });
 

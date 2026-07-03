@@ -80,7 +80,22 @@ export function probeMpegTsStream(
                   'num-buffers=50',
               ]
             : ['udpsrc', `port=${port}`, 'num-buffers=50'];
-        const args = ['-v', ...udpSrcArgs, '!', 'tsdemux', 'latency=0', '!', 'fakesink'];
+        // `parsebin` sits between tsdemux and the sink so the negotiated caps
+        // carry `channels`/`rate`. The bare tsdemux pad omits the channel count
+        // for AAC/ADTS (`audio/mpeg, mpegversion=4, stream-format=adts`) — it
+        // only surfaces after a parser (aacparse). parsebin auto-plugs the right
+        // parser for every codec, so opus/aac/mp2/ac3 all report channels.
+        const args = [
+            '-v',
+            ...udpSrcArgs,
+            '!',
+            'tsdemux',
+            'latency=0',
+            '!',
+            'parsebin',
+            '!',
+            'fakesink',
+        ];
 
         log.info({ host, port }, 'Probing MPEG-TS stream');
 
@@ -98,15 +113,14 @@ export function probeMpegTsStream(
                 clearTimeout(safetyTimer);
 
                 const output = (stdout ?? '') + (stderr ?? '');
-                const capsMatch = output.match(/caps\s*=\s*(audio\/[^\n]+)/);
+                const rawCaps = selectAudioCaps(output);
 
-                if (!capsMatch) {
+                if (!rawCaps) {
                     log.warn({ host, port }, 'No audio caps detected');
                     resolve({ codec: 'unknown', rawCaps: '' });
                     return;
                 }
 
-                const rawCaps = capsMatch[1].trim();
                 const result = classifyCaps(rawCaps);
                 log.info(
                     { host, port, codec: result.codec, channels: result.channels, rawCaps },
@@ -126,6 +140,24 @@ export function probeMpegTsStream(
             }
         }, timeoutMs + 500);
     });
+}
+
+/**
+ * Pick the most informative audio caps line from `gst-launch -v` output.
+ *
+ * The probe pipeline is `tsdemux ! parsebin ! fakesink`, so two audio caps
+ * lines appear for the same stream: the bare tsdemux pad caps (AAC/ADTS omits
+ * `channels`) and the parsed caps from parsebin's src pad (carries
+ * `rate`/`channels` for every codec). Prefer a caps line that includes
+ * `channels=`; fall back to the first audio caps so codec detection still works
+ * if parsing never negotiated (e.g. source cut off before a full frame).
+ *
+ * Returns `null` when no audio caps were seen at all.
+ */
+export function selectAudioCaps(output: string): string | null {
+    const caps = [...output.matchAll(/caps\s*=\s*(audio\/[^\n]+)/g)].map((m) => m[1].trim());
+    if (caps.length === 0) return null;
+    return caps.find((c) => /channels=\(int\)\d+/.test(c)) ?? caps[0];
 }
 
 /**
