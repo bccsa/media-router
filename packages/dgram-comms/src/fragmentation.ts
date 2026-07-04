@@ -1,12 +1,18 @@
 /**
- * UDP message fragmentation and reassembly.
+ * UDP message fragmentation.
  *
- * Binary header format (8 bytes):
+ * Data fragment header (8 bytes):
  *   [messageId: 4 bytes (UInt32BE)]
  *   [fragmentIndex: 2 bytes (UInt16BE)]
- *   [fragmentCount: 2 bytes (UInt16BE)]
+ *   [fragmentCount: 2 bytes (UInt16BE)]   // always >= 1 for data
  *   [payload: remaining bytes]
  *
+ * NACK control packet (retransmit request) reuses the header with
+ * `fragmentCount === 0` as the discriminator:
+ *   [messageId: 4 bytes]  [0: 2 bytes]  [0: 2 bytes = NACK marker]
+ *   [missing fragment index: 2 bytes (UInt16BE)] ...
+ *
+ * Reassembly + fragment-level retransmit live in FragmentTransport.
  * Max packet size: 1412 bytes (avoids IP fragmentation on most networks).
  */
 
@@ -17,22 +23,14 @@ const MAX_PAYLOAD_SIZE = MAX_PACKET_SIZE - HEADER_SIZE;
 /** Start from random offset to avoid collisions when a client restarts. */
 let globalMessageId = (Math.random() * 0xffffffff) >>> 0;
 
-/** Fragment a message buffer into sendable UDP packets. */
-export function fragment(data: Buffer): Buffer[] {
-    if (data.length <= MAX_PAYLOAD_SIZE) {
-        // Single packet — no fragmentation needed
-        globalMessageId = (globalMessageId + 1) >>> 0;
-        const packet = Buffer.alloc(HEADER_SIZE + data.length);
-        packet.writeUInt32BE(globalMessageId, 0);
-        packet.writeUInt16BE(0, 4);
-        packet.writeUInt16BE(1, 6);
-        data.copy(packet, HEADER_SIZE);
-        return [packet];
-    }
-
+/**
+ * Fragment a message buffer into sendable UDP packets, returning the assigned
+ * messageId so the caller can retain the packets for fragment-level retransmit.
+ */
+export function fragmentWithId(data: Buffer): { messageId: number; packets: Buffer[] } {
     globalMessageId = (globalMessageId + 1) >>> 0;
     const messageId = globalMessageId;
-    const fragmentCount = Math.ceil(data.length / MAX_PAYLOAD_SIZE);
+    const fragmentCount = Math.max(1, Math.ceil(data.length / MAX_PAYLOAD_SIZE));
     const packets: Buffer[] = [];
 
     for (let i = 0; i < fragmentCount; i++) {
@@ -47,10 +45,15 @@ export function fragment(data: Buffer): Buffer[] {
         packets.push(packet);
     }
 
-    return packets;
+    return { messageId, packets };
 }
 
-/** Parse the header from a fragment packet. */
+/** Fragment a message buffer into sendable UDP packets. */
+export function fragment(data: Buffer): Buffer[] {
+    return fragmentWithId(data).packets;
+}
+
+/** Parse the header from a fragment packet. `fragmentCount === 0` means it is a NACK. */
 export function parseFragmentHeader(packet: Buffer): {
     messageId: number;
     fragmentIndex: number;
@@ -66,110 +69,26 @@ export function parseFragmentHeader(packet: Buffer): {
     };
 }
 
-/**
- * Reassembles fragmented UDP messages.
- * Call `addFragment()` for each received packet.
- * Returns the complete message Buffer when all fragments are collected, or null if still waiting.
- */
-export class Reassembler {
-    private pending = new Map<
-        number,
-        {
-            fragments: (Buffer | null)[];
-            received: number;
-            total: number;
-            timer: ReturnType<typeof setTimeout>;
-        }
-    >();
-
-    /** Set of recently completed messageIds for dedup. */
-    private completed = new Set<number>();
-
-    /** Timeout before incomplete messages are discarded (ms). */
-    private timeout: number;
-
-    /** Max completed IDs to remember for dedup. */
-    private maxCompletedSize = 1000;
-
-    constructor(timeout = 5000) {
-        this.timeout = timeout;
+/** Build a NACK packet requesting retransmit of the given missing fragment indices. */
+export function encodeNack(messageId: number, missing: number[]): Buffer {
+    const buf = Buffer.alloc(HEADER_SIZE + missing.length * 2);
+    buf.writeUInt32BE(messageId >>> 0, 0);
+    buf.writeUInt16BE(0, 4);
+    buf.writeUInt16BE(0, 6); // fragmentCount === 0 discriminates a NACK
+    for (let i = 0; i < missing.length; i++) {
+        buf.writeUInt16BE(missing[i] & 0xffff, HEADER_SIZE + i * 2);
     }
+    return buf;
+}
 
-    /**
-     * Add a received fragment packet. Returns the complete message when all
-     * fragments are collected, or null if still waiting / duplicate.
-     */
-    addFragment(packet: Buffer): Buffer | null {
-        const header = parseFragmentHeader(packet);
-        if (!header) return null;
-
-        const { messageId, fragmentIndex, fragmentCount, payload } = header;
-
-        // Dedup: already completed this message
-        if (this.completed.has(messageId)) return null;
-
-        // Validate
-        if (fragmentIndex >= fragmentCount) return null;
-
-        // Single-fragment message — no assembly needed
-        if (fragmentCount === 1) {
-            this.markCompleted(messageId);
-            return payload;
-        }
-
-        // Get or create pending entry
-        let entry = this.pending.get(messageId);
-        if (!entry) {
-            entry = {
-                fragments: new Array(fragmentCount).fill(null),
-                received: 0,
-                total: fragmentCount,
-                timer: setTimeout(() => {
-                    this.pending.delete(messageId);
-                }, this.timeout),
-            };
-            this.pending.set(messageId, entry);
-        }
-
-        // Validate fragment count matches
-        if (entry.total !== fragmentCount) return null;
-
-        // Store fragment (don't overwrite)
-        if (!entry.fragments[fragmentIndex]) {
-            entry.fragments[fragmentIndex] = payload;
-            entry.received++;
-        }
-
-        // Check if complete
-        if (entry.received === entry.total) {
-            clearTimeout(entry.timer);
-            this.pending.delete(messageId);
-            this.markCompleted(messageId);
-            return Buffer.concat(entry.fragments as Buffer[]);
-        }
-
-        return null;
+/** Parse a NACK packet (header already known to have fragmentCount === 0). */
+export function decodeNack(packet: Buffer): { messageId: number; missing: number[] } {
+    const messageId = packet.readUInt32BE(0);
+    const missing: number[] = [];
+    for (let off = HEADER_SIZE; off + 2 <= packet.length; off += 2) {
+        missing.push(packet.readUInt16BE(off));
     }
-
-    private markCompleted(messageId: number): void {
-        this.completed.add(messageId);
-        // Prune old IDs to prevent unbounded growth
-        if (this.completed.size > this.maxCompletedSize) {
-            const iter = this.completed.values();
-            for (let i = 0; i < this.maxCompletedSize / 2; i++) {
-                this.completed.delete(iter.next().value!);
-            }
-        }
-    }
-
-    /** Clean up all pending timers. */
-    destroy(): void {
-        for (const entry of this.pending.values()) {
-            clearTimeout(entry.timer);
-        }
-        this.pending.clear();
-        this.completed.clear();
-    }
+    return { messageId, missing };
 }
 
 export { MAX_PACKET_SIZE, MAX_PAYLOAD_SIZE, HEADER_SIZE };

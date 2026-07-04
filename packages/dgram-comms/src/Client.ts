@@ -1,8 +1,7 @@
-import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { decrypt } from './encryption.js';
-import { fragment, Reassembler, parseFragmentHeader } from './fragmentation.js';
+import { FragmentTransport } from './FragmentTransport.js';
 import { Socket } from './Socket.js';
 import type { DgramMessage, ManagerPath } from '@media-router/shared-types';
 import { DgramWireMessageSchema, DgramDataSchema } from '@media-router/shared-types';
@@ -24,7 +23,7 @@ interface PathState {
     path: ManagerPath;
     udpSocket: dgram.Socket;
     socket: Socket;
-    reassembler: Reassembler;
+    transport: FragmentTransport;
     connected: boolean;
     lastReceived: number;
     rtt: number;
@@ -35,8 +34,15 @@ interface PathState {
 /**
  * dgram-comms multi-path UDP client.
  *
- * Connects to a server via 1–N UDP paths (for redundancy).
- * Sends every message on ALL paths. Receives from any path, deduped by sequence number.
+ * Connects to a server via 1–N UDP paths (for redundancy) and sends every
+ * message on ALL paths, stamped with one shared sequence number per logical
+ * message. The receiver's seq dedup is designed to collapse those bonded
+ * copies — but note this is NOT exercised today: the server keeps a single
+ * socket per clientID and each path's connect replaces the other's socket
+ * (see Server.handleConnect), so only the current path's packets survive the
+ * socketID lookup and reach dedup. True path bonding needs the server-side
+ * multi-endpoint handshake fixed first; the shared-seq design is the right
+ * groundwork for when it is.
  *
  * Emits:
  *   - `data` (topic, message) — received application message (deduped)
@@ -53,12 +59,8 @@ export class Client extends EventEmitter {
     private pathStates: PathState[] = [];
     private destroyed = false;
 
-    /** Sequence number for outgoing messages (for multi-path dedup on server). */
+    /** Monotonic sequence number; one per logical send, shared across all path copies. */
     private seq = 0;
-
-    /** Recently seen incoming message topics+ackIDs for dedup. */
-    private seenMessages = new Set<string>();
-    private seenCleanupTimer: ReturnType<typeof setInterval>;
 
     /** Whether at least one path is connected. */
     get connected(): boolean {
@@ -72,11 +74,6 @@ export class Client extends EventEmitter {
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
 
-        // Prune seen messages periodically (5s — dedup windows are 500ms so this is plenty)
-        this.seenCleanupTimer = setInterval(() => {
-            this.seenMessages.clear();
-        }, 5000);
-
         // Set up each path
         for (const path of options.paths) {
             this.addPath(path);
@@ -86,11 +83,13 @@ export class Client extends EventEmitter {
     private addPath(path: ManagerPath): void {
         const index = this.pathStates.length;
         const udpSocket = dgram.createSocket('udp4');
-        const reassembler = new Reassembler(this.connectionTimeout * 2);
+        const transport = new FragmentTransport(udpSocket, {
+            reassemblyTimeoutMs: this.connectionTimeout * 2,
+        });
 
         // Listen for raw UDP packets on this path
-        udpSocket.on('message', (msg) => {
-            this.onPacket(msg, index);
+        udpSocket.on('message', (msg, rinfo) => {
+            this.onPacket(msg, index, rinfo);
         });
 
         udpSocket.on('error', (err) => {
@@ -107,7 +106,7 @@ export class Client extends EventEmitter {
             udpSocket,
             // socket: filled in below by buildPathSocket
             socket: undefined as unknown as Socket,
-            reassembler,
+            transport,
             connected: false,
             lastReceived: 0,
             rtt: 0,
@@ -144,7 +143,7 @@ export class Client extends EventEmitter {
         const socket = new Socket({
             port: ps.path.port,
             address: ps.path.host,
-            udpSocket: ps.udpSocket,
+            transport: ps.transport,
             isClient: true,
             clientID: this.clientId,
             encryptionKey: this.encryptionKey,
@@ -176,18 +175,11 @@ export class Client extends EventEmitter {
             this.emit('connected');
         });
 
-        // Forward data events (deduped within a short window)
+        // Forward data events. Retransmit dedup happens by messageId in the
+        // transport, and same-seq dedup in Socket.handleMessage would collapse
+        // bonded multi-path copies too (once server-side bonding exists — see
+        // the class doc); either way identical payloads are never wrongly dropped.
         socket.on('data', (topic: string, message: unknown) => {
-            // Dedup across paths — topic + content hash + 500ms timestamp bucket.
-            // Prevents duplicate delivery from multi-path bonding while allowing
-            // repeated identical messages (e.g. mute→unmute→mute) to get through.
-            const timeBucket = Math.floor(Date.now() / 500);
-            const dedupKey = crypto
-                .createHash('md5')
-                .update(`${timeBucket}:${topic}:${JSON.stringify(message)}`)
-                .digest('hex');
-            if (this.seenMessages.has(dedupKey)) return;
-            this.seenMessages.add(dedupKey);
             this.emit('data', topic, message);
         });
 
@@ -209,14 +201,14 @@ export class Client extends EventEmitter {
         ps.socket.send(null, null, { type: 'connect' });
     }
 
-    private onPacket(rawPacket: Buffer, pathIndex: number): void {
+    private onPacket(rawPacket: Buffer, pathIndex: number, rinfo: dgram.RemoteInfo): void {
         const ps = this.pathStates[pathIndex];
         if (!ps) return;
 
         ps.lastReceived = Date.now();
 
-        // Reassemble fragments
-        const complete = ps.reassembler.addFragment(rawPacket);
+        // Reassemble fragments (and service fragment-level NACKs internally)
+        const complete = ps.transport.receive(rawPacket, rinfo);
         if (!complete) return;
 
         // Parse and validate JSON envelope
@@ -261,9 +253,13 @@ export class Client extends EventEmitter {
      */
     send(topic: string, message: unknown, options: { guaranteeDelivery?: boolean } = {}): void {
         if (this.destroyed) return;
+        // One sequence number per logical message, shared across every path
+        // copy so the server dedups the bonded duplicates by identity.
+        this.seq += 1;
+        const seq = this.seq;
         for (const ps of this.pathStates) {
             if (ps.connected) {
-                ps.socket.send(topic, message, options);
+                ps.socket.send(topic, message, { ...options, seq });
             }
         }
     }
@@ -273,12 +269,10 @@ export class Client extends EventEmitter {
         if (this.destroyed) return;
         this.destroyed = true;
 
-        clearInterval(this.seenCleanupTimer);
-
         for (const ps of this.pathStates) {
             if (ps.reconnectTimer) clearInterval(ps.reconnectTimer);
             ps.socket.destroy();
-            ps.reassembler.destroy();
+            ps.transport.destroy();
             ps.udpSocket.close();
         }
 

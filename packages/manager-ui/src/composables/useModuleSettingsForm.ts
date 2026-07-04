@@ -1,6 +1,7 @@
 import { computed, onUnmounted, ref, watch, type ComputedRef, type Ref } from 'vue';
 import type { ModuleState } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
+import { matchShowWhen } from '@/utils/showWhen';
 
 /** JSON Schema property shape with media-router extensions. */
 interface SchemaProperty {
@@ -128,13 +129,9 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
         { immediate: true, deep: true },
     );
 
-    /** Visibility rule for `x-showWhen` — format "key=value" (or
-     *  "key=v1,v2" to match any of several values). */
+    /** Visibility rule for `x-showWhen`, resolved against the live settings. */
     function isFieldVisible(field: FormField): boolean {
-        if (!field.showWhen) return true;
-        const [key, value] = field.showWhen.split('=');
-        const allowed = (value ?? '').split(',');
-        return allowed.includes(String(localSettings.value[key] ?? ''));
+        return matchShowWhen(field.showWhen, (key) => localSettings.value[key]);
     }
 
     /** Resolve effective enum values — checks x-enumBy first, falls back to plain enum. */

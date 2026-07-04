@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import MrButton from './MrButton.vue';
 import MrArrayItemField, { type ItemField } from './MrArrayItemField.vue';
+import { matchShowWhen } from '@/utils/showWhen';
 
 interface ItemSchema {
     type?: string;
@@ -75,18 +76,16 @@ function toggleAdvanced(idx: number) {
 }
 
 /**
- * `x-showWhen` ("key=v" or "key=v1,v2") evaluated against the ITEM's own value,
- * falling back to the module-global config when the controlling field is
- * inherited on this item (e.g. show `h264Profile` only when this rendition's
- * codec — its own override or the inherited global — is h264).
+ * `x-showWhen` evaluated against the ITEM's own value, falling back to the
+ * module-global config when the controlling field is inherited on this item
+ * (e.g. show `h264Profile` only when this rendition's codec — its own override
+ * or the inherited global — is h264).
  */
 function isVisible(field: Field, item: Record<string, unknown>): boolean {
-    if (!field.showWhen) return true;
-    const [key, value] = field.showWhen.split('=');
-    const allowed = (value ?? '').split(',');
-    const own = item[key];
-    const current = own !== undefined && own !== '' ? own : props.globalConfig?.[key];
-    return allowed.includes(String(current ?? ''));
+    return matchShowWhen(field.showWhen, (key) => {
+        const own = item[key];
+        return own !== undefined && own !== '' ? own : props.globalConfig?.[key];
+    });
 }
 
 function addItem() {

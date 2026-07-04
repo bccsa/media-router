@@ -144,6 +144,60 @@ describe('Server + Client integration', () => {
         expect(msg).toEqual({ health: 'ok', running: true });
     }, 10000);
 
+    it('delivers back-to-back identical server→client payloads (no false dedup)', async () => {
+        // Regression for the WAN failure: the old receive-side dedup hashed
+        // (topic + content + 500ms wall-clock bucket), so two distinct messages
+        // with identical content arriving in the same bucket — routine when
+        // latency bunches packets — silently dropped the second. seq-based
+        // dedup keys on identity, so both now arrive.
+        const password = 'dedup-secret';
+
+        server = new Server({
+            port: 0,
+            encryptionKeys: { 'engine-d': password },
+        });
+
+        await new Promise<void>((resolve) => {
+            server['udpSocket'].bind(0, '127.0.0.1', () => {
+                server['udpSocket'].on('message', (msg: Buffer, rinfo: any) => {
+                    server['onPacket'](msg, rinfo);
+                });
+                resolve();
+            });
+        });
+
+        const serverPort = server['udpSocket'].address().port;
+
+        client = new Client({
+            clientId: 'engine-d',
+            paths: [{ host: '127.0.0.1', port: serverPort }],
+            encryptionKey: password,
+            connectionTimeout: 2000,
+        });
+
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('connect timeout')), 5000);
+            client.on('connected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+
+        const received: unknown[] = [];
+        client.on('data', (topic: string, message: unknown) => {
+            if (topic === 'tick') received.push(message);
+        });
+
+        // Identical payloads, sent immediately after one another.
+        server.sendTo('engine-d', 'tick', { level: 0 });
+        server.sendTo('engine-d', 'tick', { level: 0 });
+        server.sendTo('engine-d', 'tick', { level: 0 });
+
+        await new Promise((r) => setTimeout(r, 400));
+
+        expect(received.length).toBe(3);
+    }, 10000);
+
     it('client recovers when a server restart kills its path socket', async () => {
         // Regression: a missed-keepalive death used to leave the path's
         // Socket permanently destroyed — every subsequent `send` dropped with
@@ -215,12 +269,13 @@ describe('Server + Client integration', () => {
         // 'connected' from a dead Socket. The higher level would then think
         // it was online while every send dropped with "socket destroyed".
         const { Socket: SocketCls } = await import('./Socket.js');
+        const { FragmentTransport } = await import('./FragmentTransport.js');
         const dgramMod = await import('dgram');
         const udp = dgramMod.createSocket('udp4');
         const s = new SocketCls({
             port: 1,
             address: '127.0.0.1',
-            udpSocket: udp,
+            transport: new FragmentTransport(udp),
             isClient: true,
             clientID: 'test',
             encryptionKey: 'k',

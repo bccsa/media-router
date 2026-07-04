@@ -183,11 +183,16 @@ export class TranscoderModule extends GstPluginBase {
         this.sinkNames = result.sinkNames;
         this.renditions = renditions;
         this.setStatusData('input', { host: upstream.host, port: upstream.port });
-        // Headline codec/impl show the global default; renditions that override
-        // codec/impl are flagged inline in the renditions summary.
+        // Headline codec/impl reflect what actually runs: the shared value when
+        // every rendition resolves to the same one, else 'mixed'. Per-rendition
+        // overrides are flagged inline in the renditions summary. (Derived from
+        // outputs so the headline never names a codec/impl no rendition uses —
+        // e.g. when the global codec has no encoder but all renditions override.)
+        const codecs = new Set(outputs.map((o) => o.encode.codec));
+        const impls = new Set(outputs.map((o) => o.encode.impl));
         this.setStatusData('encoder', {
-            codec: globalCodec,
-            impl: resolveImpl(globalCodec, globalImplChoice, TranscoderModule.availableImpls[globalCodec] ?? []) ?? globalImplChoice,
+            codec: codecs.size === 1 ? [...codecs][0] : 'mixed',
+            impl: impls.size === 1 ? [...impls][0] : 'mixed',
             framerate: `${framerate} fps`,
             renditions: this.renditionSummary(outputs),
         });

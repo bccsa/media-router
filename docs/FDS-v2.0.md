@@ -1507,13 +1507,20 @@ The Local API ships an OpenAPI 3.x specification file auto-generated from Fastif
 | Protocol | UDP datagrams |
 | Encryption | AES-256-CBC with SHA-256 key derivation |
 | Max packet size | 1412 bytes (avoids IP fragmentation) |
-| Fragmentation | Header: `messageId:fragmentIndex:totalFragments:` |
-| Guaranteed delivery | ACK-based with retry (10 attempts, 500ms interval) |
+| Fragmentation | Binary header `[messageId:4B][fragmentIndex:2B][fragmentCount:2B]`; `fragmentCount === 0` marks a NACK control packet (see §8.1.2) |
+| Guaranteed delivery | ACK-based; fragment-level NACK retransmit + whole-message fallback (10 attempts, 200ms→1600ms backoff) — see §8.1.2 |
 | Keepalive | Every `connectionTimeout/4` (1.25s default) |
 | Disconnect detection | 3 missed keepalives |
 | Connection flow | Client sends `connect` → Server responds `connected` |
 
-#### 8.1.2 New: Multi-Path Delivery
+#### 8.1.2 New: Reliability (sequence dedup + fragment-level retransmit)
+
+Two v2.0 enhancements to the transport (see `packages/dgram-comms`):
+
+- **Sequence-number dedup.** Each `data` envelope carries a monotonic `seq` (per sending socket). The receiver delivers each `seq` at most once, so retransmits and (future) bonded multi-path copies never double-apply. This replaced a v1-era receive-time content+timestamp hash that wrongly dropped distinct-but-identical payloads when latency bunched them into one window — the root cause of lost commands on high-latency/lossy WAN links.
+- **Fragment-level retransmit (NACK).** A message is fragmented once under a stable `messageId` and the sender retains the packets. When the receiver stalls with fragments missing, it sends a **NACK** — a control packet with `fragmentCount === 0`, payload = the missing fragment indices (UInt16BE each) — and the sender resends *only those* fragments (to the exact endpoint it originally sent to). This replaces whole-message retransmit, whose per-attempt success was `(1-loss)^fragmentCount`, so large (config-sized) messages now survive lossy links. A whole-message resend remains as the fallback for total loss, and reassembly is keyed by `source:messageId` so two peers reusing a messageId never collide.
+
+#### 8.1.3 New: Multi-Path Delivery
 
 For network redundancy, the engine can send each message to multiple destination IP address/port combinations simultaneously. Each path can optionally be bound to a specific network interface, or left unbound to use OS-level routing:
 
@@ -1552,7 +1559,7 @@ interface ManagerConnectionProfile {
 - Duplicate copies (from other paths) are discarded
 - Path health is tracked independently — if one path fails, the other continues
 
-#### 8.1.3 Message Format
+#### 8.1.4 Message Format
 
 ```typescript
 interface DgramMessage {

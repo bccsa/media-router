@@ -158,6 +158,52 @@ describe('buildPipeline', () => {
         );
     });
 
+    it('reports the shared codec/impl in the headline, else "mixed"', () => {
+        const { module } = makeModule();
+        // Uniform: both renditions inherit h264/software.
+        module.buildPipeline({
+            codec: 'h264',
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 5000 },
+                { width: 854, height: 480, bitrate: 1200 },
+            ],
+        });
+        expect((module as any).setStatusData).toHaveBeenCalledWith(
+            'encoder',
+            expect.objectContaining({ codec: 'h264', impl: 'software' }),
+        );
+        // One rendition overrides the codec → headline collapses to 'mixed'.
+        module.buildPipeline({
+            codec: 'h264',
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 5000 },
+                { width: 854, height: 480, bitrate: 1200, codec: 'h265' },
+            ],
+        });
+        expect((module as any).setStatusData).toHaveBeenCalledWith(
+            'encoder',
+            expect.objectContaining({ codec: 'mixed', impl: 'software' }),
+        );
+    });
+
+    it('never names the unused global codec when every rendition overrides', () => {
+        // Global codec av1 has NO encoder, but both renditions override to h264.
+        TranscoderModule.setAvailableImpls({ h264: ['software'], h265: ['software'], av1: [] });
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            codec: 'av1',
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 5000, codec: 'h264' },
+                { width: 854, height: 480, bitrate: 1200, codec: 'h264' },
+            ],
+        });
+        expect(desc).not.toBeNull();
+        expect((module as any).setStatusData).toHaveBeenCalledWith(
+            'encoder',
+            expect.objectContaining({ codec: 'h264', impl: 'software' }),
+        );
+    });
+
     it('errors naming the rendition when its overridden codec has no encoder', () => {
         // av1 has no impl available; a rendition overriding to av1 must fail clearly.
         TranscoderModule.setAvailableImpls({ h264: ['software'], h265: ['software'], av1: [] });

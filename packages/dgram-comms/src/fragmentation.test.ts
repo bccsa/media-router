@@ -1,8 +1,10 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
     fragment,
+    fragmentWithId,
     parseFragmentHeader,
-    Reassembler,
+    encodeNack,
+    decodeNack,
     MAX_PAYLOAD_SIZE,
     HEADER_SIZE,
 } from './fragmentation.js';
@@ -49,6 +51,22 @@ describe('fragmentation', () => {
             const h2 = parseFragmentHeader(p2[0])!;
             expect(h2.messageId).toBe(h1.messageId + 1);
         });
+
+        it('handles an empty buffer as one zero-length fragment', () => {
+            const packets = fragment(Buffer.alloc(0));
+            expect(packets).toHaveLength(1);
+            expect(parseFragmentHeader(packets[0])!.fragmentCount).toBe(1);
+        });
+    });
+
+    describe('fragmentWithId()', () => {
+        it('exposes the assigned messageId, matching the packet headers', () => {
+            const { messageId, packets } = fragmentWithId(Buffer.alloc(MAX_PAYLOAD_SIZE * 2, 'Z'));
+            expect(packets.length).toBe(2);
+            for (const p of packets) {
+                expect(parseFragmentHeader(p)!.messageId).toBe(messageId);
+            }
+        });
     });
 
     describe('parseFragmentHeader()', () => {
@@ -71,72 +89,19 @@ describe('fragmentation', () => {
         });
     });
 
-    describe('Reassembler', () => {
-        let reassembler: Reassembler;
-
-        afterEach(() => {
-            reassembler?.destroy();
+    describe('NACK encode/decode', () => {
+        it('round-trips a messageId and missing indices', () => {
+            const nack = encodeNack(1234, [0, 2, 5]);
+            // fragmentCount === 0 is the NACK discriminator
+            expect(parseFragmentHeader(nack)!.fragmentCount).toBe(0);
+            const decoded = decodeNack(nack);
+            expect(decoded.messageId).toBe(1234);
+            expect(decoded.missing).toEqual([0, 2, 5]);
         });
 
-        it('returns payload immediately for single-fragment messages', () => {
-            reassembler = new Reassembler();
-            const packets = fragment(Buffer.from('simple'));
-            const result = reassembler.addFragment(packets[0]);
-            expect(result).not.toBeNull();
-            expect(result!.toString()).toBe('simple');
-        });
-
-        it('reassembles multi-fragment messages', () => {
-            reassembler = new Reassembler();
-            const data = Buffer.alloc(MAX_PAYLOAD_SIZE * 2 + 50, 'X');
-            const packets = fragment(data);
-            expect(packets.length).toBeGreaterThan(1);
-
-            let result: Buffer | null = null;
-            for (const packet of packets) {
-                result = reassembler.addFragment(packet);
-            }
-            expect(result).not.toBeNull();
-            expect(result!.equals(data)).toBe(true);
-        });
-
-        it('handles out-of-order fragments', () => {
-            reassembler = new Reassembler();
-            const data = Buffer.alloc(MAX_PAYLOAD_SIZE * 3, 'Y');
-            const packets = fragment(data);
-
-            // Deliver in reverse order
-            const reversed = [...packets].reverse();
-            let result: Buffer | null = null;
-            for (const packet of reversed) {
-                result = reassembler.addFragment(packet);
-            }
-            expect(result).not.toBeNull();
-            expect(result!.equals(data)).toBe(true);
-        });
-
-        it('deduplicates completed messages', () => {
-            reassembler = new Reassembler();
-            const packets = fragment(Buffer.from('dedup'));
-
-            const result1 = reassembler.addFragment(packets[0]);
-            expect(result1).not.toBeNull();
-
-            // Same packet again
-            const result2 = reassembler.addFragment(packets[0]);
-            expect(result2).toBeNull();
-        });
-
-        it('ignores invalid fragment indices', () => {
-            reassembler = new Reassembler();
-            const packet = Buffer.alloc(HEADER_SIZE + 5);
-            packet.writeUInt32BE(999, 0);
-            packet.writeUInt16BE(5, 4); // index 5
-            packet.writeUInt16BE(3, 6); // but only 3 total — invalid!
-            packet.write('oops!', HEADER_SIZE);
-
-            const result = reassembler.addFragment(packet);
-            expect(result).toBeNull();
+        it('is distinguishable from a data fragment (count >= 1)', () => {
+            const dataFrag = fragment(Buffer.from('x'))[0];
+            expect(parseFragmentHeader(dataFrag)!.fragmentCount).toBeGreaterThanOrEqual(1);
         });
     });
 });

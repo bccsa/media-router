@@ -1,8 +1,8 @@
 import * as crypto from 'crypto';
-import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
-import { encrypt, decrypt } from './encryption.js';
-import { fragment, Reassembler } from './fragmentation.js';
+import { encrypt } from './encryption.js';
+import { FragmentTransport } from './FragmentTransport.js';
+import { ReliableDelivery } from './ReliableDelivery.js';
 import type { DgramMessage } from '@media-router/shared-types';
 
 export interface SocketOptions {
@@ -10,8 +10,8 @@ export interface SocketOptions {
     port: number;
     /** Remote address. */
     address: string;
-    /** The underlying dgram socket to send on. */
-    udpSocket: dgram.Socket;
+    /** Shared fragment transport (owns the udp socket + fragment-level reliability). */
+    transport: FragmentTransport;
     /** Whether this is the client side of the connection. */
     isClient?: boolean;
     /** Client identifier (for encryption key lookup). */
@@ -44,13 +44,12 @@ export class Socket extends EventEmitter {
 
     private port: number;
     private address: string;
-    private udpSocket: dgram.Socket;
+    private transport: FragmentTransport;
     private encryptionKey: string | undefined;
     private connectionTimeout: number;
     private missedKeepaliveThreshold: number;
     private onDisconnectCb: ((socketID: string) => void) | undefined;
 
-    private reassembler: Reassembler;
     private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
     private keepAliveTime = Date.now();
     private missedKeepalives = 0;
@@ -61,22 +60,36 @@ export class Socket extends EventEmitter {
         return this._destroyed;
     }
 
-    /** Pending guaranteed-delivery messages awaiting ACK. */
-    private waitingAck = new Map<number, ReturnType<typeof setTimeout>>();
-    private ackCounter = 0;
+    /** Guaranteed-delivery bookkeeping (ackIDs, fallback resend, release-on-ACK). */
+    private reliable: ReliableDelivery;
+
+    /** Monotonic sequence number stamped on outgoing data messages. */
+    private seqCounter = 0;
+
+    /** Delivered seq → timestamp (ms). Dedups multi-path copies and retransmits; evicted by age. */
+    private seenSeqs = new Map<number, number>();
+    /** Age bound — must outlast the sender's ~13s fallback-resend window. */
+    private readonly seqDedupTtlMs = 30000;
+    /** Hard backstop; age eviction (seqDedupTtlMs) is the primary bound. */
+    private readonly maxSeenSeqs = 65536;
 
     constructor(options: SocketOptions) {
         super();
         this.port = options.port;
         this.address = options.address;
-        this.udpSocket = options.udpSocket;
+        this.transport = options.transport;
         this.isClient = options.isClient ?? false;
         this.clientID = options.clientID ?? '';
         this.encryptionKey = options.encryptionKey;
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
         this.onDisconnectCb = options.onDisconnect;
-        this.reassembler = new Reassembler(this.connectionTimeout * 2);
+        this.reliable = new ReliableDelivery(
+            this.transport,
+            () => ({ port: this.port, address: this.address }),
+            (info) => this.emit('ackTimeout', info),
+            () => this.destroyed,
+        );
 
         // Client sockets get their socketID assigned by the server
         this.socketID = this.isClient ? '' : crypto.randomUUID();
@@ -101,7 +114,13 @@ export class Socket extends EventEmitter {
     send(
         topic: string | null,
         message: unknown,
-        options: { type?: DgramMessage['type']; guaranteeDelivery?: boolean; ackID?: number } = {},
+        options: {
+            type?: DgramMessage['type'];
+            guaranteeDelivery?: boolean;
+            ackID?: number;
+            /** Shared sequence number (set by the multi-path Client so every path copy dedups as one). */
+            seq?: number;
+        } = {},
     ): void {
         if (this.destroyed) {
             console.warn(
@@ -112,20 +131,31 @@ export class Socket extends EventEmitter {
         this._send(topic, message, options);
     }
 
-    private async _send(
+    private _send(
         topic: string | null,
         message: unknown,
         options: {
             type?: DgramMessage['type'];
             guaranteeDelivery?: boolean;
             ackID?: number;
-            _retryCount?: number;
+            seq?: number;
         },
-    ): Promise<void> {
+    ): void {
         // Assign ackID for guaranteed delivery
         if (!options.ackID && options.guaranteeDelivery) {
-            this.ackCounter++;
-            options.ackID = this.ackCounter;
+            options.ackID = this.reliable.nextAckId();
+        }
+
+        const msgType = options.type ?? 'data';
+
+        // Assign a monotonic sequence number to data messages so the receiver
+        // dedups by identity. Multi-path copies and retransmits carry the same
+        // seq: the Client passes a shared seq for its bonded path copies, and
+        // retransmits reuse it via the preserved options object. Only data
+        // messages need it — keepalive/ack/connect are idempotent.
+        if (msgType === 'data' && options.seq === undefined) {
+            this.seqCounter += 1;
+            options.seq = this.seqCounter;
         }
 
         const data: DgramMessage['data'] = {
@@ -136,7 +166,6 @@ export class Socket extends EventEmitter {
         };
 
         // Encrypt if we have a key and this is a data/connect message
-        const msgType = options.type ?? 'data';
         let envelope: DgramMessage;
 
         if (this.clientID && this.encryptionKey && (msgType === 'data' || msgType === 'connect')) {
@@ -145,44 +174,24 @@ export class Socket extends EventEmitter {
                 type: msgType,
                 clientID: this.clientID,
                 iv: encrypted.iv,
+                seq: options.seq,
                 data: encrypted.data as unknown as DgramMessage['data'],
             };
         } else {
             envelope = {
                 type: msgType,
                 clientID: this.clientID,
+                seq: options.seq,
                 data,
             };
         }
 
         const buf = Buffer.from(JSON.stringify(envelope));
-        const packets = fragment(buf);
+        const reliable = !!options.guaranteeDelivery;
+        const messageId = this.transport.send(buf, this.port, this.address, reliable);
 
-        for (const packet of packets) {
-            this.udpSocket.send(packet, this.port, this.address);
-        }
-
-        // Guaranteed delivery: schedule retry with exponential backoff
-        if (options.guaranteeDelivery && options.ackID) {
-            const retryCount = options._retryCount ?? 0;
-            if (retryCount < 10) {
-                // 200ms, 400ms, 800ms, 1600ms, then cap at 1600ms
-                const delay = Math.min(200 * Math.pow(2, retryCount), 1600);
-                const ackID = options.ackID;
-                const timer = setTimeout(() => {
-                    if (this.waitingAck.has(ackID) && !this.destroyed) {
-                        this._send(topic, message, {
-                            ...options,
-                            _retryCount: retryCount + 1,
-                        });
-                    }
-                }, delay);
-                this.waitingAck.set(ackID, timer);
-            } else {
-                // Max retries — give up
-                this.waitingAck.delete(options.ackID);
-                this.emit('ackTimeout', { topic, ackID: options.ackID });
-            }
+        if (reliable && options.ackID !== undefined) {
+            this.reliable.track(options.ackID, messageId, topic ?? undefined);
         }
     }
 
@@ -207,11 +216,7 @@ export class Socket extends EventEmitter {
 
             case 'ack':
                 if (msg.data?.ackID !== undefined) {
-                    const timer = this.waitingAck.get(msg.data.ackID);
-                    if (timer) {
-                        clearTimeout(timer);
-                        this.waitingAck.delete(msg.data.ackID);
-                    }
+                    this.reliable.ack(msg.data.ackID);
                 }
                 break;
 
@@ -227,9 +232,19 @@ export class Socket extends EventEmitter {
                 break;
 
             case 'data': {
-                // Send ACK if requested
+                // ACK first — even duplicates must be acked, or the sender
+                // keeps retransmitting a message we already have.
                 if (msg.data?.ackID !== undefined) {
                     this.sendAck(msg.data.ackID);
+                }
+                // Dedup by sequence number. Multi-path copies and retransmits
+                // share a seq; genuinely distinct messages always get distinct
+                // seqs, so identical payloads are never wrongly dropped — the
+                // old receive-time content hash did exactly that when latency
+                // bunched packets into one 500ms window.
+                if (msg.seq !== undefined) {
+                    if (this.seenSeqs.has(msg.seq)) break;
+                    this.markSeqSeen(msg.seq);
                 }
                 const topic = msg.data?.topic;
                 if (topic) {
@@ -248,6 +263,24 @@ export class Socket extends EventEmitter {
 
     private sendAck(ackID: number): void {
         this._send(null, null, { type: 'ack', ackID });
+    }
+
+    /**
+     * Record a delivered sequence number. Evicts by age (older than
+     * `seqDedupTtlMs`, which outlasts the retransmit window) so the table stays
+     * bounded regardless of message rate — the count cap is only a backstop.
+     * seq is monotonic per socket, so entries are inserted in time order and the
+     * oldest is always at the front.
+     */
+    private markSeqSeen(seq: number): void {
+        const now = Date.now();
+        this.seenSeqs.set(seq, now);
+        while (this.seenSeqs.size > 0) {
+            const oldest = this.seenSeqs.keys().next().value as number;
+            const ts = this.seenSeqs.get(oldest) ?? 0;
+            if (this.seenSeqs.size <= this.maxSeenSeqs && now - ts <= this.seqDedupTtlMs) break;
+            this.seenSeqs.delete(oldest);
+        }
     }
 
     // ---- Keepalive -----------------------------------------------------------
@@ -305,13 +338,11 @@ export class Socket extends EventEmitter {
             this.keepAliveTimer = null;
         }
 
-        // Clean up pending ACKs
-        for (const timer of this.waitingAck.values()) {
-            clearTimeout(timer);
-        }
-        this.waitingAck.clear();
+        // Clean up guaranteed-delivery timers + release retained fragments for this
+        // socket. The transport itself is shared (owned by Server/Client) — don't destroy it.
+        this.reliable.destroy();
+        this.seenSeqs.clear();
 
-        this.reassembler.destroy();
         this.onDisconnectCb?.(this.socketID);
         this.emit('disconnected', this.socketID);
 

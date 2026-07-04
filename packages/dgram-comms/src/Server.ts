@@ -1,7 +1,7 @@
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { decrypt } from './encryption.js';
-import { Reassembler, parseFragmentHeader } from './fragmentation.js';
+import { FragmentTransport } from './FragmentTransport.js';
 import { Socket } from './Socket.js';
 import type { DgramMessage } from '@media-router/shared-types';
 import { DgramWireMessageSchema, DgramDataSchema } from '@media-router/shared-types';
@@ -35,7 +35,7 @@ export class Server extends EventEmitter {
     private missedKeepaliveThreshold: number;
 
     private udpSocket: dgram.Socket;
-    private reassembler: Reassembler;
+    private transport: FragmentTransport;
 
     /** Connected sockets by socketID. */
     private sockets = new Map<string, Socket>();
@@ -63,7 +63,9 @@ export class Server extends EventEmitter {
         this.rejectLogIntervalMs = options.rejectLogIntervalMs ?? 30_000;
 
         this.udpSocket = dgram.createSocket('udp4');
-        this.reassembler = new Reassembler(this.connectionTimeout * 2);
+        this.transport = new FragmentTransport(this.udpSocket, {
+            reassemblyTimeoutMs: this.connectionTimeout * 2,
+        });
 
         this.udpSocket.on('error', (err) => {
             console.error(`[dgram-comms Server] error: ${err.message}`);
@@ -110,7 +112,7 @@ export class Server extends EventEmitter {
         this.sockets.clear();
         this.clientToSocket.clear();
         this.rejectLogState.clear();
-        this.reassembler.destroy();
+        this.transport.destroy();
         return new Promise((resolve) => {
             this.udpSocket.close(() => resolve());
         });
@@ -174,8 +176,8 @@ export class Server extends EventEmitter {
     // ---- Packet handling -----------------------------------------------------
 
     private onPacket(rawPacket: Buffer, rinfo: dgram.RemoteInfo): void {
-        // Reassemble fragments
-        const complete = this.reassembler.addFragment(rawPacket);
+        // Reassemble fragments (and service fragment-level NACKs internally)
+        const complete = this.transport.receive(rawPacket, rinfo);
         if (!complete) return;
 
         // Parse and validate JSON envelope
@@ -299,7 +301,7 @@ export class Server extends EventEmitter {
         const socket = new Socket({
             port: rinfo.port,
             address: rinfo.address,
-            udpSocket: this.udpSocket,
+            transport: this.transport,
             isClient: false,
             clientID,
             encryptionKey: this.encryptionKeys[clientID],
