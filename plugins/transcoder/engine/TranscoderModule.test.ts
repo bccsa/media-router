@@ -83,7 +83,10 @@ describe('buildPipeline', () => {
         const { module } = makeModule();
         (module as any).config = { codec: 'h264', renditions: [{ width: 1280, height: 720, bitrate: 2500 }] };
         expect(module.buildPipeline((module as any).config)).toBeNull();
-        expect((module as any).setHealth).toHaveBeenCalledWith('error', expect.stringContaining('No encoder'));
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'error',
+            expect.stringContaining('No h264 encoder available'),
+        );
     });
 
     it('allocates a distinct UDP port per rendition and builds the pipeline', () => {
@@ -120,6 +123,54 @@ describe('buildPipeline', () => {
         expect((module as any).setStatusData).toHaveBeenCalledWith(
             'encoder',
             expect.objectContaining({ renditions: '1280x720@2500k, 640x360@800k' }),
+        );
+    });
+
+    it('applies a per-rendition override on top of the global default', () => {
+        TranscoderModule.setAvailableImpls({ h264: ['software'], h265: ['software'], av1: [] });
+        const { module } = makeModule();
+        // Global codec is h264; only the second rendition overrides to h265.
+        const desc = module.buildPipeline({
+            codec: 'h264',
+            speedPreset: 'ultrafast',
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 5000, speedPreset: 'medium' },
+                { width: 854, height: 480, bitrate: 1200, codec: 'h265' },
+            ],
+        })!;
+        expect(desc.pipeline).toContain('x264enc'); // rendition 0 inherits global codec
+        expect(desc.pipeline).toContain('speed-preset=medium'); // rendition 0 override
+        expect(desc.pipeline).toContain('x265enc'); // rendition 1 codec override
+    });
+
+    it('flags overridden knobs in the encoder status summary', () => {
+        const { module } = makeModule();
+        module.buildPipeline({
+            codec: 'h264',
+            renditions: [
+                { width: 1920, height: 1080, bitrate: 5000 },
+                { width: 854, height: 480, bitrate: 1200, codec: 'h265', speedPreset: 'medium' },
+            ],
+        });
+        expect((module as any).setStatusData).toHaveBeenCalledWith(
+            'encoder',
+            expect.objectContaining({ renditions: '1920x1080@5000k, 854x480@1200k [h265, medium]' }),
+        );
+    });
+
+    it('errors naming the rendition when its overridden codec has no encoder', () => {
+        // av1 has no impl available; a rendition overriding to av1 must fail clearly.
+        TranscoderModule.setAvailableImpls({ h264: ['software'], h265: ['software'], av1: [] });
+        const { module } = makeModule();
+        expect(
+            module.buildPipeline({
+                codec: 'h264',
+                renditions: [{ name: 'HiQ', width: 1920, height: 1080, bitrate: 5000, codec: 'av1' }],
+            }),
+        ).toBeNull();
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'error',
+            expect.stringContaining('No av1 encoder available for rendition "HiQ"'),
         );
     });
 });

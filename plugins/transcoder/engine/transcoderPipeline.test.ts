@@ -6,6 +6,7 @@ import {
     readRenditions,
     renditionLabel,
     type Rendition,
+    type ResolvedEncode,
     type TranscoderOutput,
 } from './transcoderPorts.js';
 import { resolveImpl } from '@media-router/engine';
@@ -18,11 +19,23 @@ const r = (over: Partial<Rendition> = {}): Rendition => ({
     ...over,
 });
 
-const out = (i: number, rendition: Rendition): TranscoderOutput => ({
+/** Fully-resolved encode settings, as the module hands them to the pipeline. */
+const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
+    codec: 'h264',
+    impl: 'software',
+    rateControl: 'cbr',
+    speedPreset: 'ultrafast',
+    h264Profile: 'auto',
+    sceneCut: 40,
+    ...over,
+});
+
+const out = (i: number, rendition: Rendition, encode: ResolvedEncode = enc()): TranscoderOutput => ({
     portId: outputPortId(i),
     host: '239.255.0.1',
     port: 41000 + i,
     rendition,
+    encode,
 });
 
 describe('readRenditions', () => {
@@ -30,13 +43,13 @@ describe('readRenditions', () => {
         const res = readRenditions({
             renditions: [{ name: 'HD', width: '1920', height: '1080', bitrate: '5000' }],
         });
-        expect(res).toEqual([{ name: 'HD', width: 1920, height: 1080, bitrate: 5000 }]);
+        expect(res[0]).toMatchObject({ name: 'HD', width: 1920, height: 1080, bitrate: 5000 });
     });
 
     it('falls back to defaults for missing/invalid fields', () => {
         const res = readRenditions({ renditions: [{}, { width: -5, height: 0, bitrate: 'x' }] });
-        expect(res[0]).toEqual({ name: '', width: 1280, height: 720, bitrate: 2500 });
-        expect(res[1]).toEqual({ name: '', width: 1280, height: 720, bitrate: 2500 });
+        expect(res[0]).toMatchObject({ name: '', width: 1280, height: 720, bitrate: 2500 });
+        expect(res[1]).toMatchObject({ name: '', width: 1280, height: 720, bitrate: 2500 });
     });
 
     it('falls back to one provisional rendition when the key is absent (pre-start)', () => {
@@ -52,6 +65,77 @@ describe('readRenditions', () => {
     it('clamps to a maximum of 8 renditions', () => {
         const many = Array.from({ length: 20 }, () => ({ width: 100, height: 100, bitrate: 100 }));
         expect(readRenditions({ renditions: many })).toHaveLength(8);
+    });
+
+    it('leaves per-rendition overrides undefined (inherit) when absent', () => {
+        const res = readRenditions({ renditions: [{ width: 640, height: 360, bitrate: 800 }] });
+        expect(res[0]).toEqual({
+            name: '',
+            width: 640,
+            height: 360,
+            bitrate: 800,
+            codec: undefined,
+            encoderImpl: undefined,
+            rateControl: undefined,
+            speedPreset: undefined,
+            h264Profile: undefined,
+            sceneCut: undefined,
+        });
+    });
+
+    it('parses valid per-rendition encoder overrides', () => {
+        const res = readRenditions({
+            renditions: [
+                {
+                    width: 1920,
+                    height: 1080,
+                    bitrate: 5000,
+                    codec: 'h265',
+                    encoderImpl: 'software',
+                    rateControl: 'vbr',
+                    speedPreset: 'medium',
+                    h264Profile: 'high',
+                    sceneCut: 0,
+                },
+            ],
+        });
+        expect(res[0]).toMatchObject({
+            codec: 'h265',
+            encoderImpl: 'software',
+            rateControl: 'vbr',
+            speedPreset: 'medium',
+            h264Profile: 'high',
+            sceneCut: 0,
+        });
+    });
+
+    it('drops invalid override values back to inherit (undefined)', () => {
+        const res = readRenditions({
+            renditions: [
+                {
+                    width: 1280,
+                    height: 720,
+                    bitrate: 2500,
+                    codec: 'vp9', // not a known codec
+                    encoderImpl: 'nvenc', // not a known impl
+                    rateControl: 'abr', // not cbr/vbr
+                    speedPreset: 'warp', // not a known preset
+                    h264Profile: 'ultra', // not a known profile
+                },
+            ],
+        });
+        expect(res[0].codec).toBeUndefined();
+        expect(res[0].encoderImpl).toBeUndefined();
+        expect(res[0].rateControl).toBeUndefined();
+        expect(res[0].speedPreset).toBeUndefined();
+        expect(res[0].h264Profile).toBeUndefined();
+    });
+
+    it('treats a blank sceneCut override as inherit and clamps a numeric one', () => {
+        const blank = readRenditions({ renditions: [{ ...r(), sceneCut: '' }] });
+        expect(blank[0].sceneCut).toBeUndefined();
+        const clamped = readRenditions({ renditions: [{ ...r(), sceneCut: 250 }] });
+        expect(clamped[0].sceneCut).toBe(100);
     });
 });
 
@@ -86,8 +170,6 @@ describe('buildDynamicPorts', () => {
 describe('buildPipeline', () => {
     const base = {
         input: { host: '239.0.0.1', port: 5004 },
-        codec: 'h264' as const,
-        impl: 'software' as const,
         framerate: 50,
         gopFrames: 50,
     };
@@ -144,18 +226,18 @@ describe('buildPipeline', () => {
         expect(res.pipeline).toContain('key-int-max=60');
     });
 
-    it('switches rate control between CBR and VBR', () => {
-        const cbr = buildPipeline({ ...base, rateControl: 'cbr', outputs: [out(0, r())] })!;
+    it('applies each rendition\'s own rate control', () => {
+        const cbr = buildPipeline({ ...base, outputs: [out(0, r(), enc({ rateControl: 'cbr' }))] })!;
         expect(cbr.pipeline).toContain('nal-hrd=cbr');
-        const vbr = buildPipeline({ ...base, rateControl: 'vbr', outputs: [out(0, r())] })!;
+        const vbr = buildPipeline({ ...base, outputs: [out(0, r(), enc({ rateControl: 'vbr' }))] })!;
         expect(vbr.pipeline).not.toContain('nal-hrd=cbr');
         expect(vbr.pipeline).toContain('vbv-maxrate'); // VBV-capped VBR
     });
 
-    it('defaults to the ultrafast x264 preset and honours an override', () => {
+    it('applies each rendition\'s own speed preset', () => {
         const def = buildPipeline({ ...base, outputs: [out(0, r())] })!;
         expect(def.pipeline).toContain('speed-preset=ultrafast');
-        const med = buildPipeline({ ...base, speedPreset: 'medium', outputs: [out(0, r())] })!;
+        const med = buildPipeline({ ...base, outputs: [out(0, r(), enc({ speedPreset: 'medium' }))] })!;
         expect(med.pipeline).toContain('speed-preset=medium');
         expect(med.pipeline).not.toContain('speed-preset=ultrafast');
     });
@@ -163,33 +245,47 @@ describe('buildPipeline', () => {
     it('forces the H.264 profile only when not "auto"', () => {
         const auto = buildPipeline({ ...base, outputs: [out(0, r())] })!;
         expect(auto.pipeline).not.toContain('profile=');
-        const baseline = buildPipeline({ ...base, h264Profile: 'baseline', outputs: [out(0, r())] })!;
+        const baseline = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ h264Profile: 'baseline' }))],
+        })!;
         expect(baseline.pipeline).toContain('video/x-h264,profile=baseline');
         expect(baseline.pipeline).toMatch(/profile=baseline ! h264parse/);
     });
 
-    it('defaults scenecut to 40 and honours an override (incl. 0 = off)', () => {
+    it('applies each rendition\'s own scenecut (incl. 0 = off)', () => {
         const def = buildPipeline({ ...base, outputs: [out(0, r())] })!;
         expect(def.pipeline).toContain('scenecut=40');
-        const off = buildPipeline({ ...base, sceneCut: 0, outputs: [out(0, r())] })!;
+        const off = buildPipeline({ ...base, outputs: [out(0, r(), enc({ sceneCut: 0 }))] })!;
         expect(off.pipeline).toContain('scenecut=0');
     });
 
     it('emits codec-specific encoder elements', () => {
-        const h265 = buildPipeline({
-            ...base,
-            codec: 'h265',
-            outputs: [out(0, r())],
-        })!;
+        const h265 = buildPipeline({ ...base, outputs: [out(0, r(), enc({ codec: 'h265' }))] })!;
         expect(h265.pipeline).toContain('x265enc');
     });
 
     it('builds an Intel VA-API hardware branch for H.265', () => {
-        const res = buildPipeline({ ...base, impl: 'va', codec: 'h265', outputs: [out(0, r())] })!;
+        const res = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ impl: 'va', codec: 'h265' }))],
+        })!;
         expect(res.pipeline).toContain('vah265enc');
         expect(res.pipeline).toContain('rate-control=cbr');
         expect(res.pipeline).toMatch(/target-usage=\d/);
         expect(res.pipeline).not.toContain('x265enc');
+    });
+
+    it('mixes different codecs/presets across renditions in one pipeline', () => {
+        const outputs = [
+            out(0, r({ width: 1920, height: 1080, bitrate: 5000 }), enc({ speedPreset: 'medium' })),
+            out(1, r({ width: 854, height: 480, bitrate: 1200 }), enc({ codec: 'h265' })),
+        ];
+        const p = buildPipeline({ ...base, outputs })!.pipeline;
+        // Rendition 0 stays H.264 at its overridden preset; rendition 1 is H.265.
+        expect(p).toContain('x264enc');
+        expect(p).toContain('speed-preset=medium');
+        expect(p).toContain('x265enc');
     });
 });
 

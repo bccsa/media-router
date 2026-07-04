@@ -9,22 +9,20 @@ import {
     buildUdpSink,
     buildLeakyQueue,
     buildEncoderBranch,
-    type CodecId,
-    type H264Profile,
-    type ImplId,
-    type RateControl,
-    type SpeedPreset,
 } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
 
 export interface TranscoderPipelineInputs {
     input: { host: string; port: number };
+    /** One output per rendition. Each carries its own fully-resolved encoder
+     *  settings (`encode`: codec / impl / rateControl / speedPreset / h264Profile
+     *  / sceneCut) — resolved in TranscoderModule (override ?? global) so this
+     *  builder never sees `auto`/undefined and holds no encode defaults itself. */
     outputs: TranscoderOutput[];
-    codec: CodecId;
-    impl: ImplId;
     framerate: number;
     /** Keyframe interval in FRAMES — passed straight to the encoder as
-     *  key-int-max (the standard x264/x265 unit). */
+     *  key-int-max (the standard x264/x265 unit). Shared by all renditions to
+     *  keep keyframes aligned for ABR. */
     gopFrames: number;
     /** udpsrc timeout (ns) — runner turns the timeout into a bus error so a
      *  silent source triggers `restartOnError`. */
@@ -32,24 +30,12 @@ export interface TranscoderPipelineInputs {
     /** Buffer in ms (default 200): sizes the input jitter queue AND a post-decode
      *  raw-frame queue that lets the frame-threaded decoder work ahead. The cost
      *  is this much latency. Never buffered leakily on the compressed stream —
-     *  see buildPipeline. */
+     *  see buildPipeline. Shared: sizes the single decode chain. */
     bufferMs?: number;
     /** 'multi' (default) sets `avdec_h264 thread-type=frame max-threads=3` so the
      *  decode spreads across cores on the live feed; 'single' is GStreamer's
-     *  default one-core live decode (lowest latency). */
+     *  default one-core live decode (lowest latency). Shared: one decoder. */
     decodeThreads?: 'multi' | 'single';
-    /** Encoder rate control for every rendition: 'cbr' (default, constant — safest
-     *  for fixed-bandwidth UDP/SRT) or 'vbr' (variable, better quality on motion). */
-    rateControl?: RateControl;
-    /** x264/x265 speed↔quality preset for every rendition (default 'ultrafast').
-     *  Slower presets spend more CPU for cleaner motion at the same bitrate. */
-    speedPreset?: SpeedPreset;
-    /** H.264 output profile for every rendition (default 'auto'). Constrains
-     *  encoder features for decoder compatibility. H.264 only. */
-    h264Profile?: H264Profile;
-    /** x264/x265 scene-cut threshold (default 40; 0 = off). Inserts an adaptive
-     *  keyframe at detected scene changes so the picture snaps clean at a cut. */
-    sceneCut?: number;
 }
 
 export interface TranscoderPipelineResult {
@@ -147,21 +133,22 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const sinkNames: string[] = [];
     const leaf = (out: TranscoderOutput, i: number): string => {
         const r = out.rendition;
+        const e = out.encode;
         const q = 'queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0';
         const scale = `videoscale ! video/x-raw,width=${r.width},height=${r.height}`;
-        // Pass the tuning knobs straight through: buildEncoderBranch applies the
-        // same defaults (cbr, ultrafast, auto profile, scenecut 40) on undefined,
-        // so there's no second set of defaults to keep in sync here.
+        // Every knob is per-rendition here: `out.encode` is already fully resolved
+        // (override ?? global, impl picked for this rendition's codec) by the
+        // module, so this builder just forwards it — no defaults to keep in sync.
         const encoder = buildEncoderBranch({
-            codec: input.codec,
-            impl: input.impl,
+            codec: e.codec,
+            impl: e.impl,
             bitrateKbps: r.bitrate,
             kif,
             name: `venc_${i}`,
-            rateControl: input.rateControl,
-            speedPreset: input.speedPreset,
-            h264Profile: input.h264Profile,
-            sceneCut: input.sceneCut,
+            rateControl: e.rateControl,
+            speedPreset: e.speedPreset,
+            h264Profile: e.h264Profile,
+            sceneCut: e.sceneCut,
         });
         const sinkName = `usink_${i}`;
         sinkNames.push(sinkName);

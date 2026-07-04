@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import MrInput from './MrInput.vue';
-import MrSelect from './MrSelect.vue';
+import { computed, ref } from 'vue';
 import MrButton from './MrButton.vue';
+import MrArrayItemField, { type ItemField } from './MrArrayItemField.vue';
 
 interface ItemSchema {
     type?: string;
@@ -15,13 +14,18 @@ const props = defineProps<{
     label?: string;
     description?: string;
     disabled?: boolean;
+    /** The module's full config, used to resolve item-relative `x-showWhen` when
+     *  the controlling field is inherited (item value absent → fall back here). */
+    globalConfig?: Record<string, unknown>;
 }>();
 
 const emit = defineEmits<{
     'update:modelValue': [value: unknown[]];
 }>();
 
-// Fill missing fields with defaults from schema for existing items
+// Fill missing fields with defaults from schema for existing items. Advanced
+// (override) fields are deliberately NOT filled — an absent key means "inherit
+// the module-global setting", which is the whole point of a per-item override.
 const items = computed(() => {
     const raw = props.modelValue ?? [];
     if (!props.schema?.properties) return raw;
@@ -29,6 +33,7 @@ const items = computed(() => {
         const patched = { ...(item as Record<string, unknown>) };
         for (const [key, rawProp] of Object.entries(props.schema.properties!)) {
             const prop = rawProp as Record<string, unknown>;
+            if (prop['x-advanced']) continue;
             if (patched[key] === undefined && prop.default !== undefined) {
                 patched[key] = prop.default;
             }
@@ -36,7 +41,13 @@ const items = computed(() => {
         return patched;
     });
 });
-const fields = computed(() => {
+
+interface Field extends ItemField {
+    default: unknown;
+    showWhen?: string;
+}
+
+const fields = computed<Field[]>(() => {
     if (!props.schema?.properties) return [];
     return Object.entries(props.schema.properties).map(([key, rawProp]) => {
         const prop = rawProp as Record<string, unknown>;
@@ -46,13 +57,43 @@ const fields = computed(() => {
             default: prop.default,
             description: (prop.description as string) ?? key,
             enumValues: prop.enum as unknown[] | undefined,
+            enumLabels: prop['x-enumLabels'] as Record<string, string> | undefined,
+            advanced: !!prop['x-advanced'],
+            showWhen: prop['x-showWhen'] as string | undefined,
         };
     });
 });
 
+const primaryFields = computed(() => fields.value.filter((f) => !f.advanced));
+const advancedFields = computed(() => fields.value.filter((f) => f.advanced));
+const hasAdvanced = computed(() => advancedFields.value.length > 0);
+
+/** Which item indices have their Advanced section expanded. */
+const expanded = ref<Record<number, boolean>>({});
+function toggleAdvanced(idx: number) {
+    expanded.value = { ...expanded.value, [idx]: !expanded.value[idx] };
+}
+
+/**
+ * `x-showWhen` ("key=v" or "key=v1,v2") evaluated against the ITEM's own value,
+ * falling back to the module-global config when the controlling field is
+ * inherited on this item (e.g. show `h264Profile` only when this rendition's
+ * codec — its own override or the inherited global — is h264).
+ */
+function isVisible(field: Field, item: Record<string, unknown>): boolean {
+    if (!field.showWhen) return true;
+    const [key, value] = field.showWhen.split('=');
+    const allowed = (value ?? '').split(',');
+    const own = item[key];
+    const current = own !== undefined && own !== '' ? own : props.globalConfig?.[key];
+    return allowed.includes(String(current ?? ''));
+}
+
 function addItem() {
     const newItem: Record<string, unknown> = {};
-    for (const f of fields.value) {
+    // Seed only the primary fields; advanced/override fields stay absent so a new
+    // item inherits every global by default.
+    for (const f of primaryFields.value) {
         newItem[f.key] = f.default ?? (f.type === 'number' ? 0 : '');
     }
     emit('update:modelValue', [...items.value, newItem]);
@@ -68,6 +109,17 @@ function updateField(index: number, key: string, value: unknown) {
     const updated = items.value.map((item, i) => {
         if (i !== index) return item;
         return { ...(item as Record<string, unknown>), [key]: value };
+    });
+    emit('update:modelValue', updated);
+}
+
+/** Reset an override to inherit by dropping the key from the item. */
+function clearField(index: number, key: string) {
+    const updated = items.value.map((item, i) => {
+        if (i !== index) return item;
+        const copy = { ...(item as Record<string, unknown>) };
+        delete copy[key];
+        return copy;
     });
     emit('update:modelValue', updated);
 }
@@ -101,36 +153,42 @@ function updateField(index: number, key: string, value: unknown) {
                 </button>
             </div>
 
-            <div v-for="field in fields" :key="field.key" class="space-y-0.5">
-                <label class="text-[10px] text-muted">{{ field.description }}</label>
-
-                <MrSelect
-                    v-if="field.enumValues"
-                    :model-value="(item as Record<string, unknown>)[field.key] as string | number"
-                    :options="
-                        field.enumValues.map((v) => ({
-                            value: v as string | number,
-                            label: String(v),
-                        }))
-                    "
+            <template v-for="field in primaryFields" :key="field.key">
+                <MrArrayItemField
+                    v-if="isVisible(field, item as Record<string, unknown>)"
+                    :field="field"
+                    :value="(item as Record<string, unknown>)[field.key]"
                     :disabled="disabled"
-                    @update:model-value="updateField(idx, field.key, $event)"
+                    @update="updateField(idx, field.key, $event)"
+                    @clear="clearField(idx, field.key)"
                 />
+            </template>
 
-                <MrInput
-                    v-else
-                    :model-value="String((item as Record<string, unknown>)[field.key] ?? '')"
-                    :type="field.type === 'number' ? 'number' : 'text'"
-                    :disabled="disabled"
-                    @update:model-value="
-                        updateField(
-                            idx,
-                            field.key,
-                            field.type === 'number' ? Number($event) : $event,
-                        )
-                    "
-                />
-            </div>
+            <template v-if="hasAdvanced">
+                <button
+                    type="button"
+                    class="flex items-center gap-1 text-[10px] text-muted hover:text-foreground transition-colors pt-0.5"
+                    @click="toggleAdvanced(idx)"
+                >
+                    <span>{{ expanded[idx] ? '▾' : '▸' }}</span>
+                    <span>Advanced (per-encode overrides)</span>
+                </button>
+                <div
+                    v-if="expanded[idx]"
+                    class="space-y-1.5 pl-2 border-l border-border-alt"
+                >
+                    <template v-for="field in advancedFields" :key="field.key">
+                        <MrArrayItemField
+                            v-if="isVisible(field, item as Record<string, unknown>)"
+                            :field="field"
+                            :value="(item as Record<string, unknown>)[field.key]"
+                            :disabled="disabled"
+                            @update="updateField(idx, field.key, $event)"
+                            @clear="clearField(idx, field.key)"
+                        />
+                    </template>
+                </div>
+            </template>
         </div>
 
         <div

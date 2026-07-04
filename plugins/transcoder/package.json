@@ -33,7 +33,73 @@
                             "name": { "type": "string", "default": "", "description": "Label (optional)" },
                             "width": { "type": "number", "default": 1280, "minimum": 16, "maximum": 7680, "description": "Width (px)" },
                             "height": { "type": "number", "default": 720, "minimum": 16, "maximum": 4320, "description": "Height (px)" },
-                            "bitrate": { "type": "number", "default": 2500, "minimum": 128, "maximum": 50000, "description": "Bitrate (kbps)" }
+                            "bitrate": { "type": "number", "default": 2500, "minimum": 128, "maximum": 50000, "description": "Bitrate (kbps)" },
+                            "codec": {
+                                "type": "string",
+                                "enum": ["h264", "h265", "av1"],
+                                "x-advanced": true,
+                                "x-enumLabels": { "h264": "H.264", "h265": "H.265", "av1": "AV1" },
+                                "description": "Override output codec for this rendition. Blank = inherit the global codec."
+                            },
+                            "encoderImpl": {
+                                "type": "string",
+                                "enum": ["auto", "v4l2", "va", "software"],
+                                "x-advanced": true,
+                                "x-enumLabels": {
+                                    "auto": "Auto",
+                                    "v4l2": "V4L2 hardware (Pi)",
+                                    "va": "VA-API hardware (Intel iGPU)",
+                                    "software": "Software (x264/x265)"
+                                },
+                                "description": "Override encoder implementation for this rendition. Resolved against this rendition's codec. Blank = inherit the global implementation."
+                            },
+                            "rateControl": {
+                                "type": "string",
+                                "enum": ["cbr", "vbr"],
+                                "x-advanced": true,
+                                "x-enumLabels": {
+                                    "cbr": "CBR (constant)",
+                                    "vbr": "VBR (variable)"
+                                },
+                                "description": "Override rate control for this rendition. Blank = inherit."
+                            },
+                            "speedPreset": {
+                                "type": "string",
+                                "enum": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"],
+                                "x-advanced": true,
+                                "x-enumLabels": {
+                                    "ultrafast": "Ultrafast",
+                                    "superfast": "Superfast",
+                                    "veryfast": "Very fast",
+                                    "faster": "Faster",
+                                    "fast": "Fast",
+                                    "medium": "Medium",
+                                    "slow": "Slow"
+                                },
+                                "x-showWhen": "encoderImpl=software,va,auto",
+                                "description": "Override speed↔quality preset for this rendition (software x264/x265 / VA-API only). Raise it on just the top rendition for cleaner motion without paying the CPU on every quality. Blank = inherit."
+                            },
+                            "h264Profile": {
+                                "type": "string",
+                                "enum": ["auto", "baseline", "main", "high"],
+                                "x-advanced": true,
+                                "x-enumLabels": {
+                                    "auto": "Auto",
+                                    "baseline": "Baseline",
+                                    "main": "Main",
+                                    "high": "High"
+                                },
+                                "x-showWhen": "codec=h264",
+                                "description": "Override H.264 profile for this rendition (H.264 only) — e.g. Baseline on a low rendition targeting old decoders. Blank = inherit."
+                            },
+                            "sceneCut": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 100,
+                                "x-advanced": true,
+                                "x-showWhen": "encoderImpl=software,auto",
+                                "description": "Override scene-cut threshold for this rendition (software x264/x265 only; 0 = off). Blank = inherit."
+                            }
                         }
                     },
                     "x-liveUpdatable": false

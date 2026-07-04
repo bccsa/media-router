@@ -304,9 +304,12 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 | `x-enumBy` | `{ field, map }` | Field-dependent dropdown options (e.g. `{ "field": "codec", "map": { "opus": [...], "aac": [...] } }`) |
 | `x-maxBy` | `{ field, map }` | Field-dependent max for number inputs (e.g. `{ "field": "codec", "map": { "opus": 8, "aac": 6 } }`) |
 | `x-showWhen` | `string` | Only show field when condition matches (e.g. `"codec=opus"`) |
+| `x-advanced` | `boolean` | **(array-item fields only)** Collapse this property into a per-item **Advanced** section in `MrArrayField`, and treat it as an optional _override_: it is NOT seeded with a default on Add, an absent value means "inherit", and the control offers an explicit way back to inherit ("Inherit (global)" for enums, a ↺ reset button for numbers). Used by the transcoder for per-rendition encoder overrides. |
 | `x-contextMenu` | `boolean` | Show this setting in the module's right-click context menu |
 | `x-unit` | `string` | Unit label displayed next to the value (e.g. `"%"`, `"kbps"`, `"ms"`) |
 | `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable) |
+
+**Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, and item-relative `x-showWhen` are honoured — `x-showWhen` is evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
 
 #### Context Menu Settings
 

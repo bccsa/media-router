@@ -292,6 +292,7 @@ function clearUpload(field: FormField): void {
                 v-else-if="field.type === 'array' && field.items"
                 :model-value="(settings[field.key] as unknown[]) ?? field.defaultValue ?? []"
                 :schema="field.items"
+                :global-config="settings"
                 :disabled="field.readOnly"
                 @update:model-value="onUpdate(field.key, $event)"
             />

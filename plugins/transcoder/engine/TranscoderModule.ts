@@ -18,8 +18,11 @@ import {
     buildDynamicPorts,
     outputPortId,
     readRenditions,
+    renditionLabel,
     type DynamicPort,
+    type ImplChoice,
     type Rendition,
+    type ResolvedEncode,
     type TranscoderOutput,
 } from './transcoderPorts.js';
 
@@ -108,60 +111,71 @@ export class TranscoderModule extends GstPluginBase {
             return null;
         }
 
-        const codec = (config.codec as CodecId) ?? 'h264';
-        const impl = resolveImpl(
-            codec,
-            (config.encoderImpl as ImplId | 'auto') ?? 'auto',
-            TranscoderModule.availableImpls[codec] ?? [],
-        );
-        if (!impl) {
-            this.setHealth(
-                'error',
-                `No encoder available for ${codec} — install a compatible GStreamer plugin`,
-            );
-            return null;
-        }
+        // Module-global encoder defaults. Each is validated against its known set
+        // so a malformed config can't splice an arbitrary token into the
+        // gst-launch string; they also serve as the inherit-fallback for any
+        // rendition that doesn't override the field.
+        const globalCodec = (config.codec as CodecId) ?? 'h264';
+        const globalImplChoice = (config.encoderImpl as ImplChoice) ?? 'auto';
+        const globalRateControl = config.rateControl === 'vbr' ? 'vbr' : 'cbr';
+        const globalSpeedPreset = SPEED_PRESETS.includes(config.speedPreset as SpeedPreset)
+            ? (config.speedPreset as SpeedPreset)
+            : 'ultrafast';
+        const globalH264Profile = H264_PROFILES.includes(config.h264Profile as H264Profile)
+            ? (config.h264Profile as H264Profile)
+            : 'auto';
+        // Clamp the scene-cut threshold to x264's valid 0–100 range (0 = off).
+        const rawSceneCut = Math.round(Number(config.sceneCut));
+        const globalSceneCut = Number.isFinite(rawSceneCut)
+            ? Math.min(100, Math.max(0, rawSceneCut))
+            : 40;
 
+        // Resolve each rendition's effective encoder settings (override ??
+        // global) and its concrete impl. The impl is resolved PER rendition
+        // against the rendition's (possibly overridden) codec — an inherited
+        // encoderImpl choice like 'auto' must re-pick for that codec, not reuse
+        // the global codec's resolved impl.
         const outputs: TranscoderOutput[] = [];
         for (let i = 0; i < renditions.length; i++) {
+            const r = renditions[i];
+            const codec = r.codec ?? globalCodec;
+            const implChoice = r.encoderImpl ?? globalImplChoice;
+            const impl = resolveImpl(codec, implChoice, TranscoderModule.availableImpls[codec] ?? []);
+            if (!impl) {
+                this.setHealth(
+                    'error',
+                    `No ${codec} encoder available for rendition "${renditionLabel(r)}" — install a compatible GStreamer plugin`,
+                );
+                return null;
+            }
+            const encode: ResolvedEncode = {
+                codec,
+                impl,
+                rateControl: r.rateControl ?? globalRateControl,
+                speedPreset: r.speedPreset ?? globalSpeedPreset,
+                h264Profile: r.h264Profile ?? globalH264Profile,
+                sceneCut: r.sceneCut ?? globalSceneCut,
+            };
             const portId = outputPortId(i);
             const ep = router.assignUdpPort(instanceId, portId);
             if (!ep) {
                 this.setHealth('error', `UDP port pool exhausted while allocating ${portId}`);
                 return null;
             }
-            outputs.push({ portId, host: ep.host, port: ep.port, rendition: renditions[i] });
+            outputs.push({ portId, host: ep.host, port: ep.port, rendition: r, encode });
         }
 
         const framerate = (config.framerate as number) ?? 50;
         const gopFrames = (config.gopFrames as number) ?? 50;
         const bufferMs = (config.bufferMs as number) ?? 200;
         const decodeThreads = config.cpuDecodeThreading === 'single' ? 'single' : 'multi';
-        const rateControl = config.rateControl === 'vbr' ? 'vbr' : 'cbr';
-        // Validate against the known set so a malformed config can't splice an
-        // arbitrary token into the gst-launch string; fall back to 'ultrafast'.
-        const speedPreset = SPEED_PRESETS.includes(config.speedPreset as SpeedPreset)
-            ? (config.speedPreset as SpeedPreset)
-            : 'ultrafast';
-        const h264Profile = H264_PROFILES.includes(config.h264Profile as H264Profile)
-            ? (config.h264Profile as H264Profile)
-            : 'auto';
-        // Clamp the scene-cut threshold to x264's valid 0–100 range (0 = off).
-        const rawSceneCut = Math.round(Number(config.sceneCut));
-        const sceneCut = Number.isFinite(rawSceneCut) ? Math.min(100, Math.max(0, rawSceneCut)) : 40;
         const result = buildPipeline({
             input: { host: upstream.host, port: upstream.port },
             outputs,
-            codec,
-            impl,
             framerate,
             gopFrames,
             bufferMs,
             decodeThreads,
-            rateControl,
-            speedPreset,
-            h264Profile,
-            sceneCut,
             timeoutNs: 5_000_000_000,
         });
         if (!result) return null;
@@ -169,11 +183,13 @@ export class TranscoderModule extends GstPluginBase {
         this.sinkNames = result.sinkNames;
         this.renditions = renditions;
         this.setStatusData('input', { host: upstream.host, port: upstream.port });
+        // Headline codec/impl show the global default; renditions that override
+        // codec/impl are flagged inline in the renditions summary.
         this.setStatusData('encoder', {
-            codec,
-            impl,
+            codec: globalCodec,
+            impl: resolveImpl(globalCodec, globalImplChoice, TranscoderModule.availableImpls[globalCodec] ?? []) ?? globalImplChoice,
             framerate: `${framerate} fps`,
-            renditions: this.renditionSummary(renditions),
+            renditions: this.renditionSummary(outputs),
         });
         this.setHealth('ok');
 
@@ -189,8 +205,23 @@ export class TranscoderModule extends GstPluginBase {
 
     // --- internals ---
 
-    private renditionSummary(renditions: Rendition[]): string {
-        return renditions.map((r) => `${r.width}x${r.height}@${r.bitrate}k`).join(', ');
+    private renditionSummary(outputs: TranscoderOutput[]): string {
+        return outputs
+            .map((o) => {
+                const r = o.rendition;
+                // Flag only the knobs this rendition actually overrides, using the
+                // resolved value so 'auto'/inherited entries don't show noise.
+                const tags: string[] = [];
+                if (r.codec) tags.push(o.encode.codec);
+                if (r.encoderImpl) tags.push(o.encode.impl);
+                if (r.rateControl) tags.push(o.encode.rateControl);
+                if (r.speedPreset) tags.push(o.encode.speedPreset);
+                if (r.h264Profile && r.h264Profile !== 'auto') tags.push(o.encode.h264Profile);
+                if (r.sceneCut !== undefined) tags.push(`sc${o.encode.sceneCut}`);
+                const suffix = tags.length ? ` [${tags.join(', ')}]` : '';
+                return `${r.width}x${r.height}@${r.bitrate}k${suffix}`;
+            })
+            .join(', ');
     }
 
     /**

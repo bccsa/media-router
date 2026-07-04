@@ -3,10 +3,29 @@
  *
  * Pure and dependency-free (plain inputs → plain outputs) so they unit-test on
  * their own and stay decoupled from the GStreamer pipeline assembly in
- * `transcoderPipeline.ts`.
+ * `transcoderPipeline.ts`. The only engine imports are the encoder enum
+ * type/const definitions used to validate per-rendition override values —
+ * constants, no runtime dependency on the pipeline.
  */
 
+import {
+    SPEED_PRESETS,
+    H264_PROFILES,
+    type CodecId,
+    type H264Profile,
+    type ImplId,
+    type RateControl,
+    type SpeedPreset,
+} from '@media-router/engine';
+
 export type PortDirection = 'input' | 'output';
+
+/** Encoder-impl selector as it appears in config — a concrete impl or 'auto'. */
+export type ImplChoice = ImplId | 'auto';
+
+const CODEC_IDS: readonly CodecId[] = ['h264', 'h265', 'av1'];
+const ENCODER_IMPLS: readonly ImplChoice[] = ['auto', 'v4l2', 'va', 'software'];
+const RATE_CONTROLS: readonly RateControl[] = ['cbr', 'vbr'];
 
 export interface DynamicPort {
     id: string;
@@ -20,20 +39,51 @@ export interface DynamicPort {
     requiresOrderedApply?: boolean;
 }
 
-/** One configured output rendition. */
-export interface Rendition {
+/**
+ * Optional per-rendition encoder overrides. Every field is optional: an absent
+ * value means "inherit the module-global setting". Only the encode-branch knobs
+ * are overridable — framerate / GOP / buffer / decode-threading stay global
+ * (single shared decoder + ABR keyframe alignment). Resolution of override ??
+ * global happens in TranscoderModule, not here.
+ */
+export interface RenditionOverrides {
+    codec?: CodecId;
+    encoderImpl?: ImplChoice;
+    rateControl?: RateControl;
+    speedPreset?: SpeedPreset;
+    h264Profile?: H264Profile;
+    sceneCut?: number;
+}
+
+/** One configured output rendition (size/bitrate + optional encoder overrides). */
+export interface Rendition extends RenditionOverrides {
     name: string;
     width: number;
     height: number;
     bitrate: number;
 }
 
-/** A rendition with its allocated UDP endpoint + stable port id. */
+/**
+ * Fully-resolved per-rendition encoder settings (override ?? global, with the
+ * impl resolved to a concrete element). Built by TranscoderModule and consumed
+ * by the pipeline leaf builder — no `auto`, no undefined.
+ */
+export interface ResolvedEncode {
+    codec: CodecId;
+    impl: ImplId;
+    rateControl: RateControl;
+    speedPreset: SpeedPreset;
+    h264Profile: H264Profile;
+    sceneCut: number;
+}
+
+/** A rendition with its allocated UDP endpoint + resolved encoder settings. */
 export interface TranscoderOutput {
     portId: string;
     host: string;
     port: number;
     rendition: Rendition;
+    encode: ResolvedEncode;
 }
 
 const INPUT_PORT_ID = 'mpegts-in';
@@ -70,11 +120,20 @@ export function readRenditions(config: Record<string, unknown>): Rendition[] {
     if (!Array.isArray(arr)) return [{ ...DEFAULT_RENDITION }];
     return arr.slice(0, MAX_RENDITIONS).map((raw) => {
         const e = (raw ?? {}) as Record<string, unknown>;
+        // Overrides are strictly validated: a value not in the known enum set (or
+        // a blank "inherit" sentinel) collapses to undefined = inherit global, so
+        // a malformed config can never splice junk into the gst-launch string.
         return {
             name: typeof e.name === 'string' ? e.name : '',
             width: toPositiveInt(e.width, 1280),
             height: toPositiveInt(e.height, 720),
             bitrate: toPositiveInt(e.bitrate, 2500),
+            codec: readEnum(e.codec, CODEC_IDS),
+            encoderImpl: readEnum(e.encoderImpl, ENCODER_IMPLS),
+            rateControl: readEnum(e.rateControl, RATE_CONTROLS),
+            speedPreset: readEnum(e.speedPreset, SPEED_PRESETS),
+            h264Profile: readEnum(e.h264Profile, H264_PROFILES),
+            sceneCut: readSceneCutOverride(e.sceneCut),
         };
     });
 }
@@ -82,6 +141,20 @@ export function readRenditions(config: Record<string, unknown>): Rendition[] {
 function toPositiveInt(value: unknown, fallback: number): number {
     const n = Math.round(Number(value));
     return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Keep a string override only if it's in the allowed set; else inherit (undefined). */
+function readEnum<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+    return typeof value === 'string' && (allowed as readonly string[]).includes(value)
+        ? (value as T)
+        : undefined;
+}
+
+/** Scene-cut override: blank/absent = inherit; otherwise clamp to x264's 0–100. */
+function readSceneCutOverride(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Math.round(Number(value));
+    return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : undefined;
 }
 
 /** Display label for a rendition's port: operator name, else `WxH`. */
