@@ -92,17 +92,20 @@ function toggleMute() {
             <MrVuMeter :levels="vuLevels" orientation="vertical" :num-blocks="15" :block-gap="2" />
         </div>
 
-        <div v-if="volumeEnabled" class="fader-container">
+        <div class="fader-container">
             <VerticalFader
                 :value="localVolume"
                 :min="0"
                 :max="volumeMax"
+                :disabled="!volumeEnabled"
                 @input="onFaderInput"
                 @end="onFaderEnd"
             />
         </div>
 
-        <div v-if="volumeEnabled" class="volume-display">{{ Math.round(localVolume) }}%</div>
+        <div class="volume-display" :class="{ disabled: !volumeEnabled }">
+            {{ Math.round(localVolume) }}%
+        </div>
 
         <button
             class="power-btn"
@@ -182,6 +185,9 @@ function toggleMute() {
     color: var(--text-primary, #f1f5f9);
     text-align: center;
     min-height: 20px;
+}
+.volume-display.disabled {
+    opacity: 0.3;
 }
 
 .power-btn {

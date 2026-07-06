@@ -5,6 +5,7 @@ const props = defineProps<{
     value: number;
     min?: number;
     max?: number;
+    disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -35,6 +36,7 @@ function getPercentFromY(clientY: number): number {
 }
 
 function onTouchStart(e: TouchEvent) {
+    if (props.disabled) return;
     e.preventDefault();
     dragging.value = true;
     const pct = getPercentFromY(e.touches[0].clientY);
@@ -57,6 +59,7 @@ function onTouchEnd(e: TouchEvent) {
 }
 
 function onMouseDown(e: MouseEvent) {
+    if (props.disabled) return;
     e.preventDefault();
     dragging.value = true;
     const pct = getPercentFromY(e.clientY);
@@ -91,6 +94,7 @@ const thumbPercent = computed(() => valueToPercent(props.value));
     <div
         ref="trackRef"
         class="fader-track"
+        :class="{ disabled }"
         @touchstart="onTouchStart"
         @touchmove="onTouchMove"
         @touchend="onTouchEnd"
@@ -126,6 +130,11 @@ const thumbPercent = computed(() => valueToPercent(props.value));
     margin-left: -3px;
     border-radius: 3px;
     background: var(--border-primary, #2d3348);
+}
+
+.fader-track.disabled {
+    cursor: not-allowed;
+    opacity: 0.3;
 }
 
 .fader-fill {
