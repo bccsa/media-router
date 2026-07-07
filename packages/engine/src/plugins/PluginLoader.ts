@@ -169,6 +169,20 @@ export class PluginLoader {
         return Array.from(this.plugins.values()).map((p) => p.manifest);
     }
 
+    /**
+     * Effective config schemas per plugin id, as narrowed by each plugin's
+     * `initManifest` for THIS host (e.g. the encoder probe drops impls the box
+     * can't honour). Sent to the manager on connect so it renders each engine's
+     * real capabilities rather than falling back to its own host probe.
+     */
+    getPluginSchemas(): Record<string, unknown> {
+        const schemas: Record<string, unknown> = {};
+        for (const [pluginId, p] of this.plugins) {
+            schemas[pluginId] = p.manifest.configSchema;
+        }
+        return schemas;
+    }
+
     /** Get the number of loaded plugins. */
     get size(): number {
         return this.plugins.size;

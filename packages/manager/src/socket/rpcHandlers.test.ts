@@ -34,6 +34,7 @@ function captureHandlers(configStore: ConfigStore) {
     } as any;
     const eventForwarder = {
         getEngineData: vi.fn().mockReturnValue(undefined),
+        getPluginSchemas: vi.fn().mockReturnValue(undefined),
         notifyRename: vi.fn(),
     } as any;
     const pluginRegistry = {
@@ -382,6 +383,27 @@ describe('rpcHandlers — profiles', () => {
             expect.arrayContaining([
                 expect.objectContaining({ path: '/activeProfile', value: 'p1' }),
             ]),
+        );
+    });
+
+    it('profile:activate enriches modules with the engine-reported schemas (#661)', async () => {
+        store.createProfile('eng-1', 'p1', {
+            modules: { 'mod-a': { pluginId: 'transcoder' } },
+            connections: [],
+        });
+        const { call, eventForwarder, pluginRegistry } = captureHandlers(store);
+        const engineSchemas = { transcoder: { properties: { encoderImpl: { enum: ['auto', 'va'] } } } };
+        (eventForwarder.getPluginSchemas as any).mockReturnValue(engineSchemas);
+
+        await call('profile:activate', { engineId: 'eng-1', profileName: 'p1' });
+
+        expect(eventForwarder.getPluginSchemas).toHaveBeenCalledWith('eng-1');
+        // The engine's own schemas must reach enrichModule so activating a
+        // profile doesn't revert modules to the manager's local probe.
+        expect(pluginRegistry.enrichModule).toHaveBeenCalledWith(
+            'mod-a',
+            expect.objectContaining({ pluginId: 'transcoder' }),
+            engineSchemas,
         );
     });
 

@@ -210,6 +210,7 @@ export class Engine {
             },
             enrichConfigForLcp: (config) => this.enrichConfigForLcp(config),
             refreshModulePorts: (moduleId) => this.lifecycle.refreshPorts(moduleId),
+            pluginSchemas: () => this.pluginLoader.getPluginSchemas(),
         });
     }
 

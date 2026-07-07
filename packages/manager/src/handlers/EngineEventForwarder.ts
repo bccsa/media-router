@@ -93,6 +93,32 @@ export class EngineEventForwarder {
             this.io.emit('engine:state', { engineId, state });
         });
 
+        // Engine reports its effective per-plugin config schemas on connect
+        // (this host's real capabilities). Cache per engine and push a
+        // configSchema replace for each already-placed module so browsers that
+        // are already viewing the engine refresh without a reload (issue #661).
+        this.engineManager.on('engineCapabilities', (engineId: string, data: unknown) => {
+            if (typeof data !== 'object' || data === null) {
+                log.warn({ engineId }, 'engineCapabilities: expected object, dropping');
+                return;
+            }
+            const schemas = data as Record<string, unknown>;
+            this.setEngineData(engineId, 'pluginSchemas', schemas);
+
+            const engine = this.configStore.getEngine(engineId);
+            if (!engine?.active_profile) return;
+            const profile = this.configStore.getProfile(engineId, engine.active_profile as string);
+            const modules = (profile?.modules ?? {}) as Record<string, Record<string, unknown>>;
+            const patch = Object.entries(modules)
+                .filter(([, mod]) => schemas[mod.pluginId as string] !== undefined)
+                .map(([id, mod]) => ({
+                    op: 'replace' as const,
+                    path: `/modules/${id}/configSchema`,
+                    value: schemas[mod.pluginId as string],
+                }));
+            if (patch.length > 0) this.io.emit('engine:update', { engineId, patch });
+        });
+
         this.engineManager.on('engineVu', (engineId: string, data: unknown) => {
             if (typeof data !== 'object' || data === null) return;
             this.io
@@ -207,6 +233,18 @@ export class EngineEventForwarder {
     /** Get cached runtime states for an engine (used when browser connects). */
     getCachedStates(engineId: string): Record<string, unknown> {
         return this.cachedModuleStates.get(engineId) ?? {};
+    }
+
+    /**
+     * Engine-reported effective plugin schemas (pluginId → configSchema), or
+     * `undefined` when the engine hasn't reported (offline, or an older engine
+     * version). Callers fall back to the manager's own probed schema in that
+     * case, so overlaying prefers the engine's real capabilities (issue #661).
+     */
+    getPluginSchemas(engineId: string): Record<string, unknown> | undefined {
+        return this.getEngineData(engineId, 'pluginSchemas') as
+            | Record<string, unknown>
+            | undefined;
     }
 
     /** Get log buffer for an engine (used for logs:history request). */

@@ -72,9 +72,10 @@ export function setupSocketIO(deps: SocketDeps): void {
 
                 // Overlay live plugin manifest + cached runtime state (clone to avoid mutating ConfigStore)
                 const cachedStates = eventForwarder.getCachedStates(e.engine_id as string);
+                const engineSchemas = eventForwarder.getPluginSchemas(e.engine_id as string);
                 for (const [id, mod] of Object.entries(modules)) {
                     const m = (modules[id] = { ...(mod as Record<string, unknown>) });
-                    pluginRegistry.overlayManifest(m);
+                    pluginRegistry.overlayManifest(m, engineSchemas);
                     const cached = cachedStates[id] as Record<string, unknown> | undefined;
                     if (cached) {
                         if ('health' in cached) m.health = cached.health;

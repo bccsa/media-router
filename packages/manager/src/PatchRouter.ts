@@ -3,6 +3,7 @@ import { createLogger, applyJsonPatch } from '@media-router/shared-types';
 import type { PatchOp } from '@media-router/shared-types';
 import type { ConfigStore } from './config/ConfigStore.js';
 import type { EngineConnectionManager } from './engines/EngineConnectionManager.js';
+import type { EngineEventForwarder } from './handlers/EngineEventForwarder.js';
 import type { PluginRegistry } from './plugins/PluginRegistry.js';
 import { dispatchRule, type RuleContext } from './patchRules.js';
 
@@ -36,6 +37,7 @@ export class PatchRouter {
         private engineManager: EngineConnectionManager,
         private io: SocketIOServer,
         private pluginRegistry: PluginRegistry,
+        private eventForwarder: EngineEventForwarder,
     ) {}
 
     /**
@@ -162,7 +164,7 @@ export class PatchRouter {
      * state, not on an intermediate state between ops).
      */
     private preprocessOps(
-        _engineId: string,
+        engineId: string,
         config: Record<string, unknown>,
         ops: PatchOp[],
     ): { processed: PatchOp[]; cascades: PatchOp[] } {
@@ -172,6 +174,7 @@ export class PatchRouter {
             interlocks: config.interlocks as Array<{ id: string; members: string[] }>,
             connections: (config.connections ?? []) as Array<Record<string, unknown>>,
             pluginRegistry: this.pluginRegistry,
+            engineSchemas: this.eventForwarder.getPluginSchemas(engineId),
         };
 
         const processed: PatchOp[] = [];
@@ -205,7 +208,11 @@ export class PatchRouter {
                 const value: Record<string, unknown> = {
                     ...(op.value as Record<string, unknown>),
                 };
-                this.pluginRegistry.enrichModule(moduleId, value);
+                this.pluginRegistry.enrichModule(
+                    moduleId,
+                    value,
+                    this.eventForwarder.getPluginSchemas(engineId),
+                );
                 enriched.push({ ...op, value });
                 continue;
             }

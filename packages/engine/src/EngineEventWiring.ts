@@ -32,6 +32,9 @@ export interface EngineEventContext {
     /** Re-resolve a module's dynamic ports after a plugin auto-writes config
      *  that changes its port set (mpegts-demuxer discovery, plan Phase 3). */
     refreshModulePorts: (moduleId: string) => void;
+    /** Effective per-plugin config schemas for THIS host, sent to the manager
+     *  on connect so it shows this engine's real capabilities (issue #661). */
+    pluginSchemas: () => Record<string, unknown>;
 }
 
 export function wireEngineEvents(ctx: EngineEventContext): void {
@@ -176,6 +179,14 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         ctx.systemStats.start();
         ctx.managerConnection.send('engineRunningState', {
             running: ctx.runController.isRunning,
+        });
+        // Advertise this host's effective plugin schemas so the manager renders
+        // this engine's real capabilities (e.g. hardware encoders) rather than
+        // its own host probe. Static per session, so sent once on connect;
+        // guaranteed because a dropped packet leaves the manager on its
+        // fallback schema until the next reconnect (issue #661).
+        ctx.managerConnection.send('capabilities', ctx.pluginSchemas(), {
+            guaranteeDelivery: true,
         });
         const states = ctx.moduleManager.getAllStates();
         if (Object.keys(states).length > 0) {

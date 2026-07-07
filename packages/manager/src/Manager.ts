@@ -87,6 +87,7 @@ export class Manager {
             this.engineManager,
             this.io,
             pluginRegistry,
+            eventForwarder,
         );
 
         // Wire everything

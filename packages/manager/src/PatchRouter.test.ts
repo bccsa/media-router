@@ -60,8 +60,23 @@ function createMocks() {
         pluginRegistry.overlayManifest(mod);
     };
 
-    const router = new PatchRouter(configStore, engineManager, io, pluginRegistry);
-    return { router, configStore, engineManager, io, pluginRegistry, emitted, senderRoom };
+    // Engine hasn't reported schemas by default → PatchRouter falls back to the
+    // manager's own manifest. Tests override the return value to exercise #661.
+    const eventForwarder: any = {
+        getPluginSchemas: vi.fn().mockReturnValue(undefined),
+    };
+
+    const router = new PatchRouter(configStore, engineManager, io, pluginRegistry, eventForwarder);
+    return {
+        router,
+        configStore,
+        engineManager,
+        io,
+        pluginRegistry,
+        eventForwarder,
+        emitted,
+        senderRoom,
+    };
 }
 
 describe('PatchRouter', () => {
@@ -322,6 +337,49 @@ describe('PatchRouter', () => {
             expect(addOp.value.ports).toEqual([
                 { id: 'audio-out', direction: 'output', streamType: 'audio/pcm' },
             ]);
+        });
+
+        it('module add prefers the engine-reported schema over the manager probe (#661)', () => {
+            const { router, configStore, engineManager, pluginRegistry, eventForwarder } =
+                createMocks();
+            // Manager's own probe: software-only, no `va`, and no scenecut default.
+            pluginRegistry.find.mockReturnValue({
+                pluginId: 'transcoder',
+                displayName: 'Transcoder',
+                ports: [],
+                configSchema: {
+                    properties: {
+                        encoderImpl: { type: 'string', enum: ['auto', 'software'] },
+                    },
+                },
+            });
+            // The target engine reported hardware VA plus an extra defaulted field.
+            eventForwarder.getPluginSchemas.mockReturnValue({
+                transcoder: {
+                    properties: {
+                        encoderImpl: { type: 'string', enum: ['auto', 'va', 'software'] },
+                        sceneCut: { type: 'number', default: 40 },
+                    },
+                },
+            });
+            configStore.modifyProfileConfig.mockImplementation(
+                (_eid: string, _pid: string, fn: any) => fn({ modules: {}, connections: [] }),
+            );
+
+            router.onPatch('browser-1', 'eng-1', [
+                { op: 'add', path: '/modules/mod-new', value: { pluginId: 'transcoder' } },
+            ]);
+
+            const addOp = engineManager.sendToEngine.mock.calls[0][2].ops.find(
+                (o: any) => o.op === 'add',
+            );
+            // configSchema + defaults come from the engine, not the manager probe.
+            expect(addOp.value.configSchema.properties.encoderImpl.enum).toEqual([
+                'auto',
+                'va',
+                'software',
+            ]);
+            expect(addOp.value.settings).toEqual({ sceneCut: 40 });
         });
 
         it('module add with unknown plugin passes through without enrichment', () => {

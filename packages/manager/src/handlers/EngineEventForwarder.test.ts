@@ -172,6 +172,60 @@ describe('EngineEventForwarder', () => {
         });
     });
 
+    describe('engineCapabilities (#661)', () => {
+        it('caches schemas and pushes configSchema patches for matching modules', () => {
+            const { forwarder, engineManager, configStore, io } = createMocks();
+            configStore.getProfile.mockReturnValue({
+                modules: {
+                    't-1': { pluginId: 'transcoder' },
+                    'a-1': { pluginId: 'audio-input' }, // no reported schema → skipped
+                },
+            });
+            const schemas = {
+                transcoder: { properties: { encoderImpl: { enum: ['auto', 'va'] } } },
+            };
+
+            engineManager.emit('engineCapabilities', 'eng-1', schemas);
+
+            expect(forwarder.getPluginSchemas('eng-1')).toEqual(schemas);
+            expect(io.emit).toHaveBeenCalledWith('engine:update', {
+                engineId: 'eng-1',
+                patch: [
+                    {
+                        op: 'replace',
+                        path: '/modules/t-1/configSchema',
+                        value: schemas.transcoder,
+                    },
+                ],
+            });
+        });
+
+        it('caches but does not broadcast when no placed module matches', () => {
+            const { forwarder, engineManager, configStore, io } = createMocks();
+            configStore.getProfile.mockReturnValue({ modules: { 'a-1': { pluginId: 'audio-input' } } });
+
+            engineManager.emit('engineCapabilities', 'eng-1', { transcoder: { properties: {} } });
+
+            expect(forwarder.getPluginSchemas('eng-1')).toBeDefined();
+            expect(io.emit).not.toHaveBeenCalledWith('engine:update', expect.anything());
+        });
+
+        it('drops non-object payloads', () => {
+            const { forwarder, engineManager, io } = createMocks();
+            engineManager.emit('engineCapabilities', 'eng-1', 'nope');
+            expect(forwarder.getPluginSchemas('eng-1')).toBeUndefined();
+            expect(io.emit).not.toHaveBeenCalled();
+        });
+
+        it('is cleared on engineOffline', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineCapabilities', 'eng-1', { transcoder: {} });
+            expect(forwarder.getPluginSchemas('eng-1')).toBeDefined();
+            engineManager.emit('engineOffline', 'eng-1');
+            expect(forwarder.getPluginSchemas('eng-1')).toBeUndefined();
+        });
+    });
+
     describe('engineVu', () => {
         it('emits VU data to watchers room via volatile', () => {
             const { engineManager, toRoom, roomVolatileEmit } = createMocks();

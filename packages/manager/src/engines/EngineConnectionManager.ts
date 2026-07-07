@@ -16,6 +16,7 @@ const log = createLogger('EngineConnectionManager');
  *   - 'engineOnline' (engineId)
  *   - 'engineOffline' (engineId)
  *   - 'engineState' (engineId, state)
+ *   - 'engineCapabilities' (engineId, pluginSchemas)
  */
 export class EngineConnectionManager extends EventEmitter {
     private server: Server;
@@ -80,6 +81,12 @@ export class EngineConnectionManager extends EventEmitter {
 
             socket.on('system', (data: unknown) => {
                 this.emit('engineSystem', clientId, data);
+            });
+
+            // Engine advertises its effective per-plugin config schemas on
+            // connect — this host's real capabilities (issue #661).
+            socket.on('capabilities', (data: unknown) => {
+                this.emit('engineCapabilities', clientId, data);
             });
 
             socket.on('logs', (data: unknown) => {

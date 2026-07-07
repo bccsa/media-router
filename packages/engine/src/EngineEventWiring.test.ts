@@ -81,6 +81,8 @@ function makeCtx(stubs: Stubs): EngineEventContext {
         getCurrentConfig: () => null,
         setCurrentConfig: vi.fn(),
         enrichConfigForLcp: (c) => c,
+        refreshModulePorts: vi.fn(),
+        pluginSchemas: vi.fn(() => ({ transcoder: { properties: {} } })),
     };
 }
 
@@ -105,6 +107,16 @@ describe('wireEngineEvents — state resync heartbeat', () => {
 
         expect(stubs.managerConnection.sendState).toHaveBeenCalledWith(
             { 'mod-1': { running: true, health: 'ok' } },
+            { guaranteeDelivery: true },
+        );
+    });
+
+    it('advertises this host plugin schemas on connect (guaranteed) (#661)', () => {
+        stubs.managerConnection.emit('connected');
+
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'capabilities',
+            { transcoder: { properties: {} } },
             { guaranteeDelivery: true },
         );
     });

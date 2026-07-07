@@ -32,6 +32,7 @@ describe('setupSocketIO', () => {
         const engineCommands = { isRunning: vi.fn().mockReturnValue(false) } as any;
         const eventForwarder = {
             getCachedStates: vi.fn().mockReturnValue({}),
+            getPluginSchemas: vi.fn().mockReturnValue(undefined),
             getEngineData: vi.fn().mockReturnValue(undefined),
             getLogBuffer: vi.fn().mockReturnValue([]),
         } as any;

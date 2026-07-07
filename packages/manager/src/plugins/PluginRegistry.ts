@@ -119,12 +119,18 @@ export class PluginRegistry {
      *
      * Static-port plugins are authoritative for `ports`; dynamic-port plugins
      * (manifest.ports empty, e.g. n1-mixer) keep whatever the engine pushed.
+     *
+     * `engineSchemas` (pluginId → configSchema) is the engine's own probed
+     * schema for THIS host. When it carries the module's plugin we use it so
+     * the UI shows that engine's real capabilities (e.g. hardware encoders);
+     * otherwise we fall back to the manager's local probe. See issue #661.
      */
-    overlayManifest(mod: Record<string, unknown>): void {
+    overlayManifest(mod: Record<string, unknown>, engineSchemas?: Record<string, unknown>): void {
         const manifest = this.find(mod.pluginId as string);
         if (!manifest) return;
         if ((manifest.ports ?? []).length > 0) mod.ports = manifest.ports;
-        mod.configSchema = manifest.configSchema ?? {};
+        const engineSchema = engineSchemas?.[mod.pluginId as string];
+        mod.configSchema = engineSchema ?? manifest.configSchema ?? {};
         mod.color = manifest.color;
         mod.icon = manifest.icon;
         mod.statusSections = manifest.statusSections;
@@ -142,13 +148,17 @@ export class PluginRegistry {
      * fields so stored per-module state (user toggles, enabled flag, etc.)
      * survives unchanged.
      */
-    enrichModule(id: string, mod: Record<string, unknown>): void {
+    enrichModule(
+        id: string,
+        mod: Record<string, unknown>,
+        engineSchemas?: Record<string, unknown>,
+    ): void {
         mod.instanceId = id;
         if (mod.enabled === undefined) mod.enabled = true;
         if (mod.running === undefined) mod.running = false;
         if (mod.health === undefined) mod.health = 'stopped';
         if (mod.pendingRestart === undefined) mod.pendingRestart = false;
-        this.overlayManifest(mod);
+        this.overlayManifest(mod, engineSchemas);
     }
 
     /** Force re-scan of the plugins directory. */

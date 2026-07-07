@@ -122,6 +122,22 @@ describe('PluginLoader', () => {
         expect(manifests.map((m) => m.pluginId).sort()).toEqual(['p1', 'p2']);
     });
 
+    it('getPluginSchemas maps pluginId to this host effective configSchema (#661)', async () => {
+        createPlugin('enc', {
+            pluginId: 'enc',
+            displayName: 'Encoder',
+            engine: './engine/T.js',
+            configSchema: { properties: { encoderImpl: { enum: ['auto', 'va', 'software'] } } },
+        });
+
+        const loader = new PluginLoader(tmpDir);
+        await loader.load();
+
+        expect(loader.getPluginSchemas()).toEqual({
+            enc: { properties: { encoderImpl: { enum: ['auto', 'va', 'software'] } } },
+        });
+    });
+
     it('clears previous plugins on reload', async () => {
         createPlugin('first', { pluginId: 'first', displayName: 'First', engine: './engine/T.js' });
 

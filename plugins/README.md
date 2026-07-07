@@ -685,6 +685,8 @@ Two optional **static** methods on the module class run **once per plugin class*
 
 Use when the manifest depends on what the host machine actually supports. The method is called once after the manifest is parsed; mutate `manifest` in place to surface detected capabilities (codec lists, encoder enums, hardware presence flags).
 
+The narrowed `configSchema` you produce here is **per-engine**: the engine advertises it to the manager on connect, so the settings panel shows *that* engine's real capabilities even when the manager runs on different hardware (e.g. an Intel engine's HW encoders appear under an ARM manager). The manager only falls back to its own host probe for engines that don't report (older engine versions). You don't need to do anything to opt in — just narrow the manifest as usual.
+
 ```typescript
 import { GstPluginBase, probeGstElement, type PluginManifest } from '@media-router/engine';
 

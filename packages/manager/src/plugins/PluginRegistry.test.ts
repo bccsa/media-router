@@ -175,6 +175,65 @@ describe('PluginRegistry', () => {
         });
     });
 
+    describe('engine-reported schemas (#661)', () => {
+        function makeRegistry() {
+            createPlugin('transcoder', {
+                pluginId: 'transcoder',
+                displayName: 'Transcoder',
+                ports: [],
+                // Manager's own probe: software-only (e.g. an ARM manager).
+                configSchema: {
+                    properties: { encoderImpl: { enum: ['auto', 'software'] } },
+                },
+            });
+            return new PluginRegistry(tmpDir);
+        }
+
+        // The engine reports hardware VA-API — an Intel engine's real caps.
+        const engineSchemas = {
+            transcoder: { properties: { encoderImpl: { enum: ['auto', 'va', 'software'] } } },
+        };
+
+        it('overlayManifest uses the engine schema when it carries the plugin', () => {
+            const mod: Record<string, unknown> = { pluginId: 'transcoder' };
+            makeRegistry().overlayManifest(mod, engineSchemas);
+            expect((mod.configSchema as any).properties.encoderImpl.enum).toEqual([
+                'auto',
+                'va',
+                'software',
+            ]);
+        });
+
+        it('overlayManifest falls back to the manager schema when the engine has not reported', () => {
+            const mod: Record<string, unknown> = { pluginId: 'transcoder' };
+            makeRegistry().overlayManifest(mod); // no engineSchemas
+            expect((mod.configSchema as any).properties.encoderImpl.enum).toEqual([
+                'auto',
+                'software',
+            ]);
+        });
+
+        it('overlayManifest falls back when the engine schema omits this plugin', () => {
+            const mod: Record<string, unknown> = { pluginId: 'transcoder' };
+            makeRegistry().overlayManifest(mod, { 'other-plugin': {} });
+            expect((mod.configSchema as any).properties.encoderImpl.enum).toEqual([
+                'auto',
+                'software',
+            ]);
+        });
+
+        it('enrichModule threads the engine schema through', () => {
+            const mod: Record<string, unknown> = { pluginId: 'transcoder' };
+            makeRegistry().enrichModule('t-1', mod, engineSchemas);
+            expect(mod.instanceId).toBe('t-1');
+            expect((mod.configSchema as any).properties.encoderImpl.enum).toEqual([
+                'auto',
+                'va',
+                'software',
+            ]);
+        });
+    });
+
     describe('refresh', () => {
         it('clears cache so next getAll rescans', () => {
             createPlugin('plugin-a', {

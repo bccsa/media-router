@@ -33,6 +33,13 @@ export interface RuleContext {
     interlocks: Array<{ id: string; members: string[] }>;
     connections: Array<Record<string, unknown>>;
     pluginRegistry: PluginRegistry;
+    /**
+     * The target engine's own reported config schemas (pluginId → configSchema),
+     * or undefined when it hasn't reported. Preferred over the manager's local
+     * schema when adding a module so it renders that engine's real capabilities
+     * (issue #661).
+     */
+    engineSchemas?: Record<string, unknown>;
 }
 
 export interface RuleResult {
@@ -193,8 +200,12 @@ const enrichModuleAdd: Rule = (op, ctx) => {
     const pluginId = modValue.pluginId as string | undefined;
     const manifest = pluginId ? ctx.pluginRegistry.find(pluginId) : undefined;
     if (manifest) {
+        // Prefer the engine's own probed schema (its real capabilities) over
+        // the manager's local one; fall back when the engine hasn't reported.
+        const configSchema =
+            (pluginId ? ctx.engineSchemas?.[pluginId] : undefined) ?? manifest.configSchema ?? {};
         const schemaProps =
-            (manifest.configSchema as { properties?: Record<string, Record<string, unknown>> })
+            (configSchema as { properties?: Record<string, Record<string, unknown>> })
                 ?.properties ?? {};
         const defaults: Record<string, unknown> = {};
         for (const [key, schema] of Object.entries(schemaProps)) {
@@ -205,7 +216,7 @@ const enrichModuleAdd: Rule = (op, ctx) => {
             ...((modValue.settings as Record<string, unknown>) ?? {}),
         };
         modValue.ports = modValue.ports ?? manifest.ports ?? [];
-        modValue.configSchema = manifest.configSchema ?? {};
+        modValue.configSchema = configSchema;
     }
 
     return { processed: [{ ...op, value: modValue }], cascades: [] };

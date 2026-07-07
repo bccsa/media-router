@@ -377,9 +377,12 @@ export function registerRpcHandlers(socket: IOSocket, deps: RpcDeps): void {
             const connections = (profile.connections ?? []) as unknown[];
             // Imported profiles can lack instanceId / runtime fields on each
             // module; without enrichment the browser builds Vue Flow nodes
-            // with `id: undefined` and crashes in `parseNode`.
+            // with `id: undefined` and crashes in `parseNode`. Pass the engine's
+            // own reported schemas so activating a profile keeps that engine's
+            // real capabilities instead of reverting to the manager probe (#661).
+            const engineSchemas = eventForwarder.getPluginSchemas(engineId);
             for (const [moduleId, mod] of Object.entries(modules)) {
-                pluginRegistry.enrichModule(moduleId, mod);
+                pluginRegistry.enrichModule(moduleId, mod, engineSchemas);
             }
 
             io.emit('engine:update', {
