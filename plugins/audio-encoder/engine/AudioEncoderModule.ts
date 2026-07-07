@@ -165,7 +165,13 @@ export class AudioEncoderModule extends GstPluginBase {
         let tail: string;
         switch (codec) {
             case 'aac':
-                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=false aac-ms=false ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`;
+                // Force plain L/R stereo: disable intensity (aac-is) and M/S
+                // (aac-ms) joint-stereo coding so independent-channel broadcast
+                // feeds aren't blended. Use `0` not `false` — newer gst-libav
+                // exposes aac-ms as a tri-state enum (auto/off/on), where the
+                // literal `false` fails to deserialize (issue #676). `0` means
+                // "off" on the enum and "false" on builds that keep it boolean.
+                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=0 aac-ms=0 ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`;
                 break;
             case 'opus':
             default: {

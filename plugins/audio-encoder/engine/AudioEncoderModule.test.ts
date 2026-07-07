@@ -47,6 +47,17 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('opusenc');
     });
 
+    it('disables AAC joint stereo with integer 0, not "false" (issue #676)', () => {
+        // avenc_aac's aac-ms is a tri-state enum (auto/off/on) on newer
+        // gst-libav; the literal "false" fails to deserialize. `0` = off works
+        // on both the enum and boolean builds.
+        const { module } = makeModule();
+        const desc = module.buildPipeline({ codec: 'aac' });
+        expect(desc.pipeline).toContain('aac-is=0 aac-ms=0');
+        expect(desc.pipeline).not.toContain('aac-ms=false');
+        expect(desc.pipeline).not.toContain('aac-is=false');
+    });
+
     it('falls back to fakesink when no UDP port can be assigned', () => {
         const { module } = makeModule({ udpPort: null });
         const desc = module.buildPipeline({});
