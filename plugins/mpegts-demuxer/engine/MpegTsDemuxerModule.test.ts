@@ -185,13 +185,17 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             });
             expect(result!.pipeline).toContain('tsdemux latency=0 name=demux');
         });
-        it('adds a udpsrc timeout so a silent upstream restarts instead of hanging tsdemux', () => {
+        it('sets no udpsrc timeout — a single-input loopback demuxer must wait for a silent source, not restart-storm', () => {
             const result = buildPipeline({
                 input: { host: '239.255.0.1', port: 40001 },
                 videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
                 audioOutputs: [],
             });
-            expect(result!.pipeline).toContain('timeout=5000000000');
+            // A timeout→restart can't recover a loopback source (the producer is
+            // local; the group never goes away) and at boot restart-stormed the
+            // whole demuxer→decoder chain, pinning every port to "stale". The
+            // already-joined udpsrc receives the instant the producer starts.
+            expect(result!.pipeline).not.toContain('timeout=');
         });
         it('goes straight from udpsrc to tsdemux with no tsparse — re-anchoring PCR mid-pipeline causes mpegtsmux PCR re-emit to surface as packet loss', () => {
             const result = buildPipeline({

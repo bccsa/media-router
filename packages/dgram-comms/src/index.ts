@@ -8,6 +8,7 @@ export { FragmentTransport } from './FragmentTransport.js';
 export type { FragmentTransportOptions } from './FragmentTransport.js';
 export { ReliableDelivery } from './ReliableDelivery.js';
 export { encrypt, decrypt, clearKeyCache } from './encryption.js';
+export { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
 export {
     fragment,
     fragmentWithId,

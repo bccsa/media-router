@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import * as dgram from 'dgram';
 import { Server } from './Server.js';
+import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
+
+// Wrap dgram.createSocket with a call-through spy so we can assert the recv
+// buffer option is plumbed through. The real socket is still created (rmem_max
+// clamping means the enlarged size isn't otherwise observable in-process).
+vi.mock('dgram', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('dgram')>();
+    return { ...actual, createSocket: vi.fn(actual.createSocket) };
+});
 
 describe('Server', () => {
     let server: Server;
@@ -43,6 +53,24 @@ describe('Server', () => {
         server = new Server({ encryptionKeys: keys });
         keys['engine-2'] = 'pass2';
         expect(server['encryptionKeys']).not.toHaveProperty('engine-2');
+    });
+
+    // ---- Receive buffer sizing ----
+
+    it('creates the listening socket with the default enlarged recv buffer', () => {
+        vi.mocked(dgram.createSocket).mockClear();
+        server = new Server();
+        expect(dgram.createSocket).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'udp4', recvBufferSize: DEFAULT_RECV_BUFFER_SIZE }),
+        );
+    });
+
+    it('honours a custom recvBufferSize', () => {
+        vi.mocked(dgram.createSocket).mockClear();
+        server = new Server({ recvBufferSize: 1_048_576 });
+        expect(dgram.createSocket).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'udp4', recvBufferSize: 1_048_576 }),
+        );
     });
 
     // ---- refreshEncryptionKeys ----

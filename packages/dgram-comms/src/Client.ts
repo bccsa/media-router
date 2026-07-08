@@ -1,5 +1,6 @@
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
+import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
 import { decrypt } from './encryption.js';
 import { FragmentTransport } from './FragmentTransport.js';
 import { Socket } from './Socket.js';
@@ -17,6 +18,8 @@ export interface ClientOptions {
     connectionTimeout?: number;
     /** Max missed keepalives before disconnect (default 3). */
     missedKeepaliveThreshold?: number;
+    /** SO_RCVBUF for each path's UDP socket in bytes (default 4 MiB). Clamped to net.core.rmem_max. */
+    recvBufferSize?: number;
 }
 
 interface PathState {
@@ -56,6 +59,7 @@ export class Client extends EventEmitter {
     private encryptionKey: string;
     private connectionTimeout: number;
     private missedKeepaliveThreshold: number;
+    private recvBufferSize: number;
     private pathStates: PathState[] = [];
     private destroyed = false;
 
@@ -73,6 +77,7 @@ export class Client extends EventEmitter {
         this.encryptionKey = options.encryptionKey;
         this.connectionTimeout = options.connectionTimeout ?? 5000;
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
+        this.recvBufferSize = options.recvBufferSize ?? DEFAULT_RECV_BUFFER_SIZE;
 
         // Set up each path
         for (const path of options.paths) {
@@ -82,7 +87,13 @@ export class Client extends EventEmitter {
 
     private addPath(path: ManagerPath): void {
         const index = this.pathStates.length;
-        const udpSocket = dgram.createSocket('udp4');
+        // Enlarge SO_RCVBUF to match the server; keeps bursty inbound (e.g. a
+        // large guaranteed config push arriving as many fragments) from
+        // overflowing the OS-default receive buffer. Clamped to rmem_max.
+        const udpSocket = dgram.createSocket({
+            type: 'udp4',
+            recvBufferSize: this.recvBufferSize,
+        });
         const transport = new FragmentTransport(udpSocket, {
             reassemblyTimeoutMs: this.connectionTimeout * 2,
         });

@@ -24,9 +24,6 @@ export interface TranscoderPipelineInputs {
      *  key-int-max (the standard x264/x265 unit). Shared by all renditions to
      *  keep keyframes aligned for ABR. */
     gopFrames: number;
-    /** udpsrc timeout (ns) — runner turns the timeout into a bus error so a
-     *  silent source triggers `restartOnError`. */
-    timeoutNs?: number;
     /** Buffer in ms (default 200): sizes the input jitter queue AND a post-decode
      *  raw-frame queue that lets the frame-threaded decoder work ahead. The cost
      *  is this much latency. Never buffered leakily on the compressed stream —
@@ -114,10 +111,15 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // downstream receive buffers (visible as packet loss). The decode chain
     // takes per-frame PTS from the PES headers via tsdemux, so PCR re-stamping
     // buys nothing here.
+    // No udpsrc `timeout`: a single-input loopback transcoder feeding a tee (fan-
+    // out, not an aggregator) has nothing to freeze when its source goes silent —
+    // it stalls, then resumes when the local producer returns. A timeout→restart
+    // can't recover a loopback source and only restart-storms (re-spawning the
+    // x264 encoders) at boot before the upstream has data. See the same rationale
+    // in mpegtsDemuxerPipeline. The multi-source mpegts-muxer keeps its timeout.
     const tsInput = buildTsUdpInput({
         host: input.input.host,
         port: input.input.port,
-        timeoutNs: input.timeoutNs,
         jitterMs: bufferMs,
         setTimestamps: false,
     });

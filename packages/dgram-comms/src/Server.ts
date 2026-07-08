@@ -1,5 +1,6 @@
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
+import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
 import { decrypt } from './encryption.js';
 import { FragmentTransport } from './FragmentTransport.js';
 import { Socket } from './Socket.js';
@@ -19,6 +20,8 @@ export interface ServerOptions {
     missedKeepaliveThreshold?: number;
     /** Minimum ms between repeated "No key" / "Decryption failed" warnings per client (default 30_000). */
     rejectLogIntervalMs?: number;
+    /** SO_RCVBUF for the listening UDP socket in bytes (default 4 MiB). Clamped to net.core.rmem_max. */
+    recvBufferSize?: number;
 }
 
 /**
@@ -62,7 +65,13 @@ export class Server extends EventEmitter {
         this.missedKeepaliveThreshold = options.missedKeepaliveThreshold ?? 3;
         this.rejectLogIntervalMs = options.rejectLogIntervalMs ?? 30_000;
 
-        this.udpSocket = dgram.createSocket('udp4');
+        // Enlarge SO_RCVBUF so a fleet-wide reconnect storm (every engine
+        // reconnecting at once after a manager restart) doesn't overflow the
+        // OS-default ~208 KB receive buffer and drop packets as RcvbufErrors.
+        this.udpSocket = dgram.createSocket({
+            type: 'udp4',
+            recvBufferSize: options.recvBufferSize ?? DEFAULT_RECV_BUFFER_SIZE,
+        });
         this.transport = new FragmentTransport(this.udpSocket, {
             reassemblyTimeoutMs: this.connectionTimeout * 2,
         });

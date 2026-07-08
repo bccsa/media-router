@@ -270,15 +270,6 @@ export interface DemuxerPipelineInputs {
 const DEMUX_NAME = 'demux';
 
 /**
- * udpsrc timeout (5 s, in ns). A silent upstream — the muxer/encoder dark, or
- * the multicast group never producing — otherwise leaves tsdemux waiting
- * forever with no bus error to trigger `restartOnError`. The runner turns the
- * resulting `GstUDPSrcTimeout` element message into an error event, so a dark
- * source recovers via the normal restart path.
- */
-const UDP_INPUT_TIMEOUT_NS = 5_000_000_000;
-
-/**
  * Bound (ms) on each video output branch's NON-leaky back-pressure queue. This
  * is a runaway/memory safety cap, NOT a latency budget: on the loopback path the
  * udpsink always drains so the queue sits near-empty and adds ≈0 latency. It
@@ -398,11 +389,21 @@ export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResu
     // PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
     // timeline, and downstream `mpegtsmux latency=0` re-emitting PCR from those
     // values surfaces at the receiver as visible packet loss on live video.
+    // No udpsrc `timeout` here (unlike the multi-source mpegts-muxer, where the
+    // aggregator can't tell a late pad from a dead one). The demuxer has a single
+    // loopback-bus input feeding independent output pads, so a silent input just
+    // produces nothing — there's no aggregator to freeze. A timeout→restart can't
+    // recover a loopback source anyway (the producer is a local pipeline; the
+    // group never "goes away"); it only thrashes. At boot, before the upstream
+    // ip-input has data, the old 5 s timeout restart-stormed the whole
+    // demuxer→decoder chain and kept every port stuck showing "stale" for
+    // minutes. The already-joined udpsrc receives the instant the local producer
+    // starts, and a producer *port* change is handled by MpegTsUdpExecutor
+    // restarting this module explicitly — not by a udpsrc watchdog.
     const udpsrc = buildUdpSrc({
         host: input.input.host,
         port: input.input.port,
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
-        timeoutNs: UDP_INPUT_TIMEOUT_NS,
         bufferSize: NET_UDP_RCV_BUF,
     });
     const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;

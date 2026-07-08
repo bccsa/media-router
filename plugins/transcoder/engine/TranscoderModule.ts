@@ -176,7 +176,6 @@ export class TranscoderModule extends GstPluginBase {
             gopFrames,
             bufferMs,
             decodeThreads,
-            timeoutNs: 5_000_000_000,
         });
         if (!result) return null;
 
