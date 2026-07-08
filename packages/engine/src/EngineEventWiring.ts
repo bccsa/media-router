@@ -144,11 +144,24 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
 
     // Forward every registered device provider's changes to the manager
     // through a single typed topic. One loop, any number of device types.
+    //
+    // Guaranteed delivery: the registry diff-polls and only emits on an actual
+    // change, so a single dropped best-effort packet would leave the manager's
+    // dropdown stale until the *next* change — which for a stable resource like
+    // network interfaces is effectively never. Same reasoning as the
+    // capabilities snapshot (#661). Payloads are small and low-frequency, so
+    // the retransmit cost is negligible. (Symptom this fixes: the mpegts-ip
+    // NIC dropdown showed empty for engines reached over a lossy tunnel because
+    // the one initial snapshot packet never arrived.)
     ctx.deviceProviders.on(
         'deviceList',
         ({ type, devices }: { type: string; devices: unknown }) => {
             if (!ctx.managerConnection.isConnected) return;
-            ctx.managerConnection.send('deviceList', { type, devices });
+            ctx.managerConnection.send(
+                'deviceList',
+                { type, devices },
+                { guaranteeDelivery: true },
+            );
         },
     );
 
@@ -156,7 +169,11 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         for (const type of ctx.deviceProviders.types()) {
             try {
                 const devices = await ctx.deviceProviders.getDevices(type);
-                ctx.managerConnection.send('deviceList', { type, devices });
+                ctx.managerConnection.send(
+                    'deviceList',
+                    { type, devices },
+                    { guaranteeDelivery: true },
+                );
             } catch (err) {
                 log.warn({ err, type }, 'Initial device snapshot failed');
             }
@@ -173,6 +190,16 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // fragment and the whole reassembly is lost — so it's guaranteed too.
     // Without that, persistent fragmentation would stall convergence on
     // exactly the case the resync exists to repair.
+    //
+    // The same heartbeat re-broadcasts device snapshots. Device lists are
+    // otherwise sent only once on connect (the registry's diff-poll suppresses
+    // re-emits once the list is steady), but the manager wipes its whole
+    // per-engine cache on any `engineOffline` — so a single reconnect flap
+    // (observed on engines behind a NAT/tunnel: offline→online churn) drops the
+    // snapshot that was just delivered and the device dropdowns go empty until
+    // the list next changes, which for NICs is never. Re-sending on the
+    // heartbeat lets the cache self-heal within one interval, exactly like the
+    // module-state and systemStats resyncs already do.
     let stateResyncTimer: ReturnType<typeof setInterval> | null = null;
 
     ctx.managerConnection.on('connected', () => {
@@ -198,6 +225,9 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             if (Object.keys(snapshot).length > 0) {
                 ctx.managerConnection.sendState(snapshot, { guaranteeDelivery: true });
             }
+            // Re-broadcast device snapshots so the manager's dropdowns survive a
+            // cache-wiping reconnect flap (see the note above).
+            void sendInitialDeviceSnapshots();
         }, 10_000);
         // Always push a full snapshot of every device type on connect, then
         // let the registry's internal polling take over change detection.

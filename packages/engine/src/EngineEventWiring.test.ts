@@ -197,4 +197,75 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         vi.advanceTimersByTime(10_000);
         expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
     });
+
+    // A dropped best-effort snapshot leaves the manager's device dropdown empty
+    // until the next change — for NICs, effectively forever. Both the initial
+    // snapshot and change-forward must be guaranteed (the mpegts NIC dropdown fix).
+    it('sends the initial device snapshot guaranteed on connect', async () => {
+        stubs.deviceProviders.types.mockReturnValue(['network-interface']);
+        const devices = [{ name: 'eth0', label: 'eth0 (10.56.0.55)' }];
+        stubs.deviceProviders.getDevices.mockResolvedValue(devices);
+
+        stubs.managerConnection.emit('connected');
+        // sendInitialDeviceSnapshots is fire-and-forget async — flush microtasks.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'deviceList',
+            { type: 'network-interface', devices },
+            { guaranteeDelivery: true },
+        );
+    });
+
+    it('re-broadcasts device snapshots on the 10s heartbeat (self-heals a wiped cache)', async () => {
+        stubs.deviceProviders.types.mockReturnValue(['network-interface']);
+        const devices = [{ name: 'eth0' }];
+        stubs.deviceProviders.getDevices.mockResolvedValue(devices);
+
+        stubs.managerConnection.emit('connected');
+        // Flush the on-connect snapshot, then clear so we only observe the
+        // heartbeat's re-send — not the initial one.
+        await Promise.resolve();
+        await Promise.resolve();
+        stubs.managerConnection.send.mockClear();
+
+        vi.advanceTimersByTime(10_000);
+        // The send follows getDevices' resolution — flush microtasks.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'deviceList',
+            { type: 'network-interface', devices },
+            { guaranteeDelivery: true },
+        );
+    });
+
+    it('forwards device-list changes guaranteed while connected', () => {
+        stubs.managerConnection.isConnected = true;
+        const devices = [{ name: 'eth1', label: 'eth1 (10.64.0.55)' }];
+
+        stubs.deviceProviders.emit('deviceList', { type: 'network-interface', devices });
+
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'deviceList',
+            { type: 'network-interface', devices },
+            { guaranteeDelivery: true },
+        );
+    });
+
+    it('drops device-list changes while disconnected', () => {
+        stubs.managerConnection.isConnected = false;
+        stubs.deviceProviders.emit('deviceList', {
+            type: 'network-interface',
+            devices: [{ name: 'eth0' }],
+        });
+
+        expect(stubs.managerConnection.send).not.toHaveBeenCalledWith(
+            'deviceList',
+            expect.anything(),
+            expect.anything(),
+        );
+    });
 });
