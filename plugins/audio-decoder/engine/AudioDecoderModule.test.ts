@@ -43,15 +43,24 @@ describe('AudioDecoderModule.buildPipeline', () => {
 
     it.each([
         ['opus', 'opusdec'],
-        ['aac', 'avdec_aac'],
+        // libav decoders need framed access units — tsdemux emits unframed ES,
+        // so a parser MUST precede the decoder or avdec_aac/a52dec crash-loop.
+        ['aac', 'aacparse ! avdec_aac'],
         ['mp2', 'mpegaudioparse ! mpg123audiodec'],
-        ['ac3', 'a52dec'],
-    ])('selects the %s decoder', (codec, expected) => {
+        ['ac3', 'ac3parse ! a52dec'],
+    ])('selects the %s decoder (with the codec parser it needs)', (codec, expected) => {
         const { module } = makeModule();
         module.probeResult = { codec };
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain(expected);
+    });
+
+    it('puts the parser directly after tsdemux for AAC (unframed → avdec_aac fails without it)', () => {
+        const { module } = makeModule();
+        module.probeResult = { codec: 'aac' };
+        const desc = module.buildPipeline({});
+        expect(desc!.pipeline).toMatch(/tsdemux[^!]*![^!]*queue[^!]*! aacparse ! avdec_aac/);
     });
 
     it('falls back to decodebin when the probed codec is unknown', () => {

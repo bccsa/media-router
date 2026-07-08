@@ -122,20 +122,31 @@ export class AudioDecoderModule extends GstPluginBase {
             bufferSize: 262_144,
         });
 
-        // Plugin decides decoder based on probe result
+        // Plugin decides decoder based on probe result.
+        //
+        // Each decoder is fed straight off a `tsdemux` src pad, which emits
+        // *unframed* elementary streams. These software decoders need whole,
+        // framed access units, so a codec parser MUST sit between tsdemux and
+        // the decoder — without it `avdec_aac` errors "Input buffer exhausted
+        // before END element found" on every buffer and the pipeline
+        // crash-loops (seen on a clean single-AAC RIST feed: null-sink idle,
+        // gst-runner flapping). The `default` (decodebin) branch is safe
+        // because decodebin auto-plugs the parser; the explicit branches must
+        // add it themselves. opus is the exception — tsdemux already emits
+        // muxer/decoder-ready opus caps, so opusdec needs no parser.
         let decoder: string;
         switch (this.probeResult?.codec) {
             case 'opus':
                 decoder = 'opusdec';
                 break;
             case 'aac':
-                decoder = 'avdec_aac';
+                decoder = 'aacparse ! avdec_aac';
                 break;
             case 'mp2':
                 decoder = 'mpegaudioparse ! mpg123audiodec';
                 break;
             case 'ac3':
-                decoder = 'a52dec';
+                decoder = 'ac3parse ! a52dec';
                 break;
             default:
                 decoder = 'decodebin';
