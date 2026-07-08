@@ -20,12 +20,13 @@ Usage:
 
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst, GLib
+from gi.repository import Gst, GLib, Gio
 
 import json
 import math
 import os
 import signal
+import socket as pysocket
 import sys
 import threading
 
@@ -908,6 +909,71 @@ def _apply_net_clock(pipe, clock_cfg):
     # value would make every buffer "late" and break playback.
 
 
+def _isolate_loopback_bus_udpsrc(pipe):
+    """Group-bind every loopback-bus udpsrc so foreign unicast can't pollute it.
+
+    GStreamer's udpsrc binds INADDR_ANY:port on Linux even when a
+    multicast-group is set, so any unicast datagram sprayed at that port is
+    delivered into the pipeline and interleaved with the bus TS. Seen live on
+    a fleet box: a remote RIST peer's control packets (60/64-byte keepalives)
+    landed on ports colliding with the bus allocator range (40000+), and the
+    SRT output forwarded them to MediaMTX, which rejected the whole publish
+    with "received packet with size 60 not multiple of 188".
+
+    Fix: pre-create the socket ourselves, bound to the GROUP address
+    (239.x:port) — the kernel then only delivers datagrams addressed to the
+    group, excluding all unicast — and hand it to udpsrc via its `socket`
+    property. Membership is joined on `lo` explicitly (the bus convention),
+    with `auto-multicast` disabled so udpsrc doesn't double-join.
+
+    Only touches udpsrc elements with `multicast-iface=lo` AND a `239.`
+    address — the loopback-bus signature from buildUdpSrc. Network-facing
+    sources (mpegts-ip-input on a real NIC, ristsrc's internal udpsrc pair)
+    use other ifaces/addresses and keep stock behaviour. Any failure falls
+    back to udpsrc's own ANY-bind (today's behaviour) with a warning.
+    """
+    it = pipe.iterate_recurse()
+    while True:
+        result, element = it.next()
+        if result == Gst.IteratorResult.RESYNC:
+            it.resync()
+            continue
+        if result != Gst.IteratorResult.OK:
+            break
+        factory = element.get_factory()
+        if not factory or factory.get_name() != 'udpsrc':
+            continue
+        try:
+            iface = element.get_property('multicast-iface')
+            addr = element.get_property('address')
+            port = element.get_property('port')
+        except (TypeError, GLib.Error):
+            continue
+        if iface != 'lo' or not addr or not addr.startswith('239.'):
+            continue
+        try:
+            gsock = Gio.Socket.new(Gio.SocketFamily.IPV4,
+                                   Gio.SocketType.DATAGRAM,
+                                   Gio.SocketProtocol.UDP)
+            buf = element.get_property('buffer-size') or 0
+            if buf > 0:
+                gsock.set_option(pysocket.SOL_SOCKET, pysocket.SO_RCVBUF, buf)
+            # allow_reuse=True — several consumers of one producer share a port
+            gsock.bind(Gio.InetSocketAddress.new_from_string(addr, port), True)
+            gsock.join_multicast_group(Gio.InetAddress.new_from_string(addr),
+                                       False, 'lo')
+            element.set_property('auto-multicast', False)
+            element.set_property('socket', gsock)
+            sys.stderr.write(
+                f"[gst-runner.py] bus udpsrc {addr}:{port} group-bound "
+                f"(foreign unicast excluded)\n")
+            sys.stderr.flush()
+        except GLib.Error as e:
+            emit_event({"event": "warning",
+                        "message": f"bus udpsrc isolation failed for {addr}:{port} "
+                                   f"— falling back to ANY-bind: {e.message}"})
+
+
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
@@ -937,6 +1003,11 @@ def handle_start(data):
     except GLib.Error as e:
         emit_event({"event": "error", "message": f"Pipeline parse error: {e.message}"})
         return
+
+    # Harden the loopback bus BEFORE any state change: group-bound sockets
+    # must be handed to udpsrc while it is still NULL (it opens/binds on
+    # READY). See _isolate_loopback_bus_udpsrc for the why.
+    _isolate_loopback_bus_udpsrc(pipeline)
 
     # Cross-pipeline A/V sync (opt-in): slave this pipeline to a shared net
     # clock + base-time so it presents on the SAME timeline as its sibling
