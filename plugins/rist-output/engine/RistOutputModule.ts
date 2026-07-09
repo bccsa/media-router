@@ -1,4 +1,9 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import {
+    GstPluginBase,
+    isMulticast,
+    type PipelineDescription,
+    type ModuleServices,
+} from '@media-router/engine';
 import type { ManagedProcess } from '@media-router/engine';
 
 interface RistLink {
@@ -34,7 +39,11 @@ export class RistOutputModule extends GstPluginBase {
             return;
         }
 
-        const inputUrl = `udp://${udpSource.host}:${udpSource.port}`;
+        // The loopback bus is multicast: join the group on lo (a bare udp://
+        // multicast input would join on the default route's NIC, not lo).
+        const inputUrl = isMulticast(udpSource.host)
+            ? `udp://${udpSource.host}:${udpSource.port}?miface=lo`
+            : `udp://${udpSource.host}:${udpSource.port}`;
 
         // Build RIST output URLs from links config
         const links = (this.config.links as RistLink[]) ?? [

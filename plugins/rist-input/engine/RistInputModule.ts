@@ -1,4 +1,9 @@
-import { GstPluginBase, type PipelineDescription, type ModuleServices } from '@media-router/engine';
+import {
+    GstPluginBase,
+    isMulticast,
+    type PipelineDescription,
+    type ModuleServices,
+} from '@media-router/engine';
 import type { ManagedProcess } from '@media-router/engine';
 
 interface RistLink {
@@ -53,8 +58,12 @@ export class RistInputModule extends GstPluginBase {
             })
             .join(',');
 
-        // ristreceiver CLI outputs via regular UDP (not multicast), use localhost
-        const outputUrl = `udp://127.0.0.1:${endpoint.port}`;
+        // The loopback bus is multicast: send to the group on lo, matching the
+        // engine's group-bound consumer sockets (a 127.0.0.1 unicast send never
+        // reaches them, so downstream modules hear silence).
+        const outputUrl = isMulticast(endpoint.host)
+            ? `udp://${endpoint.host}:${endpoint.port}?miface=lo`
+            : `udp://${endpoint.host}:${endpoint.port}`;
 
         // Build CLI args
         const args = ['-i', inputUrls, '-o', outputUrl];

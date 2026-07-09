@@ -22,6 +22,21 @@ describe('RistOutputModule.buildPipeline', () => {
     });
 });
 
+describe('RistOutputModule.onStart', () => {
+    it('joins the multicast bus group on lo for its input', async () => {
+        const { module } = makeModule();
+        module.services.mediaRouter = {
+            getModuleUdpSource: vi.fn(() => ({ host: '239.255.0.1', port: 41000, connectionId: 'c1' })),
+        };
+        module.services.processManager = {};
+        module.setHealth = vi.fn();
+        module.spawnRunnerProcess = vi.fn(() => ({ on: vi.fn() }));
+        await module.onStart();
+        const args = module.spawnRunnerProcess.mock.calls[0][0].args as string[];
+        expect(args[args.indexOf('-i') + 1]).toBe('udp://239.255.0.1:41000?miface=lo');
+    });
+});
+
 describe('RistOutputModule.parseStats', () => {
     beforeEach(() => vi.clearAllMocks());
 

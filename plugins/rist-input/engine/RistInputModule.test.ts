@@ -28,6 +28,18 @@ describe('RistInputModule.buildPipeline', () => {
     });
 });
 
+describe('RistInputModule.onStart', () => {
+    it('points ristreceiver at the multicast bus group on lo', async () => {
+        const { module } = makeModule();
+        module.services.processManager = {};
+        module.setHealth = vi.fn();
+        module.spawnRunnerProcess = vi.fn(() => ({ on: vi.fn() }));
+        await module.onStart();
+        const args = module.spawnRunnerProcess.mock.calls[0][0].args as string[];
+        expect(args[args.indexOf('-o') + 1]).toBe('udp://239.255.0.1:41000?miface=lo');
+    });
+});
+
 describe('RistInputModule.parseStats', () => {
     beforeEach(() => vi.clearAllMocks());
 
