@@ -48,7 +48,10 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
             return null;
         }
 
-        const udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
+        let udpPort = this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
+        if (udpPort === undefined) {
+            udpPort = await this.materializeProducerPort(conn);
+        }
         if (udpPort === undefined) {
             // Throw rather than silently returning null so the caller's
             // retry path (ConnectionApplier.connectWithRetry) can re-attempt
@@ -105,6 +108,59 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
         };
     }
 
+    /**
+     * Connections whose producer we already restarted once to materialize a
+     * late-discovered port. ConnectionApplier re-executes on every retry and
+     * re-apply cycle — without this guard a producer whose rebuild cannot
+     * produce the port would be bounced on each attempt, interrupting its
+     * healthy consumers. Cleared on teardown so a deliberate re-wire of the
+     * same edge gets a fresh attempt.
+     */
+    private materializeAttempted = new Set<string>();
+
+    /**
+     * A running producer can declare an output port that has no branch in its
+     * live pipeline: the mpegts-demuxer discovers streams mid-run and adds
+     * their ports live (deliberately without a reload), so a port wired
+     * *after* discovery has no UDP allocation until the producer's next
+     * `buildPipeline`. Restart the producer once so the rebuild materializes
+     * the port's branch, then re-read the allocation.
+     *
+     * Guards, in order: at most one attempt per connection; the producer must
+     * be running WITH a live pipeline (a running-but-idle producer — e.g. a
+     * demuxer whose upstream is disconnected, so `buildPipeline` returned
+     * null — would rebuild to null again); and the port must actually be
+     * declared by the producer. A producer that simply hasn't finished
+     * starting keeps the caller's retry contract (throw → ConnectionApplier
+     * backoff) untouched. Existing consumers of the producer's other ports
+     * survive the bounce: `UdpPortManager.acquire` is sticky per owner key,
+     * so the rebuild re-lands on the same ports and their multicast
+     * subscriptions stay valid.
+     */
+    private async materializeProducerPort(conn: Connection): Promise<number | undefined> {
+        if (this.materializeAttempted.has(conn.id)) return undefined;
+        const producer = this.moduleGetter(conn.sourceModuleId);
+        if (!producer?.running) return undefined;
+        if (!producer.getChildProcess?.()) return undefined;
+        const declared = producer
+            .getDynamicPorts?.()
+            ?.some((p) => p.id === conn.sourcePortId && p.direction === 'output');
+        if (!declared) return undefined;
+        this.materializeAttempted.add(conn.id);
+        log.info(
+            { moduleId: conn.sourceModuleId, portId: conn.sourcePortId },
+            `Producer port has no live branch — restarting producer for ${this.connLabel(conn)}`,
+        );
+        try {
+            await producer.stop();
+            await producer.start();
+        } catch (err) {
+            log.error({ err, moduleId: conn.sourceModuleId }, 'Producer restart failed');
+            return undefined;
+        }
+        return this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
+    }
+
     async teardown(
         handle: ActiveHandle,
         conn: Connection | undefined,
@@ -114,6 +170,7 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
             { connectionId: handle.connectionId, udpPort: handle.udpPort },
             'Removing UDP connection',
         );
+        this.materializeAttempted.delete(handle.connectionId);
 
         if (skipModuleRestart) return;
 

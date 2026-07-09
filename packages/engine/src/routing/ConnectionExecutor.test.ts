@@ -415,6 +415,87 @@ describe('ConnectionExecutor', () => {
             ).rejects.toThrow(/has not assigned a UDP port/);
         });
 
+        function makeMockProducer(overrides: Partial<ModuleInstance> = {}): ModuleInstance {
+            // Live-pipeline producer declaring the connection's source port —
+            // the mid-run discovery case materializeProducerPort exists for.
+            return makeMockModule({
+                running: true,
+                getChildProcess: vi.fn(() => ({}) as any),
+                getDynamicPorts: vi.fn(() => [
+                    { id: 'out', direction: 'output', streamType: 'muxed/mpegts', label: 'Out' },
+                ]),
+                ...overrides,
+            } as Partial<ModuleInstance>);
+        }
+
+        it('restarts a running producer whose declared port has no UDP allocation yet, then connects', async () => {
+            const producer = makeMockProducer({
+                start: vi.fn(async () => {
+                    udpPorts.set('src-mod', 5004);
+                }),
+            });
+            modules.set('src-mod', producer);
+            modules.set('sink-mod', makeMockModule());
+
+            const result = await executor.execute(makeConnection({ streamType: 'muxed/mpegts' }));
+
+            expect(producer.stop).toHaveBeenCalled();
+            expect(producer.start).toHaveBeenCalled();
+            expect(result).toEqual({ connectionId: 'src:out-sink:in', type: 'udp', udpPort: 5004 });
+        });
+
+        it('does not restart a producer that does not declare the port — throws for the retry path', async () => {
+            const producer = makeMockProducer({ getDynamicPorts: vi.fn(() => []) });
+            modules.set('src-mod', producer);
+            modules.set('sink-mod', makeMockModule());
+
+            await expect(
+                executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
+            ).rejects.toThrow(/has not assigned a UDP port/);
+            expect(producer.stop).not.toHaveBeenCalled();
+        });
+
+        it('does not restart a running-but-idle producer (no live pipeline)', async () => {
+            // buildPipeline returned null (e.g. demuxer with upstream
+            // disconnected): a rebuild would return null again.
+            const producer = makeMockProducer({ getChildProcess: vi.fn(() => null) });
+            modules.set('src-mod', producer);
+            modules.set('sink-mod', makeMockModule());
+
+            await expect(
+                executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
+            ).rejects.toThrow(/has not assigned a UDP port/);
+            expect(producer.stop).not.toHaveBeenCalled();
+        });
+
+        it('falls through to the retry throw when the producer restart fails', async () => {
+            const producer = makeMockProducer({
+                start: vi.fn(async () => {
+                    throw new Error('boom');
+                }),
+            });
+            modules.set('src-mod', producer);
+            modules.set('sink-mod', makeMockModule());
+
+            await expect(
+                executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
+            ).rejects.toThrow(/has not assigned a UDP port/);
+        });
+
+        it('restarts the producer at most once per connection across retries', async () => {
+            // Rebuild runs but never yields the port (e.g. stream vanished
+            // from config): the retrying caller must not bounce the producer
+            // — and its healthy consumers — on every attempt.
+            const producer = makeMockProducer();
+            modules.set('src-mod', producer);
+            modules.set('sink-mod', makeMockModule());
+            const conn = makeConnection({ streamType: 'muxed/mpegts' });
+
+            await expect(executor.execute(conn)).rejects.toThrow(/has not assigned a UDP port/);
+            await expect(executor.execute(conn)).rejects.toThrow(/has not assigned a UDP port/);
+            expect(producer.stop).toHaveBeenCalledTimes(1);
+        });
+
         it('stops and restarts a running decoder', async () => {
             const sinkMod = makeMockModule({ running: true });
             modules.set('sink-mod', sinkMod);
