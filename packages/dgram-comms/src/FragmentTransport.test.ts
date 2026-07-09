@@ -55,11 +55,15 @@ describe('FragmentTransport', () => {
             expect(result!.equals(data)).toBe(true);
         });
 
-        it('deduplicates completed messages', () => {
+        it('re-delivers a retransmitted single-fragment message (Socket re-ACKs it)', () => {
+            // Transport-level dedup of resends starved the Socket's re-ACK:
+            // one lost ACK made a guaranteed message permanently
+            // unacknowledgeable. Dedup lives in the Socket (seq), which acks
+            // every copy first — so the transport must pass resends through.
             t = new FragmentTransport(fakeSock().sock);
-            const [p] = fragment(Buffer.from('dedup'));
+            const [p] = fragment(Buffer.from('resend'));
             expect(t.receive(p, rinfo())).not.toBeNull();
-            expect(t.receive(p, rinfo())).toBeNull();
+            expect(t.receive(p, rinfo())).not.toBeNull();
         });
 
         it('keeps a reused messageId from different sources separate', () => {
@@ -177,18 +181,21 @@ describe('FragmentTransport', () => {
             expect(nacks.length).toBe(3); // capped at maxNackAttempts, not ~unbounded
         });
 
-        it('forgets a completed message after dedupTtlMs (bounded dedup table)', async () => {
-            const { sock } = fakeSock();
-            t = new FragmentTransport(sock, { dedupTtlMs: 30 });
-            const { packets } = fragmentWithId(Buffer.from('ttl'));
-            expect(t.receive(packets[0], rinfo())).not.toBeNull(); // delivered + remembered
-            expect(t.receive(packets[0], rinfo())).toBeNull(); // within TTL → deduped
+        it('re-assembles a full resend of a completed multi-fragment message', () => {
+            // The sender's fallback resend replays every retained fragment with
+            // the same messageId. After completion the rx entry is gone, so the
+            // resend re-assembles from scratch and is re-delivered — giving the
+            // Socket another chance to ACK when the first ACK was lost.
+            t = new FragmentTransport(fakeSock().sock);
+            const data = Buffer.alloc(MAX_PAYLOAD_SIZE * 2, 'R');
+            const { packets } = fragmentWithId(data);
+            let first: Buffer | null = null;
+            for (const p of packets) first = t.receive(p, rinfo());
+            expect(first!.equals(data)).toBe(true);
 
-            await new Promise((r) => setTimeout(r, 50)); // past dedupTtlMs
-            // a fresh completion triggers the age prune, evicting the expired key…
-            t.receive(fragment(Buffer.from('other'))[0], rinfo());
-            // …so the old message is no longer deduped (bounded, not a leak)
-            expect(t.receive(packets[0], rinfo())).not.toBeNull();
+            let second: Buffer | null = null;
+            for (const p of packets) second = t.receive(p, rinfo());
+            expect(second!.equals(data)).toBe(true);
         });
     });
 });

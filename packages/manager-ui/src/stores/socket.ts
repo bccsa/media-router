@@ -133,10 +133,27 @@ export const useSocketStore = defineStore('socket', () => {
             // profiles — the main cause of the editor bogging down.
         });
 
-        // VU meter data — uses dedicated VU store for fine-grained reactivity
-        s.on('engine:vu', (data: { engineId: string; instanceId: string; vuData: number[] }) => {
-            useVuStore().update(data.engineId, data.instanceId, data.vuData);
-        });
+        // VU meter data — uses dedicated VU store for fine-grained reactivity.
+        // New engines send one batched payload per flush window ({batch});
+        // engines on older builds still send per-module ({instanceId, vuData}).
+        s.on(
+            'engine:vu',
+            (data: {
+                engineId: string;
+                instanceId?: string;
+                vuData?: number[];
+                batch?: Record<string, number[]>;
+            }) => {
+                const vu = useVuStore();
+                if (data.batch) {
+                    for (const [instanceId, vuData] of Object.entries(data.batch)) {
+                        vu.update(data.engineId, instanceId, vuData);
+                    }
+                } else if (data.instanceId && data.vuData) {
+                    vu.update(data.engineId, data.instanceId, data.vuData);
+                }
+            },
+        );
 
         // System stats (CPU, memory, temp, IP, build)
         s.on(

@@ -119,6 +119,11 @@ export class EngineEventForwarder {
 
         this.engineManager.on('engineVu', (engineId: string, data: unknown) => {
             if (typeof data !== 'object' || data === null) return;
+            // ONE volatile emit per engine payload — never a burst. Unpacking a
+            // batch into N volatile emits dropped the tail of every burst
+            // (volatile discards whenever the transport buffer isn't drained,
+            // which it never is mid-burst): measured 80-90% VU loss, heaviest
+            // for the modules serialized last. The browser unpacks instead.
             this.io
                 .to(`watch:${engineId}`)
                 .volatile.emit('engine:vu', { engineId, ...(data as Record<string, unknown>) });

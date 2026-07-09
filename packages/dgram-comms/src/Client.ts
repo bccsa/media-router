@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
@@ -65,6 +66,16 @@ export class Client extends EventEmitter {
 
     /** Monotonic sequence number; one per logical send, shared across all path copies. */
     private seq = 0;
+
+    /**
+     * Session nonce carried in every connect packet. Lets the server tell a
+     * handshake RETRY (same Client re-sending connect because the reply was
+     * lost or slow) from a REBIRTH (a new Client that happens to bind the same
+     * ephemeral port, e.g. a crash-looping engine): retries must keep the
+     * existing server socket, rebirths must replace it — otherwise the old
+     * socket's seq-dedup table can silently eat the new session's messages.
+     */
+    private readonly sessionNonce = crypto.randomUUID();
 
     /** Whether at least one path is connected. */
     get connected(): boolean {
@@ -209,7 +220,7 @@ export class Client extends EventEmitter {
             ps.socket = this.buildPathSocket(index);
         }
         // Send connect message
-        ps.socket.send(null, null, { type: 'connect' });
+        ps.socket.send(null, this.sessionNonce, { type: 'connect' });
     }
 
     private onPacket(rawPacket: Buffer, pathIndex: number, rinfo: dgram.RemoteInfo): void {

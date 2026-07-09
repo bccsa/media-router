@@ -12,7 +12,6 @@ interface Stubs {
     managerConnection: EventEmitter & {
         send: ReturnType<typeof vi.fn>;
         sendState: ReturnType<typeof vi.fn>;
-        sendVu: ReturnType<typeof vi.fn>;
         isConnected: boolean;
     };
     lcpServer: EventEmitter & {
@@ -38,7 +37,6 @@ function makeStubs(): Stubs {
     const managerConnection = Object.assign(new EventEmitter(), {
         send: vi.fn(),
         sendState: vi.fn(),
-        sendVu: vi.fn(),
         isConnected: false,
     });
     const lcpServer = Object.assign(new EventEmitter(), {
@@ -99,16 +97,15 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         vi.useRealTimers();
     });
 
-    it('pushes guaranteed initial snapshot on connect', () => {
+    it('pushes best-effort initial snapshot on connect (10s resync self-heals drops)', () => {
         stubs.moduleManager.getAllStates.mockReturnValue({
             'mod-1': { running: true, health: 'ok' },
         });
         stubs.managerConnection.emit('connected');
 
-        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith(
-            { 'mod-1': { running: true, health: 'ok' } },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({
+            'mod-1': { running: true, health: 'ok' },
+        });
     });
 
     it('advertises this host plugin schemas on connect (guaranteed) (#661)', () => {
@@ -128,25 +125,21 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
     });
 
-    it('reports engineRunningState from the run controller (guaranteed), not module-map size', () => {
-        // Two things at once:
-        //  - Value: dormant instances exist (size > 0) but the controller says
-        //    stopped — the historical `moduleManager.size > 0` proxy would
-        //    mis-report this as running.
-        //  - Delivery: guaranteed. This handshake is the sole trigger for
-        //    manager-driven auto-start; sent best-effort it drops on a lossy
-        //    tunnel (the NO-BR gate over Cloudflare) and the engine boots with
-        //    every module stopped until an operator restarts it.
+    it('reports engineRunningState from the run controller, not module-map size', () => {
+        // Value check: dormant instances exist (size > 0) but the controller
+        // says stopped — the historical `moduleManager.size > 0` proxy would
+        // mis-report this as running. Delivery is best-effort: the handshake
+        // repeats on the 10s heartbeat, so a drop delays the auto-start
+        // reconcile one interval at most (guaranteed delivery here fed the
+        // retransmit flood that choked the NO-BR uplink).
         stubs.moduleManager.getAllStates.mockReturnValue({
             'mod-1': { running: false, health: 'stopped' },
         });
         stubs.managerConnection.emit('connected');
 
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
-            'engineRunningState',
-            { running: false },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('engineRunningState', {
+            running: false,
+        });
     });
 
     it('re-sends the running-state handshake on the 10s heartbeat (self-healing auto-start)', () => {
@@ -154,14 +147,12 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         stubs.managerConnection.send.mockClear();
 
         vi.advanceTimersByTime(10_000);
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
-            'engineRunningState',
-            { running: false },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('engineRunningState', {
+            running: false,
+        });
     });
 
-    it('republishes guaranteed snapshot every 10s while connected', () => {
+    it('republishes best-effort snapshot every 10s while connected', () => {
         stubs.moduleManager.getAllStates.mockReturnValue({
             'mod-1': { running: true, health: 'ok' },
         });
@@ -170,10 +161,9 @@ describe('wireEngineEvents — state resync heartbeat', () => {
 
         vi.advanceTimersByTime(10_000);
         expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
-        expect(stubs.managerConnection.sendState).toHaveBeenLastCalledWith(
-            { 'mod-1': { running: true, health: 'ok' } },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.sendState).toHaveBeenLastCalledWith({
+            'mod-1': { running: true, health: 'ok' },
+        });
 
         vi.advanceTimersByTime(10_000);
         expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(2);
@@ -217,10 +207,10 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
     });
 
-    // A dropped best-effort snapshot leaves the manager's device dropdown empty
-    // until the next change — for NICs, effectively forever. Both the initial
-    // snapshot and change-forward must be guaranteed (the mpegts NIC dropdown fix).
-    it('sends the initial device snapshot guaranteed on connect', async () => {
+    // Device snapshots are best-effort: the 10s heartbeat re-broadcasts them,
+    // so a dropped packet self-heals within one interval. Guaranteed delivery
+    // here was measured flooding lossy uplinks with retransmits (NO-BR gate).
+    it('sends the initial device snapshot on connect', async () => {
         stubs.deviceProviders.types.mockReturnValue(['network-interface']);
         const devices = [{ name: 'eth0', label: 'eth0 (10.56.0.55)' }];
         stubs.deviceProviders.getDevices.mockResolvedValue(devices);
@@ -230,11 +220,10 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
-            'deviceList',
-            { type: 'network-interface', devices },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('deviceList', {
+            type: 'network-interface',
+            devices,
+        });
     });
 
     it('re-broadcasts device snapshots on the 10s heartbeat (self-heals a wiped cache)', async () => {
@@ -254,24 +243,22 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
-            'deviceList',
-            { type: 'network-interface', devices },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('deviceList', {
+            type: 'network-interface',
+            devices,
+        });
     });
 
-    it('forwards device-list changes guaranteed while connected', () => {
+    it('forwards device-list changes while connected', () => {
         stubs.managerConnection.isConnected = true;
         const devices = [{ name: 'eth1', label: 'eth1 (10.64.0.55)' }];
 
         stubs.deviceProviders.emit('deviceList', { type: 'network-interface', devices });
 
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
-            'deviceList',
-            { type: 'network-interface', devices },
-            { guaranteeDelivery: true },
-        );
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith('deviceList', {
+            type: 'network-interface',
+            devices,
+        });
     });
 
     it('drops device-list changes while disconnected', () => {
@@ -332,18 +319,17 @@ describe('wireEngineEvents — module state batching', () => {
         });
     });
 
-    it('guaranteed snapshot supersedes the pending batch and resets dedup', () => {
+    it('snapshot supersedes the pending batch and resets dedup', () => {
         stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'ok' });
         stubs.moduleManager.getAllStates.mockReturnValue({
             'mod-1': { running: true, health: 'ok', vuData: [-3] },
         });
         stubs.managerConnection.emit('connected');
 
-        // Snapshot went out guaranteed (vuData stripped)…
-        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith(
-            { 'mod-1': { running: true, health: 'ok' } },
-            { guaranteeDelivery: true },
-        );
+        // Snapshot went out (vuData stripped)…
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({
+            'mod-1': { running: true, health: 'ok' },
+        });
         stubs.managerConnection.sendState.mockClear();
 
         // …and the pending batch was absorbed — nothing extra flushes.

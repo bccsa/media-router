@@ -288,17 +288,47 @@ export class Server extends EventEmitter {
 
     private handleConnect(
         clientID: string,
-        _data: DgramMessage['data'],
+        data: DgramMessage['data'],
         rinfo: dgram.RemoteInfo,
     ): void {
         // Validate client has a registered encryption key
         if (!this.encryptionKeys[clientID]) return;
 
-        // If client already connected, destroy old socket and create fresh one
+        // Client-generated session nonce (undefined for older clients).
+        const nonce = typeof data?.message === 'string' ? data.message : undefined;
+
         const existingSocketId = this.clientToSocket.get(clientID);
         if (existingSocketId) {
             const existing = this.sockets.get(existingSocketId);
             if (existing) {
+                // A connect from the SAME endpoint AND same session nonce is a
+                // handshake retry (the client fires connects at 0/200/500ms and
+                // on a high-RTT link the retry always beats the first reply),
+                // NOT a new session. Replacing the socket here minted a new
+                // socketID per retry and the client ended up on whichever
+                // reply landed last — a coin flip against the manager's live
+                // socket, after which every packet it sent was dropped as
+                // unknown-socketID (measured on the NO-BR gate, RTT ~350ms).
+                // Re-ack with the SAME socketID instead.
+                //
+                // The nonce guards the endpoint check against a reborn client
+                // (crash-loop) landing on the same ephemeral port: reusing the
+                // old socket there would let its seq-dedup table silently eat
+                // the new session's early messages. Different nonce ⇒ rebirth.
+                if (
+                    existing.remoteAddress === rinfo.address &&
+                    existing.remotePort === rinfo.port &&
+                    existing.connectNonce === nonce
+                ) {
+                    existing.resetKeepalive();
+                    existing.send('connected', existing.socketID, {
+                        type: 'connected',
+                        guaranteeDelivery: true,
+                    });
+                    return;
+                }
+                // Different endpoint or nonce → genuine reconnect (new client):
+                // tear down the old session and build a fresh one.
                 console.log(`[dgram-comms Server] ${clientID} reconnecting — replacing old socket`);
                 existing.destroy();
                 this.sockets.delete(existingSocketId);
@@ -323,6 +353,7 @@ export class Server extends EventEmitter {
             },
         });
 
+        socket.connectNonce = nonce;
         this.sockets.set(socket.socketID, socket);
         this.clientToSocket.set(clientID, socket.socketID);
 

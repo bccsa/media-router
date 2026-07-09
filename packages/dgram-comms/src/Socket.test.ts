@@ -103,4 +103,32 @@ describe('Socket seq-based dedup', () => {
 
         expect(spy).toHaveBeenCalledTimes(2);
     });
+
+    it('ACKs the guaranteed connected handshake — every copy, but connects once', () => {
+        makeSocket();
+        const ackSpy = vi.spyOn(
+            s as unknown as { sendAck: (id: number) => void },
+            'sendAck',
+        );
+        const connSpy = vi.fn();
+        s.on('connected', connSpy);
+
+        const connectedMsg = () =>
+            ({
+                type: 'connected',
+                clientID: 'test',
+                data: { message: 'sock-id-1', ackID: 7, socketID: 'sock-id-1' },
+            }) as Parameters<Socket['handleMessage']>[0];
+
+        s.handleMessage(connectedMsg());
+        s.handleMessage(connectedMsg()); // server resend (its ACK was lost)
+
+        // The server sends 'connected' guaranteed — without these ACKs every
+        // handshake retransmitted 10x and hit GIVE-UP even on a clean link.
+        expect(ackSpy).toHaveBeenCalledTimes(2);
+        expect(ackSpy).toHaveBeenCalledWith(7);
+        expect(s.socketID).toBe('sock-id-1');
+        expect(s.connected).toBe(true);
+        expect(connSpy).toHaveBeenCalledTimes(1); // no re-emit on the resend
+    });
 });

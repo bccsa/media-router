@@ -77,15 +77,6 @@ describe('ManagerConnection', () => {
         );
     });
 
-    it('sendVu delegates to send with correct format', () => {
-        const sendSpy = vi.spyOn(conn, 'send');
-        conn.sendVu('audio-input-abc', [5, 5]);
-        expect(sendSpy).toHaveBeenCalledWith('vu', {
-            instanceId: 'audio-input-abc',
-            vuData: [5, 5],
-        });
-    });
-
     it('emits events as EventEmitter', () => {
         const handler = vi.fn();
         conn.on('testEvent', handler);

@@ -5,6 +5,7 @@ import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
 import type { ManagerConnection } from './comms/ManagerConnection.js';
 import { ModuleStateBatcher } from './comms/ModuleStateBatcher.js';
+import { VuBatcher } from './comms/VuBatcher.js';
 import type { LcpServer } from './comms/LcpServer.js';
 import type { PipeWireManager } from './audio/PipeWireManager.js';
 import type { LogForwarder } from './logging/LogForwarder.js';
@@ -77,32 +78,19 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         },
     );
 
-    // VU data with dedup + heartbeat
-    const lastVu = new Map<string, number[]>();
-    const lastVuSent = new Map<string, number>();
-    const vuChanged = (prev: number[] | undefined, next: number[]): boolean => {
-        if (!prev || prev.length !== next.length) return true;
-        for (let i = 0; i < next.length; i++) {
-            if (prev[i] !== next[i]) return true;
-        }
-        return false;
-    };
+    // VU: batched + deduped on its way to the manager (see VuBatcher for the
+    // WAN rationale). The LCP broadcast stays per-module and immediate — it's
+    // loopback, not the WAN flow — but reuses the batcher's dedup verdict.
+    const vuBatcher = new VuBatcher((batch) => ctx.managerConnection.send('vu', { batch }));
     ctx.moduleManager.on('vuData', (instanceId: string, data: number[]) => {
-        const prev = lastVu.get(instanceId);
-        const lastSent = lastVuSent.get(instanceId) ?? 0;
-        const now = Date.now();
-        if (vuChanged(prev, data) || now - lastSent >= 1000) {
-            lastVu.set(instanceId, data);
-            lastVuSent.set(instanceId, now);
-            ctx.managerConnection.sendVu(instanceId, data);
+        if (vuBatcher.enqueue(instanceId, data)) {
             ctx.lcpServer.broadcastVuData(instanceId, data);
         }
     });
 
     // Clean up VU + state dedup maps when modules are destroyed
     ctx.moduleManager.on('moduleDeleted', (instanceId: string) => {
-        lastVu.delete(instanceId);
-        lastVuSent.delete(instanceId);
+        vuBatcher.drop(instanceId);
         stateBatcher.drop(instanceId);
     });
 
@@ -155,23 +143,18 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // Forward every registered device provider's changes to the manager
     // through a single typed topic. One loop, any number of device types.
     //
-    // Guaranteed delivery: the registry diff-polls and only emits on an actual
-    // change, so a single dropped best-effort packet would leave the manager's
-    // dropdown stale until the *next* change — which for a stable resource like
-    // network interfaces is effectively never. Same reasoning as the
-    // capabilities snapshot (#661). Payloads are small and low-frequency, so
-    // the retransmit cost is negligible. (Symptom this fixes: the mpegts-ip
-    // NIC dropdown showed empty for engines reached over a lossy tunnel because
-    // the one initial snapshot packet never arrived.)
+    // Best-effort ON PURPOSE: the 10s heartbeat re-broadcasts every device
+    // snapshot anyway, so a dropped packet self-heals within one interval.
+    // Guaranteed delivery here was measured DDoSing the NO-BR gate's lossy
+    // uplink — 5 deviceLists + state + runningState per heartbeat, each
+    // retransmitting up to 10x when ACKs died, ~40 packets/s of retransmit
+    // flood that drowned the ACK channel and starved real commands.
+    // Repetition IS the delivery guarantee for repeating telemetry.
     ctx.deviceProviders.on(
         'deviceList',
         ({ type, devices }: { type: string; devices: unknown }) => {
             if (!ctx.managerConnection.isConnected) return;
-            ctx.managerConnection.send(
-                'deviceList',
-                { type, devices },
-                { guaranteeDelivery: true },
-            );
+            ctx.managerConnection.send('deviceList', { type, devices });
         },
     );
 
@@ -179,11 +162,7 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         for (const type of ctx.deviceProviders.types()) {
             try {
                 const devices = await ctx.deviceProviders.getDevices(type);
-                ctx.managerConnection.send(
-                    'deviceList',
-                    { type, devices },
-                    { guaranteeDelivery: true },
-                );
+                ctx.managerConnection.send('deviceList', { type, devices });
             } catch (err) {
                 log.warn({ err, type }, 'Initial device snapshot failed');
             }
@@ -212,30 +191,27 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // module-state and systemStats resyncs already do.
     let stateResyncTimer: ReturnType<typeof setInterval> | null = null;
 
-    // Guaranteed full-state snapshot (connect + 10s resync). The batcher
+    // Best-effort full-state snapshot (connect + 10s resync). The batcher
     // refreshes its dedup cache and drops any pending batch — the snapshot
-    // already contains everything queued.
+    // already contains everything queued. Best-effort on purpose: the resync
+    // repeats every 10s, so a drop self-heals next tick; guaranteed delivery
+    // turned each snapshot into a 10x retransmit storm on lossy uplinks.
     const sendStateSnapshot = (): void => {
         const lean = stateBatcher.snapshot(ctx.moduleManager.getAllStates());
         if (!lean) return;
-        ctx.managerConnection.sendState(lean, { guaranteeDelivery: true });
+        ctx.managerConnection.sendState(lean);
     };
 
     ctx.managerConnection.on('connected', () => {
         ctx.systemStats.start();
-        // Guaranteed: this handshake is the *sole* trigger for manager-driven
-        // auto-start on (re)connect — EngineEventForwarder only issues `start`
-        // when it sees this payload report `running:false` against a persisted
-        // `running:true`. Sent best-effort it can drop on a lossy tunnel (the
-        // NO-BR gate over Cloudflare), and then the manager never reconciles:
-        // the engine boots with every module stopped and stays that way until
-        // an operator restarts it. Same reasoning as the capabilities/state
-        // sends below (#661) — small payload, so guaranteed delivery is free.
-        ctx.managerConnection.send(
-            'engineRunningState',
-            { running: ctx.runController.isRunning },
-            { guaranteeDelivery: true },
-        );
+        // Best-effort: this handshake triggers manager-driven auto-start, but
+        // it re-sends on the 10s heartbeat below — a dropped packet delays the
+        // reconcile one interval at most. Repetition beats retransmission:
+        // guaranteed delivery here contributed to the retransmit flood that
+        // choked the NO-BR uplink.
+        ctx.managerConnection.send('engineRunningState', {
+            running: ctx.runController.isRunning,
+        });
         // Advertise this host's effective plugin schemas so the manager renders
         // this engine's real capabilities (e.g. hardware encoders) rather than
         // its own host probe. Static per session, so sent once on connect;
@@ -248,20 +224,13 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         if (stateResyncTimer) clearInterval(stateResyncTimer);
         stateResyncTimer = setInterval(() => {
             sendStateSnapshot();
-            // Re-send the running-state handshake too. Guaranteed delivery
-            // dies with its session: on the NO-BR gate a half-open session ate
-            // the connect-time handshake (manager logged "Guaranteed delivery
-            // failed — topic: connected") and the engine sat stopped forever —
-            // the manager only reconciles auto-start when it SEES this
-            // payload. Re-sending makes the reconcile self-healing; the
-            // manager treats repeats as idempotent (start-retry is desired,
-            // both-running is a no-op — config comes from the session-connect
-            // push, not this handshake).
-            ctx.managerConnection.send(
-                'engineRunningState',
-                { running: ctx.runController.isRunning },
-                { guaranteeDelivery: true },
-            );
+            // Re-send the running-state handshake too — repetition makes the
+            // auto-start reconcile self-healing without per-message
+            // retransmits. The manager treats repeats as idempotent
+            // (start-retry is desired, both-running is a no-op).
+            ctx.managerConnection.send('engineRunningState', {
+                running: ctx.runController.isRunning,
+            });
             // Re-broadcast device snapshots so the manager's dropdowns survive a
             // cache-wiping reconnect flap (see the note above).
             void sendInitialDeviceSnapshots();
@@ -280,5 +249,6 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             stateResyncTimer = null;
         }
         stateBatcher.reset();
+        vuBatcher.reset();
     });
 }

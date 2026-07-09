@@ -41,6 +41,10 @@ export class Socket extends EventEmitter {
     connected = false;
     readonly isClient: boolean;
     readonly clientID: string;
+    /** Server-side: the client's session nonce from the connect payload —
+     *  distinguishes handshake retries from a reborn client on the same
+     *  endpoint (see Server.handleConnect). Undefined for older clients. */
+    connectNonce: string | undefined;
 
     private port: number;
     private address: string;
@@ -101,6 +105,14 @@ export class Socket extends EventEmitter {
     updateRemote(port: number, address: string): void {
         this.port = port;
         this.address = address;
+    }
+
+    /** Current remote endpoint (used by Server to recognise handshake retries). */
+    get remotePort(): number {
+        return this.port;
+    }
+    get remoteAddress(): string {
+        return this.address;
     }
 
     // ---- Send ---------------------------------------------------------------
@@ -224,6 +236,14 @@ export class Socket extends EventEmitter {
                 if (this.isClient && msg.data?.socketID) {
                     this.socketID = msg.data.socketID as string;
                 }
+                // ACK the handshake — the server sends 'connected' guaranteed and
+                // resends until acknowledged. Ack BEFORE the already-connected
+                // guard so retransmitted copies are re-ACKed too (previously this
+                // was never acked at all and every handshake hit GIVE-UP).
+                if (msg.data?.ackID !== undefined) {
+                    this.sendAck(msg.data.ackID);
+                }
+                if (this.connected) break; // retransmit of a handshake we processed
                 this.connected = true;
                 this.hasEverConnected = true;
                 this.missedKeepalives = 0;

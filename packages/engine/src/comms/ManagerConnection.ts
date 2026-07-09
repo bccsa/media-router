@@ -150,9 +150,4 @@ export class ManagerConnection extends EventEmitter {
     ): void {
         this.send('state', moduleStates, options);
     }
-
-    /** Send VU data to manager. */
-    sendVu(instanceId: string, vuData: number[]): void {
-        this.send('vu', { instanceId, vuData });
-    }
 }

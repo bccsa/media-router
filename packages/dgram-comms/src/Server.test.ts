@@ -234,6 +234,49 @@ describe('Server', () => {
         expect(server['sockets'].size).toBe(1);
     });
 
+    it('handleConnect treats a same-endpoint, same-nonce connect as a handshake retry', () => {
+        // The client fires connects at 0/200/500ms; on a high-RTT link the
+        // retry beats the first reply. Replacing the socket per retry minted a
+        // new socketID each time and the client ended up on whichever reply
+        // landed last — often a dead one, after which ALL its traffic was
+        // dropped as unknown-socketID. Same endpoint + nonce ⇒ same session.
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const connSpy = vi.fn();
+        server.on('connection', connSpy);
+        const ep = { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 };
+        const connect = { message: 'session-nonce-1' };
+
+        server['handleConnect']('engine-1', connect, ep);
+        const firstSocketId = server['clientToSocket'].get('engine-1')!;
+
+        server['handleConnect']('engine-1', connect, ep); // 200ms quick retry
+        server['handleConnect']('engine-1', connect, ep); // 500ms quick retry
+
+        // Same socket survives — no churn, no new socketID, one connection event.
+        expect(server['clientToSocket'].get('engine-1')).toBe(firstSocketId);
+        expect(server['sockets'].size).toBe(1);
+        expect(connSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('handleConnect replaces the socket when the nonce differs (reborn client, same port)', () => {
+        // A crash-looping client can rebind the SAME ephemeral port within the
+        // old socket's seq-dedup TTL. Reusing that socket would let its
+        // seenSeqs silently eat the new session's early messages (ACKed but
+        // never delivered) — the fresh nonce marks it as a new session.
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const ep = { address: '10.0.0.1', port: 5000, family: 'IPv4', size: 0 };
+
+        server['handleConnect']('engine-1', { message: 'nonce-A' }, ep);
+        const firstSocketId = server['clientToSocket'].get('engine-1')!;
+
+        server['handleConnect']('engine-1', { message: 'nonce-B' }, ep);
+        const secondSocketId = server['clientToSocket'].get('engine-1')!;
+
+        expect(secondSocketId).not.toBe(firstSocketId);
+        expect(server['sockets'].has(firstSocketId)).toBe(false);
+        expect(server['sockets'].size).toBe(1);
+    });
+
     // ---- Disconnection tracking ----
 
     it('onDisconnect callback cleans up maps', () => {

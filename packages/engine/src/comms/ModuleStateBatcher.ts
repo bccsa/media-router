@@ -12,9 +12,11 @@ import type { ModuleRuntimeState } from '@media-router/shared-types';
  * browser ignores it inside state payloads, but its constant churn would
  * defeat the dedup.
  *
- * Batches go best-effort; a dropped one is healed by the guaranteed periodic
- * snapshot resync (see `snapshot`). The LCP is NOT routed through this class —
- * it broadcasts the unbatched full state, vuData included.
+ * Batches go best-effort, as does the periodic snapshot resync (see
+ * `snapshot`) — it repeats every 10s, so repetition is the delivery guarantee
+ * and a dropped batch heals within one interval. The LCP is NOT routed
+ * through this class — it broadcasts the unbatched full state, vuData
+ * included.
  */
 export class ModuleStateBatcher {
     private lastSent = new Map<string, string>();
@@ -38,10 +40,10 @@ export class ModuleStateBatcher {
     }
 
     /**
-     * Prepare a full-state snapshot for a guaranteed send (connect + resync):
-     * strips vuData like the incremental path, refreshes the dedup cache, and
-     * supersedes any pending batch — the snapshot already contains everything
-     * queued. Returns null when there are no modules.
+     * Prepare a full-state snapshot for the periodic resync send (connect +
+     * every 10s): strips vuData like the incremental path, refreshes the dedup
+     * cache, and supersedes any pending batch — the snapshot already contains
+     * everything queued. Returns null when there are no modules.
      */
     snapshot(
         states: Record<string, ModuleRuntimeState>,
