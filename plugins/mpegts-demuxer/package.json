@@ -18,14 +18,37 @@
         "configSchema": {
             "type": "object",
             "properties": {
-                "bufferMs": {
+                "queueLeaky": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Output-branch queue behaviour. OFF (non-leaky): never drop — bursts back-pressure into the socket buffer and the re-mux stays lossless (contribution/stability). ON (leaky): shed the oldest frame once Queue depth of backlog builds — never hold backlog (live production). The paced audio branch always stays non-leaky ahead of clocksync (a leaky queue there shears every paced burst). Queues sit after the codec parser, upstream of the branch muxer — drops always land on whole frames; the mux output is never queued.",
+                    "x-liveUpdatable": false
+                },
+                "queueDepthMs": {
+                    "type": "number",
+                    "minimum": 20,
+                    "maximum": 5000,
+                    "default": 400,
+                    "description": "Output-branch queue bound. Non-leaky: runaway safety cap (the branch normally sits near-empty). Leaky: backlog tolerance before shedding. Paced audio uses at least pacing offset + 240 ms regardless.",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "ms",
+                    "x-liveUpdatable": false
+                },
+                "audioPacing": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Pace demuxed audio to real-time frame cadence. Sources pack multiple audio frames per PES, so tsdemux releases audio in line-rate bursts that downstream decoders and SRT links hear as choppy audio; pacing restores one-frame (21 ms) cadence at the cost of the pacing offset in extra delay on audio outputs. Turn OFF for latency-critical live production where occasional burst-induced drops are preferable to added delay.",
+                    "x-liveUpdatable": false
+                },
+                "audioPacingMs": {
                     "type": "number",
                     "minimum": 0,
-                    "maximum": 5000,
-                    "default": 50,
-                    "description": "Per-pad queue size in milliseconds — lower = lower latency, higher = more jitter tolerance",
+                    "maximum": 2000,
+                    "default": 160,
+                    "description": "Audio pacing offset — must cover one source PES worth of audio (this source: ~150 ms = 7 AAC frames). Smaller-PES sources can run lower for less egress delay; too low degrades gracefully toward unpaced bursts. Ignored when audio pacing is off.",
                     "x-widget": "slider",
-                    "x-step": 5,
+                    "x-step": 10,
                     "x-unit": "ms",
                     "x-liveUpdatable": false
                 },

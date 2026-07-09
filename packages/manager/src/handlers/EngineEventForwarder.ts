@@ -48,30 +48,23 @@ export class EngineEventForwarder {
             const managerWantsRunning = this.engineCommands.isRunning(engineId);
 
             if (managerWantsRunning && !engineRunning) {
-                // Manager=run, Engine=stopped → start engine
-                log.info({ engineId }, 'Engine connected stopped — sending start');
+                // Manager=run, Engine=stopped → start engine. Fires on every
+                // handshake (connect + 10s heartbeat) — deliberately: if the
+                // start command was eaten by a dead WAN window, the next
+                // heartbeat retries it.
+                log.info({ engineId }, 'Engine reports stopped — sending start');
                 this.engineCommands.sendCommand(engineId, 'start');
-            } else if (managerWantsRunning && engineRunning) {
-                // Manager=run, Engine=running → push config, no restart
-                log.info({ engineId }, 'Engine already running — pushing config');
-                const engine = this.configStore.getEngine(engineId);
-                if (engine?.active_profile) {
-                    const config = this.configStore.getProfile(
-                        engineId,
-                        engine.active_profile as string,
-                    );
-                    if (config) {
-                        this.engineManager.sendToEngine(engineId, 'config', config, {
-                            guaranteeDelivery: true,
-                        });
-                    }
-                }
             } else if (!managerWantsRunning && engineRunning) {
                 // Manager=stop, Engine=running → stop engine
                 log.info({ engineId }, 'Manager wants stopped — sending stop');
                 this.engineCommands.sendCommand(engineId, 'stop');
             }
-            // Manager=stop, Engine=stopped → do nothing
+            // Both running → nothing to reconcile: the full config (with
+            // interlock repair) already went out guaranteed on this session's
+            // connect (EngineConnectionManager's connection handler). Pushing
+            // it again here doubled a ~100KB guaranteed message per connect —
+            // and the 10s handshake heartbeat would repeat it every tick.
+            // Both stopped → do nothing.
         });
 
         this.engineManager.on('engineOffline', (engineId: string) => {
@@ -90,7 +83,12 @@ export class EngineEventForwarder {
                 ...(this.cachedModuleStates.get(engineId) ?? {}),
                 ...(state as Record<string, unknown>),
             });
-            this.io.emit('engine:state', { engineId, state });
+            // Watch-room only — this is the highest-rate stream (every module
+            // re-sends full state on each stats tick) and only the routing
+            // editor renders per-module state. The sidebar reads engine-level
+            // events (engine:online/running), and `watch:engine` rehydrates a
+            // full snapshot from cachedModuleStates when a browser switches.
+            this.io.to(`watch:${engineId}`).emit('engine:state', { engineId, state });
         });
 
         // Engine reports its effective per-plugin config schemas on connect

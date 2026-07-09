@@ -126,8 +126,11 @@ export const useSocketStore = defineStore('socket', () => {
                         mod.liveUpdatableParams = s.liveUpdatableParams as string[] | undefined;
                 }
             }
-            // Trigger reactivity
-            store.touchEngine(data.engineId);
+            // No touchEngine here: `engines` is a deep-reactive Map, so the
+            // per-field writes above already notify exactly the components
+            // that read them. Replacing the whole Map per event invalidated
+            // every engine-derived computed 20+ times a second on large
+            // profiles — the main cause of the editor bogging down.
         });
 
         // VU meter data — uses dedicated VU store for fine-grained reactivity

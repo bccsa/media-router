@@ -55,14 +55,20 @@
                     "default": 7,
                     "description": "MPEG-TS muxer alignment — keep at SRT-aligned for SRT/RIST/UDP transport. Use Continuous only for v1-style receivers that derive timing from byte flow (their tsparse mis-estimates bitrate from 1316 B bursts)"
                 },
-                "bufferMs": {
+                "queueLeaky": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Input queue behaviour. OFF (non-leaky): never drop — hold the leading stream up to Queue depth while waiting out A/V skew or a stall; backlog flushes after recovery (contribution/stability). ON (leaky): shed the oldest frame once Queue depth of backlog builds, so output resumes at the live edge immediately after a stall (live production). Queues sit upstream of the muxer, after the codec parser — drops always land on whole frames; the mux output itself is never queued (a drop there would corrupt the TS mid-frame).",
+                    "x-liveUpdatable": false
+                },
+                "queueDepthMs": {
                     "type": "number",
-                    "minimum": 0,
-                    "maximum": 2000,
-                    "default": 50,
-                    "description": "Per-pad queue size in milliseconds — lower = lower latency, higher = more jitter tolerance",
+                    "minimum": 100,
+                    "maximum": 5000,
+                    "default": 500,
+                    "description": "Input queue bound. Non-leaky: how much A/V arrival skew to absorb without back-pressuring (set ≥ the worst skew of your wiring: transcode chain ~200 ms, demuxer audio pacing 160 ms, B-frame delay ~120 ms). Leaky: how much backlog to tolerate before shedding starts.",
                     "x-widget": "slider",
-                    "x-step": 5,
+                    "x-step": 50,
                     "x-unit": "ms",
                     "x-liveUpdatable": false
                 }

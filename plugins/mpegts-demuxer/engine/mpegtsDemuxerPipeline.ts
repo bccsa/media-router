@@ -256,9 +256,25 @@ export interface DemuxerPipelineInputs {
     input: { host: string; port: number };
     videoOutputs: DemuxerOutput[];
     audioOutputs: DemuxerOutput[];
-    /** Per-pad queue size in milliseconds (defaults to 50). Lower = lower
-     *  latency, higher = more jitter tolerance. */
-    bufferMs?: number;
+    /** Branch queue behaviour (defaults to false = non-leaky). Leaky sheds
+     *  the oldest whole frame when the bound fills (live production: never
+     *  hold backlog); non-leaky holds and back-pressures (contribution:
+     *  never drop). The paced audio branch forces non-leaky ahead of
+     *  clocksync regardless — a leaky queue there would shear every paced
+     *  burst (measured). */
+    queueLeaky?: boolean;
+    /** Branch queue bound in ms (defaults to 400, clamped 20–5000). Leaky:
+     *  how much backlog to tolerate before shedding. Non-leaky: the runaway
+     *  safety cap. Paced audio uses max(this, audioPacingMs + 240). */
+    queueDepthMs?: number;
+    /** Pace demuxed audio to per-frame cadence via clocksync (defaults to
+     *  true). OFF passes raw PES bursts through — the low-latency choice.
+     *  See AUDIO_PACING_MS_DEFAULT. */
+    audioPacing?: boolean;
+    /** Pacing offset in ms (defaults to 160). Must cover one source PES —
+     *  tune down for a smaller-PES source to shave egress delay, up for a
+     *  bigger one. Only consumed while `audioPacing` is on. */
+    audioPacingMs?: number;
     /** Output smoothing buffer in milliseconds (defaults to 0 = OFF). When 0
      *  the branch strings are byte-identical to the low-latency live path; when
      *  > 0 each branch prepends a deep non-leaky queue that absorbs a bursty
@@ -270,13 +286,70 @@ export interface DemuxerPipelineInputs {
 const DEMUX_NAME = 'demux';
 
 /**
- * Bound (ms) on each video output branch's NON-leaky back-pressure queue. This
- * is a runaway/memory safety cap, NOT a latency budget: on the loopback path the
- * udpsink always drains so the queue sits near-empty and adds ≈0 latency. It
- * only matters if a consumer genuinely stalls, where back-pressuring (up to this
- * bound) beats silently shedding frames. See `buildBackpressureQueue`.
+ * Default bound (ms) for the per-branch queue (operator-tunable via
+ * `queueDepthMs`). Non-leaky (default): a runaway/memory safety cap, NOT a
+ * latency budget — on the loopback path the udpsink always drains so the
+ * queue sits near-empty (≈0 latency) and only back-pressures if a consumer
+ * genuinely stalls. Leaky: the backlog tolerance before the oldest whole
+ * frame is shed. Sized to cover the paced-audio worst case
+ * (ts-offset 160 ms + one PES) so both media share one default.
  */
-const VIDEO_BRANCH_QUEUE_MS = 200;
+const BRANCH_QUEUE_MS_DEFAULT = 400;
+
+/** Clamp the operator-set branch queue depth. */
+export function clampQueueDepthMs(value: unknown): number {
+    const n = typeof value === 'number' && Number.isFinite(value) ? value : BRANCH_QUEUE_MS_DEFAULT;
+    return Math.max(20, Math.min(5000, n));
+}
+
+/**
+ * Audio branch pacing (measured on gate01, 2026-07-08). tsdemux only pushes an
+ * audio PES once its LAST byte arrives, so a source that packs ~7 AAC frames
+ * per PES (149 ms) emits the whole PES as one line-rate burst even though the
+ * TS packets arrived smoothly (input: 3.7 ms cadence; output: 150 ms bursts,
+ * 98% of datagrams <1 ms apart). Downstream consumers with a small jitter
+ * budget (audio decoders, N×SRT links colliding) surface that as choppy audio
+ * / wire loss. `clocksync` re-times each parsed frame to its PTS, restoring a
+ * one-frame (21.3 ms @ 48 kHz AAC) cadence — verified live: p99 21.6 ms, zero
+ * >100 ms gaps, full 453 kbps content.
+ *
+ * `ts-offset` must cover one PES worth of frames: every frame in the PES is
+ * already PAST its PTS when the PES completes (that's why a bare sync=true
+ * sink doesn't pace — everything renders as already-late). The default
+ * 160 ms covers the common 100–150 ms ADTS packing; a source with even
+ * bigger PES degrades gracefully to today's render-immediately behaviour.
+ * Operator-tunable via `audioPacingMs` (a smaller-PES source can run a
+ * smaller offset for less egress delay). This is NOT added buffering in the
+ * latency-budget sense: the receiver already had to dejitter the full PES
+ * quantum to play smoothly — the wait just moves to the sender where it
+ * stops burst collisions. A/V sync is unaffected (PTS untouched; downstream
+ * re-mux aligns by PTS).
+ */
+const AUDIO_PACING_MS_DEFAULT = 160;
+const AUDIO_PACING_MS_MAX = 2000;
+
+/**
+ * Floor (ms) for the NON-leaky audio branch queue ahead of `clocksync`. The
+ * queue is the thread boundary that keeps clocksync's clock-wait out of the
+ * shared tsdemux streaming thread (blocking there would stall every sibling
+ * branch), and it must hold at least ts-offset + one PES without dropping —
+ * the old 50 ms leaky queue would shear the tail off every paced burst. The
+ * actual bound scales with the configured offset:
+ * `max(400, audioPacingMs + 240)` (240 ≈ one worst-case PES + margin), so
+ * the default offset keeps the measured-good 400 ms bound exactly.
+ */
+const AUDIO_BRANCH_QUEUE_MIN_MS = 400;
+
+/** Non-leaky audio branch queue bound for a given pacing offset. */
+export function audioBranchQueueMs(pacingMs: number): number {
+    return Math.max(AUDIO_BRANCH_QUEUE_MIN_MS, pacingMs + 240);
+}
+
+/** Clamp the operator-set pacing offset to a sane range. */
+export function clampAudioPacingMs(value: unknown): number {
+    const n = typeof value === 'number' && Number.isFinite(value) ? value : AUDIO_PACING_MS_DEFAULT;
+    return Math.max(0, Math.min(AUDIO_PACING_MS_MAX, n));
+}
 
 export interface DemuxerPipelineResult {
     pipeline: string;
@@ -302,42 +375,67 @@ export interface DemuxerPipelineResult {
  *  docs/mpegts-dynamic-streams-plan.md (spike-validated: non-leaky absorbs the
  *  burst instead of dropping mid-frame, and does not stall sibling branches off
  *  the shared tsdemux). */
+export interface OutputBranchOptions {
+    /** Opt-in burst smoothing ahead of the branch (0 = OFF). */
+    outputBufferMs?: number;
+    /** Pace audio to per-frame cadence via clocksync (default true). */
+    audioPacing?: boolean;
+    /** Pacing offset ms (default 160). See AUDIO_PACING_MS_DEFAULT. */
+    audioPacingMs?: number;
+    /** Shed-oldest (leaky) vs hold-and-back-pressure branch queue. Ignored
+     *  (forced non-leaky) on the paced audio branch — see body. */
+    queueLeaky?: boolean;
+    /** Branch queue bound ms (default 400). */
+    queueDepthMs?: number;
+}
+
 export function buildOutputBranch(
     out: DemuxerOutput,
     suffix: string,
     media: 'video' | 'audio',
-    bufferMs: number,
-    outputBufferMs = 0,
+    opts: OutputBranchOptions = {},
 ): string {
+    const outputBufferMs = opts.outputBufferMs ?? 0;
+    const audioPacing = opts.audioPacing ?? true;
+    const queueLeaky = opts.queueLeaky ?? false;
+    const depthMs = clampQueueDepthMs(opts.queueDepthMs);
+    // The operator's stability-vs-latency call: non-leaky (default) holds and
+    // back-pressures into the udpsrc socket buffer — the re-mux stays
+    // lossless and, with the always-draining loopback udpsink, the queue sits
+    // near-empty (≈0 latency; the old always-leaky video queue shed frames
+    // the wire never lost, surfacing as macroblocking). Leaky sheds the
+    // oldest whole frame once the bound fills — live production's "never
+    // hold backlog" choice. Placed AFTER the (runner-injected) parser in
+    // every variant so drops/back-pressure land on whole access units, not
+    // mid-NAL.
+    const branchQueue = queueLeaky ? buildLeakyQueue(depthMs) : buildBackpressureQueue(depthMs);
     // `async=false` is load-bearing: this branch is parsed and `add()`ed to an
     // ALREADY-PLAYING pipeline at pad-added time, then `sync_state_with_parent`.
     // A default (async) udpsink would hold its first buffer in preroll, stalling
     // the shared tsdemux pad and freezing EVERY branch — the pipeline reaches
     // PLAYING but pumps nothing (input socket backs up, all outputs stay silent).
     const sink = buildUdpSink({ name: `usink_${suffix}`, host: out.host, port: out.port, async: false });
-    // No leaky queue between mpegtsmux and udpsink: any drop here is a
-    // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
-    // payload) and corrupts decode at the receiver. The kernel UDP send
-    // buffer absorbs typical bursts on its own.
+    // No queue between mpegtsmux and udpsink — EVER, in any mode: mux output
+    // buffers are untimestamped mid-frame TS chunks (~1316 B = 7 TS packets),
+    // so a leaky drop there corrupts decode at the receiver and a time-bound
+    // queue cannot even measure its depth. The kernel UDP send buffer absorbs
+    // typical bursts on its own. The per-branch queue above is the ONLY
+    // policy point.
     let branch: string;
     if (media === 'video') {
-        // Video queue placed AFTER the (runner-injected) parser so back-pressure
-        // lands on whole access units, not mid-NAL. NON-leaky: the tail is a
-        // loopback `udpsink` to a `lo` multicast group which always drains (UDP
-        // send never blocks on the receiver), so this queue sits near-empty
-        // (≈0 latency) and merely buffers a transient burst — a big I-frame,
-        // mpegtsmux aggregation, a thread wakeup — instead of shedding the
-        // oldest access unit the way a `leaky=2` queue did. On a lossless link
-        // (wired, same switch) the old leaky queue dropped frames the wire never
-        // lost, surfacing as macroblocking; back-pressuring the burst into the
-        // udpsrc socket buffer keeps the re-mux lossless. The bound is a runaway
-        // safety cap a healthy clean-link path never approaches.
-        const videoQueue = buildBackpressureQueue(VIDEO_BRANCH_QUEUE_MS);
-        branch = `${videoQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
-    } else {
-        // Audio queue after the (runner-injected) parser: drops land on whole
-        // frames rather than half-frames, which keeps the muxer's caps stable.
-        const audioQueue = buildLeakyQueue(bufferMs);
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
+    } else if (audioPacing) {
+        // Non-leaky queue first (thread boundary + PES-burst absorber — see
+        // audioBranchQueueMs), then clocksync re-times the parsed frames to
+        // their PTS (see AUDIO_PACING_MS_DEFAULT) BEFORE the muxer: mpegtsmux
+        // emits untimestamped output buffers, so pacing after it (a sync'd
+        // udpsink) has nothing to sync against — measured no-op. The queue is
+        // FORCED non-leaky regardless of `queueLeaky`: clocksync back-
+        // pressures it by design while pacing a PES out, so a leaky queue
+        // here would shear the tail off every burst.
+        const pacingMs = clampAudioPacingMs(opts.audioPacingMs);
+        const audioQueue = buildBackpressureQueue(Math.max(depthMs, audioBranchQueueMs(pacingMs)));
+        const pacer = `clocksync sync=true ts-offset=${pacingMs * 1_000_000}`;
         // Audio-only output: alignment=1 (one TS packet per UDP datagram)
         // rather than 7. Packing 7 packets means waiting for ~40–160 ms of
         // audio to accumulate before each UDP send, which arrives at the
@@ -345,7 +443,12 @@ export function buildOutputBranch(
         // and surface as scratchy / dropped frames. Per-packet emission costs
         // ~7× UDP overhead but keeps timing smooth — on localhost / LAN the
         // bandwidth hit is irrelevant.
-        branch = `${audioQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=1 ! ${sink}`;
+        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=0 alignment=1 ! ${sink}`;
+    } else {
+        // audioPacing OFF: raw PES bursts pass straight through — the
+        // low-latency choice. Queue behaviour follows queueLeaky/queueDepthMs
+        // like the video branch.
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=1 ! ${sink}`;
     }
     if (outputBufferMs <= 0) return branch;
     return `${buildSmoothingQueue(outputBufferMs)} ! ${branch}`;
@@ -379,11 +482,10 @@ function buildSmoothingQueue(outputBufferMs: number): string {
  * why mid-pipeline PCR re-anchoring causes visible packet loss when the
  * stream is re-muxed downstream. The runner then attaches `linkOnPadAdded`
  * rules so each video/audio pad gets its own pre-built branch at runtime
- * (video: parser → queue → mpegtsmux → udpsink; audio: queue → mpegtsmux →
- * udpsink).
+ * (video: parser → queue → mpegtsmux → udpsink; audio: queue → clocksync →
+ * mpegtsmux → udpsink).
  */
 export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResult | null {
-    const bufferMs = input.bufferMs ?? 50;
     const outputBufferMs = input.outputBufferMs ?? 0;
     // Goes straight `udpsrc ! tsdemux` with no `tsparse` in between: re-deriving
     // PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
@@ -408,9 +510,16 @@ export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResu
     });
     const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;
 
+    const branchOpts: OutputBranchOptions = {
+        outputBufferMs,
+        audioPacing: input.audioPacing ?? true,
+        audioPacingMs: clampAudioPacingMs(input.audioPacingMs),
+        queueLeaky: input.queueLeaky ?? false,
+        queueDepthMs: clampQueueDepthMs(input.queueDepthMs),
+    };
     const linkOnPadAdded: PadLinkRule[] = [];
-    pushMediaRule(linkOnPadAdded, 'video', input.videoOutputs, 'v', bufferMs, outputBufferMs);
-    pushMediaRule(linkOnPadAdded, 'audio', input.audioOutputs, 'a', bufferMs, outputBufferMs);
+    pushMediaRule(linkOnPadAdded, 'video', input.videoOutputs, 'v', branchOpts);
+    pushMediaRule(linkOnPadAdded, 'audio', input.audioOutputs, 'a', branchOpts);
 
     return { pipeline, linkOnPadAdded };
 }
@@ -433,8 +542,7 @@ function pushMediaRule(
     media: 'video' | 'audio',
     outputs: DemuxerOutput[],
     suffixPrefix: string,
-    bufferMs: number,
-    outputBufferMs: number,
+    opts: OutputBranchOptions,
 ): void {
     if (outputs.length === 0) return;
     const anyPinned = outputs.some((o) => typeof o.pid === 'number');
@@ -443,7 +551,7 @@ function pushMediaRule(
             from: DEMUX_NAME,
             media,
             branches: outputs.map((o, i) =>
-                buildOutputBranch(o, `${suffixPrefix}${i}`, media, bufferMs, outputBufferMs),
+                buildOutputBranch(o, `${suffixPrefix}${i}`, media, opts),
             ),
         });
         return;
@@ -455,7 +563,7 @@ function pushMediaRule(
         from: DEMUX_NAME,
         media,
         branches: pinned.map((o, i) =>
-            buildOutputBranch(o, `${suffixPrefix}${i}`, media, bufferMs, outputBufferMs),
+            buildOutputBranch(o, `${suffixPrefix}${i}`, media, opts),
         ),
         matchPids: pinned.map((o) => o.pid as number),
     });

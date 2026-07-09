@@ -441,11 +441,6 @@ export const useEngineStore = defineStore('engines', () => {
         if (changed) engines.value = new Map(engines.value);
     }
 
-    /** Force Vue reactivity trigger for an engine (after in-place module mutations). */
-    function touchEngine(engineId: string) {
-        engines.value = new Map(engines.value);
-    }
-
     return {
         engines,
         engineList,
@@ -463,7 +458,6 @@ export const useEngineStore = defineStore('engines', () => {
         removeConnection,
         setSystemStats,
         setEngineInfo,
-        touchEngine,
         renameEngine,
     };
 });

@@ -68,7 +68,13 @@ describe('setupSocketIO', () => {
             return { socket, handlers };
         }
 
-        return { io, engineManager, connectSocket, fireConnect: () => connectionHandler };
+        return {
+            io,
+            engineManager,
+            eventForwarder,
+            connectSocket,
+            fireConnect: () => connectionHandler,
+        };
     }
 
     it('engine:reboot forwards a reboot command to the online engine', () => {
@@ -97,6 +103,53 @@ describe('setupSocketIO', () => {
         handlers['engine:reboot']!({ engineId: 'eng-1' });
 
         expect(engineManager.sendToEngine).not.toHaveBeenCalled();
+        store.close();
+    });
+
+    it('module:restart is a no-op when the engine is offline', () => {
+        const store = new ConfigStore(':memory:');
+        store.createEngine('eng-1', 'Engine One', 'pw');
+        const { engineManager, connectSocket } = mockDeps(store, { online: false });
+        const { handlers } = connectSocket();
+
+        handlers['module:restart']!({ engineId: 'eng-1', moduleId: 'mod-1' });
+
+        expect(engineManager.sendToEngine).not.toHaveBeenCalled();
+        store.close();
+    });
+
+    it('watch:engine joins the room and rehydrates the cached state snapshot', () => {
+        const store = new ConfigStore(':memory:');
+        store.createEngine('eng-1', 'Engine One', 'pw');
+        const { eventForwarder, connectSocket } = mockDeps(store);
+        eventForwarder.getCachedStates.mockReturnValue({
+            'mod-1': { running: true, health: 'ok', badges: [] },
+        });
+        const { socket, handlers } = connectSocket();
+
+        handlers['watch:engine']!({ engineId: 'eng-1' });
+
+        expect(socket.join).toHaveBeenCalledWith('watch:eng-1');
+        // engine:state streams to the watch room only, so the switch must
+        // deliver the full runtime snapshot to the joining socket.
+        expect(socket.emit).toHaveBeenCalledWith('engine:state', {
+            engineId: 'eng-1',
+            state: { 'mod-1': { running: true, health: 'ok', badges: [] } },
+        });
+        store.close();
+    });
+
+    it('watch:engine skips the snapshot when nothing is cached', () => {
+        const store = new ConfigStore(':memory:');
+        store.createEngine('eng-1', 'Engine One', 'pw');
+        const { connectSocket } = mockDeps(store);
+        const { socket, handlers } = connectSocket();
+
+        handlers['watch:engine']!({ engineId: 'eng-1' });
+
+        expect(socket.join).toHaveBeenCalledWith('watch:eng-1');
+        const stateCall = socket.emit.mock.calls.find((c) => c[0] === 'engine:state');
+        expect(stateCall).toBeUndefined();
         store.close();
     });
 

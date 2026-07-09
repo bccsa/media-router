@@ -101,19 +101,16 @@ describe('EngineEventForwarder', () => {
             expect(engineCommands.sendCommand).toHaveBeenCalledWith('eng-1', 'start');
         });
 
-        it('pushes config when both manager and engine are running', () => {
-            const { engineManager, engineCommands, configStore } = createMocks();
+        it('sends nothing when both manager and engine are running — the session-connect push already delivered the config', () => {
+            const { engineManager, engineCommands } = createMocks();
             engineCommands.isRunning.mockReturnValue(true);
 
             engineManager.emit('engineRunningState', 'eng-1', { running: true });
+            // The 10s heartbeat repeats the handshake — must stay a no-op too.
+            engineManager.emit('engineRunningState', 'eng-1', { running: true });
 
             expect(engineCommands.sendCommand).not.toHaveBeenCalled();
-            expect(engineManager.sendToEngine).toHaveBeenCalledWith(
-                'eng-1',
-                'config',
-                expect.any(Object),
-                expect.objectContaining({ guaranteeDelivery: true }),
-            );
+            expect(engineManager.sendToEngine).not.toHaveBeenCalled();
         });
 
         it('sends stop when manager wants stopped but engine is running', () => {
@@ -135,24 +132,28 @@ describe('EngineEventForwarder', () => {
             expect(engineManager.sendToEngine).not.toHaveBeenCalled();
         });
 
-        it('skips config push when no active profile', () => {
-            const { engineManager, engineCommands, configStore } = createMocks();
+        it('retries start on every stopped-report — heartbeat self-heal for eaten start commands', () => {
+            const { engineManager, engineCommands } = createMocks();
             engineCommands.isRunning.mockReturnValue(true);
-            configStore.getEngine.mockReturnValue({ engine_id: 'eng-1', active_profile: null });
 
-            engineManager.emit('engineRunningState', 'eng-1', { running: true });
+            engineManager.emit('engineRunningState', 'eng-1', { running: false });
+            engineManager.emit('engineRunningState', 'eng-1', { running: false });
 
-            expect(engineManager.sendToEngine).not.toHaveBeenCalled();
+            expect(engineCommands.sendCommand).toHaveBeenCalledTimes(2);
+            expect(engineCommands.sendCommand).toHaveBeenCalledWith('eng-1', 'start');
         });
     });
 
     describe('engineState', () => {
-        it('caches module states and broadcasts to browsers', () => {
-            const { forwarder, engineManager, io } = createMocks();
+        it('caches module states and emits to the watch room only', () => {
+            const { forwarder, engineManager, io, toRoom, roomEmit } = createMocks();
 
             engineManager.emit('engineState', 'eng-1', { 'mod-1': { running: true } });
 
-            expect(io.emit).toHaveBeenCalledWith('engine:state', {
+            // Highest-rate stream — must NOT broadcast to every browser.
+            expect(io.emit).not.toHaveBeenCalled();
+            expect(toRoom).toHaveBeenCalledWith('watch:eng-1');
+            expect(roomEmit).toHaveBeenCalledWith('engine:state', {
                 engineId: 'eng-1',
                 state: { 'mod-1': { running: true } },
             });

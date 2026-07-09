@@ -490,4 +490,121 @@ describe('MediaRouter', () => {
         ).rejects.toThrow('already has 1/1 connections');
         expect(router.getConnections()).toHaveLength(1);
     });
+
+    // --- invalidateOutgoingPwLinks (consumer-restart cascade) ---
+
+    it('invalidateOutgoingPwLinks drops the source pw-link so it re-executes, but leaves mpegts/udp edges', async () => {
+        // Regression guard for the mid-chain restart cascade: when a consumer
+        // (decoder) is stopped/started to pick up a producer's udpsrc it
+        // recreates its null-sink, orphaning its downstream pw-link. The stale
+        // handle must be dropped so a re-apply re-links against the new node —
+        // otherwise createConnection's "already exists" skip leaves the encoder
+        // silent. muxed/mpegts edges survive a source restart and must NOT be
+        // torn down (that would needlessly bounce the sink).
+        const pipeWire = {
+            pwUnlinkAllBetween: vi.fn().mockResolvedValue(undefined),
+            listPorts: vi.fn().mockResolvedValue(['node:port_FL']),
+            pwLink: vi.fn().mockResolvedValue(1),
+            pwUnlinkByName: vi.fn().mockResolvedValue(undefined),
+            pwUnlink: vi.fn().mockResolvedValue(undefined),
+        };
+        const moduleGetter = vi.fn().mockImplementation((id: string) => {
+            if (id === 'dec')
+                return {
+                    running: true,
+                    getPipeWireNodeForPort: () => undefined,
+                    getPipeWireNodes: () => ({ source: 'dec.monitor' }),
+                };
+            if (id === 'enc')
+                return {
+                    running: true,
+                    getPipeWireNodeForPort: () => undefined,
+                    getPipeWireNodes: () => ({ sink: 'enc' }),
+                };
+            if (id === 'srt')
+                return {
+                    running: false,
+                    stop: vi.fn().mockResolvedValue(undefined),
+                    start: vi.fn().mockResolvedValue(undefined),
+                };
+            return undefined;
+        });
+        router.setDependencies(pipeWire as any, moduleGetter as any);
+
+        router.registerPorts('dec', [
+            { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+        ]);
+        router.registerPorts('enc', [
+            { id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
+            { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'TsOut' },
+        ]);
+        router.registerPorts('srt', [
+            { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'TsIn' },
+        ]);
+
+        router.assignUdpPort('enc');
+        await router.createConnection('dec', 'audio-out', 'enc', 'audio-in'); // pw-link handle
+        await router.createConnection('enc', 'mpegts-out', 'srt', 'mpegts-in'); // udp handle
+        expect(router.getConnections()).toHaveLength(2);
+
+        // Decoder restarted mid-chain → its outgoing pw-link handle is stale.
+        await router.invalidateOutgoingPwLinks('dec');
+
+        // pw-link edge removed (record gone → next re-apply re-executes it),
+        // and its handle was torn down (pwUnlinkByName only runs in teardown).
+        expect(router.getConnections().map((c) => c.id)).toEqual([
+            'enc:mpegts-out-srt:mpegts-in',
+        ]);
+        expect(pipeWire.pwUnlinkByName).toHaveBeenCalled();
+
+        // The mpegts/udp edge sourced by 'enc' is left intact — udp handles
+        // survive a source restart, so re-executing them would just bounce the
+        // sink for nothing.
+        await router.invalidateOutgoingPwLinks('enc');
+        expect(router.getConnections()).toHaveLength(1);
+    });
+
+    it('createConnection throws (not silently drops) when pw-link ports never appear — so the cascade re-link retries', async () => {
+        // Regression guard paired with invalidateOutgoingPwLinks: after the
+        // record is dropped, the re-apply must be retryable. A recreated
+        // null-sink can miss the first waitForPorts poll (the cascade path has
+        // no settle delay), so executePwLink throws rather than returning null
+        // — otherwise createConnection drops the record and connectWithRetry
+        // logs a false "Connected", leaving the edge gone until manual restart.
+        const pipeWire = {
+            pwUnlinkAllBetween: vi.fn().mockResolvedValue(undefined),
+            listPorts: vi.fn().mockResolvedValue([]), // ports never appear
+            pwLink: vi.fn().mockResolvedValue(1),
+            pwUnlinkByName: vi.fn().mockResolvedValue(undefined),
+            pwUnlink: vi.fn().mockResolvedValue(undefined),
+        };
+        const moduleGetter = vi.fn().mockImplementation((id: string) => {
+            if (id === 'dec')
+                return {
+                    running: true,
+                    getPipeWireNodeForPort: () => undefined,
+                    getPipeWireNodes: () => ({ source: 'dec.monitor' }),
+                };
+            if (id === 'enc')
+                return {
+                    running: true,
+                    getPipeWireNodeForPort: () => undefined,
+                    getPipeWireNodes: () => ({ sink: 'enc' }),
+                };
+            return undefined;
+        });
+        router.setDependencies(pipeWire as any, moduleGetter as any);
+        router.registerPorts('dec', [
+            { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+        ]);
+        router.registerPorts('enc', [
+            { id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
+        ]);
+
+        await expect(
+            router.createConnection('dec', 'audio-out', 'enc', 'audio-in'),
+        ).rejects.toThrow(/ports/i);
+        // Zombie record removed so a retry starts from a clean slate.
+        expect(router.getConnections()).toHaveLength(0);
+    }, 10_000);
 });

@@ -31,8 +31,8 @@ describe('mpegtsDemuxerPipeline helpers', () => {
 
     describe('buildOutputBranch', () => {
         it('produces a parser-free frame-bounded queue → mpegtsmux → udpsink branch for video (parser is injected by the runner per pad caps)', () => {
-            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20);
-            expect(s).toContain('queue leaky=0 max-size-time=200000000');
+            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video');
+            expect(s).toContain('queue leaky=0 max-size-time=400000000');
             expect(s).toContain('mpegtsmux name=mux_v0');
             expect(s).toContain('udpsink name=usink_v0 host=239.255.0.1 port=41005');
             // alignment=7: pack 7 TS packets into one UDP datagram (1316 B —
@@ -45,9 +45,17 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(s).not.toContain('h265parse');
             expect(s).not.toContain('av1parse');
         });
-        it('produces a parser-free leaky queue → mpegtsmux → udpsink branch for audio (parser is injected by the runner per pad caps)', () => {
-            const s = buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 20);
-            expect(s).toContain('queue leaky=2 max-size-time=20000000');
+        it('produces a parser-free non-leaky queue → clocksync → mpegtsmux → udpsink branch for audio (parser is injected by the runner per pad caps)', () => {
+            const s = buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio');
+            // Non-leaky thread-boundary queue sized to hold a whole paced PES
+            // (ts-offset + PES ≈ 310 ms) — a leaky 50 ms queue would shear the
+            // tail off every burst once clocksync back-pressures it.
+            expect(s).toContain('queue leaky=0 max-size-time=400000000');
+            // PTS pacing BEFORE the muxer: tsdemux releases a whole PES (~7 AAC
+            // frames = 149 ms) at once; clocksync restores per-frame cadence.
+            // Measured: without it the branch emits 150 ms line-rate bursts.
+            expect(s).toContain('clocksync sync=true ts-offset=160000000');
+            expect(s).toMatch(/clocksync[^!]+! mpegtsmux/);
             expect(s).toContain('mpegtsmux name=mux_a0');
             // alignment=1 — one TS packet per UDP datagram on audio. The
             // batched alignment=7 introduces ~40–160 ms of bursty delivery
@@ -61,12 +69,12 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(s).not.toContain('mpegaudioparse');
         });
         it('connects mpegtsmux straight to udpsink with no leaky queue between — a leaky queue here would drop mid-stream UDP buffers and corrupt decode', () => {
-            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50);
+            const s = buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video');
             expect(s).toMatch(/mpegtsmux name=mux_v0[^!]+! udpsink/);
         });
         it('marks branch udpsinks async=false — they are added to an already-PLAYING pipeline at pad-added time; a prerolling (async) sink stalls the shared tsdemux and freezes every branch', () => {
-            expect(buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 20)).toContain('async=false');
-            expect(buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 20)).toContain('async=false');
+            expect(buildOutputBranch({ portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video')).toContain('async=false');
+            expect(buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio')).toContain('async=false');
         });
 
         describe('output smoothing (opt-in outputBufferMs — Phase 5)', () => {
@@ -75,44 +83,45 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             // arg-omitted default) reproduce them character-for-character.
             it('emits BYTE-IDENTICAL strings when outputBufferMs is 0 or omitted (live path unchanged)', () => {
                 const out = { portId: 'video-0', host: '239.255.0.1', port: 41005 };
-                const videoBaseline = buildOutputBranch(out, 'v0', 'video', 50);
+                const videoBaseline = buildOutputBranch(out, 'v0', 'video');
                 const audioBaseline = buildOutputBranch(
-                    { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50);
+                    { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio');
                 // Omitted arg.
-                expect(buildOutputBranch(out, 'v0', 'video', 50)).toBe(videoBaseline);
+                expect(buildOutputBranch(out, 'v0', 'video')).toBe(videoBaseline);
                 // Explicit 0.
-                expect(buildOutputBranch(out, 'v0', 'video', 50, 0)).toBe(videoBaseline);
+                expect(buildOutputBranch(out, 'v0', 'video', { outputBufferMs: 0 })).toBe(videoBaseline);
                 expect(
-                    buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50, 0),
+                    buildOutputBranch({ portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', { outputBufferMs: 0 }),
                 ).toBe(audioBaseline);
                 // And no smoothing queue was prepended: the default path has
-                // exactly ONE queue per branch (the re-mux queue itself — which
-                // is now non-leaky on video), not a leading smoothing queue.
+                // exactly ONE queue per branch (the re-mux queue itself — now
+                // non-leaky on both media), not a leading smoothing queue.
                 expect((videoBaseline.match(/queue leaky=/g) || []).length).toBe(1);
                 expect((audioBaseline.match(/queue leaky=/g) || []).length).toBe(1);
             });
 
             it('prepends a deep NON-leaky smoothing queue with the right window on the video branch', () => {
                 const s = buildOutputBranch(
-                    { portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50, 2000);
+                    { portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', { outputBufferMs: 2000 });
                 // Smoothing queue is first, non-leaky, sized to the window.
                 expect(s).toMatch(/^queue leaky=0 max-size-time=2000000000 max-size-buffers=0 max-size-bytes=0 !/);
                 // The original branch is preserved after it.
-                expect(s).toContain('queue leaky=0 max-size-time=200000000');
+                expect(s).toContain('queue leaky=0 max-size-time=400000000');
                 expect(s).toContain('alignment=7');
             });
 
             it('prepends the smoothing queue on the audio branch too, keeping alignment=1', () => {
                 const s = buildOutputBranch(
-                    { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', 50, 800);
+                    { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', { outputBufferMs: 800 });
                 expect(s).toMatch(/^queue leaky=0 max-size-time=800000000 max-size-buffers=0 max-size-bytes=0 !/);
-                expect(s).toContain('queue leaky=2 max-size-time=50000000');
+                expect(s).toContain('queue leaky=0 max-size-time=400000000');
+                expect(s).toContain('clocksync sync=true');
                 expect(s).toContain('alignment=1');
             });
 
             it('clamps the smoothing window to the 5000 ms ceiling', () => {
                 const s = buildOutputBranch(
-                    { portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', 50, 999999);
+                    { portId: 'video-0', host: '239.255.0.1', port: 41005 }, 'v0', 'video', { outputBufferMs: 999999 });
                 expect(s).toContain('queue leaky=0 max-size-time=5000000000');
             });
         });
@@ -142,15 +151,82 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(audioRule.branches[0]).toContain('port=41002');
             expect(audioRule.branches[1]).toContain('port=41003');
         });
-        it('threads bufferMs into the audio output queue (video uses a frame-count queue so bufferMs does not apply)', () => {
+        it('paces audio by default — non-leaky queue + clocksync', () => {
             const result = buildPipeline({
                 input: { host: '239.255.0.1', port: 40001 },
                 videoOutputs: [],
                 audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
-                bufferMs: 50,
             });
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
-            expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
+            expect(audioRule.branches[0]).toContain('queue leaky=0 max-size-time=400000000');
+            expect(audioRule.branches[0]).toContain('clocksync sync=true ts-offset=160000000');
+            expect(audioRule.branches[0]).not.toContain('leaky=2');
+        });
+        it('queueLeaky + audioPacing=false reproduces the pre-pacing leaky branch byte-for-byte (the low-latency A/B lever)', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+                audioPacing: false,
+                queueLeaky: true,
+                queueDepthMs: 50,
+            });
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(audioRule.branches[0]).toBe(
+                'queue leaky=2 max-size-time=50000000 max-size-buffers=0 max-size-bytes=0 ! ' +
+                'mpegtsmux name=mux_a0 latency=0 alignment=1 ! ' +
+                'udpsink name=usink_a0 host=239.255.0.1 port=41002 multicast-iface=lo auto-multicast=true ' +
+                'buffer-size=4194304 sync=false async=false',
+            );
+            expect(audioRule.branches[0]).not.toContain('clocksync');
+        });
+        it('queueLeaky applies to the video branch, but the paced audio branch stays forced non-leaky', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+                queueLeaky: true,
+                queueDepthMs: 100,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(videoRule.branches[0]).toContain('queue leaky=2 max-size-time=100000000');
+            // Paced audio ignores queueLeaky (clocksync back-pressures its
+            // queue by design — leaky would shear every paced burst) and
+            // keeps the pacing-derived bound.
+            expect(audioRule.branches[0]).toContain('queue leaky=0 max-size-time=400000000');
+            expect(audioRule.branches[0]).toContain('clocksync sync=true');
+        });
+        it('threads audioPacingMs into the clocksync offset and scales the branch queue bound', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+                audioPacingMs: 500,
+            });
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(audioRule.branches[0]).toContain('clocksync sync=true ts-offset=500000000');
+            // Queue bound scales with the offset: max(400, 500 + 240) = 740 ms.
+            expect(audioRule.branches[0]).toContain('queue leaky=0 max-size-time=740000000');
+        });
+        it('clamps audioPacingMs to the sane range and keeps the 400 ms queue floor', () => {
+            const result = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+                audioPacingMs: 99_999,
+            });
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(audioRule.branches[0]).toContain('ts-offset=2000000000'); // 2000 ms cap
+            const low = buildPipeline({
+                input: { host: '239.255.0.1', port: 40001 },
+                videoOutputs: [],
+                audioOutputs: [{ portId: 'audio-0', host: '239.255.0.1', port: 41002 }],
+                audioPacingMs: 0,
+            });
+            const lowRule = low!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(lowRule.branches[0]).toContain('ts-offset=0');
+            expect(lowRule.branches[0]).toContain('queue leaky=0 max-size-time=400000000'); // floor
         });
         it('threads outputBufferMs into both video and audio branches (Phase 5)', () => {
             const result = buildPipeline({

@@ -166,12 +166,16 @@ export class MpegTsMuxerModule extends GstPluginBase {
         }
 
         const alignment = (config.alignment as number) ?? DEFAULT_MPEGTS_ALIGNMENT;
-        const bufferMs = (config.bufferMs as number) ?? 50;
+        // Stability-vs-latency is a per-use-case operator call, not a
+        // constant — see the queueLeaky doc in the pipeline helpers.
+        const queueLeaky = (config.queueLeaky as boolean) ?? false;
+        const queueDepthMs = config.queueDepthMs as number | undefined;
         const result = buildPipeline({
             sources,
             output: endpoint,
             alignment,
-            bufferMs,
+            queueLeaky,
+            queueDepthMs,
         });
         if (!result) return null;
 

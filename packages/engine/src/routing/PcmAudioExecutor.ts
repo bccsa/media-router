@@ -114,19 +114,24 @@ export class PcmAudioExecutor implements StreamTypeExecutor {
         const srcPorts = await this.waitForPorts(sourcePwNode, 'output');
         const sinkPorts = await this.waitForPorts(sinkPwNode, 'input');
 
+        // Throw (not return null) when ports never appear so the caller's retry
+        // path (ConnectionApplier.connectWithRetry) re-attempts with backoff.
+        // PipeWire port registration is async; on the consumer-restart cascade
+        // the just-recreated null-sink can miss this poll window, and that path
+        // has no PW_SETTLE_MS wait (ModuleLifecycle wires it directly). A silent
+        // null instead makes createConnection drop the connection record and the
+        // caller log a false "Connected" — the edge is then gone with no retry
+        // until a manual restart. Same asymmetry MpegTsUdpExecutor already
+        // avoids by throwing on a not-yet-assigned UDP port.
         if (srcPorts.length === 0) {
-            log.warn(
-                { node: sourcePwNode },
-                `No output ports found after polling — connection cannot be created ${this.connLabel(conn)}`,
+            throw new Error(
+                `No output ports on ${sourcePwNode} after polling — cannot create ${this.connLabel(conn)}`,
             );
-            return null;
         }
         if (sinkPorts.length === 0) {
-            log.warn(
-                { node: sinkPwNode },
-                `No input ports found after polling — connection cannot be created ${this.connLabel(conn)}`,
+            throw new Error(
+                `No input ports on ${sinkPwNode} after polling — cannot create ${this.connLabel(conn)}`,
             );
-            return null;
         }
 
         log.info({ srcPorts, sinkPorts }, `Discovered PipeWire ports ${this.connLabel(conn)}`);

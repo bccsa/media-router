@@ -128,18 +128,37 @@ describe('wireEngineEvents — state resync heartbeat', () => {
         expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
     });
 
-    it('reports engineRunningState from the run controller, not module-map size', () => {
-        // Dormant instances exist (size > 0) but the controller says stopped —
-        // the historical `moduleManager.size > 0` proxy would mis-report this
-        // as running.
+    it('reports engineRunningState from the run controller (guaranteed), not module-map size', () => {
+        // Two things at once:
+        //  - Value: dormant instances exist (size > 0) but the controller says
+        //    stopped — the historical `moduleManager.size > 0` proxy would
+        //    mis-report this as running.
+        //  - Delivery: guaranteed. This handshake is the sole trigger for
+        //    manager-driven auto-start; sent best-effort it drops on a lossy
+        //    tunnel (the NO-BR gate over Cloudflare) and the engine boots with
+        //    every module stopped until an operator restarts it.
         stubs.moduleManager.getAllStates.mockReturnValue({
             'mod-1': { running: false, health: 'stopped' },
         });
         stubs.managerConnection.emit('connected');
 
-        expect(stubs.managerConnection.send).toHaveBeenCalledWith('engineRunningState', {
-            running: false,
-        });
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'engineRunningState',
+            { running: false },
+            { guaranteeDelivery: true },
+        );
+    });
+
+    it('re-sends the running-state handshake on the 10s heartbeat (self-healing auto-start)', () => {
+        stubs.managerConnection.emit('connected');
+        stubs.managerConnection.send.mockClear();
+
+        vi.advanceTimersByTime(10_000);
+        expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+            'engineRunningState',
+            { running: false },
+            { guaranteeDelivery: true },
+        );
     });
 
     it('republishes guaranteed snapshot every 10s while connected', () => {
@@ -267,5 +286,83 @@ describe('wireEngineEvents — state resync heartbeat', () => {
             expect.anything(),
             expect.anything(),
         );
+    });
+});
+
+describe('wireEngineEvents — module state batching', () => {
+    let stubs: Stubs;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        stubs = makeStubs();
+        wireEngineEvents(makeCtx(stubs));
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    // Batching semantics (flush window, latest-wins, dedup, vu-strip) are
+    // covered directly in ModuleStateBatcher.test.ts — here we verify the
+    // WIRING: events reach the batcher and its output reaches the connection.
+    it('routes stateChange through the batcher — LCP gets the full state at once, the manager a lean batch on flush', () => {
+        const state = { running: true, health: 'ok', vuData: [-12.5] };
+        stubs.moduleManager.emit('stateChange', 'mod-1', state);
+        stubs.moduleManager.emit('stateChange', 'mod-2', { running: false, health: 'stopped' });
+
+        expect(stubs.lcpServer.broadcastState).toHaveBeenCalledWith('mod-1', state);
+        expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledTimes(1);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({
+            'mod-1': { running: true, health: 'ok' },
+            'mod-2': { running: false, health: 'stopped' },
+        });
+    });
+
+    it('drops a deleted module from the pending batch', () => {
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'ok' });
+        stubs.moduleManager.emit('stateChange', 'mod-2', { running: true, health: 'ok' });
+        stubs.moduleManager.emit('moduleDeleted', 'mod-1');
+
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({
+            'mod-2': { running: true, health: 'ok' },
+        });
+    });
+
+    it('guaranteed snapshot supersedes the pending batch and resets dedup', () => {
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'ok' });
+        stubs.moduleManager.getAllStates.mockReturnValue({
+            'mod-1': { running: true, health: 'ok', vuData: [-3] },
+        });
+        stubs.managerConnection.emit('connected');
+
+        // Snapshot went out guaranteed (vuData stripped)…
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith(
+            { 'mod-1': { running: true, health: 'ok' } },
+            { guaranteeDelivery: true },
+        );
+        stubs.managerConnection.sendState.mockClear();
+
+        // …and the pending batch was absorbed — nothing extra flushes.
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
+    });
+
+    it('clears the batch and dedup cache on disconnect so reconnect starts clean', () => {
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'ok' });
+        stubs.managerConnection.emit('disconnected');
+
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).not.toHaveBeenCalled();
+
+        // Same state again post-reconnect must not be dedup-suppressed.
+        stubs.moduleManager.emit('stateChange', 'mod-1', { running: true, health: 'ok' });
+        vi.advanceTimersByTime(250);
+        expect(stubs.managerConnection.sendState).toHaveBeenCalledWith({
+            'mod-1': { running: true, health: 'ok' },
+        });
     });
 });

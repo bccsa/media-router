@@ -27,7 +27,10 @@ function makeModules(
 }
 
 describe('ConnectionApplier', () => {
-    let mockMediaRouter: { createConnection: ReturnType<typeof vi.fn> };
+    let mockMediaRouter: {
+        createConnection: ReturnType<typeof vi.fn>;
+        invalidateOutgoingPwLinks: ReturnType<typeof vi.fn>;
+    };
     let mockModuleManager: { get: ReturnType<typeof vi.fn> };
     let resolvePortsForInstance: ReturnType<typeof vi.fn>;
     let getConfig: ReturnType<typeof vi.fn>;
@@ -36,6 +39,7 @@ describe('ConnectionApplier', () => {
     beforeEach(() => {
         mockMediaRouter = {
             createConnection: vi.fn().mockResolvedValue('conn-id'),
+            invalidateOutgoingPwLinks: vi.fn().mockResolvedValue(undefined),
         };
         mockModuleManager = {
             get: vi.fn().mockReturnValue({ running: true }),
@@ -404,6 +408,50 @@ describe('ConnectionApplier', () => {
                 'video-0',
                 undefined,
             );
+        });
+
+        it('outgoingOnly=true invalidates stale pw-links before re-applying, so the encoder re-links', async () => {
+            // The just-restarted consumer recreated its PipeWire null-sink; its
+            // outgoing pw-link handle is now stale. Without dropping it first,
+            // createConnection short-circuits on "already exists" and the
+            // downstream encoder stays silent. invalidate must run BEFORE the
+            // re-apply.
+            getConfig.mockReturnValue({
+                connections: [
+                    makeConn({
+                        id: 'out',
+                        sourceModuleId: 'decoder',
+                        sourcePortId: 'audio-out',
+                        sinkModuleId: 'encoder',
+                        sinkPortId: 'audio-in',
+                    }),
+                ],
+            });
+            const order: string[] = [];
+            mockMediaRouter.invalidateOutgoingPwLinks.mockImplementation(async () => {
+                order.push('invalidate');
+            });
+            mockMediaRouter.createConnection.mockImplementation(async () => {
+                order.push('create');
+                return 'conn-id';
+            });
+
+            await applier.reapplyModuleConnections('decoder', true);
+
+            expect(mockMediaRouter.invalidateOutgoingPwLinks).toHaveBeenCalledWith('decoder');
+            expect(order).toEqual(['invalidate', 'create']);
+        });
+
+        it('outgoingOnly=false (normal restart) does NOT invalidate pw-links', async () => {
+            // The full _restart path already removed the module's own edges
+            // before re-applying, so there is no stale handle to clear.
+            getConfig.mockReturnValue({
+                connections: [makeConn({ sourceModuleId: 'mod-a', sinkModuleId: 'mod-b' })],
+            });
+
+            await applier.reapplyModuleConnections('mod-a');
+
+            expect(mockMediaRouter.invalidateOutgoingPwLinks).not.toHaveBeenCalled();
         });
 
         it('skips connections where source or sink is not running', async () => {

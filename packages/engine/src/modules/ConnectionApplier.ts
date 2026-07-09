@@ -149,6 +149,19 @@ export class ConnectionApplier {
         const config = this.getConfig();
         if (!config) return;
 
+        // Cascade path (post consumer-restart via MpegTsUdpExecutor): the
+        // module we're re-applying for was just stopped/started to pick up a
+        // producer's udpsrc, which recreated its PipeWire null-sink. Any live
+        // pw-link handle on its *outgoing* edges now points at a destroyed
+        // node. Drop those handles (and their connection records) first so the
+        // re-apply below actually re-executes them, instead of the idempotent
+        // `createConnection` short-circuit skipping the re-link and leaving the
+        // downstream module (e.g. an encoder fed by this decoder) wired to a
+        // dead node — silent until a manual restart.
+        if (outgoingOnly) {
+            await this.mediaRouter.invalidateOutgoingPwLinks(moduleId);
+        }
+
         const storedConns = (config.connections ?? []) as StoredConnection[];
         for (const conn of storedConns) {
             // `outgoingOnly` is used by the post-consumer-restart cascade

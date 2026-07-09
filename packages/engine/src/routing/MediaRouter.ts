@@ -236,6 +236,39 @@ export class MediaRouter {
         return existed;
     }
 
+    /**
+     * Tear down live pw-link handles (and drop their connection records) for
+     * every edge where `moduleId` is the SOURCE, so a subsequent re-apply
+     * re-executes them instead of hitting `createConnection`'s idempotent
+     * "connection already exists" short-circuit.
+     *
+     * Called from the MPEG-TS consumer-restart cascade
+     * (`ConnectionApplier.reapplyModuleConnections`, outgoing-only): when a
+     * consumer is stopped/started to pick up a producer's `udpsrc` it destroys
+     * and recreates its own PipeWire null-sink, so every downstream pw-link is
+     * now bound to a node that no longer exists. Without this the short-circuit
+     * skips the re-link and the downstream module (e.g. an audio-encoder fed by
+     * an audio-decoder) stays wired to the dead node — silent until an operator
+     * manually restarts it, then its downstream in turn (the exact cascade of
+     * manual restarts operators hit after restarting an SRT input mid-chain).
+     *
+     * Scope is deliberately pw-link only: `muxed/mpegts` edges keep working
+     * across a source restart (the multicast port is preserved by
+     * `UdpPortManager`) and re-executing them would needlessly bounce the sink.
+     */
+    async invalidateOutgoingPwLinks(moduleId: string): Promise<void> {
+        const stale = this.getConnections().filter(
+            (c) => c.sourceModuleId === moduleId && this.handles.get(c.id)?.type === 'pw-link',
+        );
+        for (const conn of stale) {
+            log.info(
+                { connectionId: conn.id },
+                'Invalidating stale pw-link after consumer restart',
+            );
+            await this.removeConnection(conn.id, true);
+        }
+    }
+
     async updateChannelMap(connId: string, channelMap?: ChannelMapEntry[]): Promise<void> {
         const conn = this.connections.get(connId);
         if (!conn) {

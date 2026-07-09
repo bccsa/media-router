@@ -9,6 +9,7 @@ import {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_METADATA_PID,
     audioStreamPid,
+    buildBackpressureQueue,
     buildLeakyQueue,
     buildUdpSink,
     buildUdpSrc,
@@ -65,6 +66,34 @@ export const KLV_APPSRC_NAME = 'klvsrc';
  * normal restart path instead of hanging until manually restarted.
  */
 const UDP_INPUT_TIMEOUT_NS = 5_000_000_000;
+
+/**
+ * Default bound (ms) on each per-pad NON-leaky input queue (`queueLeaky`
+ * off, the default). Must exceed the worst legitimate inter-stream skew the
+ * aggregator waits out (audio transcode chain ~200 ms, demuxer audio pacing
+ * 160 ms, B-frame DTS delay ~120 ms — measured on gate01); 500 ms covers all
+ * with margin. This is a runaway safety cap, not a latency budget:
+ * steady-state occupancy equals the skew, and the cap only bites when a
+ * sibling input genuinely stalls — where the udpsrc timeout (above) is the
+ * actual recovery. Operator-tunable via `queueDepthMs`.
+ */
+const MUX_INPUT_QUEUE_MS = 500;
+
+/**
+ * Per-use-case input queue behaviour (operator-selected via `queueLeaky`):
+ *
+ * - non-leaky (default) — zero frame shedding: the leading stream is held
+ *   for up to `queueDepthMs` while the aggregator waits out inter-stream
+ *   skew or a transient stall. Measured on gate01: leaky queues shed 11% of
+ *   audio frames under a ~200 ms skew; non-leaky lost zero. Steady-state
+ *   latency is identical (the mux is paced by the laggier input either way)
+ *   — the difference is behaviour under degradation, where backlog is held
+ *   and flushed rather than dropped.
+ * - leaky — sheds the oldest whole frame once `queueDepthMs` of backlog has
+ *   built up. For live production where a stalling sibling input must never
+ *   queue up backlog: output resumes at the live edge immediately after
+ *   recovery, at the cost of dropped frames whenever skew exceeds the bound.
+ */
 
 /** One configured input stream: just its operator-set name (blank = unset). */
 export interface StreamEntry {
@@ -163,7 +192,7 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
  * PTS from PCR mid-pipeline rewrites buffer running-times onto a separate
  * timeline, and `mpegtsmux latency=0` re-emitting PCR from those values
  * surfaces at the receiver as visible packet loss on live video. The runner-
- * injected parser + the leaky pad queue downstream provide the only
+ * injected parser + the per-pad input queue downstream provide the only
  * buffering this branch needs.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
@@ -195,9 +224,14 @@ export interface MuxerPipelineInputs {
     sources: UdpInputSource[];
     output: { host: string; port: number };
     alignment: number;
-    /** Per-pad queue size in milliseconds (defaults to 50). Lower = lower
-     *  latency, higher = more jitter tolerance. */
-    bufferMs?: number;
+    /** Input queue behaviour (defaults to false = non-leaky). See the
+     *  queueLeaky doc above MUX_INPUT_QUEUE_MS. */
+    queueLeaky?: boolean;
+    /** Queue bound in ms (defaults to MUX_INPUT_QUEUE_MS, clamped 100–5000).
+     *  Non-leaky: set to at least the worst inter-stream skew of the wiring
+     *  (transcode chain, pacing offset, B-frame delay). Leaky: the backlog
+     *  tolerance before shedding starts. */
+    queueDepthMs?: number;
 }
 
 export interface MuxerPipelineResult {
@@ -226,17 +260,19 @@ export interface MuxerPipelineResult {
  */
 export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult | null {
     if (input.sources.length === 0) return null;
-    const bufferMs = input.bufferMs ?? 50;
-    // Audio queue: leaky=2 on raw demuxed audio is fine (single-frame drops
-    // are inaudible).
-    const audioQueue = buildLeakyQueue(bufferMs);
-    // Video queue: placed AFTER the runner-injected parser so drops land on
-    // whole access units, not mid-NAL — dropping a sub-frame buffer corrupts
-    // the AU and the receiver sees that as packet loss until the next IDR.
-    // `leaky=2 max-size-buffers=2` keeps latency at ≤2 frames (~66 ms @ 30 fps)
-    // and drops a single complete frame under stall, which the decoder
-    // conceals cleanly.
-    const videoQueue = `queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0`;
+    // Per-pad input queue shape is the operator's stability-vs-latency call —
+    // see the queueLeaky doc above MUX_INPUT_QUEUE_MS for the two behaviours
+    // and the gate01 measurements (leaky queues shed 11% of audio under a
+    // ~200 ms inter-stream skew, because mpegtsmux back-pressures the LEADING
+    // pad by the skew on every buffer; non-leaky lost zero). The queue sits
+    // AFTER the runner-injected parser so back-pressure/drops land on whole
+    // access units, not mid-NAL. Dead-input recovery is mode-independent: a
+    // dark source's own udpsrc timeout (above) is poll-based and fires
+    // regardless of downstream back-pressure.
+    const depth = Math.max(100, Math.min(5000, input.queueDepthMs ?? MUX_INPUT_QUEUE_MS));
+    const inputQueue = (input.queueLeaky ?? false)
+        ? buildLeakyQueue(depth)
+        : buildBackpressureQueue(depth);
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
     const muxer = `mpegtsmux name=mux latency=0 alignment=${input.alignment}`;
     const sink = buildUdpSink({ name: 'usink', host: input.output.host, port: input.output.port });
@@ -284,7 +320,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             linkOnPadAdded.push({
                 from: demux,
                 media: 'video',
-                branches: [videoQueue],
+                branches: [inputQueue],
                 linkTo: 'mux',
                 requestedPadNames: [muxSinkPadName(pid)],
             });
@@ -301,7 +337,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
             linkOnPadAdded.push({
                 from: demux,
                 media: 'audio',
-                branches: [audioQueue],
+                branches: [inputQueue],
                 linkTo: 'mux',
                 requestedPadNames: [muxSinkPadName(pid)],
             });

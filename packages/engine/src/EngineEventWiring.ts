@@ -4,6 +4,7 @@ import { createLogger, safeParse, PatchEnvelopeSchema } from '@media-router/shar
 import type { ModuleManager } from './modules/ModuleManager.js';
 import type { MediaRouter } from './routing/MediaRouter.js';
 import type { ManagerConnection } from './comms/ManagerConnection.js';
+import { ModuleStateBatcher } from './comms/ModuleStateBatcher.js';
 import type { LcpServer } from './comms/LcpServer.js';
 import type { PipeWireManager } from './audio/PipeWireManager.js';
 import type { LogForwarder } from './logging/LogForwarder.js';
@@ -44,9 +45,17 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         }
     });
 
+    // Manager-bound module state goes through batch + dedup (see
+    // ModuleStateBatcher for the traffic math); dropped batches are healed by
+    // the guaranteed 10s snapshot resync below. The LCP broadcast stays
+    // unbatched and keeps the full state, vuData included.
+    const stateBatcher = new ModuleStateBatcher((batch) =>
+        ctx.managerConnection.sendState(batch),
+    );
+
     ctx.moduleManager.on('stateChange', (instanceId: string, state: ModuleRuntimeState) => {
-        ctx.managerConnection.sendState({ [instanceId]: state });
         ctx.lcpServer.broadcastState(instanceId, state);
+        stateBatcher.enqueue(instanceId, state);
     });
 
     ctx.moduleManager.on(
@@ -90,10 +99,11 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         }
     });
 
-    // Clean up VU dedup maps when modules are destroyed
+    // Clean up VU + state dedup maps when modules are destroyed
     ctx.moduleManager.on('moduleDeleted', (instanceId: string) => {
         lastVu.delete(instanceId);
         lastVuSent.delete(instanceId);
+        stateBatcher.drop(instanceId);
     });
 
     ctx.managerConnection.on('config', (config: unknown) => {
@@ -202,11 +212,30 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
     // module-state and systemStats resyncs already do.
     let stateResyncTimer: ReturnType<typeof setInterval> | null = null;
 
+    // Guaranteed full-state snapshot (connect + 10s resync). The batcher
+    // refreshes its dedup cache and drops any pending batch — the snapshot
+    // already contains everything queued.
+    const sendStateSnapshot = (): void => {
+        const lean = stateBatcher.snapshot(ctx.moduleManager.getAllStates());
+        if (!lean) return;
+        ctx.managerConnection.sendState(lean, { guaranteeDelivery: true });
+    };
+
     ctx.managerConnection.on('connected', () => {
         ctx.systemStats.start();
-        ctx.managerConnection.send('engineRunningState', {
-            running: ctx.runController.isRunning,
-        });
+        // Guaranteed: this handshake is the *sole* trigger for manager-driven
+        // auto-start on (re)connect — EngineEventForwarder only issues `start`
+        // when it sees this payload report `running:false` against a persisted
+        // `running:true`. Sent best-effort it can drop on a lossy tunnel (the
+        // NO-BR gate over Cloudflare), and then the manager never reconciles:
+        // the engine boots with every module stopped and stays that way until
+        // an operator restarts it. Same reasoning as the capabilities/state
+        // sends below (#661) — small payload, so guaranteed delivery is free.
+        ctx.managerConnection.send(
+            'engineRunningState',
+            { running: ctx.runController.isRunning },
+            { guaranteeDelivery: true },
+        );
         // Advertise this host's effective plugin schemas so the manager renders
         // this engine's real capabilities (e.g. hardware encoders) rather than
         // its own host probe. Static per session, so sent once on connect;
@@ -215,16 +244,24 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         ctx.managerConnection.send('capabilities', ctx.pluginSchemas(), {
             guaranteeDelivery: true,
         });
-        const states = ctx.moduleManager.getAllStates();
-        if (Object.keys(states).length > 0) {
-            ctx.managerConnection.sendState(states, { guaranteeDelivery: true });
-        }
+        sendStateSnapshot();
         if (stateResyncTimer) clearInterval(stateResyncTimer);
         stateResyncTimer = setInterval(() => {
-            const snapshot = ctx.moduleManager.getAllStates();
-            if (Object.keys(snapshot).length > 0) {
-                ctx.managerConnection.sendState(snapshot, { guaranteeDelivery: true });
-            }
+            sendStateSnapshot();
+            // Re-send the running-state handshake too. Guaranteed delivery
+            // dies with its session: on the NO-BR gate a half-open session ate
+            // the connect-time handshake (manager logged "Guaranteed delivery
+            // failed — topic: connected") and the engine sat stopped forever —
+            // the manager only reconciles auto-start when it SEES this
+            // payload. Re-sending makes the reconcile self-healing; the
+            // manager treats repeats as idempotent (start-retry is desired,
+            // both-running is a no-op — config comes from the session-connect
+            // push, not this handshake).
+            ctx.managerConnection.send(
+                'engineRunningState',
+                { running: ctx.runController.isRunning },
+                { guaranteeDelivery: true },
+            );
             // Re-broadcast device snapshots so the manager's dropdowns survive a
             // cache-wiping reconnect flap (see the note above).
             void sendInitialDeviceSnapshots();
@@ -242,5 +279,6 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
             clearInterval(stateResyncTimer);
             stateResyncTimer = null;
         }
+        stateBatcher.reset();
     });
 }

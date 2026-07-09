@@ -141,8 +141,8 @@ describe('mpegtsMuxerPipeline helpers', () => {
             // No codec parser in the branch — the Python pad-link runner
             // injects the right parser (`aacparse` / `ac3parse` / …) at
             // pad-added time based on the pad's actual caps.
-            expect(audioRule.branches[0].startsWith('queue leaky=2')).toBe(true);
-            expect(videoRule.branches[0].startsWith('queue leaky=2')).toBe(true);
+            expect(audioRule.branches[0].startsWith('queue leaky=0')).toBe(true);
+            expect(videoRule.branches[0].startsWith('queue leaky=0')).toBe(true);
             expect(audioRule.branches[0]).not.toContain('aacparse');
             expect(videoRule.branches[0]).not.toContain('h264parse');
         });
@@ -210,16 +210,51 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(result!.pipeline).toContain('alignment=1');
         });
-        it('threads bufferMs into the audio pad-link queue (video uses a buffer-count queue, not time-based)', () => {
+        it('defaults to non-leaky input queues (aggregator skew back-pressures, never sheds)', () => {
             const result = buildPipeline({
                 sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
                 output: { host: '239.255.0.1', port: 40010 },
                 alignment: 7,
-                bufferMs: 50,
             });
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
-            // 50ms = 50_000_000 ns
-            expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=50000000');
+            // Measured on gate01: mpegtsmux back-pressures the leading pad by
+            // the inter-stream skew on every buffer; a 50 ms leaky queue shed
+            // 11% of audio frames. Non-leaky 500 ms bound lost zero.
+            expect(audioRule.branches[0]).toBe(
+                'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0',
+            );
+        });
+        it('threads queueDepthMs into the stability-mode bound (clamped 100–5000 ms)', () => {
+            const result = buildPipeline({
+                sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+                queueDepthMs: 1200,
+            });
+            expect(result!.linkOnPadAdded[0].branches[0]).toContain('max-size-time=1200000000');
+            const clamped = buildPipeline({
+                sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+                queueDepthMs: 99_999,
+            });
+            expect(clamped!.linkOnPadAdded[0].branches[0]).toContain('max-size-time=5000000000');
+        });
+        it('queueLeaky switches both input queues to shed-oldest at the same depth (never hold backlog)', () => {
+            const result = buildPipeline({
+                sources: [
+                    { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 },
+                    { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 },
+                ],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+                queueLeaky: true,
+                queueDepthMs: 200,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(videoRule.branches[0]).toContain('queue leaky=2 max-size-time=200000000');
+            expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=200000000');
         });
         it('emits parser-free branches (parser is picked by the runner from per-pad caps)', () => {
             const result = buildPipeline({
@@ -228,28 +263,19 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 alignment: 7,
             });
             const branch = result!.linkOnPadAdded[0].branches[0];
-            expect(branch.startsWith('queue leaky=2')).toBe(true);
+            expect(branch.startsWith('queue leaky=0')).toBe(true);
             expect(branch).not.toMatch(/aacparse|ac3parse|mpegaudioparse|opusparse/);
         });
-        it('clamps audio bufferMs to a sane upper bound', () => {
-            const result = buildPipeline({
-                sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
-                output: { host: '239.255.0.1', port: 40010 },
-                alignment: 7,
-                bufferMs: 999_999,
-            });
-            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
-            // 5000ms cap → 5_000_000_000 ns (matches the demuxer's slider ceiling)
-            expect(audioRule.branches[0]).toContain('max-size-time=5000000000');
-        });
-        it('emits a frame-bounded leaky queue on the video branch (parser is injected ahead of it by the runner so drops land on whole frames)', () => {
+        it('emits a non-leaky bounded queue on the video branch (parser is injected ahead of it by the runner so back-pressure lands on whole frames)', () => {
             const result = buildPipeline({
                 sources: [{ sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 }],
                 output: { host: '239.255.0.1', port: 40010 },
                 alignment: 7,
             });
             const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
-            expect(videoRule.branches[0]).toContain('queue leaky=2 max-size-buffers=2');
+            expect(videoRule.branches[0]).toBe(
+                'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0',
+            );
         });
         it('adds a KLV metadata appsrc pinned to the fixed metadata PID (0x1f0 = 496)', () => {
             const result = buildPipeline({

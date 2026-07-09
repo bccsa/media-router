@@ -338,16 +338,28 @@ export class MpegTsDemuxerModule extends GstPluginBase {
             return null;
         }
 
-        const bufferMs = (config.bufferMs as number) ?? 50;
         // Opt-in output smoothing (default 0 = OFF = today's exact strings).
         // Raise for a bursty source (HLS); leave 0 for low-latency live.
         const outputBufferMs = (config.outputBufferMs as number) ?? 0;
+        // Audio PTS pacing (default ON). OFF restores the raw PES-burst branch
+        // — the low-latency choice. Offset is operator-tunable to match the
+        // source's PES size — see AUDIO_PACING_MS_DEFAULT in the pipeline
+        // helpers for the measured why.
+        const audioPacing = (config.audioPacing as boolean) ?? true;
+        const audioPacingMs = config.audioPacingMs as number | undefined;
+        // Branch queue behaviour — the operator's stability-vs-latency call
+        // (leaky = shed oldest frame, non-leaky = hold + back-pressure).
+        const queueLeaky = (config.queueLeaky as boolean) ?? false;
+        const queueDepthMs = config.queueDepthMs as number | undefined;
         const result = buildPipeline({
             input: { host: upstream.host, port: upstream.port },
             videoOutputs,
             audioOutputs,
-            bufferMs,
             outputBufferMs,
+            audioPacing,
+            queueLeaky,
+            ...(audioPacingMs !== undefined ? { audioPacingMs } : {}),
+            ...(queueDepthMs !== undefined ? { queueDepthMs } : {}),
         });
         if (!result) return null;
 

@@ -117,6 +117,13 @@ export function setupSocketIO(deps: SocketDeps): void {
                     if (room.startsWith('watch:')) socket.leave(room);
                 }
                 socket.join(`watch:${engineId}`);
+                // engine:state streams to the watch room only — rehydrate the
+                // full runtime snapshot so the editor doesn't render stale
+                // state (from engine:list at connect) until the next tick.
+                const states = eventForwarder.getCachedStates(engineId);
+                if (Object.keys(states).length > 0) {
+                    socket.emit('engine:state', { engineId, state: states });
+                }
             }),
         );
 
