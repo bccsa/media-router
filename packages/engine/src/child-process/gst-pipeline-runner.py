@@ -374,7 +374,7 @@ def _pid_from_tsdemux_pad_name(pad_name):
 
 # Decoded-text cap on a KLV buffer before we even try to JSON-parse it (plan
 # D6 / section 3 — "a few KB"). A larger buffer is garbage; we emit a malformed
-# `stream_names` once rather than parsing megabytes of junk. The JS-side parser
+# `stream:names` once rather than parsing megabytes of junk. The JS-side parser
 # enforces the same cap; this is the runner's first line of defence.
 _KLV_MAX_BYTES = 4096
 # One-shot guard so a persistently-bad metadata stream doesn't spam a warning
@@ -389,8 +389,8 @@ def _attach_klv_reader(pipe, pad, source_name):
     a tsdemux pad back-pressures the streaming loop and stalls the whole TS.
     Per plan D6 this path is report-only — a parse/link failure is swallowed so
     the name channel can never disturb the media pipeline. The appsink hands
-    the raw bytes up as a `stream_names` event with a `malformed` hint; the
-    actual JSON parse + name merge happens Node-side.
+    the raw bytes up on the `stream:names` plugin-event channel with a
+    `malformed` hint; the actual JSON parse + name merge happens Node-side.
     """
     try:
         q = Gst.ElementFactory.make("queue", None)
@@ -417,19 +417,19 @@ def _attach_klv_reader(pipe, pad, source_name):
                 if size == 0 or size > _KLV_MAX_BYTES:
                     if source_name not in _klv_garbage_warned:
                         _klv_garbage_warned.add(source_name)
-                        emit_event({"event": "stream_names", "payload": None,
-                                    "malformed": True})
+                        emit_plugin_event("stream:names",
+                                          {"payload": None, "malformed": True})
                     return Gst.FlowReturn.OK
                 try:
                     payload = bytes(mi.data).decode("utf-8")
                 except (UnicodeDecodeError, ValueError):
                     if source_name not in _klv_garbage_warned:
                         _klv_garbage_warned.add(source_name)
-                        emit_event({"event": "stream_names", "payload": None,
-                                    "malformed": True})
+                        emit_plugin_event("stream:names",
+                                          {"payload": None, "malformed": True})
                     return Gst.FlowReturn.OK
-                emit_event({"event": "stream_names", "payload": payload,
-                            "malformed": False})
+                emit_plugin_event("stream:names",
+                                  {"payload": payload, "malformed": False})
             finally:
                 buf.unmap(mi)
             return Gst.FlowReturn.OK
@@ -446,7 +446,7 @@ def _attach_klv_reader(pipe, pad, source_name):
 
 
 def _install_stream_discovery(element, source_name, read_klv_names=False):
-    """Emit a `stream_discovered` event for every pad tsdemux exposes.
+    """Report every pad tsdemux exposes on the `stream:discovered` channel.
 
     Separate from the pad-link rules: link rules filter by media and only fire
     for the streams a module routes, whereas the stream inspector wants *all*
@@ -457,16 +457,15 @@ def _install_stream_discovery(element, source_name, read_klv_names=False):
 
     When `read_klv_names` is set (mpegts demuxer, Phase 2), a `meta/x-klv` pad
     additionally gets a `queue ! appsink` reader so the in-band name carousel is
-    surfaced as `stream_names` events. The metadata PID is still never linked to
-    a routing branch — only read for labels.
+    surfaced on the `stream:names` channel. The metadata PID is still never
+    linked to a routing branch — only read for labels.
     """
     pipe = element.get_parent()
 
     def on_pad(_el, pad):
         caps = pad.get_current_caps() or pad.query_caps(None)
         caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ''
-        emit_event({
-            "event": "stream_discovered",
+        emit_plugin_event("stream:discovered", {
             "from": source_name,
             "pid": _pid_from_tsdemux_pad_name(pad.get_name()),
             "media": _stream_media_from_caps_name(caps_name or ''),
@@ -1044,8 +1043,8 @@ def handle_start(data):
         _install_pad_link_rule(pipeline, rule)
 
     # Install stream discovery on every distinct demux element the rules
-    # reference, so the owning module sees an unfiltered `stream_discovered`
-    # event per pad (PID + caps + media type) regardless of what's routed.
+    # reference, so the owning module sees an unfiltered `stream:discovered`
+    # report per pad (PID + caps + media type) regardless of what's routed.
     # Connected once per element even when a tsdemux has both a video and an
     # audio rule.
     for src_name in {rule.get("from") for rule in pad_link_rules if rule.get("from")}:

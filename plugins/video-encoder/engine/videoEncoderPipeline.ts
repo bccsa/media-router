@@ -1,12 +1,6 @@
 import { execFileSync } from 'child_process';
 import { parseFormats, type CodecId, type ImplId } from '@media-router/engine';
 
-/** Names of properties that can be live-tweaked on the resolved encoder. */
-export function liveElementProps(codec: CodecId, impl: ImplId): string[] {
-    if (impl === 'v4l2') return ['extra-controls'];
-    return codec === 'av1' ? ['target-bitrate'] : ['bitrate'];
-}
-
 /**
  * Whether the encoder element accepts bitrate changes at runtime *cleanly*.
  *

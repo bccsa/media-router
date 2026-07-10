@@ -103,10 +103,6 @@ export interface PluginModule {
 export interface PipelineDescription {
     /** GStreamer pipeline string (for gst-launch style). */
     pipeline: string;
-    /** Elements that should have a `level` element for VU metering. */
-    vuElements?: string[];
-    /** Elements whose properties can be changed live. */
-    liveElements?: Record<string, string[]>;
     /** When true, gst-runner pipes stdin/stdout for data (MPEG-TS) instead of bus messages. */
     useStdioForData?: boolean;
     /** When true, pipeline auto-restarts on GStreamer bus error or EOS (like v1 reload behaviour). */
@@ -129,9 +125,9 @@ export interface PipelineDescription {
     linkOnPadAdded?: PadLinkRule[];
     /**
      * When true, the runner attaches a `queue ! appsink` to every `meta/x-klv`
-     * pad a `tsdemux` exposes, parses the payload off it, and emits a
-     * `stream_names` event with the raw bytes (mpegts demuxer in-band name
-     * channel, Phase 2). The mandatory `queue` is the Phase 0 finding — an
+     * pad a `tsdemux` exposes, parses the payload off it, and reports the raw
+     * bytes on the `stream:names` plugin-event channel (mpegts demuxer in-band
+     * name channel, Phase 2). The mandatory `queue` is the Phase 0 finding — an
      * appsink straight on a tsdemux pad back-pressures the streaming loop and
      * stalls the whole TS. Off by default; only the demuxer sets it. Per plan
      * D6 the reader never affects routing or pipeline health.

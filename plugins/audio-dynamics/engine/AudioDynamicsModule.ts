@@ -124,24 +124,20 @@ export class AudioDynamicsModule extends GstPluginBase {
     }
 
     /**
-     * Re-seed on every PLAYING, including a crash-restart that rebuilds the
-     * pipeline from the original string. Ducker: reset the envelope so it
-     * re-converges from unity (the fresh `volume` element is at 1.0). LADSPA
-     * modes: re-apply the current live config to the fresh element, since the
-     * restart's baked-in string carries only start-time values.
+     * Re-seed the ducker envelope on every PLAYING, including a crash-restart.
+     * The unity push is required, not defensive: the engine's sticky-property
+     * replay restores the last written `duckvol` value on restart, which the
+     * fresh envelope (assuming unity) would otherwise never correct while the
+     * key stays steady. LADSPA modes need nothing here — their live props are
+     * re-applied by the same sticky replay.
      */
     protected onPipelinePlaying(): void {
-        if (this.mode === 'ducker') {
-            this.duckDb = 0;
-            this.duckActiveMs = -Infinity;
-            this.duckTickMs = Date.now();
-            this.duckSetGain = 1;
-            return;
-        }
-        const map = LIVE_PROP_MAPS[this.mode];
-        for (const [key, { prop, convert }] of Object.entries(map)) {
-            void this.setElementProperty('dyn', prop, convert(this.config[key] ?? this.defaultFor(key)));
-        }
+        if (this.mode !== 'ducker') return;
+        this.duckDb = 0;
+        this.duckActiveMs = -Infinity;
+        this.duckTickMs = Date.now();
+        this.duckSetGain = 1;
+        void this.setElementProperty('duckvol', 'volume', 1);
     }
 
     async onStop(): Promise<void> {
@@ -297,10 +293,6 @@ export class AudioDynamicsModule extends GstPluginBase {
             'ds.src_0 ! queue ! il.sink_2',
             'ds.src_1 ! queue ! il.sink_3',
         ];
-        // Live changes are applied directly via setElementProperty and
-        // re-applied on restart by onPipelinePlaying — no liveElements field
-        // (the engine reads none; declaring it would imply a guarantee it
-        // doesn't provide).
         return {
             pipeline: parts.join(' '),
             restartOnError: true,

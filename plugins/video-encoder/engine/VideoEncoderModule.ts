@@ -18,7 +18,6 @@ import {
 } from '@media-router/engine';
 import {
     buildV4l2Source,
-    liveElementProps,
     parseResolution,
     supportsLiveBitrate,
 } from './videoEncoderPipeline.js';
@@ -159,7 +158,6 @@ export class VideoEncoderModule extends GstPluginBase {
 
         return {
             pipeline,
-            liveElements: { venc0: liveElementProps(codec, impl) },
             restartOnError: true,
         };
     }

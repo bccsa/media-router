@@ -190,7 +190,6 @@ export class AudioDecoderModule extends GstPluginBase {
 
         return {
             pipeline,
-            liveElements: { vol: ['volume'] },
             restartOnError: true,
             ...(clockSync ? { clockSync: true } : {}),
         };

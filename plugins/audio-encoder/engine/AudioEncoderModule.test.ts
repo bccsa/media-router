@@ -106,11 +106,6 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).toContain('audio-type=2049');
     });
 
-    it('exposes vol.volume as a live-updatable property', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({});
-        expect(desc.liveElements).toEqual({ vol: ['volume'] });
-    });
 });
 
 describe('AudioEncoderModule.updateStatusData', () => {

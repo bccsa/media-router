@@ -203,9 +203,6 @@ export class AudioEncoderModule extends GstPluginBase {
 
         return {
             pipeline,
-            liveElements: {
-                vol: ['volume'],
-            },
         };
     }
 }

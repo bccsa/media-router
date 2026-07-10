@@ -281,31 +281,6 @@ export class GstRunner {
                 );
                 break;
 
-            case 'stream_discovered':
-                // A tsdemux pad appeared — forward the PID/codec/media to the
-                // owning module's stream inspector. Pure report (plan D6): it
-                // never affects routing or health, so it's not gated on
-                // restartOnError or currentState.
-                this.ipc.sendEvent('streamDiscovered', {
-                    from: eventJson.from,
-                    pid: eventJson.pid,
-                    media: eventJson.media,
-                    caps: eventJson.caps,
-                    padName: eventJson.padName,
-                });
-                break;
-
-            case 'stream_names':
-                // KLV name payload parsed off the metadata PID (Phase 2).
-                // Forward the raw payload + a parsed/malformed hint to the
-                // owning module's name merge. Pure report (plan D6) — never
-                // gates on restartOnError or currentState.
-                this.ipc.sendEvent('streamNames', {
-                    payload: eventJson.payload,
-                    malformed: eventJson.malformed,
-                });
-                break;
-
             case 'property':
             case 'stats':
             case 'throughput':

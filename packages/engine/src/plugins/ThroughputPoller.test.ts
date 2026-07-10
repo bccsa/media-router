@@ -83,6 +83,64 @@ describe('ThroughputPoller', () => {
         expect(publish).toHaveBeenCalledTimes(1);
     });
 
+    it('aggregates named counters into the total and reports each separately', async () => {
+        const calls: Array<{ total: ThroughputSample; counters: Record<string, ThroughputSample> }> =
+            [];
+        // Two renditions over one 2s tick: 625 kB → 2500 kbps, 200 kB → 800 kbps.
+        const getBytes = vi
+            .fn<() => Promise<Record<string, number> | undefined>>()
+            .mockResolvedValueOnce({ usink_0: 625_000, usink_1: 200_000 });
+        const poller = new ThroughputPoller({
+            getBytes,
+            publish: (total, counters) => calls.push({ total, counters }),
+        });
+        poller.start();
+
+        await vi.advanceTimersByTimeAsync(2000);
+        poller.stop();
+
+        expect(calls[0].counters).toEqual({
+            usink_0: { bitrateKbps: 2500, totalBytes: 625_000 },
+            usink_1: { bitrateKbps: 800, totalBytes: 200_000 },
+        });
+        expect(calls[0].total).toEqual({ bitrateKbps: 3300, totalBytes: 825_000 });
+    });
+
+    it('skips the tick for an empty counter record — same contract as undefined', async () => {
+        const publish = vi.fn();
+        const getBytes = vi
+            .fn<() => Promise<Record<string, number> | undefined>>()
+            .mockResolvedValueOnce({});
+        const poller = new ThroughputPoller({ getBytes, publish });
+        poller.start();
+
+        await vi.advanceTimersByTimeAsync(2000);
+        poller.stop();
+        expect(publish).not.toHaveBeenCalled();
+    });
+
+    it('guards each counter reset independently', async () => {
+        const calls: Array<Record<string, ThroughputSample>> = [];
+        // usink_0 keeps counting; usink_1 drops below its baseline (child
+        // re-spawn) and must clamp to 0 without disturbing usink_0's rate.
+        const getBytes = vi
+            .fn<() => Promise<Record<string, number> | undefined>>()
+            .mockResolvedValueOnce({ usink_0: 250_000, usink_1: 500_000 })
+            .mockResolvedValueOnce({ usink_0: 500_000, usink_1: 100_000 });
+        const poller = new ThroughputPoller({
+            getBytes,
+            publish: (_total, counters) => calls.push(counters),
+        });
+        poller.start();
+
+        await vi.advanceTimersByTimeAsync(2000);
+        await vi.advanceTimersByTimeAsync(2000);
+        poller.stop();
+
+        expect(calls[1].usink_0).toEqual({ bitrateKbps: 1000, totalBytes: 500_000 });
+        expect(calls[1].usink_1).toEqual({ bitrateKbps: 0, totalBytes: 100_000 });
+    });
+
     it('honours a custom interval and stops cleanly', async () => {
         const publish = vi.fn();
         const getBytes = vi.fn<() => Promise<number | undefined>>().mockResolvedValue(1000);

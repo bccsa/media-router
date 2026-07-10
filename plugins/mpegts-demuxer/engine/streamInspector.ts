@@ -1,7 +1,7 @@
 /**
  * Pure stream-inspector state for the MPEG-TS demuxer.
  *
- * Collects the `stream_discovered` events the runner emits per tsdemux pad
+ * Collects the `stream:discovered` reports the runner emits per tsdemux pad
  * (Phase 1) into a PID-keyed table and renders it for the module's status
  * panel. Kept free of GStreamer / engine imports so it's unit-testable with
  * plain event objects.

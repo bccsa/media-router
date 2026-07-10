@@ -34,7 +34,7 @@ export function throwIfRpcError(result: unknown, label: string): void {
  * Emits:
  *   - 'stateChange' (state) — pipeline state change
  *   - 'vuData' (data) — VU meter data
- *   - 'streamDiscovered' (data) — a tsdemux pad appeared (PID, caps, media)
+ *   - 'pluginEvent' ({channel, payload}) — generic pipeline→plugin data
  *   - 'error' (data) — error from pipeline
  *   - 'exit' (code) — child process exited
  */
@@ -47,6 +47,14 @@ export class GstChildProcess extends EventEmitter {
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private destroyed = false;
     private gstRunnerPath: string;
+    /**
+     * Last value set per element property since `start()`. Replayed on every
+     * PLAYING transition: any restart layer (runner-internal Python respawn or
+     * a full gst-runner respawn) rebuilds the pipeline from the original
+     * string, which carries only start-time values — without the replay, live
+     * changes (volume, overlay text, encoder bitrate…) silently revert.
+     */
+    private stickyProps = new Map<string, { element: string; property: string; value: unknown }>();
 
     constructor(gstRunnerPath?: string) {
         super();
@@ -73,6 +81,7 @@ export class GstChildProcess extends EventEmitter {
         if (this.destroyed) throw new Error('GstChildProcess is destroyed');
 
         this.pipelineDesc = desc;
+        this.stickyProps.clear(); // fresh description = fresh baseline
         await this.spawnChild();
     }
 
@@ -103,7 +112,20 @@ export class GstChildProcess extends EventEmitter {
             if (state === 'playing') {
                 this.running = true;
                 this.startStabilityTimer();
-            } else if (state === 'stopped' || state === 'error') {
+                // Replay live property changes BEFORE announcing PLAYING —
+                // Python executes commands in order, so anything a listener
+                // (e.g. a plugin's onPipelinePlaying) sets afterwards
+                // deterministically wins over the replayed values. If the
+                // pipeline dies during the replay (fast-crash-after-PLAYING),
+                // a stopped/error event has already flipped `running` false —
+                // drop the stale 'playing' instead of announcing a dead
+                // pipeline healthy.
+                void this.replayStickyProps().finally(() => {
+                    if (this.running) this.emit('stateChange', data);
+                });
+                return;
+            }
+            if (state === 'stopped' || state === 'error') {
                 this.running = false;
             }
             this.emit('stateChange', data);
@@ -115,22 +137,10 @@ export class GstChildProcess extends EventEmitter {
 
         // Generic pipeline→plugin data channel (channel + payload). Pure
         // passthrough — the module decides what to do with each channel (e.g.
-        // the audio-dynamics ducker keys its envelope off `level:sclevel`).
+        // `level:sclevel` for the audio-dynamics ducker, `stream:discovered` /
+        // `stream:names` for the mpegts demuxer's inspector).
         this.ipc.on('pluginEvent', (data) => {
             this.emit('pluginEvent', data);
-        });
-
-        // Stream inspection (mpegts demuxer): per-pad discovery. Pure
-        // passthrough — the module decides what to do with it.
-        this.ipc.on('streamDiscovered', (data) => {
-            this.emit('streamDiscovered', data);
-        });
-
-        // In-band name channel (mpegts demuxer, Phase 2): the runner parsed a
-        // KLV name payload off the metadata PID. Pure passthrough — the module
-        // merges it onto its inspector; never affects routing or health (D6).
-        this.ipc.on('streamNames', (data) => {
-            this.emit('streamNames', data);
         });
 
         this.ipc.on('error', (data) => {
@@ -174,6 +184,7 @@ export class GstChildProcess extends EventEmitter {
         this.backoff.reset();
         // Prevent auto-restart from firing
         this.pipelineDesc = null;
+        this.stickyProps.clear();
 
         if (!this.child) {
             this.cleanup();
@@ -263,6 +274,9 @@ export class GstChildProcess extends EventEmitter {
 
     /** Set a property on a named GStreamer element (live, no restart). */
     async setProperty(element: string, property: string, value: unknown): Promise<void> {
+        // Record the intent first: a change made while the pipeline is down or
+        // mid-restart is applied by the next PLAYING replay instead of lost.
+        this.stickyProps.set(`${element} ${property}`, { element, property, value });
         if (!this.ipc || !this.running) return;
         const result = await this.ipc.sendRequest(
             'setProperty',
@@ -270,6 +284,21 @@ export class GstChildProcess extends EventEmitter {
             2000,
         );
         throwIfRpcError(result, `setProperty(${element}.${property})`);
+    }
+
+    /** Re-apply every recorded live property (see `stickyProps`). */
+    private async replayStickyProps(): Promise<void> {
+        if (this.stickyProps.size === 0) return;
+        const results = await Promise.allSettled(
+            [...this.stickyProps.values()].map((p) =>
+                this.setProperty(p.element, p.property, p.value),
+            ),
+        );
+        for (const r of results) {
+            if (r.status === 'rejected') {
+                log.debug({ err: r.reason }, 'Sticky property replay failed');
+            }
+        }
     }
 
     /** Get a property from a named GStreamer element. */

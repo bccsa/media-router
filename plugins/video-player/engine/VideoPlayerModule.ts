@@ -597,7 +597,6 @@ export class VideoPlayerModule extends GstPluginBase {
         if (useFallback) {
             return {
                 pipeline: buildFallbackOnlyPipeline(fallback, sinkElement, fallbackImage),
-                liveElements: { nov: ['text'] },
                 restartOnError: true,
                 env,
             };
@@ -611,7 +610,6 @@ export class VideoPlayerModule extends GstPluginBase {
                 Number(this.config.bufferMs ?? 200),
                 clockSync,
             ),
-            liveElements: {},
             restartOnError: true,
             env,
             decoderThreadType: resolveDecoderThreadType(this.config.cpuDecodeThreading),

@@ -316,7 +316,6 @@ describe('VideoEncoderModule', () => {
             expect(desc!.pipeline).toContain(
                 'udpsink name=usink host=239.255.0.1 port=5000 multicast-iface=lo auto-multicast=true buffer-size=4194304 sync=false',
             );
-            expect(desc!.liveElements).toEqual({ venc0: ['extra-controls'] });
             expect(desc!.restartOnError).toBe(true);
         });
 

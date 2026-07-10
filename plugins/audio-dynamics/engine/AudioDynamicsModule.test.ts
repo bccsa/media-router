@@ -295,8 +295,10 @@ describe('AudioDynamicsModule', () => {
     });
 
     describe('onPipelinePlaying (restart re-seed)', () => {
-        it('ducker resets the gain envelope so it re-converges from unity', async () => {
+        it('ducker resets the envelope AND pushes unity (sticky replay may have restored a duck)', async () => {
             const { module } = await createModule({ mode: 'ducker' });
+            const spy = vi.fn(async () => {});
+            (module as any).setElementProperty = spy;
             // Pretend the envelope was pinned at the floor before a restart
             (module as any).duckDb = -18;
             (module as any).duckSetGain = 0.125;
@@ -305,24 +307,15 @@ describe('AudioDynamicsModule', () => {
             expect((module as any).duckDb).toBe(0);
             expect((module as any).duckSetGain).toBe(1);
             expect((module as any).duckActiveMs).toBe(-Infinity);
+            expect(spy).toHaveBeenCalledWith('duckvol', 'volume', 1);
         });
 
-        it('compressor re-applies the current live config to the fresh element', async () => {
-            const { module } = await createModule({ mode: 'compressor', threshold: -20, release: 500 });
+        it('LADSPA modes do nothing — live props are restored by the sticky replay', async () => {
+            const { module } = await createModule({ mode: 'compressor', threshold: -20 });
             const spy = vi.fn(async () => {});
             (module as any).setElementProperty = spy;
             module['onPipelinePlaying']();
-            // current config (not start-time defaults) is pushed back to 'dyn'
-            expect(spy).toHaveBeenCalledWith('dyn', 'attack-threshold', 0.1); // -20 dB
-            expect(spy).toHaveBeenCalledWith('dyn', 'release-time', 500);
-        });
-
-        it('gate re-applies its config on restart', async () => {
-            const { module } = await createModule({ mode: 'gate', gateKey: 'sidechain' });
-            const spy = vi.fn(async () => {});
-            (module as any).setElementProperty = spy;
-            module['onPipelinePlaying']();
-            expect(spy).toHaveBeenCalledWith('dyn', 'sidechain-input', 1);
+            expect(spy).not.toHaveBeenCalled();
         });
     });
 });

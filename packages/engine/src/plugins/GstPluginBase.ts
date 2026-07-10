@@ -376,13 +376,20 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.childProcess?.sendKlvPayload(element, payload);
     }
 
-    /** Set a property on a named GStreamer element (live, no restart). */
+    /**
+     * Set a property on a named GStreamer element (live, no restart).
+     *
+     * Safe to call while the pipeline is down or mid-restart: the child
+     * records the last value per property and replays it on every PLAYING
+     * transition, so live changes survive crash-restarts (which rebuild the
+     * pipeline from the original string with only start-time values).
+     */
     protected async setElementProperty(
         element: string,
         property: string,
         value: unknown,
     ): Promise<void> {
-        if (!this.childProcess?.isRunning) return;
+        if (!this.childProcess) return;
         try {
             await this.childProcess.setProperty(element, property, value);
         } catch (err) {

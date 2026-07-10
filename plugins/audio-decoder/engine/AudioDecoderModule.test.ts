@@ -127,13 +127,6 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1');
     });
 
-    it('exposes vol.volume as a live-updatable property', () => {
-        const { module } = makeModule();
-        module.probeResult = { codec: 'opus' };
-        const desc = module.buildPipeline({});
-        expect(desc!.liveElements).toEqual({ vol: ['volume'] });
-    });
-
     it('sets restartOnError so transient stream blips auto-recover', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };

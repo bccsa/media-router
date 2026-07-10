@@ -110,42 +110,24 @@ describe('GstRunner — Python event routing', () => {
         expect((errEvent?.data as { kind?: string }).kind).toBe('udp_timeout');
     });
 
-    it('forwards stream_discovered to the parent as a streamDiscovered event', () => {
+    it('forwards plugin_event verbatim as a pluginEvent (channel + payload)', () => {
+        // stream:discovered / stream:names / level:<name> all ride this one
+        // channel — the runner never grows a per-data-type case again.
         emit({
-            event: 'stream_discovered',
-            from: 'demux',
-            pid: 0x141,
-            media: 'audio',
-            caps: 'audio/mpeg, mpegversion=(int)4',
-            padName: 'audio_0_0141',
+            event: 'plugin_event',
+            channel: 'stream:discovered',
+            payload: { from: 'demux', pid: 0x141, media: 'audio' },
         });
-        const evt = lastByType('event', 'streamDiscovered');
-        expect(evt?.data).toMatchObject({ pid: 0x141, media: 'audio', from: 'demux' });
+        const evt = lastByType('event', 'pluginEvent');
+        expect(evt?.data).toEqual({
+            channel: 'stream:discovered',
+            payload: { from: 'demux', pid: 0x141, media: 'audio' },
+        });
     });
 
-    it('does NOT schedule a restart or surface an error for stream_discovered (D6 report-only)', () => {
+    it('does NOT schedule a restart or surface an error for plugin_event (D6 report-only)', () => {
         vi.useFakeTimers();
-        emit({ event: 'stream_discovered', from: 'demux', pid: 0x100, media: 'video', caps: '' });
-        expect((runner as unknown as { restartTimer: unknown }).restartTimer).toBeNull();
-        expect(lastByType('event', 'error')).toBeUndefined();
-    });
-
-    it('forwards stream_names to the parent as a streamNames event (Phase 2)', () => {
-        emit({
-            event: 'stream_names',
-            payload: '{"v":1,"streams":[{"pid":256,"name":"Cam 1"}]}',
-            malformed: false,
-        });
-        const evt = lastByType('event', 'streamNames');
-        expect(evt?.data).toMatchObject({
-            payload: '{"v":1,"streams":[{"pid":256,"name":"Cam 1"}]}',
-            malformed: false,
-        });
-    });
-
-    it('does NOT restart or error on stream_names (D6 report-only)', () => {
-        vi.useFakeTimers();
-        emit({ event: 'stream_names', payload: null, malformed: true });
+        emit({ event: 'plugin_event', channel: 'stream:names', payload: { malformed: true } });
         expect((runner as unknown as { restartTimer: unknown }).restartTimer).toBeNull();
         expect(lastByType('event', 'error')).toBeUndefined();
     });

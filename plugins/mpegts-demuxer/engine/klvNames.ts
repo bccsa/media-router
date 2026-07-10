@@ -3,9 +3,9 @@
  * wire format in section 3 of docs/mpegts-dynamic-streams-plan.md).
  *
  * Kept free of GStreamer / engine imports so it's unit-testable with plain
- * inputs. The runner reads the metadata-PID payload off an appsink and emits a
- * `stream_names` event carrying the raw string; the demuxer module merges the
- * names this parses onto its PID-keyed inspector streams.
+ * inputs. The runner reads the metadata-PID payload off an appsink and reports
+ * it on the `stream:names` channel carrying the raw string; the demuxer module
+ * merges the names this parses onto its PID-keyed inspector streams.
  *
  * D6 invariant: no state of the KLV channel — absent, malformed, oversized, or
  * stale — may affect routing or pipeline health. So every function here is

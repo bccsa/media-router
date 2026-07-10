@@ -119,19 +119,6 @@ export class MpegTsDemuxerModule extends GstPluginBase {
         this.klvNames.clear();
         this.klvGarbageWarned = false;
         await super.onStart();
-        // super.onStart() builds this.childProcess; subscribe to the runner's
-        // stream-inspection events. All report-only — they only update the
-        // status panel and never touch routing or health (plan D6).
-        this.childProcess?.on('streamDiscovered', (data: StreamDiscoveredEvent) => {
-            this.inspector.record(data);
-            this.publishStreamStatus();
-            this.persistDiscovered();
-            if (this.staleGraceElapsed) this.cleanupStaleStreams();
-        });
-        // In-band name carousel (Phase 2): merge KLV names onto the inspector.
-        this.childProcess?.on('streamNames', (data: { payload?: string; malformed?: boolean }) => {
-            this.handleStreamNames(data);
-        });
         // Grace-timer stale check: with a completely dark source no discovery
         // event ever fires, so nothing would call publishStreamStatus and the
         // persisted streams would never show as stale. One pass after the pads
@@ -152,6 +139,22 @@ export class MpegTsDemuxerModule extends GstPluginBase {
             this.publishStreamStatus();
             this.cleanupStaleStreams();
         }, 30_000);
+    }
+
+    /**
+     * Runner stream-inspection reports. Both channels are report-only — they
+     * update the status panel and never touch routing or health (plan D6).
+     */
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel === 'stream:discovered') {
+            this.inspector.record(payload as StreamDiscoveredEvent);
+            this.publishStreamStatus();
+            this.persistDiscovered();
+            if (this.staleGraceElapsed) this.cleanupStaleStreams();
+        } else if (channel === 'stream:names') {
+            // In-band name carousel (Phase 2): merge KLV names onto the inspector.
+            this.handleStreamNames(payload as { payload?: string; malformed?: boolean });
+        }
     }
 
     async onStop(): Promise<void> {
@@ -375,7 +378,7 @@ export class MpegTsDemuxerModule extends GstPluginBase {
             restartOnError: true,
             // Read the in-band name carousel off the metadata PID (Phase 2).
             // The runner attaches a `queue ! appsink` to the meta/x-klv pad and
-            // emits `stream_names`; the metadata PID is never routed (D6).
+            // reports on `stream:names`; the metadata PID is never routed (D6).
             readKlvNames: true,
         };
     }

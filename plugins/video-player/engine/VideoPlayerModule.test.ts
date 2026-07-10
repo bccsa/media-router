@@ -392,7 +392,6 @@ describe('VideoPlayerModule helpers', () => {
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Nothing here');
             expect(desc.pipeline).not.toContain('input-selector');
-            expect(desc.liveElements).toEqual({ nov: ['text'] });
             // Empty display → no env override (let the compositor decide).
             expect(desc.env).toEqual({});
             expect((module as any).setHealth).toHaveBeenCalledWith(
@@ -423,7 +422,6 @@ describe('VideoPlayerModule helpers', () => {
             expect(desc.pipeline).toContain('kmssink name=sink');
             expect(desc.pipeline).not.toContain('connector-name=');
             expect(desc.pipeline).not.toContain('videotestsrc');
-            expect(desc.liveElements).toEqual({});
             // KMS path → no wayland app-id env. The pinning mechanism doesn't
             // apply here (kmssink picks the connector directly), and leaking
             // a prgname into process listings would just be confusing.

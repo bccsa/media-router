@@ -3,6 +3,7 @@ import {
     ENCODER_ELEMENTS,
     H264_PROFILES,
     SPEED_PRESETS,
+    ThroughputPoller,
     bitrateBadge,
     resolveImpl,
     probeEncoderAvailability,
@@ -12,6 +13,7 @@ import {
     type ImplId,
     type PipelineDescription,
     type SpeedPreset,
+    type ThroughputSample,
 } from '@media-router/engine';
 import { buildPipeline } from './transcoderPipeline.js';
 import {
@@ -49,10 +51,22 @@ export class TranscoderModule extends GstPluginBase {
     private sinkNames: string[] = [];
     /** Renditions captured at build time, index-aligned with `sinkNames`. */
     private renditions: Rendition[] = [];
-    /** Per-sink byte/time baseline for the per-rendition bitrate delta. */
-    private sinkStats: Array<{ lastBytes: number; lastTime: number }> = [];
-    /** Per-rendition throughput poll timer. */
-    private statsTimer: ReturnType<typeof setInterval> | null = null;
+    /**
+     * Per-rendition throughput: one counter per udpsink. All-or-nothing read —
+     * a partial read (idle / not yet playing) would misreport rates, so any
+     * unavailable counter skips the whole tick.
+     */
+    private readonly throughput = new ThroughputPoller({
+        getBytes: async () => {
+            if (!this.running || this.sinkNames.length === 0) return undefined;
+            const served = await Promise.all(
+                this.sinkNames.map((name) => this.getElementProperty(name, 'bytes-served')),
+            );
+            if (served.some((v) => typeof v !== 'number')) return undefined;
+            return Object.fromEntries(this.sinkNames.map((name, i) => [name, served[i] as number]));
+        },
+        publish: (total, perSink) => this.publishThroughput(total, perSink),
+    });
 
     /** Runtime availability map — populated by `initManifest` after probing. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
@@ -82,15 +96,11 @@ export class TranscoderModule extends GstPluginBase {
         // super.onStart() invokes buildPipeline, which populates the input /
         // encoder status sections and captures sinkNames/renditions.
         await super.onStart();
-        this.sinkStats = this.sinkNames.map(() => ({ lastBytes: 0, lastTime: Date.now() }));
-        this.statsTimer = setInterval(() => void this.pollThroughput(), 2000);
+        this.throughput.start();
     }
 
     async onStop(): Promise<void> {
-        if (this.statsTimer) {
-            clearInterval(this.statsTimer);
-            this.statsTimer = null;
-        }
+        this.throughput.stop();
         await super.onStop();
     }
 
@@ -238,58 +248,35 @@ export class TranscoderModule extends GstPluginBase {
     }
 
     /**
-     * Poll every rendition's udpsink `bytes-served` and publish a PER-RENDITION
-     * live bitrate (not a single aggregate) as a runtime status section — one
-     * row per quality plus a Total. The face badge stays the aggregate so the
-     * node shows one headline number.
-     *
-     * Skips the whole tick if any counter is unavailable (idle / not yet
-     * playing) — a partial read would misreport rates. Each sink carries its own
-     * byte/time baseline; a counter dropping below its last value is a child
-     * re-spawn, treated as a fresh baseline (0 this tick) rather than a negative
-     * rate.
+     * Publish a PER-RENDITION live bitrate (not a single aggregate) as a
+     * runtime status section — one row per quality plus a Total. The face
+     * badge stays the aggregate so the node shows one headline number.
      */
-    private async pollThroughput(): Promise<void> {
-        if (!this.running || this.sinkNames.length === 0) return;
-        const served = await Promise.all(
-            this.sinkNames.map((name) => this.getElementProperty(name, 'bytes-served')),
-        );
-        if (served.some((v) => typeof v !== 'number')) return;
-
-        const now = Date.now();
+    private publishThroughput(
+        total: ThroughputSample,
+        perSink: Record<string, ThroughputSample>,
+    ): void {
         const fields: Array<{ key: string; label: string; unit?: string }> = [];
         const data: Record<string, number | string> = {};
-        let totalMbps = 0;
-        let totalBytes = 0;
 
         for (let i = 0; i < this.sinkNames.length; i++) {
-            const bytes = served[i] as number;
-            const st = this.sinkStats[i] ?? { lastBytes: 0, lastTime: now };
-            const elapsed = (now - st.lastTime) / 1000;
-            const reset = bytes < st.lastBytes;
-            const delta = reset ? 0 : bytes - st.lastBytes;
-            const mbps = elapsed > 0 ? (delta * 8) / elapsed / 1_000_000 : 0;
-            st.lastBytes = bytes;
-            st.lastTime = now;
-            this.sinkStats[i] = st;
-
-            totalMbps += mbps;
-            totalBytes += bytes;
+            const sample = perSink[this.sinkNames[i]];
+            if (!sample) continue;
             fields.push({
                 key: `r${i}`,
                 label: this.renditionStatLabel(this.renditions[i], i),
                 unit: 'Mbps',
             });
-            data[`r${i}`] = Math.round(mbps * 100) / 100;
+            data[`r${i}`] = Math.round(sample.bitrateKbps / 10) / 100;
         }
 
         fields.push({ key: 'total', label: 'Total', unit: 'Mbps' });
-        data.total = Math.round(totalMbps * 100) / 100;
+        data.total = Math.round(total.bitrateKbps / 10) / 100;
         fields.push({ key: 'totalBytes', label: 'Total Bytes' });
-        data.totalBytes = `${(totalBytes / 1024 / 1024).toFixed(1)} MB`;
+        data.totalBytes = `${(total.totalBytes / 1024 / 1024).toFixed(1)} MB`;
 
         this.dynamicStatusSections = [{ id: 'throughput', label: 'Live Throughput', fields }];
         this.setStatusData('throughput', data);
-        this.setBadge('bitrate', bitrateBadge(Math.round(totalMbps * 1000)));
+        this.setBadge('bitrate', bitrateBadge(total.bitrateKbps));
     }
 }

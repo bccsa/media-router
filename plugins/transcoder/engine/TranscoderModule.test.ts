@@ -221,10 +221,12 @@ describe('buildPipeline', () => {
     });
 });
 
-describe('TranscoderModule.pollThroughput', () => {
+describe('TranscoderModule throughput (multi-counter ThroughputPoller)', () => {
     afterEach(() => vi.useRealTimers());
 
     function setup() {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(10_000));
         const module = makeModule().module as any;
         module.running = true;
         module.sinkNames = ['usink_0', 'usink_1'];
@@ -232,24 +234,26 @@ describe('TranscoderModule.pollThroughput', () => {
             { width: 1280, height: 720, bitrate: 2500 },
             { width: 640, height: 360, bitrate: 800 },
         ];
-        // Fixed clock: baseline 1s ago so elapsed is exactly 1.0s and the
-        // per-sink bitrate is deterministic.
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date(10_000));
-        module.sinkStats = [
-            { lastBytes: 0, lastTime: 9_000 },
-            { lastBytes: 0, lastTime: 9_000 },
-        ];
         return module;
+    }
+
+    /** Baseline at t=10s, one tick at t=12s — deterministic 2.0s elapsed.
+     *  The tick is awaited directly (not via the interval) so the assertion
+     *  can't race the poller's async publish chain. */
+    async function runOneTick(module: any) {
+        module.throughput.start();
+        vi.setSystemTime(new Date(12_000));
+        await (module.throughput as any).tick();
+        module.throughput.stop();
     }
 
     it('publishes a PER-RENDITION live bitrate section, not a single sum', async () => {
         const module = setup();
-        // 312500 B/s → 2.5 Mbps; 100000 B/s → 0.8 Mbps.
+        // Over the first 2s tick: 625 kB → 2.5 Mbps; 200 kB → 0.8 Mbps.
         module.getElementProperty = vi.fn(async (name: string) =>
-            name === 'usink_0' ? 312_500 : 100_000,
+            name === 'usink_0' ? 625_000 : 200_000,
         );
-        await module.pollThroughput();
+        await runOneTick(module);
 
         expect(module.dynamicStatusSections).toEqual([
             {
@@ -275,9 +279,9 @@ describe('TranscoderModule.pollThroughput', () => {
     it('skips the tick when a sink counter is unavailable (idle / not playing)', async () => {
         const module = setup();
         module.getElementProperty = vi.fn(async (name: string) =>
-            name === 'usink_0' ? 312_500 : undefined,
+            name === 'usink_0' ? 625_000 : undefined,
         );
-        await module.pollThroughput();
+        await runOneTick(module);
         expect(module.setStatusData).not.toHaveBeenCalledWith('throughput', expect.anything());
         expect(module.setBadge).not.toHaveBeenCalled();
     });

@@ -569,8 +569,6 @@ interface PipelineDescription {
     pipeline: string;
     /** When true, stdin/stdout carry binary data (MPEG-TS), not bus messages. */
     useStdioForData?: boolean;
-    /** Named elements with live-updatable properties. */
-    liveElements?: Record<string, string[]>;
     /** Auto-restart on bus error / EOS. */
     restartOnError?: boolean;
     /**
@@ -649,11 +647,11 @@ or pipeline health:
   `stateChange → playing` handler so the first payload appears immediately.
 - **Reader.** Set `readKlvNames: true` on the `PipelineDescription`. The runner
   attaches a `queue ! appsink` (the queue is mandatory — an appsink straight on
-  a tsdemux pad stalls the whole TS) to every `meta/x-klv` pad and emits a
-  `stream_names` event with the raw payload string plus a `malformed` hint.
-  Subscribe with `this.childProcess?.on('streamNames', …)` and parse Node-side.
-  Parsing must be total — a malformed payload can never throw out of the
-  handler (warn once, ignore).
+  a tsdemux pad stalls the whole TS) to every `meta/x-klv` pad and reports the
+  raw payload string plus a `malformed` hint on the `stream:names` plugin-event
+  channel — handle it in `onPluginEvent` (the demuxer also receives every
+  discovered pad on `stream:discovered`). Parsing must be total — a malformed
+  payload can never throw out of the handler (warn once, ignore).
 
 The MPEG-TS muxer (`setKlvPayload`) and demuxer (`readKlvNames`) are the
 reference consumers; the payload format itself is plugin-defined.
@@ -913,6 +911,16 @@ await this.setElementProperty('enc', 'bitrate', 256000);
 await this.setElementProperty('vol', 'volume', 0.5);
 ```
 
+Live values are **sticky across restarts**: the engine records the last value
+set per element property and replays them on every PLAYING transition. A
+crash-restart rebuilds the pipeline from the original string (start-time values
+only), so without the replay live changes would silently revert. Calling
+`setElementProperty` while the pipeline is down or mid-restart is also safe —
+the value is recorded and applied on the next PLAYING. If your module drives an
+element from its own control loop and assumes a fresh element state after a
+restart (e.g. the audio-dynamics ducker's `volume`), re-seed explicitly in
+`onPipelinePlaying()` — the replayed value wins otherwise.
+
 #### Get Element Property
 
 Read a property value from a running element:
@@ -1030,8 +1038,8 @@ export class MyEncoderModule extends GstPluginBase {
 The poller owns the timing so every plugin gets the same correct behaviour:
 
 - **Idle skip** — when `getBytes` returns `undefined` (pipeline not playing yet), the tick is skipped and nothing is published, so an idle module stops emitting spurious "0 kbps" updates.
-- **Counter-reset guard** — if the byte counter drops below the previous sample (the child was re-spawned via `restartOnError` and `udpsink` reset `bytes-served` to 0), the delta clamps to 0 instead of reporting a negative rate.
-- **Multiple sinks** — read them with `Promise.all` and return `undefined` if *any* is unavailable (a partial total would read as a bitrate dip). See the transcoder's `sumSinkBytes`.
+- **Counter-reset guard** — if a byte counter drops below its previous sample (the child was re-spawned via `restartOnError` and `udpsink` reset `bytes-served` to 0), that counter's delta clamps to 0 instead of reporting a negative rate. Guarded per counter.
+- **Multiple counters** — `getBytes` may return a `Record<name, bytes>` instead of one number (one entry per sink); `publish` then receives `(total, counters)` with a per-counter `ThroughputSample` breakdown alongside the aggregate. Read the counters with `Promise.all` and return `undefined` if *any* is unavailable (a partial read would misreport rates). Real example: the transcoder publishes one bitrate row per rendition plus a Total from a single poller.
 
 **Important:** The `key` in `setStatusData` must match the `key` field in the manifest's `statusSections.fields[]`. Mismatched keys will show "—" in the UI.
 
