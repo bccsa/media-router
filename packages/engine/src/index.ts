@@ -20,7 +20,7 @@ export {
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
 export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './system/drmConnectors.js';
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
-export { probeGstElement, gstInspectMaxChannels } from './plugins/gstInspect.js';
+export { probeGstElement, gstInspectMaxChannels, findLadspaElement } from './plugins/gstInspect.js';
 export {
     ENCODER_ELEMENTS,
     SPEED_PRESETS,

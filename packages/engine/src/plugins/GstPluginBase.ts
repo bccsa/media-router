@@ -97,6 +97,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 this.ready = true;
                 this.health = 'ok';
                 this.error = undefined;
+                // Fires on EVERY playing transition, including a runner-internal
+                // crash-restart (which rebuilds the pipeline from the original
+                // string, dropping any live element state). Subclasses re-seed
+                // control state here so a restart doesn't strand them.
+                this.onPipelinePlaying();
             } else if (data.state === 'error') {
                 this.health = 'error';
             } else if (data.state === 'stopped') {
@@ -109,6 +114,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         this.childProcess.on('vuData', (data: { peak: number[] }) => {
             this.setVuData(data.peak);
+        });
+
+        // Generic pipeline→plugin data channel. Delivered to the subclass hook
+        // so it can react to any channel it subscribed to (e.g. the
+        // audio-dynamics ducker's gain envelope off `level:sclevel`).
+        this.childProcess.on('pluginEvent', (data: { channel: string; payload: unknown }) => {
+            this.onPluginEvent(data.channel, data.payload);
         });
 
         this.childProcess.on('error', (data: { message: string }) => {
@@ -320,6 +332,29 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
         Object.assign(this.config, changes);
+    }
+
+    /**
+     * Generic pipeline→plugin data channel. Called for every `pluginEvent` the
+     * runner emits — `channel` names the data stream, `payload` is its JSON
+     * body. Default no-op; subclasses match the channels they subscribed to
+     * (e.g. `level:<name>` from `PipelineDescription.busReports`, keyed by the
+     * audio-dynamics ducker's gain envelope). New data types need no
+     * middle-layer plumbing — just an emitter in the runner and a case here.
+     */
+    protected onPluginEvent(_channel: string, _payload: unknown): void {
+        /* subclass hook */
+    }
+
+    /**
+     * Called on every transition to PLAYING, INCLUDING a runner-internal
+     * crash-restart (which rebuilds the pipeline from the original string and so
+     * loses any live element changes / control-loop memory). Default no-op;
+     * subclasses re-seed state that must survive a restart — e.g. re-apply live
+     * element properties, or reset a control envelope so it re-converges.
+     */
+    protected onPipelinePlaying(): void {
+        /* subclass hook */
     }
 
     // --- Live element control (delegates to GstChildProcess → Python runner)

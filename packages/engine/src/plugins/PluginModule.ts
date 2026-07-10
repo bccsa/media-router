@@ -181,6 +181,25 @@ export interface PipelineDescription {
      * broadcast streams these boxes carry.) Ignored by a HW (VAAPI) decoder.
      */
     decoderThreadType?: 'auto' | 'frame';
+    /**
+     * Bus-message subscriptions: for each `{element, structure}`, the runner
+     * forwards that element's matching ELEMENT bus messages to the module on the
+     * generic `<structure>:<element>` plugin-event channel (payload = the
+     * structure as an object) — see GstPluginBase.onPluginEvent. Any bus message
+     * works (`level`, `spectrum`, QoS, element stats, …) with no runner change;
+     * a subscribed `level` element is forwarded instead of feeding the aggregate
+     * VU meter. E.g. the audio-dynamics ducker subscribes to its sidechain
+     * `level` element and keys its gain envelope off `level:sclevel`.
+     */
+    busReports?: BusReport[];
+}
+
+/** A bus-message subscription — see PipelineDescription.busReports. */
+export interface BusReport {
+    /** `name=` of the element whose bus messages to forward. */
+    element: string;
+    /** Structure name to match (e.g. `level`, `spectrum`). Channel is `<structure>:<element>`. */
+    structure: string;
 }
 
 /**

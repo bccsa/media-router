@@ -1,8 +1,27 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type { PadLinkRule } from '../plugins/PluginModule.js';
+import type { PadLinkRule, BusReport } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
+
+/**
+ * Everything the Python runner needs to start (and replay on restart) a
+ * pipeline — the runner-relevant subset of PipelineDescription, passed verbatim
+ * through GstChildProcess → GstRunner → here → Python. A new runner knob is one
+ * field here + one `data.get()` in the runner; no positional args to drift out
+ * of sync (which is how `decoderThreadType` was silently lost before).
+ */
+export interface RunnerStartOptions {
+    pipeline: string;
+    useStdioForData?: boolean;
+    linkOnPadAdded?: PadLinkRule[];
+    readKlvNames?: boolean;
+    /** Applied at fork (spawn env), not sent in the start command. */
+    env?: Record<string, string>;
+    clock?: ClockConfig;
+    decoderThreadType?: 'auto' | 'frame';
+    busReports?: BusReport[];
+}
 
 export interface PythonProcessOptions {
     pythonRunnerPath: string;
@@ -48,21 +67,16 @@ export class PythonProcess {
      * A fresh `PythonProcess` is constructed for every pipeline (re)start,
      * so each spawn sees the env intended for that specific pipeline.
      */
-    start(
-        pipeline: string,
-        padLinkRules: PadLinkRule[],
-        env: Record<string, string> = {},
-        readKlvNames = false,
-        clock?: ClockConfig,
-    ): void {
+    start(opts: RunnerStartOptions): void {
         if (this.proc) throw new Error('PythonProcess already started');
+        const { pipeline, linkOnPadAdded = [], env = {} } = opts;
 
         const mode = this.options.useStdioForData ? 'data-pipe' : 'bus-messages';
         // Log the full pipeline string — truncating it hides the failing element
         // when a plugin's pipeline is rejected by parse_launch.
         console.error(`[gst-runner] Starting pipeline (${mode}): ${pipeline}`);
-        if (padLinkRules.length > 0) {
-            console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(padLinkRules)}`);
+        if (linkOnPadAdded.length > 0) {
+            console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(linkOnPadAdded)}`);
         }
 
         const spawnEnv = { ...process.env, ...env };
@@ -116,13 +130,13 @@ export class PythonProcess {
         });
         this.proc.on('error', (err) => this.options.onSpawnError(err));
 
+        // Pass the options verbatim (minus `env`, which is applied at spawn).
+        // `useStdioForData` is fixed at construction, so it wins.
+        const { env: _env, ...cmdOpts } = opts;
         this.sendCommand({
             cmd: 'start',
-            pipeline,
+            ...cmdOpts,
             useStdioForData: this.options.useStdioForData,
-            linkOnPadAdded: padLinkRules,
-            readKlvNames,
-            ...(clock ? { clock } : {}),
         });
     }
 

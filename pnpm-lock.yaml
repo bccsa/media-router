@@ -262,6 +262,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/audio-dynamics:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/audio-encoder:
     dependencies:
       '@media-router/engine':

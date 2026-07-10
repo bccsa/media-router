@@ -5,7 +5,7 @@ vi.mock('child_process', () => ({
     execFile: (...args: unknown[]) => execFileMock(...args),
 }));
 
-import { gstInspectMaxChannels, probeGstElement } from './gstInspect.js';
+import { gstInspectMaxChannels, probeGstElement, findLadspaElement } from './gstInspect.js';
 
 type ExecCallback = (err: Error | null, stdout: string, stderr: string) => void;
 
@@ -39,6 +39,43 @@ describe('probeGstElement', () => {
         await probeGstElement('cached-element-3');
         await probeGstElement('cached-element-3');
         await probeGstElement('cached-element-3');
+        expect(execFileMock).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('findLadspaElement', () => {
+    beforeEach(() => {
+        execFileMock.mockReset();
+    });
+
+    it('returns null when the ladspa wrapper is missing (and does not cache the failure)', async () => {
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, new Error('No such element')),
+        );
+        await expect(findLadspaElement('sc-compressor-stereo')).resolves.toBeNull();
+        expect(execFileMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves versioned element names by suffix and caches the list', async () => {
+        const stdout = `Plugin Details:
+  Name                     ladspa
+  ladspa-lsp-plugins-ladspa-1-2-5-so-http---lsp-plug-in-plugins-ladspa-sc-compressor-stereo: Sidechain Compressor Stereo
+  ladspa-lsp-plugins-ladspa-1-2-5-so-http---lsp-plug-in-plugins-ladspa-sc-gate-stereo: Sidechain Gate Stereo
+  ladspa-gate-1410-so-gate: Gate
+
+  46 features:
+`;
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null, stdout),
+        );
+        await expect(findLadspaElement('sc-compressor-stereo')).resolves.toBe(
+            'ladspa-lsp-plugins-ladspa-1-2-5-so-http---lsp-plug-in-plugins-ladspa-sc-compressor-stereo',
+        );
+        await expect(findLadspaElement('sc-gate-stereo')).resolves.toBe(
+            'ladspa-lsp-plugins-ladspa-1-2-5-so-http---lsp-plug-in-plugins-ladspa-sc-gate-stereo',
+        );
+        await expect(findLadspaElement('no-such-suffix')).resolves.toBeNull();
+        // One gst-inspect run serves all lookups
         expect(execFileMock).toHaveBeenCalledTimes(1);
     });
 });

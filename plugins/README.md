@@ -709,6 +709,10 @@ export class VideoEncoderModule extends GstPluginBase {
 
 Real examples: [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts) (HW encoder probing), [`audio-encoder`](audio-encoder/engine/AudioEncoderModule.ts) (codec capability), [`video-player`](video-player/engine/VideoPlayerModule.ts) (sink probing).
 
+##### LADSPA-wrapped elements
+
+`findLadspaElement(suffix)` (from `@media-router/engine`) resolves a GStreamer `ladspa` wrapper element by name suffix — e.g. `findLadspaElement('sc-compressor-stereo')`. LADSPA element names embed the plugin's .so filename *including its version* (`ladspa-lsp-plugins-ladspa-1-2-5-so-…`), so never hardcode them; resolve at start and fail with a clear error when null (plugin library not installed). Real example: [`audio-dynamics`](audio-dynamics/engine/AudioDynamicsModule.ts). Note the wrapper exposes a multi-audio-input plugin as **one interleaved sink pad** (all audio ports in declaration order) — merge streams with `deinterleave`/`interleave` and force `channel-mask=(bitmask)0x0` on the merged caps.
+
 ##### Shared video-encoder helpers
 
 Codec plugins that emit H.264/H.265/AV1 (video-encoder, transcoder) share the encoder-element knowledge from `@media-router/engine` rather than forking it — don't copy an encoder branch builder into a new plugin, reuse these:
@@ -920,6 +924,30 @@ const bitrate = await this.getElementProperty('enc', 'bitrate');
 const bytesServed = await this.getElementProperty('usink', 'bytes-served');
 // Returns: 1234567 (for udpsink)
 ```
+
+#### Getting data back from the pipeline (generic `pluginEvent` channel)
+
+When a plugin needs the runner to stream data *back* — not just answer a one-shot `getElementProperty` — use the generic pipeline→plugin data channel instead of adding a bespoke event type through every layer. The runner emits `{channel, payload}`; the base class forwards it verbatim to your `onPluginEvent(channel, payload)` hook. A new kind of data needs an emitter in the runner and a `case` in your handler — **no changes to GstRunner / GstChildProcess / GstPluginBase**.
+
+The built-in producer is **bus-message subscriptions**: for each `{element, structure}` in `PipelineDescription.busReports`, the runner forwards that element's matching ELEMENT bus messages on channel `<structure>:<element>` (payload = the GstStructure as an object). This is fully generic — `level`, `spectrum`, QoS, element stats messages all work with no runner change; a subscribed `level` element is forwarded instead of folding into the aggregate VU meter. Build any control loop on top — metering, gating, AGC, or ducking:
+
+```typescript
+buildPipeline() {
+    return {
+        pipeline: `pulsesrc device=${sc}.monitor ! audioconvert ! ` +
+            `level name=sclevel post-messages=true interval=15000000 ! fakesink sync=false ...`,
+        busReports: [{ element: 'sclevel', structure: 'level' }],   // stream this element's level back
+    };
+}
+
+protected onPluginEvent(channel: string, payload: unknown): void {
+    if (channel !== 'level:sclevel') return;
+    const keyDb = Math.max(...(payload as { rms: number[] }).rms);
+    // …drive your own envelope / control loop, e.g. this.setElementProperty('vol','volume', g)
+}
+```
+
+Real example: [`audio-dynamics`](audio-dynamics/engine/AudioDynamicsModule.ts) (ducker mode) keys its gain envelope off `level:sclevel` and rides a `volume` element — an exact-floor sidechain ducker built from stock `level`/`volume`, no LADSPA. If your control loop must survive a runner crash-restart (which rebuilds the pipeline from the original string), re-seed it in `onPipelinePlaying()` — it fires on every PLAYING transition, including restarts.
 
 #### Get Element Stats (GstStructure)
 

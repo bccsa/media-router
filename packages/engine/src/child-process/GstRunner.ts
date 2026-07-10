@@ -1,7 +1,5 @@
 import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
-import type { PadLinkRule } from '../plugins/PluginModule.js';
-import type { ClockConfig } from './ClockAuthority.js';
-import { PythonProcess } from './PythonProcess.js';
+import { PythonProcess, type RunnerStartOptions } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
 
 // Restart policy:
@@ -19,15 +17,11 @@ const DEFAULT_RESTART_BASE_MS = 1000;
 const DEFAULT_RESTART_MAX_MS = 5000;
 const RESTART_STABILITY_MS = 30_000;
 
-interface StartPipelineMessage {
-    pipeline: string;
-    useStdioForData?: boolean;
+// The `startPipeline` wire message: the runner start options plus the two
+// restart-policy knobs GstRunner consumes itself (not forwarded to Python).
+interface StartPipelineMessage extends RunnerStartOptions {
     restartOnError?: boolean;
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
-    linkOnPadAdded?: PadLinkRule[];
-    readKlvNames?: boolean;
-    env?: Record<string, string>;
-    clock?: ClockConfig;
 }
 
 /**
@@ -44,14 +38,11 @@ export class GstRunner {
     private python: PythonProcess | null = null;
     private readonly ipc = new ParentIpc();
     private currentState: 'stopped' | 'playing' | 'error' = 'stopped';
-    private useStdioForData = false;
     private restartOnError = false;
-    private lastPipelineString = '';
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
-    private lastPadLinkRules: PadLinkRule[] = [];
-    private lastReadKlvNames = false;
-    private lastEnv: Record<string, string> = {};
-    private lastClock: ClockConfig | undefined = undefined;
+    // The last start options, replayed verbatim by the restart loop. One field
+    // instead of a mirror per knob — new knobs can't drift out of the replay.
+    private lastStart: RunnerStartOptions | null = null;
     private readonly restartBackoff = new ExponentialBackoff(
         DEFAULT_RESTART_BASE_MS,
         DEFAULT_RESTART_MAX_MS,
@@ -67,22 +58,15 @@ export class GstRunner {
     handleControlMessage(msg: ControlIpcMessage): void {
         switch (msg.action) {
             case 'startPipeline': {
-                const d = msg.data as StartPipelineMessage;
-                this.restartOnError = d.restartOnError ?? false;
+                const { restartOnError, restartBackoffMs, ...opts } =
+                    msg.data as StartPipelineMessage;
+                this.restartOnError = restartOnError ?? false;
                 this.restartBackoff.setBounds(
-                    d.restartBackoffMs?.baseMs ?? DEFAULT_RESTART_BASE_MS,
-                    d.restartBackoffMs?.maxMs ?? DEFAULT_RESTART_MAX_MS,
+                    restartBackoffMs?.baseMs ?? DEFAULT_RESTART_BASE_MS,
+                    restartBackoffMs?.maxMs ?? DEFAULT_RESTART_MAX_MS,
                 );
                 this.restartBackoff.reset();
-                this.startPipeline(
-                    d.pipeline,
-                    msg.id,
-                    d.useStdioForData,
-                    d.linkOnPadAdded ?? [],
-                    d.env ?? {},
-                    d.readKlvNames ?? false,
-                    d.clock,
-                );
+                this.startPipeline(opts, msg.id);
                 break;
             }
 
@@ -241,6 +225,15 @@ export class GstRunner {
                 this.ipc.sendEvent('vuData', { peak: eventJson.peak });
                 break;
 
+            case 'plugin_event':
+                // Generic pipeline→plugin data channel. Forwarded verbatim; the
+                // runner and the plugin are the only type-aware ends.
+                this.ipc.sendEvent('pluginEvent', {
+                    channel: eventJson.channel,
+                    payload: eventJson.payload,
+                });
+                break;
+
             case 'error':
                 // Fatal pipeline-lifecycle failure (bus ERROR, parse-fail,
                 // PLAYING-fail, udpsrc timeout). Tear down + restart per
@@ -341,41 +334,20 @@ export class GstRunner {
         );
         this.restartTimer = setTimeout(() => {
             this.restartTimer = null;
-            if (this.lastPipelineString) {
-                this.startPipeline(
-                    this.lastPipelineString,
-                    `restart-${this.restartBackoff.attempts}`,
-                    this.useStdioForData,
-                    this.lastPadLinkRules,
-                    this.lastEnv,
-                    this.lastReadKlvNames,
-                    this.lastClock,
-                );
+            if (this.lastStart) {
+                this.startPipeline(this.lastStart, `restart-${this.restartBackoff.attempts}`);
             }
         }, delay);
     }
 
-    private startPipeline(
-        pipeline: string,
-        requestId: string,
-        stdioForData = false,
-        padLinkRules: PadLinkRule[] = [],
-        env: Record<string, string> = {},
-        readKlvNames = false,
-        clock?: ClockConfig,
-    ): void {
+    private startPipeline(opts: RunnerStartOptions, requestId: string): void {
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
             this.restartTimer = null;
         }
         if (this.python) this.python.stop();
 
-        this.lastPipelineString = pipeline;
-        this.lastPadLinkRules = padLinkRules;
-        this.lastReadKlvNames = readKlvNames;
-        this.lastEnv = env;
-        this.lastClock = clock;
-        this.useStdioForData = stdioForData;
+        this.lastStart = opts;
 
         // Capture this instance locally — `this.python` may already point to a
         // newer spawn by the time the exit handler fires (a SIGKILL'd
@@ -384,13 +356,13 @@ export class GstRunner {
         // cascade restart.
         const py: PythonProcess = new PythonProcess({
             pythonRunnerPath: this.pythonRunnerPath,
-            useStdioForData: stdioForData,
+            useStdioForData: opts.useStdioForData ?? false,
             onEvent: (event) => this.handlePythonEvent(event),
             onExit: (code, signal) => this.handlePythonExit(py, code, signal),
             onSpawnError: (err) => this.handlePythonSpawnError(py, err),
         });
         this.python = py;
-        py.start(pipeline, padLinkRules, env, readKlvNames, clock);
+        py.start(opts);
 
         this.ipc.sendResponse(requestId, { ok: true });
     }

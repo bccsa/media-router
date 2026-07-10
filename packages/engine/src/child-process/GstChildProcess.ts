@@ -113,6 +113,13 @@ export class GstChildProcess extends EventEmitter {
             this.emit('vuData', data);
         });
 
+        // Generic pipeline→plugin data channel (channel + payload). Pure
+        // passthrough — the module decides what to do with each channel (e.g.
+        // the audio-dynamics ducker keys its envelope off `level:sclevel`).
+        this.ipc.on('pluginEvent', (data) => {
+            this.emit('pluginEvent', data);
+        });
+
         // Stream inspection (mpegts demuxer): per-pad discovery. Pure
         // passthrough — the module decides what to do with it.
         this.ipc.on('streamDiscovered', (data) => {
@@ -154,6 +161,7 @@ export class GstChildProcess extends EventEmitter {
                 env: this.pipelineDesc.env ?? {},
                 clock: this.pipelineDesc.clock,
                 decoderThreadType: this.pipelineDesc.decoderThreadType ?? 'auto',
+                busReports: this.pipelineDesc.busReports ?? [],
             });
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });

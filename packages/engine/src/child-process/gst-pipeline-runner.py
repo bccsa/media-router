@@ -55,6 +55,15 @@ event_fd = None     # File object for writing events
 use_stdio_for_data = False
 running = False
 
+# Bus-message subscriptions: (element_name, structure_name) pairs whose ELEMENT
+# messages are forwarded verbatim to the parent on the generic
+# `<structure>:<element>` plugin-event channel (payload = the structure as a
+# dict). Generic — any plugin observes any element bus message (level, QoS,
+# spectrum, element stats, …) with zero type-specific code here. Set from
+# `busReports` at start. A subscribed `level` element is forwarded instead of
+# feeding the aggregate VU meter.
+bus_reports = set()
+
 # VU throttle: only send when changed, heartbeat every 1s
 last_vu = None
 last_vu_time = 0
@@ -233,6 +242,14 @@ def handle_level_message(structure):
     last_vu_time = now_ms
     emit_event({"event": "vu_data", "peak": peak_blocks})
 
+def emit_plugin_event(channel, payload):
+    """Generic pipeline→plugin data channel. The runner emits `{channel,
+    payload}`; the parent forwards it verbatim to the owning module's
+    `onPluginEvent(channel, payload)` hook. This is the ONE transport for
+    getting data back from a pipeline — new data types add extraction here and a
+    handler in the plugin, never any middle-layer plumbing."""
+    emit_event({"event": "plugin_event", "channel": channel, "payload": payload})
+
 # ---------------------------------------------------------------------------
 # Bus message handler
 # ---------------------------------------------------------------------------
@@ -267,7 +284,13 @@ def on_bus_message(bus, message):
     elif t == Gst.MessageType.ELEMENT:
         structure = message.get_structure()
         name = structure.get_name() if structure else None
-        if name == "level":
+        src = message.src
+        src_name = src.get_name() if src else None
+        if name and src_name and (src_name, name) in bus_reports:
+            # Subscribed via `busReports` — forward the whole structure on the
+            # generic `<structure>:<element>` channel (e.g. `level:sclevel`).
+            emit_plugin_event(f"{name}:{src_name}", gst_structure_to_dict(structure))
+        elif name == "level":
             handle_level_message(structure)
         elif name == "GstUDPSrcTimeout":
             # udpsrc has not received data within its configured timeout.
@@ -977,7 +1000,7 @@ def _isolate_loopback_bus_udpsrc(pipe):
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
-    global klv_payloads, klv_timer_id, playing_watchdog_id
+    global klv_payloads, klv_timer_id, playing_watchdog_id, bus_reports
 
     # Drop any carousel state from a prior run; the parent re-pushes after the
     # pipeline is PLAYING. Stale payloads pointing at the old element graph
@@ -1039,6 +1062,14 @@ def handle_start(data):
     # time), so we hook every avdec_* as it shows up — see the function for the
     # two-pronged tree-walk + `deep-element-added` strategy.
     _install_decoder_thread_hook(pipeline, decoder_thread_type)
+
+    # Bus-message subscriptions (generic; e.g. the audio-dynamics ducker keys
+    # its envelope off the sidechain `level` element).
+    bus_reports = {
+        (r.get("element"), r.get("structure"))
+        for r in (data.get("busReports") or [])
+        if r.get("element") and r.get("structure")
+    }
 
     # Set up bus watch
     bus = pipeline.get_bus()
