@@ -6,7 +6,6 @@
  */
 
 import {
-    DEFAULT_MPEGTS_ALIGNMENT,
     TS_METADATA_PID,
     audioStreamPid,
     buildBackpressureQueue,
@@ -196,10 +195,13 @@ export function buildDynamicPorts(videoCount: number, audioCount: number): Dynam
  * buffering this branch needs.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
+    // No caps declared on udpsrc (matches the demuxer): negotiation falls to
+    // the udpsrc↔tsdemux pad intersection, and the packetizer auto-detects the
+    // packet size (188/192/204) from sync-byte spacing — verified end-to-end
+    // on a capsless `udpsrc ! tsdemux` loopback run.
     const udpsrc = buildUdpSrc({
         host: source.host,
         port: source.port,
-        caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
         timeoutNs: UDP_INPUT_TIMEOUT_NS,
         bufferSize: NET_UDP_RCV_BUF,
     });

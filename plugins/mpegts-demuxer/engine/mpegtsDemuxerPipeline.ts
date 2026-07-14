@@ -9,7 +9,6 @@
  */
 
 import {
-    DEFAULT_MPEGTS_ALIGNMENT,
     buildLeakyQueue,
     buildBackpressureQueue,
     buildUdpSink,
@@ -421,9 +420,12 @@ export function buildOutputBranch(
     // queue cannot even measure its depth. The kernel UDP send buffer absorbs
     // typical bursts on its own. The per-branch queue above is the ONLY
     // policy point.
+    // alignment=-1 (auto) on every branch: let mpegtsmux emit its natural
+    // buffer grouping instead of pinning a fixed packets-per-datagram count
+    // (7 batched video into MTU-sized sends, 1 forced per-packet audio).
     let branch: string;
     if (media === 'video') {
-        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=${DEFAULT_MPEGTS_ALIGNMENT} ! ${sink}`;
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=-1 ! ${sink}`;
     } else if (audioPacing) {
         // Non-leaky queue first (thread boundary + PES-burst absorber — see
         // audioBranchQueueMs), then clocksync re-times the parsed frames to
@@ -436,19 +438,12 @@ export function buildOutputBranch(
         const pacingMs = clampAudioPacingMs(opts.audioPacingMs);
         const audioQueue = buildBackpressureQueue(Math.max(depthMs, audioBranchQueueMs(pacingMs)));
         const pacer = `clocksync sync=true ts-offset=${pacingMs * 1_000_000}`;
-        // Audio-only output: alignment=1 (one TS packet per UDP datagram)
-        // rather than 7. Packing 7 packets means waiting for ~40–160 ms of
-        // audio to accumulate before each UDP send, which arrives at the
-        // downstream decoder as bursts that exceed its late-tolerance budget
-        // and surface as scratchy / dropped frames. Per-packet emission costs
-        // ~7× UDP overhead but keeps timing smooth — on localhost / LAN the
-        // bandwidth hit is irrelevant.
-        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=0 alignment=1 ! ${sink}`;
+        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=0 alignment=-1 ! ${sink}`;
     } else {
         // audioPacing OFF: raw PES bursts pass straight through — the
         // low-latency choice. Queue behaviour follows queueLeaky/queueDepthMs
         // like the video branch.
-        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=1 ! ${sink}`;
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=-1 ! ${sink}`;
     }
     if (outputBufferMs <= 0) return branch;
     return `${buildSmoothingQueue(outputBufferMs)} ! ${branch}`;
@@ -502,10 +497,12 @@ export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResu
     // minutes. The already-joined udpsrc receives the instant the local producer
     // starts, and a producer *port* change is handled by MpegTsUdpExecutor
     // restarting this module explicitly — not by a udpsrc watchdog.
+    // NO caps declared at all (testing): negotiation falls to the
+    // udpsrc↔tsdemux pad intersection, and the packetizer auto-detects the
+    // packet size (188/192/204) from sync-byte spacing.
     const udpsrc = buildUdpSrc({
         host: input.input.host,
         port: input.input.port,
-        caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
         bufferSize: NET_UDP_RCV_BUF,
     });
     const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;
