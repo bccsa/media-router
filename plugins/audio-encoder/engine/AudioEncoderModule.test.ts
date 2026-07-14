@@ -35,7 +35,7 @@ describe('AudioEncoderModule.buildPipeline', () => {
         const desc = module.buildPipeline({});
         expect(desc.pipeline).toContain('pulsesrc device=MR_PW_enc-1.monitor');
         expect(desc.pipeline).toContain('opusenc bitrate=128000');
-        expect(desc.pipeline).toContain('mpegtsmux latency=0 alignment=7');
+        expect(desc.pipeline).toContain('mpegtsmux latency=0 alignment=1');
         expect(desc.pipeline).toContain('udpsink');
         expect(desc.pipeline).toContain('port=41000');
     });
@@ -65,10 +65,10 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('udpsink');
     });
 
-    it('threads tsAlignment through to mpegtsmux', () => {
+    it('always emits standard 188-byte TS packets (alignment=1) — wire packing is done at egress', () => {
         const { module } = makeModule();
-        const desc = module.buildPipeline({ codec: 'opus', tsAlignment: 1 });
-        expect(desc.pipeline).toContain('alignment=1');
+        const desc = module.buildPipeline({ codec: 'opus' });
+        expect(desc.pipeline).toContain('mpegtsmux latency=0 alignment=1');
     });
 
     it('respects audioEnabled=false by forcing gst volume to 0', () => {

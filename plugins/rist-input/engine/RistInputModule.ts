@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    isMulticast,
+    buildTsRepackRelayArgs,
     type PipelineDescription,
     type ModuleServices,
 } from '@media-router/engine';
@@ -26,6 +26,7 @@ interface RistLink {
  */
 export class RistInputModule extends GstPluginBase {
     private receiver: ManagedProcess | null = null;
+    private relay: ManagedProcess | null = null;
     private lastStats: Record<string, string | number> = {};
 
     async onStart(): Promise<void> {
@@ -58,12 +59,20 @@ export class RistInputModule extends GstPluginBase {
             })
             .join(',');
 
-        // The loopback bus is multicast: send to the group on lo, matching the
-        // engine's group-bound consumer sockets (a 127.0.0.1 unicast send never
-        // reaches them, so downstream modules hear silence).
-        const outputUrl = isMulticast(endpoint.host)
-            ? `udp://${endpoint.host}:${endpoint.port}?miface=lo`
-            : `udp://${endpoint.host}:${endpoint.port}`;
+        // Depacketize to standard 188-byte TS packets before the bus: ristreceiver
+        // (UDP-only, no stdio) outputs to a PRIVATE unicast loopback port that the
+        // sidecar relay reads — then `gst-launch tsparse alignment=1` re-chunks to
+        // 188 B and rebroadcasts onto the multicast bus (which the group-bound
+        // downstream consumers read; a direct 127.0.0.1 send would miss them).
+        const priv = this.services?.mediaRouter?.assignUdpPort(
+            this.services.instanceId,
+            'rist-depacketize',
+        );
+        if (!priv) {
+            this.log.warn('No private UDP port for depacketize relay — cannot output');
+            return;
+        }
+        const outputUrl = `udp://127.0.0.1:${priv.port}`;
 
         // Build CLI args
         const args = ['-i', inputUrls, '-o', outputUrl];
@@ -90,6 +99,17 @@ export class RistInputModule extends GstPluginBase {
         // Spawn ristreceiver via ProcessManager (shared health wiring:
         // restarting → warning, exhausted/spawn-fail → error, badges cleared)
         if (this.services?.processManager) {
+            // Sidecar relay: private → tsparse alignment=1 (188 B) → multicast bus.
+            this.relay = this.spawnRunnerProcess({
+                label: 'depacketize-relay',
+                command: 'gst-launch-1.0',
+                args: buildTsRepackRelayArgs({
+                    in: { host: '127.0.0.1', port: priv.port },
+                    out: { host: endpoint.host, port: endpoint.port },
+                    alignment: 1,
+                }),
+                autoRestart: true,
+            });
             this.receiver = this.spawnRunnerProcess({
                 label: 'ristreceiver',
                 command: 'ristreceiver',
@@ -114,8 +134,9 @@ export class RistInputModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
-        // ProcessManager auto-kills on module stop, but clear our reference
+        // ProcessManager auto-kills on module stop, but clear our references
         this.receiver = null;
+        this.relay = null;
         this.lastStats = {};
         await super.onStop();
     }

@@ -71,6 +71,19 @@
                     ],
                     "default": 0,
                     "description": "Encryption key length (0 = none)"
+                },
+                "packetsPerDatagram": {
+                    "type": "number",
+                    "enum": [
+                        1,
+                        7
+                    ],
+                    "x-enumLabels": {
+                        "1": "One TS packet (188 B)",
+                        "7": "SRT-aligned (1316 B)"
+                    },
+                    "default": 7,
+                    "description": "Wire datagram packing — TS packets per SRT payload. 7 (1316 B) is the standard SRT payload; 1 (188 B) matches the internal bus. The internal bus is always 188 B — this re-packs at egress."
                 }
             }
         },

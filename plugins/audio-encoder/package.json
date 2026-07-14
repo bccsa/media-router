@@ -129,21 +129,6 @@
                     "description": "Expected packet loss % — encoder adds more redundancy at higher values",
                     "x-showWhen": "codec=opus"
                 },
-                "tsAlignment": {
-                    "type": "number",
-                    "enum": [
-                        0,
-                        1,
-                        7
-                    ],
-                    "x-enumLabels": {
-                        "0": "Continuous",
-                        "1": "One TS packet",
-                        "7": "SRT-aligned (1316 B)"
-                    },
-                    "default": 7,
-                    "description": "MPEG-TS muxer alignment — keep at SRT-aligned for SRT/RIST/UDP transport. Use Continuous only for v1-style receivers that derive timing from byte flow (their tsparse mis-estimates bitrate from 1316 B bursts)"
-                },
                 "sampleRate": {
                     "type": "number",
                     "enum": [

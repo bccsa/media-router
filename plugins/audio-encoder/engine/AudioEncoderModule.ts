@@ -161,7 +161,6 @@ export class AudioEncoderModule extends GstPluginBase {
             ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';
 
-        const tsAlignment = (config.tsAlignment as number) ?? 7;
         let tail: string;
         switch (codec) {
             case 'aac':
@@ -171,7 +170,7 @@ export class AudioEncoderModule extends GstPluginBase {
                 // exposes aac-ms as a tri-state enum (auto/off/on), where the
                 // literal `false` fails to deserialize (issue #676). `0` means
                 // "off" on the enum and "false" on builds that keep it boolean.
-                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=0 aac-ms=0 ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`;
+                tail = `audioconvert ! avenc_aac bitrate=${bitrate * 1000} aac-is=0 aac-ms=0 ! mpegtsmux latency=0 alignment=1 ! ${udpSink}`;
                 break;
             case 'opus':
             default: {
@@ -191,7 +190,7 @@ export class AudioEncoderModule extends GstPluginBase {
                           ? 2051
                           : 2048;
                 tail =
-                    `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} audio-type=${audioType} ! mpegtsmux latency=0 alignment=${tsAlignment} ! ${udpSink}`.replace(
+                    `opusenc bitrate=${bitrate * 1000} frame-size=${frameSize} dtx=false inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} audio-type=${audioType} ! mpegtsmux latency=0 alignment=1 ! ${udpSink}`.replace(
                         /  +/g,
                         ' ',
                     );

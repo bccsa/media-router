@@ -47,11 +47,12 @@ export {
     buildUdpSink,
     buildNetUdpSrc,
     buildNetUdpSink,
+    buildTsRepackRelayArgs,
     isMulticast,
     isMulticastAddr,
     NET_UDP_RCV_BUF,
 } from './plugins/udpHelpers.js';
-export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/udpHelpers.js';
+export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts, TsRepackRelayOpts } from './plugins/udpHelpers.js';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_VIDEO_PID_BASE,

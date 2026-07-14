@@ -50,6 +50,8 @@ describe('SrtOutputModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('udpsrc');
         expect(desc!.pipeline).toContain('port=41000');
+        // Egress repacks the 188-byte internal TS to 1316 B (7 packets) for SRT by default.
+        expect(desc!.pipeline).toContain('tsparse alignment=7 set-timestamps=false');
         expect(desc!.pipeline).toContain('srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"');
     });
 

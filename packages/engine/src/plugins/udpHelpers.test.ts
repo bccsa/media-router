@@ -4,6 +4,7 @@ import {
     buildUdpSrc,
     buildNetUdpSrc,
     buildNetUdpSink,
+    buildTsRepackRelayArgs,
     isMulticast,
     isMulticastAddr,
 } from './udpHelpers.js';
@@ -147,5 +148,48 @@ describe('buildUdpSink', () => {
     it('emits async=false when requested (runtime-added sinks must not preroll)', () => {
         expect(buildUdpSink({ host: '127.0.0.1', port: 1, async: false })).toContain('async=false');
         expect(buildUdpSink({ host: '239.255.0.1', port: 1, async: false })).toContain('async=false');
+    });
+});
+
+describe('buildTsRepackRelayArgs', () => {
+    it('depacketizes a private unicast input to the 188-byte multicast bus (alignment=1)', () => {
+        const args = buildTsRepackRelayArgs({
+            in: { host: '127.0.0.1', port: 45000 },
+            out: { host: '239.255.0.1', port: 41000 },
+            alignment: 1,
+        });
+        const p = args.join(' ');
+        expect(args[0]).toBe('-q');
+        expect(p).toContain('udpsrc address=127.0.0.1 port=45000');
+        expect(p).toContain('tsparse alignment=1 set-timestamps=false');
+        expect(p).toContain(
+            'udpsink host=239.255.0.1 port=41000 multicast-iface=lo auto-multicast=true',
+        );
+    });
+
+    it('repacks the multicast bus to a private unicast output (alignment=7)', () => {
+        const args = buildTsRepackRelayArgs({
+            in: { host: '239.255.0.1', port: 41000 },
+            out: { host: '127.0.0.1', port: 45001 },
+            alignment: 7,
+        });
+        const p = args.join(' ');
+        expect(p).toContain(
+            'udpsrc multicast-group=239.255.0.1 port=41000 multicast-iface=lo auto-multicast=true',
+        );
+        expect(p).toContain('tsparse alignment=7 set-timestamps=false');
+        // unicast send side — no multicast-iface
+        expect(p).toContain('udpsink host=127.0.0.1 port=45001 sync=false');
+        expect(p).not.toContain('udpsink host=127.0.0.1 port=45001 multicast-iface');
+    });
+
+    it('returns tokens gst-launch can parse (no embedded spaces, includes the ! separators)', () => {
+        const args = buildTsRepackRelayArgs({
+            in: { host: '127.0.0.1', port: 1 },
+            out: { host: '239.255.0.1', port: 2 },
+            alignment: 1,
+        });
+        expect(args.every((t) => !t.includes(' '))).toBe(true);
+        expect(args).toContain('!');
     });
 });

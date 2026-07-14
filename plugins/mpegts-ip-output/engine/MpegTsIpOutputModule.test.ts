@@ -44,6 +44,8 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
         });
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('udpsrc name=busin');
+        // Egress repacks the 188-byte internal TS to 1316 B (7 packets) for the wire by default.
+        expect(desc!.pipeline).toContain('tsparse alignment=7 set-timestamps=false');
         expect(desc!.pipeline).toContain('udpsink name=netsink host=239.1.1.1 port=5000');
         expect(desc!.pipeline).toContain('multicast-iface=eth0');
         expect(desc!.pipeline).toContain('ttl-mc=8');

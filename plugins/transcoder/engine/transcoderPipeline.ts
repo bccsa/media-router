@@ -155,7 +155,9 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         const sinkName = `usink_${i}`;
         sinkNames.push(sinkName);
         const sink = buildUdpSink({ name: sinkName, host: out.host, port: out.port });
-        return `${q} ! ${scale} ! videoconvert ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
+        // alignment=1: standard 188-byte TS packets on the internal bus; wire
+        // datagram packing (e.g. 1316) is applied at network egress.
+        return `${q} ! ${scale} ! videoconvert ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=1 ! ${sink}`;
     };
 
     // Video-only capsfilter on the tsdemux output — steers pad selection to the

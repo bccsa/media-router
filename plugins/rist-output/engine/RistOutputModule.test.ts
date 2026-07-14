@@ -23,17 +23,28 @@ describe('RistOutputModule.buildPipeline', () => {
 });
 
 describe('RistOutputModule.onStart', () => {
-    it('joins the multicast bus group on lo for its input', async () => {
+    it('runs a tsparse repack relay off the bus and points ristsender at the private port', async () => {
         const { module } = makeModule();
         module.services.mediaRouter = {
             getModuleUdpSource: vi.fn(() => ({ host: '239.255.0.1', port: 41000, connectionId: 'c1' })),
+            assignUdpPort: vi.fn((_id: string, portId?: string) => ({
+                host: '239.255.0.1',
+                port: portId === 'rist-repack' ? 45002 : 41000,
+            })),
         };
         module.services.processManager = {};
         module.setHealth = vi.fn();
         module.spawnRunnerProcess = vi.fn(() => ({ on: vi.fn() }));
         await module.onStart();
-        const args = module.spawnRunnerProcess.mock.calls[0][0].args as string[];
-        expect(args[args.indexOf('-i') + 1]).toBe('udp://239.255.0.1:41000?miface=lo');
+        // First spawn: the gst-launch repack relay (bus → tsparse 1316 → private).
+        expect(module.spawnRunnerProcess.mock.calls[0][0].command).toBe('gst-launch-1.0');
+        const relayArgs = (module.spawnRunnerProcess.mock.calls[0][0].args as string[]).join(' ');
+        expect(relayArgs).toContain('udpsrc multicast-group=239.255.0.1 port=41000');
+        expect(relayArgs).toContain('tsparse alignment=7 set-timestamps=false');
+        expect(relayArgs).toContain('udpsink host=127.0.0.1 port=45002');
+        // Second spawn: ristsender ← the private loopback port, not the bus.
+        const txArgs = module.spawnRunnerProcess.mock.calls[1][0].args as string[];
+        expect(txArgs[txArgs.indexOf('-i') + 1]).toBe('udp://127.0.0.1:45002');
     });
 });
 
