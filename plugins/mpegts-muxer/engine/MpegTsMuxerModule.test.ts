@@ -78,10 +78,10 @@ describe('mpegtsMuxerPipeline helpers', () => {
     });
 
     describe('buildInputBranch', () => {
-        it('uses multicast-group syntax for 239.x hosts and declares MPEG-TS caps on udpsrc', () => {
+        it('uses multicast-group syntax for 239.x hosts and goes capsless on udpsrc (packet size auto-detected)', () => {
             const s = buildInputBranch('0', { sinkPortId: 'video-0', host: '239.255.0.1', port: 40000 });
             expect(s).toContain('udpsrc multicast-group=239.255.0.1 port=40000');
-            expect(s).toContain('caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188"');
+            expect(s).not.toContain('caps=');
             expect(s).toContain('tsdemux latency=0 name=demux_0');
             // No inline `! mux.` chain — pad-linking is done at runtime via linkOnPadAdded
             expect(s).not.toContain('! mux.');
@@ -128,7 +128,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(result!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
             expect(result!.pipeline).toContain('udpsink name=usink host=239.255.0.1 port=40010');
             expect(result!.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
-            expect(result!.pipeline.match(/caps="video\/mpegts/g)).toHaveLength(2);
+            expect(result!.pipeline).not.toContain('caps="video/mpegts');
             // One video rule for the video-0 source + one audio rule for the audio-0 source
             expect(result!.linkOnPadAdded).toHaveLength(2);
             expect(result!.linkOnPadAdded.every((r) => r.linkTo === 'mux')).toBe(true);

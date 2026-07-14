@@ -35,10 +35,9 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(s).toContain('queue leaky=0 max-size-time=400000000');
             expect(s).toContain('mpegtsmux name=mux_v0');
             expect(s).toContain('udpsink name=usink_v0 host=239.255.0.1 port=41005');
-            // alignment=7: pack 7 TS packets into one UDP datagram (1316 B —
-            // MTU-sized). For video this is right: a single frame fills many
-            // packets, so the batching adds negligible delay.
-            expect(s).toContain('alignment=7');
+            // alignment=-1 (auto): let mpegtsmux emit its natural buffer
+            // grouping instead of pinning a fixed packets-per-datagram count.
+            expect(s).toContain('alignment=-1');
             // No codec parser in the JS string — the Python pad-link runner
             // prepends it at pad-added time based on the pad's actual caps.
             expect(s).not.toContain('h264parse');
@@ -57,13 +56,9 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(s).toContain('clocksync sync=true ts-offset=160000000');
             expect(s).toMatch(/clocksync[^!]+! mpegtsmux/);
             expect(s).toContain('mpegtsmux name=mux_a0');
-            // alignment=1 — one TS packet per UDP datagram on audio. The
-            // batched alignment=7 introduces ~40–160 ms of bursty delivery
-            // for AAC, which exceeds the decoder's late-frame tolerance and
-            // surfaces as scratchy audio. The video branch keeps alignment=7
-            // because video frames fill 7 packets fast.
-            expect(s).toContain('alignment=1');
-            expect(s).not.toContain('alignment=7');
+            // alignment=-1 (auto): same natural grouping as the video branch —
+            // b3978d6 unified both branches off the fixed 7/1 split.
+            expect(s).toContain('alignment=-1');
             expect(s).not.toContain('aacparse');
             expect(s).not.toContain('ac3parse');
             expect(s).not.toContain('mpegaudioparse');
@@ -107,16 +102,16 @@ describe('mpegtsDemuxerPipeline helpers', () => {
                 expect(s).toMatch(/^queue leaky=0 max-size-time=2000000000 max-size-buffers=0 max-size-bytes=0 !/);
                 // The original branch is preserved after it.
                 expect(s).toContain('queue leaky=0 max-size-time=400000000');
-                expect(s).toContain('alignment=7');
+                expect(s).toContain('alignment=-1');
             });
 
-            it('prepends the smoothing queue on the audio branch too, keeping alignment=1', () => {
+            it('prepends the smoothing queue on the audio branch too, keeping alignment=-1', () => {
                 const s = buildOutputBranch(
                     { portId: 'audio-0', host: '239.255.0.1', port: 41006 }, 'a0', 'audio', { outputBufferMs: 800 });
                 expect(s).toMatch(/^queue leaky=0 max-size-time=800000000 max-size-buffers=0 max-size-bytes=0 !/);
                 expect(s).toContain('queue leaky=0 max-size-time=400000000');
                 expect(s).toContain('clocksync sync=true');
-                expect(s).toContain('alignment=1');
+                expect(s).toContain('alignment=-1');
             });
 
             it('clamps the smoothing window to the 5000 ms ceiling', () => {
@@ -139,7 +134,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             });
             expect(result).not.toBeNull();
             expect(result!.pipeline).toContain('udpsrc multicast-group=239.255.0.1 port=40001');
-            expect(result!.pipeline).toContain('caps="video/mpegts');
+            expect(result!.pipeline).not.toContain('caps="video/mpegts');
             expect(result!.pipeline).toContain('tsdemux latency=0 name=demux');
             expect(result!.linkOnPadAdded).toHaveLength(2); // 1 video rule + 1 audio rule
             const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
@@ -174,7 +169,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             expect(audioRule.branches[0]).toBe(
                 'queue leaky=2 max-size-time=50000000 max-size-buffers=0 max-size-bytes=0 ! ' +
-                'mpegtsmux name=mux_a0 latency=0 alignment=1 ! ' +
+                'mpegtsmux name=mux_a0 latency=0 alignment=-1 ! ' +
                 'udpsink name=usink_a0 host=239.255.0.1 port=41002 multicast-iface=lo auto-multicast=true ' +
                 'buffer-size=4194304 sync=false async=false',
             );
