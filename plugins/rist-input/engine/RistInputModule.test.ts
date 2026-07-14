@@ -6,10 +6,7 @@ function makeModule() {
     module.services = {
         instanceId: 'rist-in-1',
         mediaRouter: {
-            assignUdpPort: vi.fn((_id: string, portId?: string) => ({
-                host: '239.255.0.1',
-                port: portId === 'rist-depacketize' ? 45000 : 41000,
-            })),
+            assignUdpPort: vi.fn(() => ({ host: '239.255.0.1', port: 41000 })),
             getUdpEndpoint: vi.fn(() => ({ host: '239.255.0.1', port: 41000 })),
         },
     };
@@ -32,21 +29,14 @@ describe('RistInputModule.buildPipeline', () => {
 });
 
 describe('RistInputModule.onStart', () => {
-    it('runs a tsparse depacketize relay to the bus and points ristreceiver at the private port', async () => {
+    it('points ristreceiver at the multicast bus group on lo', async () => {
         const { module } = makeModule();
         module.services.processManager = {};
         module.setHealth = vi.fn();
         module.spawnRunnerProcess = vi.fn(() => ({ on: vi.fn() }));
         await module.onStart();
-        // First spawn: the gst-launch depacketize relay (private → tsparse 188 → bus).
-        expect(module.spawnRunnerProcess.mock.calls[0][0].command).toBe('gst-launch-1.0');
-        const relayArgs = (module.spawnRunnerProcess.mock.calls[0][0].args as string[]).join(' ');
-        expect(relayArgs).toContain('udpsrc address=127.0.0.1 port=45000');
-        expect(relayArgs).toContain('tsparse alignment=1 set-timestamps=false');
-        expect(relayArgs).toContain('udpsink host=239.255.0.1 port=41000');
-        // Second spawn: ristreceiver → the private loopback port, not the bus.
-        const rxArgs = module.spawnRunnerProcess.mock.calls[1][0].args as string[];
-        expect(rxArgs[rxArgs.indexOf('-o') + 1]).toBe('udp://127.0.0.1:45000');
+        const args = module.spawnRunnerProcess.mock.calls[0][0].args as string[];
+        expect(args[args.indexOf('-o') + 1]).toBe('udp://239.255.0.1:41000?miface=lo');
     });
 });
 

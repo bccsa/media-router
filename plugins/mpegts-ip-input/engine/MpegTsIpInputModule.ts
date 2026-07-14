@@ -158,14 +158,15 @@ export class MpegTsIpInputModule extends GstPluginBase {
             bufferSize: NET_UDP_RCV_BUF,
         });
 
-        // Depacketize inbound TS to standard 188-byte packets on the internal bus
-        // via `tsparse alignment=1` (spike-verified: uniform 188 B buffers out).
-        // alignment=1 is REQUIRED — NOT default tsparse: the default (auto)
-        // aggregates TS into 80 kB+ buffers (a 720p/8 Mbps keyframe), which the
-        // loopback udpsink can't send as one datagram (UDP max 65507 B) and DROPS.
-        // alignment=1 forces one TS packet per buffer — the opposite of
-        // aggregation — so every datagram is a safe 188 B. set-timestamps=false:
-        // pure relay, don't re-anchor PCR (downstream owns timing).
+        // Pure passthrough rebroadcast onto the local bus — mirror srt-input
+        // (`srtsrc ! queue ! udpsink`), NO tsparse. tsparse aggregates TS
+        // packets into large buffers (a keyframe at 720p/8Mbps yields 80 kB+),
+        // which the loopback udpsink then can't send as a single datagram (UDP
+        // max 65507 B) — it warns "packet larger than maximum size" and DROPS
+        // them, so only the small inter-frames get through. The incoming
+        // datagrams are already ~1316 B (7×188); leaving them un-aggregated
+        // keeps every datagram well under the UDP limit. Downstream tsdemux
+        // does the parsing — no need to re-frame/re-timestamp here.
         const depay = encapsulation === 'rtp' ? ['rtpjitterbuffer', 'rtpmp2tdepay'] : [];
 
         // Non-leaky (back-pressure, not drop): this is a pure loopback relay to
@@ -181,7 +182,6 @@ export class MpegTsIpInputModule extends GstPluginBase {
             netSrc,
             ...depay,
             buildBackpressureQueue(jitterMs),
-            'tsparse alignment=1 set-timestamps=false',
             buildUdpSink({ host: '239.255.0.1', port: udpPort }),
         ].join(' ! ');
 

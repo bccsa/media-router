@@ -312,7 +312,7 @@ describe('VideoEncoderModule', () => {
             expect(desc).not.toBeNull();
             expect(desc!.pipeline).toContain('v4l2src device=/dev/video-nonexistent-for-test');
             expect(desc!.pipeline).toContain('v4l2h264enc name=venc0');
-            expect(desc!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=1');
+            expect(desc!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
             expect(desc!.pipeline).toContain(
                 'udpsink name=usink host=239.255.0.1 port=5000 multicast-iface=lo auto-multicast=true buffer-size=4194304 sync=false',
             );

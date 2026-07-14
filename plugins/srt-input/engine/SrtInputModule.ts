@@ -109,15 +109,9 @@ export class SrtInputModule extends GstPluginBase {
         // tight (10s) — unlike a transient crash, an unreachable SRT peer
         // gains nothing from longer backoff: we don't know when it returns,
         // so retrying often is what feels snappy when it finally does.
-        // Depacketize inbound SRT to standard 188-byte TS packets on the internal
-        // bus. SRT delivers ~1316-byte (7×188) payloads; `tsparse alignment=1`
-        // re-chunks to one TS packet per buffer (spike-verified: uniform 188 B out,
-        // no >64 KB aggregation). set-timestamps=false: pure relay — keep source
-        // timing, don't re-anchor PCR. Wire-size packing is re-applied at egress.
         const pipeline = [
             `srtsrc name=src uri="${uri}" auto-reconnect=false`,
             'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
-            'tsparse alignment=1 set-timestamps=false',
             buildUdpSink({ host: '239.255.0.1', port: udpPort }),
         ].join(' ! ');
 

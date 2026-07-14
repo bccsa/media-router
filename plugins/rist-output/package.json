@@ -112,19 +112,6 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Enable NPD (receiver must support)"
-                },
-                "packetsPerDatagram": {
-                    "type": "number",
-                    "enum": [
-                        1,
-                        7
-                    ],
-                    "x-enumLabels": {
-                        "1": "One TS packet (188 B)",
-                        "7": "SRT-aligned (1316 B)"
-                    },
-                    "default": 7,
-                    "description": "Wire datagram packing — TS packets per RIST payload. A sidecar tsparse relay re-packs the 188-byte internal bus to this size before ristsender. 7 (1316 B) is standard; 1 keeps 188 B."
                 }
             }
         },

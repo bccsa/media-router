@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildTsRepackRelayArgs,
+    isMulticast,
     type PipelineDescription,
     type ModuleServices,
 } from '@media-router/engine';
@@ -26,7 +26,6 @@ interface RistLink {
  */
 export class RistOutputModule extends GstPluginBase {
     private sender: ManagedProcess | null = null;
-    private relay: ManagedProcess | null = null;
     private lastStats: Record<string, string | number> = {};
     private peerLastSeen = new Map<number, number>(); // peerId → timestamp
     private peerCleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -40,18 +39,11 @@ export class RistOutputModule extends GstPluginBase {
             return;
         }
 
-        // Re-pack the 188-byte internal bus to wire-sized datagrams before RIST:
-        // a sidecar `gst-launch tsparse alignment=N` relay reads the multicast bus,
-        // packs to N×188 B (default 7 = 1316), and forwards to a PRIVATE loopback
-        // port that ristsender (UDP-only, no stdio) reads. Without this, ristsender
-        // would RIST-wrap 188-byte payloads (7× the per-packet overhead).
-        const packetsPerDatagram = (this.config.packetsPerDatagram as number) ?? 7;
-        const priv = this.services?.mediaRouter?.assignUdpPort(instanceId, 'rist-repack');
-        if (!priv) {
-            this.log.warn('No private UDP port for repack relay — cannot send');
-            return;
-        }
-        const inputUrl = `udp://127.0.0.1:${priv.port}`;
+        // The loopback bus is multicast: join the group on lo (a bare udp://
+        // multicast input would join on the default route's NIC, not lo).
+        const inputUrl = isMulticast(udpSource.host)
+            ? `udp://${udpSource.host}:${udpSource.port}?miface=lo`
+            : `udp://${udpSource.host}:${udpSource.port}`;
 
         // Build RIST output URLs from links config
         const links = (this.config.links as RistLink[]) ?? [
@@ -98,17 +90,6 @@ export class RistOutputModule extends GstPluginBase {
         // Spawn ristsender via ProcessManager (shared health wiring:
         // restarting → warning, exhausted/spawn-fail → error, badges cleared)
         if (this.services?.processManager) {
-            // Sidecar relay: multicast bus → tsparse alignment=N → private port.
-            this.relay = this.spawnRunnerProcess({
-                label: 'repack-relay',
-                command: 'gst-launch-1.0',
-                args: buildTsRepackRelayArgs({
-                    in: { host: udpSource.host, port: udpSource.port },
-                    out: { host: '127.0.0.1', port: priv.port },
-                    alignment: packetsPerDatagram,
-                }),
-                autoRestart: true,
-            });
             this.sender = this.spawnRunnerProcess({
                 label: 'ristsender',
                 command: 'ristsender',
@@ -142,7 +123,6 @@ export class RistOutputModule extends GstPluginBase {
             this.peerCleanupTimer = null;
         }
         this.sender = null;
-        this.relay = null;
         this.lastStats = {};
         this.peerLastSeen.clear();
         await super.onStop();

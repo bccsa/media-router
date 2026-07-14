@@ -1,16 +1,15 @@
 import { createSocket, type Socket } from 'node:dgram';
+import { DEFAULT_MPEGTS_ALIGNMENT } from './tsHelpers.js';
 import { MULTICAST_IFACE_ADDR } from './udpHelpers.js';
 
 /** One MPEG-TS packet. */
 export const TS_PACKET_BYTES = 188;
-/** Internal loopback bus carries one TS packet per datagram — the standard
- *  188-byte granularity. Network egress re-packs up to the wire size (e.g. 7 =
- *  1316 B) per-output. */
-export const TS_PACKETS_PER_DATAGRAM = 1;
+/** 7 TS packets = 1316 bytes — the classic TS-over-UDP datagram size (fits a 1500-byte MTU). */
+export const TS_PACKETS_PER_DATAGRAM = DEFAULT_MPEGTS_ALIGNMENT;
 export const TS_DATAGRAM_BYTES = TS_PACKET_BYTES * TS_PACKETS_PER_DATAGRAM;
 
 /**
- * Slice a byte stream into whole TS datagrams (TS_DATAGRAM_BYTES), carrying any partial
+ * Slice a byte stream into whole 1316-byte datagrams, carrying any partial
  * trailing bytes forward as `remainder` for the next call. Pure + deterministic
  * so it can be unit-tested without a socket.
  */

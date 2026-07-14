@@ -45,8 +45,6 @@ describe('SrtInputModule.buildPipeline', () => {
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('srtsrc name=src uri="srt://0.0.0.0:9000?mode=listener&latency=125"');
-        // Depacketize inbound SRT to standard 188-byte TS packets on the internal bus.
-        expect(desc!.pipeline).toContain('tsparse alignment=1 set-timestamps=false');
         expect(desc!.pipeline).toContain('udpsink');
         expect(desc!.pipeline).toContain('port=41000');
     });

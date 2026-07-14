@@ -41,10 +41,9 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
         // raw TS caps, not RTP
         expect(desc!.pipeline).toContain('video/mpegts');
         expect(desc!.pipeline).not.toContain('rtpmp2tdepay');
-        // Depacketize inbound bundles to 188-byte TS packets for the internal
-        // bus: alignment=1 forces one packet per buffer (NOT default tsparse,
-        // which aggregates into >64KB buffers the loopback udpsink drops).
-        expect(desc!.pipeline).toContain('tsparse alignment=1 set-timestamps=false');
+        // No tsparse: it aggregates TS into >64KB buffers that the loopback
+        // udpsink can't send (UDP datagram limit) and drops. Pure passthrough.
+        expect(desc!.pipeline).not.toContain('tsparse');
         // udpsrc feeds straight into a NON-leaky back-pressure queue: on a clean
         // loopback relay a leaky queue would shed TS packets on a sender burst →
         // continuity errors / macroblocking downstream. See buildBackpressureQueue.

@@ -194,39 +194,3 @@ export function buildNetUdpSink(opts: NetUdpSinkOpts): string {
     const ttlClause = opts.ttl !== undefined ? ` ttl=${opts.ttl}` : '';
     return `udpsink${nameClause} host=${opts.host} port=${opts.port}${ttlClause} buffer-size=${buf} sync=${sync}`;
 }
-
-export interface TsRepackRelayOpts {
-    /** Receive side — a `239.x` loopback-bus group or a unicast loopback address. */
-    in: { host: string; port: number };
-    /** Send side. */
-    out: { host: string; port: number };
-    /** tsparse packets-per-buffer: 1 depacketizes to 188-byte packets, 7 packs to 1316 B. */
-    alignment: number;
-}
-
-/**
- * `gst-launch-1.0` argv for a standalone TS packet-size relay:
- *   udpsrc(in) ! queue ! tsparse alignment=N set-timestamps=false ! udpsink(out)
- *
- * The RIST plugins' CLI tools (ristreceiver/ristsender) only speak UDP sockets —
- * no stdio — so packet-size normalization runs as a sidecar relay between the
- * CLI's private loopback port and the multicast bus. `239.x` hosts use loopback
- * multicast; any other host is treated as plain unicast (loopback). alignment=1
- * depacketizes an inbound bundle to 188 B; alignment=7 re-packs the 188-byte bus
- * to 1316 B. set-timestamps=false keeps the source PCR (pure relay).
- *
- * Returned as a token array (not a string) because gst-launch parses each argv
- * element as one pipeline token.
- */
-export function buildTsRepackRelayArgs(opts: TsRepackRelayOpts): string[] {
-    const src = isMulticast(opts.in.host)
-        ? `udpsrc multicast-group=${opts.in.host} port=${opts.in.port} multicast-iface=${MULTICAST_IFACE} auto-multicast=true buffer-size=${NET_UDP_RCV_BUF}`
-        : `udpsrc address=${opts.in.host} port=${opts.in.port} buffer-size=${NET_UDP_RCV_BUF}`;
-    const sink = isMulticast(opts.out.host)
-        ? `udpsink host=${opts.out.host} port=${opts.out.port} multicast-iface=${MULTICAST_IFACE} auto-multicast=true sync=false`
-        : `udpsink host=${opts.out.host} port=${opts.out.port} sync=false`;
-    const pipeline =
-        `${src} ! queue leaky=0 max-size-buffers=0 max-size-bytes=0 max-size-time=200000000 ` +
-        `! tsparse alignment=${opts.alignment} set-timestamps=false ! ${sink}`;
-    return ['-q', ...pipeline.split(/\s+/).filter(Boolean)];
-}

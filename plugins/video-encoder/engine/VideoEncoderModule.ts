@@ -148,14 +148,13 @@ export class VideoEncoderModule extends GstPluginBase {
             : 'fakesink name=usink sync=false';
 
         // No leaky queue between mpegtsmux and udpsink: any drop here is a
-        // mid-stream UDP buffer and corrupts decode at the receiver. The 2 MB
-        // kernel UDP send buffer absorbs typical bursts on its own. The
-        // source→encoder boundary still has its own queue placed by
-        // `buildV4l2Source` immediately after v4l2src, where it's needed to
-        // protect the V4L2 kernel ringbuffer from filling up under back-pressure.
-        // alignment=1: emit standard 188-byte TS packets onto the internal bus.
-        // Packing up to a wire datagram size (e.g. 1316) is done at network egress.
-        const pipeline = `${source} ! ${encoder} ! mpegtsmux name=mux latency=0 alignment=1 ! ${udpSink}`;
+        // mid-stream UDP buffer (~1316 B = 7 TS packets) and corrupts decode
+        // at the receiver. The 2 MB kernel UDP send buffer absorbs typical
+        // bursts on its own. The source→encoder boundary still has its own
+        // queue placed by `buildV4l2Source` immediately after v4l2src, where
+        // it's needed to protect the V4L2 kernel ringbuffer from filling up
+        // under back-pressure.
+        const pipeline = `${source} ! ${encoder} ! mpegtsmux name=mux latency=0 alignment=7 ! ${udpSink}`;
 
         return {
             pipeline,
