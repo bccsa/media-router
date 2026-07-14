@@ -50,9 +50,20 @@ describe('SrtOutputModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('udpsrc');
         expect(desc!.pipeline).toContain('port=41000');
-        // Egress repacks the 188-byte internal TS to 1316 B (7 packets) for SRT by default.
-        expect(desc!.pipeline).toContain('tsparse alignment=7 set-timestamps=false');
+        // Passthrough by default — no TS re-parsing (safest for lossy live streams).
+        expect(desc!.pipeline).not.toContain('tsparse');
         expect(desc!.pipeline).toContain('srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"');
+    });
+
+    it('inserts tsparse only when a wire datagram size is explicitly forced', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({ packetsPerDatagram: 0 }).pipeline).not.toContain('tsparse');
+        expect(module.buildPipeline({ packetsPerDatagram: 7 }).pipeline).toContain(
+            'tsparse alignment=7 set-timestamps=false',
+        );
+        expect(module.buildPipeline({ packetsPerDatagram: 1 }).pipeline).toContain(
+            'tsparse alignment=1 set-timestamps=false',
+        );
     });
 
     it('includes streamId, passphrase, and pbkeylen when configured', () => {

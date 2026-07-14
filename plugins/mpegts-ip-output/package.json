@@ -76,15 +76,17 @@
                 "packetsPerDatagram": {
                     "type": "number",
                     "enum": [
+                        0,
                         1,
                         7
                     ],
                     "x-enumLabels": {
+                        "0": "Passthrough (as received)",
                         "1": "One TS packet (188 B)",
                         "7": "SRT-aligned (1316 B)"
                     },
-                    "default": 7,
-                    "description": "Wire datagram packing — TS packets per output datagram (raw mode). 7 (1316 B) is standard for MPEG-TS/UDP; 1 (188 B) matches the internal bus. In RTP mode the payloader governs the final size."
+                    "default": 0,
+                    "description": "Wire datagram packing (raw mode). Passthrough (default) forwards bus datagrams as-is — no TS re-parsing, lowest CPU, safest for lossy live streams. 1/7 force a specific size (inserts tsparse). In RTP mode the payloader governs the final size."
                 }
             }
         },

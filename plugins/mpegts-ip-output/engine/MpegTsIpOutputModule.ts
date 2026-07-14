@@ -66,7 +66,7 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         const encapsulation = (config.encapsulation as string) ?? 'raw';
         const iface = (config.interface as string) ?? '';
         const ttl = (config.ttl as number) ?? 16;
-        const packetsPerDatagram = (config.packetsPerDatagram as number) ?? 7;
+        const packetsPerDatagram = (config.packetsPerDatagram as number) ?? 0;
         const destinations = this.resolveDestinations(config);
 
         const instanceId = this.services?.instanceId ?? '';
@@ -91,11 +91,15 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         const head = [
             buildUdpSrc({ name: 'busin', host: udpSource.host, port: udpSource.port }),
             buildBackpressureQueue(200),
-            // Re-pack the 188-byte internal TS into N-packet wire datagrams
-            // (default 7 = 1316 B). Raw mode: sets the UDP datagram size directly;
-            // RTP mode: rtpmp2tpay re-bundles to its MTU downstream.
-            `tsparse alignment=${packetsPerDatagram} set-timestamps=false`,
         ];
+        // Passthrough by default (packetsPerDatagram=0): forward bus datagrams
+        // as-is, no TS parsing. Only re-chunk to a specific wire size when forced
+        // (>= 1) — parsing/re-chunking a lossy live stream can scramble the
+        // picture, and for a same-size passthrough it is needless. In RTP mode
+        // rtpmp2tpay governs the final datagram size regardless.
+        if (packetsPerDatagram >= 1) {
+            head.push(`tsparse alignment=${packetsPerDatagram} set-timestamps=false`);
+        }
         if (encapsulation === 'rtp') head.push('rtpmp2tpay');
 
         const makeSink = (dest: Destination, name: string): string =>
