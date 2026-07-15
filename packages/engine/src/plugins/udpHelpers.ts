@@ -52,10 +52,51 @@ export function busTransport(): BusTransport {
  * it, with all its sticky-reacquire semantics — it just names a socket
  * instead of binding one. Keep the dir short: AF_UNIX paths cap at ~108
  * chars.
+ *
+ * Used only as the fallback socket for a bus channel with no per-consumer
+ * fan-out; the live path is `busEdgeSocketPath` (one socket per consumer
+ * edge — see the fan-out note on `buildUdpSink`).
  */
 export function busSocketPath(port: number): string {
     const dir = process.env.MR_BUS_SOCKET_DIR ?? '/tmp';
     return `${dir}/mr-bus-${port}.sock`;
+}
+
+/**
+ * Element name of a producer's bus-egress fan-out `tee`, derived from its
+ * allocated channel port. Deterministic so the engine-side fan-out
+ * coordinator can address the tee (`bus_attach`/`bus_detach`) knowing only
+ * the port, without the producer registering its element names. Also the
+ * throughput-probe target (the tee's sink pad carries the full output rate,
+ * consumers or not).
+ */
+export function busTeeName(port: number): string {
+    return `busout_${port}`;
+}
+
+/** 32-bit FNV-1a → 6 hex chars. Keeps per-edge socket paths short (AF_UNIX
+ *  ~108-char cap) and collision-safe within a channel's connection set. */
+function shortHash(s: string): string {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16).padStart(6, '0').slice(-6);
+}
+
+/**
+ * Socket path for one CONSUMER EDGE under unixfd. Each `muxed/mpegts`
+ * connection gets its own socket off the producer's `tee`, so a consumer
+ * that stops draining (restart, crash-loop, preroll) only backs up its own
+ * `queue leaky=2 ! unixfdsink` branch — the tee never blocks and sibling
+ * consumers are untouched. Keyed by (channel port, connection id) so the
+ * producer-side coordinator and the consumer-side `buildUdpSrc` derive the
+ * identical path independently.
+ */
+export function busEdgeSocketPath(port: number, connectionId: string): string {
+    const dir = process.env.MR_BUS_SOCKET_DIR ?? '/tmp';
+    return `${dir}/mr-bus-${port}-${shortHash(connectionId)}.sock`;
 }
 
 /**
@@ -101,6 +142,14 @@ export interface UdpSrcOpts {
      * silent and never emits a bus error of its own.
      */
     timeoutNs?: number;
+    /**
+     * Explicit unixfd bus socket to connect to (a per-consumer EDGE socket
+     * from `busEdgeSocketPath`). When set, overrides the channel-level
+     * `busSocketPath(port)` so this consumer reads its own dedicated fan-out
+     * branch. Ignored under UDP transport. See the fan-out note on
+     * `buildUdpSink`.
+     */
+    socketPath?: string;
 }
 
 export function buildUdpSrc(opts: UdpSrcOpts): string {
@@ -110,16 +159,16 @@ export function buildUdpSrc(opts: UdpSrcOpts): string {
         // and a dead producer surfaces as a connection error (which trips
         // the runner's restart path) rather than a silent stall.
         //
-        // The leaky queue is the consumer's drain contract. unixfdsink sends
-        // to clients under its object lock with blocking sockets, so ONE
-        // consumer that stops reading freezes the producer AND every sibling
-        // consumer, and blocks new clients from being accepted (measured:
-        // demuxer stall → srtsrc frozen → SRT session drop). The queue
-        // guarantees unixfdsrc always drains its socket; a stalled consumer
+        // The leaky queue is the consumer's drain contract. This consumer
+        // connects to its OWN per-edge fan-out branch on the producer (see
+        // buildUdpSink), so a stall here can only back up this one branch's
+        // queue — never the producer or a sibling consumer. The queue
+        // guarantees unixfdsrc keeps draining its socket; a stalled consumer
         // sheds its own buffers instead — same loss-locality UDP gave us.
         const nameClause = opts.name ? ` name=${opts.name}` : '';
+        const socket = opts.socketPath ?? busSocketPath(opts.port);
         return (
-            `unixfdsrc${nameClause} socket-path=${busSocketPath(opts.port)}` +
+            `unixfdsrc${nameClause} socket-path=${socket}` +
             ' ! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0'
         );
     }
@@ -167,17 +216,30 @@ export interface UdpSinkOpts {
 
 export function buildUdpSink(opts: UdpSinkOpts): string {
     if (isMulticast(opts.host) && busTransport() === 'unixfd') {
-        const nameClause = opts.name ? ` name=${opts.name}` : '';
-        const sync = opts.sync === true ? 'true' : 'false';
-        const asyncClause = opts.async === false ? ' async=false' : '';
-        // unixfd transports caps, and consumers (tsdemux) reject caps-less
-        // buffers with not-negotiated. Producers that end in mpegtsmux have
-        // caps anyway, but raw-byte producers (srtsrc, NIC-side udpsrc) are
-        // caps-ANY — under UDP the socket erased caps so it never mattered.
-        // The bus is `muxed/mpegts` by contract, so pin TS caps at every
-        // egress.
-        return `capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! unixfdsink${nameClause} socket-path=${busSocketPath(opts.port)} sync=${sync}${asyncClause}`;
+        // Fan-out point. The producer's egress is a `tee` (named
+        // deterministically from the port so the engine coordinator can
+        // address it); the actual `unixfdsink` branches are attached ONE PER
+        // CONSUMER at runtime via the `bus_attach` command
+        // (`gst-pipeline-runner.py`), each `tee. ! queue leaky=2 ! unixfdsink`
+        // on its own edge socket. This is what isolates consumers: unixfdsink
+        // sends under its object lock with blocking sockets, so a shared sink
+        // froze every sibling when one consumer stalled; a per-consumer branch
+        // with a leaky queue sheds only its own buffers instead.
+        //
+        // `allow-not-linked=true` lets the producer run with zero consumers
+        // attached (buffers dropped at the tee) — consumers wire in later
+        // without a producer rebuild. The capsfilter pins TS caps (unixfd
+        // transports caps; tsdemux rejects caps-less buffers), inherited by
+        // every attached branch. No `unixfdsink` here means no sink-name to
+        // poll for throughput — the tee's sink pad is the probe target.
+        return (
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+            `tee name=${busTeeName(opts.port)} allow-not-linked=true`
+        );
     }
+    // UDP multicast bus (legacy transport, kept for the non-GStreamer raw-socket
+    // users): unchanged — multicast fans out on its own, so no tee is needed and
+    // the element keeps the caller's name for throughput polling.
     // 4 MB SO_SNDBUF default, matching buildUdpSrc — symmetric with the
     // receiver-side default so the sender can absorb brief kernel scheduling
     // hiccups without blocking.

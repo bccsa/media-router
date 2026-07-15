@@ -8,6 +8,8 @@ import { ConnectionExecutor } from './ConnectionExecutor.js';
 import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
 import { PcmAudioExecutor } from './PcmAudioExecutor.js';
 import { MpegTsUdpExecutor } from './MpegTsUdpExecutor.js';
+import { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
+import { busTransport, busEdgeSocketPath } from '../plugins/udpHelpers.js';
 
 const log = createLogger('MediaRouter');
 
@@ -50,6 +52,11 @@ export class MediaRouter {
     readonly portRegistry = new PortRegistry();
     readonly udpPorts = new UdpPortManager();
     /**
+     * Per-consumer unixfd bus fan-out. Constructed in `setDependencies` once the
+     * module getter is available; null until then. No-op under UDP transport.
+     */
+    private busFanout: BusFanoutCoordinator | null = null;
+    /**
      * Pluggable per-stream-type executor registry. Pre-populated with the two
      * built-in executors (`audio/pcm`, `muxed/mpegts`) during `setDependencies`;
      * plugins can add more via `services.mediaRouter.streamExecutors.register(...)`
@@ -78,18 +85,25 @@ export class MediaRouter {
     ): void {
         this.moduleGetter = moduleGetter;
         const connLabel = makeConnLabel(displayNameResolver);
+        const resolveProducerPort = (moduleId: string, portId?: string) =>
+            this.udpPorts.get(this.udpPortKey(moduleId, portId)) ??
+            this.udpPorts.get(moduleId);
+        this.busFanout = new BusFanoutCoordinator(
+            moduleGetter,
+            resolveProducerPort,
+            () => this.getConnections(),
+        );
         this.streamExecutors.register(
             new PcmAudioExecutor(pipeWire, moduleGetter, connLabel),
         );
         this.streamExecutors.register(
             new MpegTsUdpExecutor(
                 moduleGetter,
-                (moduleId, portId) =>
-                    this.udpPorts.get(this.udpPortKey(moduleId, portId)) ??
-                    this.udpPorts.get(moduleId),
+                resolveProducerPort,
                 MULTICAST_ADDR,
                 connLabel,
                 (id) => this.consumerRestartCallback?.(id) ?? Promise.resolve(),
+                this.busFanout,
             ),
         );
         this.executor = new ConnectionExecutor(this.streamExecutors);
@@ -380,6 +394,9 @@ export class MediaRouter {
               channels?: number;
               sourceModuleId: string;
               sourcePortId: string;
+              /** Per-consumer edge socket under unixfd — the consumer reads its
+               *  own fan-out branch, not the shared channel. Undefined on UDP. */
+              socketPath?: string;
           }
         | undefined {
         for (const [connId, conn] of this.connections) {
@@ -399,10 +416,29 @@ export class MediaRouter {
                     channels,
                     sourceModuleId: conn.sourceModuleId,
                     sourcePortId: conn.sourcePortId,
+                    socketPath: this.edgeSocketPath(port, connId),
                 };
             }
         }
         return undefined;
+    }
+
+    /**
+     * Per-consumer edge socket for a connection under unixfd (undefined on UDP).
+     * The producer's `BusFanoutCoordinator` serves the identical path, so both
+     * ends derive it from (channel port, connection id) via `busEdgeSocketPath`.
+     */
+    private edgeSocketPath(port: number, connectionId: string): string | undefined {
+        return busTransport() === 'unixfd' ? busEdgeSocketPath(port, connectionId) : undefined;
+    }
+
+    /**
+     * A producer reached PLAYING — (re)attach its per-consumer bus fan-out
+     * branches. Called by `GstPluginBase` on every PLAYING edge so a runner
+     * respawn (which rebuilds the tee with no branches) is healed. No-op on UDP.
+     */
+    onProducerPlaying(moduleId: string): void {
+        this.busFanout?.reattachProducer(moduleId);
     }
 
     /** Resolve every connected muxed/mpegts source feeding a given sink module. */
@@ -415,6 +451,7 @@ export class MediaRouter {
         sourceModuleId: string;
         sourcePortId: string;
         sinkPortId: string;
+        socketPath?: string;
     }> {
         const out: Array<{
             host: string;
@@ -423,6 +460,7 @@ export class MediaRouter {
             sourceModuleId: string;
             sourcePortId: string;
             sinkPortId: string;
+            socketPath?: string;
         }> = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || conn.streamType !== 'muxed/mpegts') continue;
@@ -437,6 +475,7 @@ export class MediaRouter {
                     sourceModuleId: conn.sourceModuleId,
                     sourcePortId: conn.sourcePortId,
                     sinkPortId: conn.sinkPortId,
+                    socketPath: this.edgeSocketPath(port, connId),
                 });
             }
         }

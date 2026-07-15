@@ -118,6 +118,9 @@ export interface TsUdpInputOpts {
      *  `GstUDPSrcTimeout` element message into a bus error so the restart path
      *  triggers when a stream goes silent. */
     timeoutNs?: number;
+    /** Per-consumer edge socket under unixfd (from MediaRouter.getModuleUdpSource);
+     *  undefined on UDP multicast. */
+    socketPath?: string;
     /**
      * `tsparse set-timestamps` (default true). True re-anchors PTS/DTS from PCR
      * to the local timeline — the right default for single-pipeline playout and
@@ -152,6 +155,7 @@ export function buildTsUdpInput(opts: TsUdpInputOpts): string {
         caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
         name: opts.udpsrcName,
         timeoutNs: opts.timeoutNs,
+        socketPath: opts.socketPath,
     });
     const queue = buildLeakyQueue(opts.jitterMs ?? 200);
     const setTs = opts.setTimestamps ?? true;

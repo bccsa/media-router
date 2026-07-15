@@ -88,7 +88,12 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         // gaps / macroblocking it can never recover (plain MPEG-TS/UDP has no
         // retransmit). Don't drop on the sender when the wire isn't dropping.
         const head = [
-            buildUdpSrc({ name: 'busin', host: udpSource.host, port: udpSource.port }),
+            buildUdpSrc({
+                name: 'busin',
+                host: udpSource.host,
+                port: udpSource.port,
+                socketPath: udpSource.socketPath,
+            }),
             buildBackpressureQueue(200),
         ];
         if (encapsulation === 'rtp') head.push('rtpmp2tpay');

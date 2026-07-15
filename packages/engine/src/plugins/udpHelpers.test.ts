@@ -5,6 +5,8 @@ import {
     buildNetUdpSrc,
     buildNetUdpSink,
     busSocketPath,
+    busTeeName,
+    busEdgeSocketPath,
     busTransport,
     isMulticast,
     isMulticastAddr,
@@ -188,17 +190,45 @@ describe('unixfd bus transport (MR_BUS_TRANSPORT=unixfd)', () => {
         );
     });
 
-    it('swaps the multicast bus sink for unixfdsink, keeping sync/async mapping', () => {
+    it('makes the multicast bus sink a per-consumer fan-out tee', () => {
         vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
-        // TS capsfilter pinned at egress: raw-byte producers (srtsrc) never
-        // emit caps and unixfd consumers fail not-negotiated without them.
+        // The egress is a tee (named by port) with allow-not-linked so the
+        // producer runs with zero consumers; the actual unixfdsink branches
+        // are attached per consumer at runtime (bus_attach). TS capsfilter is
+        // pinned before the tee (unixfd consumers fail not-negotiated without
+        // caps) and inherited by every branch.
         expect(buildUdpSink({ name: 'usink', host: '239.255.0.1', port: 40001 })).toBe(
-            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! unixfdsink name=usink socket-path=/tmp/mr-bus-40001.sock sync=false',
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'tee name=busout_40001 allow-not-linked=true',
         );
-        expect(buildUdpSink({ host: '239.255.0.1', port: 1, async: false })).toContain(
-            'async=false',
+    });
+
+    it('derives deterministic tee + per-edge socket names from the port', () => {
+        expect(busTeeName(40001)).toBe('busout_40001');
+        // Per-edge socket: stable per (port, connId), short enough for AF_UNIX.
+        const a = busEdgeSocketPath(40001, 'srt-input-x:mpegts-out-mpegts-muxer-y:audio-0');
+        const b = busEdgeSocketPath(40001, 'srt-input-x:mpegts-out-mpegts-muxer-y:audio-0');
+        const c = busEdgeSocketPath(40001, 'srt-input-x:mpegts-out-audio-decoder-z:mpegts-in');
+        expect(a).toBe(b); // deterministic
+        expect(a).not.toBe(c); // distinct consumers → distinct sockets
+        expect(a.startsWith('/tmp/mr-bus-40001-')).toBe(true);
+        expect(a.endsWith('.sock')).toBe(true);
+        expect(a.length).toBeLessThan(108); // AF_UNIX path cap
+        vi.stubEnv('MR_BUS_SOCKET_DIR', '/run/mr');
+        expect(busEdgeSocketPath(40001, a).startsWith('/run/mr/')).toBe(true);
+    });
+
+    it('unixfdsrc connects to the per-consumer edge socket when supplied', () => {
+        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
+        const edge = '/tmp/mr-bus-40001-ab12cd.sock';
+        expect(buildUdpSrc({ host: '239.255.0.1', port: 40001, socketPath: edge })).toBe(
+            `unixfdsrc socket-path=${edge}` +
+                ' ! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0',
         );
-        expect(buildUdpSink({ host: '239.255.0.1', port: 1, sync: true })).toContain('sync=true');
+        // Falls back to the channel socket when no edge socket is given.
+        expect(buildUdpSrc({ host: '239.255.0.1', port: 40001 })).toContain(
+            'socket-path=/tmp/mr-bus-40001.sock',
+        );
     });
 
     it('leaves unicast loopback and network-facing builders on udp', () => {

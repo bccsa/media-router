@@ -1338,6 +1338,128 @@ def handle_set_klv_payload(data):
     _push_klv_carousel()
 
 
+# ---------------------------------------------------------------------------
+# Per-consumer bus fan-out (unixfd transport)
+# ---------------------------------------------------------------------------
+# A producer's bus egress is a `tee` (built by buildUdpSink); the engine's
+# BusFanoutCoordinator attaches ONE `queue leaky=2 ! unixfdsink` branch per
+# consumer edge at runtime. This is the isolation the shared unixfdsink lacked:
+# unixfdsink sends under its object lock with blocking sockets, so a shared
+# sink froze every sibling when one consumer stalled; a per-consumer branch
+# with a leaky queue sheds only its own buffers, so a consumer that restarts,
+# crash-loops, or stalls in preroll can never back up the producer or a sibling.
+#
+# Keyed by edge socket path so attach is idempotent — a re-applied connection
+# or a producer-restart re-attach is a no-op when the branch already exists.
+_bus_branches = {}      # socket_path -> (branch_bin, tee, tee_src_pad)
+_bus_branch_seq = 0
+# Attaches whose tee doesn't exist YET. The mpegts-demuxer creates its output
+# tees dynamically at pad-added time (when source data flows), so an attach
+# issued on connect or on the producer's PLAYING edge can arrive before the
+# tee. Retried on a short timer until the tee appears or the deadline passes —
+# same "wait for the producer side" philosophy as the consumer's busSocketGate.
+_pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_left]
+_bus_retry_timer_id = None
+_BUS_ATTACH_MAX_ATTEMPTS = 40   # ~10 s at 250 ms
+
+def _try_bus_attach(tee_name, socket):
+    """Attach one branch. Returns True on success, False if the tee isn't up yet."""
+    global _bus_branch_seq
+    if pipeline is None or socket in _bus_branches:
+        return True
+    tee = pipeline.get_by_name(tee_name)
+    if tee is None:
+        return False  # tee not created yet — caller queues a retry
+    try:
+        branch = Gst.parse_bin_from_description(
+            "queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0"
+            f" ! unixfdsink socket-path={socket} sync=false async=false",
+            True,
+        )
+        _bus_branch_seq += 1
+        branch.set_name(f"busedge_{_bus_branch_seq}")
+        # Add the leaf to the tee's OWN parent bin, not the top-level pipeline:
+        # the mpegts-demuxer's tee lives inside a per-pad branch bin, and linking
+        # a tee request pad to an element in a different bin fails WRONG_HIERARCHY
+        # (same reason _link_pad_to_branches_via_tee keeps its tee a direct child).
+        parent = tee.get_parent() or pipeline
+        parent.add(branch)
+        tee_src = tee.request_pad_simple("src_%u")
+        if tee_src is None:
+            emit_event({"event": "error", "message": f"bus_attach: no tee src pad ({tee_name})"})
+            parent.remove(branch)
+            return True  # don't retry a structural failure
+        link_ret = tee_src.link(branch.get_static_pad("sink"))
+        if link_ret != Gst.PadLinkReturn.OK:
+            emit_event({"event": "error",
+                        "message": f"bus_attach: link failed ({link_ret}) {socket}"})
+            tee.release_request_pad(tee_src)
+            parent.remove(branch)
+            return True
+        branch.sync_state_with_parent()
+        _bus_branches[socket] = (branch, tee, tee_src)
+        emit_event({"event": "bus_attached", "tee": tee_name, "socket": socket})
+        return True
+    except GLib.Error as e:
+        emit_event({"event": "error", "message": f"bus_attach parse failed: {e.message}"})
+        return True
+
+def _retry_pending_bus_attaches():
+    global _bus_retry_timer_id
+    for socket in list(_pending_bus_attaches.keys()):
+        tee_name, attempts = _pending_bus_attaches[socket]
+        if _try_bus_attach(tee_name, socket):
+            _pending_bus_attaches.pop(socket, None)
+        elif attempts <= 1:
+            _pending_bus_attaches.pop(socket, None)
+            emit_event({"event": "error",
+                        "message": f"bus_attach: tee {tee_name} never appeared for {socket}"})
+        else:
+            _pending_bus_attaches[socket] = [tee_name, attempts - 1]
+    if not _pending_bus_attaches:
+        _bus_retry_timer_id = None
+        return False   # stop the timer
+    return True
+
+def handle_bus_attach(data):
+    """Attach a per-consumer fan-out branch to a producer's egress tee."""
+    global _bus_retry_timer_id
+    tee_name = data.get("tee", "")
+    socket = data.get("socket", "")
+    if not tee_name or not socket:
+        return
+    if _try_bus_attach(tee_name, socket):
+        _pending_bus_attaches.pop(socket, None)
+        return
+    # Tee not up yet — queue a bounded retry (demuxer creates tees on pad-add).
+    _pending_bus_attaches[socket] = [tee_name, _BUS_ATTACH_MAX_ATTEMPTS]
+    if _bus_retry_timer_id is None:
+        _bus_retry_timer_id = GLib.timeout_add(250, _retry_pending_bus_attaches)
+
+
+def handle_bus_detach(data):
+    """Detach and tear down a per-consumer fan-out branch by edge socket."""
+    socket = data.get("socket", "")
+    # Cancel a not-yet-satisfied attach for this edge, if any.
+    _pending_bus_attaches.pop(socket, None)
+    entry = _bus_branches.pop(socket, None)
+    if entry is None:
+        return
+    branch, tee, tee_src = entry
+    try:
+        branch.set_state(Gst.State.NULL)
+        peer = tee_src.get_peer()
+        if peer is not None:
+            tee_src.unlink(peer)
+        tee.release_request_pad(tee_src)
+        parent = branch.get_parent()
+        if parent is not None:
+            parent.remove(branch)
+        emit_event({"event": "bus_detached", "socket": socket})
+    except Exception:  # noqa: BLE001 — teardown must never crash the runner
+        pass
+
+
 # Command dispatch
 CMD_HANDLERS = {
     "start": handle_start,
@@ -1348,6 +1470,8 @@ CMD_HANDLERS = {
     "track_throughput": handle_track_throughput,
     "get_throughput": handle_get_throughput,
     "set_klv_payload": handle_set_klv_payload,
+    "bus_attach": handle_bus_attach,
+    "bus_detach": handle_bus_detach,
 }
 
 def dispatch_command(line):

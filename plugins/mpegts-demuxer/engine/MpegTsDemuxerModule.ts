@@ -363,7 +363,7 @@ export class MpegTsDemuxerModule extends GstPluginBase {
         const queueLeaky = (config.queueLeaky as boolean) ?? false;
         const queueDepthMs = config.queueDepthMs as number | undefined;
         const result = buildPipeline({
-            input: { host: upstream.host, port: upstream.port },
+            input: { host: upstream.host, port: upstream.port, socketPath: upstream.socketPath },
             videoOutputs,
             audioOutputs,
             outputBufferMs,

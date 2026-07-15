@@ -180,7 +180,7 @@ export class TranscoderModule extends GstPluginBase {
         const bufferMs = (config.bufferMs as number) ?? 200;
         const decodeThreads = config.cpuDecodeThreading === 'single' ? 'single' : 'multi';
         const result = buildPipeline({
-            input: { host: upstream.host, port: upstream.port },
+            input: { host: upstream.host, port: upstream.port, socketPath: upstream.socketPath },
             outputs,
             framerate,
             gopFrames,

@@ -102,7 +102,11 @@ export class SrtOutputModule extends GstPluginBase {
         // gains nothing from longer backoff: we don't know when it returns,
         // so retrying often is what feels snappy when it finally does.
         const pipeline = [
-            buildUdpSrc({ host: udpSource.host, port: udpSource.port }),
+            buildUdpSrc({
+                host: udpSource.host,
+                port: udpSource.port,
+                socketPath: udpSource.socketPath,
+            }),
             buildLeakyQueue(100),
             `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
         ].join(' ! ');

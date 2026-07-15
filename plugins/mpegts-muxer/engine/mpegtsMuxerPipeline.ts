@@ -45,6 +45,8 @@ export interface UdpInputSource {
     name?: string | null;
     /** Connected source module id (D4 name fallback when no operator name). */
     sourceModuleId?: string | null;
+    /** Per-consumer edge socket under unixfd (undefined on UDP multicast). */
+    socketPath?: string;
 }
 
 const VIDEO_PORT_PREFIX = 'video-';
@@ -204,6 +206,7 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
         port: source.port,
         timeoutNs: UDP_INPUT_TIMEOUT_NS,
         bufferSize: NET_UDP_RCV_BUF,
+        socketPath: source.socketPath,
     });
     // The udpsrc `timeout` is load-bearing on a MULTI-source mux, not just a
     // nicety: `mpegtsmux` aggregates all its sink pads and CANNOT distinguish a

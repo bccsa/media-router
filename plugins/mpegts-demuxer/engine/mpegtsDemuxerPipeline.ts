@@ -251,8 +251,9 @@ export interface DemuxerOutput {
 }
 
 export interface DemuxerPipelineInputs {
-    /** Upstream UDP source (from MediaRouter.getModuleUdpSource). */
-    input: { host: string; port: number };
+    /** Upstream UDP source (from MediaRouter.getModuleUdpSource). `socketPath`
+     *  is the per-consumer edge socket under unixfd (undefined on UDP). */
+    input: { host: string; port: number; socketPath?: string };
     videoOutputs: DemuxerOutput[];
     audioOutputs: DemuxerOutput[];
     /** Branch queue behaviour (defaults to false = non-leaky). Leaky sheds
@@ -504,6 +505,7 @@ export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResu
         host: input.input.host,
         port: input.input.port,
         bufferSize: NET_UDP_RCV_BUF,
+        socketPath: input.input.socketPath,
     });
     const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;
 

@@ -67,14 +67,18 @@ export function probeMpegTsStream(
     host: string,
     port: number,
     timeoutMs = 3000,
+    socketPath?: string,
 ): Promise<ProbeResult> {
     return new Promise((resolve) => {
         // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port
         const isMulticast = host.startsWith('239.');
-        // Under unixfd bus transport the probe joins the producer's socket as
-        // one more fan-out client, mirroring buildUdpSrc's branch.
+        // Under unixfd the probe connects to the caller's per-consumer EDGE
+        // socket (already attached on the producer's tee before the consumer
+        // started), mirroring buildUdpSrc. Falls back to the channel socket
+        // only if no edge socket was supplied.
+        const unixSocket = socketPath ?? busSocketPath(port);
         const udpSrcArgs = isMulticast && busTransport() === 'unixfd'
-            ? ['unixfdsrc', `socket-path=${busSocketPath(port)}`, 'num-buffers=50']
+            ? ['unixfdsrc', `socket-path=${unixSocket}`, 'num-buffers=50']
             : isMulticast
             ? [
                   'udpsrc',

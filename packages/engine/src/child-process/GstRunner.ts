@@ -159,6 +159,21 @@ export class GstRunner {
                 break;
             }
 
+            case 'busAttach': {
+                // Per-consumer bus fan-out (unixfd). Fire-and-forget — the Python
+                // side is idempotent per socket, so a duplicate (re-apply /
+                // producer-restart re-attach) is a no-op.
+                const d = msg.data as { tee: string; socket: string };
+                this.python?.sendCommand({ cmd: 'bus_attach', tee: d.tee, socket: d.socket });
+                break;
+            }
+
+            case 'busDetach': {
+                const d = msg.data as { socket: string };
+                this.python?.sendCommand({ cmd: 'bus_detach', socket: d.socket });
+                break;
+            }
+
             default:
                 console.warn(`[gst-runner] Unknown action: ${msg.action}`);
                 this.ipc.sendResponse(msg.id, { error: `Unknown action: ${msg.action}` });

@@ -49,6 +49,8 @@ export {
     buildNetUdpSink,
     busTransport,
     busSocketPath,
+    busTeeName,
+    busEdgeSocketPath,
     isMulticast,
     isMulticastAddr,
     NET_UDP_RCV_BUF,

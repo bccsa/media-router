@@ -2,6 +2,7 @@ import { createLogger } from '@media-router/shared-types';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
 import type { Connection, ActiveHandle } from './MediaRouter.js';
 import type { StreamTypeExecutor } from './StreamTypeExecutor.js';
+import type { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
 
 const log = createLogger('MpegTsUdpExecutor');
 
@@ -39,6 +40,12 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
          * the operator manually toggled a module.
          */
         private onConsumerRestarted?: (consumerId: string) => Promise<void>,
+        /**
+         * Per-consumer unixfd bus fan-out. Attach the producer's edge branch
+         * before starting the consumer (so its socket exists when the consumer's
+         * `unixfdsrc` connects); detach on teardown. No-op under UDP.
+         */
+        private busFanout?: BusFanoutCoordinator,
     ) {}
 
     async execute(conn: Connection): Promise<ActiveHandle | null> {
@@ -67,6 +74,12 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
             { host: this.multicastAddr, udpPort },
             `UDP MPEG-TS connection ${this.connLabel(conn)}`,
         );
+
+        // Attach this consumer's dedicated fan-out branch on the producer FIRST,
+        // so its edge socket exists by the time the consumer's `unixfdsrc`
+        // connects (the consumer's busSocketGate waits for it). Idempotent, and
+        // a no-op under UDP multicast.
+        this.busFanout?.attach(conn);
 
         // Start/restart the consumer so it subscribes to the producer's multicast
         try {
@@ -171,6 +184,9 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
             'Removing UDP connection',
         );
         this.materializeAttempted.delete(handle.connectionId);
+
+        // Tear down the producer's fan-out branch for this edge (no-op on UDP).
+        if (conn) this.busFanout?.detach(conn);
 
         if (skipModuleRestart) return;
 

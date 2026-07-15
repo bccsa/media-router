@@ -9,11 +9,13 @@ import {
     buildUdpSink,
     buildLeakyQueue,
     buildEncoderBranch,
+    busTransport,
+    busTeeName,
 } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
 
 export interface TranscoderPipelineInputs {
-    input: { host: string; port: number };
+    input: { host: string; port: number; socketPath?: string };
     /** One output per rendition. Each carries its own fully-resolved encoder
      *  settings (`encode`: codec / impl / rateControl / speedPreset / h264Profile
      *  / sceneCut) — resolved in TranscoderModule (override ?? global) so this
@@ -120,6 +122,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const tsInput = buildTsUdpInput({
         host: input.input.host,
         port: input.input.port,
+        socketPath: input.input.socketPath,
         jitterMs: bufferMs,
         setTimestamps: false,
     });
@@ -152,9 +155,10 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
             h264Profile: e.h264Profile,
             sceneCut: e.sceneCut,
         });
-        const sinkName = `usink_${i}`;
-        sinkNames.push(sinkName);
-        const sink = buildUdpSink({ name: sinkName, host: out.host, port: out.port });
+        const sink = buildUdpSink({ name: `usink_${i}`, host: out.host, port: out.port });
+        // Throughput element differs by transport: the fan-out `tee`
+        // (busTeeName) under unixfd, the named `usink_i` udpsink under UDP.
+        sinkNames.push(busTransport() === 'unixfd' ? busTeeName(out.port) : `usink_${i}`);
         return `${q} ! ${scale} ! videoconvert ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
     };
 

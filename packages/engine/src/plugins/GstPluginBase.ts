@@ -98,6 +98,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 this.ready = true;
                 this.health = 'ok';
                 this.error = undefined;
+                // Re-attach this producer's per-consumer bus fan-out branches:
+                // a runner-internal respawn rebuilds the pipeline from the base
+                // string with the egress tee but NO branches, so without this a
+                // producer restart would strand every consumer. Idempotent and a
+                // no-op under UDP / for non-producers. Done directly (not via the
+                // overridable onPipelinePlaying) so a subclass override can't drop it.
+                if (this.services?.instanceId) {
+                    this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
+                }
                 // Fires on EVERY playing transition, including a runner-internal
                 // crash-restart (which rebuilds the pipeline from the original
                 // string, dropping any live element state). Subclasses re-seed

@@ -2,6 +2,8 @@ import {
     DEFAULT_MPEGTS_ALIGNMENT,
     GstPluginBase,
     ThroughputPoller,
+    busTransport,
+    busTeeName,
     type PipelineDescription,
     type ModuleServices,
     type ThroughputSample,
@@ -44,6 +46,9 @@ export class MpegTsMuxerModule extends GstPluginBase {
      *  time so a live name edit can rebuild the carousel without re-deriving
      *  the pipeline. Empty until the pipeline is built. */
     private namedStreams: NamedStreamInput[] = [];
+    /** Bus egress element to poll for throughput, resolved at build time: the
+     *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
+    private busSinkName: string | undefined;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -99,7 +104,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
     }
 
     private async readSinkBytes(): Promise<number | undefined> {
-        return this.readBusSinkBytes('usink');
+        return this.busSinkName ? this.readBusSinkBytes(this.busSinkName) : undefined;
     }
 
     private publishThroughput(sample: ThroughputSample): void {
@@ -143,6 +148,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                 port: s.port,
                 name: nameForPort(config, s.sinkPortId),
                 sourceModuleId: s.sourceModuleId,
+                socketPath: s.socketPath,
             }));
         const sources = sortSources(muxedSources);
 
@@ -163,6 +169,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
             this.setHealth('error', 'No free UDP ports available');
             return null;
         }
+        this.busSinkName = busTransport() === 'unixfd' ? busTeeName(endpoint.port) : 'usink';
 
         const alignment = (config.alignment as number) ?? DEFAULT_MPEGTS_ALIGNMENT;
         // Stability-vs-latency is a per-use-case operator call, not a

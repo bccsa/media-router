@@ -272,6 +272,26 @@ export class GstChildProcess extends EventEmitter {
         this.ipc.sendEvent('setKlvPayload', { element, payload });
     }
 
+    /**
+     * Attach a per-consumer bus fan-out branch (`tee. ! queue leaky ! unixfdsink`)
+     * on the producer's egress tee, so a new consumer reads its own isolated
+     * socket. Fire-and-forget, and gated only on IPC — NOT on `running`: the
+     * BusFanoutCoordinator re-attaches on the producer's 'playing' edge (a fresh
+     * restartOnError process rebuilds from the base string with no branches), and
+     * the attach must be queued to the runner the moment its IPC is up. The runner
+     * is idempotent per socket, so a duplicate attach is a no-op.
+     */
+    sendBusAttach(tee: string, socket: string): void {
+        if (!this.ipc) return;
+        this.ipc.sendEvent('busAttach', { tee, socket });
+    }
+
+    /** Detach a per-consumer bus fan-out branch by its edge socket. Fire-and-forget. */
+    sendBusDetach(socket: string): void {
+        if (!this.ipc) return;
+        this.ipc.sendEvent('busDetach', { socket });
+    }
+
     /** Set a property on a named GStreamer element (live, no restart). */
     async setProperty(element: string, property: string, value: unknown): Promise<void> {
         // Record the intent first: a change made while the pipeline is down or

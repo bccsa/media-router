@@ -3,6 +3,8 @@ import {
     ThroughputPoller,
     bitrateBadge,
     buildUdpSink,
+    busTransport,
+    busTeeName,
     listV4l2Devices,
     ENCODER_ELEMENTS,
     buildEncoderBranch,
@@ -39,6 +41,10 @@ export class VideoEncoderModule extends GstPluginBase {
         getBytes: () => this.readSinkBytes(),
         publish: (sample) => this.publishThroughput(sample),
     });
+
+    /** Bus egress element to poll for throughput, resolved at build time: the
+     *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
+    private busSinkName: string | undefined;
 
     /** Runtime availability map — populated by `initManifest` after probing each encoder element. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
@@ -143,6 +149,11 @@ export class VideoEncoderModule extends GstPluginBase {
 
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
+        this.busSinkName = endpoint
+            ? busTransport() === 'unixfd'
+                ? busTeeName(endpoint.port)
+                : 'usink'
+            : undefined;
         const udpSink = endpoint
             ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';
@@ -213,7 +224,7 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     private async readSinkBytes(): Promise<number | undefined> {
-        return this.readBusSinkBytes('usink');
+        return this.busSinkName ? this.readBusSinkBytes(this.busSinkName) : undefined;
     }
 
     private publishThroughput(sample: ThroughputSample): void {

@@ -29,7 +29,12 @@ export class AudioDecoderModule extends GstPluginBase {
 
         // 1. Probe the stream for codec (and channels if available — opus includes it, AAC doesn't)
         if (udpSource) {
-            this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
+            this.probeResult = await probeMpegTsStream(
+                udpSource.host,
+                udpSource.port,
+                3000,
+                udpSource.socketPath,
+            );
             this.log.info(
                 { codec: this.probeResult.codec, channels: this.probeResult.channels },
                 'Stream probe',
@@ -120,6 +125,7 @@ export class AudioDecoderModule extends GstPluginBase {
             host: udpSource.host,
             port: udpSource.port,
             bufferSize: 262_144,
+            socketPath: udpSource.socketPath,
         });
 
         // Plugin decides decoder based on probe result.

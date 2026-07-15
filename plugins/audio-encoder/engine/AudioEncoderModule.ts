@@ -3,6 +3,8 @@ import {
     ThroughputPoller,
     bitrateBadge,
     buildUdpSink,
+    busTransport,
+    busTeeName,
     gstInspectMaxChannels,
     type PipelineDescription,
     type ModuleServices,
@@ -31,6 +33,10 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     protected liveUpdatableParams = ['bitrate', 'volume', 'audioEnabled'];
+
+    /** Bus egress element to poll for throughput, resolved at build time: the
+     *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
+    private busSinkName: string | undefined;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -71,7 +77,7 @@ export class AudioEncoderModule extends GstPluginBase {
     });
 
     private async readSinkBytes(): Promise<number | undefined> {
-        return this.readBusSinkBytes('usink');
+        return this.busSinkName ? this.readBusSinkBytes(this.busSinkName) : undefined;
     }
 
     private publishThroughput(sample: ThroughputSample): void {
@@ -156,6 +162,11 @@ export class AudioEncoderModule extends GstPluginBase {
         // Encoder always gets a UDP multicast port assigned at startup.
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.assignUdpPort(instanceId);
+        this.busSinkName = endpoint
+            ? busTransport() === 'unixfd'
+                ? busTeeName(endpoint.port)
+                : 'usink'
+            : undefined;
         const udpSink = endpoint
             ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
             : 'fakesink name=usink sync=false';
