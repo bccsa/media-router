@@ -77,6 +77,7 @@ export class SrtOutputModule extends GstPluginBase {
         const streamId = (config.streamId as string) ?? '';
         const passphrase = (config.passphrase as string) ?? '';
         const pbKeyLen = (config.pbKeyLen as number) ?? 0;
+        const packetsPerDatagram = (config.packetsPerDatagram as number) ?? 0;
 
         // Get the UDP source from the connected encoder/srt-input
         const instanceId = this.services?.instanceId ?? '';
@@ -101,6 +102,15 @@ export class SrtOutputModule extends GstPluginBase {
         // tight (10s) — unlike a transient crash, an unreachable SRT peer
         // gains nothing from longer backoff: we don't know when it returns,
         // so retrying often is what feels snappy when it finally does.
+        // Pure byte passthrough by default (packetsPerDatagram=0): relay the bus
+        // datagrams to SRT as-is, no TS parsing. Re-parsing/re-chunking a lossy
+        // live stream can scramble the picture (tsparse re-timing — see the
+        // mpegts-demuxer notes), and for a same-size passthrough it is needless.
+        // Only insert tsparse when a specific wire datagram size is forced (>= 1).
+        const repack =
+            packetsPerDatagram >= 1
+                ? [`tsparse alignment=${packetsPerDatagram} set-timestamps=false`]
+                : [];
         const pipeline = [
             buildUdpSrc({
                 host: udpSource.host,
@@ -108,6 +118,7 @@ export class SrtOutputModule extends GstPluginBase {
                 socketPath: udpSource.socketPath,
             }),
             buildLeakyQueue(100),
+            ...repack,
             `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
         ].join(' ! ');
 

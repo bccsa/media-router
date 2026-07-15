@@ -44,6 +44,8 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
         });
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('udpsrc name=busin');
+        // Passthrough by default — no TS re-parsing (safest for lossy live streams).
+        expect(desc!.pipeline).not.toContain('tsparse');
         expect(desc!.pipeline).toContain('udpsink name=netsink host=239.1.1.1 port=5000');
         expect(desc!.pipeline).toContain('multicast-iface=eth0');
         expect(desc!.pipeline).toContain('ttl-mc=8');

@@ -71,6 +71,21 @@
                     ],
                     "default": 0,
                     "description": "Encryption key length (0 = none)"
+                },
+                "packetsPerDatagram": {
+                    "type": "number",
+                    "enum": [
+                        0,
+                        1,
+                        7
+                    ],
+                    "x-enumLabels": {
+                        "0": "Passthrough (as received)",
+                        "1": "One TS packet (188 B)",
+                        "7": "SRT-aligned (1316 B)"
+                    },
+                    "default": 0,
+                    "description": "Wire datagram packing. Passthrough (default) relays bus datagrams as-is — no TS re-parsing, lowest CPU, and safest for lossy live streams. 1/7 force a specific SRT payload size (inserts tsparse) — only needed when the bus datagram size differs from the wire size."
                 }
             }
         },
