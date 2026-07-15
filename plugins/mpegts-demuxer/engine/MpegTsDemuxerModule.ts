@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    busTransport,
     registerCodecClassifier,
     type EngineServices,
     type PipelineDescription,
@@ -348,7 +349,14 @@ export class MpegTsDemuxerModule extends GstPluginBase {
         // — the low-latency choice. Offset is operator-tunable to match the
         // source's PES size — see AUDIO_PACING_MS_DEFAULT in the pipeline
         // helpers for the measured why.
-        const audioPacing = (config.audioPacing as boolean) ?? true;
+        // Pacing exists to smooth PES bursts that overflowed UDP socket
+        // buffers. The unixfd bus is lossless (nothing to smooth) and
+        // clocksync's clock-waits against socket-transported timestamps
+        // stalled the branch — which back-pressures tsdemux and freezes the
+        // whole upstream bus (measured: srtsrc stalled until the SRT session
+        // dropped). Hard-off under unixfd, operator toggle otherwise.
+        const audioPacing =
+            busTransport() === 'unixfd' ? false : ((config.audioPacing as boolean) ?? true);
         const audioPacingMs = config.audioPacingMs as number | undefined;
         // Branch queue behaviour — the operator's stability-vs-latency call
         // (leaky = shed oldest frame, non-leaky = hold + back-pressure).

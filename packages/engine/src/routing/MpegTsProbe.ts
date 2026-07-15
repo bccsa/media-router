@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createLogger } from '@media-router/shared-types';
+import { busTransport, busSocketPath } from '../plugins/udpHelpers.js';
 
 const log = createLogger('MpegTsProbe');
 
@@ -70,7 +71,11 @@ export function probeMpegTsStream(
     return new Promise((resolve) => {
         // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port
         const isMulticast = host.startsWith('239.');
-        const udpSrcArgs = isMulticast
+        // Under unixfd bus transport the probe joins the producer's socket as
+        // one more fan-out client, mirroring buildUdpSrc's branch.
+        const udpSrcArgs = isMulticast && busTransport() === 'unixfd'
+            ? ['unixfdsrc', `socket-path=${busSocketPath(port)}`, 'num-buffers=50']
+            : isMulticast
             ? [
                   'udpsrc',
                   `multicast-group=${host}`,

@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
     buildUdpSink,
     buildUdpSrc,
     buildNetUdpSrc,
     buildNetUdpSink,
+    busSocketPath,
+    busTransport,
     isMulticast,
     isMulticastAddr,
 } from './udpHelpers.js';
@@ -147,5 +149,63 @@ describe('buildUdpSink', () => {
     it('emits async=false when requested (runtime-added sinks must not preroll)', () => {
         expect(buildUdpSink({ host: '127.0.0.1', port: 1, async: false })).toContain('async=false');
         expect(buildUdpSink({ host: '239.255.0.1', port: 1, async: false })).toContain('async=false');
+    });
+});
+
+describe('unixfd bus transport (MR_BUS_TRANSPORT=unixfd)', () => {
+    afterEach(() => {
+        vi.unstubAllEnvs();
+    });
+
+    it('defaults to udp when the env var is unset or unrecognised', () => {
+        expect(busTransport()).toBe('udp');
+        vi.stubEnv('MR_BUS_TRANSPORT', 'bogus');
+        expect(busTransport()).toBe('udp');
+    });
+
+    it('derives the socket path from the port, honouring MR_BUS_SOCKET_DIR', () => {
+        expect(busSocketPath(40001)).toBe('/tmp/mr-bus-40001.sock');
+        vi.stubEnv('MR_BUS_SOCKET_DIR', '/run/mr');
+        expect(busSocketPath(40001)).toBe('/run/mr/mr-bus-40001.sock');
+    });
+
+    it('swaps the multicast bus source for unixfdsrc, dropping udp-only options', () => {
+        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
+        const s = buildUdpSrc({
+            name: 'busin',
+            host: '239.255.0.1',
+            port: 40001,
+            caps: 'video/mpegts',
+            timeoutNs: 5_000_000_000,
+            bufferSize: 65_536,
+        });
+        // The trailing leaky queue is the consumer drain contract — see
+        // buildUdpSrc: a consumer that stops reading must shed its own
+        // buffers, not freeze the producer's blocking unixfdsink sends.
+        expect(s).toBe(
+            'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
+                ' ! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0',
+        );
+    });
+
+    it('swaps the multicast bus sink for unixfdsink, keeping sync/async mapping', () => {
+        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
+        // TS capsfilter pinned at egress: raw-byte producers (srtsrc) never
+        // emit caps and unixfd consumers fail not-negotiated without them.
+        expect(buildUdpSink({ name: 'usink', host: '239.255.0.1', port: 40001 })).toBe(
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! unixfdsink name=usink socket-path=/tmp/mr-bus-40001.sock sync=false',
+        );
+        expect(buildUdpSink({ host: '239.255.0.1', port: 1, async: false })).toContain(
+            'async=false',
+        );
+        expect(buildUdpSink({ host: '239.255.0.1', port: 1, sync: true })).toContain('sync=true');
+    });
+
+    it('leaves unicast loopback and network-facing builders on udp', () => {
+        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
+        expect(buildUdpSrc({ host: '127.0.0.1', port: 5500 })).toContain('udpsrc');
+        expect(buildUdpSink({ host: '10.9.16.20', port: 5500 })).toContain('udpsink');
+        expect(buildNetUdpSrc({ port: 5004, multicastGroup: '239.1.1.1' })).toContain('udpsrc');
+        expect(buildNetUdpSink({ host: '239.1.1.1', port: 5000 })).toContain('udpsink');
     });
 });

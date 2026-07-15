@@ -4,6 +4,7 @@ import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
+import { busTransport } from './udpHelpers.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -408,6 +409,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
     }
 
+    /**
+     * Cumulative bytes pushed into a bus egress sink, transport-agnostic.
+     * udpsink exposes `bytes-served`; unixfdsink has no byte counter, so
+     * count bytes on its sink pad via the runner's throughput tracker.
+     * `track_throughput` is idempotent per element, so re-arming on every
+     * read is safe — and it survives child-process respawns, which drop
+     * the python-side trackers.
+     */
+    protected async readBusSinkBytes(element: string): Promise<number | undefined> {
+        if (busTransport() === 'unixfd') {
+            await this.trackThroughput(element, 'sink');
+            const total = (await this.getThroughput())[element]?.total_bytes;
+            return typeof total === 'number' ? total : undefined;
+        }
+        const served = await this.getElementProperty(element, 'bytes-served');
+        return typeof served === 'number' ? served : undefined;
+    }
+
     /** Start tracking throughput on a named element's pad. */
     protected async trackThroughput(element: string, pad = 'src'): Promise<void> {
         if (!this.childProcess?.isRunning) return;
@@ -431,13 +450,28 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
     }
 
+    /** Elements whose last stats read failed — logged once per outage, not per poll. */
+    private statsFailureLogged = new Set<string>();
+
     /** Read the 'stats' property from a named element (e.g. srtsrc). */
     protected async getElementStats(element: string): Promise<Record<string, unknown>> {
         if (!this.childProcess?.isRunning) return {};
         try {
-            return await this.childProcess.getStats(element);
+            const stats = await this.childProcess.getStats(element);
+            if (this.statsFailureLogged.delete(element)) {
+                this.log.debug({ element }, 'getElementStats recovered');
+            }
+            return stats;
         } catch (err) {
-            this.log.debug({ err, element }, 'getElementStats failed');
+            // Pollers hit this every tick while an element blocks its stats
+            // getter (srtsrc mid-reconnect) — one line per outage is enough.
+            if (!this.statsFailureLogged.has(element)) {
+                this.statsFailureLogged.add(element);
+                this.log.debug(
+                    { err, element },
+                    'getElementStats failed (suppressing repeats until it recovers)',
+                );
+            }
             return {};
         }
     }

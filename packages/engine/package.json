@@ -18,7 +18,7 @@
     "scripts": {
         "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst-net-clock.py dist/child-process/",
         "typecheck": "tsc --noEmit",
-        "dev": "tsx watch --inspect=9230 examples/test-engine.ts"
+        "dev": "bash -c '[ -f .env.local ] && . ./.env.local; exec tsx watch --inspect=9230 examples/test-engine.ts'"
     },
     "dependencies": {
         "@fastify/cors": "^11.2.0",

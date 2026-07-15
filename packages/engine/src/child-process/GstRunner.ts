@@ -1,6 +1,7 @@
 import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
 import { PythonProcess, type RunnerStartOptions } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
+import { unixFdSrcSocketPaths, waitForBusSockets } from './busSocketGate.js';
 
 // Restart policy:
 //   - Default 1s base, 5s cap — fast recovery for transient errors.
@@ -72,6 +73,7 @@ export class GstRunner {
 
             case 'stopPipeline':
                 this.restartOnError = false; // Cancel any pending restarts
+                this.startEpoch++; // Invalidate any in-flight socket-gate wait
                 this.restartBackoff.reset();
                 if (this.restartTimer) {
                     clearTimeout(this.restartTimer);
@@ -315,6 +317,9 @@ export class GstRunner {
         }, delay);
     }
 
+    /** Bumped on every start/stop; invalidates in-flight socket-gate waits. */
+    private startEpoch = 0;
+
     private startPipeline(opts: RunnerStartOptions, requestId: string): void {
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
@@ -323,21 +328,48 @@ export class GstRunner {
         if (this.python) this.python.stop();
 
         this.lastStart = opts;
+        const epoch = ++this.startEpoch;
 
-        // Capture this instance locally — `this.python` may already point to a
-        // newer spawn by the time the exit handler fires (a SIGKILL'd
-        // predecessor can take hundreds of ms to reap). Without this guard the
-        // late exit would clobber the live reference and trigger an extra
-        // cascade restart.
-        const py: PythonProcess = new PythonProcess({
-            pythonRunnerPath: this.pythonRunnerPath,
-            useStdioForData: opts.useStdioForData ?? false,
-            onEvent: (event) => this.handlePythonEvent(event),
-            onExit: (code, signal) => this.handlePythonExit(py, code, signal),
-            onSpawnError: (err) => this.handlePythonSpawnError(py, err),
-        });
-        this.python = py;
-        py.start(opts);
+        const launch = () => {
+            // Capture this instance locally — `this.python` may already point to a
+            // newer spawn by the time the exit handler fires (a SIGKILL'd
+            // predecessor can take hundreds of ms to reap). Without this guard the
+            // late exit would clobber the live reference and trigger an extra
+            // cascade restart.
+            const py: PythonProcess = new PythonProcess({
+                pythonRunnerPath: this.pythonRunnerPath,
+                useStdioForData: opts.useStdioForData ?? false,
+                onEvent: (event) => this.handlePythonEvent(event),
+                onExit: (code, signal) => this.handlePythonExit(py, code, signal),
+                onSpawnError: (err) => this.handlePythonSpawnError(py, err),
+            });
+            this.python = py;
+            py.start(opts);
+        };
+
+        // unixfdsrc has no retry: connect() runs once in start(), so launching
+        // before the producer's socket accepts burns a full start/timeout/
+        // backoff cycle. Gate on a live connect-probe instead; on deadline,
+        // launch anyway and let the existing error path take over.
+        const busSockets = unixFdSrcSocketPaths(opts.pipeline);
+        if (busSockets.length === 0) {
+            launch();
+        } else {
+            void waitForBusSockets(busSockets, {
+                onWait: (pending) =>
+                    console.error(
+                        `[gst-runner] Waiting for producer bus socket(s): ${pending.join(', ')}`,
+                    ),
+            }).then((ready) => {
+                if (epoch !== this.startEpoch) return; // superseded by stop/newer start
+                if (!ready) {
+                    console.error(
+                        '[gst-runner] Producer bus socket(s) still absent after gate deadline — starting anyway',
+                    );
+                }
+                launch();
+            });
+        }
 
         this.ipc.sendResponse(requestId, { ok: true });
     }

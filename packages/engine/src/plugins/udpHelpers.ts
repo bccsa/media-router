@@ -25,6 +25,40 @@ export function isMulticast(host: string): boolean {
 }
 
 /**
+ * Inter-module bus transport. `MR_BUS_TRANSPORT=unixfd` swaps the loopback
+ * multicast bus (udpsink/udpsrc) for GStreamer's unixfd IPC — fd-passed
+ * memfd buffers over a unix socket, so buffer boundaries, caps, and
+ * timestamps survive the hop and nothing can be dropped by a kernel socket
+ * buffer. Requires GStreamer ≥ 1.24 with the copy-to-shm backport (test
+ * prefix: `source ~/gst-1.24/env.sh`).
+ *
+ * Only the gst↔gst loopback-bus hops flip; consumers that read the bus with
+ * their own UDP sockets stay on UDP and go silent under unixfd: the rist
+ * CLI relays, hls-player's PacedUdpTsSink, and video-player's dgram resume
+ * probe. Network-facing builders (`buildNetUdpSrc`/`buildNetUdpSink`) are
+ * never affected.
+ *
+ * Read per call (not cached) so tests and module rebuilds see env changes.
+ */
+export type BusTransport = 'udp' | 'unixfd';
+
+export function busTransport(): BusTransport {
+    return process.env.MR_BUS_TRANSPORT === 'unixfd' ? 'unixfd' : 'udp';
+}
+
+/**
+ * Socket path for one bus channel under unixfd transport. The UDP port
+ * number remains the channel identity — `UdpPortManager` still allocates
+ * it, with all its sticky-reacquire semantics — it just names a socket
+ * instead of binding one. Keep the dir short: AF_UNIX paths cap at ~108
+ * chars.
+ */
+export function busSocketPath(port: number): string {
+    const dir = process.env.MR_BUS_SOCKET_DIR ?? '/tmp';
+    return `${dir}/mr-bus-${port}.sock`;
+}
+
+/**
  * Network-side (non-loopback) multicast test covering the full 224.0.0.0/4
  * range (`224.` – `239.`). Used by the MPEG-TS-over-IP plugins that talk to a
  * real NIC, where a group address may be anywhere in the class-D range — unlike
@@ -70,6 +104,25 @@ export interface UdpSrcOpts {
 }
 
 export function buildUdpSrc(opts: UdpSrcOpts): string {
+    if (isMulticast(opts.host) && busTransport() === 'unixfd') {
+        // caps, buffer-size, and timeout don't apply here: caps arrive over
+        // the socket from the producer, there is no kernel rcvbuf to size,
+        // and a dead producer surfaces as a connection error (which trips
+        // the runner's restart path) rather than a silent stall.
+        //
+        // The leaky queue is the consumer's drain contract. unixfdsink sends
+        // to clients under its object lock with blocking sockets, so ONE
+        // consumer that stops reading freezes the producer AND every sibling
+        // consumer, and blocks new clients from being accepted (measured:
+        // demuxer stall → srtsrc frozen → SRT session drop). The queue
+        // guarantees unixfdsrc always drains its socket; a stalled consumer
+        // sheds its own buffers instead — same loss-locality UDP gave us.
+        const nameClause = opts.name ? ` name=${opts.name}` : '';
+        return (
+            `unixfdsrc${nameClause} socket-path=${busSocketPath(opts.port)}` +
+            ' ! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0'
+        );
+    }
     // 4 MB default — picked as a compromise:
     //   - Producer-restart UX: stale data buffered here plays out before the
     //     new stream's keyframe arrives. At 5 Mbps, 4 MB holds ~6 s, vs ~25 s
@@ -113,6 +166,18 @@ export interface UdpSinkOpts {
 }
 
 export function buildUdpSink(opts: UdpSinkOpts): string {
+    if (isMulticast(opts.host) && busTransport() === 'unixfd') {
+        const nameClause = opts.name ? ` name=${opts.name}` : '';
+        const sync = opts.sync === true ? 'true' : 'false';
+        const asyncClause = opts.async === false ? ' async=false' : '';
+        // unixfd transports caps, and consumers (tsdemux) reject caps-less
+        // buffers with not-negotiated. Producers that end in mpegtsmux have
+        // caps anyway, but raw-byte producers (srtsrc, NIC-side udpsrc) are
+        // caps-ANY — under UDP the socket erased caps so it never mattered.
+        // The bus is `muxed/mpegts` by contract, so pin TS caps at every
+        // egress.
+        return `capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! unixfdsink${nameClause} socket-path=${busSocketPath(opts.port)} sync=${sync}${asyncClause}`;
+    }
     // 4 MB SO_SNDBUF default, matching buildUdpSrc — symmetric with the
     // receiver-side default so the sender can absorb brief kernel scheduling
     // hiccups without blocking.

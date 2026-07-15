@@ -60,7 +60,7 @@ export class TranscoderModule extends GstPluginBase {
         getBytes: async () => {
             if (!this.running || this.sinkNames.length === 0) return undefined;
             const served = await Promise.all(
-                this.sinkNames.map((name) => this.getElementProperty(name, 'bytes-served')),
+                this.sinkNames.map((name) => this.readBusSinkBytes(name)),
             );
             if (served.some((v) => typeof v !== 'number')) return undefined;
             return Object.fromEntries(this.sinkNames.map((name, i) => [name, served[i] as number]));

@@ -213,8 +213,7 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     private async readSinkBytes(): Promise<number | undefined> {
-        const served = await this.getElementProperty('usink', 'bytes-served');
-        return typeof served === 'number' ? served : undefined;
+        return this.readBusSinkBytes('usink');
     }
 
     private publishThroughput(sample: ThroughputSample): void {

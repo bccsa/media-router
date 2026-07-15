@@ -1168,6 +1168,14 @@ def handle_get_property(data):
     except Exception as e:
         emit_command_error(req_id, f"get_property failed: {e}")
 
+# Stats reads currently running, by element name. srtsrc blocks its 'stats'
+# property getter while (re)connecting; a blocked read on the main context
+# would freeze every other command until it returns (RPC-timeout pile-up in
+# the parent), so reads run on worker threads with at most one in flight per
+# element.
+stats_reads_in_flight = set()
+stats_reads_lock = threading.Lock()
+
 def handle_get_stats(data):
     """Read the 'stats' property from a named element (e.g. srtsrc, srtserversrc)."""
     req_id = data.get("id")
@@ -1182,15 +1190,29 @@ def handle_get_stats(data):
         emit_command_error(req_id, f"Element not found: {element_name}")
         return
 
-    try:
-        stats = element.get_property("stats")
-        stats_dict = gst_structure_to_dict(stats) if isinstance(stats, Gst.Structure) else {}
-        result = {"event": "stats", "element": element_name, "data": stats_dict}
-        if req_id:
-            result["id"] = req_id
-        emit_event(result)
-    except Exception as e:
-        emit_command_error(req_id, f"get_stats failed: {e}")
+    with stats_reads_lock:
+        if element_name in stats_reads_in_flight:
+            emit_command_error(
+                req_id, f"stats read for {element_name} still in progress (element busy)")
+            return
+        stats_reads_in_flight.add(element_name)
+
+    def read_and_emit():
+        try:
+            stats = element.get_property("stats")
+            stats_dict = gst_structure_to_dict(stats) if isinstance(stats, Gst.Structure) else {}
+            result = {"event": "stats", "element": element_name, "data": stats_dict}
+            if req_id:
+                result["id"] = req_id
+            emit_event(result)
+        except Exception as e:
+            emit_command_error(req_id, f"get_stats failed: {e}")
+        finally:
+            with stats_reads_lock:
+                stats_reads_in_flight.discard(element_name)
+
+    threading.Thread(target=read_and_emit, daemon=True,
+                     name=f"stats-{element_name}").start()
 
 def _pad_probe_cb(pad, info, element_name):
     """Pad probe callback — counts bytes flowing through."""
