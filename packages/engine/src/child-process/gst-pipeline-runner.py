@@ -1099,6 +1099,7 @@ def handle_stop(data=None):
     """Stop the pipeline."""
     global pipeline, running
     _cancel_playing_watchdog()
+    _clear_pending_bus_attaches()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
@@ -1354,13 +1355,17 @@ def handle_set_klv_payload(data):
 _bus_branches = {}      # socket_path -> (branch_bin, tee, tee_src_pad)
 _bus_branch_seq = 0
 # Attaches whose tee doesn't exist YET. The mpegts-demuxer creates its output
-# tees dynamically at pad-added time (when source data flows), so an attach
-# issued on connect or on the producer's PLAYING edge can arrive before the
-# tee. Retried on a short timer until the tee appears or the deadline passes —
-# same "wait for the producer side" philosophy as the consumer's busSocketGate.
-_pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_left]
+# tees dynamically at pad-added time (when source data flows), so on a busy
+# multi-stream startup a tee can legitimately take longer than any fixed
+# deadline (measured: gate01's 24-stream graph). Pending attaches therefore
+# retry INDEFINITELY (bus_detach or pipeline stop cancels them) and never
+# escalate to an error: an `error` event is pipeline-fatal to GstRunner, and
+# killing the PRODUCER because one consumer edge isn't ready yet restart-storms
+# the whole graph. One warning is emitted once per socket after ~10s so the
+# wait is visible in logs.
+_pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_so_far]
 _bus_retry_timer_id = None
-_BUS_ATTACH_MAX_ATTEMPTS = 40   # ~10 s at 250 ms
+_BUS_ATTACH_WARN_AFTER = 40   # ~10 s at 250 ms — log once, keep retrying
 
 def _try_bus_attach(tee_name, socket):
     """Attach one branch. Returns True on success, False if the tee isn't up yet."""
@@ -1386,12 +1391,12 @@ def _try_bus_attach(tee_name, socket):
         parent.add(branch)
         tee_src = tee.request_pad_simple("src_%u")
         if tee_src is None:
-            emit_event({"event": "error", "message": f"bus_attach: no tee src pad ({tee_name})"})
+            emit_event({"event": "warning", "message": f"bus_attach: no tee src pad ({tee_name})"})
             parent.remove(branch)
             return True  # don't retry a structural failure
         link_ret = tee_src.link(branch.get_static_pad("sink"))
         if link_ret != Gst.PadLinkReturn.OK:
-            emit_event({"event": "error",
+            emit_event({"event": "warning",
                         "message": f"bus_attach: link failed ({link_ret}) {socket}"})
             tee.release_request_pad(tee_src)
             parent.remove(branch)
@@ -1401,7 +1406,7 @@ def _try_bus_attach(tee_name, socket):
         emit_event({"event": "bus_attached", "tee": tee_name, "socket": socket})
         return True
     except GLib.Error as e:
-        emit_event({"event": "error", "message": f"bus_attach parse failed: {e.message}"})
+        emit_event({"event": "warning", "message": f"bus_attach parse failed: {e.message}"})
         return True
 
 def _retry_pending_bus_attaches():
@@ -1410,12 +1415,12 @@ def _retry_pending_bus_attaches():
         tee_name, attempts = _pending_bus_attaches[socket]
         if _try_bus_attach(tee_name, socket):
             _pending_bus_attaches.pop(socket, None)
-        elif attempts <= 1:
-            _pending_bus_attaches.pop(socket, None)
-            emit_event({"event": "error",
-                        "message": f"bus_attach: tee {tee_name} never appeared for {socket}"})
         else:
-            _pending_bus_attaches[socket] = [tee_name, attempts - 1]
+            attempts += 1
+            if attempts == _BUS_ATTACH_WARN_AFTER:
+                emit_event({"event": "warning",
+                            "message": f"bus_attach: tee {tee_name} not up yet for {socket} — still retrying"})
+            _pending_bus_attaches[socket] = [tee_name, attempts]
     if not _pending_bus_attaches:
         _bus_retry_timer_id = None
         return False   # stop the timer
@@ -1431,10 +1436,14 @@ def handle_bus_attach(data):
     if _try_bus_attach(tee_name, socket):
         _pending_bus_attaches.pop(socket, None)
         return
-    # Tee not up yet — queue a bounded retry (demuxer creates tees on pad-add).
-    _pending_bus_attaches[socket] = [tee_name, _BUS_ATTACH_MAX_ATTEMPTS]
+    # Tee not up yet — queue a persistent retry (demuxer creates tees on pad-add).
+    _pending_bus_attaches[socket] = [tee_name, 0]
     if _bus_retry_timer_id is None:
         _bus_retry_timer_id = GLib.timeout_add(250, _retry_pending_bus_attaches)
+
+
+def _clear_pending_bus_attaches():
+    _pending_bus_attaches.clear()
 
 
 def handle_bus_detach(data):
