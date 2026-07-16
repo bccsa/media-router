@@ -188,4 +188,103 @@ describe('GstRunner — Python event routing', () => {
         expect(response?.id).toBe('rpc-3');
         expect((response?.data as { event: string }).event).toBe('property_set');
     });
+
+    it('forwards the error source `element` on pipeline error events', () => {
+        // Attribution from the gst bus message source — diagnostics and
+        // per-element policies (e.g. a udpsrc timeout names its udpsrc).
+        emit({
+            event: 'error',
+            message: 'Could not write to resource',
+            element: 'unixfdsink3',
+        });
+        const errEvent = lastByType('event', 'error');
+        expect((errEvent?.data as { element?: string }).element).toBe('unixfdsink3');
+    });
+
+    describe('indefinite unixfd socket gate', () => {
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+        const gatedStart = (id: string, socket: string) =>
+            runner.handleControlMessage({
+                id,
+                type: 'request',
+                action: 'startPipeline',
+                data: {
+                    pipeline: `unixfdsrc socket-path=${socket} ! fakesink`,
+                    restartOnError: false,
+                },
+            });
+        const pythonOf = () => (runner as unknown as { python: unknown }).python;
+
+        it('does not spawn python while the producer socket is absent, and reports busGate', async () => {
+            gatedStart('rpc-g1', `/tmp/gate-gr-${process.pid}-a.sock`);
+            // The start request is ACKed immediately (gate runs behind it)…
+            expect(lastByType('response')?.id).toBe('rpc-g1');
+            // …but python must NOT be spawned while gated: waiting is free,
+            // spawning into a guaranteed unixfdsrc connect failure is the
+            // respawn storm the indefinite gate exists to prevent.
+            await sleep(400);
+            expect(pythonOf()).toBeNull();
+            // Operator visibility: the pending socket is reported upward.
+            const gate = lastByType('event', 'busGate');
+            expect((gate?.data as { pending: string[] }).pending).toEqual([
+                `/tmp/gate-gr-${process.pid}-a.sock`,
+            ]);
+        });
+
+        it('stopPipeline during the gate cancels it — python never spawns', async () => {
+            const exitSpy = vi
+                .spyOn(process, 'exit')
+                .mockImplementation((() => undefined) as never);
+            try {
+                gatedStart('rpc-g2', `/tmp/gate-gr-${process.pid}-b.sock`);
+                await sleep(50);
+                runner.handleControlMessage({
+                    id: 'rpc-g3',
+                    type: 'request',
+                    action: 'stopPipeline',
+                    data: {},
+                });
+                // Even if the producer socket appeared now, the aborted gate
+                // must not launch a pipeline for the stopped epoch.
+                const { createServer } = await import('node:net');
+                const srv = createServer(() => {});
+                await new Promise<void>((resolve) =>
+                    srv.listen(`/tmp/gate-gr-${process.pid}-b.sock`, () => resolve()),
+                );
+                await sleep(800);
+                expect(pythonOf()).toBeNull();
+                await new Promise((r) => srv.close(r));
+                const { unlinkSync } = await import('node:fs');
+                try {
+                    unlinkSync(`/tmp/gate-gr-${process.pid}-b.sock`);
+                } catch {
+                    /* gone */
+                }
+            } finally {
+                exitSpy.mockRestore();
+            }
+        });
+
+        it('a newer start supersedes an in-flight gate (no launch for the old epoch)', async () => {
+            gatedStart('rpc-g4', `/tmp/gate-gr-${process.pid}-c.sock`);
+            await sleep(50);
+            // Second gated start on a different (also absent) socket bumps the
+            // epoch; satisfying the FIRST socket afterwards must not launch.
+            gatedStart('rpc-g5', `/tmp/gate-gr-${process.pid}-d.sock`);
+            const { createServer } = await import('node:net');
+            const srv = createServer(() => {});
+            await new Promise<void>((resolve) =>
+                srv.listen(`/tmp/gate-gr-${process.pid}-c.sock`, () => resolve()),
+            );
+            await sleep(800);
+            expect(pythonOf()).toBeNull(); // still gated on the SECOND socket
+            await new Promise((r) => srv.close(r));
+            const { unlinkSync } = await import('node:fs');
+            try {
+                unlinkSync(`/tmp/gate-gr-${process.pid}-c.sock`);
+            } catch {
+                /* gone */
+            }
+        });
+    });
 });

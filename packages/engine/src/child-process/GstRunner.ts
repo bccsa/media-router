@@ -257,7 +257,7 @@ export class GstRunner {
                 // policy. RPC-handler failures use `command_error` (below).
                 this.currentState = 'error';
                 console.error(
-                    `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
+                    `[gst-runner] Pipeline ERROR: ${eventJson.message}${eventJson.element ? ` [element: ${eventJson.element}]` : ''}${eventJson.debug ? ` (${eventJson.debug})` : ''}`,
                 );
                 this.ipc.sendEvent('error', {
                     message: eventJson.message,
@@ -266,6 +266,9 @@ export class GstRunner {
                     // from hard bus errors. Plugins use this to switch to a
                     // fallback pipeline instead of looping on the failing one.
                     kind: eventJson.kind,
+                    // Source element name (from the gst bus message) — error
+                    // attribution for diagnostics and per-element policies.
+                    element: eventJson.element,
                 });
                 this.ipc.sendEvent('stateChange', { state: 'error' });
                 if (this.restartOnError) this.scheduleRestart();
@@ -296,6 +299,14 @@ export class GstRunner {
                 console.error(
                     `[gst-runner] Pad linked: rule=${eventJson.rule} index=${eventJson.index} pad=${eventJson.padName}`,
                 );
+                break;
+
+            case 'warning':
+                // Non-fatal runner diagnostics (parser fallback, bus_attach
+                // retries, stale-socket cleanup). Dropping these hid real
+                // failures — a video branch linked without its codec parser
+                // warned here and nothing reached the logs.
+                console.error(`[gst-runner] Warning: ${eventJson.message}`);
                 break;
 
             case 'property':
@@ -364,24 +375,30 @@ export class GstRunner {
 
         // unixfdsrc has no retry: connect() runs once in start(), so launching
         // before the producer's socket accepts burns a full start/timeout/
-        // backoff cycle. Gate on a live connect-probe instead; on deadline,
-        // launch anyway and let the existing error path take over.
+        // backoff cycle. Gate on a live connect-probe INDEFINITELY — waiting
+        // spawns nothing and errors nothing, so large graphs converge
+        // topologically instead of restart-storming (the old 10s
+        // "start anyway" fallback guaranteed a failed start per consumer per
+        // cycle and kept a 24-stream graph from ever settling). The abort
+        // predicate stops a superseded wait's probe loop outright; the
+        // periodic progress callback keeps the wait visible to the operator
+        // (console + `busGate` event → module health warning).
         const busSockets = unixFdSrcSocketPaths(opts.pipeline);
         if (busSockets.length === 0) {
             launch();
         } else {
             void waitForBusSockets(busSockets, {
-                onWait: (pending) =>
+                shouldAbort: () => epoch !== this.startEpoch,
+                onProgress: (pending) => {
                     console.error(
                         `[gst-runner] Waiting for producer bus socket(s): ${pending.join(', ')}`,
-                    ),
-            }).then((ready) => {
-                if (epoch !== this.startEpoch) return; // superseded by stop/newer start
-                if (!ready) {
-                    console.error(
-                        '[gst-runner] Producer bus socket(s) still absent after gate deadline — starting anyway',
                     );
-                }
+                    this.ipc.sendEvent('busGate', { pending });
+                },
+            }).then((ready) => {
+                if (!ready || epoch !== this.startEpoch) return; // superseded by stop/newer start
+                // All producer sockets accept — clear the gate signal, launch.
+                this.ipc.sendEvent('busGate', { pending: [] });
                 launch();
             });
         }

@@ -259,7 +259,27 @@ def on_bus_message(bus, message):
 
     if t == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
-        emit_event({"event": "error", "message": str(err.message), "debug": debug or ""})
+        src = message.src
+        element = (src.get_name() or "") if src is not None else ""
+        # CONTAINMENT: an error originating inside a per-consumer fan-out
+        # branch (`busedge_*` bin — edge unixfdsink bind/send failure) must
+        # never kill the producer pipeline: that restart-storms the producer's
+        # whole consumer subtree over ONE consumer's edge (the same class of
+        # cascade the attach-time fix removed). Detach the failed branch and
+        # keep running; the engine re-attaches the edge on the next connect /
+        # producer-PLAYING reconcile, and the affected consumer's own gate +
+        # restart path recovers it independently.
+        edge = _busedge_ancestor(src)
+        if edge is not None:
+            edge_socket = _socket_for_busedge(edge)
+            if edge_socket:
+                _teardown_bus_branch(edge_socket)
+            emit_event({"event": "warning",
+                        "message": f"bus edge failed ({element}): {err.message} — "
+                                   f"branch detached, producer unaffected"})
+            return True
+        emit_event({"event": "error", "message": str(err.message),
+                    "debug": debug or "", "element": element})
         # Stop the pipeline on error
         if pipeline:
             pipeline.set_state(Gst.State.NULL)
@@ -635,6 +655,8 @@ def _parser_prefix_for_pad(pad, rule_id):
     the single-branch and tee fan-out link paths."""
     caps = pad.get_current_caps() or pad.query_caps(None)
     parser = _parser_for_caps(caps)
+    emit_event({"event": "warning",
+                "message": f"DEBUG parser pick: pad={pad.get_name()} caps={caps.to_string()[:120] if caps else None} parser={parser!r}"})
     if parser is None:
         caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else 'unknown'
         warn_key = f"{rule_id}::{caps_name}"
@@ -1362,6 +1384,24 @@ def handle_set_klv_payload(data):
 #
 # Keyed by edge socket path so attach is idempotent — a re-applied connection
 # or a producer-restart re-attach is a no-op when the branch already exists.
+#
+# Convergence design decisions (gate01 24-stream incident, 2026-07-16):
+# - Edge branches are attached DYNAMICALLY only — static pre-creation in the
+#   pipeline string was evaluated and rejected: unixfdsink binds its socket at
+#   NULL→READY during sync_state_with_parent (verified gst 1.24 + 1.28), so a
+#   dynamic attach already publishes the socket before any data flows; static
+#   branches would bypass the _bus_branches idempotency (double-bind on
+#   re-attach) and be invisible to bus_detach, for no latency win on the real
+#   long pole (demuxer tees are pad-added, i.e. data-gated).
+# - A producer respawn remains CONSUMER-pipeline-fatal by design: consumers'
+#   unixfdsrc dies, and their restart goes through the (indefinite, spawn-free)
+#   busSocketGate — one cheap gated respawn per consumer per real producer
+#   restart, matching UDP-bus semantics. In-place unixfdsrc swap was rejected:
+#   a sourceless pipeline can't hold sinks in preroll, and the added state
+#   machine isn't worth ~1s on an infrequent operator action.
+# - Errors INSIDE a busedge_* branch are contained (branch detached, warning
+#   emitted) — see on_bus_message. A single consumer's edge failure must never
+#   kill the producer; that cascade is what kept large graphs from converging.
 _bus_branches = {}      # socket_path -> (branch_bin, tee, tee_src_pad)
 _bus_branch_seq = 0
 # Attaches whose tee doesn't exist YET. The mpegts-demuxer creates its output
@@ -1377,6 +1417,32 @@ _pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_so_far]
 _bus_retry_timer_id = None
 _BUS_ATTACH_WARN_AFTER = 40   # ~10 s at 250 ms — log once, keep retrying
 
+def _remove_stale_bus_socket(socket_path):
+    # unixfdsink cannot bind over an existing socket file, and a runner that
+    # dies hard (SIGKILL on engine stop, SIGSEGV) never unlinks its path. Edge
+    # paths are deterministic, so the next attach is guaranteed to collide and
+    # the producer crash-loops. Unlink only if nothing is listening — a live
+    # listener means another producer owns the edge (ghost engine), and
+    # binding over it must stay a loud failure, not a silent takeover.
+    if not os.path.exists(socket_path):
+        return
+    probe = pysocket.socket(pysocket.AF_UNIX, pysocket.SOCK_STREAM)
+    probe.settimeout(0.2)
+    try:
+        probe.connect(socket_path)
+        emit_event({"event": "warning",
+                    "message": f"bus_attach: live producer already on {socket_path} — not unlinking"})
+    except OSError:
+        try:
+            os.unlink(socket_path)
+            emit_event({"event": "warning",
+                        "message": f"bus_attach: unlinked stale bus socket {socket_path}"})
+        except OSError:
+            pass
+    finally:
+        probe.close()
+
+
 def _try_bus_attach(tee_name, socket):
     """Attach one branch. Returns True on success, False if the tee isn't up yet."""
     global _bus_branch_seq
@@ -1385,6 +1451,7 @@ def _try_bus_attach(tee_name, socket):
     tee = pipeline.get_by_name(tee_name)
     if tee is None:
         return False  # tee not created yet — caller queues a retry
+    _remove_stale_bus_socket(socket)
     try:
         branch = Gst.parse_bin_from_description(
             "queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0"
@@ -1456,14 +1523,18 @@ def _clear_pending_bus_attaches():
     _pending_bus_attaches.clear()
 
 
-def handle_bus_detach(data):
-    """Detach and tear down a per-consumer fan-out branch by edge socket."""
-    socket = data.get("socket", "")
+def _teardown_bus_branch(socket):
+    """Tear down one fan-out branch by edge socket. Returns True if it existed.
+
+    Shared by `bus_detach` (engine-driven) and the on_bus_message busedge
+    error containment (runner-driven: a failed edge is detached instead of
+    killing the producer pipeline).
+    """
     # Cancel a not-yet-satisfied attach for this edge, if any.
     _pending_bus_attaches.pop(socket, None)
     entry = _bus_branches.pop(socket, None)
     if entry is None:
-        return
+        return False
     branch, tee, tee_src = entry
     try:
         branch.set_state(Gst.State.NULL)
@@ -1474,9 +1545,42 @@ def handle_bus_detach(data):
         parent = branch.get_parent()
         if parent is not None:
             parent.remove(branch)
+        # unixfdsink does not unlink its socket file on NULL; remove it so a
+        # later attach on this edge doesn't hit the stale-file bind failure.
+        try:
+            os.unlink(socket)
+        except OSError:
+            pass
         emit_event({"event": "bus_detached", "socket": socket})
     except Exception:  # noqa: BLE001 — teardown must never crash the runner
         pass
+    return True
+
+
+def _busedge_ancestor(obj):
+    """Nearest `busedge_*` fan-out branch bin above a message source, or None."""
+    while obj is not None:
+        try:
+            name = obj.get_name() or ''
+        except Exception:  # noqa: BLE001 — never let attribution crash the bus watch
+            return None
+        if name.startswith('busedge_'):
+            return obj
+        obj = obj.get_parent()
+    return None
+
+
+def _socket_for_busedge(edge_bin):
+    """Reverse-lookup the edge socket path owning a busedge branch bin."""
+    for sock, (branch, _tee, _pad) in _bus_branches.items():
+        if branch is edge_bin:
+            return sock
+    return None
+
+
+def handle_bus_detach(data):
+    """Detach and tear down a per-consumer fan-out branch by edge socket."""
+    _teardown_bus_branch(data.get("socket", ""))
 
 
 # ---------------------------------------------------------------------------

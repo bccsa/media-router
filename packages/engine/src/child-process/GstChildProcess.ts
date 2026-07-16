@@ -147,6 +147,15 @@ export class GstChildProcess extends EventEmitter {
             this.emit('error', data);
         });
 
+        // unixfd socket-gate progress: the runner is waiting (indefinitely)
+        // for producer edge sockets before launching the pipeline. Forwarded
+        // so the module can surface a health warning naming the pending
+        // sockets — without it a gated module reports healthy while nothing
+        // runs. `pending: []` clears the signal (gate opened).
+        this.ipc.on('busGate', (data) => {
+            this.emit('busGate', data);
+        });
+
         // Monitor child exit for auto-restart
         this.child.on('exit', (code) => {
             this.running = false;

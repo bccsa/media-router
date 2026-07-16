@@ -137,6 +137,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.setHealth('error', data.message);
         });
 
+        // unixfd socket-gate progress: the runner waits indefinitely for
+        // producer edge sockets before launching. Surface the wait as a
+        // health warning naming the pending sockets — otherwise a gated
+        // module reports 'ok' forever while nothing runs (e.g. a consumer
+        // whose producer is disabled). Cleared when the gate opens
+        // (pending: []) and superseded by the 'playing' health flip.
+        this.childProcess.on('busGate', (data: { pending: string[] }) => {
+            if (data.pending.length > 0) {
+                this.setStatusData('bus', {
+                    'Waiting for producer': data.pending.join(', '),
+                });
+                this.setHealth('warning', `Waiting for producer bus socket(s): ${data.pending.join(', ')}`);
+            } else {
+                this.setStatusData('bus', {});
+                if (this.health === 'warning') this.setHealth('ok');
+            }
+        });
+
         await this.childProcess.start(desc);
         this.running = true;
         this.health = 'ok';

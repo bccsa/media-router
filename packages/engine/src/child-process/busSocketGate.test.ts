@@ -70,33 +70,73 @@ describe('probeUnixSocket', () => {
 });
 
 describe('waitForBusSockets', () => {
-    it('waits until a late producer binds, reporting the pending path once', async () => {
+    it('waits until a late producer binds, reporting the pending path', async () => {
         const p = scratchPath();
         const pending: string[][] = [];
         setTimeout(() => void listen(p), 200);
         const ok = await waitForBusSockets([p], {
-            deadlineMs: 3000,
-            intervalMs: 50,
-            onWait: (x) => pending.push(x),
+            onProgress: (x) => pending.push(x),
         });
         expect(ok).toBe(true);
-        expect(pending).toEqual([[p]]);
+        expect(pending[0]).toEqual([p]);
     });
-    it('gives up at the deadline when the producer never appears', async () => {
-        const ok = await waitForBusSockets([scratchPath()], { deadlineMs: 400, intervalMs: 50 });
+
+    it('has NO deadline — a very late producer still opens the gate', async () => {
+        // Longer than the old 10s deadline would be impractical in a unit
+        // test; what matters is that no deadline parameter exists and the
+        // wait keeps probing across several backoff rounds (250→500→1000ms)
+        // without resolving false.
+        const p = scratchPath();
+        setTimeout(() => void listen(p), 1200);
+        const ok = await waitForBusSockets([p], {});
+        expect(ok).toBe(true);
+    }, 10_000);
+
+    it('aborts (resolves false) when shouldAbort trips, and stops probing', async () => {
+        const p = scratchPath(); // never bound
+        let aborted = false;
+        let progressAfterAbort = 0;
+        setTimeout(() => {
+            aborted = true;
+        }, 300);
+        const ok = await waitForBusSockets([p], {
+            shouldAbort: () => aborted,
+            onProgress: () => {
+                if (aborted) progressAfterAbort++;
+            },
+        });
         expect(ok).toBe(false);
+        // Once aborted, the loop exits before probing again — no progress
+        // callbacks may fire after the abort took effect.
+        expect(progressAfterAbort).toBe(0);
     });
-    it('resolves immediately (no onWait) when all sockets are already up', async () => {
+
+    it('resolves immediately (no onProgress) when all sockets are already up', async () => {
         const p = scratchPath();
         await listen(p);
-        let waited = false;
+        let reported = false;
         const ok = await waitForBusSockets([p], {
-            deadlineMs: 500,
-            onWait: () => {
-                waited = true;
+            onProgress: () => {
+                reported = true;
             },
         });
         expect(ok).toBe(true);
-        expect(waited).toBe(false);
+        expect(reported).toBe(false);
+    });
+
+    it('reports only the still-pending subset', async () => {
+        const up = scratchPath();
+        const down = scratchPath();
+        await listen(up);
+        const pending: string[][] = [];
+        let aborted = false;
+        setTimeout(() => {
+            aborted = true;
+        }, 300);
+        await waitForBusSockets([up, down], {
+            shouldAbort: () => aborted,
+            onProgress: (x) => pending.push(x),
+        });
+        expect(pending[0]).toEqual([down]);
     });
 });
