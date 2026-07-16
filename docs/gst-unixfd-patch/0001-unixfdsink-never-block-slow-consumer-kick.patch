@@ -1,0 +1,75 @@
+--- a/gst/unixfd/gstunixfdsink.c	2026-07-16 21:10:14.674436241 +0200
++++ b/gst/unixfd/gstunixfdsink.c	2026-07-16 21:10:14.690436259 +0200
+@@ -51,6 +51,7 @@
+ 
+ #include <stdint.h>
+ #include <glib/gstdio.h>
++#include <sys/socket.h>
+ #include <gio/gio.h>
+ #include <gio/gunixsocketaddress.h>
+ 
+@@ -385,6 +386,22 @@
+     return G_SOURCE_CONTINUE;
+   }
+ 
++  /* Local patch (media-router): at datagram-like buffer rates (thousands of
++   * NEW_BUFFER commands/s) the default ~208KB socket buffer holds well under
++   * a second of commands — a client that pauses briefly (e.g. downstream
++   * preroll at join) overflows it and trips the slow-consumer kick. Give
++   * each client several seconds of headroom so only a genuinely hung
++   * consumer gets kicked (requires net.core.wmem_max >= this value). */
++  {
++    GError *sockopt_error = NULL;
++    if (!g_socket_set_option (client_socket, SOL_SOCKET, SO_SNDBUF,
++            4 * 1024 * 1024, &sockopt_error)) {
++      GST_WARNING_OBJECT (self, "Could not grow client send buffer: %s",
++          sockopt_error->message);
++      g_clear_error (&sockopt_error);
++    }
++  }
++
+   client = g_new0 (Client, 1);
+   client->buffers =
+       g_hash_table_new_full (NULL, NULL, (GDestroyNotify) gst_buffer_unref,
+@@ -440,6 +457,18 @@
+ 
+   GST_OBJECT_LOCK (self);
+ 
++  /* Local patch (media-router): a SIGKILL'd producer leaves its socket file
++   * behind and the next bind fails with EADDRINUSE. Engine pipelines are
++   * restarted aggressively, so unlink a pre-existing path before binding —
++   * same "last bind wins" semantics the UDP bus had. */
++  if (self->socket_type == G_UNIX_SOCKET_ADDRESS_PATH
++      && self->socket_path != NULL
++      && g_file_test (self->socket_path, G_FILE_TEST_EXISTS)) {
++    GST_WARNING_OBJECT (self, "Removing stale socket path %s",
++        self->socket_path);
++    g_unlink (self->socket_path);
++  }
++
+   self->socket =
+       gst_unix_fd_socket_new (self->socket_path, self->socket_type, &addr,
+       &error);
+@@ -517,6 +546,22 @@
+   g_hash_table_iter_init (&iter, self->clients);
+   while (g_hash_table_iter_next (&iter, (gpointer) & socket,
+           (gpointer) & client)) {
++    /* Local patch (media-router): never block in render. This runs under
++     * GST_OBJECT_LOCK; a blocking send to a full client socket deadlocks the
++     * whole sink — the command thread (which drains RELEASE_BUFFER messages
++     * and accepts new clients) waits on the same lock, so the client can
++     * never be drained and the pipeline freezes until the session dies.
++     * A client that has stopped emptying its socket gets kicked instead —
++     * it reconnects cleanly via its own restart path. */
++    if (type == COMMAND_TYPE_NEW_BUFFER
++        && !g_socket_condition_check (socket, G_IO_OUT)) {
++      GST_WARNING_OBJECT (self,
++          "Client %p is not draining its socket — kicking slow consumer",
++          client);
++      g_hash_table_iter_remove (&iter);
++      client_removed = TRUE;
++      continue;
++    }
+     if (!gst_unix_fd_send_command (socket, type, fds, payload, payload_size,
+             &error)) {
+       GST_ERROR_OBJECT (self, "Failed to send command %d to client %p: %s",
