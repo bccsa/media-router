@@ -1402,8 +1402,28 @@ def handle_set_klv_payload(data):
 # - Errors INSIDE a busedge_* branch are contained (branch detached, warning
 #   emitted) — see on_bus_message. A single consumer's edge failure must never
 #   kill the producer; that cascade is what kept large graphs from converging.
-_bus_branches = {}      # socket_path -> (branch_bin, tee, tee_src_pad)
+_bus_branches = {}      # socket_path -> dict(branch, tee, tee_src, tee_name, queue, sink_pad, progressed, stall, probe_id)
 _bus_branch_seq = 0
+# Edge-stall watchdog (gate01 wedge, 2026-07-16): stock unixfdsink's send
+# BLOCKS forever on a connected client that stops reading (~208KB kernel
+# sndbuf ≈ 60ms of a 28Mbps stream) while holding the sink object lock —
+# freezing the producer's whole chain. A consumer stuck mid-startup is
+# exactly such a client (unixfdsrc connects at READY, reads only at
+# PLAYING). The watchdog samples each edge branch every 2s via a one-shot
+# buffer probe on the unixfdsink's sink pad; a branch whose queue holds
+# data but whose sink saw no buffer for 3 consecutive ticks is torn down
+# and RE-CREATED in place (fresh sink, same socket path): the zombie
+# client gets EOF → its runner errors → gated respawn → clean reconnect.
+# Self-healing on both sides with no engine round-trip.
+_BUS_STALL_TICK_MS = 2000
+_BUS_STALL_TICKS = 3
+_bus_stall_timer_id = None
+# Per-tee input progress flags: {tee_name: {"pad": tee_sink_pad, "progressed": bool, "probe_id": id}}
+# The discriminator that makes edge resets safe: an edge is reset only when
+# its TEE keeps receiving data while the edge's sink delivers nothing — a
+# dark/idle source (tee idle) never triggers resets, so an idle-but-healthy
+# edge is left alone.
+_bus_tee_progress = {}
 # Attaches whose tee doesn't exist YET. The mpegts-demuxer creates its output
 # tees dynamically at pad-added time (when source data flows), so on a busy
 # multi-stream startup a tee can legitimately take longer than any fixed
@@ -1446,16 +1466,45 @@ def _remove_stale_bus_socket(socket_path):
 def _try_bus_attach(tee_name, socket):
     """Attach one branch. Returns True on success, False if the tee isn't up yet."""
     global _bus_branch_seq
-    if pipeline is None or socket in _bus_branches:
+    if pipeline is None:
+        return True
+    existing = _bus_branches.get(socket)
+    if existing is not None:
+        # Idempotent re-attach (connection re-apply / producer-PLAYING
+        # reconcile). NOT a plain no-op: an attach that landed while the
+        # pipeline's own state change was in progress can leave the branch
+        # stuck at READY — a bin's state cascade misses children added
+        # mid-transition, and sync_state_with_parent latches whatever state
+        # the parent momentarily had. A READY branch has inactive pads, so
+        # the tee's first sticky-event push returns FLUSHING and the whole
+        # upstream chain freezes (observed live: netsrc blocked, rx_queue
+        # full, sink accepting clients but never receiving a caps event).
+        # Re-syncing here lets the engine's PLAYING re-attach bump the
+        # branch to the now-settled parent state.
+        try:
+            existing["branch"].sync_state_with_parent()
+        except Exception:  # noqa: BLE001
+            pass
         return True
     tee = pipeline.get_by_name(tee_name)
     if tee is None:
         return False  # tee not created yet — caller queues a retry
     _remove_stale_bus_socket(socket)
     try:
+        # wait-for-connection=false is LOAD-BEARING (gate01 wedge, 2026-07-16):
+        # stock unixfdsink KICKS a client on any send failure (silently — the
+        # GST_ERROR goes to the disabled gst debug log), and with the default
+        # wait-for-connection=true the NEXT render then blocks FOREVER on
+        # wait_for_connection_cond once the client table is empty — freezing
+        # the producer's whole chain (observed: netsrc rx_queue full, 2.4M
+        # kernel drops, zero data on every edge). With per-consumer fan-out,
+        # "no client → drop and keep flowing" is exactly the UDP-multicast
+        # semantic this bus replaces; a kicked/gone consumer recovers through
+        # its own busSocketGate + restart path without touching the producer.
         branch = Gst.parse_bin_from_description(
             "queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0"
-            f" ! unixfdsink socket-path={socket} sync=false async=false",
+            f" ! unixfdsink socket-path={socket} sync=false async=false"
+            " wait-for-connection=false",
             True,
         )
         _bus_branch_seq += 1
@@ -1466,9 +1515,24 @@ def _try_bus_attach(tee_name, socket):
         # (same reason _link_pad_to_branches_via_tee keeps its tee a direct child).
         parent = tee.get_parent() or pipeline
         parent.add(branch)
+        # Activate the branch BEFORE linking it to the tee. The link is what
+        # exposes the pad to dataflow: when an attach races the pipeline's
+        # own NULL→PLAYING transition, the bin's state cascade misses a child
+        # added mid-change, and the tee's first sticky-event push into the
+        # still-inactive pad returns FLUSHING — which pauses the producer's
+        # upstream queue task PERMANENTLY (observed live on gate01: netsrc
+        # blocked, rx_queue full, edge sink accepting clients but never
+        # receiving a caps event; no later state-sync can restart the paused
+        # task). An unlinked branch activates trivially, so add → activate →
+        # link removes the race. Target the pipeline's PENDING state —
+        # sync_state_with_parent would latch the mid-transition current
+        # state (READY) instead.
+        _, st_cur, st_pend = pipeline.get_state(0)
+        branch.set_state(st_pend if st_pend != Gst.State.VOID_PENDING else st_cur)
         tee_src = tee.request_pad_simple("src_%u")
         if tee_src is None:
             emit_event({"event": "warning", "message": f"bus_attach: no tee src pad ({tee_name})"})
+            branch.set_state(Gst.State.NULL)
             parent.remove(branch)
             return True  # don't retry a structural failure
         link_ret = tee_src.link(branch.get_static_pad("sink"))
@@ -1476,15 +1540,128 @@ def _try_bus_attach(tee_name, socket):
             emit_event({"event": "warning",
                         "message": f"bus_attach: link failed ({link_ret}) {socket}"})
             tee.release_request_pad(tee_src)
+            branch.set_state(Gst.State.NULL)
             parent.remove(branch)
             return True
-        branch.sync_state_with_parent()
-        _bus_branches[socket] = (branch, tee, tee_src)
+        entry = {"branch": branch, "tee": tee, "tee_src": tee_src,
+                 "tee_name": tee_name, "queue": None, "sink_pad": None,
+                 "progressed": False, "stall": 0, "probe_id": None}
+        it2 = branch.iterate_recurse()
+        while True:
+            r2, el2 = it2.next()
+            if r2 == Gst.IteratorResult.RESYNC:
+                it2.resync()
+                continue
+            if r2 != Gst.IteratorResult.OK:
+                break
+            f2 = el2.get_factory()
+            fname = f2.get_name() if f2 else ''
+            if fname == 'unixfdsink':
+                entry["sink_pad"] = el2.get_static_pad('sink')
+            elif fname == 'queue':
+                entry["queue"] = el2
+        _bus_branches[socket] = entry
+        _arm_bus_progress_probe(entry)
+        if tee_name not in _bus_tee_progress:
+            tpad = tee.get_static_pad('sink')
+            if tpad is not None:
+                _bus_tee_progress[tee_name] = {"pad": tpad, "progressed": False, "probe_id": None}
+                _arm_tee_progress_probe(_bus_tee_progress[tee_name])
+        _ensure_bus_stall_timer()
         emit_event({"event": "bus_attached", "tee": tee_name, "socket": socket})
         return True
     except GLib.Error as e:
         emit_event({"event": "warning", "message": f"bus_attach parse failed: {e.message}"})
         return True
+
+
+def _arm_bus_progress_probe(entry):
+    """One-shot buffer probe on the edge sink's pad — sets the progress flag."""
+    pad = entry.get("sink_pad")
+    if pad is None or entry.get("probe_id") is not None:
+        return
+
+    def _cb(_pad, _info):
+        entry["progressed"] = True
+        entry["probe_id"] = None
+        return Gst.PadProbeReturn.REMOVE
+
+    entry["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _cb)
+
+
+def _arm_tee_progress_probe(tentry):
+    """One-shot buffer probe on the tee's sink pad — 'the producer has data'."""
+    if tentry.get("probe_id") is not None:
+        return
+
+    def _cb(_pad, _info):
+        tentry["progressed"] = True
+        tentry["probe_id"] = None
+        return Gst.PadProbeReturn.REMOVE
+
+    tentry["probe_id"] = tentry["pad"].add_probe(Gst.PadProbeType.BUFFER, _cb)
+
+
+def _ensure_bus_stall_timer():
+    global _bus_stall_timer_id
+    if _bus_stall_timer_id is None and _bus_branches:
+        _bus_stall_timer_id = GLib.timeout_add(_BUS_STALL_TICK_MS, _bus_stall_watchdog)
+
+
+def _bus_stall_watchdog():
+    """Detect and reset edge branches whose sink stopped draining (see the
+    watchdog comment above). Never raises — a watchdog fault must not take
+    the runner down."""
+    global _bus_stall_timer_id
+    # Snapshot per-tee progress for this tick, then re-arm the tee probes.
+    tee_flowing = {}
+    for tname, tentry in _bus_tee_progress.items():
+        try:
+            tee_flowing[tname] = tentry["progressed"]
+            if tentry["progressed"]:
+                tentry["progressed"] = False
+                _arm_tee_progress_probe(tentry)
+        except Exception:  # noqa: BLE001
+            tee_flowing[tname] = False
+    for socket in list(_bus_branches.keys()):
+        entry = _bus_branches.get(socket)
+        if entry is None:
+            continue
+        try:
+            if entry["progressed"]:
+                entry["progressed"] = False
+                entry["stall"] = 0
+                _arm_bus_progress_probe(entry)
+                continue
+            # No edge progress this tick. Only counts as a stall when the tee
+            # itself IS receiving data (dark source ≠ stuck edge). The stuck
+            # buffer usually sits inside the sink's blocked render (already
+            # popped from the queue), so queue level can read 0 — do not gate
+            # on it.
+            if tee_flowing.get(entry["tee_name"], False):
+                entry["stall"] += 1
+                if entry["stall"] >= _BUS_STALL_TICKS:
+                    tee_name = entry["tee_name"]
+                    emit_event({"event": "warning",
+                                "message": f"bus edge stalled (tee flowing, edge sink "
+                                           f"silent {entry['stall']} ticks) — resetting {socket}"})
+                    _teardown_bus_branch(socket)
+                    _try_bus_attach(tee_name, socket)
+            else:
+                entry["stall"] = 0
+        except Exception:  # noqa: BLE001
+            pass
+    if not _bus_branches:
+        for tentry in _bus_tee_progress.values():
+            try:
+                if tentry.get("probe_id") is not None:
+                    tentry["pad"].remove_probe(tentry["probe_id"])
+            except Exception:  # noqa: BLE001
+                pass
+        _bus_tee_progress.clear()
+        _bus_stall_timer_id = None
+        return False
+    return True
 
 def _retry_pending_bus_attaches():
     global _bus_retry_timer_id
@@ -1535,7 +1712,15 @@ def _teardown_bus_branch(socket):
     entry = _bus_branches.pop(socket, None)
     if entry is None:
         return False
-    branch, tee, tee_src = entry
+    branch, tee, tee_src = entry["branch"], entry["tee"], entry["tee_src"]
+    try:
+        # Drop a pending progress probe so its closure can't fire on a pad of
+        # a removed branch.
+        if entry.get("probe_id") is not None and entry.get("sink_pad") is not None:
+            entry["sink_pad"].remove_probe(entry["probe_id"])
+            entry["probe_id"] = None
+    except Exception:  # noqa: BLE001
+        pass
     try:
         branch.set_state(Gst.State.NULL)
         peer = tee_src.get_peer()
@@ -1572,8 +1757,8 @@ def _busedge_ancestor(obj):
 
 def _socket_for_busedge(edge_bin):
     """Reverse-lookup the edge socket path owning a busedge branch bin."""
-    for sock, (branch, _tee, _pad) in _bus_branches.items():
-        if branch is edge_bin:
+    for sock, entry in _bus_branches.items():
+        if entry["branch"] is edge_bin:
             return sock
     return None
 

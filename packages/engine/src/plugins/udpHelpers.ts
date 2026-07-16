@@ -167,14 +167,21 @@ export function buildUdpSrc(opts: UdpSrcOpts): string {
         // sheds its own buffers instead — same loss-locality UDP gave us.
         const nameClause = opts.name ? ` name=${opts.name}` : '';
         const socket = opts.socketPath ?? busSocketPath(opts.port);
-        // NON-leaky bounded ingress: a shed here cuts a muxed TS mid-stream
-        // (receiver-visible corruption). With per-consumer fan-out the
-        // producer no longer needs consumer-side shedding — a stalled
-        // consumer back-pressures only its own producer-edge branch, whose
-        // leaky queue is the (sole, whole-branch) shed point.
+        // LEAKY deep ingress (5 s, never approached in steady state — mux
+        // latency budget is 1.2 s — so it adds no latency and never sheds
+        // during normal skew). Non-leaky ingress deadlocked gate01: stock
+        // unixfdsink sends on BLOCKING client sockets under its object lock,
+        // so when THIS module's own output edge stalls, a non-leaky input
+        // queue fills, unixfdsrc stops draining its socket, the upstream
+        // producer's sink blocks in send holding its lock, and the freeze
+        // propagates producer-by-producer through the whole graph (and any
+        // bus_attach then deadlocks that runner's mainloop in gst_bin_add →
+        // gst_object_check_uniqueness). Shedding after 5 s of stall cuts a
+        // muxed TS mid-stream, but a stall that long has already lost the
+        // data — corruption on one branch beats a wedged graph.
         return (
             `unixfdsrc${nameClause} socket-path=${socket}` +
-            ' ! queue leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0'
+            ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0'
         );
     }
     // 4 MB default — picked as a compromise:

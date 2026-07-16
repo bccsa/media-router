@@ -181,12 +181,13 @@ describe('unixfd bus transport (MR_BUS_TRANSPORT=unixfd)', () => {
             timeoutNs: 5_000_000_000,
             bufferSize: 65_536,
         });
-        // NON-leaky bounded ingress: a shed on a muxed TS is mid-stream corruption;
-        // with per-consumer fan-out the producer-edge branch is the only shed
-        // point, so consumers hold + back-pressure instead of dropping.
+        // LEAKY deep ingress (5 s, above any steady-state skew): consumers
+        // must never stop draining their socket — stock unixfdsink blocks in
+        // send under its object lock, so a back-pressuring consumer freezes
+        // its upstream producer and the stall cascades through the graph.
         expect(s).toBe(
             'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
-                ' ! queue leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
         );
     });
 
@@ -223,7 +224,7 @@ describe('unixfd bus transport (MR_BUS_TRANSPORT=unixfd)', () => {
         const edge = '/tmp/mr-bus-40001-ab12cd.sock';
         expect(buildUdpSrc({ host: '239.255.0.1', port: 40001, socketPath: edge })).toBe(
             `unixfdsrc socket-path=${edge}` +
-                ' ! queue leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
         );
         // Falls back to the channel socket when no edge socket is given.
         expect(buildUdpSrc({ host: '239.255.0.1', port: 40001 })).toContain(
