@@ -90,6 +90,46 @@ sudo apt-get install -y \
 
 Same as Debian above. PipeWire is the default audio server on Raspberry Pi OS Bookworm.
 
+## Kernel sysctl Settings
+
+The engine moves high-rate media over kernel sockets; the defaults
+(~208 KB) are too small. Install as e.g. `/etc/sysctl.d/60-media-router.conf`:
+
+```
+# unixfd bus transport: unixfdsink requests SO_SNDBUF=4MB per client
+# socket; setsockopt is silently CLAMPED to wmem_max, so without this
+# the buffer stays ~208KB and slow-but-alive consumers lose data.
+net.core.wmem_max = 4194304
+net.core.wmem_default = 4194304
+
+# UDP receive headroom for bursty MPEG-TS mux output into local receivers
+# (measured: 760k drops on a 208KB rcvbuf at 24 streams; 0 drops at 128M).
+# rmem_max also caps what `udpsrc buffer-size=...` can actually request.
+net.core.rmem_max = 134217728
+net.core.rmem_default = 134217728
+```
+
+Apply with `sudo sysctl --system` (or reboot). On image-based /
+read-only-rootfs deployments, bake the fragment into the image — runtime
+`sysctl -w` does not survive a rootfs swap.
+
+## unixfd Bus Transport (optional, `MR_BUS_TRANSPORT=unixfd`)
+
+The inter-pipeline media bus defaults to UDP multicast on loopback. The
+zero-copy unixfd transport additionally requires:
+
+- **GStreamer ≥ 1.24** — `unixfdsrc`/`unixfdsink` (in `plugins-bad`).
+- **A patched `unixfdsink`** for production fan-out: stock unixfdsink
+  (verified through 1.28.2) sends to clients on *blocking* sockets while
+  holding the element's object lock, so a single stalled consumer freezes
+  the producer pipeline permanently and can deadlock dynamic branch
+  attachment. The required patch (never block — skip unwritable clients,
+  kick after 10 s dead; 4 MB client `SO_SNDBUF`; stale socket unlink before
+  bind) is maintained with the deployment tooling, outside this repository.
+- The `wmem` sysctl values above.
+
+Without the patch, keep `MR_BUS_TRANSPORT` unset (UDP bus).
+
 ## Optional Dependencies
 
 | Dependency | Purpose |
