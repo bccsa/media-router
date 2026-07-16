@@ -5,6 +5,7 @@ export type {
     PluginModule,
     PipelineDescription,
     PadLinkRule,
+    RistRunnerConfig,
     EngineServices,
     ModuleServices,
 } from './plugins/PluginModule.js';

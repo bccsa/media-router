@@ -188,6 +188,39 @@ export interface PipelineDescription {
      * `level` element and keys its gain envelope off `level:sclevel`.
      */
     busReports?: BusReport[];
+    /**
+     * librist half of a RIST module pipeline. When set, the runner drives
+     * librist in-process (ctypes binding, `librist.py`): a `receiver` pushes
+     * every RIST payload into the named appsrc; a `sender` drains the named
+     * appsink into librist. This replaces the ristreceiver/ristsender CLI
+     * relay and its loopback UDP hop, so RIST modules ride the normal bus
+     * transport (tee fan-out under unixfd) like any other gst module. librist
+     * stats arrive on the `rist:stats` plugin-event channel (same JSON shape
+     * the CLI printed on stderr).
+     */
+    rist?: RistRunnerConfig;
+}
+
+/** librist runner config — see PipelineDescription.rist. */
+export interface RistRunnerConfig {
+    /** `receiver` feeds the named appsrc; `sender` drains the named appsink. */
+    role: 'receiver' | 'sender';
+    /** rist:// peer URLs; per-link params (weight, cname, …) stay in the URL. */
+    urls: string[];
+    /** RIST profile: 0 simple, 1 main (default), 2 advanced. */
+    profile?: number;
+    /** Recovery buffer in ms — folded into each URL as `buffer=`. */
+    buffer?: number;
+    /** Encryption pre-shared secret — folded into each URL as `secret=`. */
+    secret?: string;
+    /** AES key size for `secret` (128 | 256) — folded in as `aes-type=`. */
+    encType?: number;
+    /** NULL-packet deletion (sender only). */
+    npd?: boolean;
+    /** librist stats interval in ms → `rist:stats` plugin events (0 disables). */
+    statsInterval?: number;
+    /** `name=` of the appsrc (receiver) / appsink (sender) in `pipeline`. */
+    appElement: string;
 }
 
 /** A bus-message subscription — see PipelineDescription.busReports. */

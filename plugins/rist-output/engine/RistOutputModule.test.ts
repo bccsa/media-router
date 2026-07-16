@@ -3,7 +3,17 @@ import { RistOutputModule } from './RistOutputModule.js';
 
 function makeModule() {
     const module = new RistOutputModule() as any;
-    module.services = { instanceId: 'rist-out-1' };
+    module.services = {
+        instanceId: 'rist-out-1',
+        mediaRouter: {
+            getModuleUdpSource: vi.fn(() => ({
+                host: '239.255.0.1',
+                port: 41000,
+                connectionId: 'c1',
+                socketPath: undefined,
+            })),
+        },
+    };
     module.config = {};
     module.dynamicStatusSections = [];
     const setStatusData = vi.fn();
@@ -16,47 +26,96 @@ function makeModule() {
 }
 
 describe('RistOutputModule.buildPipeline', () => {
-    it('always returns null — ristsender CLI does the work, no GStreamer pipeline', () => {
+    const savedTransport = process.env.MR_BUS_TRANSPORT;
+    afterEach(() => {
+        if (savedTransport === undefined) delete process.env.MR_BUS_TRANSPORT;
+        else process.env.MR_BUS_TRANSPORT = savedTransport;
+    });
+
+    it('returns null when no MPEG-TS source is connected', () => {
         const { module } = makeModule();
+        module.services.mediaRouter.getModuleUdpSource = vi.fn(() => undefined);
+        module.log = { info: vi.fn() };
         expect(module.buildPipeline({})).toBeNull();
     });
-});
 
-describe('RistOutputModule.onStart', () => {
-    it('joins the multicast bus group on lo for its input', async () => {
+    it('reads the bus and drains into the librist appsink (udp transport)', () => {
+        delete process.env.MR_BUS_TRANSPORT;
         const { module } = makeModule();
-        module.services.mediaRouter = {
-            getModuleUdpSource: vi.fn(() => ({ host: '239.255.0.1', port: 41000, connectionId: 'c1' })),
+        const desc = module.buildPipeline({})!;
+        expect(desc.pipeline).toContain('udpsrc multicast-group=239.255.0.1 port=41000');
+        expect(desc.pipeline).toContain('appsink name=ristsink');
+        expect(desc.restartOnError).toBe(true);
+    });
+
+    it('reads its per-consumer edge socket under the unixfd bus', () => {
+        process.env.MR_BUS_TRANSPORT = 'unixfd';
+        const { module } = makeModule();
+        module.services.mediaRouter.getModuleUdpSource = vi.fn(() => ({
+            host: '239.255.0.1',
+            port: 41000,
+            connectionId: 'c1',
+            socketPath: '/tmp/mr-bus-41000-abc123.sock',
+        }));
+        const desc = module.buildPipeline({})!;
+        expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock');
+        // The queue between unixfdsrc and the appsink is buildUdpSrc's drain
+        // contract — presence matters here, its tuning is the builder's test.
+        expect(desc.pipeline).toMatch(/unixfdsrc[^!]+! queue /);
+        expect(desc.pipeline).toContain('appsink name=ristsink');
+        expect(desc.pipeline).not.toContain('udpsrc');
+    });
+
+    it('carries the librist sender config with per-link rist:// URLs', () => {
+        const { module } = makeModule();
+        module.config = {
+            links: [{ mode: 'caller', address: 'rist.example.net', port: 5004, weight: 5, cname: 'tx1' }],
+            profile: 1,
+            buffer: 1200,
+            secret: 'hush',
+            encryptionType: 256,
+            nullPacketDeletion: true,
+            statsInterval: 1000,
         };
-        module.services.processManager = {};
-        module.setHealth = vi.fn();
-        module.spawnRunnerProcess = vi.fn(() => ({ on: vi.fn() }));
-        await module.onStart();
-        const args = module.spawnRunnerProcess.mock.calls[0][0].args as string[];
-        expect(args[args.indexOf('-i') + 1]).toBe('udp://239.255.0.1:41000?miface=lo');
+        const desc = module.buildPipeline({})!;
+        expect(desc.rist).toMatchObject({
+            role: 'sender',
+            profile: 1,
+            buffer: 1200,
+            secret: 'hush',
+            encType: 256,
+            npd: true,
+            statsInterval: 1000,
+            appElement: 'ristsink',
+        });
+        expect(desc.rist.urls).toEqual(['rist://rist.example.net:5004?weight=5&cname=tx1']);
+    });
+
+    it('defaults to a single caller link on :5004', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({})!;
+        expect(desc.rist.urls).toEqual(['rist://localhost:5004?weight=50&cname=link1']);
     });
 });
 
-describe('RistOutputModule.parseStats', () => {
+describe('RistOutputModule rist:stats rendering', () => {
     beforeEach(() => vi.clearAllMocks());
 
-    function statsLine(json: unknown): string {
-        return `1234 -stats" ${JSON.stringify(json)}`;
+    function stats(module: any, json: unknown): void {
+        module.onPluginEvent('rist:stats', json);
     }
 
     it('emits a per-peer dynamic section keyed by peer.id with the cname as label', () => {
         const { module, setStatusData } = makeModule();
-        module.parseStats(
-            statsLine({
-                'sender-stats': {
-                    peer: {
-                        id: 1,
-                        cname: 'remote-tx',
-                        stats: { quality: 95, sent: 1000, retransmitted: 5, bandwidth: 4500, avg_rtt: 12.3 },
-                    },
+        stats(module, {
+            'sender-stats': {
+                peer: {
+                    id: 1,
+                    cname: 'remote-tx',
+                    stats: { quality: 95, sent: 1000, retransmitted: 5, bandwidth: 4500, avg_rtt: 12.3 },
                 },
-            }),
-        );
+            },
+        });
         expect(module.dynamicStatusSections).toHaveLength(1);
         expect(module.dynamicStatusSections[0]).toMatchObject({ id: 'peer-1', label: 'remote-tx' });
         expect(setStatusData).toHaveBeenCalledWith(
@@ -70,16 +129,14 @@ describe('RistOutputModule.parseStats', () => {
         const payload = {
             'sender-stats': { peer: { id: 1, cname: 'remote-tx', stats: { quality: 95 } } },
         };
-        module.parseStats(statsLine(payload));
-        module.parseStats(statsLine(payload));
+        stats(module, payload);
+        stats(module, payload);
         expect(module.dynamicStatusSections.filter((s: { id: string }) => s.id === 'peer-1')).toHaveLength(1);
     });
 
     it('tracks peer last-seen timestamps in peerLastSeen', () => {
         const { module } = makeModule();
-        module.parseStats(
-            statsLine({ 'sender-stats': { peer: { id: 7, stats: { quality: 90 } } } }),
-        );
+        stats(module, { 'sender-stats': { peer: { id: 7, stats: { quality: 90 } } } });
         expect(module.peerLastSeen.has(7)).toBe(true);
         const ts = module.peerLastSeen.get(7)!;
         expect(ts).toBeGreaterThan(Date.now() - 1000);
@@ -87,28 +144,22 @@ describe('RistOutputModule.parseStats', () => {
 
     it('colours the quality badge green/amber/red by threshold', () => {
         const { module, setBadge } = makeModule();
-        module.parseStats(
-            statsLine({ 'sender-stats': { peer: { id: 1, stats: { quality: 95 } } } }),
-        );
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 95 } } } });
         expect(setBadge).toHaveBeenCalledWith('quality', expect.objectContaining({ color: '#10b981' }));
 
         setBadge.mockClear();
-        module.parseStats(
-            statsLine({ 'sender-stats': { peer: { id: 1, stats: { quality: 60 } } } }),
-        );
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 60 } } } });
         expect(setBadge).toHaveBeenCalledWith('quality', expect.objectContaining({ color: '#f59e0b' }));
 
         setBadge.mockClear();
-        module.parseStats(
-            statsLine({ 'sender-stats': { peer: { id: 1, stats: { quality: 30 } } } }),
-        );
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 30 } } } });
         expect(setBadge).toHaveBeenCalledWith('quality', expect.objectContaining({ color: '#ef4444' }));
     });
 
     it('emits a connections badge reflecting the peer-last-seen size', () => {
         const { module, setBadge } = makeModule();
-        module.parseStats(statsLine({ 'sender-stats': { peer: { id: 1, stats: { quality: 90 } } } }));
-        module.parseStats(statsLine({ 'sender-stats': { peer: { id: 2, stats: { quality: 90 } } } }));
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 90 } } } });
+        stats(module, { 'sender-stats': { peer: { id: 2, stats: { quality: 90 } } } });
         // Last call should reflect 2 active peers
         const lastConnectionsCall = setBadge.mock.calls
             .filter((c) => c[0] === 'connections')
@@ -118,18 +169,16 @@ describe('RistOutputModule.parseStats', () => {
 
     it('ignores payloads without sender-stats.peer.stats', () => {
         const { module, setStatusData } = makeModule();
-        module.parseStats(statsLine({ 'sender-stats': { peer: {} } }));
+        stats(module, { 'sender-stats': { peer: {} } });
         expect(setStatusData).not.toHaveBeenCalled();
     });
 
-    it('does not throw on malformed JSON', () => {
-        const { module } = makeModule();
-        expect(() => module.parseStats('1234 -stats" { incomplete')).not.toThrow();
-    });
-
-    it('does not throw when the line contains no JSON at all', () => {
-        const { module } = makeModule();
-        expect(() => module.parseStats('plain log line')).not.toThrow();
+    it('ignores other plugin-event channels and malformed payloads', () => {
+        const { module, setStatusData } = makeModule();
+        module.onPluginEvent('stream:names', { payload: 'x' });
+        expect(() => stats(module, null)).not.toThrow();
+        expect(() => stats(module, 'not an object')).not.toThrow();
+        expect(setStatusData).not.toHaveBeenCalled();
     });
 });
 

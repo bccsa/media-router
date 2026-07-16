@@ -1070,6 +1070,15 @@ def handle_start(data):
         if r.get("element") and r.get("structure")
     }
 
+    # librist half of a RIST module — wired BEFORE PLAYING so the appsink
+    # can never see data without its handler; appsrc pushes before PLAYING
+    # just FLUSH-drop (live-source semantics, satisfies the NO_PREROLL
+    # invariant of the playing watchdog above).
+    if not _start_rist(pipeline, data.get("rist")):
+        pipeline.set_state(Gst.State.NULL)
+        pipeline = None
+        return
+
     # Set up bus watch
     bus = pipeline.get_bus()
     bus.add_signal_watch()
@@ -1100,6 +1109,7 @@ def handle_stop(data=None):
     global pipeline, running
     _cancel_playing_watchdog()
     _clear_pending_bus_attaches()
+    _stop_rist()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
@@ -1467,6 +1477,180 @@ def handle_bus_detach(data):
         emit_event({"event": "bus_detached", "socket": socket})
     except Exception:  # noqa: BLE001 — teardown must never crash the runner
         pass
+
+
+# ---------------------------------------------------------------------------
+# librist integration (rist-input / rist-output as native gst modules)
+#
+# The RIST plugins used to spawn the ristreceiver/ristsender CLI and relay
+# through a loopback UDP socket. Driving librist in-process instead moves
+# payloads straight between librist and a named appsrc/appsink, so RIST
+# modules ride the same bus transport as every other gst module (tee fan-out
+# under unixfd) with no intermediate datagram hop. See librist.py (same dir)
+# for the ctypes binding and its ABI-stability strategy.
+# ---------------------------------------------------------------------------
+_rist_ctx = None          # librist.RistReceiver | librist.RistSender
+_rist_thread = None       # receiver push loop (daemon)
+_rist_stop = threading.Event()
+
+# 7 x 188 — the classic TS-over-datagram unit. Sender payloads are re-chunked
+# to this so a large bus buffer (mpegtsmux with wide alignment) never exceeds
+# what a RIST datagram carried under the old CLI relay. Buffers on this bus
+# are 188-aligned by caps, so 1316-byte slices stay packet-aligned.
+_RIST_WRITE_CHUNK = 1316
+
+
+def _rist_log(_level, msg):
+    # librist logs arrive on librist's own threads; plain stderr lines join
+    # the runner's debug stream without touching the JSON event channel.
+    sys.stderr.write(f"[librist] {msg}\n")
+
+
+def _on_rist_stats(stats_json):
+    # Called on a librist thread — emit_event is thread-safe (event_lock).
+    # Same JSON shape the CLI printed on stderr ({"receiver-stats":...} /
+    # {"sender-stats":...}), so the plugin's parser carries over unchanged.
+    try:
+        payload = json.loads(stats_json)
+    except (json.JSONDecodeError, ValueError):
+        return
+    emit_plugin_event("rist:stats", payload)
+
+
+def _start_rist(pipe, cfg):
+    """Bring up the librist half of a RIST module pipeline.
+
+    Returns True when no rist config is present or librist is up; on failure
+    emits an `error` event (the parent's restart/backoff path applies) and
+    returns False so handle_start can abort the pipeline.
+    """
+    global _rist_ctx, _rist_thread
+    if not cfg:
+        return True
+    try:
+        import librist
+    except Exception as e:  # noqa: BLE001 — a missing/broken .so must fail loudly
+        emit_event({"event": "error", "message": f"librist unavailable: {e}"})
+        return False
+
+    role = cfg.get("role", "")
+    urls = cfg.get("urls") or []
+    element_name = cfg.get("appElement", "")
+    element = pipe.get_by_name(element_name)
+    if not element or not urls or role not in ("receiver", "sender"):
+        emit_event({
+            "event": "error",
+            "message": (f"rist config invalid (role={role!r}, element="
+                        f"{element_name!r} found={bool(element)}, {len(urls)} url(s))"),
+        })
+        return False
+
+    profile = int(cfg.get("profile", 1))
+    buffer_ms = cfg.get("buffer")
+    secret = cfg.get("secret") or None
+    enc_type = cfg.get("encType")
+    stats_ms = int(cfg.get("statsInterval", 1000))
+
+    ctx = None
+    try:
+        lib_ver, api_ver = librist.versions()
+        sys.stderr.write(
+            f"[gst-runner.py] librist {lib_ver} (API {api_ver}) "
+            f"role={role} peers={len(urls)} element={element_name}\n")
+        if role == "receiver":
+            ctx = librist.RistReceiver(profile=profile, log_fn=_rist_log)
+        else:
+            ctx = librist.RistSender(profile=profile, log_fn=_rist_log,
+                                     npd=bool(cfg.get("npd")))
+        for url in urls:
+            ctx.add_peer(librist.augment_url(
+                url, buffer_ms=buffer_ms, secret=secret, aes_type=enc_type))
+        if stats_ms > 0:
+            ctx.set_stats_callback(stats_ms, _on_rist_stats)
+
+        if role == "receiver":
+            _rist_stop.clear()
+
+            def _push_loop():
+                # Blocking read releases the GIL; appsrc push-buffer is
+                # thread-safe. A push before PLAYING / during teardown returns
+                # FLUSHING and the buffer drops — live-source semantics,
+                # exactly what udpsrc did under the CLI relay.
+                while not _rist_stop.is_set():
+                    try:
+                        data = ctx.read(100)
+                    except librist.RistError as e:
+                        emit_event({"event": "warning",
+                                    "message": f"librist read failed: {e}"})
+                        break
+                    if not data:
+                        continue
+                    try:
+                        element.emit("push-buffer", Gst.Buffer.new_wrapped(data))
+                    except Exception:  # noqa: BLE001 — teardown race
+                        pass
+
+            _rist_thread = threading.Thread(
+                target=_push_loop, daemon=True, name="rist-reader")
+        else:
+            # appsink → librist. Properties are set here (not in the pipeline
+            # string) so the drain contract can't drift: bounded + dropping +
+            # unsynced. data_write only copies into librist's own buffers, so
+            # the streaming thread is never held hostage.
+            element.set_property("emit-signals", True)
+            element.set_property("sync", False)
+            element.set_property("max-buffers", 64)
+            element.set_property("drop", True)
+
+            def _on_sample(sink):
+                smp = sink.emit("pull-sample")
+                if not smp:
+                    return Gst.FlowReturn.OK
+                buf = smp.get_buffer()
+                ok, mi = buf.map(Gst.MapFlags.READ)
+                if not ok:
+                    return Gst.FlowReturn.OK
+                try:
+                    data = bytes(mi.data)
+                    for off in range(0, len(data), _RIST_WRITE_CHUNK):
+                        ctx.write(data[off:off + _RIST_WRITE_CHUNK])
+                except librist.RistError:
+                    pass  # transient send failure — recovery is librist's job
+                finally:
+                    buf.unmap(mi)
+                return Gst.FlowReturn.OK
+
+            element.connect("new-sample", _on_sample)
+
+        ctx.start()
+        _rist_ctx = ctx
+        if _rist_thread is not None:
+            _rist_thread.start()
+        return True
+    except librist.RistError as e:
+        emit_event({"event": "error", "message": f"librist start failed: {e}"})
+        if ctx is not None:
+            try:
+                ctx.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
+def _stop_rist():
+    global _rist_ctx, _rist_thread
+    _rist_stop.set()
+    if _rist_thread is not None:
+        _rist_thread.join(timeout=2)
+        _rist_thread = None
+    if _rist_ctx is not None:
+        # destroy() joins librist's threads — no stats/log/data callback can
+        # fire after it returns, so dropping the refs is safe.
+        try:
+            _rist_ctx.destroy()
+        except Exception:  # noqa: BLE001 — teardown must never crash the runner
+            pass
+        _rist_ctx = None
 
 
 # Command dispatch
