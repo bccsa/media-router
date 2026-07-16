@@ -125,7 +125,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 alignment: 7,
             });
             expect(result).not.toBeNull();
-            expect(result!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
+            expect(result!.pipeline).toContain('mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7');
             expect(result!.pipeline).toContain('udpsink name=usink host=239.255.0.1 port=40010');
             expect(result!.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
             expect(result!.pipeline).not.toContain('caps="video/mpegts');
@@ -277,32 +277,23 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0',
             );
         });
-        it('adds a KLV metadata appsrc pinned to the fixed metadata PID (0x1f0 = 496)', () => {
-            const result = buildPipeline({
-                sources: [{ sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 }],
-                output: { host: '239.255.0.1', port: 40010 },
-                alignment: 7,
-            });
-            expect(result!.pipeline).toContain('appsrc name=klvsrc caps=meta/x-klv,parsed=true');
-            // Pinned to the metadata PID's mpegtsmux request pad.
-            expect(result!.pipeline).toContain('! mux.sink_496');
-            // mpegtsmux ! udpsink chain still comes first (the appsrc is appended).
-            expect(result!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! udpsink/);
-        });
-
-        it('returns PID-keyed named streams carrying name + sourceModuleId for the carousel', () => {
+        it('has no metadata appsrc so mpegtsmux carries PCR on the media (not a software timer)', () => {
+            // The KLV metadata appsrc was retired: as a live `do-timestamp`
+            // appsrc it got picked as the mpegtsmux PCR stream, so the receiver
+            // clock rode the ~50 ms carousel timer instead of the media and
+            // sporadically dropped audio. Only media pads remain → PCR on video.
             const result = buildPipeline({
                 sources: [
-                    { sinkPortId: 'video-0', host: 'h', port: 1, name: 'Cam 1', sourceModuleId: 'enc-v' },
-                    { sinkPortId: 'audio-0', host: 'h', port: 2, sourceModuleId: 'enc-a' },
+                    { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 },
+                    { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 },
                 ],
                 output: { host: '239.255.0.1', port: 40010 },
                 alignment: 7,
             });
-            expect(result!.namedStreams).toEqual([
-                { pid: 0x100, media: 'video', sinkPortId: 'video-0', name: 'Cam 1', sourceModuleId: 'enc-v' },
-                { pid: 0x140, media: 'audio', sinkPortId: 'audio-0', name: undefined, sourceModuleId: 'enc-a' },
-            ]);
+            expect(result!.pipeline).not.toContain('appsrc');
+            expect(result!.pipeline).not.toContain('meta/x-klv');
+            expect(result!.pipeline).not.toContain('mux.sink_496');
+            expect(result!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! udpsink/);
         });
 
         it('emits tsdemux latency=0 on every input branch', () => {
@@ -416,99 +407,6 @@ describe('MpegTsMuxerModule', () => {
             expect(assignUdpPort).toHaveBeenCalledWith('mux-1');
         });
 
-        it('threads operator names + sourceModuleId fallback into the carousel payload', () => {
-            const { module } = makeModule({
-                sources: [
-                    { sinkPortId: 'video-0', port: 40001 },
-                    { sinkPortId: 'audio-0', port: 40002 },
-                ],
-            });
-            (module as any).config = {
-                videoStreamCount: 1,
-                audioStreamCount: 1,
-                streamNames: { 'video-0': 'Main Cam' },
-            };
-            (module as any).setHealth = vi.fn();
-            (module as any).setStatusData = vi.fn();
-            module.buildPipeline((module as any).config);
-
-            // Capture the payload the module would push on PLAYING.
-            const sent: string[] = [];
-            (module as any).setKlvPayload = (_el: string, payload: string) => sent.push(payload);
-            (module as any).pushKlvCarousel();
-
-            expect(sent).toHaveLength(1);
-            const parsed = JSON.parse(sent[0]);
-            expect(parsed.v).toBe(1);
-            // video-0 named explicitly; audio-0 falls back to its sourceModuleId.
-            expect(parsed.streams).toEqual([
-                { pid: 0x100, media: 'video', name: 'Main Cam' },
-                { pid: 0x140, media: 'audio', name: 'enc-audio-0' },
-            ]);
-        });
-
-        it('live rename resolves by sink port id, not PID ordinal (non-contiguous wiring)', async () => {
-            // videoStreams[0]=A, [1]=B, but ONLY video-1 is connected: the
-            // stream gets the first video PID (0x100) yet its name must come
-            // from index 1. Reverse-deriving the port from the PID broadcast
-            // "A" for stream "B" — the exact mislabeling this feature exists
-            // to prevent.
-            const { module } = makeModule({
-                sources: [{ sinkPortId: 'video-1', port: 40001 }],
-            });
-            (module as any).config = {
-                videoStreams: [{ name: 'A' }, { name: 'B' }],
-                audioStreams: [],
-            };
-            (module as any).setHealth = vi.fn();
-            (module as any).setStatusData = vi.fn();
-            module.buildPipeline((module as any).config);
-
-            const sent: string[] = [];
-            (module as any).setKlvPayload = (_el: string, payload: string) => sent.push(payload);
-            (module as any).pushKlvCarousel();
-            expect(JSON.parse(sent[0]).streams).toEqual([
-                { pid: 0x100, media: 'video', name: 'B' },
-            ]);
-
-            // And a live rename of index 1 follows the same port, not the PID.
-            await module.onLiveConfigUpdate({
-                videoStreams: [{ name: 'A' }, { name: 'B2' }],
-            });
-            expect(JSON.parse(sent[1]).streams[0].name).toBe('B2');
-        });
-
-        it('a live stream rename re-pushes the carousel without rebuilding', async () => {
-            const { module } = makeModule({
-                sources: [{ sinkPortId: 'video-0', port: 40001 }],
-            });
-            (module as any).config = { videoStreams: [{ name: '' }], audioStreams: [] };
-            (module as any).setHealth = vi.fn();
-            (module as any).setStatusData = vi.fn();
-            module.buildPipeline((module as any).config);
-
-            const sent: string[] = [];
-            (module as any).setKlvPayload = (_el: string, payload: string) => sent.push(payload);
-            await module.onLiveConfigUpdate({ videoStreams: [{ name: 'Renamed' }] });
-
-            expect(sent).toHaveLength(1);
-            expect(JSON.parse(sent[0]).streams[0].name).toBe('Renamed');
-        });
-
-        it('still pushes a carousel with zero named inputs (names fall back to sourceModuleId)', () => {
-            const { module } = makeModule({ sources: [{ sinkPortId: 'audio-0', port: 40002 }] });
-            (module as any).config = { videoStreamCount: 0, audioStreamCount: 1 };
-            (module as any).setHealth = vi.fn();
-            (module as any).setStatusData = vi.fn();
-            module.buildPipeline((module as any).config);
-
-            const sent: string[] = [];
-            (module as any).setKlvPayload = (_el: string, payload: string) => sent.push(payload);
-            (module as any).pushKlvCarousel();
-            expect(sent).toHaveLength(1);
-            expect(JSON.parse(sent[0]).streams[0].name).toBe('enc-audio-0');
-        });
-
         it('declares the stream arrays as live-updatable', () => {
             const { module } = makeModule();
             expect(module.getLiveUpdatableParams()).toEqual(['videoStreams', 'audioStreams']);
@@ -516,7 +414,7 @@ describe('MpegTsMuxerModule', () => {
 
         it('isLiveChange: rename is live, add/remove or legacy shape is not', () => {
             const { module } = makeModule();
-            // Same length → rename → live KLV push, no rebuild.
+            // Same length → rename (label only) → live update, no rebuild.
             expect(
                 module.isLiveChange('videoStreams', [{ name: 'B' }], [{ name: 'A' }]),
             ).toBe(true);

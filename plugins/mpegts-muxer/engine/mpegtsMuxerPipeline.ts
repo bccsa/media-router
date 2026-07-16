@@ -6,7 +6,6 @@
  */
 
 import {
-    TS_METADATA_PID,
     audioStreamPid,
     buildBackpressureQueue,
     buildLeakyQueue,
@@ -17,7 +16,6 @@ import {
     videoStreamPid,
     type PadLinkRule,
 } from '@media-router/engine';
-import type { NamedStreamInput } from './klvPayload.js';
 
 export type PortDirection = 'input' | 'output';
 
@@ -52,11 +50,6 @@ export interface UdpInputSource {
 const VIDEO_PORT_PREFIX = 'video-';
 const AUDIO_PORT_PREFIX = 'audio-';
 const OUTPUT_PORT_ID = 'mpegts-out';
-
-/** Element name of the metadata `appsrc` the runner pushes the KLV carousel
- *  onto (plan D2/Phase 2). The module references this when wiring live name
- *  updates to the `set_klv_payload` runner command. */
-export const KLV_APPSRC_NAME = 'klvsrc';
 
 /**
  * udpsrc timeout (5 s, in ns). A silent input — encoder dead, multicast
@@ -242,10 +235,6 @@ export interface MuxerPipelineInputs {
 export interface MuxerPipelineResult {
     pipeline: string;
     linkOnPadAdded: PadLinkRule[];
-    /** Per-stream identity for the in-band name carousel (plan D2/Phase 2),
-     *  PID-keyed and in the same per-media ordinal order used for PID pinning.
-     *  The module turns this into the KLV payload pushed to the runner. */
-    namedStreams: NamedStreamInput[];
 }
 
 /**
@@ -279,24 +268,31 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         ? buildLeakyQueue(depth)
         : buildBackpressureQueue(depth);
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
-    const muxer = `mpegtsmux name=mux latency=0 alignment=${input.alignment}`;
+    // TEST (2026-07-16, sporadic-drop hunt): give the aggregator a real
+    // latency budget. Measured in the live muxer: buffers arrive ~1s late vs
+    // the pipeline clock (cross-process bus hides upstream latency, so the
+    // latency query reports ~0) — with latency=0 the aggregator's deadline is
+    // always already expired, so it never waits to interleave pads by PTS and
+    // muxes by arrival; upstream jitter then lands as backward-DTS timeline
+    // jolts ("ignoring DTS going backward") and invalid PTS<DTS audio PES the
+    // receiver discards in bursts. 1.2s covers the observed ~1.07s lateness.
+    const muxer =
+        'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 ' +
+        `alignment=${input.alignment}`;
     const sink = buildUdpSink({ name: 'usink', host: input.output.host, port: input.output.port });
     // No leaky queue between mpegtsmux and udpsink: any drop here is a
     // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
     // payload) and corrupts decode at the receiver. The 2 MB kernel UDP
     // send buffer (≈4 s @ 4 Mbps) absorbs typical bursts on its own.
     //
-    // In-band name channel (plan D2/Phase 2): a metadata `appsrc` pinned to the
-    // fixed metadata PID feeds `mpegtsmux`. The runner pushes the KLV name
-    // carousel onto `${KLV_APPSRC_NAME}` on a ~50 ms timer (and re-pushes on every
-    // live name edit). Per D6 this branch never affects routing or pipeline
-    // health: it's a static element that simply carries labels, and the demuxer
-    // treats its absence as a non-event. `do-timestamp=true` lets mpegtsmux
-    // schedule the packets without the pusher computing PTS.
-    const klvSrc =
-        `appsrc name=${KLV_APPSRC_NAME} caps=meta/x-klv,parsed=true ` +
-        `format=time is-live=true do-timestamp=true ! mux.${muxSinkPadName(TS_METADATA_PID)}`;
-    const pipeline = `${muxer} ! ${sink} ${branches.join(' ')} ${klvSrc}`;
+    // No metadata appsrc: the in-band KLV name carousel was retired. It fed a
+    // live `appsrc` (do-timestamp/is-live) that `mpegtsmux` picked as the PCR
+    // stream, so the receiver's clock ended up driven by the ~50 ms carousel
+    // software timer instead of the media — its jitter surfaced as sporadic
+    // audio drops at the receiver. With only the media pads present, mpegtsmux
+    // carries PCR on the video stream (media clock), matching the source.
+    // Stream labels move to ISO-standard names/labels.
+    const pipeline = `${muxer} ! ${sink} ${branches.join(' ')}`;
 
     // Per-source pad-link rules: each tsdemux gets one rule per media type.
     // No codec parser in the branch — the Python pad-link runner injects the
@@ -311,10 +307,6 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // stable port identity, and the PID is the join key for in-band naming
     // (Phase 2). Without this, mpegtsmux auto-numbers PIDs and they drift.
     const linkOnPadAdded: PadLinkRule[] = [];
-    // Same per-media ordinal walk as the PID pinning above, recording each
-    // stream's pinned PID + identity so the module can build the name carousel
-    // (plan D2/D4). PID is the join key the demuxer matches names against.
-    const namedStreams: NamedStreamInput[] = [];
     let videoOrdinal = 0;
     let audioOrdinal = 0;
     for (let i = 0; i < input.sources.length; i++) {
@@ -329,13 +321,6 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
                 linkTo: 'mux',
                 requestedPadNames: [muxSinkPadName(pid)],
             });
-            namedStreams.push({
-                pid,
-                media: 'video',
-                sinkPortId: source.sinkPortId,
-                name: source.name,
-                sourceModuleId: source.sourceModuleId,
-            });
         }
         if (isAudioInputPort(source.sinkPortId)) {
             const pid = audioStreamPid(audioOrdinal++);
@@ -346,17 +331,10 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
                 linkTo: 'mux',
                 requestedPadNames: [muxSinkPadName(pid)],
             });
-            namedStreams.push({
-                pid,
-                media: 'audio',
-                sinkPortId: source.sinkPortId,
-                name: source.name,
-                sourceModuleId: source.sourceModuleId,
-            });
         }
     }
 
-    return { pipeline, linkOnPadAdded, namedStreams };
+    return { pipeline, linkOnPadAdded };
 }
 
 /** Sort a list of input sources so the resulting pipeline is deterministic. */

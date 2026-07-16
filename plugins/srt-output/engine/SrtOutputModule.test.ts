@@ -101,10 +101,12 @@ describe('SrtOutputModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('wait-for-connection=false');
     });
 
-    it('sets the leaky queue + correct restart backoff window', () => {
+    it('sets a NON-leaky relay queue + correct restart backoff window', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('queue leaky=2');
+        // Non-leaky: a leaky shed on a muxed TS byte stream cuts mid-packet —
+        // receiver-visible corruption. Hold + back-pressure instead.
+        expect(desc!.pipeline).toContain('queue leaky=0 max-size-time=200000000');
         expect(desc!.restartOnError).toBe(true);
         expect(desc!.restartBackoffMs).toEqual({ baseMs: 5000, maxMs: 10000 });
     });

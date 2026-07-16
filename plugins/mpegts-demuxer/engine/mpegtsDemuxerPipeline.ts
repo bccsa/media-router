@@ -426,7 +426,7 @@ export function buildOutputBranch(
     // (7 batched video into MTU-sized sends, 1 forced per-packet audio).
     let branch: string;
     if (media === 'video') {
-        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=-1 ! ${sink}`;
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ${sink}`;
     } else if (audioPacing) {
         // Non-leaky queue first (thread boundary + PES-burst absorber — see
         // audioBranchQueueMs), then clocksync re-times the parsed frames to
@@ -439,12 +439,12 @@ export function buildOutputBranch(
         const pacingMs = clampAudioPacingMs(opts.audioPacingMs);
         const audioQueue = buildBackpressureQueue(Math.max(depthMs, audioBranchQueueMs(pacingMs)));
         const pacer = `clocksync sync=true ts-offset=${pacingMs * 1_000_000}`;
-        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=0 alignment=-1 ! ${sink}`;
+        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ${sink}`;
     } else {
         // audioPacing OFF: raw PES bursts pass straight through — the
         // low-latency choice. Queue behaviour follows queueLeaky/queueDepthMs
         // like the video branch.
-        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=0 alignment=-1 ! ${sink}`;
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ${sink}`;
     }
     if (outputBufferMs <= 0) return branch;
     return `${buildSmoothingQueue(outputBufferMs)} ! ${branch}`;
@@ -507,7 +507,7 @@ export function buildPipeline(input: DemuxerPipelineInputs): DemuxerPipelineResu
         bufferSize: NET_UDP_RCV_BUF,
         socketPath: input.input.socketPath,
     });
-    const pipeline = `${udpsrc} ! tsdemux latency=0 name=${DEMUX_NAME}`;
+    const pipeline = `${udpsrc} ! tsdemux latency=0 ignore-pcr=true name=${DEMUX_NAME}`;
 
     const branchOpts: OutputBranchOptions = {
         outputBufferMs,

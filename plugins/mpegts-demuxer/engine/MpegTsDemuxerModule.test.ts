@@ -135,7 +135,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             expect(result).not.toBeNull();
             expect(result!.pipeline).toContain('udpsrc multicast-group=239.255.0.1 port=40001');
             expect(result!.pipeline).not.toContain('caps="video/mpegts');
-            expect(result!.pipeline).toContain('tsdemux latency=0 name=demux');
+            expect(result!.pipeline).toContain('tsdemux latency=0 ignore-pcr=true name=demux');
             expect(result!.linkOnPadAdded).toHaveLength(2); // 1 video rule + 1 audio rule
             const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
@@ -169,7 +169,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             expect(audioRule.branches[0]).toBe(
                 'queue leaky=2 max-size-time=50000000 max-size-buffers=0 max-size-bytes=0 ! ' +
-                'mpegtsmux name=mux_a0 latency=0 alignment=-1 ! ' +
+                'mpegtsmux name=mux_a0 latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ' +
                 'udpsink name=usink_a0 host=239.255.0.1 port=41002 multicast-iface=lo auto-multicast=true ' +
                 'buffer-size=4194304 sync=false async=false',
             );
@@ -254,7 +254,7 @@ describe('mpegtsDemuxerPipeline helpers', () => {
                 videoOutputs: [{ portId: 'video-0', host: '239.255.0.1', port: 41001 }],
                 audioOutputs: [],
             });
-            expect(result!.pipeline).toContain('tsdemux latency=0 name=demux');
+            expect(result!.pipeline).toContain('tsdemux latency=0 ignore-pcr=true name=demux');
         });
         it('sets no udpsrc timeout — a single-input loopback demuxer must wait for a silent source, not restart-storm', () => {
             const result = buildPipeline({

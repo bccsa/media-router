@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildLeakyQueue,
+    buildBackpressureQueue,
     buildUdpSrc,
     SrtStatPoller,
     type PipelineDescription,
@@ -117,7 +117,8 @@ export class SrtOutputModule extends GstPluginBase {
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),
-            buildLeakyQueue(100),
+            // NON-leaky: a leaky shed on muxed TS is mid-stream corruption at the wire.
+            buildBackpressureQueue(200),
             ...repack,
             `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
         ].join(' ! ');

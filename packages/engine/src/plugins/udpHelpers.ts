@@ -167,9 +167,14 @@ export function buildUdpSrc(opts: UdpSrcOpts): string {
         // sheds its own buffers instead — same loss-locality UDP gave us.
         const nameClause = opts.name ? ` name=${opts.name}` : '';
         const socket = opts.socketPath ?? busSocketPath(opts.port);
+        // NON-leaky bounded ingress: a shed here cuts a muxed TS mid-stream
+        // (receiver-visible corruption). With per-consumer fan-out the
+        // producer no longer needs consumer-side shedding — a stalled
+        // consumer back-pressures only its own producer-edge branch, whose
+        // leaky queue is the (sole, whole-branch) shed point.
         return (
             `unixfdsrc${nameClause} socket-path=${socket}` +
-            ' ! queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0'
+            ' ! queue leaky=0 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0'
         );
     }
     // 4 MB default — picked as a compromise:

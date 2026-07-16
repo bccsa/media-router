@@ -9,7 +9,6 @@ import {
     type ThroughputSample,
 } from '@media-router/engine';
 import {
-    KLV_APPSRC_NAME,
     buildDynamicPorts,
     buildPipeline,
     isAudioInputPort,
@@ -19,8 +18,6 @@ import {
     type DynamicPort,
     type UdpInputSource,
 } from './mpegtsMuxerPipeline.js';
-import { buildKlvPayload, serializeKlvPayload } from './klvPayload.js';
-import type { NamedStreamInput } from './klvPayload.js';
 
 /**
  * MPEG-TS Muxer plugin.
@@ -31,8 +28,8 @@ import type { NamedStreamInput } from './klvPayload.js';
  * MediaRouter. PID collisions are handled by mpegtsmux itself.
  */
 export class MpegTsMuxerModule extends GstPluginBase {
-    // The stream arrays are live for renames only: editing a name re-pushes
-    // the KLV carousel without a pipeline rebuild (plan D4/Phase 2), while
+    // The stream arrays are live for renames only: a name edit changes only a
+    // label and never the port set, so it applies without a pipeline rebuild;
     // adding/removing an entry changes the port set and routes through the
     // pending-restart path via `isLiveChange` below.
     protected liveUpdatableParams: string[] = ['videoStreams', 'audioStreams'];
@@ -42,10 +39,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
         getBytes: () => this.readSinkBytes(),
         publish: (sample) => this.publishThroughput(sample),
     });
-    /** PID-keyed identity of the streams currently muxed, captured at build
-     *  time so a live name edit can rebuild the carousel without re-deriving
-     *  the pipeline. Empty until the pipeline is built. */
-    private namedStreams: NamedStreamInput[] = [];
     /** Bus egress element to poll for throughput, resolved at build time: the
      *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
     private busSinkName: string | undefined;
@@ -74,29 +67,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
-        this.namedStreams = [];
         await super.onStart();
-        // Push the name carousel once the appsrc exists (PLAYING). The runner's
-        // ~50 ms carousel timer keeps re-pushing after that; this just makes the
-        // first labels appear without waiting a full tick. Re-pushed on every
-        // PLAYING so a restartOnError re-spawn re-seeds the carousel.
-        this.childProcess?.on('stateChange', (data: { state: string }) => {
-            if (data.state === 'playing') this.pushKlvCarousel();
-        });
-        // Seed the carousel directly here, not only on the `playing` edge.
-        // mpegtsmux is an aggregator: it produces no output until EVERY sink
-        // pad (video, audio, AND the KLV metadata appsrc) has delivered a
-        // buffer. The `playing` stateChange that drives the carousel is racy —
-        // if it's missed, the KLV appsrc never gets a buffer and the whole mux
-        // stalls (the "muxer outputs nothing" bug). Pushing here, right after
-        // the pipeline is built and the runner is up, guarantees the runner
-        // receives the payload; its ~50 ms carousel timer then re-pushes once
-        // the appsrc reaches PLAYING. (The carousel is 50 ms, NOT 1 s, because
-        // mpegtsmux gates its output on the oldest pad timestamp — a 1 s
-        // metadata cadence throttled the muxed A/V to ~8 % of bitrate. See the
-        // comment in gst-pipeline-runner.py.) namedStreams is populated by
-        // buildPipeline (run inside super.onStart above).
-        this.pushKlvCarousel();
         // Poll udpsink bytes-served every 2s. The poller's counter-reset guard
         // turns the udpsink counter resetting to 0 on a child re-spawn
         // (restartOnError) into a fresh baseline instead of a negative rate.
@@ -117,13 +88,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
     async onStop(): Promise<void> {
         this.throughput.stop();
         await super.onStop();
-    }
-
-    /** A live stream rename re-pushes the carousel — labels update downstream
-     *  without a pipeline rebuild (plan D4/Phase 2). */
-    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        await super.onLiveConfigUpdate(changes);
-        if ('videoStreams' in changes || 'audioStreams' in changes) this.pushKlvCarousel();
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -185,10 +149,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
         });
         if (!result) return null;
 
-        // Capture the PID-keyed identity so a live name edit can re-push the
-        // carousel without rebuilding the pipeline.
-        this.namedStreams = result.namedStreams;
-
         this.setStatusData('udp', { host: endpoint.host, port: endpoint.port });
         this.setStatusData('inputs', { video: videoCount, audio: audioCount });
 
@@ -198,33 +158,11 @@ export class MpegTsMuxerModule extends GstPluginBase {
             restartOnError: true,
         };
     }
-
-    /** Build the carousel payload from the captured streams + current config
-     *  names, and push it to the runner. Always emits — even with zero named
-     *  inputs names fall back to `sourceModuleId`, so the demuxer always sees
-     *  the channel (plan: never goes silent on zero named inputs). */
-    private pushKlvCarousel(): void {
-        if (this.namedStreams.length === 0) return;
-        // Re-apply the latest operator names. The captured `namedStreams`
-        // already carry the sourceModuleId fallback and the sink port id each
-        // stream entered on; only the explicit name can change live, and it
-        // lives in the config stream arrays indexed by port. (Never derive the
-        // port from the PID: PIDs are numbered by connected-source ordinal,
-        // ports by config index — they diverge when wired ports aren't a
-        // contiguous prefix.)
-        const withNames = this.namedStreams.map((s) => ({
-            ...s,
-            name: nameForPort(this.config, s.sinkPortId) ?? s.name,
-        }));
-        const payload = serializeKlvPayload(buildKlvPayload(withNames));
-        this.setKlvPayload(KLV_APPSRC_NAME, payload);
-    }
 }
 
 /** Operator name for a sink port id (`video-0` / `audio-2`) from the config
  *  stream arrays (legacy count+map configs are normalised by `streamEntries`).
- *  Blank means unset — `resolveStreamName` then falls back to the source
- *  module id. */
+ *  Populates the input source label; blank means unset. */
 function nameForPort(
     config: Record<string, unknown>,
     sinkPortId: string,
