@@ -163,34 +163,58 @@ export class AudioDecoderModule extends GstPluginBase {
         // Resample prevents latency buildup over hours — proven stable in v1 over 12+ hour sessions.
         const slaveMethod = (config.slaveMethod as number) ?? 0;
 
+        // `sync=false` is LOAD-BEARING on this path — do NOT switch to
+        // sync=true for jitter/drift reasons. Measured on gate01 (2026-07-16):
+        // a sync=true sink plays only when the decoder starts together with its
+        // producer; on any MID-STREAM join (demuxer restart, decoder
+        // restartOnError respawn — i.e. routine production events) tsdemux's
+        // segment start no longer matches the in-progress TS timeline, every
+        // buffer arrives "late" beyond max-lateness, and the sink SILENTLY
+        // drops all of them — decoders output pure silence with zero errors
+        // (live A/B on the bus edge: sync=true peak=0, sync=false peak=6359).
+        // Burst smoothing is instead handled arrival-driven: the non-leaky
+        // dejitter queue above + the 200 ms pa ring below.
+        //
         // Cross-pipeline A/V sync (opt-in, plan: shared net clock). When on, the
         // sink honours PTS against the engine's shared clock so this pipeline
         // presents on the same timeline as the video-player. `provide-clock=false`
         // stops pulsesink imposing the DAC clock over the shared net clock the
         // engine sets, and `sync=true` makes it present at PTS. The input chain
         // is already `tsdemux` with no `tsparse set-timestamps`, so the source
-        // PTS is preserved (required for the lock). Off → today's exact string.
+        // PTS is preserved (required for the lock). Off → sync=false (default).
         const clockSync = (config.clockSync as boolean) === true;
         const sinkSync = clockSync ? 'true' : 'false';
         const provideClock = clockSync ? ' provide-clock=false' : '';
 
         const parts = [
-            // Post-tsdemux jitter buffer (leaky=2 drops oldest when full). Size
-            // is per-instance via `bufferMs` — default 100 ms keeps live
-            // SRT/RIST latency-tight; raise (e.g. 1500 ms) on HLS chains where
-            // mid-stream joins and CPU spikes need lookahead to avoid scratch.
-            `${udpSrc} ! tsdemux latency=0 ! queue leaky=2 max-size-time=${Number(config.bufferMs ?? 100) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            // Post-tsdemux dejitter buffer — NON-LEAKY (leaky=0), sized to at
+            // least one PES burst. `tsdemux` emits audio in ~150 ms PES bursts
+            // and the pipewire `pulsesink` below is a REAL-TIME endpoint that
+            // drains at a steady 48 kHz. The old leaky queue dropped the tail
+            // of every burst, so between bursts the sink starved and underflowed
+            // (~12–22 % silence in 40 ms gaps, measured on gate01, unixfd path);
+            // non-leaky retains the whole burst as an arrival-driven reservoir
+            // (the pa ring blocks when full, so the queue holds the overflow)
+            // → 0 % gaps. This is CONSUMER-side dejitter: it can only back-
+            // pressure this module's own bus edge (which sheds), never the
+            // demuxer or sibling consumers — so it fixes choppiness without the
+            // demuxer-side clocksync pacing that back-pressures tsdemux and
+            // freezes the whole unixfd bus. `bufferMs` is per-instance tunable
+            // (default 1000 ms) but FLOORED at 300 ms: existing configs tuned
+            // small values (e.g. 100 ms) as the *leaky latency bound* under the
+            // old semantics — as a non-leaky burst cap that would re-starve the
+            // sink. The cap is a safety bound, not steady-state latency.
+            `${udpSrc} ! tsdemux latency=0 ! queue leaky=0 max-size-time=${Math.max(Number(config.bufferMs ?? 1000), 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            // `buffer-time=50000` (50 ms) — kept tight because broadcast
-            // latency budget is the dominant constraint here.
-            // `max-lateness=200000000` and `processing-deadline=100000000`
-            // were bumped up from 40 ms each: they don't add steady-state
-            // latency (pulsesink only drops/skips when an arriving frame is
-            // *already* this late) but they let pulsesink tolerate transient
-            // delivery jitter that was previously surfacing as scratchy audio.
-            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=50000 max-lateness=200000000`,
+            // `buffer-time=200000` (200 ms) — the DAC ring the sink drains at
+            // 48 kHz. 50 ms was too shallow to bridge PES-burst spacing; 200 ms
+            // gives the slaving headroom without material latency (the reservoir
+            // upstream is the dominant term). `max-lateness=200000000` drops a
+            // frame only when it arrives *already* >200 ms late (post-stall
+            // recovery, not steady state); `processing-deadline=100000000`.
+            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=200000 max-lateness=200000000`,
         ];
         const pipeline = parts.join(' ! ');
 

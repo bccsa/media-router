@@ -77,7 +77,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('decodebin');
     });
 
-    it('plays sync=false with no clockSync by default (standalone/low-latency)', () => {
+    it('plays sync=false by default — sync=true silently drops ALL audio on any mid-stream join (demuxer restart / decoder respawn)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=false');
@@ -134,11 +134,17 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.restartOnError).toBe(true);
     });
 
-    it('emits a queue with leaky=2 after tsdemux so decoder backpressure does not accumulate latency', () => {
+    it('emits a NON-leaky dejitter queue after tsdemux so PES bursts are retained for the real-time sink (not dropped)', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toMatch(/tsdemux[^!]+! queue leaky=2/);
+        expect(desc!.pipeline).toMatch(/tsdemux[^!]+! queue leaky=0/);
+        // Default 1000 ms non-leaky cap (a safety bound, not steady-state latency).
+        expect(desc!.pipeline).toContain('queue leaky=0 max-size-time=1000000000');
+        // Operator bufferMs floored at 300 ms: small values were tuned as the OLD
+        // leaky latency bound and would re-starve the sink as a non-leaky burst cap.
+        const floored = module.buildPipeline({ bufferMs: 100 });
+        expect(floored!.pipeline).toContain('queue leaky=0 max-size-time=300000000');
     });
 });
 

@@ -424,9 +424,21 @@ export function buildOutputBranch(
     // alignment=-1 (auto) on every branch: let mpegtsmux emit its natural
     // buffer grouping instead of pinning a fixed packets-per-datagram count
     // (7 batched video into MTU-sized sends, 1 forced per-packet audio).
+    // mpegtsmux `latency` is a multi-pad INTERLEAVE budget: the mux waits this
+    // long to collect buffers across its input pads and align them by PTS.
+    // These per-PID branches are SINGLE-stream muxes (one pad), so there is
+    // nothing to interleave — the 1.2 s budget buys zero alignment and only
+    // adds 1.2 s of pipeline latency. (The 1.2 s budget is the real fix for the
+    // downstream PROGRAM muxer that combines video+audio — it does not belong
+    // on these single-stream branches, where it got copied.) Audio branches
+    // feed a real-time consumer (audio-decoder pipewire sink), so the latency
+    // matters: drop it to 0. Video keeps 1.2 s conservatively — its branch may
+    // feed a program muxer whose alignment expects the buffered arrival timing;
+    // video is out of scope for the audio-latency fix and untested at 0.
+    const muxLatency = media === 'video' ? 1_200_000_000 : 0;
     let branch: string;
     if (media === 'video') {
-        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ${sink}`;
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=${muxLatency} min-upstream-latency=${muxLatency} alignment=-1 ! ${sink}`;
     } else if (audioPacing) {
         // Non-leaky queue first (thread boundary + PES-burst absorber — see
         // audioBranchQueueMs), then clocksync re-times the parsed frames to
@@ -439,12 +451,12 @@ export function buildOutputBranch(
         const pacingMs = clampAudioPacingMs(opts.audioPacingMs);
         const audioQueue = buildBackpressureQueue(Math.max(depthMs, audioBranchQueueMs(pacingMs)));
         const pacer = `clocksync sync=true ts-offset=${pacingMs * 1_000_000}`;
-        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ${sink}`;
+        branch = `${audioQueue} ! ${pacer} ! mpegtsmux name=mux_${suffix} latency=${muxLatency} min-upstream-latency=${muxLatency} alignment=-1 ! ${sink}`;
     } else {
         // audioPacing OFF: raw PES bursts pass straight through — the
         // low-latency choice. Queue behaviour follows queueLeaky/queueDepthMs
         // like the video branch.
-        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ${sink}`;
+        branch = `${branchQueue} ! mpegtsmux name=mux_${suffix} latency=${muxLatency} min-upstream-latency=${muxLatency} alignment=-1 ! ${sink}`;
     }
     if (outputBufferMs <= 0) return branch;
     return `${buildSmoothingQueue(outputBufferMs)} ! ${branch}`;

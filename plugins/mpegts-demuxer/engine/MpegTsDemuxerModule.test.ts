@@ -169,7 +169,9 @@ describe('mpegtsDemuxerPipeline helpers', () => {
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             expect(audioRule.branches[0]).toBe(
                 'queue leaky=2 max-size-time=50000000 max-size-buffers=0 max-size-bytes=0 ! ' +
-                'mpegtsmux name=mux_a0 latency=1200000000 min-upstream-latency=1200000000 alignment=-1 ! ' +
+                // Single-stream audio branch: mux latency 0 (the 1.2 s interleave
+                // budget is only meaningful on the downstream program muxer).
+                'mpegtsmux name=mux_a0 latency=0 min-upstream-latency=0 alignment=-1 ! ' +
                 'udpsink name=usink_a0 host=239.255.0.1 port=41002 multicast-iface=lo auto-multicast=true ' +
                 'buffer-size=4194304 sync=false async=false',
             );
