@@ -24,19 +24,28 @@ and place the patch in `gstreamer1.0-plugins-bad/` next to it.
 The patch makes three changes to `gst/unixfd/gstunixfdsink.c` (all marked
 `Local patch (media-router)` in the source):
 
-1. **Never block in render — kick slow consumers.** Stock `unixfdsink`
-   sends `NEW_BUFFER` commands on BLOCKING client sockets while holding the
-   element's object lock. A consumer that stops draining its socket (stalled
-   pipeline, preroll, zombie connection) blocks the send forever; because the
-   lock is held, the command thread (which accepts clients and drains
-   RELEASE_BUFFER messages) can never run, so the producer pipeline freezes
-   permanently, and any operation that touches sibling element locks
-   (e.g. `gst_bin_add` during a dynamic fan-out attach) deadlocks the
-   process's mainloop. The patch checks `G_IO_OUT` before each `NEW_BUFFER`
-   send and kicks (disconnects) a client whose socket is full — the client
-   reconnects through its own restart path. Measured on gate01: a
-   connected-never-reading client froze the producer in seconds; with the
-   patch it is kicked with a warning and healthy siblings flow untouched.
+1. **Never block in render — skip unwritable clients, kick only the dead.**
+   Stock `unixfdsink` sends `NEW_BUFFER` commands on BLOCKING client sockets
+   while holding the element's object lock. A consumer that stops draining
+   its socket (stalled pipeline, preroll, zombie connection) blocks the send
+   forever; because the lock is held, the command thread (which accepts
+   clients and drains RELEASE_BUFFER messages) can never run, so the
+   producer pipeline freezes permanently, and any operation that touches
+   sibling element locks (e.g. `gst_bin_add` during a dynamic fan-out
+   attach) deadlocks the process's mainloop. The patch checks `G_IO_OUT`
+   before each `NEW_BUFFER` send; an unwritable client has that buffer
+   SKIPPED for it (the same loss semantics UDP multicast had — the client
+   was not reading anyway), and only a client continuously unwritable for
+   10 s (`KICK_AFTER_US`) is assumed dead and kicked. Skip-before-kick is
+   load-bearing: an immediate kick killed consumers with slow cold starts
+   (VA-API driver / librist init takes seconds between their `unixfdsrc`
+   connect at READY and actually reading at PLAYING — at 21 Mbps a 4 MB
+   sndbuf is only ~1.5 s of tolerance), producing a self-sustaining
+   kick→restart→kick loop (measured on gate01: transcoder churned every
+   ~15 s until skip-before-kick landed; with it, zero errors/restarts).
+   Measured for the freeze case: a connected-never-reading client froze the
+   producer in seconds unpatched; with the patch healthy siblings flow
+   untouched and the corpse is culled after 10 s.
 
 2. **4 MB `SO_SNDBUF` on accepted client sockets.** At thousands of
    commands/s the default ~208 KB socket buffer holds well under a second of
@@ -84,9 +93,14 @@ fix is the only complete one.
   full engine restart: graph converged, 0 restarts / 0 errors / 0 edge
   stalls, ip-input clean, audio 0.00 % silence.
 - Zombie-client acceptance test: producer at 1500 commands/s, one healthy
-  consumer + one connected-never-reading client. Result: exactly 1 kick (the
-  zombie), 0 send errors, healthy consumer uninterrupted. Same scenario
-  freezes an unpatched sink permanently.
+  consumer + one connected-never-reading client. Result: zombie's buffers
+  skipped then culled, 0 send errors, healthy consumer uninterrupted. Same
+  scenario freezes an unpatched sink permanently.
+- Kick-loop regression test (why skip-before-kick exists): with immediate
+  kick, gate01's transcoder (slow VA cold start) was kicked mid-init by the
+  demuxer's 21 Mbps edge every ~15 s, churning the whole downstream chain;
+  with skip-before-kick: 120 s window with zero errors, restarts, or log
+  lines, audio 0.00 % silence.
 - Note for tests at low ulimits: each in-flight command carries an fd, and
   sends fail (client kicked via the existing error path) when the sending
   user's in-flight-fd quota (RLIMIT_NOFILE) is exceeded — engine services run
