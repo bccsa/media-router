@@ -139,7 +139,17 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const leaf = (out: TranscoderOutput, i: number): string => {
         const r = out.rendition;
         const e = out.encode;
-        const q = 'queue leaky=2 max-size-buffers=2 max-size-time=0 max-size-bytes=0';
+        // 4 buffers (80 ms @50 fps), not 2: vah264enc accepts frames in GPU
+        // batch cycles, and with only 40 ms of slack every cycle shed frames —
+        // measured on gate01 (file-paced replica, per-stage probes): videorate
+        // feeds a clean 50/s, encoder-out was 38/s at buffers=2 vs 48.4/s at
+        // buffers=4 (8/16 add nothing; encoder preset and vapostproc change
+        // nothing — the 40 ms admission window was the choke). Kept BUFFERS-
+        // bounded and small on purpose: these queues hold DECODER-POOL frames,
+        // and a deep time-bound queue here (300 ms ≈ 15 frames × N leaves)
+        // exhausted avdec's buffer pool and froze the whole transcode chain.
+        // 4 × 3 leaves = 12 refs is well inside the pool.
+        const q = 'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0';
         const scale = `videoscale ! video/x-raw,width=${r.width},height=${r.height}`;
         // Every knob is per-rendition here: `out.encode` is already fully resolved
         // (override ?? global, impl picked for this rendition's codec) by the
