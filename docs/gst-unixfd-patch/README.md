@@ -65,15 +65,48 @@ upstream backports that **1.28.2 already contains — do not port them.**
 
 ### 2. sysctl (image-level, must survive RAUC slot switches)
 
+Fragment to install as `/etc/sysctl.d/60-media-router.conf`:
+
 ```
-# /etc/sysctl.d/60-media-router-unixfd.conf
+# media-router kernel socket-buffer requirements — baked into the image
+# because manual `sysctl -w` and hand-copied sysctl.d files are lost on
+# every RAUC slot switch (has bitten repeatedly on gate01).
+
+# unixfd bus: unixfdsink sets SO_SNDBUF=4MB on every accepted client
+# socket (see patch change 2). setsockopt is silently CLAMPED to wmem_max,
+# so without this the buffer stays ~208KB and slow-but-alive consumers
+# lose data / get culled far too eagerly.
 net.core.wmem_max = 4194304
 net.core.wmem_default = 4194304
+
+# UDP receive headroom for bursty mux output into RIST/loopback receivers
+# (2026-07-10 gate01 incident: 760k drops on a 208KB rcvbuf; 128M verified
+# 0 drops). rmem_max also caps what udpsrc buffer-size=... can request.
+net.core.rmem_max = 134217728
+net.core.rmem_default = 134217728
 ```
 
-Bake into the image (e.g. a `files/` fragment in the device-manager or base
-recipe). Do NOT rely on runtime `sysctl -w` — manual settings are lost on
-every RAUC slot switch (this has already bitten twice on gate01).
+Example recipe (adjust to layer conventions), e.g.
+`recipes-core/media-router-sysctl/media-router-sysctl.bb`:
+
+```bitbake
+SUMMARY = "media-router kernel sysctl requirements"
+LICENSE = "CLOSED"
+
+SRC_URI = "file://60-media-router.conf"
+
+do_install() {
+    install -d ${D}${sysconfdir}/sysctl.d
+    install -m 0644 ${WORKDIR}/60-media-router.conf ${D}${sysconfdir}/sysctl.d/
+}
+
+FILES:${PN} = "${sysconfdir}/sysctl.d/60-media-router.conf"
+```
+
+…and add the package to the image (`IMAGE_INSTALL:append = " media-router-sysctl"`).
+Alternatively fold the file into an existing recipe that already ships
+`/etc` fragments (e.g. device-manager) — the only requirement is that it
+lands in the image, not in `/data`.
 
 ## Why (short version)
 
