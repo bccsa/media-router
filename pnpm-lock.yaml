@@ -299,12 +299,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/hls-pipe
 
-  plugins/mpegts-demuxer:
-    dependencies:
-      '@media-router/engine':
-        specifier: workspace:*
-        version: link:../../packages/engine
-
   plugins/mpegts-ip-input:
     dependencies:
       '@media-router/engine':
