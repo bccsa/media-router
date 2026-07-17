@@ -221,6 +221,15 @@ export interface TsSplitOutput {
     appsrc: string;
     /** Persisted PMT stream_type — seeds the output PMT until live discovery corrects it. */
     streamType?: number;
+    /**
+     * Bus port of this output's egress tee (`busout_<port>`). Under unixfd
+     * the runner gates production on the tee having at least one attached
+     * fan-out edge — an unwired pin costs nothing (no PSI rewrite, no join,
+     * no appsrc push; packets discarded at the routing lookup). Omitted, or
+     * when the tee doesn't exist (UDP transport), the output is always
+     * produced.
+     */
+    port?: number;
 }
 
 /** ts-splitter runner config — see PipelineDescription.tsSplit. */

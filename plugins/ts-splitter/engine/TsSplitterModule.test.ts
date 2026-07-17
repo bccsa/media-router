@@ -71,8 +71,8 @@ describe('TsSplitterModule.buildPipeline', () => {
         expect(assignUdpPort).toHaveBeenCalledWith('split-1', pidPortId(0x65));
         expect(assignUdpPort).toHaveBeenCalledWith('split-1', pidPortId(0xc9));
         expect(desc!.tsSplit!.outputs).toEqual([
-            { pid: 0x65, appsrc: 'out_0x65', streamType: 0x1b },
-            { pid: 0xc9, appsrc: 'out_0xc9', streamType: 0x0f },
+            { pid: 0x65, appsrc: 'out_0x65', streamType: 0x1b, port: 41000 },
+            { pid: 0xc9, appsrc: 'out_0xc9', streamType: 0x0f, port: 41001 },
         ]);
         expect(desc!.pipeline).toContain('appsrc name=out_0x65');
         expect(desc!.pipeline).toContain('appsrc name=out_0xc9');

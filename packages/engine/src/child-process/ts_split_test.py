@@ -185,6 +185,34 @@ res = core_e.feed(source[:188 * 20])
 check("no-match feed returns empty dict", res == {})
 check("empty feed is a no-op", core_e.feed(b"") == {})
 
+# --- wired-only gating (set_enabled) ------------------------------------------------
+core_g = ts_split.SplitterCore(1, [(VIDEO_PID, None), (AUDIO_PID, None)])
+core_g.set_enabled([AUDIO_PID])
+mid = len(source) // 2 // 188 * 188
+out_1 = {}
+for off in range(0, mid, 1000):
+    for pid, payload in core_g.feed(source[off:min(off + 1000, mid)]).items():
+        out_1.setdefault(pid, []).append(payload)
+check("disabled pid produces nothing", VIDEO_PID not in out_1 and AUDIO_PID in out_1)
+
+core_g.set_enabled([AUDIO_PID, VIDEO_PID])   # re-enable video mid-stream
+out_2 = {}
+for off in range(mid, len(source), 1000):
+    for pid, payload in core_g.feed(source[off:off + 1000]).items():
+        out_2.setdefault(pid, []).append(payload)
+check("re-enabled pid resumes", VIDEO_PID in out_2)
+first_batch = list(ts_psi.iter_packets(out_2[VIDEO_PID][0]))
+check("re-enable forces PSI before first ES",
+      first_batch and ts_psi.ts_pid(first_batch[0]) == 0x0000
+      and ts_psi.ts_pid(first_batch[1]) == ts_split.SPLIT_PMT_PID)
+v_es_2 = es_only(b"".join(out_2[VIDEO_PID]), VIDEO_PID)
+check("re-enabled ES is byte-identical to source segment",
+      len(v_es_2) > 0 and all(p in src_video_es for p in v_es_2))
+
+core_g.set_enabled([])
+out_3 = core_g.feed(source[:188 * 40])
+check("all-disabled feed returns empty dict", out_3 == {})
+
 print()
 if _failures:
     print("FAILURES:", ", ".join(_failures))

@@ -1411,6 +1411,10 @@ def handle_set_klv_payload(data):
 #   emitted) — see on_bus_message. A single consumer's edge failure must never
 #   kill the producer; that cascade is what kept large graphs from converging.
 _bus_branches = {}      # socket_path -> dict(branch, tee, tee_src, tee_name, queue, sink_pad, progressed, stall, probe_id)
+# Monotonic edge-topology version: bumped on every fan-out attach/detach so
+# consumers of the wired-state (the ts-splitter's wired-only gating) can
+# cheaply detect changes with one int compare per buffer.
+_bus_topology_version = 0
 _bus_branch_seq = 0
 # Edge-stall watchdog (gate01 wedge, 2026-07-16): stock unixfdsink's send
 # BLOCKS forever on a connected client that stops reading (~208KB kernel
@@ -1586,6 +1590,7 @@ def _try_bus_attach(tee_name, socket):
             elif fname == 'queue':
                 entry["queue"] = el2
         _bus_branches[socket] = entry
+        globals()["_bus_topology_version"] += 1
         _arm_bus_progress_probe(entry)
         if tee_name not in _bus_tee_progress:
             tpad = tee.get_static_pad('sink')
@@ -1764,6 +1769,7 @@ def _teardown_bus_branch(socket):
     entry = _bus_branches.pop(socket, None)
     if entry is None:
         return False
+    globals()["_bus_topology_version"] += 1
     branch, tee, tee_src = entry["branch"], entry["tee"], entry["tee_src"]
     try:
         # Drop a pending progress probe so its closure can't fire on a pad of
@@ -2068,6 +2074,13 @@ def _start_ts_split(pipe, cfg):
         return False
     appsrcs = {}
     outputs = []
+    # Wired-only gating map: pid -> busout tee name, for outputs whose egress
+    # tee exists in this pipeline (unixfd transport). Such an output is
+    # produced only while its tee has >= 1 attached fan-out edge — an unwired
+    # pin is discarded at the routing lookup (no PSI rewrite, no join, no
+    # push). Outputs without a port, or whose tee is absent (UDP transport:
+    # fixed udpsink, no fan-out), stay always-on.
+    gated = {}
     for out in cfg.get("outputs") or []:
         el = pipe.get_by_name(out.get("appsrc", ""))
         if el is None:
@@ -2077,6 +2090,9 @@ def _start_ts_split(pipe, cfg):
         pid = int(out["pid"])
         appsrcs[pid] = el
         outputs.append((pid, out.get("streamType")))
+        port = out.get("port")
+        if port is not None and pipe.get_by_name(f"busout_{int(port)}") is not None:
+            gated[pid] = f"busout_{int(port)}"
     # Empty outputs is valid: the input-only pipeline still runs discovery so
     # the module can learn the source's PIDs before any port is wired.
 
@@ -2111,10 +2127,25 @@ def _start_ts_split(pipe, cfg):
     appsink.set_property("max-buffers", 64)
     appsink.set_property("drop", False)
 
+    # Wired-state cache for the gating check: one int compare per buffer in
+    # steady state; the enabled set is recomputed only when an edge attaches
+    # or detaches (_bus_topology_version bumps on the GLib main loop; a
+    # briefly stale read here self-heals on the next buffer).
+    gate_state = {"ver": -1}
+
+    def _refresh_gate():
+        gate_state["ver"] = _bus_topology_version
+        active = {e["tee_name"] for e in _bus_branches.values()}
+        enabled = [p for p in appsrcs
+                   if p not in gated or gated[p] in active]
+        core.set_enabled(enabled)
+
     def _on_sample(sink):
         smp = sink.emit("pull-sample")
         if not smp:
             return Gst.FlowReturn.OK
+        if gated and gate_state["ver"] != _bus_topology_version:
+            _refresh_gate()
         buf = smp.get_buffer()
         ok, mi = buf.map(Gst.MapFlags.READ)
         if not ok:

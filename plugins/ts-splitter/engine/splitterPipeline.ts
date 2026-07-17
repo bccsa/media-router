@@ -77,6 +77,9 @@ export function buildSplitterPipeline(input: SplitterPipelineInput): {
                 pid: o.pid,
                 appsrc: pidAppsrcName(o.pid),
                 streamType: o.streamType,
+                // Enables wired-only gating: the runner produces this output
+                // only while its busout tee has an attached fan-out edge.
+                port: o.port,
             })),
         },
     };

@@ -109,6 +109,22 @@ class SplitterCore:
         self.master_pcr = None
         self.desync_bytes = 0        # lifetime counter, readable by the glue
         self._rem = b""
+        self._enabled = set(self.outputs)
+        self._routing = dict(self.outputs)   # enabled subset used by feed()
+
+    def set_enabled(self, pids):
+        """Gate which outputs are produced (wired-only mode). A pid outside
+        the enabled set is discarded at the routing lookup — no bucket, no
+        join, no PSI rewrite, no push. A pin transitioning to enabled gets
+        its PSI carousel and PCR re-injection forced so a fresh consumer
+        locks on the very first batch."""
+        pids = {int(p) for p in pids} & set(self.outputs)
+        for pid in pids - self._enabled:
+            o = self.outputs[pid]
+            o.since_psi = SPLIT_PSI_INTERVAL_PKTS
+            o.last_pcr = None
+        self._enabled = pids
+        self._routing = {pid: self.outputs[pid] for pid in pids}
 
     def _apply_discovery(self):
         streams = list(self.disc.pmt["streams"])
@@ -131,7 +147,7 @@ class SplitterCore:
         mv = memoryview(data)
         buckets = {}
         psi_pkts = []
-        outputs = self.outputs
+        outputs = self._routing            # enabled subset (see set_enabled)
         pmt_pid_before = self.disc.pmt_pid
         pcr_pid = self.pcr_pid
         off = 0

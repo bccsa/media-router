@@ -46,8 +46,9 @@ describe('buildSplitterPipeline (udp transport)', () => {
             inputAppsink: INPUT_APPSINK,
             tsId: 1,
             outputs: [
-                { pid: 0x65, appsrc: 'out_0x65', streamType: 0x1b },
-                { pid: 0xc9, appsrc: 'out_0xc9', streamType: 0x0f },
+                // port enables the runner's wired-only gating (busout_<port>)
+                { pid: 0x65, appsrc: 'out_0x65', streamType: 0x1b, port: 40010 },
+                { pid: 0xc9, appsrc: 'out_0xc9', streamType: 0x0f, port: 40011 },
             ],
         });
     });
