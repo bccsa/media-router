@@ -1436,6 +1436,10 @@ _bus_tee_progress = {}
 _pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_so_far]
 _bus_retry_timer_id = None
 _BUS_ATTACH_WARN_AFTER = 40   # ~10 s at 250 ms — log once, keep retrying
+# Edges whose probe-gated teardown hasn't completed yet (see
+# _teardown_bus_branch). An attach for one of these is deferred through the
+# same 250 ms pending-retry path as a not-yet-created tee.
+_bus_teardowns = set()
 
 def _remove_stale_bus_socket(socket_path):
     # unixfdsink cannot bind over an existing socket file, and a runner that
@@ -1468,6 +1472,8 @@ def _try_bus_attach(tee_name, socket):
     global _bus_branch_seq
     if pipeline is None:
         return True
+    if socket in _bus_teardowns:
+        return False  # old branch still detaching — caller queues a retry
     existing = _bus_branches.get(socket)
     if existing is not None:
         # Idempotent re-attach (connection re-apply / producer-PLAYING
@@ -1646,7 +1652,10 @@ def _bus_stall_watchdog():
                                 "message": f"bus edge stalled (tee flowing, edge sink "
                                            f"silent {entry['stall']} ticks) — resetting {socket}"})
                     _teardown_bus_branch(socket)
-                    _try_bus_attach(tee_name, socket)
+                    # Teardown is probe-gated (async): queue the re-create so
+                    # it lands after the old branch actually releases the
+                    # socket and tee pad.
+                    _attach_or_queue(tee_name, socket)
             else:
                 entry["stall"] = 0
         except Exception:  # noqa: BLE001
@@ -1680,32 +1689,56 @@ def _retry_pending_bus_attaches():
         return False   # stop the timer
     return True
 
-def handle_bus_attach(data):
-    """Attach a per-consumer fan-out branch to a producer's egress tee."""
+def _attach_or_queue(tee_name, socket):
+    """Attach now, or queue the persistent 250 ms retry (tee not created yet,
+    or the edge's previous branch is still mid-teardown)."""
     global _bus_retry_timer_id
-    tee_name = data.get("tee", "")
-    socket = data.get("socket", "")
-    if not tee_name or not socket:
-        return
     if _try_bus_attach(tee_name, socket):
         _pending_bus_attaches.pop(socket, None)
         return
-    # Tee not up yet — queue a persistent retry (demuxer creates tees on pad-add).
     _pending_bus_attaches[socket] = [tee_name, 0]
     if _bus_retry_timer_id is None:
         _bus_retry_timer_id = GLib.timeout_add(250, _retry_pending_bus_attaches)
 
 
+def handle_bus_attach(data):
+    """Attach a per-consumer fan-out branch to a producer's egress tee."""
+    tee_name = data.get("tee", "")
+    socket = data.get("socket", "")
+    if not tee_name or not socket:
+        return
+    _attach_or_queue(tee_name, socket)
+
+
 def _clear_pending_bus_attaches():
     _pending_bus_attaches.clear()
+    _bus_teardowns.clear()
 
 
 def _teardown_bus_branch(socket):
     """Tear down one fan-out branch by edge socket. Returns True if it existed.
 
-    Shared by `bus_detach` (engine-driven) and the on_bus_message busedge
-    error containment (runner-driven: a failed edge is detached instead of
-    killing the producer pipeline).
+    Shared by `bus_detach` (engine-driven), the on_bus_message busedge error
+    containment, and the stall watchdog's in-place edge reset.
+
+    Teardown happens BEHIND A BLOCKING PAD PROBE on the tee src pad — the
+    canonical dynamic-unlink recipe. The producer pushes from its own
+    streaming thread; deactivating the branch mid-push (the old order:
+    NULL → unlink → release) makes that in-flight push return FLUSHING,
+    which silently pauses the producer's basesrc task FOREVER — no bus
+    error, appsrc queue pins at max-bytes with leaky-drop, every edge on
+    the bus goes dark until the module restarts. That is exactly what
+    killed the live RIST producer when a consumer module was restarted
+    (.211, 2026-07-16 21:37). Reproduced 5/5 at ~500 pkt/s with the naked
+    teardown; 5/5 clean with this probe (repro5.py, 2026-07-17).
+    BLOCK_DOWNSTREAM intercepts between buffers when flowing; IDLE fires
+    immediately when the pad is quiet, so a dark producer detaches at once.
+
+    The actual teardown is therefore ASYNCHRONOUS. `_bus_teardowns` marks
+    the edge until the probe fires; `_try_bus_attach` treats a mid-teardown
+    socket as "not ready yet" (returns False → caller's 250 ms retry), so
+    a fast detach→attach on the same edge path can't bind over the dying
+    branch's socket or double-request the tee pad.
     """
     # Cancel a not-yet-satisfied attach for this edge, if any.
     _pending_bus_attaches.pop(socket, None)
@@ -1721,25 +1754,63 @@ def _teardown_bus_branch(socket):
             entry["probe_id"] = None
     except Exception:  # noqa: BLE001
         pass
-    try:
-        branch.set_state(Gst.State.NULL)
-        peer = tee_src.get_peer()
-        if peer is not None:
-            tee_src.unlink(peer)
-        tee.release_request_pad(tee_src)
-        parent = branch.get_parent()
-        if parent is not None:
-            parent.remove(branch)
-        # unixfdsink does not unlink its socket file on NULL; remove it so a
-        # later attach on this edge doesn't hit the stale-file bind failure.
+
+    def _finish(pad, _info):
+        # Runs with the tee src pad blocked (or idle): the producer's
+        # streaming thread cannot be inside this branch anymore.
         try:
-            os.unlink(socket)
-        except OSError:
+            peer = pad.get_peer()
+            if peer is not None:
+                pad.unlink(peer)
+            branch.set_state(Gst.State.NULL)
+            parent = branch.get_parent()
+            if parent is not None:
+                parent.remove(branch)
+            # unixfdsink does not unlink its socket file on NULL; remove it so
+            # a later attach on this edge doesn't hit the stale-file bind
+            # failure.
+            try:
+                os.unlink(socket)
+            except OSError:
+                pass
+            # Release the request pad from the main loop, not from its own
+            # probe (validated in repro5; avoids re-entering the tee under
+            # the probe's pad lock).
+            GLib.idle_add(_release_tee_pad, tee, pad)
+            emit_event({"event": "bus_detached", "socket": socket})
+        except Exception:  # noqa: BLE001 — teardown must never crash the runner
             pass
-        emit_event({"event": "bus_detached", "socket": socket})
-    except Exception:  # noqa: BLE001 — teardown must never crash the runner
-        pass
+        finally:
+            _bus_teardowns.discard(socket)
+        return Gst.PadProbeReturn.REMOVE
+
+    _bus_teardowns.add(socket)
+    try:
+        tee_src.add_probe(
+            Gst.PadProbeType.BLOCK_DOWNSTREAM | Gst.PadProbeType.IDLE, _finish)
+    except Exception:  # noqa: BLE001 — pad already dead: fall back to direct teardown
+        _bus_teardowns.discard(socket)
+        try:
+            branch.set_state(Gst.State.NULL)
+            parent = branch.get_parent()
+            if parent is not None:
+                parent.remove(branch)
+            try:
+                os.unlink(socket)
+            except OSError:
+                pass
+            emit_event({"event": "bus_detached", "socket": socket})
+        except Exception:  # noqa: BLE001
+            pass
     return True
+
+
+def _release_tee_pad(tee, pad):
+    try:
+        tee.release_request_pad(pad)
+    except Exception:  # noqa: BLE001
+        pass
+    return False  # one-shot idle source
 
 
 def _busedge_ancestor(obj):
