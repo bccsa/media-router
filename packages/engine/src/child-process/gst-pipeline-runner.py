@@ -1507,8 +1507,19 @@ def _try_bus_attach(tee_name, socket):
         # "no client → drop and keep flowing" is exactly the UDP-multicast
         # semantic this bus replaces; a kicked/gone consumer recovers through
         # its own busSocketGate + restart path without touching the producer.
+        # 500 ms edge queue, NOT 200: a RIST-fed producer delivers in hold-and-
+        # burst cycles — librist withholds ~1 RTT (measured up to ~250 ms at
+        # RTT 200) while a retransmit is in flight, then releases the backlog
+        # at line rate. The burst momentarily outruns the client's ~208 KB
+        # kernel sndbuf, unixfdsink blocks, and a 200 ms queue overflowed and
+        # shed mid-burst — corrupting PAT/PMT/media on an otherwise LOSSLESS
+        # feed (measured on .211 bus 40000: 10 CC errors/min on the bus vs 1
+        # on the wire, engine librist lost=0). 500 ms absorbs the worst
+        # observed hold (~253 ms) with 2x headroom; memory cost is trivial
+        # (≈340 KB at 5.4 Mbps). Still leaky=2 — a genuinely stalled consumer
+        # must shed here, never back-pressure the producer.
         branch = Gst.parse_bin_from_description(
-            "queue leaky=2 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0"
+            "queue leaky=2 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0"
             f" ! unixfdsink socket-path={socket} sync=false async=false"
             " wait-for-connection=false",
             True,
