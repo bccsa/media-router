@@ -205,6 +205,17 @@
                     "default": 50,
                     "description": "Output framerate (shared by all renditions, keeps keyframes aligned for ABR)"
                 },
+                "deinterlace": {
+                    "type": "string",
+                    "enum": ["auto", "force", "off"],
+                    "default": "auto",
+                    "x-enumLabels": {
+                        "auto": "Auto (deinterlace when interlaced)",
+                        "force": "Force deinterlace",
+                        "off": "Keep interlaced (pass-through)"
+                    },
+                    "description": "Interlaced sources (1080i etc.) are deinterlaced automatically by default — progressive sources pass through untouched. 'Keep interlaced' skips deinterlacing and passes the fields through; only useful when renditions keep the source resolution (scaling interlaced fields corrupts them). Note: only the software (x264) H.264 encoder can flag its output as interlaced; VA-API/V4L2 outputs remain progressive-flagged."
+                },
                 "gopFrames": {
                     "type": "number",
                     "default": 50,

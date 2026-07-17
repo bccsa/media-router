@@ -122,6 +122,11 @@ export interface EncoderBranchOptions {
     speedPreset?: SpeedPreset;
     h264Profile?: H264Profile;
     sceneCut?: number;
+    /** The frames being encoded are interlaced fields passed through undeinterlaced
+     *  (transcoder "keep interlaced" mode). Only x264 can signal this in the
+     *  bitstream (`interlaced=true`); VA-API/V4L2 have no interlaced encode mode,
+     *  so the flag is ignored there and their output stays progressive-flagged. */
+    interlacedOutput?: boolean;
 }
 
 /**
@@ -138,6 +143,7 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
         speedPreset = 'ultrafast',
         h264Profile = 'auto',
         sceneCut = 40,
+        interlacedOutput = false,
     } = opts;
     const bps = bitrateKbps * 1000;
     const cbr = rateControl !== 'vbr';
@@ -191,7 +197,8 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
             // property); x264 then drops CABAC / 8x8dct etc. to comply. 'auto'
             // adds no filter and leaves x264 to pick.
             const profCaps = h264Profile === 'auto' ? '' : ` ! video/x-h264,profile=${h264Profile}`;
-            return `x264enc name=${name} tune=zerolatency bitrate=${bitrateKbps} speed-preset=${speedPreset} key-int-max=${kif} bframes=0 option-string="${opts}"${profCaps} ! h264parse config-interval=1`;
+            const ilace = interlacedOutput ? ' interlaced=true' : '';
+            return `x264enc name=${name} tune=zerolatency bitrate=${bitrateKbps} speed-preset=${speedPreset} key-int-max=${kif} bframes=0${ilace} option-string="${opts}"${profCaps} ! h264parse config-interval=1`;
         }
         if (codec === 'h265') {
             const opts =

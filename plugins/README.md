@@ -717,7 +717,7 @@ Codec plugins that emit H.264/H.265/AV1 (video-encoder, transcoder) share the en
 
 - `ENCODER_ELEMENTS` — the `{codec × impl}` → GStreamer element-name table (`impl` is `v4l2` \| `va` \| `software`).
 - `resolveImpl(codec, preference, available)` — pick the impl to use at runtime (`auto` prefers a hardware block, then software), given the probed availability.
-- `buildEncoderBranch(opts)` — build one CBR/VBR-tuned encoder fragment ending at the parsed elementary stream. Options: `{ codec, impl, bitrateKbps, kif, name, rateControl?, speedPreset?, h264Profile?, sceneCut? }` (defaults: CBR, `ultrafast`, `auto` profile, scenecut 40). `name` gives the encoder element a distinct name so several renditions can coexist in one pipeline.
+- `buildEncoderBranch(opts)` — build one CBR/VBR-tuned encoder fragment ending at the parsed elementary stream. Options: `{ codec, impl, bitrateKbps, kif, name, rateControl?, speedPreset?, h264Profile?, sceneCut?, interlacedOutput? }` (defaults: CBR, `ultrafast`, `auto` profile, scenecut 40). `name` gives the encoder element a distinct name so several renditions can coexist in one pipeline. `interlacedOutput` marks the frames as undeinterlaced fields — only x264 can signal it in the bitstream (`interlaced=true`); VA-API/V4L2 ignore it.
 - `probeEncoderAvailability(ENCODER_ELEMENTS)` — probe every element with `gst-inspect` and return the installed impls per codec. Store the result for `resolveImpl`.
 - `applyEncoderAvailabilityToManifest(manifest, availability)` — narrow the manifest's `codec` enum to installed codecs and build the `encoderImpl` `x-enumBy` map. A codec plugin's `initManifest` is usually just these two calls:
 

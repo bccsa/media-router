@@ -289,6 +289,108 @@ describe('buildPipeline', () => {
     });
 });
 
+describe('deinterlacing', () => {
+    const base = {
+        input: { host: '239.0.0.1', port: 5004 },
+        framerate: 50,
+        gopFrames: 50,
+    };
+
+    it('inserts an auto deinterlacer between the raw buffer and videorate by default', () => {
+        const p = buildPipeline({ ...base, outputs: [out(0, r())] })!.pipeline;
+        // mode=auto self-detects from decoded buffer flags: interlaced content is
+        // deinterlaced, progressive passes through — the "auto by default" contract.
+        expect(p).toMatch(/! deinterlace mode=auto ! videorate ! video\/x-raw,framerate=50\/1/);
+    });
+
+    it('force mode deinterlaces unconditionally', () => {
+        const p = buildPipeline({ ...base, deinterlace: 'force', outputs: [out(0, r())] })!.pipeline;
+        expect(p).toContain('deinterlace mode=interlaced ! videorate');
+        expect(p).not.toContain('mode=auto');
+    });
+
+    it('off omits the deinterlacer entirely (interlaced pass-through)', () => {
+        const p = buildPipeline({ ...base, deinterlace: 'off', outputs: [out(0, r())] })!.pipeline;
+        expect(p).not.toContain('deinterlace');
+    });
+
+    it('off flags interlaced output on the software x264 branch only', () => {
+        const sw = buildPipeline({ ...base, deinterlace: 'off', outputs: [out(0, r())] })!.pipeline;
+        expect(sw).toMatch(/x264enc [^!]*interlaced=true/);
+        // VA-API has no interlaced encode mode — flag must not leak there.
+        const va = buildPipeline({
+            ...base,
+            deinterlace: 'off',
+            outputs: [out(0, r(), enc({ impl: 'va' }))],
+        })!.pipeline;
+        expect(va).not.toContain('interlaced=true');
+        // And deinterlaced modes never set it.
+        const auto = buildPipeline({ ...base, outputs: [out(0, r())] })!.pipeline;
+        expect(auto).not.toContain('interlaced=true');
+    });
+});
+
+describe('hardware scaling', () => {
+    const base = {
+        input: { host: '239.0.0.1', port: 5004 },
+        framerate: 50,
+        gopFrames: 50,
+    };
+
+    it('va renditions scale on the GPU via vapostproc when available', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { va: true },
+            outputs: [out(0, r(), enc({ impl: 'va' }))],
+        })!.pipeline;
+        expect(p).toContain('vapostproc ! video/x-raw(memory:VAMemory),width=1280,height=720');
+        expect(p).not.toContain('videoscale');
+        expect(p).not.toContain('videoconvert');
+    });
+
+    it('va renditions fall back to the software chain when vapostproc is absent', () => {
+        const p = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ impl: 'va' }))],
+        })!.pipeline;
+        expect(p).not.toContain('vapostproc');
+        expect(p).toMatch(/videoscale ! video\/x-raw,width=1280,height=720 ! videoconvert/);
+    });
+
+    it('v4l2 renditions scale on the Pi ISP via v4l2convert when available', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { v4l2: true },
+            outputs: [out(0, r(), enc({ impl: 'v4l2' }))],
+        })!.pipeline;
+        expect(p).toContain('v4l2convert ! video/x-raw,width=1280,height=720');
+        expect(p).not.toContain('videoscale');
+    });
+
+    it('v4l2 renditions fall back to the software chain when v4l2convert is absent', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { va: true }, // va scaler present, v4l2 not
+            outputs: [out(0, r(), enc({ impl: 'v4l2' }))],
+        })!.pipeline;
+        expect(p).not.toContain('v4l2convert');
+        expect(p).toContain('videoscale');
+    });
+
+    it('mixes hardware and software scaling across renditions', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { va: true },
+            outputs: [
+                out(0, r({ width: 1920, height: 1080 }), enc({ impl: 'va' })),
+                out(1, r({ width: 854, height: 480 })),
+            ],
+        })!.pipeline;
+        expect(p).toContain('vapostproc ! video/x-raw(memory:VAMemory),width=1920,height=1080');
+        expect(p).toMatch(/videoscale ! video\/x-raw,width=854,height=480 ! videoconvert/);
+    });
+});
+
 describe('resolveImpl', () => {
     it('auto prefers v4l2, then software, then whatever remains', () => {
         expect(resolveImpl('h264', 'auto', ['software', 'va'])).toBe('software');

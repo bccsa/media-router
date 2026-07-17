@@ -35,6 +35,19 @@ export interface TranscoderPipelineInputs {
      *  decode spreads across cores on the live feed; 'single' is GStreamer's
      *  default one-core live decode (lowest latency). Shared: one decoder. */
     decodeThreads?: 'multi' | 'single';
+    /** Interlace handling on the shared decode path (default 'auto'):
+     *  'auto' inserts `deinterlace mode=auto` — the element reads the decoded
+     *  buffers' interlace flags itself, deinterlacing interlaced content and
+     *  passing progressive through untouched (no caps plumbing needed).
+     *  'force' deinterlaces unconditionally; 'off' omits the element and passes
+     *  fields through (only sensible when renditions keep the source
+     *  resolution — the encoder flag for that case is handled per branch). */
+    deinterlace?: 'auto' | 'force' | 'off';
+    /** Hardware scaler availability, probed by the module at manifest init.
+     *  When a rendition's encoder impl has its hardware scaler available, the
+     *  leaf's software `videoscale ! videoconvert` stage is replaced by the
+     *  hardware equivalent (`vapostproc` for VA, `v4l2convert` for the Pi ISP). */
+    hwScalers?: { va?: boolean; v4l2?: boolean };
 }
 
 export interface TranscoderPipelineResult {
@@ -104,6 +117,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const fps = input.framerate;
     const kif = Math.max(1, Math.round(input.gopFrames));
     const bufferMs = input.bufferMs ?? 200;
+    const deinterlaceMode = input.deinterlace ?? 'auto';
 
     // setTimestamps=false: `tsparse set-timestamps=true` re-stamps from PCR and
     // must BUFFER until the next PCR arrives to interpolate. A spec-compliant
@@ -150,7 +164,24 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         // exhausted avdec's buffer pool and froze the whole transcode chain.
         // 4 × 3 leaves = 12 refs is well inside the pool.
         const q = 'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0';
-        const scale = `videoscale ! video/x-raw,width=${r.width},height=${r.height}`;
+        // Scale/convert stage, hardware where the rendition's encoder impl has
+        // its scaler installed (probed by the module):
+        //   va   → vapostproc does scale+format-convert+GPU-upload in one step
+        //          and hands vah26Xenc frames already in VA memory. The software
+        //          chain uploaded anyway (vah26Xenc needs the frames on the GPU)
+        //          AFTER burning CPU on videoscale+videoconvert — strictly worse.
+        //   v4l2 → v4l2convert, the Pi ISP M2M scaler that pairs with
+        //          v4l2h26Xenc (bcm2835; Pi 5 exposes neither, so this never
+        //          triggers there).
+        //   else → software videoscale, with videoconvert HERE (after the
+        //          scale) so pixel-format conversion runs on the small
+        //          downscaled frame instead of the full-size source.
+        const scale =
+            e.impl === 'va' && input.hwScalers?.va
+                ? `vapostproc ! video/x-raw(memory:VAMemory),width=${r.width},height=${r.height}`
+                : e.impl === 'v4l2' && input.hwScalers?.v4l2
+                  ? `v4l2convert ! video/x-raw,width=${r.width},height=${r.height}`
+                  : `videoscale ! video/x-raw,width=${r.width},height=${r.height} ! videoconvert`;
         // Every knob is per-rendition here: `out.encode` is already fully resolved
         // (override ?? global, impl picked for this rendition's codec) by the
         // module, so this builder just forwards it — no defaults to keep in sync.
@@ -164,12 +195,13 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
             speedPreset: e.speedPreset,
             h264Profile: e.h264Profile,
             sceneCut: e.sceneCut,
+            interlacedOutput: deinterlaceMode === 'off',
         });
         const sink = buildUdpSink({ name: `usink_${i}`, host: out.host, port: out.port });
         // Throughput element differs by transport: the fan-out `tee`
         // (busTeeName) under unixfd, the named `usink_i` udpsink under UDP.
         sinkNames.push(busTransport() === 'unixfd' ? busTeeName(out.port) : `usink_${i}`);
-        return `${q} ! ${scale} ! videoconvert ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
+        return `${q} ! ${scale} ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
     };
 
     // Video-only capsfilter on the tsdemux output — steers pad selection to the
@@ -197,14 +229,30 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
             ? 'h264parse ! avdec_h264'
             : 'h264parse ! avdec_h264 thread-type=frame max-threads=3';
 
+    // Shared deinterlacer, ONCE for all renditions (decode-once economics).
+    // Placed after the raw-buffer queue (decode bursts absorb first) and BEFORE
+    // videorate: an interlaced source emits field-rate frames out of the
+    // deinterlacer (1080i25 → 50p with the default fields=all), and videorate
+    // then conforms that to the configured output framerate. mode=auto reads
+    // the decoded buffers' interlace flags itself — interlaced content is
+    // deinterlaced, progressive passes through untouched. 'off' omits the
+    // element entirely (interlaced pass-through; the x264 branches then flag
+    // their output via interlacedOutput above).
+    const deinterlacer =
+        deinterlaceMode === 'off'
+            ? ''
+            : deinterlaceMode === 'force'
+              ? 'deinterlace mode=interlaced ! '
+              : 'deinterlace mode=auto ! ';
+
     const teeBranches = input.outputs.map((o, i) => `t. ! ${leaf(o, i)}`).join(' ');
-    // Shared pre-tee path: demux → decode → raw buffer (thread boundary) → drop
-    // to the target framerate → tee. No videoconvert here (moved into the leaves
-    // so it runs on the small downscaled frame). videorate runs on its own
-    // thread via the raw buffer queue.
+    // Shared pre-tee path: demux → decode → raw buffer (thread boundary) →
+    // deinterlace → drop to the target framerate → tee. No videoconvert here
+    // (moved into the leaves so it runs on the small downscaled frame).
+    // videorate runs on its own thread via the raw buffer queue.
     const pipeline =
         `${tsInput} ! tsdemux latency=0 ! ${videoCaps} ! ${decoder} ! ${rawBuffer} ! ` +
-        `videorate ! video/x-raw,framerate=${fps}/1 ! tee name=t ${teeBranches}`;
+        `${deinterlacer}videorate ! video/x-raw,framerate=${fps}/1 ! tee name=t ${teeBranches}`;
 
     return { pipeline, sinkNames };
 }

@@ -7,6 +7,7 @@ import {
     bitrateBadge,
     resolveImpl,
     probeEncoderAvailability,
+    probeGstElement,
     applyEncoderAvailabilityToManifest,
     type CodecId,
     type H264Profile,
@@ -71,9 +72,19 @@ export class TranscoderModule extends GstPluginBase {
     /** Runtime availability map — populated by `initManifest` after probing. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
 
+    /** Hardware scaler availability (vapostproc / v4l2convert), probed alongside
+     *  the encoders. Renditions on a hardware encoder impl get their scale stage
+     *  offloaded to the matching hardware scaler when it's installed. */
+    private static hwScalers: { va: boolean; v4l2: boolean } = { va: false, v4l2: false };
+
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
+        const [availability, vapost, v4l2conv] = await Promise.all([
+            probeEncoderAvailability(ENCODER_ELEMENTS),
+            probeGstElement('vapostproc'),
+            probeGstElement('v4l2convert'),
+        ]);
         TranscoderModule.availableImpls = availability;
+        TranscoderModule.hwScalers = { va: vapost, v4l2: v4l2conv };
         applyEncoderAvailabilityToManifest(manifest, availability);
     }
 
@@ -85,6 +96,11 @@ export class TranscoderModule extends GstPluginBase {
     /** Exposed for tests. */
     static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
         TranscoderModule.availableImpls = availability;
+    }
+
+    /** Exposed for tests. */
+    static setHwScalers(hwScalers: { va: boolean; v4l2: boolean }): void {
+        TranscoderModule.hwScalers = hwScalers;
     }
 
     /** One MPEG-TS input + one MPEG-TS output per configured rendition. */
@@ -179,6 +195,12 @@ export class TranscoderModule extends GstPluginBase {
         const gopFrames = (config.gopFrames as number) ?? 50;
         const bufferMs = (config.bufferMs as number) ?? 200;
         const decodeThreads = config.cpuDecodeThreading === 'single' ? 'single' : 'multi';
+        // Validated against the known set like the encoder enums above, so a
+        // malformed config can't splice into the gst-launch string.
+        const deinterlace =
+            config.deinterlace === 'force' || config.deinterlace === 'off'
+                ? config.deinterlace
+                : 'auto';
         const result = buildPipeline({
             input: { host: upstream.host, port: upstream.port, socketPath: upstream.socketPath },
             outputs,
@@ -186,6 +208,8 @@ export class TranscoderModule extends GstPluginBase {
             gopFrames,
             bufferMs,
             decodeThreads,
+            deinterlace,
+            hwScalers: TranscoderModule.hwScalers,
         });
         if (!result) return null;
 
