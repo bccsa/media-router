@@ -6,6 +6,8 @@ export type {
     PipelineDescription,
     PadLinkRule,
     RistRunnerConfig,
+    TsSplitRunnerConfig,
+    TsSplitOutput,
     EngineServices,
     ModuleServices,
 } from './plugins/PluginModule.js';

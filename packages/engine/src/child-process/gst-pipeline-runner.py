@@ -1101,6 +1101,13 @@ def handle_start(data):
         pipeline = None
         return
 
+    # ts-splitter half of a ts-splitter module — same before-PLAYING wiring
+    # contract as the rist block above.
+    if not _start_ts_split(pipeline, data.get("tsSplit")):
+        pipeline.set_state(Gst.State.NULL)
+        pipeline = None
+        return
+
     # Set up bus watch
     bus = pipeline.get_bus()
     bus.add_signal_watch()
@@ -1132,6 +1139,7 @@ def handle_stop(data=None):
     _cancel_playing_watchdog()
     _clear_pending_bus_attaches()
     _stop_rist()
+    _stop_ts_split()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
@@ -2022,6 +2030,120 @@ def _stop_rist():
         except Exception:  # noqa: BLE001 — teardown must never crash the runner
             pass
         _rist_ctx = None
+
+
+# ---------------------------------------------------------------------------
+# ts-splitter integration (packet-level per-PID SPTS outputs)
+#
+# The ts-splitter plugin's pipeline is `<bus src> ! appsink` plus one
+# `appsrc ! <bus sink>` chain per PID output. This glue drains the appsink on
+# its streaming thread, routes packets in a single pass (ts_split.SplitterCore)
+# and pushes one joined buffer per (input buffer, output) — packet-level
+# pass-through, so output cadence equals ingest cadence (no PES assembly, no
+# demuxer hold-and-burst). See ts_split.py for the core's contract.
+# ---------------------------------------------------------------------------
+_ts_split = None          # {"core": SplitterCore, "appsrcs": {pid: element}} while active
+
+
+def _start_ts_split(pipe, cfg):
+    """Bring up the ts-splitter half of a ts-splitter module pipeline.
+
+    Returns True when no tsSplit config is present or the splitter is wired;
+    on failure emits an `error` event (the parent's restart/backoff path
+    applies) and returns False so handle_start can abort the pipeline.
+    """
+    global _ts_split
+    if not cfg:
+        return True
+    try:
+        import ts_split
+    except Exception as e:  # noqa: BLE001 — a missing core must fail loudly
+        emit_event({"event": "error", "message": f"ts_split unavailable: {e}"})
+        return False
+
+    appsink = pipe.get_by_name(cfg.get("inputAppsink", ""))
+    if appsink is None:
+        emit_event({"event": "error",
+                    "message": f"tsSplit: input appsink not found: {cfg.get('inputAppsink')!r}"})
+        return False
+    appsrcs = {}
+    outputs = []
+    for out in cfg.get("outputs") or []:
+        el = pipe.get_by_name(out.get("appsrc", ""))
+        if el is None:
+            emit_event({"event": "error",
+                        "message": f"tsSplit: output appsrc not found: {out.get('appsrc')!r}"})
+            return False
+        pid = int(out["pid"])
+        appsrcs[pid] = el
+        outputs.append((pid, out.get("streamType")))
+    # Empty outputs is valid: the input-only pipeline still runs discovery so
+    # the module can learn the source's PIDs before any port is wired.
+
+    def _on_discovered(streams, pcr_pid):
+        # Called from the appsink streaming thread — emit_event is
+        # lock-protected (same precedent as the librist stats callback).
+        emit_plugin_event("tssplit:discovered", {
+            "streams": [{"pid": p, "streamType": t} for p, t in streams],
+            "pcrPid": pcr_pid,
+        })
+
+    def _on_desync(dropped):
+        emit_event({"event": "warning",
+                    "message": f"tsSplit: resynced after {dropped} garbage bytes"})
+
+    core = ts_split.SplitterCore(int(cfg.get("tsId", 1)), outputs,
+                                 on_discovered=_on_discovered,
+                                 on_desync=_on_desync)
+
+    # Drain contract set here, not in the pipeline string, so it can't drift.
+    # drop=False (unlike the rist sender): this feeds the lossless local bus,
+    # and the routing callback is ~1% core — overflow should back-pressure
+    # into the upstream LEAKY ingress queue (the bus's universal shed point),
+    # never silently vanish at a hidden 64-buffer cliff here.
+    appsink.set_property("emit-signals", True)
+    appsink.set_property("sync", False)
+    # async=false: keep the appsink OUT of preroll. Without it the pipeline
+    # wedges in PAUSED until the first buffer arrives (verified gst 1.22) —
+    # a dark upstream would then hit the PLAYING watchdog and restart-loop,
+    # exactly the demuxer failure mode this module exists to avoid.
+    appsink.set_property("async", False)
+    appsink.set_property("max-buffers", 64)
+    appsink.set_property("drop", False)
+
+    def _on_sample(sink):
+        smp = sink.emit("pull-sample")
+        if not smp:
+            return Gst.FlowReturn.OK
+        buf = smp.get_buffer()
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+        try:
+            data = bytes(mi.data)   # one copy; feed()'s memoryviews point at THIS
+        finally:
+            buf.unmap(mi)
+        # push-buffer never blocks (appsrc block=false default; each output
+        # appsrc is bounded by leaky-type=downstream in the pipeline string),
+        # so routing in-callback cannot deadlock the input streaming thread.
+        for pid, payload in core.feed(data).items():
+            try:
+                appsrcs[pid].emit("push-buffer", Gst.Buffer.new_wrapped(payload))
+            except Exception:  # noqa: BLE001 — teardown race
+                pass
+        return Gst.FlowReturn.OK
+
+    appsink.connect("new-sample", _on_sample)
+    _ts_split = {"core": core, "appsrcs": appsrcs}
+    return True
+
+
+def _stop_ts_split():
+    # No threads to join: all splitter work rides the appsink streaming
+    # thread, which the pipeline's NULL transition stops. A runner-internal
+    # respawn replays the same start payload, so state rebuilds itself.
+    global _ts_split
+    _ts_split = None
 
 
 # Command dispatch
