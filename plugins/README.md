@@ -107,7 +107,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | A CLI-tool wrapper (returns `null` from `buildPipeline`) | `rist-input` / `rist-output` | `ProcessManager` lifecycle, stderr parsing |
 | A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, multicasts MPEG-TS over a `dgram` socket, probes the source and reports `fieldOptions` |
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
-| A multi-port plugin with variable port count | `mpegts-demuxer` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
+| A multi-port plugin with variable port count | `ts-splitter` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
 
 The Quick Start example above is a minimal skeleton — for anything non-trivial, copying a real plugin will save more time than reading docs.
@@ -540,7 +540,7 @@ Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three archi
 
 | Variant | `buildPipeline` returns | Process model | Examples |
 |---|---|---|---|
-| **GStreamer pipeline** | a `PipelineDescription` | Python `gst-pipeline-runner.py` child process spawned by `GstChildProcess` | `audio-decoder`, `audio-encoder`, `srt-input`, `srt-output`, `mpegts-demuxer`, `mpegts-muxer`, `video-encoder`, `video-player`, `audio-input`, `audio-output` |
+| **GStreamer pipeline** | a `PipelineDescription` | Python `gst-pipeline-runner.py` child process spawned by `GstChildProcess` | `audio-decoder`, `audio-encoder`, `srt-input`, `srt-output`, `ts-splitter`, `mpegts-muxer`, `video-encoder`, `video-player`, `audio-input`, `audio-output` |
 | **External CLI tool** | `null` | A long-running CLI managed by `services.processManager` (auto-killed on stop) | `rist-input` (`ristreceiver`), `rist-output` (`ristsender`) |
 | **PipeWire-only** | `null` | No subprocess — pure PipeWire null-sinks/loopbacks via `services.pipeWire` | `n1-mixer` |
 
@@ -624,7 +624,7 @@ return {
 
 Each branch's first element's sink pad is auto-ghosted, so the rule only needs the downstream elements. Pads beyond the supplied list are ignored.
 
-**Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This is the mpegts-demuxer's PID-based port routing (plan Phase 3); without `matchPids` the positional contract is unchanged.
+**Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This was the (retired) mpegts-demuxer's PID-based port routing (plan Phase 3); the mpegts-muxer's per-PID inputs still use `matchPids`; without it the positional contract is unchanged.
 
 **Pinning an outer muxer's request-pad name (`requestedPadNames`).** With `linkTo`, the runner asks the target for an implicit `sink_%d` pad by default. Pass `requestedPadNames: ['sink_256', …]` to request an exact pad per branch index — the mpegts-muxer uses `sink_<pid>` to pin each stream's PID (plan D3). Indices past the list end fall back to `sink_%d`.
 
@@ -809,7 +809,7 @@ getDynamicPorts(): Array<{
 
 Triggering regeneration: changing a config field that affects port count (e.g. `pairCount`) is enough — the `patchRules` cascade re-emits the dynamic ports and prunes any connections to ports that no longer exist.
 
-**Plugin-driven port changes (`emitConfigUpdate` → live refresh).** A plugin can write its own config to persist runtime discoveries (mpegts-demuxer writing the streams it detects into a `discoveredStreams` array, plan Phase 3) via `this.emitConfigUpdate({ key: value })` — this persists to SQLite and broadcasts to the UI. When the changed key affects the port set, the engine re-resolves `getDynamicPorts` off the back of that update and pushes a `/modules/<id>/ports` patch, so the new ports appear on the open Vue Flow node **without a reload**. Debounce these writes (only `emitConfigUpdate` when the discovered set actually changed) so a steady detection loop doesn't spam SQLite. Discovery should populate config, never replace it: don't auto-remove an entry when its stream disappears — keep it and render the port stale, so downstream connections survive a source going dark.
+**Plugin-driven port changes (`emitConfigUpdate` → live refresh).** A plugin can write its own config to persist runtime discoveries (ts-splitter writing the streams it discovers into a `discoveredStreams` array) via `this.emitConfigUpdate({ key: value })` — this persists to SQLite and broadcasts to the UI. When the changed key affects the port set, the engine re-resolves `getDynamicPorts` off the back of that update and pushes a `/modules/<id>/ports` patch, so the new ports appear on the open Vue Flow node **without a reload**. Debounce these writes (only `emitConfigUpdate` when the discovered set actually changed) so a steady detection loop doesn't spam SQLite. Discovery should populate config, never replace it: don't auto-remove an entry when its stream disappears — keep it and render the port stale, so downstream connections survive a source going dark.
 
 For plugins where each port maps to a distinct PipeWire node (rather than one shared null-sink for the whole module), also implement `getPipeWireNodeForPort(portId)`:
 
@@ -820,7 +820,7 @@ getPipeWireNodeForPort(portId: string): { source?: string; sink?: string } {
 }
 ```
 
-Real examples: [`n1-mixer`](n1-mixer/engine/N1MixerModule.ts) (per-port PipeWire nodes), [`mpegts-demuxer`](mpegts-demuxer/engine/MpegTsDemuxerModule.ts) and [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts) (dynamic outputs/inputs based on stream counts).
+Real examples: [`n1-mixer`](n1-mixer/engine/N1MixerModule.ts) (per-port PipeWire nodes), [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts) and [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts) (dynamic outputs/inputs based on stream counts).
 
 ### Device Watchdog (Hardware Hot-Plug)
 
@@ -1353,7 +1353,7 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | Audio Input | `plugins/audio-input/` | Device picker, `registerPipeWireDeviceProvider`, device watchdog, native `module-remap-source`, VU process |
 | Audio Output | `plugins/audio-output/` | Symmetric to audio-input but for sinks; `registerPipeWireDeviceProvider` with `direction: 'sink'` |
 | Audio Encoder | `plugins/audio-encoder/` | `static initManifest` for codec capability probing, live bitrate via `setElementProperty`, UDP-port allocation |
-| Audio Decoder | `plugins/audio-decoder/` | Stream probing (`probeMpegTsStream`), idle when no upstream connected (`null` from `buildPipeline`). **Requires `mpegts-demuxer` to be installed** — that plugin's `static registerServices` provides the opus/aac/mp2/ac3 codec classifiers `probeMpegTsStream` consults. Without it, `probeResult.codec` always reports `'unknown'` and the decoder silently falls back to `decodebin`. |
+| Audio Decoder | `plugins/audio-decoder/` | Stream probing (`probeMpegTsStream`), idle when no upstream connected (`null` from `buildPipeline`). **Requires `ts-splitter` to be installed** — that plugin's `static registerServices` provides the opus/aac/mp2/ac3 codec classifiers `probeMpegTsStream` consults. Without it, `probeResult.codec` always reports `'unknown'` and the decoder silently falls back to `decodebin`. |
 | SRT Input / Output | `plugins/srt-input/`, `plugins/srt-output/` | Per-caller stat polling, dynamic `statusSections` for multi-peer state, badges, `restartBackoffMs` tuning |
 | RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | **No GStreamer pipeline** — `ProcessManager` driving `ristreceiver` / `ristsender`, stderr-JSON stat parsing |
 | MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignUdpPort(instanceId, portId)`, `linkOnPadAdded` rules |
