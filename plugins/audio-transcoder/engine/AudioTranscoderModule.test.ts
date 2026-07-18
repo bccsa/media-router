@@ -1,0 +1,142 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { AudioTranscoderModule } from './AudioTranscoderModule.js';
+
+interface HarnessOpts {
+    mpegtsUpstream?: boolean;
+    mixSources?: number;
+    udpPort?: number | null;
+}
+
+function makeModule(opts: HarnessOpts = {}) {
+    const module = new AudioTranscoderModule() as any;
+    let nextPort = 41000;
+    const mixSources = Array.from({ length: opts.mixSources ?? 0 }, (_, i) => ({
+        host: '239.255.0.1',
+        port: 40100 + i,
+        connectionId: `c-mix-${i}`,
+        sourceModuleId: `src-${i}`,
+        sourcePortId: 'out-0',
+        sinkPortId: 'audio-in',
+        streamType: 'audio/302m',
+    }));
+    module.services = {
+        instanceId: 'atx-1',
+        mediaRouter: {
+            getModuleUdpSource: vi.fn((_id: string, portId?: string) =>
+                opts.mpegtsUpstream && (portId === undefined || portId === 'mpegts-in')
+                    ? {
+                          host: '239.255.0.1',
+                          port: 40001,
+                          connectionId: 'c-up',
+                          sourceModuleId: 'src-ts',
+                          sourcePortId: 'mpegts-out',
+                          streamType: 'muxed/mpegts',
+                      }
+                    : undefined,
+            ),
+            getModuleUdpSources: vi.fn(() => mixSources),
+            assignUdpPort: vi.fn(() =>
+                opts.udpPort === null ? null : { host: '239.255.0.1', port: nextPort++ },
+            ),
+        },
+    };
+    module.config = {};
+    const setHealth = vi.fn();
+    module.setHealth = setHealth;
+    module.setStatusData = vi.fn();
+    return { module, setHealth };
+}
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    AudioTranscoderModule.setS302mSupported(true);
+});
+
+describe('AudioTranscoderModule.getDynamicPorts', () => {
+    it('exposes both inputs + per-rendition outputs from config', () => {
+        const { module } = makeModule();
+        module.config = {
+            renditions: [{ codec: 'opus' }, { codec: 'pcm' }],
+        };
+        const ports = module.getDynamicPorts();
+        expect(ports.filter((p: any) => p.direction === 'input')).toHaveLength(2);
+        expect(ports.filter((p: any) => p.direction === 'output')).toHaveLength(2);
+    });
+});
+
+describe('AudioTranscoderModule.buildPipeline', () => {
+    it('returns null + warning when nothing is wired', () => {
+        const { module, setHealth } = makeModule();
+        expect(module.buildPipeline({})).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('No input'));
+    });
+
+    it('returns null + warning on zero renditions', () => {
+        const { module, setHealth } = makeModule({ mpegtsUpstream: true });
+        expect(module.buildPipeline({ renditions: [] })).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining('No renditions'),
+        );
+    });
+
+    it('mpegts front-end when upstream TS is wired', () => {
+        const { module } = makeModule({ mpegtsUpstream: true });
+        module.probeResult = { codec: 'aac' };
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
+        expect(desc).not.toBeNull();
+        expect(desc!.pipeline).toContain('tsdemux latency=0');
+        expect(desc!.pipeline).toContain('aacparse ! avdec_aac');
+        expect(desc!.restartOnError).toBe(true);
+    });
+
+    it('falls back to the 302M mix front-end when only audio-in is wired', () => {
+        const { module } = makeModule({ mixSources: 2 });
+        const desc = module.buildPipeline({ renditions: [{ codec: 'aac' }] });
+        expect(desc).not.toBeNull();
+        expect(desc!.pipeline).toContain('audiomixer name=mixin');
+        expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
+    });
+
+    it('mpegts-in wins when both inputs are wired, with a warning', () => {
+        const { module, setHealth } = makeModule({ mpegtsUpstream: true, mixSources: 1 });
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
+        expect(desc!.pipeline).toContain('tsdemux');
+        expect(desc!.pipeline).not.toContain('audiomixer');
+        expect(setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining('Audio In (302M) is ignored'),
+        );
+    });
+
+    it('health error when a pcm rendition is configured on a runtime without 302M TS support', () => {
+        AudioTranscoderModule.setS302mSupported(false);
+        const { module, setHealth } = makeModule({ mpegtsUpstream: true });
+        expect(module.buildPipeline({ renditions: [{ codec: 'pcm' }] })).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('1.26'));
+    });
+
+    it('allocates a distinct UDP port per rendition', () => {
+        const { module } = makeModule({ mpegtsUpstream: true });
+        const desc = module.buildPipeline({
+            renditions: [{ codec: 'opus' }, { codec: 'aac' }],
+        });
+        expect(desc).not.toBeNull();
+        expect(module.services.mediaRouter.assignUdpPort).toHaveBeenCalledWith('atx-1', 'out-0');
+        expect(module.services.mediaRouter.assignUdpPort).toHaveBeenCalledWith('atx-1', 'out-1');
+    });
+
+    it('health error when the UDP port pool is exhausted', () => {
+        const { module, setHealth } = makeModule({ mpegtsUpstream: true, udpPort: null });
+        expect(module.buildPipeline({ renditions: [{ codec: 'opus' }] })).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('exhausted'));
+    });
+
+    it('never contains PipeWire capture/re-stamp elements', () => {
+        const { module } = makeModule({ mpegtsUpstream: true });
+        const desc = module.buildPipeline({ renditions: [{ codec: 'pcm' }] });
+        expect(desc!.pipeline).not.toContain('pulsesrc');
+        expect(desc!.pipeline).not.toContain('pulsesink');
+        expect(desc!.pipeline).not.toContain('do-timestamp');
+    });
+});

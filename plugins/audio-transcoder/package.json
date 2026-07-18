@@ -1,0 +1,168 @@
+{
+    "name": "@media-router/plugin-audio-transcoder",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Audio transcoder — decode once, encode to N renditions (Opus / AAC / PCM 302M), timeline-preserving",
+    "mediaRouter": {
+        "pluginId": "audio-transcoder",
+        "displayName": "Audio Transcoder",
+        "description": "Decodes one audio source (MPEG-TS or 302M PCM mix input) once and re-encodes it into several renditions — Opus, AAC, or PCM 302M — each on its own output port. Preserves the source timeline end-to-end (no PipeWire re-stamping), so downstream muxers keep A/V sync.",
+        "color": "#06b6d4",
+        "icon": "audio-waveform",
+        "category": "codec",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "renditions": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "default": [
+                        { "name": "PCM 302M", "codec": "pcm" }
+                    ],
+                    "description": "Output renditions — \"+ Add\" creates another output port. Each rendition re-encodes the shared decoded audio: Opus/AAC for contribution/distribution, PCM 302M for lossless timeline-true audio to mixers, outputs, or other devices.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "default": "", "description": "Output label (optional)" },
+                            "codec": {
+                                "type": "string",
+                                "enum": ["opus", "aac", "pcm"],
+                                "x-enumLabels": {
+                                    "opus": "Opus",
+                                    "aac": "AAC",
+                                    "pcm": "PCM 302M (lossless)"
+                                },
+                                "default": "opus",
+                                "description": "Codec for this rendition. PCM 302M is fixed-rate (~2.3 Mbps stereo) and carries the source timeline losslessly."
+                            },
+                            "bitrate": {
+                                "type": "number",
+                                "enum": [32, 64, 96, 128, 192, 256, 320],
+                                "default": 128,
+                                "x-unit": "kbps",
+                                "x-showWhen": "codec=opus,aac",
+                                "description": "Encode bitrate"
+                            },
+                            "frameSize": {
+                                "type": "number",
+                                "enum": [2.5, 5, 10, 20, 40, 60],
+                                "default": 20,
+                                "x-unit": "ms",
+                                "x-showWhen": "codec=opus",
+                                "x-advanced": true,
+                                "description": "Opus frame size — smaller = lower latency, higher overhead"
+                            },
+                            "inbandFec": {
+                                "type": "boolean",
+                                "default": false,
+                                "x-showWhen": "codec=opus",
+                                "x-advanced": true,
+                                "description": "Opus in-band forward error correction"
+                            },
+                            "packetLoss": {
+                                "type": "number",
+                                "enum": [0, 5, 10, 15, 20, 25, 30, 50],
+                                "default": 10,
+                                "x-unit": "%",
+                                "x-showWhen": "codec=opus",
+                                "x-advanced": true,
+                                "description": "Expected packet loss (drives FEC strength)"
+                            },
+                            "audioType": {
+                                "type": "number",
+                                "enum": [0, 2048, 2049, 2051],
+                                "x-enumLabels": {
+                                    "0": "Auto",
+                                    "2048": "Generic",
+                                    "2049": "Voice",
+                                    "2051": "Restricted low delay"
+                                },
+                                "default": 0,
+                                "x-showWhen": "codec=opus",
+                                "x-advanced": true,
+                                "description": "Opus application type (Auto picks by frame size)"
+                            }
+                        }
+                    }
+                },
+                "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 150,
+                    "default": 100,
+                    "description": "Volume (%)",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-live": true,
+                    "x-contextMenu": true,
+                    "x-unit": "%"
+                },
+                "audioEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Audio enabled",
+                    "x-live": true,
+                    "x-contextMenu": true
+                },
+                "channels": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2,
+                    "default": 2,
+                    "description": "Channels (302M renditions are stereo-pinned)"
+                },
+                "sampleRate": {
+                    "type": "number",
+                    "enum": [48000],
+                    "default": 48000,
+                    "x-readOnly": true,
+                    "description": "Sample rate (48 kHz — SMPTE 302M standard)"
+                },
+                "bufferMs": {
+                    "type": "number",
+                    "default": 75,
+                    "minimum": 50,
+                    "maximum": 5000,
+                    "x-widget": "slider",
+                    "x-step": 25,
+                    "x-unit": "ms",
+                    "description": "Post-demux jitter buffer (MPEG-TS input). No real-time sink in the encode path, so keep this low — standing fill in this non-leaky queue adds arrival latency at downstream muxers. Raise for HLS/bursty sources only."
+                },
+                "mixLatencyMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 50,
+                    "maximum": 2000,
+                    "x-widget": "slider",
+                    "x-step": 25,
+                    "x-unit": "ms",
+                    "description": "Mix latency budget (302M audio input) — how long the mixer waits for lagging inputs before emitting; starved inputs are silence-filled."
+                },
+                "tsAlignment": {
+                    "type": "number",
+                    "enum": [0, 1, 7],
+                    "x-enumLabels": {
+                        "0": "Continuous",
+                        "1": "One TS packet",
+                        "7": "SRT-aligned (1316 B)"
+                    },
+                    "default": 7,
+                    "description": "MPEG-TS output alignment for Opus/AAC renditions — keep SRT-aligned for SRT/RIST/UDP transport"
+                }
+            }
+        },
+        "engine": "./engine/AudioTranscoderModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}
