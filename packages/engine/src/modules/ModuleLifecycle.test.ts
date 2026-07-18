@@ -686,6 +686,26 @@ describe('ModuleLifecycle', () => {
             expect(moduleManager.get('mod-a')?.running).toBe(true);
         });
 
+        it('recovers a module whose first start failed (stale instance in map)', async () => {
+            // Simulate the aftermath of a failed start: instance exists, not running
+            moduleManager.createModule('mod-a', 'example', {});
+            expect(moduleManager.get('mod-a')?.running).toBe(false);
+
+            // Must NOT throw "Module already exists" — rebuild and start
+            await lifecycle.startSingle('mod-a');
+            expect(moduleManager.get('mod-a')?.running).toBe(true);
+        });
+
+        it('is a no-op for an already-running module (no rebuild)', async () => {
+            await lifecycle.startSingle('mod-a');
+            const first = moduleManager.get('mod-a');
+            expect(first?.running).toBe(true);
+
+            await lifecycle.startSingle('mod-a');
+            expect(moduleManager.get('mod-a')).toBe(first);
+            expect(first?.running).toBe(true);
+        });
+
         it('handles start failure gracefully', async () => {
             // Create a mock pluginLoader that will cause createModule to fail
             const badPluginLoader = {

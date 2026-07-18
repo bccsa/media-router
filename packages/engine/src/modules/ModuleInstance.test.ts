@@ -123,6 +123,24 @@ describe('ModuleInstance', () => {
         expect(instance.running).toBe(false);
     });
 
+    it('failed start re-runs onInit on retry so config fixes take effect', async () => {
+        // First start fails (e.g. no device configured yet)
+        plugin.onStart.mockRejectedValueOnce(new Error('No audio device configured'));
+        await expect(instance.start()).rejects.toThrow('No audio device configured');
+
+        // Operator fixes the config on the dormant instance
+        await instance.applyConfigUpdate({ device: 'alsa_output.usb-shure' });
+
+        // Retry must re-init with the CURRENT config, not the stale init cache
+        await instance.start();
+        expect(plugin.onInit).toHaveBeenCalledTimes(2);
+        expect(plugin.onInit).toHaveBeenLastCalledWith(
+            expect.objectContaining({ device: 'alsa_output.usb-shure' }),
+            undefined,
+        );
+        expect(instance.running).toBe(true);
+    });
+
     it('passes services to onInit when provided', async () => {
         const services = createMockServices();
         const inst = new ModuleInstance('inst-2', 'audio-decoder', plugin, { ...config }, services);

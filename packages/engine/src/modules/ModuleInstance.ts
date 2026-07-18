@@ -122,6 +122,11 @@ export class ModuleInstance extends EventEmitter {
                     'onStop cleanup after failed start',
                 );
             }
+            // Re-init on the next start attempt: plugins cache settings in
+            // onInit (e.g. audio-output's device name), and a start that
+            // failed on bad config would otherwise retry against the stale
+            // cache forever even after the config is fixed.
+            this._initialized = false;
             throw err;
         }
         this.emitStateChange();

@@ -299,6 +299,19 @@ export class ModuleLifecycle {
             return;
         }
 
+        const existing = this.moduleManager.get(moduleId);
+        if (existing?.running) {
+            log.info({ moduleId, module: label }, 'Module already running');
+            return;
+        }
+        if (existing) {
+            // A failed start leaves the instance in the map (running=false),
+            // which would make createModule throw "Module already exists" —
+            // the restart button could then never recover a module that
+            // failed its first start. Rebuild from current config instead.
+            await this.moduleManager.deleteModule(moduleId);
+        }
+
         try {
             const instance = this.moduleManager.createModule(
                 moduleId,

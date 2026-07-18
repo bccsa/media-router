@@ -42,8 +42,10 @@ onMounted(async () => {
     }
 });
 
-const categories = ['protocol', 'codec', 'processing', 'utility'];
+const categories = ['input', 'output', 'protocol', 'codec', 'processing', 'utility'];
 const categoryLabels: Record<string, string> = {
+    input: 'Input',
+    output: 'Output',
     protocol: 'Protocol',
     codec: 'Codec',
     processing: 'Processing',
@@ -63,6 +65,12 @@ const groupedPlugins = computed(() => {
     for (const cat of categories) {
         const items = filteredPlugins.value.filter((p) => p.category === cat);
         if (items.length > 0) groups[cat] = items;
+    }
+    // Unknown categories get their own trailing groups so new plugin
+    // categories never silently vanish from the palette.
+    for (const p of filteredPlugins.value) {
+        if (categories.includes(p.category)) continue;
+        (groups[p.category] ??= []).push(p);
     }
     return groups;
 });

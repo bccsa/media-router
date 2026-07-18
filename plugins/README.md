@@ -779,7 +779,9 @@ severe stutter (measured). Encode-path queues on decoded audio must be NON-leaky
 real-time capture paths (pulsesrc trickle) tolerate small leaky queues. Real examples:
 [`audio-transcoder`](audio-transcoder/engine/audioTranscoderPipeline.ts),
 [`audio-output-302m`](audio-output-302m/engine/AudioOutput302mModule.ts),
-[`audio-input-302m`](audio-input-302m/engine/AudioInput302mModule.ts).
+[`audio-input-302m`](audio-input-302m/engine/AudioInput302mModule.ts),
+[`n1-mixer-302m`](n1-mixer-302m/engine/n1Mixer302mPipeline.ts) (N-1 mix-minus matrix
+built from these helpers — decode each input once, `tee`, one output mixer per pair).
 
 #### `static registerServices(services)` — Contribute engine-wide services
 
@@ -1399,6 +1401,7 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignUdpPort(instanceId, portId)`, `linkOnPadAdded` rules |
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
+| N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one force-live `audiomixer` per output (i ≠ o matrix), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignUdpPort` only for outputs with contributors |
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates |
 | Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignUdpPort(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |

@@ -341,6 +341,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/n1-mixer-302m:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/note:
     dependencies:
       '@media-router/engine':
