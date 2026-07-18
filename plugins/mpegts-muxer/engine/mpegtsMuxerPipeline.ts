@@ -45,6 +45,8 @@ export interface UdpInputSource {
     sourceModuleId?: string | null;
     /** Per-consumer edge socket under unixfd (undefined on UDP multicast). */
     socketPath?: string;
+    /** Lipsync offset (ms) for this input's mux pad — see StreamEntry.offsetMs. */
+    offsetMs?: number;
 }
 
 const VIDEO_PORT_PREFIX = 'video-';
@@ -89,9 +91,27 @@ const MUX_INPUT_QUEUE_MS = 500;
  *   recovery, at the cost of dropped frames whenever skew exceeds the bound.
  */
 
-/** One configured input stream: just its operator-set name (blank = unset). */
+/** One configured input stream. */
 export interface StreamEntry {
+    /** Operator-set name (blank = unset). */
     name: string;
+    /**
+     * Lipsync offset (ms) applied to this input's mux pad via
+     * `GstPad.set_offset()` (audio inputs only — delaying video would add real
+     * latency). Negative advances the stream on the mux timeline: use
+     * `-<measured audio-late skew>` to cancel a stable path offset with no
+     * added latency (costs ~|offset| of clipped audio at pipeline start).
+     * Clamped ±2000; 0/absent → no offset applied (rule shape unchanged).
+     */
+    offsetMs: number;
+}
+
+const MAX_OFFSET_MS = 2000;
+
+/** Clamp a raw config offset to ±2000 ms; malformed → 0. */
+function normalizeOffsetMs(raw: unknown): number {
+    const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
+    return Math.max(-MAX_OFFSET_MS, Math.min(MAX_OFFSET_MS, n));
 }
 
 const MAX_STREAMS: Record<'video' | 'audio', number> = { video: 8, audio: 16 };
@@ -114,6 +134,7 @@ export function streamEntries(
                 typeof (e as { name?: unknown } | null)?.name === 'string'
                     ? ((e as { name: string }).name)
                     : '',
+            offsetMs: normalizeOffsetMs((e as { offsetMs?: unknown } | null)?.offsetMs),
         }));
     }
     const count = Math.max(
@@ -123,6 +144,7 @@ export function streamEntries(
     const legacyNames = (config.streamNames as Record<string, string> | undefined) ?? {};
     return Array.from({ length: Math.min(count, MAX_STREAMS[media]) }, (_, i) => ({
         name: legacyNames[`${media}-${i}`] ?? '',
+        offsetMs: 0,
     }));
 }
 
@@ -324,12 +346,17 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         }
         if (isAudioInputPort(source.sinkPortId)) {
             const pid = audioStreamPid(audioOrdinal++);
+            // Lipsync offset on the mux request pad (audio only — offsetting
+            // video would add real latency). Omitted when 0 so the default
+            // rule shape stays byte-identical to today's.
+            const offsetMs = normalizeOffsetMs(source.offsetMs);
             linkOnPadAdded.push({
                 from: demux,
                 media: 'audio',
                 branches: [inputQueue],
                 linkTo: 'mux',
                 requestedPadNames: [muxSinkPadName(pid)],
+                ...(offsetMs !== 0 ? { padOffsetNs: offsetMs * 1_000_000 } : {}),
             });
         }
     }

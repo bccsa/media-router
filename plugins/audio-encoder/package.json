@@ -129,6 +129,16 @@
                     "description": "Expected packet loss % — encoder adds more redundancy at higher values",
                     "x-showWhen": "codec=opus"
                 },
+                "srcBufferMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 40,
+                    "maximum": 1000,
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "ms",
+                    "description": "Audio capture ring buffer (pulsesrc). 200 = the previous implicit default, now pinned explicitly. Part of the standing audio latency on re-encode paths; lower only during a measured tuning pass (overrun/crackle risk)."
+                },
                 "tsAlignment": {
                     "type": "number",
                     "enum": [

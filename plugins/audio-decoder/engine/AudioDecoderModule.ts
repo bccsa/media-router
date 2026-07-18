@@ -6,7 +6,6 @@ import {
     probeMpegTsStream,
     type ProbeResult,
 } from '@media-router/engine';
-
 /**
  * Audio Decoder plugin.
  *
@@ -183,8 +182,40 @@ export class AudioDecoderModule extends GstPluginBase {
         // is already `tsdemux` with no `tsparse set-timestamps`, so the source
         // PTS is preserved (required for the lock). Off → sync=false (default).
         const clockSync = (config.clockSync as boolean) === true;
-        const sinkSync = clockSync ? 'true' : 'false';
+        // Low-latency deterministic anchor (opt-in) — the lipsync fix for
+        // re-encoded audio paths (decoder → PipeWire loop → encoder → mux).
+        // With sync=false every buffer in the loop FILLS and stays full: the
+        // startup backlog is trapped forever as standing latency, and the
+        // encoder's pulsesrc re-stamps audio AFTER it (measured on gate01:
+        // audio timeline 776 ms late vs video on both 1080p muxes). sync=true
+        // paces rendering at PTS + ts-offset, so the anchor shift becomes the
+        // configured offset instead of "sum of all buffer fills". The
+        // mid-stream-join silence trap documented above is disarmed by
+        // `max-lateness=-1`: a late timeline (join, respawn, startup backlog)
+        // renders immediately and DRAINS instead of being silently dropped —
+        // degrading to arrival-driven behaviour, never to silence.
+        // `syncOffsetMs` (default 250) must cover the ~150-200 ms PES-burst
+        // arrival lateness of bus audio; too small ⇒ constant late-mode (no
+        // harm, just arrival-anchored), too big ⇒ that much standing latency.
+        const lowLatencySync = (config.lowLatencySync as boolean) === true && !clockSync;
+        const syncOffsetMs = Math.max(0, Number(config.syncOffsetMs ?? 0));
+        const sinkSync = clockSync || lowLatencySync ? 'true' : 'false';
         const provideClock = clockSync ? ' provide-clock=false' : '';
+        // Small pa ring (50 ms vs the default 200 ms): with sync=true the ring
+        // fill is bounded playout delay, not a reservoir — the upstream
+        // non-leaky dejitter queue holds the bursts. syncOffsetMs defaults to
+        // 0: PES-cluster arrivals then render slightly "late" (immediately,
+        // thanks to max-lateness=-1), anchoring audio at arrival ≈ the
+        // smallest possible standing latency. Raise it only if underflow
+        // gaps appear (it trades latency for pacing headroom).
+        const sinkTiming = lowLatencySync
+            ? `${syncOffsetMs > 0 ? ` ts-offset=${syncOffsetMs * 1_000_000}` : ''} max-lateness=-1`
+            : ' max-lateness=200000000';
+
+        // pa ring size (µs) for the default sync=false path — see the
+        // pulsesink comment below. Clamped 80–1000 ms.
+        const sinkBufferUs =
+            Math.max(80, Math.min(1000, Number(config.sinkBufferMs ?? 200))) * 1000;
 
         const parts = [
             // Post-tsdemux dejitter buffer — NON-LEAKY (leaky=0), sized to at
@@ -199,22 +230,31 @@ export class AudioDecoderModule extends GstPluginBase {
             // pressure this module's own bus edge (which sheds), never the
             // demuxer or sibling consumers — so it fixes choppiness without the
             // demuxer-side clocksync pacing that back-pressures tsdemux and
-            // freezes the whole unixfd bus. `bufferMs` is per-instance tunable
-            // (default 1000 ms) but FLOORED at 300 ms: existing configs tuned
-            // small values (e.g. 100 ms) as the *leaky latency bound* under the
-            // old semantics — as a non-leaky burst cap that would re-starve the
-            // sink. The cap is a safety bound, not steady-state latency.
-            `${udpSrc} ! tsdemux latency=0 ! queue leaky=0 max-size-time=${Math.max(Number(config.bufferMs ?? 1000), 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            // freezes the whole unixfd bus.
+            //
+            // `bufferMs`: an UNSET value defaults to 300 ms (safe for bursty
+            // demuxer-fed sources). An EXPLICIT value is honoured down to a
+            // 50 ms floor: splitter-fed inputs arrive at wire cadence (~4 ms,
+            // measured gate01 2026-07-18), and because this queue is NON-LEAKY
+            // its startup backlog is trapped forever (in-rate = out-rate) —
+            // on a re-encode path that trapped fill lands 1:1 as A/V skew
+            // (the encoder re-stamps at capture). Operators tuning latency
+            // must be able to shrink it; the old hard 300 ms floor was
+            // demuxer-burst-era protection.
+            `${udpSrc} ! tsdemux latency=0 ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-            // `buffer-time=200000` (200 ms) — the DAC ring the sink drains at
-            // 48 kHz. 50 ms was too shallow to bridge PES-burst spacing; 200 ms
-            // gives the slaving headroom without material latency (the reservoir
-            // upstream is the dominant term). `max-lateness=200000000` drops a
-            // frame only when it arrives *already* >200 ms late (post-stall
-            // recovery, not steady state); `processing-deadline=100000000`.
-            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=200000 max-lateness=200000000`,
+            // `sinkBufferMs` (default 200 ms) — the DAC ring the sink drains
+            // at 48 kHz. 50 ms was too shallow to bridge PES-burst spacing;
+            // 200 ms gives the slaving headroom without material latency (the
+            // reservoir upstream is the dominant term). Lower only during a
+            // measured tuning pass — the floor of 80 ms guards against
+            // configs that would re-starve the sink. `max-lateness=200000000`
+            // drops a frame only when it arrives *already* >200 ms late
+            // (post-stall recovery, not steady state);
+            // `processing-deadline=100000000`.
+            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${lowLatencySync ? 50000 : sinkBufferUs}${sinkTiming}`,
         ];
         const pipeline = parts.join(' ! ');
 

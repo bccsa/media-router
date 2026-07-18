@@ -297,7 +297,10 @@ export class GstRunner {
 
             case 'pad_linked':
                 console.error(
-                    `[gst-runner] Pad linked: rule=${eventJson.rule} index=${eventJson.index} pad=${eventJson.padName}`,
+                    `[gst-runner] Pad linked: rule=${eventJson.rule} index=${eventJson.index} pad=${eventJson.padName}` +
+                        (eventJson.padOffsetNs !== undefined
+                            ? ` padOffsetNs=${eventJson.padOffsetNs}`
+                            : ''),
                 );
                 break;
 

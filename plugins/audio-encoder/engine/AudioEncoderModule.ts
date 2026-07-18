@@ -10,7 +10,6 @@ import {
     type ModuleServices,
     type ThroughputSample,
 } from '@media-router/engine';
-
 /**
  * Audio Encoder plugin.
  *
@@ -148,8 +147,13 @@ export class AudioEncoderModule extends GstPluginBase {
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const gstVolume = (volumePct / 100).toFixed(2);
 
-        // Read from our null-sink's monitor
-        const source = `pulsesrc device=${this.pwNodeName}.monitor`;
+        // Read from our null-sink's monitor. `srcBufferMs` pins the pulsesrc
+        // ring size (previously the implicit gst default of 200 ms) — this
+        // ring is part of the standing audio latency on re-encode paths;
+        // lower only during a measured tuning pass (overrun/crackle risk).
+        const srcBufferUs =
+            Math.max(40, Math.min(1000, Number(config.srcBufferMs ?? 200))) * 1000;
+        const source = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=${srcBufferUs}`;
         const format = `audioconvert ! audioresample ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
         const vol = `volume name=vol volume=${gstVolume}`;
         const level =

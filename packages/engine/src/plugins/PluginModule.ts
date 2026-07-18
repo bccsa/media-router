@@ -322,4 +322,14 @@ export interface PadLinkRule {
      * contract is used unchanged.
      */
     matchPids?: number[];
+    /**
+     * Optional — timestamp offset (ns) applied via `GstPad.set_offset()` on
+     * the `linkTo` request pad before linking. Positive delays the stream on
+     * the target's timeline; negative advances it (buffers whose shifted
+     * running-time falls before the segment start are clipped — costs that
+     * much stream at startup, nothing steady-state). Requires `linkTo`;
+     * ignored on the `matchPids` tee-fanout path. First consumer: mpegts-muxer
+     * per-audio-input lipsync offset (cancels a measured constant path skew).
+     */
+    padOffsetNs?: number;
 }

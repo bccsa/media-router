@@ -40,6 +40,22 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).toContain('port=41000');
     });
 
+    it('pins the pulsesrc ring to srcBufferMs (default 200 ms = the previous implicit gst default, clamped to 40 ms floor)', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({}).pipeline).toContain(
+            'pulsesrc device=MR_PW_enc-1.monitor buffer-time=200000',
+        );
+        expect(module.buildPipeline({ srcBufferMs: 60 }).pipeline).toContain(
+            'buffer-time=60000',
+        );
+        expect(module.buildPipeline({ srcBufferMs: 5 }).pipeline).toContain(
+            'buffer-time=40000',
+        );
+        expect(module.buildPipeline({ srcBufferMs: 5000 }).pipeline).toContain(
+            'buffer-time=1000000',
+        );
+    });
+
     it('builds an AAC path when codec=aac', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ codec: 'aac', bitrate: 192 });

@@ -18,7 +18,6 @@ import {
     type DynamicPort,
     type UdpInputSource,
 } from './mpegtsMuxerPipeline.js';
-
 /**
  * MPEG-TS Muxer plugin.
  *
@@ -55,15 +54,25 @@ export class MpegTsMuxerModule extends GstPluginBase {
         );
     }
 
-    /** Stream-array edits are live only when the length is unchanged (rename).
-     *  A grown/shrunk array means a different port set → pipeline rebuild. */
+    /** Stream-array edits are live only when the length is unchanged (rename)
+     *  AND no entry's `offsetMs` changed. A grown/shrunk array means a
+     *  different port set; an offset change alters the pad-link rules — the
+     *  offset is applied at pad-link time, so treating it as live would
+     *  silently swallow the edit. Both route through pending-restart. */
     isLiveChange(key: string, newValue: unknown, oldValue: unknown): boolean {
         if (key !== 'videoStreams' && key !== 'audioStreams') return true;
-        return (
-            Array.isArray(newValue) &&
-            Array.isArray(oldValue) &&
-            newValue.length === oldValue.length
-        );
+        if (
+            !Array.isArray(newValue) ||
+            !Array.isArray(oldValue) ||
+            newValue.length !== oldValue.length
+        ) {
+            return false;
+        }
+        return newValue.every((e, i) => {
+            const next = (e as { offsetMs?: unknown } | null)?.offsetMs ?? 0;
+            const prev = (oldValue[i] as { offsetMs?: unknown } | null)?.offsetMs ?? 0;
+            return next === prev;
+        });
     }
 
     async onStart(): Promise<void> {
@@ -106,14 +115,18 @@ export class MpegTsMuxerModule extends GstPluginBase {
                     isVideoInputPort(s.sinkPortId) ||
                     isAudioInputPort(s.sinkPortId),
             )
-            .map((s) => ({
-                sinkPortId: s.sinkPortId,
-                host: s.host,
-                port: s.port,
-                name: nameForPort(config, s.sinkPortId),
-                sourceModuleId: s.sourceModuleId,
-                socketPath: s.socketPath,
-            }));
+            .map((s) => {
+                const entry = entryForPort(config, s.sinkPortId);
+                return {
+                    sinkPortId: s.sinkPortId,
+                    host: s.host,
+                    port: s.port,
+                    name: entry?.name,
+                    sourceModuleId: s.sourceModuleId,
+                    socketPath: s.socketPath,
+                    offsetMs: entry?.offsetMs,
+                };
+            });
         const sources = sortSources(muxedSources);
 
         // Parser selection is now done by the Python pad-link runner from
@@ -160,15 +173,15 @@ export class MpegTsMuxerModule extends GstPluginBase {
     }
 }
 
-/** Operator name for a sink port id (`video-0` / `audio-2`) from the config
+/** Stream entry for a sink port id (`video-0` / `audio-2`) from the config
  *  stream arrays (legacy count+map configs are normalised by `streamEntries`).
- *  Populates the input source label; blank means unset. */
-function nameForPort(
+ *  Carries the operator label (blank = unset) and the lipsync offsetMs. */
+function entryForPort(
     config: Record<string, unknown>,
     sinkPortId: string,
-): string | undefined {
+): { name: string; offsetMs: number } | undefined {
     const media = isVideoInputPort(sinkPortId) ? 'video' : 'audio';
     const idx = Number(sinkPortId.slice(media.length + 1));
     if (!Number.isInteger(idx) || idx < 0) return undefined;
-    return streamEntries(config, media)[idx]?.name;
+    return streamEntries(config, media)[idx];
 }

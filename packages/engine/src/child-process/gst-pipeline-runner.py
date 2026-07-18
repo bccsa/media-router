@@ -756,6 +756,13 @@ def _install_pad_link_rule(pipe, rule):
                                         # PID isn't listed is ignored. Fixes the
                                         # positional fragility for PID-based ports
                                         # (mpegts-demuxer, plan Phase 3).
+      "padOffsetNs": -700000000,        # optional — GstPad.set_offset() on the
+                                        # linkTo request pad, applied BEFORE the
+                                        # link (the sticky segment propagates at
+                                        # link time). Positive delays, negative
+                                        # advances (early buffers clip at segment
+                                        # start). Requires linkTo; not applied on
+                                        # the matchPids tee-fanout path.
     }
 
     By default the Nth pad of the matching media type is connected to
@@ -782,6 +789,8 @@ def _install_pad_link_rule(pipe, rule):
     # Optional PID→branch matching (plan Phase 3). When present, the pad's PID
     # picks the branch index; absent, we fall back to pad-added order.
     match_pids = rule.get("matchPids") or []
+    # Optional timestamp offset (ns) on the linkTo request pad (lipsync knob).
+    pad_offset_ns = rule.get("padOffsetNs")
 
     def on_pad_added(_element, pad):
         if media_filter and _pad_caps_media(pad) != media_filter:
@@ -859,6 +868,10 @@ def _install_pad_link_rule(pipe, rule):
                     emit_event({"event": "error",
                                 "message": f"linkOnPadAdded: could not request sink pad on {link_to_name} ({rule_id})"})
                     return
+                # Apply the pad offset BEFORE linking — the sticky segment
+                # event propagates at link time and must already carry it.
+                if pad_offset_ns:
+                    req_pad.set_offset(int(pad_offset_ns))
                 outer_link = src_pad.link(req_pad)
                 if outer_link != Gst.PadLinkReturn.OK:
                     emit_event({"event": "error",
@@ -868,7 +881,9 @@ def _install_pad_link_rule(pipe, rule):
             emit_event({"event": "pad_linked",
                         "rule": rule_id,
                         "index": index,
-                        "padName": pad.get_name()})
+                        "padName": pad.get_name(),
+                        **({"padOffsetNs": int(pad_offset_ns)}
+                           if (pad_offset_ns and link_to_name) else {})})
         except GLib.Error as e:
             emit_event({"event": "error",
                         "message": f"linkOnPadAdded: branch parse failed: {e.message}"})

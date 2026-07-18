@@ -39,7 +39,16 @@
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" }
+                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" },
+                            "offsetMs": {
+                                "type": "number",
+                                "default": 0,
+                                "minimum": -2000,
+                                "maximum": 2000,
+                                "x-step": 10,
+                                "x-unit": "ms",
+                                "description": "Lipsync offset for this audio input on the mux timeline. Negative advances audio — set to minus the measured audio-late skew to cancel a stable path delay with no added latency (costs ~|offset| of clipped audio at pipeline start). Re-measure after changing audio-path buffering. Applied at pad-link time — changing it restarts the muxer."
+                            }
                         }
                     },
                     "x-liveUpdatable": true

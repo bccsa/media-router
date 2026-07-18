@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
     audioPortId,
     buildDynamicPorts,
@@ -20,21 +22,39 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 'video',
             );
             expect(entries).toEqual([
-                { name: 'Cam 1' },
-                { name: '' },
-                { name: '' },
-                { name: '' },
+                { name: 'Cam 1', offsetMs: 0 },
+                { name: '', offsetMs: 0 },
+                { name: '', offsetMs: 0 },
+                { name: '', offsetMs: 0 },
             ]);
         });
-        it('falls back to legacy counts + streamNames map', () => {
+        it('maps offsetMs, clamping to ±2000 and zeroing malformed values', () => {
+            const entries = streamEntries(
+                {
+                    audioStreams: [
+                        { name: 'ENG', offsetMs: -700 },
+                        { name: '', offsetMs: -9999 },
+                        { name: '', offsetMs: 9999 },
+                        { name: '', offsetMs: 'nope' },
+                        { name: '', offsetMs: NaN },
+                    ],
+                },
+                'audio',
+            );
+            expect(entries.map((e) => e.offsetMs)).toEqual([-700, -2000, 2000, 0, 0]);
+        });
+        it('falls back to legacy counts + streamNames map (offsetMs 0)', () => {
             const entries = streamEntries(
                 { audioStreamCount: 2, streamNames: { 'audio-1': 'FOH' } },
                 'audio',
             );
-            expect(entries).toEqual([{ name: '' }, { name: 'FOH' }]);
+            expect(entries).toEqual([
+                { name: '', offsetMs: 0 },
+                { name: 'FOH', offsetMs: 0 },
+            ]);
         });
         it('defaults to one unnamed stream on an empty config', () => {
-            expect(streamEntries({}, 'video')).toEqual([{ name: '' }]);
+            expect(streamEntries({}, 'video')).toEqual([{ name: '', offsetMs: 0 }]);
         });
         it('clamps to the schema maxItems (8 video / 16 audio)', () => {
             const many = Array.from({ length: 20 }, () => ({ name: '' }));
@@ -307,6 +327,38 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(result!.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
         });
+
+        it('puts offsetMs on the AUDIO rule as padOffsetNs (lipsync knob), omitted at 0 so the default rule shape is unchanged', () => {
+            const result = buildPipeline({
+                sources: [
+                    { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001, offsetMs: -700 },
+                    { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002, offsetMs: -700 },
+                    { sinkPortId: 'audio-1', host: '239.255.0.1', port: 40003, offsetMs: 0 },
+                    { sinkPortId: 'audio-2', host: '239.255.0.1', port: 40004 },
+                ],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRules = result!.linkOnPadAdded.filter((r) => r.media === 'audio');
+            // Video never gets an offset — delaying video adds real latency.
+            expect('padOffsetNs' in videoRule).toBe(false);
+            expect(audioRules[0].padOffsetNs).toBe(-700_000_000);
+            // 0 / absent → key omitted entirely (byte-identical default rules).
+            expect('padOffsetNs' in audioRules[1]).toBe(false);
+            expect('padOffsetNs' in audioRules[2]).toBe(false);
+        });
+
+        it('clamps out-of-range offsetMs at the rule level too (±2000)', () => {
+            const result = buildPipeline({
+                sources: [
+                    { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002, offsetMs: -5000 },
+                ],
+                output: { host: '239.255.0.1', port: 40010 },
+                alignment: 7,
+            });
+            expect(result!.linkOnPadAdded[0].padOffsetNs).toBe(-2_000_000_000);
+        });
     });
 
     describe('sortSources', () => {
@@ -426,6 +478,72 @@ describe('MpegTsMuxerModule', () => {
             expect(module.isLiveChange('videoStreams', [{ name: '' }], undefined)).toBe(false);
             // Unrelated keys are not refined here.
             expect(module.isLiveChange('bufferMs', 100, 50)).toBe(true);
+        });
+
+        it('isLiveChange: an offsetMs edit is NOT live — the offset is applied at pad-link time, so a live update would silently swallow it', () => {
+            const { module } = makeModule();
+            expect(
+                module.isLiveChange(
+                    'audioStreams',
+                    [{ name: 'ENG', offsetMs: -700 }],
+                    [{ name: 'ENG', offsetMs: 0 }],
+                ),
+            ).toBe(false);
+            // Absent offsetMs (old entry shape) is equivalent to 0.
+            expect(
+                module.isLiveChange(
+                    'audioStreams',
+                    [{ name: 'ENG', offsetMs: -700 }],
+                    [{ name: 'ENG' }],
+                ),
+            ).toBe(false);
+            // Rename with unchanged offset stays live.
+            expect(
+                module.isLiveChange(
+                    'audioStreams',
+                    [{ name: 'NOR', offsetMs: -700 }],
+                    [{ name: 'ENG', offsetMs: -700 }],
+                ),
+            ).toBe(true);
+            // Rename where neither side carries an offset stays live too.
+            expect(
+                module.isLiveChange('audioStreams', [{ name: 'B' }], [{ name: 'A' }]),
+            ).toBe(true);
+        });
+
+        it('passes audioStreams offsetMs from config through to the audio pad-link rule', () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                ],
+            });
+            (module as any).config = {
+                videoStreams: [{ name: '' }],
+                audioStreams: [{ name: 'ENG', offsetMs: -700 }],
+                alignment: 7,
+            };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const desc = module.buildPipeline((module as any).config);
+            const audioRule = desc!.linkOnPadAdded!.find((r) => r.media === 'audio')!;
+            const videoRule = desc!.linkOnPadAdded!.find((r) => r.media === 'video')!;
+            expect(audioRule.padOffsetNs).toBe(-700_000_000);
+            expect('padOffsetNs' in videoRule).toBe(false);
+        });
+
+        it('exposes offsetMs in the audioStreams schema (and not in videoStreams)', () => {
+            const schema = JSON.parse(
+                readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
+            ).mediaRouter.configSchema.properties;
+            const audioItem = schema.audioStreams.items.properties;
+            expect(audioItem.offsetMs).toMatchObject({
+                type: 'number',
+                default: 0,
+                minimum: -2000,
+                maximum: 2000,
+            });
+            expect(schema.videoStreams.items.properties.offsetMs).toBeUndefined();
         });
 
         it('ignores connections that arrive on unknown port ids (e.g. the output)', () => {

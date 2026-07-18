@@ -92,6 +92,38 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.clockSync).toBe(true);
     });
 
+    it('default keeps the drop-late guard (max-lateness=200ms) and no ts-offset', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({});
+        expect(desc!.pipeline).toContain('max-lateness=200000000');
+        expect(desc!.pipeline).not.toContain('ts-offset');
+    });
+
+    it('lowLatencySync → sync=true + small ring + max-lateness=-1 (arrival-anchored, never-silent)', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({ lowLatencySync: true });
+        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=true');
+        expect(desc!.pipeline).not.toContain('provide-clock=false');
+        expect(desc!.pipeline).toContain('buffer-time=50000');
+        expect(desc!.pipeline).not.toContain('ts-offset');
+        expect(desc!.pipeline).toContain('max-lateness=-1');
+        expect(desc!.clockSync).toBeUndefined();
+    });
+
+    it('lowLatencySync honors syncOffsetMs', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({ lowLatencySync: true, syncOffsetMs: 400 });
+        expect(desc!.pipeline).toContain('ts-offset=400000000');
+    });
+
+    it('clockSync wins over lowLatencySync (no ts-offset in shared-clock mode)', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({ clockSync: true, lowLatencySync: true });
+        expect(desc!.pipeline).toContain('provide-clock=false');
+        expect(desc!.pipeline).not.toContain('ts-offset');
+        expect(desc!.pipeline).toContain('max-lateness=200000000');
+    });
+
     it('uses the configured volume (volume=100% → gst volume=1.00)', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
@@ -139,12 +171,31 @@ describe('AudioDecoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'opus' };
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toMatch(/tsdemux[^!]+! queue leaky=0/);
-        // Default 1000 ms non-leaky cap (a safety bound, not steady-state latency).
-        expect(desc!.pipeline).toContain('queue leaky=0 max-size-time=1000000000');
-        // Operator bufferMs floored at 300 ms: small values were tuned as the OLD
-        // leaky latency bound and would re-starve the sink as a non-leaky burst cap.
-        const floored = module.buildPipeline({ bufferMs: 100 });
-        expect(floored!.pipeline).toContain('queue leaky=0 max-size-time=300000000');
+        // Unset bufferMs → safe 300 ms default (bursty demuxer-fed sources).
+        expect(desc!.pipeline).toContain('queue leaky=0 max-size-time=300000000');
+        // EXPLICIT low values are honoured (trapped fill in this non-leaky
+        // queue lands 1:1 as A/V skew on re-encode paths) down to a 50 ms floor.
+        const tuned = module.buildPipeline({ bufferMs: 100 });
+        expect(tuned!.pipeline).toContain('queue leaky=0 max-size-time=100000000');
+        const floored = module.buildPipeline({ bufferMs: 0 });
+        expect(floored!.pipeline).toContain('queue leaky=0 max-size-time=50000000');
+        // Values above the default pass through (clamped at 5000).
+        const raised = module.buildPipeline({ bufferMs: 1500 });
+        expect(raised!.pipeline).toContain('queue leaky=0 max-size-time=1500000000');
+    });
+
+    it('sinkBufferMs sizes the pa ring (default 200 ms, clamped to 80 ms floor)', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({})!.pipeline).toContain('buffer-time=200000');
+        expect(module.buildPipeline({ sinkBufferMs: 100 })!.pipeline).toContain(
+            'buffer-time=100000',
+        );
+        expect(module.buildPipeline({ sinkBufferMs: 10 })!.pipeline).toContain(
+            'buffer-time=80000',
+        );
+        // lowLatencySync keeps its own small fixed ring regardless of sinkBufferMs.
+        const lls = module.buildPipeline({ lowLatencySync: true, sinkBufferMs: 500 });
+        expect(lls!.pipeline).toContain('buffer-time=50000');
     });
 });
 
