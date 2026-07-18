@@ -219,11 +219,15 @@ export function useContextMenu(
         const conn = edgeContextMenu.value
             ? engine.value?.connections.find((c) => c.id === edgeContextMenu.value!.edgeId)
             : null;
-        const isAudio = conn
+        const srcStreamType = conn
             ? engine.value?.modules[conn.sourceModuleId]?.ports?.find(
                   (p) => p.id === conn.sourcePortId,
-              )?.streamType === 'audio/pcm'
-            : false;
+              )?.streamType
+            : undefined;
+        // Channel maps apply to both audio transports: pw-links re-wire per
+        // the map; 302m edges render it as an audioconvert mix-matrix in the
+        // consumer's decode branch.
+        const isAudio = srcStreamType === 'audio/pcm' || srcStreamType === 'audio/302m';
 
         const items: MenuItem[] = [
             {

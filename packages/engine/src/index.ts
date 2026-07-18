@@ -64,7 +64,11 @@ export {
     NET_UDP_RCV_BUF,
 } from './plugins/udpHelpers.js';
 export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/udpHelpers.js';
-export { buildAudioMixInput, build302mEncodeBranch } from './plugins/audio302mHelpers.js';
+export {
+    buildAudioMixInput,
+    build302mEncodeBranch,
+    mixMatrixClause,
+} from './plugins/audio302mHelpers.js';
 export type {
     AudioMixSource,
     AudioMixInputOpts,

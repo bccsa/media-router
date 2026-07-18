@@ -301,8 +301,15 @@ export class MediaRouter {
             log.warn({ connectionId: connId }, 'Cannot update channel map — connection not found');
             return;
         }
-        if (conn.streamType !== 'audio/pcm') {
-            log.warn({ connectionId: connId }, 'Channel map only applies to audio/pcm connections');
+        // audio/pcm: re-executing rewires the pw-links per the map.
+        // audio/302m: re-executing restarts the consumer, whose mix branch
+        // renders the map as an `audioconvert mix-matrix` (see
+        // buildAudioMixInput) — per-channel gain included.
+        if (conn.streamType !== 'audio/pcm' && conn.streamType !== 'audio/302m') {
+            log.warn(
+                { connectionId: connId },
+                'Channel map only applies to audio/pcm and audio/302m connections',
+            );
             return;
         }
 
@@ -469,6 +476,8 @@ export class MediaRouter {
         sinkPortId: string;
         streamType: StreamType;
         socketPath?: string;
+        /** Per-connection channel map (audio/pcm and audio/302m edges). */
+        channelMap?: ChannelMapEntry[];
     }> {
         const out: Array<{
             host: string;
@@ -479,6 +488,7 @@ export class MediaRouter {
             sinkPortId: string;
             streamType: StreamType;
             socketPath?: string;
+            channelMap?: ChannelMapEntry[];
         }> = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
@@ -495,6 +505,7 @@ export class MediaRouter {
                     sinkPortId: conn.sinkPortId,
                     streamType: conn.streamType,
                     socketPath: this.edgeSocketPath(port, connId),
+                    channelMap: conn.channelMap,
                 });
             }
         }

@@ -98,6 +98,31 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
     });
 
+    it('passes a mix source connection channelMap through as a mix-matrix', () => {
+        const { module } = makeModule({ mixSources: 1 });
+        module.services.mediaRouter.getModuleUdpSources = vi.fn(() => [
+            {
+                host: '239.255.0.1',
+                port: 40100,
+                connectionId: 'c-mix-0',
+                sourceModuleId: 'src-0',
+                sourcePortId: 'out-0',
+                sinkPortId: 'audio-in',
+                streamType: 'audio/302m',
+                channelMap: [
+                    { srcChannel: 0, dstChannel: 0, gain: 0.5 },
+                    { srcChannel: 1, dstChannel: 0, gain: 0.5 },
+                ],
+            },
+        ]);
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
+        // Mix output is stereo (module channels=2): the stereo→mono-style map
+        // lands in row 0, row 1 stays silent.
+        expect(desc!.pipeline).toContain(
+            'mix-matrix="<<(float)0.5000, (float)0.5000>, <(float)0.0000, (float)0.0000>>"',
+        );
+    });
+
     it('mpegts-in wins when both inputs are wired, with a warning', () => {
         const { module, setHealth } = makeModule({ mpegtsUpstream: true, mixSources: 1 });
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });

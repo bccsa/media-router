@@ -284,6 +284,35 @@ describe('MediaRouter', () => {
         expect(all[0].streamType).toBe('audio/302m');
     });
 
+    it('updateChannelMap accepts audio/302m edges and exposes the map via getModuleUdpSources', async () => {
+        router.registerPorts('atx', [
+            { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: 'PCM 302M' },
+        ]);
+        router.registerPorts('aout', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+        ]);
+        router.setDependencies({} as any, (id: string) =>
+            id === 'aout'
+                ? ({ config: {}, running: false, stop: vi.fn(), start: vi.fn() } as any)
+                : ({ config: {}, running: false } as any),
+        );
+        router.assignUdpPort('atx', 'out-0');
+        const connId = await router.createConnection('atx', 'out-0', 'aout', 'audio-in');
+
+        const map = [
+            { srcChannel: 0, dstChannel: 0, gain: 0.5 },
+            { srcChannel: 1, dstChannel: 0, gain: 0.5 },
+        ];
+        await router.updateChannelMap(connId, map);
+        expect(router.getModuleUdpSources('aout')[0].channelMap).toEqual(map);
+    });
+
     it('getModuleUdpSource returns undefined when encoder has no UDP port', async () => {
         registerMpegtsPair(router);
 

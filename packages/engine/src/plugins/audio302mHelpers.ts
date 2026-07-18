@@ -1,3 +1,4 @@
+import type { ChannelMapEntry } from '@media-router/shared-types';
 import { buildUdpSrc } from './udpHelpers.js';
 
 /**
@@ -27,6 +28,40 @@ export interface AudioMixSource {
     /** Per-consumer unixfd edge socket (undefined on UDP transport). */
     socketPath?: string;
     connectionId: string;
+    /**
+     * Per-connection channel map (same `ChannelMapEntry[]` the audio/pcm
+     * links use) — rendered as an `audioconvert mix-matrix` on this source's
+     * decode branch: `matrix[dst][src] = gain ?? 1.0`, unmapped cells 0.
+     * mono→stereo fan-out, stereo→mono downmix, channel picking from
+     * multichannel, and per-channel gain (which pw-links never honoured)
+     * all come out of the same matrix. Absent → default channel conversion.
+     */
+    channelMap?: ChannelMapEntry[];
+    /** Channel count of THIS source's 302M stream (matrix input dimension).
+     *  Default 2 — the v1 302M encode branch is stereo-pinned. */
+    sourceChannels?: number;
+}
+
+/** Render a ChannelMapEntry[] as an audioconvert mix-matrix launch clause. */
+export function mixMatrixClause(
+    channelMap: ChannelMapEntry[],
+    srcChannels: number,
+    dstChannels: number,
+): string {
+    const m: number[][] = Array.from({ length: dstChannels }, () =>
+        new Array<number>(srcChannels).fill(0),
+    );
+    for (const e of channelMap) {
+        const src = Math.trunc(Number(e.srcChannel));
+        const dst = Math.trunc(Number(e.dstChannel));
+        if (src < 0 || src >= srcChannels || dst < 0 || dst >= dstChannels) continue;
+        const gain = Number(e.gain ?? 1);
+        m[dst][src] = Number.isFinite(gain) ? gain : 1;
+    }
+    const rows = m
+        .map((row) => `<${row.map((v) => `(float)${v.toFixed(4)}`).join(', ')}>`)
+        .join(', ');
+    return ` mix-matrix="<${rows}>"`;
 }
 
 export interface AudioMixInputOpts {
@@ -85,9 +120,13 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
 
     const branches = opts.sources.map((s) => {
         const src = buildUdpSrc({ host: s.host, port: s.port, socketPath: s.socketPath });
+        // Per-connection channel mapping on THIS branch's audioconvert.
+        const matrix = s.channelMap?.length
+            ? mixMatrixClause(s.channelMap, s.sourceChannels ?? 2, channels)
+            : '';
         return (
             `${src} ! tsdemux latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
-            ' ! audioconvert ! audioresample' +
+            ` ! audioconvert${matrix} ! audioresample` +
             ` ! audio/x-raw,rate=48000,channels=${channels}` +
             ` ! queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0` +
             ` ! ${mixerName}.`

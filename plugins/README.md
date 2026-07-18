@@ -224,6 +224,11 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 - An INPUT port with `maxConnections: -1` and `streamType: audio/302m` can receive N
   sources — consume them with `getModuleUdpSources(id).filter(s => s.sinkPortId === ...)`
   and feed `buildAudioMixInput()` (see Engine Helpers) for implicit timeline-true mixing
+- Per-connection **channel maps** work on `audio/302m` edges like on `audio/pcm` ones
+  (same `ChannelMapEntry[]`, same context menu): the map renders as an
+  `audioconvert mix-matrix` on that connection's decode branch — mono→stereo,
+  stereo→mono, channel picking, and per-channel gain (which pw-links never honoured).
+  A map edit re-executes the edge (consumer restart)
 
 ### UI Indicators
 
