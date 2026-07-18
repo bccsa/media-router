@@ -75,7 +75,7 @@ describe('buildPipeline (audio transcoder)', () => {
         })!;
         expect(r.pipeline).toContain('audiomixer name=mixin force-live=true');
         expect(r.pipeline.match(/! mixin\./g)).toHaveLength(2);
-        expect(r.pipeline).toContain('mixin. ! audioconvert');
+        expect(r.pipeline).toContain('mixin_out. ! audioconvert');
     });
 
     it('encode leaves use NON-leaky queues — the decoder emits ~150ms PES-batch bursts, and a small leaky queue sheds most of every burst (gate01 stutter bug)', () => {

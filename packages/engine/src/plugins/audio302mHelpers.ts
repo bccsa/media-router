@@ -70,9 +70,18 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     const mixerName = opts.mixerName ?? 'mixin';
     const branchQueueNs = Math.max(20, Math.min(2000, opts.branchQueueMs ?? 100)) * 1_000_000;
 
+    // The mixer's OUTPUT caps are pinned immediately on its src pad: a
+    // force-live aggregator fixates its output format at startup, BEFORE any
+    // input has delivered caps — left to downstream preference it fixates
+    // channels=1 (encoders advertise [1,N]) and then DOWNMIXES every input
+    // to mono (measured on gate01: stereo 302M in, mono trunk/VU/encode out).
+    // Callers continue the chain from `<returned mixerName>.` — the named
+    // capsfilter, not the raw audiomixer.
+    const srcName = `${mixerName}_out`;
     const mixer =
         `audiomixer name=${mixerName} force-live=true ` +
-        `latency=${latencyNs} min-upstream-latency=${latencyNs}`;
+        `latency=${latencyNs} min-upstream-latency=${latencyNs}` +
+        ` ! capsfilter name=${srcName} caps="audio/x-raw,rate=48000,channels=${channels}"`;
 
     const branches = opts.sources.map((s) => {
         const src = buildUdpSrc({ host: s.host, port: s.port, socketPath: s.socketPath });
@@ -85,7 +94,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         );
     });
 
-    return { fragment: [mixer, ...branches].join(' '), mixerName };
+    return { fragment: [mixer, ...branches].join(' '), mixerName: srcName };
 }
 
 export interface Audio302mEncodeOpts {

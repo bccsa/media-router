@@ -6,10 +6,18 @@ const SRC = { host: '239.255.0.1', port: 40001, connectionId: 'c1' };
 describe('buildAudioMixInput', () => {
     it('emits a force-live audiomixer with the latency budget applied', () => {
         const { fragment, mixerName } = buildAudioMixInput({ sources: [SRC] });
-        expect(mixerName).toBe('mixin');
+        // Callers continue from the named output capsfilter, not the raw mixer.
+        expect(mixerName).toBe('mixin_out');
         expect(fragment).toContain('audiomixer name=mixin force-live=true');
         expect(fragment).toContain('latency=200000000');
         expect(fragment).toContain('min-upstream-latency=200000000');
+    });
+
+    it('pins the mixer OUTPUT caps — a force-live aggregator fixates before inputs deliver caps and otherwise goes mono (gate01 VU bug)', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC], channels: 2 });
+        expect(fragment).toContain(
+            'capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2"',
+        );
     });
 
     it('clamps the latency budget to 50–2000 ms', () => {
