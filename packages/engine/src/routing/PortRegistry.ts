@@ -1,4 +1,4 @@
-import type { ModulePort } from '@media-router/shared-types';
+import { streamTypesCompatible, type ModulePort } from '@media-router/shared-types';
 
 export interface CompatibilityResult {
     compatible: boolean;
@@ -55,9 +55,12 @@ export class PortRegistry {
         return count;
     }
 
-    /** Validate stream type compatibility between two ports. */
+    /** Validate stream type compatibility between two ports.
+     *  Exact match, or TS-family (`muxed/mpegts` ↔ `audio/302m`) — see
+     *  `streamTypesCompatible` in shared-types (single source of truth,
+     *  shared with the manager-ui connection validator). */
     validateCompatibility(sourcePort: ModulePort, sinkPort: ModulePort): CompatibilityResult {
-        if (sourcePort.streamType !== sinkPort.streamType) {
+        if (!streamTypesCompatible(sourcePort.streamType, sinkPort.streamType)) {
             return {
                 compatible: false,
                 reason: `Stream type mismatch: ${sourcePort.streamType} → ${sinkPort.streamType}`,

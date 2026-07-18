@@ -284,7 +284,25 @@ importers:
         specifier: ^25.5.0
         version: 25.5.0
 
+  plugins/audio-input-302m:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/audio-output:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/audio-output-302m:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/audio-transcoder:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*

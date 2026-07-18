@@ -251,6 +251,39 @@ describe('MediaRouter', () => {
         expect(source!.connectionId).toBe('encoder:mpegts-out-decoder:mpegts-in');
     });
 
+    it('getModuleUdpSource(s) resolve audio/302m connections (TS-family bus type)', async () => {
+        router.registerPorts('atx', [
+            { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: 'PCM 302M' },
+        ]);
+        router.registerPorts('aout', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+        ]);
+        router.setDependencies({} as any, (id: string) =>
+            id === 'aout'
+                ? ({ config: {}, running: false, stop: vi.fn(), start: vi.fn() } as any)
+                : ({ config: {}, running: false } as any),
+        );
+        const ep = router.assignUdpPort('atx', 'out-0');
+        expect(ep).not.toBeNull();
+        await router.createConnection('atx', 'out-0', 'aout', 'audio-in');
+
+        const single = router.getModuleUdpSource('aout');
+        expect(single).toBeDefined();
+        expect(single!.port).toBe(ep!.port);
+        expect(single!.streamType).toBe('audio/302m');
+
+        const all = router.getModuleUdpSources('aout');
+        expect(all).toHaveLength(1);
+        expect(all[0].sinkPortId).toBe('audio-in');
+        expect(all[0].streamType).toBe('audio/302m');
+    });
+
     it('getModuleUdpSource returns undefined when encoder has no UDP port', async () => {
         registerMpegtsPair(router);
 

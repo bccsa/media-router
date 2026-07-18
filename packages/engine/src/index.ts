@@ -23,7 +23,12 @@ export {
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
 export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './system/drmConnectors.js';
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
-export { probeGstElement, gstInspectMaxChannels, findLadspaElement } from './plugins/gstInspect.js';
+export {
+    probeGstElement,
+    gstInspectMaxChannels,
+    gstElementSupportsCaps,
+    findLadspaElement,
+} from './plugins/gstInspect.js';
 export {
     ENCODER_ELEMENTS,
     SPEED_PRESETS,
@@ -59,6 +64,12 @@ export {
     NET_UDP_RCV_BUF,
 } from './plugins/udpHelpers.js';
 export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/udpHelpers.js';
+export { buildAudioMixInput, build302mEncodeBranch } from './plugins/audio302mHelpers.js';
+export type {
+    AudioMixSource,
+    AudioMixInputOpts,
+    Audio302mEncodeOpts,
+} from './plugins/audio302mHelpers.js';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_VIDEO_PID_BASE,

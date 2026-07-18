@@ -13,6 +13,13 @@ import { busTransport, busEdgeSocketPath } from '../plugins/udpHelpers.js';
 
 const log = createLogger('MediaRouter');
 
+/**
+ * Stream types carried on the loopback bus (UDP multicast / unixfd fan-out).
+ * `audio/302m` is SMPTE-302M PCM in a standard MPEG-TS — same wire format,
+ * same executor, same per-edge sockets as `muxed/mpegts`.
+ */
+const BUS_STREAM_TYPES: ReadonlySet<string> = new Set(['muxed/mpegts', 'audio/302m']);
+
 /** UDP multicast address for local MPEG-TS routing. */
 const MULTICAST_ADDR = '239.255.0.1';
 
@@ -96,6 +103,10 @@ export class MediaRouter {
         this.streamExecutors.register(
             new PcmAudioExecutor(pipeWire, moduleGetter, connLabel),
         );
+        // `audio/302m` (SMPTE 302M PCM-in-TS) is valid MPEG-TS on the wire —
+        // it rides the exact same bus transport, so it aliases onto the SAME
+        // MpegTsUdpExecutor instance (see the register() doc for why not a
+        // second instance).
         this.streamExecutors.register(
             new MpegTsUdpExecutor(
                 moduleGetter,
@@ -105,6 +116,7 @@ export class MediaRouter {
                 (id) => this.consumerRestartCallback?.(id) ?? Promise.resolve(),
                 this.busFanout,
             ),
+            ['audio/302m'],
         );
         this.executor = new ConnectionExecutor(this.streamExecutors);
     }
@@ -394,13 +406,15 @@ export class MediaRouter {
               channels?: number;
               sourceModuleId: string;
               sourcePortId: string;
+              /** Bus stream type of the connection (muxed/mpegts or audio/302m). */
+              streamType: StreamType;
               /** Per-consumer edge socket under unixfd — the consumer reads its
                *  own fan-out branch, not the shared channel. Undefined on UDP. */
               socketPath?: string;
           }
         | undefined {
         for (const [connId, conn] of this.connections) {
-            if (conn.sinkModuleId !== moduleId || conn.streamType !== 'muxed/mpegts') continue;
+            if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
             if (sinkPortId !== undefined && conn.sinkPortId !== sinkPortId) continue;
             // Prefer per-output port allocation, fall back to module-level (legacy single-port encoders)
             const port =
@@ -416,6 +430,7 @@ export class MediaRouter {
                     channels,
                     sourceModuleId: conn.sourceModuleId,
                     sourcePortId: conn.sourcePortId,
+                    streamType: conn.streamType,
                     socketPath: this.edgeSocketPath(port, connId),
                 };
             }
@@ -441,7 +456,8 @@ export class MediaRouter {
         this.busFanout?.reattachProducer(moduleId);
     }
 
-    /** Resolve every connected muxed/mpegts source feeding a given sink module. */
+    /** Resolve every connected bus-carried source (muxed/mpegts or audio/302m)
+     *  feeding a given sink module. */
     getModuleUdpSources(
         moduleId: string,
     ): Array<{
@@ -451,6 +467,7 @@ export class MediaRouter {
         sourceModuleId: string;
         sourcePortId: string;
         sinkPortId: string;
+        streamType: StreamType;
         socketPath?: string;
     }> {
         const out: Array<{
@@ -460,10 +477,11 @@ export class MediaRouter {
             sourceModuleId: string;
             sourcePortId: string;
             sinkPortId: string;
+            streamType: StreamType;
             socketPath?: string;
         }> = [];
         for (const [connId, conn] of this.connections) {
-            if (conn.sinkModuleId !== moduleId || conn.streamType !== 'muxed/mpegts') continue;
+            if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
             const port =
                 this.udpPorts.get(this.udpPortKey(conn.sourceModuleId, conn.sourcePortId)) ??
                 this.udpPorts.get(conn.sourceModuleId);
@@ -475,6 +493,7 @@ export class MediaRouter {
                     sourceModuleId: conn.sourceModuleId,
                     sourcePortId: conn.sourcePortId,
                     sinkPortId: conn.sinkPortId,
+                    streamType: conn.streamType,
                     socketPath: this.edgeSocketPath(port, connId),
                 });
             }
