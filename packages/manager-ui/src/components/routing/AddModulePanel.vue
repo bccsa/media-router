@@ -79,11 +79,13 @@ function addModule() {
 function portColor(st: string) {
     return st === 'audio/pcm'
         ? 'var(--port-audio-pcm)'
-        : st === 'muxed/mpegts'
-          ? 'var(--port-muxed-mpegts)'
-          : st === 'video/raw'
-            ? 'var(--port-video-raw)'
-            : '#6b7280';
+        : st === 'audio/302m'
+          ? '#06b6d4'
+          : st === 'muxed/mpegts'
+            ? 'var(--port-muxed-mpegts)'
+            : st === 'video/raw'
+              ? 'var(--port-video-raw)'
+              : '#6b7280';
 }
 </script>
 

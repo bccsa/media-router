@@ -177,9 +177,12 @@ function getFaceWidgetValue(widget: Record<string, unknown>): number {
 
 const hasStats = computed(() => allStatusSections.value.length > 0);
 
-// Show VU meters if the module has any audio/pcm ports
+// Show VU meters if the module has any audio ports (pcm or 302m PCM-in-TS)
 const hasAudio = computed(
-    () => props.data.ports?.some((p) => p.streamType === 'audio/pcm') ?? false,
+    () =>
+        props.data.ports?.some(
+            (p) => p.streamType === 'audio/pcm' || p.streamType === 'audio/302m',
+        ) ?? false,
 );
 // Read VU data from dedicated reactive store (updates at ~15Hz without triggering full re-render)
 const vuChannels = computed(() => {
@@ -215,6 +218,7 @@ const healthColor = computed(() => {
 
 const portColorMap: Record<string, string> = {
     'audio/pcm': 'var(--port-audio-pcm)',
+    'audio/302m': '#06b6d4',
     'audio/opus': 'var(--port-audio-pcm)',
     'audio/aac': 'var(--port-audio-pcm)',
     'muxed/mpegts': 'var(--port-muxed-mpegts)',
