@@ -201,6 +201,7 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 | Type | Routing | Description |
 |------|---------|-------------|
 | `audio/pcm` | PipeWire loopback | Raw audio between PipeWire nodes |
+| `audio/302m` | Bus (unixfd/UDP) | SMPTE-302M PCM-in-MPEG-TS — timeline-preserving audio (valid TS on the wire) |
 | `audio/opus` | Reserved | Encoded Opus audio |
 | `audio/aac` | Reserved | Encoded AAC audio |
 | `muxed/mpegts` | UDP multicast on loopback | MPEG-TS container (audio, video, subs) |
@@ -213,9 +214,16 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 ### Connection Rules
 
 - Only `output` → `input` connections are allowed (but users can drag from either side)
-- Stream types must match (`audio/pcm` ↔ `audio/pcm`, `muxed/mpegts` ↔ `muxed/mpegts`)
-- Cross-type connections are blocked (use encoder/decoder to bridge)
+- Stream types must match (`audio/pcm` ↔ `audio/pcm`, `muxed/mpegts` ↔ `muxed/mpegts`) —
+  the shared rule is `streamTypesCompatible()` in `@media-router/shared-types`
+- Exception — the **TS family**: `audio/302m` ↔ `muxed/mpegts` wire in both directions
+  (302M is valid MPEG-TS, so it rides SRT/RIST/UDP transports; wrong-content TS into an
+  audio pin fails soft via a `audio/x-smpte-302m` caps filter after tsdemux)
+- Cross-type connections are otherwise blocked (use encoder/decoder to bridge)
 - `maxConnections` is enforced on both source and target ports
+- An INPUT port with `maxConnections: -1` and `streamType: audio/302m` can receive N
+  sources — consume them with `getModuleUdpSources(id).filter(s => s.sinkPortId === ...)`
+  and feed `buildAudioMixInput()` (see Engine Helpers) for implicit timeline-true mixing
 
 ### UI Indicators
 
@@ -740,6 +748,33 @@ static async initManifest(manifest: Record<string, any>): Promise<void> {
     applyEncoderAvailabilityToManifest(manifest, availability);
 }
 ```
+
+##### Shared 302M audio helpers
+
+SMPTE-302M (PCM-in-MPEG-TS) is the timeline-preserving audio transport between modules
+— use these from `@media-router/engine` instead of hand-rolling pipelines:
+
+- `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs? })` —
+  N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
+  a dark input silence-fills instead of stalling the mix). Returns `{ fragment, mixerName }`;
+  continue the chain from `${mixerName}. ! …`. Feed it `getModuleUdpSources(id)` entries
+  filtered by your input port. PTS-preserving by contract — never add `pulsesrc`,
+  `do-timestamp`, or `tsparse set-timestamps` around it.
+- `build302mEncodeBranch({ format? })` — PCM → 302M-in-TS encode tail
+  (`S32LE`/48 kHz/stereo, `avenc_s302m strict=experimental` — ffmpeg gates the encoder;
+  the bitstream is standard). Caller appends `buildUdpSink(...)`.
+- `gstElementSupportsCaps(element, mediaType)` — caps-level capability probe. 302M in
+  `mpegtsmux`/`tsdemux` needs **gst ≥ 1.26**; gate pcm features on
+  `gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m')` in `initManifest` (real
+  example: [`audio-transcoder`](audio-transcoder/engine/AudioTranscoderModule.ts)).
+
+Burst warning: decoders release audio in ~150 ms PES-batch bursts (source muxers batch
+audio PES). A small **leaky** queue downstream of a decoder sheds most of every burst —
+severe stutter (measured). Encode-path queues on decoded audio must be NON-leaky; only
+real-time capture paths (pulsesrc trickle) tolerate small leaky queues. Real examples:
+[`audio-transcoder`](audio-transcoder/engine/audioTranscoderPipeline.ts),
+[`audio-output-302m`](audio-output-302m/engine/AudioOutput302mModule.ts),
+[`audio-input-302m`](audio-input-302m/engine/AudioInput302mModule.ts).
 
 #### `static registerServices(services)` — Contribute engine-wide services
 
