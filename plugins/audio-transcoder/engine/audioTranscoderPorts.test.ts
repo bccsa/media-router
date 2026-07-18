@@ -71,3 +71,17 @@ describe('buildDynamicPorts', () => {
         expect(outs.every((p) => p.requiresOrderedApply)).toBe(true);
     });
 });
+
+describe('LCP manifest parity', () => {
+    it('declares mixer-strip LCP type + the lcp* config fields (it replaces decoder/encoder strips)', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const manifest = JSON.parse(
+            readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
+        ).mediaRouter;
+        expect(manifest.lcpType).toBe('mixer-strip');
+        for (const key of ['lcpVisible', 'lcpSortOrder', 'lcpVolumeEnabled', 'lcpMuteEnabled']) {
+            expect(manifest.configSchema.properties[key]).toBeDefined();
+        }
+    });
+});
