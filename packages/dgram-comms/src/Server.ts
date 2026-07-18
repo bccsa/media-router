@@ -1,7 +1,7 @@
 import * as dgram from 'dgram';
 import { EventEmitter } from 'events';
 import { DEFAULT_RECV_BUFFER_SIZE } from './constants.js';
-import { decrypt } from './encryption.js';
+import { decrypt, encrypt } from './encryption.js';
 import { FragmentTransport } from './FragmentTransport.js';
 import { Socket } from './Socket.js';
 import type { DgramMessage } from '@media-router/shared-types';
@@ -55,6 +55,11 @@ export class Server extends EventEmitter {
      */
     private rejectLogState = new Map<string, { lastLog: number; suppressed: number }>();
     private readonly rejectLogIntervalMs: number;
+
+    /** Per-endpoint timestamp of the last 'reset' sent (rate limiting). */
+    private resetLastSent = new Map<string, number>();
+    private static readonly RESET_INTERVAL_MS = 2000;
+    private static readonly RESET_MAP_MAX = 1024;
 
     constructor(options: ServerOptions = {}) {
         super();
@@ -121,6 +126,7 @@ export class Server extends EventEmitter {
         this.sockets.clear();
         this.clientToSocket.clear();
         this.rejectLogState.clear();
+        this.resetLastSent.clear();
         this.transport.destroy();
         return new Promise((resolve) => {
             this.udpSocket.close(() => resolve());
@@ -262,6 +268,8 @@ export class Server extends EventEmitter {
                 if (socket) {
                     socket.updateRemote(rinfo.port, rinfo.address);
                     socket.resetKeepalive();
+                } else {
+                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo);
                 }
                 break;
             }
@@ -271,6 +279,8 @@ export class Server extends EventEmitter {
                 if (socket) {
                     socket.updateRemote(rinfo.port, rinfo.address);
                     socket.handleMessage({ ...msg, data });
+                } else {
+                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo);
                 }
                 break;
             }
@@ -280,6 +290,8 @@ export class Server extends EventEmitter {
                 if (socket) {
                     socket.updateRemote(rinfo.port, rinfo.address);
                     socket.handleMessage({ ...msg, data });
+                } else {
+                    this.maybeSendReset(clientID, data?.socketID as string | undefined, rinfo);
                 }
                 break;
             }
@@ -348,8 +360,13 @@ export class Server extends EventEmitter {
             missedKeepaliveThreshold: this.missedKeepaliveThreshold,
             onDisconnect: (socketID) => {
                 this.sockets.delete(socketID);
-                this.clientToSocket.delete(clientID);
-                this.emit('disconnection', clientID);
+                // Only unmap (and report offline) if the mapping still points
+                // at THIS socket — a late-dying replaced socket must not mark
+                // the live replacement session offline.
+                if (this.clientToSocket.get(clientID) === socketID) {
+                    this.clientToSocket.delete(clientID);
+                    this.emit('disconnection', clientID);
+                }
             },
         });
 
@@ -371,5 +388,49 @@ export class Server extends EventEmitter {
     private getSocketByDataSocketID(socketID: string | undefined): Socket | undefined {
         if (!socketID) return undefined;
         return this.sockets.get(socketID);
+    }
+
+    /**
+     * Encrypted, rate-limited "your session is dead" hint (TCP-RST analogue).
+     * Without it a client whose session the server timed out keeps sending on
+     * the forgotten socketID — silently dropped — until its own watchdog fires.
+     *
+     * Safe to send on unauthenticated triggers (keepAlive/ack envelopes are
+     * plaintext): the payload is encrypted with the claimed clientID's key and
+     * names the unknown socketID, and the client only acts if it decrypts AND
+     * matches its CURRENT socketID — a server-issued UUID an off-path attacker
+     * can't know. If the server truly doesn't know the socketID, acting on the
+     * reset is correct behavior regardless of who triggered it.
+     */
+    private maybeSendReset(
+        clientID: string,
+        socketID: string | undefined,
+        rinfo: dgram.RemoteInfo,
+    ): void {
+        if (!socketID) return;
+        const key = this.encryptionKeys[clientID];
+        if (!key) return;
+
+        const endpoint = `${rinfo.address}:${rinfo.port}`;
+        const now = Date.now();
+        const last = this.resetLastSent.get(endpoint) ?? 0;
+        if (now - last < Server.RESET_INTERVAL_MS) return;
+        // Opportunistic eviction — stale endpoints (dead NAT mappings) would
+        // otherwise accumulate one small entry each, forever.
+        if (this.resetLastSent.size >= Server.RESET_MAP_MAX) {
+            for (const [ep, ts] of this.resetLastSent) {
+                if (now - ts >= Server.RESET_INTERVAL_MS) this.resetLastSent.delete(ep);
+            }
+        }
+        this.resetLastSent.set(endpoint, now);
+
+        const encrypted = encrypt(JSON.stringify({ socketID }), key);
+        const envelope = {
+            type: 'reset',
+            clientID,
+            iv: encrypted.iv,
+            data: encrypted.data,
+        };
+        this.transport.send(Buffer.from(JSON.stringify(envelope)), rinfo.port, rinfo.address, false);
     }
 }

@@ -15,6 +15,17 @@ const log = createLogger('ManagerConnection');
  *   - 'disconnected' — lost connection to manager
  */
 export class ManagerConnection extends EventEmitter {
+    /**
+     * How long each client gets to complete the handshake before a rebuild is
+     * scheduled. Must exceed the server's guaranteed 'connected' reply resend
+     * window (~12.6s: 200+400+800+1600×7ms) plus RTT margin — the old 5s
+     * window abandoned the session at 40% of it, discarding the UDP socket /
+     * NAT mapping and session nonce on every retry (gate01 2026-07-18: flat
+     * 5s reconnect hammer for hours on a lossy WAN). The path-level 1s
+     * connect retries keep running underneath for the whole window.
+     */
+    private static readonly CONNECT_WINDOW_MS = 15_000;
+
     private client: Client | null = null;
     private _isConnected = false;
     private currentProfile: ManagerConnectionProfile | null = null;
@@ -57,18 +68,26 @@ export class ManagerConnection extends EventEmitter {
             clientId: profile.name,
             paths: profile.paths,
             encryptionKey: profile.encryptionKey,
+            // Invariant: the client must detect a dead link BEFORE the server
+            // (EngineConnectionManager: 5000/3, ~7.5-8.75s) so it re-handshakes
+            // while the server still holds the session and re-acks the same
+            // socketID — no churn, no config re-push.
             connectionTimeout: 3000,
-            missedKeepaliveThreshold: 5,
+            missedKeepaliveThreshold: 3,
         });
 
-        // If not connected within 5s, recreate client (UDP packet may have been lost)
+        // If the handshake doesn't complete within the window, schedule a
+        // fresh client through the backoff — do NOT rebuild immediately, and
+        // keep the current client alive meanwhile: its 1s connect retries
+        // continue and may still land (the 'connected' handler then cancels
+        // the rebuild).
         this.connectTimeout = setTimeout(() => {
             this.connectTimeout = null;
             if (!this._isConnected && !this.intentionalDisconnect && this.currentProfile) {
-                log.warn('Connection timeout — retrying with fresh client');
-                this.createClient(this.currentProfile);
+                log.warn('Connect window expired — scheduling fresh client');
+                this.scheduleReconnect();
             }
-        }, 5000);
+        }, ManagerConnection.CONNECT_WINDOW_MS);
 
         this.client.on('connected', () => {
             if (this.connectTimeout) {
@@ -77,7 +96,10 @@ export class ManagerConnection extends EventEmitter {
             }
             this._isConnected = true;
             this.clearReconnectTimer();
-            this.backoff.reset();
+            // markStable, not reset: attempts only zero after 60s of sustained
+            // connection. A flapping link (connected 10s, dead again) must keep
+            // escalating its delays, not restart from 3s every cycle.
+            this.backoff.markStable();
             log.info('Connected to manager');
             this.emit('connected');
         });

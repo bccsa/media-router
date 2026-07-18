@@ -31,7 +31,7 @@ export const DgramDataSchema = z.object({
  * Note: `data` can be a string (encrypted) or an object (plaintext/decrypted).
  */
 export const DgramWireMessageSchema = z.object({
-    type: z.enum(['data', 'keepAlive', 'ack', 'connect', 'connected']),
+    type: z.enum(['data', 'keepAlive', 'ack', 'connect', 'connected', 'reset']),
     clientID: z.string(),
     iv: z.string().optional(),
     seq: z.number().optional(),

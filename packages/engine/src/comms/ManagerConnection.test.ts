@@ -29,8 +29,13 @@ const testProfile: ManagerConnectionProfile = {
 describe('ManagerConnection', () => {
     let conn: ManagerConnection;
 
+    let randomSpy: ReturnType<typeof vi.spyOn>;
+
     beforeEach(() => {
         vi.useFakeTimers();
+        // Pin backoff jitter to exactly 1.0 (1 + (0.5 - 0.5) * 0.5) so the
+        // escalation tests can assert exact delays: 3000, 6000, 12000ms.
+        randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
         clientInstances = [];
         (MockedClient as unknown as ReturnType<typeof vi.fn>).mockClear();
         mockDestroy.mockClear();
@@ -40,6 +45,7 @@ describe('ManagerConnection', () => {
 
     afterEach(() => {
         conn.disconnect();
+        randomSpy.mockRestore();
         vi.useRealTimers();
     });
 
@@ -228,40 +234,90 @@ describe('ManagerConnection', () => {
         expect(MockedClient).not.toHaveBeenCalled();
     });
 
-    it('connect timeout recreates client after 5s if not connected', () => {
+    it('connect window expiry schedules a fresh client through backoff, not immediately', () => {
         conn.connect(testProfile);
         expect(clientInstances).toHaveLength(1);
 
-        // Advance 5s without triggering 'connected'
-        vi.advanceTimersByTime(5100);
+        // Window expires at 15s — rebuild must NOT happen yet (it goes
+        // through the backoff), and the old client must stay alive so its
+        // 1s connect retries keep running.
+        vi.advanceTimersByTime(15_100);
+        expect(clientInstances).toHaveLength(1);
+        expect(mockDestroy).not.toHaveBeenCalled();
 
-        // Should recreate client (original + timeout retry)
-        expect(clientInstances.length).toBeGreaterThanOrEqual(2);
+        // Backoff attempt 1: 3000ms (jitter pinned) — rebuild at t=18000
+        vi.advanceTimersByTime(4000);
+        expect(clientInstances).toHaveLength(2);
+        expect(mockDestroy).toHaveBeenCalledTimes(1); // old client destroyed on rebuild
     });
 
-    it('connect timeout does not fire if connected in time', () => {
+    it('connect window expiries escalate through backoff', () => {
+        conn.connect(testProfile);
+
+        // Cycle 1: window 15s + attempt-1 delay 3000ms ⇒ rebuild at t=18000
+        vi.advanceTimersByTime(15_100);
+        vi.advanceTimersByTime(4000); // t=19100
+        expect(clientInstances).toHaveLength(2);
+
+        // Cycle 2: window expires t=33000, attempt-2 delay 6000ms ⇒ rebuild t=39000
+        vi.advanceTimersByTime(15_100); // t=34200
+        expect(clientInstances).toHaveLength(2); // window alone doesn't rebuild
+        vi.advanceTimersByTime(4400); // t=38600 < 39000
+        expect(clientInstances).toHaveLength(2);
+        vi.advanceTimersByTime(3200); // t=41800 > 39000
+        expect(clientInstances).toHaveLength(3);
+    });
+
+    it('connect window does not fire if connected in time', () => {
         conn.connect(testProfile);
         clientInstances[0].emit('connected');
         const countAfterConnect = clientInstances.length;
 
-        // Advance past 5s
-        vi.advanceTimersByTime(5100);
+        // Advance past the 15s window
+        vi.advanceTimersByTime(15_100);
 
-        // Should NOT recreate — connected cleared the timeout
+        // Should NOT schedule anything — connected cleared the timeout
         expect(clientInstances).toHaveLength(countAfterConnect);
     });
 
-    it('resets backoff on successful connection', () => {
+    it('a short-lived connection does not reset backoff (flap keeps escalating)', () => {
         conn.connect(testProfile);
         clientInstances[0].emit('connected');
-
-        // Disconnect unintentionally
         clientInstances[0].emit('disconnected');
-        (MockedClient as unknown as ReturnType<typeof vi.fn>).mockClear();
 
-        // Reconnect should happen at base delay (3000ms + up to 25% jitter), not escalated
+        // Reconnect #1: attempt 1, 3000ms
         vi.advanceTimersByTime(4000);
-        expect(MockedClient).toHaveBeenCalledTimes(1);
+        expect(clientInstances).toHaveLength(2);
+
+        // Connection lives only 10s — well under the 60s stability window
+        clientInstances[1].emit('connected');
+        vi.advanceTimersByTime(10_000);
+        clientInstances[1].emit('disconnected');
+
+        // Reconnect #2 must be attempt 2: 6000ms — NOT reset to base
+        vi.advanceTimersByTime(4400);
+        expect(clientInstances).toHaveLength(2); // 4400 < 6000 — not yet
+        vi.advanceTimersByTime(3200);
+        expect(clientInstances).toHaveLength(3); // 7600 > 6000 — fired
+    });
+
+    it('a connection stable for 60s resets backoff to base delay', () => {
+        conn.connect(testProfile);
+        clientInstances[0].emit('connected');
+        clientInstances[0].emit('disconnected');
+
+        // Escalate to attempt 2
+        vi.advanceTimersByTime(4000);
+        expect(clientInstances).toHaveLength(2);
+        clientInstances[1].emit('connected');
+
+        // Hold stable past the 60s stability window
+        vi.advanceTimersByTime(61_000);
+        clientInstances[1].emit('disconnected');
+
+        // Next reconnect is back at base delay: 3000ms
+        vi.advanceTimersByTime(4000);
+        expect(clientInstances).toHaveLength(3);
     });
 
     it('destroys old client when reconnecting', () => {

@@ -278,6 +278,18 @@ export class Socket extends EventEmitter {
             case 'connect':
                 // Handled by Server, not Socket
                 break;
+
+            case 'reset':
+                // The server no longer recognises our session (it timed out
+                // server-side while we still think we're connected). Only act
+                // if the encrypted payload names OUR current socketID — stale
+                // duplicates and spoofed triggers are ignored. The socketID is
+                // a server-issued UUID an off-path attacker can't know, and
+                // the payload only decrypts with our shared key.
+                if (this.isClient && this.connected && msg.data?.socketID === this.socketID) {
+                    this.disconnect();
+                }
+                break;
         }
     }
 
@@ -307,16 +319,23 @@ export class Socket extends EventEmitter {
 
     private startKeepalive(): void {
         if (this.keepAliveTimer) return;
-        const interval = Math.max(this.connectionTimeout / 4, 500);
+        this.watchdogIntervalMs = Math.max(this.connectionTimeout / 4, 500);
+        this.lastWatchdogTick = Date.now();
         this.keepAliveTimer = setInterval(() => {
             this.connectionWatchdog();
-        }, interval);
+        }, this.watchdogIntervalMs);
     }
 
     private hasEverConnected = false;
+    private watchdogIntervalMs = 0;
+    private lastWatchdogTick = 0;
 
     private connectionWatchdog(): void {
         if (this.destroyed) return;
+
+        const now = Date.now();
+        const late = now - this.lastWatchdogTick > this.watchdogIntervalMs * 2;
+        this.lastWatchdogTick = now;
 
         // Send keepalive
         if (this.connected || this.hasEverConnected) {
@@ -325,7 +344,18 @@ export class Socket extends EventEmitter {
 
         if (!this.hasEverConnected) return;
 
-        if (Date.now() - this.keepAliveTime > this.connectionTimeout) {
+        if (late) {
+            // Our event loop stalled (GC, config-push storm): inbound packets
+            // sat unread in the kernel buffer, so the silence window may be
+            // our fault, not the peer's. Restart measurement instead of
+            // counting a miss — otherwise a manager-side stall declares the
+            // whole fleet dead at once.
+            this.keepAliveTime = now;
+            this.missedKeepalives = 0;
+            return;
+        }
+
+        if (now - this.keepAliveTime > this.connectionTimeout) {
             this.missedKeepalives++;
             if (this.missedKeepalives >= this.missedKeepaliveThreshold) {
                 this.disconnect();

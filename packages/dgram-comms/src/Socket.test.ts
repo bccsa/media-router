@@ -132,3 +132,134 @@ describe('Socket seq-based dedup', () => {
         expect(connSpy).toHaveBeenCalledTimes(1); // no re-emit on the resend
     });
 });
+
+describe('Socket reset handling', () => {
+    let udp: dgram.Socket;
+    let tx: FragmentTransport;
+    let s: Socket;
+
+    afterEach(() => {
+        s?.disconnect();
+        tx?.destroy();
+        udp?.close();
+    });
+
+    const makeSocket = (isClient = true) => {
+        udp = dgram.createSocket('udp4');
+        tx = new FragmentTransport(udp);
+        s = new Socket({
+            port: 1,
+            address: '127.0.0.1',
+            transport: tx,
+            isClient,
+            clientID: 'test',
+            encryptionKey: 'k',
+            connectionTimeout: 500,
+        });
+        return s;
+    };
+
+    const connectClient = (socketID: string) => {
+        s.handleMessage({
+            type: 'connected',
+            clientID: 'test',
+            data: { socketID },
+        } as Parameters<Socket['handleMessage']>[0]);
+    };
+
+    const resetMsg = (socketID: string) =>
+        ({
+            type: 'reset',
+            clientID: 'test',
+            data: { socketID },
+        }) as Parameters<Socket['handleMessage']>[0];
+
+    it('reset naming our current socketID disconnects a connected client socket', () => {
+        makeSocket();
+        connectClient('sock-a');
+        const spy = vi.fn();
+        s.on('disconnected', spy);
+
+        s.handleMessage(resetMsg('sock-a'));
+
+        expect(s.destroyed).toBe(true);
+        expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('reset naming a different socketID is ignored (stale duplicate / spoof)', () => {
+        makeSocket();
+        connectClient('sock-a');
+
+        s.handleMessage(resetMsg('sock-old'));
+
+        expect(s.destroyed).toBe(false);
+        expect(s.connected).toBe(true);
+    });
+
+    it('reset is ignored on a server-side socket', () => {
+        makeSocket(false);
+        s.connected = true;
+        s.markConnected();
+
+        s.handleMessage(resetMsg(s.socketID));
+
+        expect(s.destroyed).toBe(false);
+    });
+});
+
+describe('Socket watchdog event-loop-lag guard', () => {
+    let udp: dgram.Socket;
+    let tx: FragmentTransport;
+    let s: Socket;
+
+    afterEach(() => {
+        s?.disconnect();
+        tx?.destroy();
+        udp?.close();
+        vi.useRealTimers();
+    });
+
+    const makeSocket = () => {
+        vi.useFakeTimers();
+        udp = dgram.createSocket('udp4');
+        tx = new FragmentTransport(udp);
+        s = new Socket({
+            port: 1,
+            address: '127.0.0.1',
+            transport: tx,
+            isClient: false,
+            clientID: 'test',
+            encryptionKey: 'k',
+            connectionTimeout: 2000, // watchdog interval = 500ms
+            missedKeepaliveThreshold: 3,
+        });
+        s.connected = true;
+        s.markConnected();
+        return s;
+    };
+
+    it('a late tick (event-loop stall) does not count as missed keepalives', () => {
+        makeSocket();
+
+        // Simulate a 10s stall: the clock jumps but no ticks ran meanwhile —
+        // inbound packets sat unread, so the silence is our fault. The first
+        // tick after the stall sees itself 10s late and must restart the
+        // measurement; without the guard, ticks at +500/+1000/+1500 all see
+        // >2000ms of "silence" and hit the 3-miss threshold.
+        vi.setSystemTime(Date.now() + 10_000);
+        vi.advanceTimersByTime(1600);
+
+        expect(s.destroyed).toBe(false);
+        expect(s.connected).toBe(true);
+    });
+
+    it('genuine peer silence still disconnects at the threshold', () => {
+        makeSocket();
+
+        // Ticks run on time (never late) with no inbound traffic:
+        // silence > 2000ms from t=2500, misses at 2500/3000/3500 → disconnect.
+        vi.advanceTimersByTime(3600);
+
+        expect(s.destroyed).toBe(true);
+    });
+});

@@ -32,8 +32,16 @@ export class EngineConnectionManager extends EventEmitter {
         this.server = new Server({
             port,
             encryptionKeys: this.buildEncryptionKeys(),
-            connectionTimeout: 2000,
-            missedKeepaliveThreshold: 2,
+            // Load-bearing asymmetry: the server must be the PATIENT side.
+            // The engine client (ManagerConnection: 3000/3, ~4.5-5.25s) must
+            // detect a dead link first and re-handshake — its retry carries
+            // the same session nonce, so we re-ack the same socketID and a
+            // short WAN loss burst never tears the session down. Inverting
+            // this (server faster) makes the server forget the socketID and
+            // silently drop the engine's packets for seconds per burst — the
+            // gate01 flap incident of 2026-07-18.
+            connectionTimeout: 5000,
+            missedKeepaliveThreshold: 3,
         });
 
         this.server.on('connection', (socket: any, clientId: string) => {

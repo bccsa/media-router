@@ -518,7 +518,7 @@ export interface Device {
 
 /** dgram-comms wire protocol message envelope. */
 export interface DgramMessage {
-    type: 'data' | 'keepAlive' | 'ack' | 'connect' | 'connected';
+    type: 'data' | 'keepAlive' | 'ack' | 'connect' | 'connected' | 'reset';
     /** Client identifier. */
     clientID: string;
     /** Encryption IV (hex string). */

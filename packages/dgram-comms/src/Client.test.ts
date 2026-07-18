@@ -50,4 +50,32 @@ describe('Client', () => {
             );
         expect(calls.length).toBe(2);
     });
+
+    it('destroy() is silent — emits neither disconnected nor pathDown', () => {
+        // ManagerConnection rebuilds the Client inside createClient(); if
+        // destroy() leaked a 'disconnected' event, the reconnect handler would
+        // double-schedule and the backoff was bypassed entirely (the gate01
+        // flat-5s reconnect hammer of 2026-07-18).
+        client = new Client({
+            clientId: 'engine-1',
+            paths: [{ host: '127.0.0.1', port: 3000 }],
+            encryptionKey: 'secret',
+        });
+        const disconnectedSpy = vi.fn();
+        const pathDownSpy = vi.fn();
+        client.on('disconnected', disconnectedSpy);
+        client.on('pathDown', pathDownSpy);
+
+        // Simulate an established path so teardown has state to tear down
+        const ps = client['pathStates'][0];
+        ps.connected = true;
+        ps.alive = true;
+        ps.socket.connected = true;
+        ps.socket.markConnected();
+
+        client.destroy();
+
+        expect(disconnectedSpy).not.toHaveBeenCalled();
+        expect(pathDownSpy).not.toHaveBeenCalled();
+    });
 });

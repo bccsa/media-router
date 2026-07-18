@@ -391,4 +391,94 @@ describe('Server', () => {
         expect(server['sockets'].size).toBe(0);
         expect(server['clientToSocket'].size).toBe(0);
     });
+
+    // ---- reset control message ----
+
+    const rinfo = (address: string, port: number): dgram.RemoteInfo =>
+        ({ address, port, family: 'IPv4', size: 0 }) as dgram.RemoteInfo;
+
+    it('maybeSendReset sends one encrypted reset naming the unknown socketID', async () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const sendSpy = vi.spyOn(server['transport'], 'send').mockReturnValue(0);
+
+        server['maybeSendReset']('engine-1', 'dead-sock', rinfo('10.0.0.1', 5000));
+
+        expect(sendSpy).toHaveBeenCalledTimes(1);
+        const [buf, port, address, reliable] = sendSpy.mock.calls[0];
+        expect(port).toBe(5000);
+        expect(address).toBe('10.0.0.1');
+        expect(reliable).toBe(false);
+
+        const envelope = JSON.parse((buf as Buffer).toString());
+        expect(envelope.type).toBe('reset');
+        expect(envelope.clientID).toBe('engine-1');
+        const { decrypt } = await import('./encryption.js');
+        const payload = JSON.parse(decrypt(envelope.data, envelope.iv, 'secret')!);
+        expect(payload).toEqual({ socketID: 'dead-sock' });
+    });
+
+    it('maybeSendReset rate-limits per endpoint but not across endpoints', () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const sendSpy = vi.spyOn(server['transport'], 'send').mockReturnValue(0);
+
+        server['maybeSendReset']('engine-1', 'dead-sock', rinfo('10.0.0.1', 5000));
+        server['maybeSendReset']('engine-1', 'dead-sock', rinfo('10.0.0.1', 5000));
+        expect(sendSpy).toHaveBeenCalledTimes(1); // same endpoint suppressed
+
+        server['maybeSendReset']('engine-1', 'dead-sock', rinfo('10.0.0.1', 5001));
+        expect(sendSpy).toHaveBeenCalledTimes(2); // different endpoint allowed
+    });
+
+    it('maybeSendReset sends nothing for an unregistered clientID or missing socketID', () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const sendSpy = vi.spyOn(server['transport'], 'send').mockReturnValue(0);
+
+        server['maybeSendReset']('unknown-client', 'dead-sock', rinfo('10.0.0.1', 5000));
+        server['maybeSendReset']('engine-1', undefined, rinfo('10.0.0.1', 5000));
+
+        expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('a keepAlive with an unknown socketID triggers a reset via onPacket', () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        vi.spyOn(server['transport'], 'send').mockReturnValue(0);
+        const resetSpy = vi.spyOn(server as any, 'maybeSendReset');
+
+        const packet = Buffer.from(
+            JSON.stringify({
+                type: 'keepAlive',
+                clientID: 'engine-1',
+                data: { socketID: 'forgotten-sock' },
+            }),
+        );
+        // Bypass fragment reassembly — onPacket expects fragment-framed input
+        vi.spyOn(server['transport'], 'receive').mockReturnValue(packet);
+        server['onPacket'](Buffer.alloc(1), rinfo('10.0.0.1', 5000));
+
+        expect(resetSpy).toHaveBeenCalledWith(
+            'engine-1',
+            'forgotten-sock',
+            expect.objectContaining({ address: '10.0.0.1', port: 5000 }),
+        );
+    });
+
+    // ---- onDisconnect map guard ----
+
+    it('a late-dying replaced socket does not unmap the live session', () => {
+        server = new Server({ encryptionKeys: { 'engine-1': 'secret' } });
+        const disconnectSpy = vi.fn();
+        server.on('disconnection', disconnectSpy);
+
+        server['handleConnect']('engine-1', { message: 'nonce-A' }, rinfo('10.0.0.1', 5000));
+        const oldSocketId = server['clientToSocket'].get('engine-1')!;
+        const oldSocket = server['sockets'].get(oldSocketId)!;
+
+        // Simulate the mapping having moved on to a NEWER session before the
+        // old socket's teardown runs (the hazard the guard protects against).
+        server['clientToSocket'].set('engine-1', 'live-replacement-sock');
+        oldSocket.destroy();
+
+        expect(server['clientToSocket'].get('engine-1')).toBe('live-replacement-sock');
+        expect(disconnectSpy).not.toHaveBeenCalled();
+    });
 });
