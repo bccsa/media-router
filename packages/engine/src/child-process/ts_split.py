@@ -24,7 +24,9 @@ appsink/appsrc shape:
 Per-output SPTS surgery (branch-proven values):
   - Fresh PAT + single-ES PMT (on PID 0x1000) injected before the first ES
     packet and at least every 40 ES packets (~5% overhead) so any consumer
-    joining mid-stream locks fast.
+    joining mid-stream locks fast. The source ES's descriptor loop is carried
+    verbatim — Opus lives on stream_type 0x06 and is identified ONLY by its
+    registration descriptor.
   - Outputs whose PID is not the source's PCR PID get the source's master
     PCR re-injected on its own cadence (>= 10 ms coalesce floor) as
     adaptation-only packets. The source clock is copied, never fabricated,
@@ -56,6 +58,10 @@ class SplitOutput:
         self.pid = pid
         self.ts_id = ts_id
         self.stream_type = stream_type if stream_type is not None else ts_psi.STREAM_TYPE_AVC
+        # Source ES descriptor loop, carried verbatim into the rebuilt PMT:
+        # for descriptor-identified codecs (Opus = stream_type 0x06 +
+        # registration descriptor) dropping it destroys the codec identity.
+        self.es_info = b""
         self.needs_pcr = False       # set on discovery: True when pid != source PCR pid
         self.cc_pat = 0
         self.cc_pmt = 0
@@ -67,7 +73,8 @@ class SplitOutput:
         pat = ts_psi.build_pat(self.ts_id, {1: SPLIT_PMT_PID}, self.cc_pat)
         self.cc_pat = (self.cc_pat + 1) & 0x0F
         pmt = ts_psi.build_pmt(SPLIT_PMT_PID, 1, self.pid,
-                               [(self.pid, self.stream_type)], self.cc_pmt)
+                               [(self.pid, self.stream_type, self.es_info)],
+                               self.cc_pmt)
         self.cc_pmt = (self.cc_pmt + 1) & 0x0F
         return [pat, pmt]
 
@@ -129,10 +136,12 @@ class SplitterCore:
     def _apply_discovery(self):
         streams = list(self.disc.pmt["streams"])
         self.pcr_pid = self.disc.pmt["pcr_pid"]
+        es_info = self.disc.pmt.get("es_info", {})
         known = dict(streams)
         for pid, o in self.outputs.items():
             if pid in known:
                 o.stream_type = known[pid]
+                o.es_info = es_info.get(pid, b"")
             o.needs_pcr = pid != self.pcr_pid
         if self.on_discovered is not None:
             self.on_discovered(streams, self.pcr_pid)

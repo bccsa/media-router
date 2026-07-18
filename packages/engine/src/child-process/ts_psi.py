@@ -192,7 +192,14 @@ def parse_pat(packets) -> dict:
 
 
 def parse_pmt(packets, pmt_pid: int):
-    """Return dict(program_number, pcr_pid, streams=[(pid, stream_type)]) or None."""
+    """Return dict(program_number, pcr_pid, streams=[(pid, stream_type)],
+    es_info={pid: raw descriptor bytes}) or None.
+
+    es_info keeps each ES's descriptor loop verbatim: for codecs that have no
+    stream_type of their own (Opus rides stream_type 0x06 + registration
+    'Opus' + DVB extension descriptor), the descriptors ARE the codec identity
+    and must survive any PMT rebuild.
+    """
     sec = first_section(packets, pmt_pid)
     if not sec or sec[0] != TABLE_PMT:
         return None
@@ -203,13 +210,16 @@ def parse_pmt(packets, pmt_pid: int):
     program_info_length = ((sec[10] & 0x0F) << 8) | sec[11]
     i = 12 + program_info_length
     streams = []
+    es_info = {}
     while i + 5 <= end:
         stream_type = sec[i]
         es_pid = ((sec[i + 1] & 0x1F) << 8) | sec[i + 2]
         es_info_len = ((sec[i + 3] & 0x0F) << 8) | sec[i + 4]
         streams.append((es_pid, stream_type))
+        es_info[es_pid] = bytes(sec[i + 5:i + 5 + es_info_len])
         i += 5 + es_info_len
-    return {"program_number": program_number, "pcr_pid": pcr_pid, "streams": streams}
+    return {"program_number": program_number, "pcr_pid": pcr_pid,
+            "streams": streams, "es_info": es_info}
 
 
 # --------------------------------------------------------------------------- #
@@ -300,16 +310,20 @@ class PsiDiscovery:
 
 def build_pmt(pmt_pid: int, program_number: int, pcr_pid: int,
               streams, cc: int = 0, version: int = 0) -> bytes:
+    """`streams` entries are (pid, stream_type) or (pid, stream_type, es_info)
+    where es_info is the ES's raw descriptor loop bytes (see parse_pmt)."""
     body = bytearray([TABLE_PMT, 0x00, 0x00])
     body += bytes([(program_number >> 8) & 0xFF, program_number & 0xFF])
     body += bytes([0xC1 | ((version & 0x1F) << 1)])
     body += bytes([0x00, 0x00])                  # section/last_section_number
     body += bytes([0xE0 | ((pcr_pid >> 8) & 0x1F), pcr_pid & 0xFF])
     body += bytes([0xF0, 0x00])                  # program_info_length = 0
-    for es_pid, stream_type in streams:
+    for es_pid, stream_type, *rest in streams:
+        es_info = rest[0] if rest else b""
         body += bytes([stream_type & 0xFF,
                        0xE0 | ((es_pid >> 8) & 0x1F), es_pid & 0xFF,
-                       0xF0, 0x00])              # ES_info_length = 0
+                       0xF0 | ((len(es_info) >> 8) & 0x0F), len(es_info) & 0xFF])
+        body += es_info
     section_length = (len(body) - 3) + 4
     body[1], body[2] = _section_length_field(section_length)
     return _wrap_section(pmt_pid, bytes(body), cc)

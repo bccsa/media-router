@@ -173,6 +173,38 @@ check("discovery content", ev_a and dict(ev_a[0][0]) ==
       {VIDEO_PID: ts_psi.STREAM_TYPE_AVC, AUDIO_PID: ts_psi.STREAM_TYPE_AAC}
       and ev_a[0][1] == VIDEO_PID)
 
+# --- ES descriptors carried into the rebuilt PMT (Opus identity survival) ----------
+OPUS_DESC = bytes.fromhex("05044f707573" "7f028002")   # registration 'Opus' + DVB ext
+
+
+def build_opus_source(n_audio=60, psi_every=20):
+    """MPTS whose audio ES is descriptor-identified (stream_type 0x06 + Opus
+    descriptors) — the shape the gate01 mux feed has on PIDs 0x141-0x143."""
+    out = []
+    cc_pat = cc_pmt = cc_a = 0
+    for i in range(n_audio):
+        if i % psi_every == 0:
+            out.append(ts_psi.build_pat(7, {1: PMT_PID}, cc_pat)); cc_pat = (cc_pat + 1) & 0xF
+            out.append(ts_psi.build_pmt(PMT_PID, 1, VIDEO_PID,
+                                        [(VIDEO_PID, ts_psi.STREAM_TYPE_AVC),
+                                         (AUDIO_PID, ts_psi.STREAM_TYPE_PRIVATE_PES, OPUS_DESC)],
+                                        cc_pmt))
+            cc_pmt = (cc_pmt + 1) & 0xF
+        out.append(es_packet(AUDIO_PID, cc_a, pusi=(i % 5 == 0), fill=0xBB))
+        cc_a = (cc_a + 1) & 0xF
+    return b"".join(out)
+
+
+_, _, out_opus = run_core(build_opus_source(), 1000, outputs=((AUDIO_PID, None),))
+opus_pmt = ts_psi.parse_pmt(
+    [p for p in ts_psi.iter_packets(out_opus[AUDIO_PID])
+     if ts_psi.ts_pid(p) == ts_split.SPLIT_PMT_PID], ts_split.SPLIT_PMT_PID)
+check("split PMT keeps discovered stream_type 0x06",
+      opus_pmt is not None and
+      opus_pmt["streams"] == [(AUDIO_PID, ts_psi.STREAM_TYPE_PRIVATE_PES)])
+check("split PMT carries source ES descriptors verbatim",
+      opus_pmt is not None and opus_pmt["es_info"] == {AUDIO_PID: OPUS_DESC})
+
 # --- desync recovery --------------------------------------------------------------
 dirty = b"\x00garbage\xffnoise" + source
 core_d, _, out_d = run_core(dirty, 1000)

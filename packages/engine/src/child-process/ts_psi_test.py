@@ -24,6 +24,21 @@ info = p.parse_pmt([pmt], 0x0100)
 check("PMT pcr/streams", info["pcr_pid"] == 0x0100 and
       info["streams"] == [(0x0100, 0x1b), (0x0141, 0x0f)])
 
+# ES descriptors round-trip: Opus is identified ONLY by its descriptor loop
+# (stream_type 0x06 + registration 'Opus' + DVB extension), so build_pmt must
+# write what parse_pmt captured, byte-identical.
+OPUS_DESC = bytes.fromhex("05044f707573") + bytes.fromhex("7f028002")  # reg 'Opus' + DVB ext
+pmt_d = p.build_pmt(0x0100, 1, 0x0141,
+                    [(0x0141, p.STREAM_TYPE_PRIVATE_PES, OPUS_DESC)])
+info_d = p.parse_pmt([pmt_d], 0x0100)
+check("descriptor round-trip: stream list",
+      info_d["streams"] == [(0x0141, p.STREAM_TYPE_PRIVATE_PES)])
+check("descriptor round-trip: es_info verbatim",
+      info_d["es_info"] == {0x0141: OPUS_DESC})
+check("bare 2-tuple streams still build (es_info empty)",
+      p.parse_pmt([p.build_pmt(0x0100, 1, 0x0141, [(0x0141, p.STREAM_TYPE_AAC)])],
+                  0x0100)["es_info"] == {0x0141: b""})
+
 # PID header get/set preserves the other header bits.
 q = p.ts_set_pid(pat, 0x0abc)
 check("ts_set_pid", p.ts_pid(q) == 0x0abc and p.ts_pusi(q) == p.ts_pusi(pat))
