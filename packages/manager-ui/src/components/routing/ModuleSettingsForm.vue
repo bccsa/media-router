@@ -293,6 +293,7 @@ function clearUpload(field: FormField): void {
                 :model-value="(settings[field.key] as unknown[]) ?? field.defaultValue ?? []"
                 :schema="field.items"
                 :global-config="settings"
+                :global-keys="fields.map((f) => f.key)"
                 :disabled="field.readOnly"
                 @update:model-value="onUpdate(field.key, $event)"
             />
