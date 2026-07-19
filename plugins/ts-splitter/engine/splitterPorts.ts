@@ -10,7 +10,7 @@
  * from it (a configured-but-absent stream keeps its port so a downstream stays
  * wired when the source briefly goes dark).
  */
-import { streamLabel, type StreamMedia } from './streamTypes.js';
+import { streamLabel, streamTypeInfo, type StreamMedia } from './streamTypes.js';
 
 export const INPUT_PORT_ID = 'mpegts-in';
 const PID_OUT_PREFIX = 'pid-';
@@ -25,6 +25,16 @@ export interface DynamicPort {
      *  before wiring — see the demuxer's DynamicPort note; applied by
      *  ConnectionApplier. */
     requiresOrderedApply?: boolean;
+    /** Structured stream identity for compact pin display in the UI (one
+     *  value by priority: in-band name → ISO 639 language → decimal PID,
+     *  plus a codec chip). `label` stays the full descriptive string. */
+    streamInfo?: {
+        name?: string;
+        language?: string;
+        pid?: number;
+        codec?: string;
+        media?: string;
+    };
 }
 
 export interface DiscoveredStreamConfig {
@@ -32,6 +42,10 @@ export interface DiscoveredStreamConfig {
     streamType: number;
     media: StreamMedia;
     codec: string;
+    /** ISO 639 code from the source PMT's language descriptor (natively
+     *  signalled — layered into port/status labels; absent when the ES
+     *  carries no language descriptor). */
+    language?: string;
 }
 
 export function pidPortId(pid: number): string {
@@ -56,13 +70,20 @@ export function buildDynamicPorts(discovered: DiscoveredStreamConfig[]): Dynamic
         },
     ];
     for (const s of [...discovered].sort((a, b) => a.pid - b.pid)) {
+        const { media, codec } = streamTypeInfo(s.streamType);
         ports.push({
             id: pidPortId(s.pid),
             direction: 'output',
             streamType: 'muxed/mpegts',
-            label: streamLabel(s.pid, s.streamType),
+            label: streamLabel(s.pid, s.streamType, s.language),
             maxConnections: -1,
             requiresOrderedApply: true,
+            streamInfo: {
+                pid: s.pid,
+                media,
+                codec,
+                ...(s.language ? { language: s.language } : {}),
+            },
         });
     }
     return ports;
@@ -96,7 +117,9 @@ function sameStreams(a: DiscoveredStreamConfig[], b: DiscoveredStreamConfig[]): 
     const byPid = new Map(a.map((s) => [s.pid, s]));
     for (const s of b) {
         const p = byPid.get(s.pid);
-        if (!p || p.streamType !== s.streamType) return false;
+        if (!p || p.streamType !== s.streamType || (p.language ?? '') !== (s.language ?? '')) {
+            return false;
+        }
     }
     return true;
 }

@@ -62,7 +62,7 @@ def build_source(n_video=200, n_audio=40, psi_every=50, pcr_every=20):
 def run_core(source: bytes, chunk: int, outputs=((VIDEO_PID, None), (AUDIO_PID, None))):
     events = []
     core = ts_split.SplitterCore(1, outputs,
-                                 on_discovered=lambda s, p: events.append((tuple(s), p)))
+                                 on_discovered=lambda s, p, e: events.append((tuple(s), p, dict(e))))
     per_pid = {pid: [] for pid, _ in outputs}
     for off in range(0, len(source), chunk):
         for pid, payload in core.feed(source[off:off + chunk]).items():
@@ -195,7 +195,7 @@ def build_opus_source(n_audio=60, psi_every=20):
     return b"".join(out)
 
 
-_, _, out_opus = run_core(build_opus_source(), 1000, outputs=((AUDIO_PID, None),))
+_, ev_opus, out_opus = run_core(build_opus_source(), 1000, outputs=((AUDIO_PID, None),))
 opus_pmt = ts_psi.parse_pmt(
     [p for p in ts_psi.iter_packets(out_opus[AUDIO_PID])
      if ts_psi.ts_pid(p) == ts_split.SPLIT_PMT_PID], ts_split.SPLIT_PMT_PID)
@@ -204,6 +204,13 @@ check("split PMT keeps discovered stream_type 0x06",
       opus_pmt["streams"] == [(AUDIO_PID, ts_psi.STREAM_TYPE_PRIVATE_PES)])
 check("split PMT carries source ES descriptors verbatim",
       opus_pmt is not None and opus_pmt["es_info"] == {AUDIO_PID: OPUS_DESC})
+check("discovery callback carries per-pid es_info (ISO-label read path)",
+      len(ev_opus) == 1 and ev_opus[0][2].get(AUDIO_PID) == OPUS_DESC)
+
+# es_info also flows for descriptor-less streams (empty bytes, never missing keys
+# for pids that have no descriptor loop — parse_pmt stores b"" for them).
+check("discovery es_info: plain source has empty descriptor loops",
+      ev_a and all(ev_a[0][2].get(pid, b"") == b"" for pid in (VIDEO_PID, AUDIO_PID)))
 
 # --- desync recovery --------------------------------------------------------------
 dirty = b"\x00garbage\xffnoise" + source

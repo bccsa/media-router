@@ -100,8 +100,11 @@ class SplitterCore:
     """Single-pass PID router. feed(bytes) -> {pid: joined SPTS bytes}.
 
     `outputs`: iterable of (pid, stream_type_or_None).
-    `on_discovered(streams, pcr_pid)`: called (from feed's thread) when the
-    source PMT first parses or changes; `streams` is [(pid, stream_type), ...].
+    `on_discovered(streams, pcr_pid, es_info)`: called (from feed's thread)
+    when the source PMT first parses or changes; `streams` is
+    [(pid, stream_type), ...] and `es_info` is {pid: raw descriptor-loop
+    bytes} verbatim from the PMT (ISO 639 language, registration, … — the
+    reader layers ISO labels from these when no in-band names exist).
     `on_desync(dropped_bytes)`: optional, rate-limited by the caller's cadence
     (fires once per feed() call that had to resync).
     """
@@ -144,7 +147,7 @@ class SplitterCore:
                 o.es_info = es_info.get(pid, b"")
             o.needs_pcr = pid != self.pcr_pid
         if self.on_discovered is not None:
-            self.on_discovered(streams, self.pcr_pid)
+            self.on_discovered(streams, self.pcr_pid, es_info)
 
     def feed(self, data: bytes):
         """Route one input buffer. Returns {pid: bytes} — one entry per output

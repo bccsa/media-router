@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { streamTypeInfo, streamLabel, formatPid } from './streamTypes.js';
+import { languageFromEsInfo, streamTypeInfo, streamLabel, formatPid } from './streamTypes.js';
 
 describe('streamTypeInfo', () => {
     it('maps known video/audio/data/metadata stream types', () => {
@@ -21,6 +21,30 @@ describe('streamLabel', () => {
         expect(streamLabel(0x65, 0x1b)).toBe('Video (h264, PID 0x65)');
         expect(streamLabel(0xcc, 0x0f)).toBe('Audio (aac, PID 0xcc)');
         expect(streamLabel(0x20, 0x06)).toBe('Data (private, PID 0x20)');
+    });
+
+    it('leads with the ISO 639 language when present', () => {
+        expect(streamLabel(0x141, 0x0f, 'nor')).toBe('Audio nor (aac, PID 0x141)');
+        expect(streamLabel(0x141, 0x0f, undefined)).toBe('Audio (aac, PID 0x141)');
+    });
+});
+
+describe('languageFromEsInfo', () => {
+    it('reads the ISO 639 descriptor (tag 0x0a) from a raw descriptor loop', () => {
+        // The OCC stream shape: ISO639 'nor' + AAC descriptor + max bitrate.
+        expect(languageFromEsInfo('0a046e6f7200' + '7c03518003' + '0e03c003c0')).toBe('nor');
+        // Descriptor order must not matter.
+        expect(languageFromEsInfo('7c035180030a0464657500')).toBe('deu');
+    });
+
+    it('is total on garbage: no descriptor, truncation, odd hex, non-letters', () => {
+        expect(languageFromEsInfo(undefined)).toBeUndefined();
+        expect(languageFromEsInfo('')).toBeUndefined();
+        expect(languageFromEsInfo('05044f707573')).toBeUndefined(); // Opus registration only
+        expect(languageFromEsInfo('0a04')).toBeUndefined(); // truncated
+        expect(languageFromEsInfo('0a0')).toBeUndefined(); // odd-length hex
+        expect(languageFromEsInfo('zz')).toBeUndefined(); // not hex
+        expect(languageFromEsInfo('0a04313233ff')).toBeUndefined(); // '123' not letters
     });
 });
 

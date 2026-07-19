@@ -129,6 +129,56 @@ describe('TsSplitterModule discovery', () => {
         expect(emitted).toHaveLength(1);
     });
 
+    it('layers the ISO 639 language from esInfo into port labels and status', () => {
+        const { module } = makeModule();
+        (module as any).config = {};
+        vi.spyOn(module as any, 'emitConfigUpdate').mockImplementation((changes: any) => {
+            Object.assign((module as any).config, changes);
+        });
+
+        (module as any).onPluginEvent('tssplit:discovered', {
+            streams: [
+                { pid: 0x141, streamType: 0x0f, esInfo: '0a046e6f72007c03518003' },
+                { pid: 0x65, streamType: 0x1b, esInfo: '' },
+            ],
+            pcrPid: 0x65,
+        });
+
+        const port = module.getDynamicPorts().find((p) => p.id === pidPortId(0x141))!;
+        expect(port.label).toBe('Audio nor (aac, PID 0x141)');
+        expect(module.getDynamicPorts().find((p) => p.id === pidPortId(0x65))!.label).toBe(
+            'Video (h264, PID 0x65)',
+        );
+        const section = (module as any).dynamicStatusSections.find(
+            (s: { id: string }) => s.id === 'stream-321',
+        );
+        expect(section.label).toBe('Audio nor (aac, PID 0x141)');
+        expect(section.fields.some((f: { key: string }) => f.key === 'language')).toBe(true);
+    });
+
+    it('a language appearing on a known PID re-persists (not treated as identical)', () => {
+        const { module } = makeModule();
+        (module as any).config = {};
+        const emitted: unknown[] = [];
+        vi.spyOn(module as any, 'emitConfigUpdate').mockImplementation((changes: any) => {
+            emitted.push(changes);
+            Object.assign((module as any).config, changes);
+        });
+
+        (module as any).onPluginEvent('tssplit:discovered', {
+            streams: [{ pid: 0x141, streamType: 0x0f }],
+            pcrPid: 0x65,
+        });
+        (module as any).onPluginEvent('tssplit:discovered', {
+            streams: [{ pid: 0x141, streamType: 0x0f, esInfo: '0a0464657500' }],
+            pcrPid: 0x65,
+        });
+        expect(emitted).toHaveLength(2);
+        expect(module.getDynamicPorts().find((p) => p.id === pidPortId(0x141))!.label).toBe(
+            'Audio deu (aac, PID 0x141)',
+        );
+    });
+
     it('other channels are ignored', () => {
         const { module } = makeModule();
         (module as any).config = {};

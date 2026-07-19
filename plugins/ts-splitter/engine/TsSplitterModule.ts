@@ -14,7 +14,7 @@ import {
     type DynamicPort,
 } from './splitterPorts.js';
 import { buildSplitterPipeline } from './splitterPipeline.js';
-import { formatPid, streamLabel, streamTypeInfo } from './streamTypes.js';
+import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './streamTypes.js';
 
 /**
  * TS-Splitter plugin (coexists with the mpegts-demuxer).
@@ -39,8 +39,10 @@ import { formatPid, streamLabel, streamTypeInfo } from './streamTypes.js';
  *
  * Source PMT discovery arrives on the `tssplit:discovered` plugin-event
  * channel and is persisted to `discoveredStreams` config (never removed — a
- * dark source keeps its ports). v1 skips KLV/SDT stream naming (the demuxer
- * keeps that duty).
+ * dark source keeps its ports). Labels layer the natively-signalled ISO 639
+ * language descriptor (carried as raw ES descriptor bytes in the event) onto
+ * the generic stream_type label; the in-band KLV name channel is not read
+ * here (the demuxer keeps that duty — a name would outrank the language).
  */
 export class TsSplitterModule extends GstPluginBase {
     /** Streams seen live this run (PID-keyed). Drives ports + status. */
@@ -125,16 +127,34 @@ export class TsSplitterModule extends GstPluginBase {
 
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel !== 'tssplit:discovered') return;
-        const streams = (payload as { streams?: Array<{ pid: number; streamType: number }> })?.streams;
+        const streams = (
+            payload as { streams?: Array<{ pid: number; streamType: number; esInfo?: string }> }
+        )?.streams;
         if (!Array.isArray(streams)) return;
         for (const s of streams) {
             const pid = Number(s.pid);
             const streamType = Number(s.streamType);
             if (!Number.isFinite(pid) || !Number.isFinite(streamType)) continue;
+            // ISO label layering: no in-band name channel here, so the ES's
+            // natively-signalled ISO 639 language (from the raw PMT
+            // descriptor bytes in `esInfo`) is the strongest label input.
+            const language = languageFromEsInfo(s.esInfo);
             const existing = this.discovered.get(pid);
-            if (existing && existing.streamType === streamType) continue;
+            if (
+                existing &&
+                existing.streamType === streamType &&
+                (existing.language ?? '') === (language ?? '')
+            ) {
+                continue;
+            }
             const { media, codec } = streamTypeInfo(streamType);
-            this.discovered.set(pid, { pid, streamType, media, codec });
+            this.discovered.set(pid, {
+                pid,
+                streamType,
+                media,
+                codec,
+                ...(language ? { language } : {}),
+            });
         }
         // emitConfigUpdate persists + re-resolves dynamic ports, so a new PID
         // port appears in the UI without a reload. The pipeline is NOT
@@ -153,16 +173,28 @@ export class TsSplitterModule extends GstPluginBase {
             text: `${streams.length}`,
             color: streams.length > 0 ? '#10b981' : '#6b7280',
         });
+        // Uniform field shape across every stream section — same-shaped
+        // sections collapse into ONE table in the stats modal (row per
+        // stream); a conditional language field would split the table.
         this.dynamicStatusSections = streams.map((s) => ({
             id: `stream-${s.pid}`,
-            label: streamLabel(s.pid, s.streamType),
+            label: streamLabel(s.pid, s.streamType, s.language),
             fields: [
+                { key: 'media', label: 'Media' },
                 { key: 'codec', label: 'Codec' },
+                { key: 'language', label: 'Language' },
                 { key: 'pid', label: 'PID' },
+                { key: 'pidDec', label: 'PID (dec)' },
             ],
         }));
         for (const s of streams) {
-            this.setStatusData(`stream-${s.pid}`, { codec: s.codec, pid: formatPid(s.pid) });
+            this.setStatusData(`stream-${s.pid}`, {
+                media: s.media,
+                codec: s.codec,
+                language: s.language ?? '—',
+                pid: formatPid(s.pid),
+                pidDec: s.pid,
+            });
         }
     }
 }

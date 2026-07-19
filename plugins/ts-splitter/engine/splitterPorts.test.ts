@@ -38,6 +38,22 @@ describe('buildDynamicPorts', () => {
             label: 'Video (h264, PID 0x65)',
         });
     });
+
+    it('carries structured streamInfo for compact pin display (decimal pid, codec, language)', () => {
+        const ports = buildDynamicPorts([{ ...audio(0xc9), language: 'nor' }, video(0x65)]);
+        expect(ports.find((p) => p.id === 'pid-0xc9')!.streamInfo).toEqual({
+            pid: 0xc9,
+            media: 'audio',
+            codec: 'aac',
+            language: 'nor',
+        });
+        // No language descriptor → no language key (pin falls back to PID).
+        expect(ports.find((p) => p.id === 'pid-0x65')!.streamInfo).toEqual({
+            pid: 0x65,
+            media: 'video',
+            codec: 'h264',
+        });
+    });
 });
 
 describe('mergeDiscovered', () => {

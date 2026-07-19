@@ -2111,11 +2111,15 @@ def _start_ts_split(pipe, cfg):
     # Empty outputs is valid: the input-only pipeline still runs discovery so
     # the module can learn the source's PIDs before any port is wired.
 
-    def _on_discovered(streams, pcr_pid):
+    def _on_discovered(streams, pcr_pid, es_info):
         # Called from the appsink streaming thread — emit_event is
         # lock-protected (same precedent as the librist stats callback).
+        # esInfo = the ES's raw PMT descriptor-loop bytes (hex): carries the
+        # natively-signalled identity (ISO 639 language, registration, …) the
+        # module layers into its labels.
         emit_plugin_event("tssplit:discovered", {
-            "streams": [{"pid": p, "streamType": t} for p, t in streams],
+            "streams": [{"pid": p, "streamType": t,
+                         "esInfo": es_info.get(p, b"").hex()} for p, t in streams],
             "pcrPid": pcr_pid,
         })
 
