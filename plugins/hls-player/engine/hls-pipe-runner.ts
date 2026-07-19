@@ -15,12 +15,8 @@
  * restart), non-zero = error (auto-restart with backoff).
  */
 import type { ExtractorOptions } from 'hls-pipe';
-// Deep imports: this child only needs the sinks — pulling in the engine's
-// index would load the whole engine (Fastify, comms, …) into every runner
-// process.
-import { PacedUdpTsSink } from '@media-router/engine/dist/plugins/PacedUdpTsSink.js';
-import { PacedUnixStreamTsSink } from '@media-router/engine/dist/plugins/PacedUnixStreamTsSink.js';
 import { buildExtractorOverrides, type RunnerConfig } from './runnerOptions.js';
+import { WorkerPacedTsSink } from './workerPacedSink.js';
 
 function emitStats(bitrateMbps: number, bytesSent: number): void {
     process.stdout.write(JSON.stringify({ stats: { bitrateMbps, bytesSent } }) + '\n');
@@ -41,10 +37,15 @@ async function main(): Promise<void> {
     // receiver (udpsrc kernel buffer, or the sidecar's per-consumer queues)
     // doesn't overflow. `sink` descriptor picks the transport; absent (old
     // module build) falls back to the legacy host/port multicast fields.
-    const sink =
+    // Runs on a WORKER THREAD (WorkerPacedTsSink): the extractor's
+    // per-segment fetch/decrypt/demux/mux is one main-thread macrotask, which
+    // used to starve the drain timers and stall the wire ~100 ms at every
+    // segment boundary.
+    const sink = new WorkerPacedTsSink(
         cfg.sink?.kind === 'unixfd'
-            ? new PacedUnixStreamTsSink(cfg.sink.ingestPath)
-            : new PacedUdpTsSink(cfg.port, cfg.host);
+            ? { kind: 'unixfd', ingestPath: cfg.sink.ingestPath }
+            : { kind: 'udp', port: cfg.port, host: cfg.host },
+    );
 
     const abort = new AbortController();
     const stop = (): void => abort.abort();
