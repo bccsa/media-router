@@ -66,21 +66,6 @@ describe('SrtOutputModule.buildPipeline', () => {
         );
     });
 
-    it('outputPacing re-times from PCR and makes the sink honour timestamps', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ outputPacing: true });
-        expect(desc!.pipeline).toContain('tsparse alignment=7 set-timestamps=true');
-        expect(desc!.pipeline).toContain('sync=true');
-        // Pacing holds ~one burst interval — deeper non-leaky queue for headroom.
-        expect(desc!.pipeline).toContain('queue leaky=0 max-size-time=500000000');
-    });
-
-    it('outputPacing keeps a forced wire datagram size', () => {
-        const { module } = makeModule();
-        const desc = module.buildPipeline({ outputPacing: true, packetsPerDatagram: 1 });
-        expect(desc!.pipeline).toContain('tsparse alignment=1 set-timestamps=true');
-    });
-
     it('includes streamId, passphrase, and pbkeylen when configured', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({

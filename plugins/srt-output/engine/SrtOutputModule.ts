@@ -78,7 +78,6 @@ export class SrtOutputModule extends GstPluginBase {
         const passphrase = (config.passphrase as string) ?? '';
         const pbKeyLen = (config.pbKeyLen as number) ?? 0;
         const packetsPerDatagram = (config.packetsPerDatagram as number) ?? 0;
-        const outputPacing = (config.outputPacing as boolean) ?? false;
 
         // Get the UDP source from the connected encoder/srt-input
         const instanceId = this.services?.instanceId ?? '';
@@ -108,23 +107,10 @@ export class SrtOutputModule extends GstPluginBase {
         // live stream can scramble the picture (tsparse re-timing — see the
         // mpegts-demuxer notes), and for a same-size passthrough it is needless.
         // Only insert tsparse when a specific wire datagram size is forced (>= 1).
-        //
-        // outputPacing: re-time from the stream's own PCR (tsparse
-        // set-timestamps) and let srtsink honour those timestamps (sync=true) —
-        // this converts hold-and-burst delivery (an upstream mux aggregator can
-        // emit ~100-250 ms clumps at line rate) back to wire cadence, for
-        // receivers whose jitter buffer can't ride out the bursts. Pacing needs
-        // BOTH set-timestamps and an alignment, and only works in a static
-        // pipeline like this one (inert on runtime-added branches). It holds up
-        // to ~one burst interval in the relay queue, so the queue cap is raised
-        // to keep back-pressure off the bus edge. Off by default: sync=false
-        // passthrough stays the safe choice for lossy/PCR-degraded sources.
-        const align = packetsPerDatagram >= 1 ? packetsPerDatagram : 7;
-        const repack = outputPacing
-            ? [`tsparse alignment=${align} set-timestamps=true`]
-            : packetsPerDatagram >= 1
-              ? [`tsparse alignment=${packetsPerDatagram} set-timestamps=false`]
-              : [];
+        const repack =
+            packetsPerDatagram >= 1
+                ? [`tsparse alignment=${packetsPerDatagram} set-timestamps=false`]
+                : [];
         const pipeline = [
             buildUdpSrc({
                 host: udpSource.host,
@@ -132,10 +118,9 @@ export class SrtOutputModule extends GstPluginBase {
                 socketPath: udpSource.socketPath,
             }),
             // NON-leaky: a leaky shed on muxed TS is mid-stream corruption at the wire.
-            buildBackpressureQueue(outputPacing ? 500 : 200),
+            buildBackpressureQueue(200),
             ...repack,
-            `srtsink name=sink uri="${uri}" sync=${outputPacing} ` +
-                'wait-for-connection=false auto-reconnect=false',
+            `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
         ].join(' ! ');
 
         return {
