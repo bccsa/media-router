@@ -4,8 +4,10 @@ import {
     ThroughputPoller,
     busTransport,
     busTeeName,
+    capsStreamInfo,
     type PipelineDescription,
     type ModuleServices,
+    type StreamCapsInfo,
     type ThroughputSample,
 } from '@media-router/engine';
 import {
@@ -16,8 +18,10 @@ import {
     sortSources,
     streamEntries,
     type DynamicPort,
+    type MuxedStreamPid,
     type UdpInputSource,
 } from './mpegtsMuxerPipeline.js';
+import { buildKlvPayload, serializeKlvPayload, type NamedStreamInput } from './klvPayload.js';
 /**
  * MPEG-TS Muxer plugin.
  *
@@ -42,23 +46,30 @@ export class MpegTsMuxerModule extends GstPluginBase {
      *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
     private busSinkName: string | undefined;
 
+    // In-band stream-info state (KLV carousel), rebuilt on every pipeline
+    // build. `streamPids` joins `stream:discovered` events (demux element +
+    // media) back to output PIDs; `discovered` holds the first caps seen per
+    // output PID (the first matching pad is the one the link rule routed);
+    // `hasStreamInfo` gates all pushes (no `klvsrc` in the pipeline → no-op).
+    private streamPids: MuxedStreamPid[] = [];
+    private discovered = new Map<number, StreamCapsInfo>();
+    private hasStreamInfo = false;
+
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
     }
 
     /** Generate one input port per configured video/audio stream + a single output port. */
     getDynamicPorts(config: Record<string, unknown> = this.config): DynamicPort[] {
-        return buildDynamicPorts(
-            streamEntries(config, 'video').length,
-            streamEntries(config, 'audio').length,
-        );
+        return buildDynamicPorts(streamEntries(config, 'video'), streamEntries(config, 'audio'));
     }
 
     /** Stream-array edits are live only when the length is unchanged (rename)
-     *  AND no entry's `offsetMs` changed. A grown/shrunk array means a
-     *  different port set; an offset change alters the pad-link rules — the
-     *  offset is applied at pad-link time, so treating it as live would
-     *  silently swallow the edit. Both route through pending-restart. */
+     *  AND no entry's `offsetMs` or `language` changed. A grown/shrunk array
+     *  means a different port set; an offset change alters the pad-link rules
+     *  and a language change alters the branch's `taginject` — both are
+     *  applied at build time, so treating them as live would silently swallow
+     *  the edit. All route through pending-restart. */
     isLiveChange(key: string, newValue: unknown, oldValue: unknown): boolean {
         if (key !== 'videoStreams' && key !== 'audioStreams') return true;
         if (
@@ -69,9 +80,12 @@ export class MpegTsMuxerModule extends GstPluginBase {
             return false;
         }
         return newValue.every((e, i) => {
-            const next = (e as { offsetMs?: unknown } | null)?.offsetMs ?? 0;
-            const prev = (oldValue[i] as { offsetMs?: unknown } | null)?.offsetMs ?? 0;
-            return next === prev;
+            const entry = e as { offsetMs?: unknown; language?: unknown } | null;
+            const prev = oldValue[i] as { offsetMs?: unknown; language?: unknown } | null;
+            return (
+                (entry?.offsetMs ?? 0) === (prev?.offsetMs ?? 0) &&
+                (entry?.language ?? '') === (prev?.language ?? '')
+            );
         });
     }
 
@@ -125,6 +139,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
                     sourceModuleId: s.sourceModuleId,
                     socketPath: s.socketPath,
                     offsetMs: entry?.offsetMs,
+                    language: entry?.language,
                 };
             });
         const sources = sortSources(muxedSources);
@@ -159,8 +174,16 @@ export class MpegTsMuxerModule extends GstPluginBase {
             alignment,
             queueLeaky,
             queueDepthMs,
+            emitStreamInfo: (config.emitStreamInfo as boolean) ?? true,
         });
         if (!result) return null;
+
+        // Stream-info state for this build: discovery is per-pipeline (a
+        // rebuild re-fires every pad-added), so stale codec info must not
+        // leak across builds.
+        this.streamPids = result.streamPids;
+        this.hasStreamInfo = result.hasStreamInfo;
+        this.discovered.clear();
 
         this.setStatusData('udp', { host: endpoint.host, port: endpoint.port });
         this.setStatusData('inputs', { video: videoCount, audio: audioCount });
@@ -171,15 +194,69 @@ export class MpegTsMuxerModule extends GstPluginBase {
             restartOnError: true,
         };
     }
+
+    /** Re-seed the carousel on every PLAYING transition — the runner clears
+     *  its payload store on each (re)start, and a crash-restart re-fires
+     *  discovery, so pushing the name-only payload here is never stale. */
+    protected onPipelinePlaying(): void {
+        this.pushStreamInfo();
+    }
+
+    /** First discovery per output PID wins: the pad-link rule routes the
+     *  first matching pad of each (demux, media), and discovery reports pads
+     *  in pad-added order — later same-media pads on that demux are the ones
+     *  the rule did NOT link. */
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel !== 'stream:discovered') return;
+        const event = payload as { from?: string; media?: string; caps?: string } | null;
+        if (!event?.from || !event.media || typeof event.caps !== 'string') return;
+        const stream = this.streamPids.find(
+            (s) => s.demux === event.from && s.media === event.media,
+        );
+        if (!stream || this.discovered.has(stream.pid)) return;
+        this.discovered.set(stream.pid, capsStreamInfo(event.caps));
+        this.pushStreamInfo();
+    }
+
+    /** Live rename path: the stream arrays are live for name-only edits (see
+     *  isLiveChange), and a rename only needs a carousel re-push. */
+    async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
+        await super.onLiveConfigUpdate(changes);
+        if ('videoStreams' in changes || 'audioStreams' in changes) this.pushStreamInfo();
+    }
+
+    /** Build + push the current carousel payload (names always; codec info
+     *  only for non-native codecs per the klvPayload layering rule). */
+    private pushStreamInfo(): void {
+        if (!this.hasStreamInfo) return;
+        const router = this.services?.mediaRouter;
+        const instanceId = this.services?.instanceId ?? '';
+        const bySinkPort = new Map(
+            (router?.getModuleUdpSources(instanceId) ?? []).map((s) => [
+                s.sinkPortId,
+                s.sourceModuleId,
+            ]),
+        );
+        const inputs: NamedStreamInput[] = this.streamPids.map((s) => ({
+            pid: s.pid,
+            media: s.media,
+            sinkPortId: s.sinkPortId,
+            name: entryForPort(this.config, s.sinkPortId)?.name,
+            sourceModuleId: bySinkPort.get(s.sinkPortId),
+            discovered: this.discovered.get(s.pid),
+        }));
+        this.setKlvPayload('klvsrc', serializeKlvPayload(buildKlvPayload(inputs)));
+    }
 }
 
 /** Stream entry for a sink port id (`video-0` / `audio-2`) from the config
  *  stream arrays (legacy count+map configs are normalised by `streamEntries`).
- *  Carries the operator label (blank = unset) and the lipsync offsetMs. */
+ *  Carries the operator label (blank = unset), the lipsync offsetMs and the
+ *  ISO 639 language. */
 function entryForPort(
     config: Record<string, unknown>,
     sinkPortId: string,
-): { name: string; offsetMs: number } | undefined {
+): { name: string; offsetMs: number; language: string } | undefined {
     const media = isVideoInputPort(sinkPortId) ? 'video' : 'audio';
     const idx = Number(sinkPortId.slice(media.length + 1));
     if (!Number.isInteger(idx) || idx < 0) return undefined;

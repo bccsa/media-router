@@ -22,11 +22,27 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 'video',
             );
             expect(entries).toEqual([
-                { name: 'Cam 1', offsetMs: 0 },
-                { name: '', offsetMs: 0 },
-                { name: '', offsetMs: 0 },
-                { name: '', offsetMs: 0 },
+                { name: 'Cam 1', offsetMs: 0, language: '' },
+                { name: '', offsetMs: 0, language: '' },
+                { name: '', offsetMs: 0, language: '' },
+                { name: '', offsetMs: 0, language: '' },
             ]);
+        });
+        it('sanitizes language to a bare 2-3 letter ISO 639 code (lowercased), else blank', () => {
+            const entries = streamEntries(
+                {
+                    audioStreams: [
+                        { name: '', language: 'ENG' },
+                        { name: '', language: 'de' },
+                        { name: '', language: 'german' },
+                        { name: '', language: 'e n' },
+                        { name: '', language: 7 },
+                        { name: '' },
+                    ],
+                },
+                'audio',
+            );
+            expect(entries.map((e) => e.language)).toEqual(['eng', 'de', '', '', '', '']);
         });
         it('maps offsetMs, clamping to ±2000 and zeroing malformed values', () => {
             const entries = streamEntries(
@@ -49,12 +65,12 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 'audio',
             );
             expect(entries).toEqual([
-                { name: '', offsetMs: 0 },
-                { name: 'FOH', offsetMs: 0 },
+                { name: '', offsetMs: 0, language: '' },
+                { name: 'FOH', offsetMs: 0, language: '' },
             ]);
         });
         it('defaults to one unnamed stream on an empty config', () => {
-            expect(streamEntries({}, 'video')).toEqual([{ name: '', offsetMs: 0 }]);
+            expect(streamEntries({}, 'video')).toEqual([{ name: '', offsetMs: 0, language: '' }]);
         });
         it('clamps to the schema maxItems (8 video / 16 audio)', () => {
             const many = Array.from({ length: 20 }, () => ({ name: '' }));
@@ -77,23 +93,45 @@ describe('mpegtsMuxerPipeline helpers', () => {
     });
 
     describe('buildDynamicPorts', () => {
+        const entries = (n: number) =>
+            Array.from({ length: n }, () => ({ name: '', offsetMs: 0, language: '' }));
+
         it('emits one input port per configured stream + a single output', () => {
-            const ports = buildDynamicPorts(2, 3);
+            const ports = buildDynamicPorts(entries(2), entries(3));
             expect(ports).toHaveLength(2 + 3 + 1);
             expect(ports.filter((p) => p.direction === 'input')).toHaveLength(5);
             expect(ports.filter((p) => p.direction === 'output')).toHaveLength(1);
         });
         it('still exposes the output port when no inputs are configured', () => {
-            const ports = buildDynamicPorts(0, 0);
+            const ports = buildDynamicPorts([], []);
             expect(ports).toHaveLength(1);
             expect(ports[0].direction).toBe('output');
         });
         it('caps each input at maxConnections=1 and the output at unlimited', () => {
-            const ports = buildDynamicPorts(1, 1);
+            const ports = buildDynamicPorts(entries(1), entries(1));
             const input = ports.find((p) => p.id === 'video-0')!;
             const output = ports.find((p) => p.direction === 'output')!;
             expect(input.maxConnections).toBe(1);
             expect(output.maxConnections).toBe(-1);
+        });
+
+        it('carries name/language streamInfo on configured entries, none on blank ones', () => {
+            const ports = buildDynamicPorts(
+                [{ name: 'Cam 1', offsetMs: 0, language: '' }],
+                [
+                    { name: '', offsetMs: 0, language: 'nor' },
+                    { name: '', offsetMs: 0, language: '' },
+                ],
+            );
+            expect(ports.find((p) => p.id === 'video-0')!.streamInfo).toEqual({
+                media: 'video',
+                name: 'Cam 1',
+            });
+            expect(ports.find((p) => p.id === 'audio-0')!.streamInfo).toEqual({
+                media: 'audio',
+                language: 'nor',
+            });
+            expect(ports.find((p) => p.id === 'audio-1')!.streamInfo).toBeUndefined();
         });
     });
 
@@ -297,23 +335,133 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0',
             );
         });
-        it('has no metadata appsrc so mpegtsmux carries PCR on the media (not a software timer)', () => {
-            // The KLV metadata appsrc was retired: as a live `do-timestamp`
-            // appsrc it got picked as the mpegtsmux PCR stream, so the receiver
-            // clock rode the ~50 ms carousel timer instead of the media and
-            // sporadically dropped audio. Only media pads remain → PCR on video.
-            const result = buildPipeline({
-                sources: [
-                    { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 },
-                    { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 },
-                ],
-                output: { host: '239.255.0.1', port: 40010 },
-                alignment: 7,
+        describe('in-band stream info (KLV appsrc + PCR pin)', () => {
+            const twoSources = [
+                { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 },
+                { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 },
+            ];
+            const output = { host: '239.255.0.1', port: 40010 };
+
+            it('emits the klvsrc metadata appsrc on the fixed metadata PID by default', () => {
+                const result = buildPipeline({ sources: twoSources, output, alignment: 7 });
+                expect(result!.pipeline).toContain(
+                    'appsrc name=klvsrc is-live=true do-timestamp=true format=time' +
+                        ' caps="meta/x-klv,parsed=true" ! mux.sink_496',
+                );
+                expect(result!.hasStreamInfo).toBe(true);
             });
-            expect(result!.pipeline).not.toContain('appsrc');
-            expect(result!.pipeline).not.toContain('meta/x-klv');
-            expect(result!.pipeline).not.toContain('mux.sink_496');
-            expect(result!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! udpsink/);
+
+            it('HARD INVARIANT: klvsrc never appears without a PCR pin to a non-metadata pid', () => {
+                // The retirement bug: mpegtsmux picked the live do-timestamp
+                // appsrc as the PCR stream, driving the receiver clock from a
+                // 50 ms software timer. Every pipeline shape that contains
+                // klvsrc must pin PCR_1 to a MEDIA pad.
+                const shapes = [
+                    twoSources,
+                    [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
+                    [
+                        { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 },
+                        { sinkPortId: 'audio-1', host: '239.255.0.1', port: 40003 },
+                        { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 },
+                        { sinkPortId: 'video-1', host: '239.255.0.1', port: 40004 },
+                    ],
+                ];
+                for (const sources of shapes) {
+                    const p = buildPipeline({ sources, output, alignment: 7 })!.pipeline;
+                    if (!p.includes('klvsrc')) continue;
+                    const pin = p.match(/PCR_1=sink_(\d+)/);
+                    expect(pin).not.toBeNull();
+                    expect(Number(pin![1])).not.toBe(0x1f0);
+                }
+            });
+
+            it('pins PCR to the first video stream when video is present (the media clock)', () => {
+                const result = buildPipeline({ sources: twoSources, output, alignment: 7 });
+                expect(result!.pipeline).toContain('PCR_1=sink_256');
+            });
+
+            it('pins PCR to the first audio stream on an audio-only mux', () => {
+                const result = buildPipeline({
+                    sources: [{ sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 }],
+                    output,
+                    alignment: 7,
+                });
+                expect(result!.pipeline).toContain('PCR_1=sink_320');
+            });
+
+            it('maps every stream pad AND the metadata pad into program 1 via prog-map', () => {
+                const result = buildPipeline({ sources: twoSources, output, alignment: 7 });
+                expect(result!.pipeline).toContain(
+                    'prog-map="program_map,sink_256=(int)1,sink_320=(int)1,sink_496=(int)1,' +
+                        'PCR_1=sink_256"',
+                );
+            });
+
+            it('emitStreamInfo=false restores the metadata-free pipeline byte-identically', () => {
+                const on = buildPipeline({ sources: twoSources, output, alignment: 7 });
+                const off = buildPipeline({
+                    sources: twoSources,
+                    output,
+                    alignment: 7,
+                    emitStreamInfo: false,
+                });
+                expect(off!.pipeline).not.toContain('appsrc');
+                expect(off!.pipeline).not.toContain('prog-map');
+                expect(off!.pipeline).not.toContain('mux.sink_496');
+                expect(off!.hasStreamInfo).toBe(false);
+                // Same pipeline minus the prog-map clause and metadata branch.
+                expect(on!.pipeline.replace(/ prog-map="[^"]*"/, '').replace(/ appsrc [^!]+! mux\.sink_496/, '')).toBe(
+                    off!.pipeline,
+                );
+            });
+
+            it('reports the output-PID map for every routed stream (discovery join key)', () => {
+                const result = buildPipeline({
+                    sources: [
+                        { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002 },
+                        { sinkPortId: 'video-0', host: '239.255.0.1', port: 40001 },
+                    ],
+                    output,
+                    alignment: 7,
+                });
+                expect(result!.streamPids).toEqual([
+                    { sinkPortId: 'audio-0', media: 'audio', pid: 0x140, demux: 'demux_0' },
+                    { sinkPortId: 'video-0', media: 'video', pid: 0x100, demux: 'demux_1' },
+                ]);
+            });
+        });
+
+        describe('language (ISO 639 PMT descriptor via taginject)', () => {
+            const output = { host: '239.255.0.1', port: 40010 };
+
+            it('appends a taginject to the audio branch when a language is set', () => {
+                const result = buildPipeline({
+                    sources: [
+                        { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002, language: 'deu' },
+                    ],
+                    output,
+                    alignment: 7,
+                });
+                expect(result!.linkOnPadAdded[0].branches[0]).toBe(
+                    'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0' +
+                        ' ! taginject name=lang_320 tags=language-code=deu',
+                );
+            });
+
+            it('omits the taginject when language is blank or invalid — the source language passes through', () => {
+                const result = buildPipeline({
+                    sources: [
+                        { sinkPortId: 'audio-0', host: '239.255.0.1', port: 40002, language: '' },
+                        { sinkPortId: 'audio-1', host: '239.255.0.1', port: 40003, language: 'not a code' },
+                        { sinkPortId: 'audio-2', host: '239.255.0.1', port: 40004 },
+                    ],
+                    output,
+                    alignment: 7,
+                });
+                for (const rule of result!.linkOnPadAdded) {
+                    expect(rule.branches[0]).not.toContain('taginject');
+                }
+            });
         });
 
         it('emits tsdemux latency=0 on every input branch', () => {
@@ -546,6 +694,61 @@ describe('MpegTsMuxerModule', () => {
             expect(schema.videoStreams.items.properties.offsetMs).toBeUndefined();
         });
 
+        it('exposes language on audioStreams items and the emitStreamInfo toggle in the schema', () => {
+            const schema = JSON.parse(
+                readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
+            ).mediaRouter.configSchema.properties;
+            expect(schema.audioStreams.items.properties.language).toMatchObject({
+                type: 'string',
+                default: '',
+            });
+            expect(schema.emitStreamInfo).toMatchObject({
+                type: 'boolean',
+                default: true,
+                'x-liveUpdatable': false,
+            });
+        });
+
+        it('isLiveChange: a language edit is NOT live — the taginject is built into the branch', () => {
+            const { module } = makeModule();
+            expect(
+                module.isLiveChange(
+                    'audioStreams',
+                    [{ name: 'ENG', language: 'eng' }],
+                    [{ name: 'ENG', language: '' }],
+                ),
+            ).toBe(false);
+            // Absent language (old entry shape) is equivalent to blank.
+            expect(
+                module.isLiveChange('audioStreams', [{ name: 'ENG', language: 'eng' }], [{ name: 'ENG' }]),
+            ).toBe(false);
+            // Rename with unchanged language stays live.
+            expect(
+                module.isLiveChange(
+                    'audioStreams',
+                    [{ name: 'NOR', language: 'eng' }],
+                    [{ name: 'ENG', language: 'eng' }],
+                ),
+            ).toBe(true);
+        });
+
+        it('threads audioStreams language into the audio branch taginject', () => {
+            const { module } = makeModule({
+                sources: [{ sinkPortId: 'audio-0', port: 40002 }],
+            });
+            (module as any).config = {
+                videoStreams: [],
+                audioStreams: [{ name: 'DE', language: 'deu' }],
+                alignment: 7,
+            };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const desc = module.buildPipeline((module as any).config);
+            expect(desc!.linkOnPadAdded![0].branches[0]).toContain(
+                'taginject name=lang_320 tags=language-code=deu',
+            );
+        });
+
         it('ignores connections that arrive on unknown port ids (e.g. the output)', () => {
             const { module } = makeModule({
                 sources: [
@@ -558,6 +761,138 @@ describe('MpegTsMuxerModule', () => {
             (module as any).setStatusData = vi.fn();
             const desc = module.buildPipeline((module as any).config);
             expect(desc!.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(1);
+        });
+    });
+
+    describe('in-band stream info pushes', () => {
+        function makeBuiltModule() {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                ],
+            });
+            (module as any).config = {
+                videoStreams: [{ name: 'Cam 1' }],
+                audioStreams: [{ name: '' }],
+                alignment: 7,
+            };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const setKlvPayload = vi.fn();
+            (module as any).setKlvPayload = setKlvPayload;
+            module.buildPipeline((module as any).config);
+            return { module, setKlvPayload };
+        }
+
+        it('pushes the name payload on PLAYING (config names + sourceModuleId fallback)', () => {
+            const { module, setKlvPayload } = makeBuiltModule();
+            (module as any).onPipelinePlaying();
+            expect(setKlvPayload).toHaveBeenCalledTimes(1);
+            const [element, json] = setKlvPayload.mock.calls[0];
+            expect(element).toBe('klvsrc');
+            expect(JSON.parse(json)).toEqual({
+                v: 1,
+                streams: [
+                    { pid: 0x100, media: 'video', name: 'Cam 1' },
+                    { pid: 0x140, media: 'audio', name: 'enc-audio-0' },
+                ],
+            });
+        });
+
+        it('merges discovery per the layering rule: native codec stays name-only, non-native gets codec fields', () => {
+            const { module, setKlvPayload } = makeBuiltModule();
+            (module as any).onPluginEvent('stream:discovered', {
+                from: 'demux_0',
+                pid: 0x151,
+                media: 'audio',
+                caps: 'audio/mpeg, mpegversion=(int)4, rate=(int)48000, channels=(int)2',
+                padName: 'audio_0_0151',
+            });
+            (module as any).onPluginEvent('stream:discovered', {
+                from: 'demux_1',
+                pid: 0x131,
+                media: 'video',
+                caps: 'private/x-unmapped',
+                padName: 'private_0_0131',
+            });
+            const last = JSON.parse(setKlvPayload.mock.calls.at(-1)![1]);
+            // aac is natively signalled in the PMT → name-only entry; the
+            // unknown/private video payload has no codec id → nothing to add.
+            expect(last.streams).toEqual([
+                { pid: 0x100, media: 'video', name: 'Cam 1' },
+                { pid: 0x140, media: 'audio', name: 'enc-audio-0' },
+            ]);
+        });
+
+        it('carries codec info for a non-native codec (the KLV fallback case)', () => {
+            const { module, setKlvPayload } = makeBuiltModule();
+            (module as any).onPluginEvent('stream:discovered', {
+                from: 'demux_0',
+                pid: 0x151,
+                media: 'audio',
+                caps: 'application/x-subtitle-vtt',
+                padName: 'audio_0_0151',
+            });
+            const last = JSON.parse(setKlvPayload.mock.calls.at(-1)![1]);
+            expect(last.streams.find((s: { pid: number }) => s.pid === 0x140)).toEqual({
+                pid: 0x140,
+                media: 'audio',
+                name: 'enc-audio-0',
+                codec: 'webvtt',
+            });
+        });
+
+        it('first discovery per output PID wins (later same-media pads were not linked)', () => {
+            const { module, setKlvPayload } = makeBuiltModule();
+            (module as any).onPluginEvent('stream:discovered', {
+                from: 'demux_0',
+                pid: 0x151,
+                media: 'audio',
+                caps: 'application/x-subtitle-vtt',
+                padName: 'audio_0_0151',
+            });
+            (module as any).onPluginEvent('stream:discovered', {
+                from: 'demux_0',
+                pid: 0x152,
+                media: 'audio',
+                caps: 'audio/x-opus',
+                padName: 'audio_0_0152',
+            });
+            const last = JSON.parse(setKlvPayload.mock.calls.at(-1)![1]);
+            expect(last.streams.find((s: { pid: number }) => s.pid === 0x140)?.codec).toBe('webvtt');
+        });
+
+        it('re-pushes on a live stream-array rename', async () => {
+            const { module, setKlvPayload } = makeBuiltModule();
+            await (module as any).onLiveConfigUpdate({ videoStreams: [{ name: 'Renamed' }] });
+            const last = JSON.parse(setKlvPayload.mock.calls.at(-1)![1]);
+            expect(last.streams[0].name).toBe('Renamed');
+        });
+
+        it('never pushes when the pipeline was built without the stream-info channel', () => {
+            const { module } = makeModule({
+                sources: [{ sinkPortId: 'audio-0', port: 40002 }],
+            });
+            (module as any).config = {
+                audioStreams: [{ name: 'X' }],
+                alignment: 7,
+                emitStreamInfo: false,
+            };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const setKlvPayload = vi.fn();
+            (module as any).setKlvPayload = setKlvPayload;
+            module.buildPipeline((module as any).config);
+            (module as any).onPipelinePlaying();
+            (module as any).onPluginEvent('stream:discovered', {
+                from: 'demux_0',
+                pid: 0x151,
+                media: 'audio',
+                caps: 'audio/x-opus',
+                padName: 'audio_0_0151',
+            });
+            expect(setKlvPayload).not.toHaveBeenCalled();
         });
     });
 });

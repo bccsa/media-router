@@ -88,6 +88,8 @@ export {
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
+export { capsStreamInfo } from './plugins/streamCapsInfo.js';
+export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';
 export { formatBytes, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
 export {

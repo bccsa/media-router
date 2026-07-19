@@ -47,8 +47,22 @@ Make the mpegts-muxer / mpegts-demuxer pair dynamic and self-describing:
 
 Rules: `v` is mandatory; receivers ignore unknown fields and unknown versions;
 unmatched PIDs are skipped; payload parse cap of a few KB. This is a wire
-protocol crossing version boundaries during rolling fleet upgrades — resist
-adding fields beyond names.
+protocol crossing version boundaries during rolling fleet upgrades — the
+version stays 1 and new fields are optional.
+
+*Extended 2026-07-19 (stream-info layering):* entries may carry optional
+`codec` / `channels` / `rate` fields, populated ONLY for streams MPEG-TS
+cannot signal natively (WebVTT, private payloads — `capsStreamInfo().nativeTs
+=== false`). Natively-signalled data (stream types, AAC/Opus/BSSD descriptors,
+ISO 639 language — the muxer can now WRITE language descriptors via a
+per-stream `language` config → `taginject`) always rides the PMT itself and is
+never duplicated into KLV. v1 receivers ignore the extra fields.
+
+The carousel was briefly retired (2026-07): the live `do-timestamp` appsrc got
+picked as the mpegtsmux **PCR stream**, clocking receivers off the 50 ms
+carousel timer (sporadic audio drops). Reinstated with a hard invariant: the
+appsrc is only ever emitted together with a `prog-map` pinning `PCR_1` to the
+first media pad (see `mpegtsMuxerPipeline.ts` + the invariant test).
 
 Label resolution order at the demuxer:
 **KLV name → ISO-639 language descriptor → generated** (`Audio (aac, PID 0x141)`).

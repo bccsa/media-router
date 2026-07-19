@@ -58,6 +58,58 @@ describe('buildKlvPayload', () => {
         const payload = buildKlvPayload([{ pid: 0x100, media: 'video', sinkPortId: 'video-0' }]);
         expect(payload.streams[0].name).toBe('video 0x100');
     });
+
+    it('omits codec info for natively-signalled codecs (layering rule)', () => {
+        const payload = buildKlvPayload([
+            {
+                pid: 0x141,
+                media: 'audio',
+                sinkPortId: 'audio-0',
+                name: 'EN',
+                discovered: { codec: 'aac', nativeTs: true, channels: 2, rate: 48000 },
+            },
+            {
+                pid: 0x100,
+                media: 'video',
+                sinkPortId: 'video-0',
+                name: 'Cam',
+                discovered: { codec: 'h264', nativeTs: true },
+            },
+        ]);
+        // Name-only entries — the PMT already says aac/h264 on the wire.
+        expect(payload.streams).toEqual([
+            { pid: 0x100, media: 'video', name: 'Cam' },
+            { pid: 0x141, media: 'audio', name: 'EN' },
+        ]);
+    });
+
+    it('includes codec info for non-native codecs (webvtt/private fallback)', () => {
+        const payload = buildKlvPayload([
+            {
+                pid: 0x141,
+                media: 'audio',
+                sinkPortId: 'audio-0',
+                name: 'Subs',
+                discovered: { codec: 'webvtt', nativeTs: false, channels: 0, rate: 0 },
+            },
+        ]);
+        expect(payload.streams).toEqual([
+            { pid: 0x141, media: 'audio', name: 'Subs', codec: 'webvtt' },
+        ]);
+    });
+
+    it('never emits codec fields when discovery saw no codec at all', () => {
+        const payload = buildKlvPayload([
+            {
+                pid: 0x141,
+                media: 'audio',
+                sinkPortId: 'audio-0',
+                name: 'X',
+                discovered: { nativeTs: false, channels: 2, rate: 48000 },
+            },
+        ]);
+        expect(payload.streams).toEqual([{ pid: 0x141, media: 'audio', name: 'X' }]);
+    });
 });
 
 describe('serializeKlvPayload', () => {

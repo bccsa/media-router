@@ -681,6 +681,25 @@ or pipeline health:
 The MPEG-TS muxer (`setKlvPayload`) and demuxer (`readKlvNames`) are the
 reference consumers; the payload format itself is plugin-defined.
 
+**PCR warning (hard requirement).** A live `do-timestamp` appsrc feeding an
+`mpegtsmux` WILL be picked as the mux's PCR stream unless you pin PCR to a
+media pad — the receiver's clock then rides your carousel timer instead of the
+media and audio drops sporadically (this is what got the muxer's carousel
+retired for a while). Always pair the appsrc with a `prog-map` that pins
+`PCR_1` to a media `sink_<pid>` (works inline in the launch string:
+`mpegtsmux prog-map="program_map,sink_256=(int)1,sink_496=(int)1,PCR_1=sink_256"`),
+and always keep a payload pushed once the pipeline is PLAYING — a silent live
+pad makes the aggregator wait out its full latency budget.
+
+**Layering rule for in-band stream metadata.** MPEG-TS natively signals codecs
+(stream_type + AAC/AC-3/Opus registration/302M-BSSD descriptors) and language
+(ISO 639 descriptor, fed by a `taginject tags=language-code=<code>` upstream of
+the mux pad — mpegtsmux converts to 639-2B). Put into the KLV channel ONLY what
+the standard cannot express: freeform names, and codec identity for private
+payloads with no TS mapping (e.g. WebVTT). Use `capsStreamInfo(caps)` from the
+engine to classify — its `nativeTs` flag says whether the codec is already on
+the wire. Reference: the muxer's `klvPayload.ts` + `MpegTsMuxerModule.pushStreamInfo`.
+
 ### Health Status
 
 Plugins can set their health status at any time using `setHealth()`:
@@ -772,6 +791,11 @@ SMPTE-302M (PCM-in-MPEG-TS) is the timeline-preserving audio transport between m
   `mpegtsmux`/`tsdemux` needs **gst ≥ 1.26**; gate pcm features on
   `gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m')` in `initManifest` (real
   example: [`audio-transcoder`](audio-transcoder/engine/AudioTranscoderModule.ts)).
+- `capsStreamInfo(capsString)` — codec id + `nativeTs` flag + channels/rate/language from
+  a serialized caps string (e.g. the `caps` field of `stream:discovered` events).
+  `nativeTs` drives the in-band metadata layering rule (see the carousel section above):
+  natively-signalled codecs never go into KLV. Real example:
+  [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts).
 
 Burst warning: decoders release audio in ~150 ms PES-batch bursts (source muxers batch
 audio PES). A small **leaky** queue downstream of a decoder sheds most of every burst —
