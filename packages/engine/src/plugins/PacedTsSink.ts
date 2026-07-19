@@ -64,7 +64,7 @@ export function packetizeTs(
  * (srtsrc, pulsesrc) paces them. We reconstruct that pacing:
  *
  *  - `write` slices the chunk into datagrams, stamps each with a cumulative
- *    media time (spread across the segment's EXTINF), and enqueues it —
+ *    media time (spread across the write's declared media span), and enqueues it —
  *    returning fast so the producer keeps fetching, up to a ~60 s read-ahead
  *    buffer (back-pressure beyond that). The buffer absorbs download jitter so
  *    the egress never starves — without it, one slow segment fetch stutters
@@ -116,9 +116,9 @@ export abstract class PacedTsSink {
     }
 
     /**
-     * Sink contract. `mediaSeconds` is this chunk's media duration (segment
-     * EXTINF; 0 for init sections). Enqueues paced datagrams and blocks only
-     * once the read-ahead buffer is full.
+     * Sink contract. `mediaSeconds` is this chunk's TRUE media duration (the
+     * content-time span its bytes cover; 0 for init sections). Enqueues paced
+     * datagrams and blocks only once the read-ahead buffer is full.
      */
     async write(chunk: Uint8Array, mediaSeconds: number): Promise<void> {
         if (this._closed) return;

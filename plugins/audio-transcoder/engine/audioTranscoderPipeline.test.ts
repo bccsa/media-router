@@ -111,9 +111,9 @@ describe('buildPipeline (audio transcoder)', () => {
             volume: 1,
             tsAlignment: 1,
         })!;
-        expect(r.pipeline).toContain('opusenc bitrate=128000');
+        expect(r.pipeline).toContain('opusenc perfect-timestamp=true bitrate=128000');
         expect(r.pipeline).toContain('avenc_s302m');
-        expect(r.pipeline).toContain('avenc_aac bitrate=128000 aac-is=0 aac-ms=0');
+        expect(r.pipeline).toContain('avenc_aac perfect-timestamp=true bitrate=128000 aac-is=0 aac-ms=0');
         // opus/aac take the configured alignment; the 302M branch is pinned SRT-aligned.
         expect(r.pipeline.match(/alignment=1/g)).toHaveLength(2);
         expect(r.pipeline.match(/alignment=7/g)).toHaveLength(1);

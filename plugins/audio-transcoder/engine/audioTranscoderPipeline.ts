@@ -81,10 +81,21 @@ export function decoderChainFor(codec: string | undefined): string {
 }
 
 /** Opus/AAC encode tail for one rendition (same element settings as the
- *  audio-encoder — see issue #676 for the aac-is/aac-ms integer form). */
+ *  audio-encoder — see issue #676 for the aac-is/aac-ms integer form).
+ *
+ *  `perfect-timestamp=true` (GstAudioEncoder) on the lossy encoders: output
+ *  timestamps come from the SAMPLE COUNT, not from upstream buffer stamps.
+ *  A live `tsdemux` upstream skew-corrects every timestamp against packet
+ *  ARRIVAL, so arrival ripple becomes PES-PTS jitter in the re-encoded TS
+ *  (measured ±0.45 ms on ~45 % of opus frames on .211) — inaudible to
+ *  sample-counting decoders (ffmpeg) but re-exposed as RTP timestamp jitter
+ *  by TS→WebRTC gateways, where jitter-buffer time-warping makes speech
+ *  sound scratchy/scrambled. The PCM stream is gapless, so sample-count
+ *  stamping is exact; genuine gaps beyond the 40 ms base-class tolerance
+ *  still resync. */
 function encodeTail(r: AudioTranscoderOutput['rendition'], tsAlignment: number): string {
     if (r.codec === 'aac') {
-        return `audioconvert ! avenc_aac bitrate=${r.bitrate * 1000} aac-is=0 aac-ms=0 ! mpegtsmux latency=0 alignment=${tsAlignment}`;
+        return `audioconvert ! avenc_aac perfect-timestamp=true bitrate=${r.bitrate * 1000} aac-is=0 aac-ms=0 ! mpegtsmux latency=0 alignment=${tsAlignment}`;
     }
     if (r.codec === 'pcm') {
         return build302mEncodeBranch();
@@ -97,7 +108,7 @@ function encodeTail(r: AudioTranscoderOutput['rendition'], tsAlignment: number):
     const audioType =
         r.audioType && r.audioType !== 0 ? r.audioType : frameSize <= 5 ? 2051 : 2048;
     return (
-        `opusenc bitrate=${r.bitrate * 1000} frame-size=${frameSize} dtx=false` +
+        `opusenc perfect-timestamp=true bitrate=${r.bitrate * 1000} frame-size=${frameSize} dtx=false` +
         ` inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} audio-type=${audioType}` +
         ` ! mpegtsmux latency=0 alignment=${tsAlignment}`
     );
