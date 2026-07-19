@@ -1,10 +1,13 @@
 /*
  * hls-pipe runner — spawned by HlsPlayerModule as an isolated Node child.
  *
- * Embeds hls-pipe's Extractor and writes canonical MPEG-TS to a UDP multicast
- * group (PacedUdpTsSink) instead of stdout, so stdout stays free for one-line
- * JSON stats the parent parses. hls-pipe is ESM-only; this file compiles to
- * CJS (like the rest of the plugin) and loads it via dynamic `import()`, which
+ * Embeds hls-pipe's Extractor and writes paced canonical MPEG-TS to the
+ * module's bus egress instead of stdout, so stdout stays free for one-line
+ * JSON stats the parent parses. The egress is picked by `cfg.sink`: the
+ * loopback multicast group under UDP transport (PacedUdpTsSink), or the
+ * module's unixfd-fanout sidecar ingest socket under unixfd
+ * (PacedUnixStreamTsSink). hls-pipe is ESM-only; this file compiles to CJS
+ * (like the rest of the plugin) and loads it via dynamic `import()`, which
  * NodeNext preserves natively for CJS→ESM interop.
  *
  * Config arrives as a JSON blob in the HLS_CONFIG env var. Exit codes drive the
@@ -12,9 +15,11 @@
  * restart), non-zero = error (auto-restart with backoff).
  */
 import type { ExtractorOptions } from 'hls-pipe';
-// Deep import: this child only needs the sink — pulling in the engine's index
-// would load the whole engine (Fastify, comms, …) into every runner process.
+// Deep imports: this child only needs the sinks — pulling in the engine's
+// index would load the whole engine (Fastify, comms, …) into every runner
+// process.
 import { PacedUdpTsSink } from '@media-router/engine/dist/plugins/PacedUdpTsSink.js';
+import { PacedUnixStreamTsSink } from '@media-router/engine/dist/plugins/PacedUnixStreamTsSink.js';
 import { buildExtractorOverrides, type RunnerConfig } from './runnerOptions.js';
 
 function emitStats(bitrateMbps: number, bytesSent: number): void {
@@ -32,9 +37,14 @@ async function main(): Promise<void> {
     const { Extractor, makeOutputMode, DEFAULT_ABR_CONFIG, UNSTABLE_NETWORK_ABR_CONFIG } =
         await import('hls-pipe');
 
-    // Paced multicast sink — releases each segment's datagrams at the media
-    // rate so the receiver's UDP buffer doesn't overflow.
-    const sink = new PacedUdpTsSink(cfg.port, cfg.host);
+    // Paced sink — releases each segment's datagrams at the media rate so the
+    // receiver (udpsrc kernel buffer, or the sidecar's per-consumer queues)
+    // doesn't overflow. `sink` descriptor picks the transport; absent (old
+    // module build) falls back to the legacy host/port multicast fields.
+    const sink =
+        cfg.sink?.kind === 'unixfd'
+            ? new PacedUnixStreamTsSink(cfg.sink.ingestPath)
+            : new PacedUdpTsSink(cfg.port, cfg.host);
 
     const abort = new AbortController();
     const stop = (): void => abort.abort();

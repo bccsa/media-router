@@ -47,9 +47,12 @@ export class BusFanoutCoordinator {
         if (!this.enabled()) return;
         const port = this.resolveProducerPort(conn.sourceModuleId, conn.sourcePortId);
         if (port === undefined) return;
-        const cp = this.moduleGetter(conn.sourceModuleId)?.getChildProcess?.();
-        if (!cp) return;
-        cp.sendBusAttach(busTeeName(port), busEdgeSocketPath(port, conn.id));
+        // The attach target is the gst runner for pipeline producers, or a
+        // non-gst producer's own fan-out controller (hls-player's
+        // UnixFdFanoutController driving its unixfd-fanout.py sidecar).
+        const target = this.moduleGetter(conn.sourceModuleId)?.getBusAttachTarget?.();
+        if (!target) return;
+        target.sendBusAttach(busTeeName(port), busEdgeSocketPath(port, conn.id));
         log.debug(
             { conn: conn.id, port },
             'Attached bus fan-out branch',
@@ -61,9 +64,9 @@ export class BusFanoutCoordinator {
         if (!this.enabled()) return;
         const port = this.resolveProducerPort(conn.sourceModuleId, conn.sourcePortId);
         if (port === undefined) return;
-        const cp = this.moduleGetter(conn.sourceModuleId)?.getChildProcess?.();
-        if (!cp) return;
-        cp.sendBusDetach(busEdgeSocketPath(port, conn.id));
+        const target = this.moduleGetter(conn.sourceModuleId)?.getBusAttachTarget?.();
+        if (!target) return;
+        target.sendBusDetach(busEdgeSocketPath(port, conn.id));
         log.debug({ conn: conn.id, port }, 'Detached bus fan-out branch');
     }
 

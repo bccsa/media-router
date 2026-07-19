@@ -27,6 +27,13 @@ export interface ManagedProcessOptions {
     onStdout?: (line: string) => void;
     /** Called for each line of stderr. */
     onStderr?: (line: string) => void;
+    /**
+     * Open a stdin pipe so the owner can send the process line-based
+     * commands via `writeLine` (default: stdin is ignored). The pipe is
+     * re-created on every auto-restart — senders must treat a restart as a
+     * fresh process and replay any state it needs (see UnixFdFanoutController).
+     */
+    stdin?: boolean;
 }
 
 const DEFAULT_BACKOFF = {
@@ -99,7 +106,7 @@ export class ManagedProcess extends EventEmitter {
         this.log.info({ command, args }, 'Starting process');
 
         this.child = spawn(command, args, {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: [this.options.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
             env: env ? { ...process.env, ...env } : undefined,
             cwd,
         });
@@ -165,6 +172,19 @@ export class ManagedProcess extends EventEmitter {
         this.log.info({ pid: this.child.pid }, 'Process started');
     }
 
+    /**
+     * Send one line-delimited command to the process's stdin (requires
+     * `stdin: true`). Returns false when the process isn't running or has no
+     * pipe — callers queue/replay on the 'started' event instead of buffering
+     * here, so a command never lands on the wrong incarnation.
+     */
+    writeLine(line: string): boolean {
+        const stdin = this.child?.stdin;
+        if (!this.isRunning || !stdin || stdin.destroyed) return false;
+        stdin.write(line.endsWith('\n') ? line : `${line}\n`);
+        return true;
+    }
+
     private scheduleRestart(): void {
         if (this._destroyed) return;
         const delay = this.backoff.nextDelay();
@@ -201,7 +221,12 @@ export class ManagedProcess extends EventEmitter {
             });
         });
 
-        if (!exited && !child.killed) {
+        // Node sets `child.killed` the moment a signal is DELIVERED, not when
+        // the process dies — so gating on `!child.killed` here made this
+        // escalation unreachable and a SIGTERM-ignoring child leaked past
+        // stop() (observed: hls-pipe runner draining its paced buffer kept
+        // running ~60 s after a module delete). Liveness is `exitCode === null`.
+        if (!exited && child.exitCode === null) {
             this.log.warn('Process did not exit after SIGTERM — sending SIGKILL');
             child.kill('SIGKILL');
             await new Promise<void>((resolve) => {

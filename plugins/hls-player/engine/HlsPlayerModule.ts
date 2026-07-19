@@ -1,9 +1,20 @@
-import { GstPluginBase, formatBytes, type PipelineDescription } from '@media-router/engine';
+import {
+    GstPluginBase,
+    UnixFdFanoutController,
+    busIngestSocketPath,
+    busTransport,
+    formatBytes,
+    type BusAttachTarget,
+    type PipelineDescription,
+} from '@media-router/engine';
 import type { ManagedProcess } from '@media-router/engine';
 import type { AlternateRendition } from 'hls-pipe';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolutionCapBitrateBps, resolveQuality } from './runnerOptions.js';
+
+/** Bus wire caps — identical to `buildUdpSink`'s unixfd capsfilter. */
+const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
 /**
  * Locate the compiled runner. `__dirname` is `dist/` in production, but the
@@ -16,6 +27,22 @@ function resolveRunnerPath(): string | null {
         join(__dirname, '..', 'dist', 'hls-pipe-runner.js'),
     ];
     return candidates.find((p) => existsSync(p)) ?? null;
+}
+
+/**
+ * Locate the engine's unixfd fan-out sidecar. Resolved off the engine's entry
+ * point (dist/index.js) rather than require.resolve on the .py itself — the
+ * engine's `exports` map doesn't cover it, and `existsSync` keeps the check
+ * honest when the engine dist is stale (built before the sidecar existed).
+ */
+function resolveFanoutScript(): string | null {
+    try {
+        const engineMain = require.resolve('@media-router/engine');
+        const script = join(engineMain, '..', 'child-process', 'unixfd-fanout.py');
+        return existsSync(script) ? script : null;
+    } catch {
+        return null;
+    }
 }
 
 type Option = { value: string; label: string };
@@ -56,8 +83,11 @@ function asArray(v: unknown): string[] {
  * HLS Player plugin.
  *
  * Pulls an HLS stream via the hls-pipe library (spawned as an isolated Node
- * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on local
- * UDP multicast for downstream modules — same producer contract as srt-input.
+ * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on the
+ * inter-module bus — same producer contract as srt-input. Under UDP transport
+ * the child multicasts directly (PacedUdpTsSink); under unixfd it streams into
+ * this module's `unixfd-fanout.py` sidecar, which serves the per-consumer
+ * edge sockets speaking the GstUnixFd protocol (see `startFanout`).
  *
  * On start it probes the master playlist to detect available audio / subtitle
  * languages and reports them as `fieldOptions`, so the settings panel can show
@@ -67,6 +97,11 @@ function asArray(v: unknown): string[] {
  */
 export class HlsPlayerModule extends GstPluginBase {
     private runner: ManagedProcess | null = null;
+    /** unixfd transport only: the GstUnixFd fan-out sidecar + its controller.
+     *  The sidecar owns the per-consumer edge sockets, so they survive runner
+     *  relaunches (URL changes) — consumers see a data gap, not a disconnect. */
+    private fanout: ManagedProcess | null = null;
+    private fanoutController: UnixFdFanoutController | null = null;
     private playlistKind = '—';
     /** Variant ladder from the last master-playlist probe (bitrate + height),
      *  used to turn a `maxHeight` ceiling into a bitrate cap. Empty for media
@@ -98,6 +133,12 @@ export class HlsPlayerModule extends GstPluginBase {
             this.setHealth('error', 'No UDP port assigned — cannot output MPEG-TS');
             return;
         }
+
+        // Under unixfd the fan-out sidecar must run even while idle: it owns
+        // the per-consumer edge sockets, and consumers gate their start on
+        // connecting to them (busSocketGate).
+        if (busTransport() === 'unixfd' && !this.startFanout(endpoint.port)) return;
+
         this.running = true;
         this.ready = true;
 
@@ -126,13 +167,82 @@ export class HlsPlayerModule extends GstPluginBase {
     }
 
     async onStop(): Promise<void> {
-        // ProcessManager auto-kills the runner on module stop; just drop the ref.
+        // ProcessManager auto-kills the runner + sidecar on module stop; just drop the refs.
         this.runner = null;
+        this.fanout = null;
+        this.fanoutController = null;
         await super.onStop();
     }
 
     buildPipeline(): PipelineDescription | null {
         return null;
+    }
+
+    /** Bus fan-out commands go to our sidecar controller, not a gst runner
+     *  (there is none). Null under UDP transport — the coordinator is a no-op
+     *  there anyway. */
+    getBusAttachTarget(): BusAttachTarget | null {
+        return this.fanoutController;
+    }
+
+    /**
+     * Spawn the GstUnixFd fan-out sidecar (unixfd transport only).
+     * @returns false when it could not be spawned (health already set).
+     */
+    private startFanout(port: number): boolean {
+        if (this.fanout) return true; // restart path — already up
+        if (!this.services?.processManager) {
+            this.setHealth('error', 'processManager service unavailable — cannot spawn fan-out');
+            return false;
+        }
+        const script = resolveFanoutScript();
+        if (!script) {
+            this.setHealth('error', 'unixfd-fanout.py not found — build the engine (pnpm build)');
+            return false;
+        }
+        this.fanoutController = new UnixFdFanoutController(
+            () => this.fanout,
+            // Every sidecar `ready` (first start and each autoRestart respawn):
+            // the controller has replayed its own desired edges; this reattach
+            // covers connections created while the module was down, which only
+            // the engine-side coordinator knows about.
+            () => {
+                if (this.services?.instanceId) {
+                    this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
+                }
+                this.restoreIdleHealth();
+            },
+        );
+        this.fanout = this.spawnRunnerProcess({
+            label: 'unixfd-fanout',
+            command: 'python3',
+            args: [script, '--ingest', busIngestSocketPath(port), '--caps', BUS_TS_CAPS],
+            autoRestart: true,
+            stdin: true,
+            onStdout: (line) => this.handleFanoutLine(line),
+            onStderr: (line) => this.log.warn({ src: 'unixfd-fanout' }, line),
+        });
+        return true;
+    }
+
+    private handleFanoutLine(line: string): void {
+        const msg = this.fanoutController?.handleLine(line);
+        if (!msg) return;
+        const stats = msg.stats as { clients?: number; drops?: Record<string, number> } | undefined;
+        if (stats) {
+            const drops = Object.values(stats.drops ?? {}).reduce((a, b) => a + b, 0);
+            this.setStatusData('bus', { consumers: stats.clients ?? 0, 'shed buffers': drops });
+        } else if (msg.event === 'error' || msg.event === 'warning') {
+            this.log.warn({ src: 'unixfd-fanout' }, String(msg.message ?? ''));
+        }
+    }
+
+    /** Re-assert the idle warning after a sidecar respawn set transient
+     *  crash/restart health — a URL-less module is 'waiting', not 'ok'. */
+    private restoreIdleHealth(): void {
+        if (this.running && !String(this.config.url ?? '').trim()) {
+            this.setHealth('warning', 'Waiting for HLS URL');
+        }
     }
 
     /**
@@ -242,6 +352,14 @@ export class HlsPlayerModule extends GstPluginBase {
             url,
             host,
             port,
+            // Egress descriptor — under unixfd the runner writes paced TS to
+            // the fan-out sidecar's ingest socket instead of the multicast
+            // group. `host`/`port` above stay for back-compat (old runner
+            // builds read them directly).
+            sink:
+                busTransport() === 'unixfd'
+                    ? { kind: 'unixfd', ingestPath: busIngestSocketPath(port) }
+                    : { kind: 'udp', host, port },
             quality: resolved.quality,
             capBitrateBps: caps.length ? Math.min(...caps) : 0,
             abrPreset: (this.config.abrPreset as string) ?? 'default',

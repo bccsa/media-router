@@ -3,6 +3,7 @@ import type { ModuleRuntimeState } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
+import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 
 const log = createLogger('ModuleInstance');
 
@@ -254,6 +255,13 @@ export class ModuleInstance extends EventEmitter {
     /** Get the GStreamer child process for MPEG-TS piping. */
     getChildProcess(): GstChildProcess | null {
         return this.plugin.getChildProcess?.() ?? null;
+    }
+
+    /** Where the BusFanoutCoordinator sends this producer's unixfd
+     *  bus_attach/bus_detach (gst runner, or a non-gst producer's own
+     *  fan-out controller). */
+    getBusAttachTarget(): BusAttachTarget | null {
+        return this.plugin.getBusAttachTarget?.() ?? this.getChildProcess();
     }
 
     /** Count of running child processes owned by this module. */

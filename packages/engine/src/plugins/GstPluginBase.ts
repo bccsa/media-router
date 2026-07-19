@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type { ModuleRuntimeState, ModuleHealth } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
+import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { busTransport } from './udpHelpers.js';
@@ -45,6 +46,16 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess(): GstChildProcess | null {
+        return this.childProcess;
+    }
+
+    /**
+     * Where the BusFanoutCoordinator sends this producer's unixfd
+     * `bus_attach`/`bus_detach`. The gst runner handles them natively; a
+     * non-GStreamer producer overrides this with its own fan-out controller
+     * (hls-player → UnixFdFanoutController + unixfd-fanout.py sidecar).
+     */
+    getBusAttachTarget(): BusAttachTarget | null {
         return this.childProcess;
     }
 

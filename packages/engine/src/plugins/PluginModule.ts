@@ -1,5 +1,6 @@
 import type { PluginManifest } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
+import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
@@ -92,6 +93,13 @@ export interface PluginModule {
     }>;
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess?(): GstChildProcess | null;
+    /**
+     * Where the BusFanoutCoordinator sends this producer's unixfd
+     * `bus_attach`/`bus_detach` commands. Defaults to the gst child process
+     * (GstPluginBase); a non-GStreamer producer overrides it with its own
+     * fan-out controller (hls-player → UnixFdFanoutController).
+     */
+    getBusAttachTarget?(): BusAttachTarget | null;
     /** Count of running child processes owned by this module. */
     getProcessCount?(): number;
 }

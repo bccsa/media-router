@@ -59,6 +59,7 @@ export {
     busSocketPath,
     busTeeName,
     busEdgeSocketPath,
+    busIngestSocketPath,
     isMulticast,
     isMulticastAddr,
     NET_UDP_RCV_BUF,
@@ -96,6 +97,8 @@ export {
     TS_PACKETS_PER_DATAGRAM,
     TS_DATAGRAM_BYTES,
 } from './plugins/PacedUdpTsSink.js';
+export { PacedTsSink } from './plugins/PacedTsSink.js';
+export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
@@ -121,6 +124,8 @@ export type { DeviceFormatState, DeviceDetection } from './audio/deviceFormat.js
 export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
+export { UnixFdFanoutController } from './child-process/UnixFdFanoutController.js';
+export type { BusAttachTarget } from './child-process/UnixFdFanoutController.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export {
     probeMpegTsStream,

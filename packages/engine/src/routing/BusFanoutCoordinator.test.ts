@@ -18,11 +18,13 @@ function conn(over: Partial<Connection> = {}): Connection {
 describe('BusFanoutCoordinator', () => {
     let attach: ReturnType<typeof vi.fn>;
     let detach: ReturnType<typeof vi.fn>;
-    let childProcess: { sendBusAttach: typeof attach; sendBusDetach: typeof detach };
+    /** The producer's bus-attach target — a gst child process for pipeline
+     *  producers, or a non-gst producer's own fan-out controller. */
+    let target: { sendBusAttach: typeof attach; sendBusDetach: typeof detach };
 
     const PORT = 40002;
     const make = (opts: { connections?: Connection[] } = {}) => {
-        const producer = { getChildProcess: () => childProcess };
+        const producer = { getBusAttachTarget: () => target };
         return new BusFanoutCoordinator(
             (id) => (id === 'srt-input-a' ? (producer as never) : undefined),
             () => PORT,
@@ -33,7 +35,7 @@ describe('BusFanoutCoordinator', () => {
     beforeEach(() => {
         attach = vi.fn();
         detach = vi.fn();
-        childProcess = { sendBusAttach: attach, sendBusDetach: detach };
+        target = { sendBusAttach: attach, sendBusDetach: detach };
     });
     afterEach(() => vi.unstubAllEnvs());
 
@@ -67,17 +69,17 @@ describe('BusFanoutCoordinator', () => {
         it('no-ops when the producer has no allocated channel port yet', () => {
             const c = conn();
             new BusFanoutCoordinator(
-                () => ({ getChildProcess: () => childProcess }) as never,
+                () => ({ getBusAttachTarget: () => target }) as never,
                 () => undefined, // port not allocated
                 () => [c],
             ).attach(c);
             expect(attach).not.toHaveBeenCalled();
         });
 
-        it('no-ops when the producer child process is down', () => {
+        it('no-ops when the producer attach target is down', () => {
             const c = conn();
             new BusFanoutCoordinator(
-                () => ({ getChildProcess: () => null }) as never,
+                () => ({ getBusAttachTarget: () => null }) as never,
                 () => PORT,
                 () => [c],
             ).attach(c);

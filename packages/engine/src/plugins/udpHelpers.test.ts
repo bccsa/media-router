@@ -7,6 +7,7 @@ import {
     busSocketPath,
     busTeeName,
     busEdgeSocketPath,
+    busIngestSocketPath,
     busTransport,
     isMulticast,
     isMulticastAddr,
@@ -202,6 +203,12 @@ describe('unixfd bus transport (MR_BUS_TRANSPORT=unixfd)', () => {
             'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'tee name=busout_40001 allow-not-linked=true',
         );
+    });
+
+    it('derives the non-gst producer ingest socket from the port, honouring MR_BUS_SOCKET_DIR', () => {
+        expect(busIngestSocketPath(40001)).toBe('/tmp/mr-bus-40001-ingest.sock');
+        vi.stubEnv('MR_BUS_SOCKET_DIR', '/run/mr');
+        expect(busIngestSocketPath(40001)).toBe('/run/mr/mr-bus-40001-ingest.sock');
     });
 
     it('derives deterministic tee + per-edge socket names from the port', () => {

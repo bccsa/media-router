@@ -1,15 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Record every datagram with the (fake) wall-clock time it was sent at, so
-// pacing behaviour is assertable without a real socket.
+// pacing behaviour is assertable without a real socket. Socket-option calls
+// are recorded (and optionally made to throw) for the bind-time opts tests.
 const sends: Array<{ bytes: number; at: number }> = [];
+const optCalls: string[] = [];
+let throwOnMulticastOpts = false;
 vi.mock('node:dgram', () => ({
     createSocket: () => ({
         on: () => {},
         bind: (cb: () => void) => cb(),
-        setMulticastInterface: () => {},
-        setMulticastTTL: () => {},
-        setSendBufferSize: () => {},
+        setMulticastInterface: () => {
+            optCalls.push('setMulticastInterface');
+            if (throwOnMulticastOpts) throw new Error('EINVAL');
+        },
+        setMulticastTTL: () => {
+            optCalls.push('setMulticastTTL');
+            if (throwOnMulticastOpts) throw new Error('EINVAL');
+        },
+        setSendBufferSize: () => {
+            optCalls.push('setSendBufferSize');
+        },
         send: (buf: Buffer, _port: number, _host: string, cb?: () => void) => {
             sends.push({ bytes: buf.length, at: performance.now() });
             cb?.();
@@ -146,5 +157,34 @@ describe('PacedUdpTsSink drain loop', () => {
         await sink.write(segment(), 10);
         await vi.advanceTimersByTimeAsync(1000);
         expect(sends).toHaveLength(0);
+    });
+});
+
+describe('PacedUdpTsSink socket options', () => {
+    beforeEach(() => {
+        optCalls.length = 0;
+        throwOnMulticastOpts = false;
+    });
+
+    it('applies multicast opts + send buffer for a multicast host', async () => {
+        const sink = new PacedUdpTsSink(41000, '239.255.0.1');
+        await sink.write(Buffer.alloc(0), 0);
+        expect(optCalls).toEqual(['setMulticastInterface', 'setMulticastTTL', 'setSendBufferSize']);
+        await sink.end();
+    });
+
+    it('skips multicast opts for a unicast host but still sizes the send buffer', async () => {
+        const sink = new PacedUdpTsSink(41000, '127.0.0.1');
+        await sink.write(Buffer.alloc(0), 0);
+        expect(optCalls).toEqual(['setSendBufferSize']);
+        await sink.end();
+    });
+
+    it('a throwing multicast opt no longer skips the send-buffer sizing', async () => {
+        throwOnMulticastOpts = true;
+        const sink = new PacedUdpTsSink(41000, '239.255.0.1');
+        await sink.write(Buffer.alloc(0), 0);
+        expect(optCalls).toContain('setSendBufferSize');
+        await sink.end();
     });
 });

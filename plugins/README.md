@@ -105,7 +105,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | Plain MPEG-TS over IP (UDP/RTP) to/from a real NIC | `mpegts-ip-input` / `mpegts-ip-output` | `buildNetUdpSrc`/`buildNetUdpSink` (interface + TTL, full 224.–239. multicast), raw/RTP encapsulation, `tee` fan-out, `trackThroughput` bitrate |
 | A plugin that owns a hardware device (audio source/sink, V4L2, DRM) | `audio-input` / `audio-output` | `static registerServices` for device provider, watchdog hooks |
 | A CLI-tool wrapper (returns `null` from `buildPipeline`) | `rist-input` / `rist-output` | `ProcessManager` lifecycle, stderr parsing |
-| A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, multicasts MPEG-TS over a `dgram` socket, probes the source and reports `fieldOptions` |
+| A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, publishes paced MPEG-TS on the bus (multicast under UDP, `unixfd-fanout.py` sidecar under unixfd), probes the source and reports `fieldOptions` |
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
 | A multi-port plugin with variable port count | `ts-splitter` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
@@ -1243,19 +1243,51 @@ For per-output-port allocation (e.g. MPEG-TS demuxer with N outputs), pass a `po
 const ep = router.assignUdpPort(instanceId, 'audio-0');
 ```
 
-### Producer pattern from Node (no GStreamer): `PacedUdpTsSink`
+### Producer pattern from Node (no GStreamer): paced sinks + the unixfd fan-out sidecar
 
-When the MPEG-TS bytes originate in Node (not in a GStreamer pipeline — e.g. hls-player's hls-pipe runner), use `PacedUdpTsSink` from `@media-router/engine`. It packetizes a byte stream into 1316-byte datagrams and **paces egress at the media rate** so the receiver's `udpsrc` buffer doesn't overflow when whole segments arrive in bursts — the `udpsrc` defaults in `buildUdpSrc` are tuned around this sink. It buffers up to ~60 s of read-ahead (back-pressuring `write`), pre-fills 2 s on start, and re-anchors its pacing clock after a source stall.
+When the MPEG-TS bytes originate in Node (not in a GStreamer pipeline — e.g. hls-player's hls-pipe runner), the module must publish on **both** bus transports. A Node source must NEVER write straight to the multicast group and call it done — under `MR_BUS_TRANSPORT=unixfd` nobody is listening there and every consumer blocks forever in the socket gate.
+
+**The data path** is a paced sink from `@media-router/engine` (both share `PacedTsSink`'s pacing core: ~60 s read-ahead with back-pressuring `write`, 2 s pre-fill, stall re-anchor — so whole-segment bursts never overrun the receiver):
+
+- UDP transport → `PacedUdpTsSink(port, host)`: 1316-byte datagrams onto the loopback multicast bus (the `udpsrc` defaults in `buildUdpSrc` are tuned around it).
+- unixfd transport → `PacedUnixStreamTsSink(busIngestSocketPath(port))`: raw TS into the module's fan-out sidecar (below).
 
 ```typescript
-import { PacedUdpTsSink } from '@media-router/engine';
+import { PacedUdpTsSink, PacedUnixStreamTsSink, busTransport, busIngestSocketPath } from '@media-router/engine';
 
-const sink = new PacedUdpTsSink(endpoint.port, endpoint.host); // iface defaults to loopback
+const sink =
+    busTransport() === 'unixfd'
+        ? new PacedUnixStreamTsSink(busIngestSocketPath(endpoint.port))
+        : new PacedUdpTsSink(endpoint.port, endpoint.host); // iface defaults to loopback
 await sink.write(tsBytes, segmentDurationSec); // blocks only when the read-ahead buffer is full
 await sink.end(); // flush whole packets at media rate, then close
 ```
 
-Pass the `host` from `assignUdpPort` / `getUdpEndpoint` — never hardcode the multicast group. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
+Pass the `host`/`port` from `assignUdpPort` / `getUdpEndpoint` — never hardcode the multicast group. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
+
+**The unixfd fan-out** is `unixfd-fanout.py` (engine `dist/child-process/`), a pure-stdlib python3 sidecar that stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
+
+```typescript
+getBusAttachTarget(): BusAttachTarget | null {
+    return this.fanoutController; // null under UDP — the coordinator is a no-op there
+}
+
+// onStart (unixfd only): spawn the sidecar and bridge its stdio to the controller
+this.fanoutController = new UnixFdFanoutController(
+    () => this.fanout,
+    () => this.services?.mediaRouter?.onProducerPlaying(this.services.instanceId), // reattach on every sidecar ready
+);
+this.fanout = this.spawnRunnerProcess({
+    label: 'unixfd-fanout',
+    command: 'python3',
+    args: [script, '--ingest', busIngestSocketPath(port), '--caps', TS_CAPS],
+    autoRestart: true,
+    stdin: true, // controller sends bus_attach/bus_detach as JSON lines
+    onStdout: (line) => this.fanoutController?.handleLine(line),
+});
+```
+
+The controller keeps the desired edge set and replays it on every sidecar `ready`, so sidecar crashes/restarts heal without engine involvement. Because the sidecar (not the data child) owns the edge sockets, consumers survive data-child relaunches (e.g. hls URL changes) with only a stream gap. See `plugins/hls-player/engine/HlsPlayerModule.ts` for the full reference implementation.
 
 ### Consumer pattern (decoder, muxer input, SRT-out…)
 

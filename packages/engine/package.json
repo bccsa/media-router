@@ -13,10 +13,14 @@
         "./dist/plugins/PacedUdpTsSink.js": {
             "types": "./dist/plugins/PacedUdpTsSink.d.ts",
             "default": "./dist/plugins/PacedUdpTsSink.js"
+        },
+        "./dist/plugins/PacedUnixStreamTsSink.js": {
+            "types": "./dist/plugins/PacedUnixStreamTsSink.d.ts",
+            "default": "./dist/plugins/PacedUnixStreamTsSink.js"
         }
     },
     "scripts": {
-        "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst-net-clock.py src/child-process/librist.py src/child-process/ts_psi.py src/child-process/ts_split.py dist/child-process/",
+        "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst-net-clock.py src/child-process/librist.py src/child-process/ts_psi.py src/child-process/ts_split.py src/child-process/unixfd-fanout.py dist/child-process/",
         "typecheck": "tsc --noEmit",
         "dev": "bash -c '[ -f .env.local ] && . ./.env.local; exec tsx watch --inspect=9230 examples/test-engine.ts'"
     },

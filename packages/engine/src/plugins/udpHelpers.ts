@@ -32,11 +32,12 @@ export function isMulticast(host: string): boolean {
  * buffer. Requires GStreamer ≥ 1.24 with the copy-to-shm backport (test
  * prefix: `source ~/gst-1.24/env.sh`).
  *
- * Only the gst↔gst loopback-bus hops flip; consumers that read the bus with
- * their own UDP sockets stay on UDP and go silent under unixfd: the rist
- * CLI relays, hls-player's PacedUdpTsSink, and video-player's dgram resume
- * probe. Network-facing builders (`buildNetUdpSrc`/`buildNetUdpSink`) are
- * never affected.
+ * Only the gst↔gst loopback-bus hops flip. Non-GStreamer bus PRODUCERS
+ * (hls-player's Node child) publish under unixfd through the
+ * `unixfd-fanout.py` sidecar (see `busIngestSocketPath`); the one remaining
+ * raw-UDP-socket bus user that goes silent under unixfd is video-player's
+ * dgram resume probe. Network-facing builders
+ * (`buildNetUdpSrc`/`buildNetUdpSink`) are never affected.
  *
  * Read per call (not cached) so tests and module rebuilds see env changes.
  */
@@ -97,6 +98,20 @@ function shortHash(s: string): string {
 export function busEdgeSocketPath(port: number, connectionId: string): string {
     const dir = process.env.MR_BUS_SOCKET_DIR ?? '/tmp';
     return `${dir}/mr-bus-${port}-${shortHash(connectionId)}.sock`;
+}
+
+/**
+ * Ingest socket path for a non-GStreamer bus PRODUCER under unixfd (today:
+ * hls-player). The producer's data process (hls-pipe's Node child) streams
+ * raw TS into this socket; the module's `unixfd-fanout.py` sidecar listens
+ * here and fans the stream out to the per-consumer edge sockets
+ * (`busEdgeSocketPath`) speaking the GstUnixFd protocol. Keyed by the
+ * channel port like every other bus path so it survives module restarts
+ * with the sticky port.
+ */
+export function busIngestSocketPath(port: number): string {
+    const dir = process.env.MR_BUS_SOCKET_DIR ?? '/tmp';
+    return `${dir}/mr-bus-${port}-ingest.sock`;
 }
 
 /**

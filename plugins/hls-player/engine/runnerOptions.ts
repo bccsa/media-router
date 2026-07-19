@@ -7,10 +7,19 @@
  */
 import type { AbrConfig, LatencyConfig, QualityHint } from 'hls-pipe';
 
+/** Bus egress descriptor — which paced sink the runner instantiates. */
+export type RunnerSink =
+    | { kind: 'udp'; host: string; port: number }
+    | { kind: 'unixfd'; ingestPath: string };
+
 export interface RunnerConfig {
     url: string;
+    /** Legacy multicast egress fields — still emitted (and used as the
+     *  fallback when `sink` is absent, i.e. an old module build). */
     host: string;
     port: number;
+    /** Egress descriptor; absent on configs from pre-unixfd module builds. */
+    sink?: RunnerSink;
     // 'auto' = ABR (switches; capBitrateBps caps the ceiling).
     // 'highest'/'lowest' = pin the top/bottom variant (no ABR).
     // 'fixed' = pin the highest variant at/under the resolution ceiling
