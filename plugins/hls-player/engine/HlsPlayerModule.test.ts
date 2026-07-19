@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { isMasterPlaylist } from 'hls-pipe';
 import { existsSync } from 'node:fs';
@@ -36,7 +36,8 @@ vi.mock('hls-pipe', () => {
     };
 });
 
-// The module resolves the compiled runner with existsSync — pretend it's built.
+// The module resolves both the compiled runner and the engine's fan-out
+// sidecar with existsSync — pretend both are built.
 vi.mock('node:fs', async (importOriginal) => ({
     ...(await importOriginal<typeof import('node:fs')>()),
     existsSync: vi.fn(() => true),
@@ -55,8 +56,8 @@ function makeModule() {
     module.services = {
         instanceId: 'hls-1',
         mediaRouter: {
-            assignUdpPort: vi.fn(),
-            getUdpEndpoint: vi.fn(() => ({ host: '239.255.0.1', port: 41000 })),
+            assignBusChannel: vi.fn(),
+            getBusChannel: vi.fn(() => ({ port: 41000 })),
             onProducerPlaying: vi.fn(),
         },
         processManager: { spawn, kill },
@@ -71,17 +72,29 @@ function makeModule() {
     return { module, spawn, kill };
 }
 
-/** Parse the HLS_CONFIG JSON handed to the spawned runner. */
-function runnerConfig(spawn: ReturnType<typeof vi.fn>): Record<string, unknown> {
-    return runnerConfigAt(spawn, 0);
-}
-
-/** HLS_CONFIG from the Nth spawn call. */
+/** HLS_CONFIG from the Nth spawn call. Spawn 0 is always the fan-out sidecar,
+ *  so the hls runner's config lives at index 1 (first launch). */
 function runnerConfigAt(spawn: ReturnType<typeof vi.fn>, n: number): Record<string, unknown> {
     return JSON.parse(spawn.mock.calls[n][1].env.HLS_CONFIG);
 }
 
-beforeEach(() => vi.clearAllMocks());
+/** spawn call 0 = the fan-out sidecar (always first, even idle). */
+const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
+    proc: spawn.mock.results[0]!.value as EventEmitter & {
+        writeLine: ReturnType<typeof vi.fn>;
+    },
+    opts: spawn.mock.calls[0]![1] as {
+        command: string;
+        args: string[];
+        stdin?: boolean;
+        onStdout: (line: string) => void;
+    },
+});
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+});
 
 describe('HlsPlayerModule.buildPipeline', () => {
     it('returns null — hls-pipe runner does the work, no GStreamer pipeline', () => {
@@ -98,45 +111,70 @@ describe('HlsPlayerModule.getLiveUpdatableParams', () => {
 });
 
 describe('HlsPlayerModule.onStart', () => {
-    it('with no URL: reserves the port and sits idle (warning), never spawns', async () => {
+    it('with no URL: reserves the channel, starts the sidecar and sits idle (warning), never spawns the runner', async () => {
         const { module, spawn } = makeModule();
         await module.onStart();
-        expect(module.services.mediaRouter.assignUdpPort).toHaveBeenCalledWith('hls-1');
+        expect(module.services.mediaRouter.assignBusChannel).toHaveBeenCalledWith('hls-1');
         expect(module.setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('URL'));
-        expect(spawn).not.toHaveBeenCalled();
+        expect(spawn).toHaveBeenCalledOnce(); // just the sidecar
         expect(module.running).toBe(true); // running-but-idle, ready for a pasted URL
     });
 
-    it('assigns a UDP port, spawns the runner with the source URL + endpoint', async () => {
+    it('spawns the fan-out sidecar even while idle — consumers gate on its edge sockets', async () => {
+        const { module, spawn } = makeModule();
+        await module.onStart(); // no URL
+        expect(spawn).toHaveBeenCalledOnce();
+        const { opts } = sidecarOf(spawn);
+        expect(opts.command).toBe('python3');
+        expect(opts.args.join(' ')).toContain('--ingest /tmp/mr-bus-41000-ingest.sock');
+        expect(opts.args.join(' ')).toContain('video/mpegts');
+        expect(opts.stdin).toBe(true);
+        expect(module.getBusAttachTarget()).not.toBeNull();
+    });
+
+    it('assigns a bus channel, spawns sidecar + runner with the source URL and unixfd sink', async () => {
         const { module, spawn } = makeModule();
         module.config = { url: 'https://example.com/master.m3u8', quality: 'auto' };
         await module.onStart();
 
-        expect(module.services.mediaRouter.assignUdpPort).toHaveBeenCalledWith('hls-1');
-        expect(spawn).toHaveBeenCalledOnce();
-        const cfg = runnerConfig(spawn);
+        expect(module.services.mediaRouter.assignBusChannel).toHaveBeenCalledWith('hls-1');
+        expect(spawn).toHaveBeenCalledTimes(2); // sidecar first, then the hls runner
+        const cfg = runnerConfigAt(spawn, 1);
         expect(cfg).toMatchObject({
             url: 'https://example.com/master.m3u8',
-            host: '239.255.0.1',
-            port: 41000,
             quality: 'auto',
             inlineAudio: [],
             inlineSubtitles: [],
+            sink: { kind: 'unixfd', ingestPath: '/tmp/mr-bus-41000-ingest.sock' },
         });
+        // Bus identity is the channel port keying the socket paths — no
+        // network endpoint remains in the runner config.
+        expect(cfg).not.toHaveProperty('host');
+        expect(cfg).not.toHaveProperty('port');
         expect(module.running).toBe(true);
         expect(module.setHealth).toHaveBeenCalledWith('ok');
     });
 
     it('reports an error when the runner is not built (dev tsx fallback without dist)', async () => {
         const { module, spawn } = makeModule();
-        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
+        // Sidecar script resolves fine; only the compiled runner is missing.
+        (existsSync as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+            (p: unknown) => !String(p).includes('hls-pipe-runner'),
+        );
         module.config = { url: 'https://example.com/master.m3u8' };
         await module.onStart();
-        expect(spawn).not.toHaveBeenCalled();
+        expect(spawn).toHaveBeenCalledOnce(); // sidecar only — no runner
         expect(module.setHealth).toHaveBeenCalledWith('error', expect.stringContaining('build'));
         // The error must be the FINAL health — onStart must not paper over it with 'ok'.
         expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
-        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    });
+
+    it('reports an error when the sidecar script is missing (stale engine dist)', async () => {
+        const { module, spawn } = makeModule();
+        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
+        await module.onStart();
+        expect(spawn).not.toHaveBeenCalled();
+        expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
     });
 
     it('probes the playlist and publishes detected languages as fieldOptions', async () => {
@@ -175,9 +213,9 @@ describe('HlsPlayerModule.buildRunnerConfig', () => {
             subtitleLanguages: ['eng'],
             skipOnStall: true,
         };
-        const cfg = module.buildRunnerConfig('u', '239.255.0.1', 41000);
+        const cfg = module.buildRunnerConfig('u', 41000);
         expect(cfg).toMatchObject({
-            host: '239.255.0.1',
+            sink: { kind: 'unixfd', ingestPath: '/tmp/mr-bus-41000-ingest.sock' },
             capBitrateBps: 2_500_000,
             abrPreset: 'unstable',
             inlineAudio: ['eng', 'zul'],
@@ -189,43 +227,43 @@ describe('HlsPlayerModule.buildRunnerConfig', () => {
     it('treats 0 cap bitrate as no cap', () => {
         const { module } = makeModule();
         module.config = { capBitrate: 0 };
-        expect(module.buildRunnerConfig('u', 'h', 1).capBitrateBps).toBe(0);
+        expect(module.buildRunnerConfig('u', 1).capBitrateBps).toBe(0);
     });
 });
 
 describe('HlsPlayerModule.onLiveConfigUpdate', () => {
     it('pasting a URL live: probes for languages and launches the runner', async () => {
         const { module, spawn } = makeModule();
-        await module.onStart(); // idle — no URL yet, port reserved, no spawn
-        expect(spawn).not.toHaveBeenCalled();
+        await module.onStart(); // idle — no URL yet, sidecar up, no runner
+        expect(spawn).toHaveBeenCalledOnce();
 
         await module.onLiveConfigUpdate({ url: 'https://example.com/master.m3u8' });
         expect(module.setFieldOptions).toHaveBeenCalledWith('audio', expect.any(Array)); // probed
-        expect(spawn).toHaveBeenCalledOnce();
-        expect(runnerConfig(spawn).url).toBe('https://example.com/master.m3u8');
+        expect(spawn).toHaveBeenCalledTimes(2);
+        expect(runnerConfigAt(spawn, 1).url).toBe('https://example.com/master.m3u8');
     });
 
     it('relaunches with a new URL', async () => {
         const { module, spawn, kill } = makeModule();
         module.config = { url: 'https://example.com/a.m3u8' };
         await module.onStart();
-        expect(spawn).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledTimes(2); // sidecar + first runner
 
         await module.onLiveConfigUpdate({ url: 'https://example.com/b.m3u8' });
-        expect(kill).toHaveBeenCalledOnce();
-        expect(spawn).toHaveBeenCalledTimes(2);
-        expect(runnerConfigAt(spawn, 1).url).toBe('https://example.com/b.m3u8');
+        expect(kill).toHaveBeenCalledOnce(); // old runner only — sidecar survives
+        expect(spawn).toHaveBeenCalledTimes(3);
+        expect(runnerConfigAt(spawn, 2).url).toBe('https://example.com/b.m3u8');
     });
 
     it('does not respawn when the pushed URL is unchanged (manager config re-sync)', async () => {
         const { module, spawn, kill } = makeModule();
         module.config = { url: 'https://example.com/a.m3u8' };
         await module.onStart();
-        expect(spawn).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledTimes(2);
 
         await module.onLiveConfigUpdate({ url: 'https://example.com/a.m3u8' });
         expect(kill).not.toHaveBeenCalled();
-        expect(spawn).toHaveBeenCalledOnce();
+        expect(spawn).toHaveBeenCalledTimes(2);
     });
 
     it('clearing the URL kills the runner and returns to idle', async () => {
@@ -235,24 +273,25 @@ describe('HlsPlayerModule.onLiveConfigUpdate', () => {
 
         await module.onLiveConfigUpdate({ url: '' });
         expect(kill).toHaveBeenCalledOnce();
-        expect(spawn).toHaveBeenCalledOnce(); // no respawn
+        expect(spawn).toHaveBeenCalledTimes(2); // no respawn
         expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
         expect(module.setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('URL'));
     });
 
     it('serializes rapid URL changes — last update wins, runners never overlap', async () => {
         const { module, spawn, kill } = makeModule();
-        await module.onStart(); // idle
+        await module.onStart(); // idle — sidecar only
 
         // First URL probes slowly; without the update lock the second update
-        // would interleave and both could spawn onto the same multicast port.
+        // would interleave and both could spawn a runner onto the same
+        // ingest socket, corrupting the TS for every consumer.
         const p1 = module.onLiveConfigUpdate({ url: 'https://example.com/slow.m3u8' });
         const p2 = module.onLiveConfigUpdate({ url: 'https://example.com/b.m3u8' });
         await Promise.all([p1, p2]);
 
-        expect(spawn).toHaveBeenCalledTimes(2);
+        expect(spawn).toHaveBeenCalledTimes(3); // sidecar + two runners
         expect(kill).toHaveBeenCalledOnce(); // first runner killed before the second spawned
-        expect(runnerConfigAt(spawn, 1).url).toBe('https://example.com/b.m3u8');
+        expect(runnerConfigAt(spawn, 2).url).toBe('https://example.com/b.m3u8');
     });
 
     it('a failed probe clears the previous stream’s language options', async () => {
@@ -273,7 +312,7 @@ describe('HlsPlayerModule runner health', () => {
         module.config = { url: 'https://example.com/a.m3u8' };
         await module.onStart();
 
-        const proc = spawn.mock.results[0]!.value as EventEmitter;
+        const proc = spawn.mock.results[1]!.value as EventEmitter; // the hls runner
         proc.emit('restarting', 2, 6000);
         expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
         expect(module.setHealth).toHaveBeenCalledWith(
@@ -297,7 +336,7 @@ describe('HlsPlayerModule runner health', () => {
         const selfStop = vi.fn();
         module.on('selfStop', selfStop);
 
-        const proc = spawn.mock.results[0]!.value as EventEmitter;
+        const proc = spawn.mock.results[1]!.value as EventEmitter;
         proc.emit('stopped', 0, null);
         expect(selfStop).toHaveBeenCalledWith(expect.stringContaining('ended'));
     });
@@ -309,7 +348,7 @@ describe('HlsPlayerModule runner health', () => {
         const selfStop = vi.fn();
         module.on('selfStop', selfStop);
 
-        const proc = spawn.mock.results[0]!.value as EventEmitter & { destroyed: boolean };
+        const proc = spawn.mock.results[1]!.value as EventEmitter & { destroyed: boolean };
         proc.emit('stopped', null, 'SIGKILL'); // killed (relaunch/OOM)
         proc.emit('stopped', 1, null); // crash — restart policy handles it
         proc.destroyed = true;
@@ -318,48 +357,7 @@ describe('HlsPlayerModule runner health', () => {
     });
 });
 
-describe('HlsPlayerModule under unixfd transport', () => {
-    beforeEach(() => vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd'));
-    afterEach(() => vi.unstubAllEnvs());
-
-    /** spawn call 0 = the fan-out sidecar (always first, even idle). */
-    const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
-        proc: spawn.mock.results[0]!.value as EventEmitter & {
-            writeLine: ReturnType<typeof vi.fn>;
-        },
-        opts: spawn.mock.calls[0]![1] as {
-            command: string;
-            args: string[];
-            stdin?: boolean;
-            onStdout: (line: string) => void;
-        },
-    });
-
-    it('spawns the fan-out sidecar even while idle — consumers gate on its edge sockets', async () => {
-        const { module, spawn } = makeModule();
-        await module.onStart(); // no URL
-        expect(spawn).toHaveBeenCalledOnce();
-        const { opts } = sidecarOf(spawn);
-        expect(opts.command).toBe('python3');
-        expect(opts.args.join(' ')).toContain('--ingest /tmp/mr-bus-41000-ingest.sock');
-        expect(opts.args.join(' ')).toContain('video/mpegts');
-        expect(opts.stdin).toBe(true);
-        expect(module.getBusAttachTarget()).not.toBeNull();
-        expect(module.running).toBe(true);
-        expect(module.setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('URL'));
-    });
-
-    it('runner egress descriptor targets the sidecar ingest socket, not the multicast group', async () => {
-        const { module, spawn } = makeModule();
-        module.config = { url: 'https://example.com/master.m3u8' };
-        await module.onStart();
-        expect(spawn).toHaveBeenCalledTimes(2); // sidecar first, then the hls runner
-        expect(runnerConfigAt(spawn, 1).sink).toEqual({
-            kind: 'unixfd',
-            ingestPath: '/tmp/mr-bus-41000-ingest.sock',
-        });
-    });
-
+describe('HlsPlayerModule fan-out sidecar', () => {
     it('coordinator attach commands reach the sidecar stdin and replay on ready', async () => {
         const { module, spawn } = makeModule();
         await module.onStart();
@@ -405,15 +403,6 @@ describe('HlsPlayerModule under unixfd transport', () => {
         });
     });
 
-    it('reports an error when the sidecar script is missing (stale engine dist)', async () => {
-        const { module, spawn } = makeModule();
-        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
-        await module.onStart();
-        expect(spawn).not.toHaveBeenCalled();
-        expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
-        (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
-    });
-
     it('onStop drops the fan-out refs so a restart spawns a fresh sidecar', async () => {
         const { module, spawn } = makeModule();
         await module.onStart();
@@ -422,21 +411,6 @@ describe('HlsPlayerModule under unixfd transport', () => {
         expect(module.getBusAttachTarget()).toBeNull();
         await module.onStart();
         expect(spawn).toHaveBeenCalledTimes(2); // fresh sidecar on restart
-    });
-});
-
-describe('HlsPlayerModule under UDP transport (default)', () => {
-    it('spawns no sidecar and exposes no bus attach target', async () => {
-        const { module, spawn } = makeModule();
-        module.config = { url: 'https://example.com/master.m3u8' };
-        await module.onStart();
-        expect(spawn).toHaveBeenCalledOnce(); // just the hls runner
-        expect(module.getBusAttachTarget()).toBeNull();
-        expect(runnerConfig(spawn).sink).toEqual({
-            kind: 'udp',
-            host: '239.255.0.1',
-            port: 41000,
-        });
     });
 });
 

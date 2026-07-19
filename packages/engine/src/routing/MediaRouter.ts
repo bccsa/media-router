@@ -2,26 +2,23 @@ import type { ModulePort, StreamType, ChannelMapEntry } from '@media-router/shar
 import { createLogger } from '@media-router/shared-types';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
-import { UdpPortManager } from './UdpPortManager.js';
+import { BusChannelManager } from './BusChannelManager.js';
 import { PortRegistry } from './PortRegistry.js';
 import { ConnectionExecutor } from './ConnectionExecutor.js';
 import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
 import { PcmAudioExecutor } from './PcmAudioExecutor.js';
-import { MpegTsUdpExecutor } from './MpegTsUdpExecutor.js';
+import { MpegTsBusExecutor } from './MpegTsBusExecutor.js';
 import { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
-import { busTransport, busEdgeSocketPath } from '../plugins/udpHelpers.js';
+import { busEdgeSocketPath } from '../plugins/busHelpers.js';
 
 const log = createLogger('MediaRouter');
 
 /**
- * Stream types carried on the loopback bus (UDP multicast / unixfd fan-out).
+ * Stream types carried on the inter-module bus (unixfd fan-out).
  * `audio/302m` is SMPTE-302M PCM in a standard MPEG-TS — same wire format,
  * same executor, same per-edge sockets as `muxed/mpegts`.
  */
 const BUS_STREAM_TYPES: ReadonlySet<string> = new Set(['muxed/mpegts', 'audio/302m']);
-
-/** UDP multicast address for local MPEG-TS routing. */
-const MULTICAST_ADDR = '239.255.0.1';
 
 export interface Connection {
     id: string;
@@ -35,8 +32,9 @@ export interface Connection {
 
 export interface ActiveHandle {
     connectionId: string;
-    type: 'udp' | 'pw-link';
-    udpPort?: number;
+    type: 'bus' | 'pw-link';
+    /** Bus channel (allocated port number) for bus-carried connections. */
+    busChannel?: number;
     pwLinkIds?: number[];
     /** Port name pairs for pw-link teardown (fallback when link IDs are 0). */
     pwLinkPairs?: Array<{ src: string; dst: string }>;
@@ -48,7 +46,7 @@ export interface ActiveHandle {
  * Delegates to:
  * - PortRegistry — port registration and validation
  * - ConnectionExecutor — execution and teardown of audio/MPEG-TS links
- * - UdpPortManager — UDP port allocation for encoders
+ * - BusChannelManager — UDP port allocation for encoders
  */
 export class MediaRouter {
     private connections = new Map<string, Connection>();
@@ -57,7 +55,7 @@ export class MediaRouter {
     private moduleGetter: ((id: string) => ModuleInstance | undefined) | null = null;
 
     readonly portRegistry = new PortRegistry();
-    readonly udpPorts = new UdpPortManager();
+    readonly busChannels = new BusChannelManager();
     /**
      * Per-consumer unixfd bus fan-out. Constructed in `setDependencies` once the
      * module getter is available; null until then. No-op under UDP transport.
@@ -74,10 +72,10 @@ export class MediaRouter {
     // --- Setup ---
 
     /**
-     * Optional hook invoked after `MpegTsUdpExecutor` restarts a consumer
+     * Optional hook invoked after `MpegTsBusExecutor` restarts a consumer
      * module. Registered (lazily) by `ModuleLifecycle` once it has its
      * `ConnectionApplier` constructed, so the consumer's outgoing
-     * connections can be re-applied. See `MpegTsUdpExecutor.onConsumerRestarted`.
+     * connections can be re-applied. See `MpegTsBusExecutor.onConsumerRestarted`.
      */
     private consumerRestartCallback: ((id: string) => Promise<void>) | null = null;
 
@@ -93,8 +91,8 @@ export class MediaRouter {
         this.moduleGetter = moduleGetter;
         const connLabel = makeConnLabel(displayNameResolver);
         const resolveProducerPort = (moduleId: string, portId?: string) =>
-            this.udpPorts.get(this.udpPortKey(moduleId, portId)) ??
-            this.udpPorts.get(moduleId);
+            this.busChannels.get(this.channelKey(moduleId, portId)) ??
+            this.busChannels.get(moduleId);
         this.busFanout = new BusFanoutCoordinator(
             moduleGetter,
             resolveProducerPort,
@@ -105,13 +103,12 @@ export class MediaRouter {
         );
         // `audio/302m` (SMPTE 302M PCM-in-TS) is valid MPEG-TS on the wire —
         // it rides the exact same bus transport, so it aliases onto the SAME
-        // MpegTsUdpExecutor instance (see the register() doc for why not a
+        // MpegTsBusExecutor instance (see the register() doc for why not a
         // second instance).
         this.streamExecutors.register(
-            new MpegTsUdpExecutor(
+            new MpegTsBusExecutor(
                 moduleGetter,
                 resolveProducerPort,
-                MULTICAST_ADDR,
                 connLabel,
                 (id) => this.consumerRestartCallback?.(id) ?? Promise.resolve(),
                 this.busFanout,
@@ -280,7 +277,7 @@ export class MediaRouter {
      *
      * Scope is deliberately pw-link only: `muxed/mpegts` edges keep working
      * across a source restart (the multicast port is preserved by
-     * `UdpPortManager`) and re-executing them would needlessly bounce the sink.
+     * `BusChannelManager`) and re-executing them would needlessly bounce the sink.
      */
     async invalidateOutgoingPwLinks(moduleId: string): Promise<void> {
         const stale = this.getConnections().filter(
@@ -343,8 +340,8 @@ export class MediaRouter {
     // The UDP port pool is generic infrastructure used by any plugin that
     // needs an allocated multicast port for muxed/mpegts traffic — MPEG-TS
     // muxers/demuxers, SRT in/out, RIST in/out, video/audio encoders. Plugins
-    // call `assignUdpPort(instanceId[, portId])` during pipeline build and
-    // `releaseUdpPort` / `releaseAllUdpPortsFor` on teardown.
+    // call `assignBusChannel(instanceId[, portId])` during pipeline build and
+    // `releaseBusChannel` / `releaseAllBusChannelsFor` on teardown.
 
     /**
      * Owner key for the UDP port pool. When a module exposes multiple muxed/mpegts
@@ -357,33 +354,27 @@ export class MediaRouter {
      * naturally. If a future plugin id ever introduces colons, this key shape
      * will collide with the per-port form.
      */
-    private udpPortKey(moduleId: string, portId?: string): string {
+    private channelKey(moduleId: string, portId?: string): string {
         return portId ? `${moduleId}:${portId}` : moduleId;
     }
 
-    assignUdpPort(
-        moduleId: string,
-        portId?: string,
-    ): { host: string; port: number } | null {
-        const port = this.udpPorts.acquire(this.udpPortKey(moduleId, portId));
-        return port !== null ? { host: MULTICAST_ADDR, port } : null;
+    assignBusChannel(moduleId: string, portId?: string): { port: number } | null {
+        const port = this.busChannels.acquire(this.channelKey(moduleId, portId));
+        return port !== null ? { port } : null;
     }
 
-    getUdpEndpoint(
-        moduleId: string,
-        portId?: string,
-    ): { host: string; port: number } | undefined {
-        const port = this.udpPorts.get(this.udpPortKey(moduleId, portId));
-        return port !== undefined ? { host: MULTICAST_ADDR, port } : undefined;
+    getBusChannel(moduleId: string, portId?: string): { port: number } | undefined {
+        const port = this.busChannels.get(this.channelKey(moduleId, portId));
+        return port !== undefined ? { port } : undefined;
     }
 
-    releaseUdpPort(moduleId: string, portId?: string): void {
-        this.udpPorts.release(this.udpPortKey(moduleId, portId));
+    releaseBusChannel(moduleId: string, portId?: string): void {
+        this.busChannels.release(this.channelKey(moduleId, portId));
     }
 
     /** Release every UDP port owned by a module — primary slot plus any per-port sub-slots. */
-    releaseAllUdpPortsFor(moduleId: string): void {
-        this.udpPorts.releaseAllForOwner(moduleId);
+    releaseAllBusChannelsFor(moduleId: string): void {
+        this.busChannels.releaseAllForOwner(moduleId);
     }
 
     // --- Queries ---
@@ -402,12 +393,11 @@ export class MediaRouter {
         return this.portRegistry.getConnectionCount(moduleId, portId, this.connections.values());
     }
 
-    getModuleUdpSource(
+    getModuleBusSource(
         moduleId: string,
         sinkPortId?: string,
     ):
         | {
-              host: string;
               port: number;
               connectionId: string;
               channels?: number;
@@ -415,9 +405,9 @@ export class MediaRouter {
               sourcePortId: string;
               /** Bus stream type of the connection (muxed/mpegts or audio/302m). */
               streamType: StreamType;
-              /** Per-consumer edge socket under unixfd — the consumer reads its
-               *  own fan-out branch, not the shared channel. Undefined on UDP. */
-              socketPath?: string;
+              /** Per-consumer edge socket — the consumer reads its own fan-out
+               *  branch, not the shared channel. */
+              socketPath: string;
           }
         | undefined {
         for (const [connId, conn] of this.connections) {
@@ -425,13 +415,12 @@ export class MediaRouter {
             if (sinkPortId !== undefined && conn.sinkPortId !== sinkPortId) continue;
             // Prefer per-output port allocation, fall back to module-level (legacy single-port encoders)
             const port =
-                this.udpPorts.get(this.udpPortKey(conn.sourceModuleId, conn.sourcePortId)) ??
-                this.udpPorts.get(conn.sourceModuleId);
+                this.busChannels.get(this.channelKey(conn.sourceModuleId, conn.sourcePortId)) ??
+                this.busChannels.get(conn.sourceModuleId);
             if (port !== undefined) {
                 const srcModule = this.moduleGetter?.(conn.sourceModuleId);
                 const channels = srcModule?.config?.channels as number | undefined;
                 return {
-                    host: MULTICAST_ADDR,
                     port,
                     connectionId: connId,
                     channels,
@@ -446,12 +435,12 @@ export class MediaRouter {
     }
 
     /**
-     * Per-consumer edge socket for a connection under unixfd (undefined on UDP).
-     * The producer's `BusFanoutCoordinator` serves the identical path, so both
-     * ends derive it from (channel port, connection id) via `busEdgeSocketPath`.
+     * Per-consumer edge socket for a connection. The producer's
+     * `BusFanoutCoordinator` serves the identical path, so both ends derive it
+     * from (channel port, connection id) via `busEdgeSocketPath`.
      */
-    private edgeSocketPath(port: number, connectionId: string): string | undefined {
-        return busTransport() === 'unixfd' ? busEdgeSocketPath(port, connectionId) : undefined;
+    private edgeSocketPath(port: number, connectionId: string): string {
+        return busEdgeSocketPath(port, connectionId);
     }
 
     /**
@@ -465,39 +454,36 @@ export class MediaRouter {
 
     /** Resolve every connected bus-carried source (muxed/mpegts or audio/302m)
      *  feeding a given sink module. */
-    getModuleUdpSources(
+    getModuleBusSources(
         moduleId: string,
     ): Array<{
-        host: string;
         port: number;
         connectionId: string;
         sourceModuleId: string;
         sourcePortId: string;
         sinkPortId: string;
         streamType: StreamType;
-        socketPath?: string;
+        socketPath: string;
         /** Per-connection channel map (audio/pcm and audio/302m edges). */
         channelMap?: ChannelMapEntry[];
     }> {
         const out: Array<{
-            host: string;
             port: number;
             connectionId: string;
             sourceModuleId: string;
             sourcePortId: string;
             sinkPortId: string;
             streamType: StreamType;
-            socketPath?: string;
+            socketPath: string;
             channelMap?: ChannelMapEntry[];
         }> = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
             const port =
-                this.udpPorts.get(this.udpPortKey(conn.sourceModuleId, conn.sourcePortId)) ??
-                this.udpPorts.get(conn.sourceModuleId);
+                this.busChannels.get(this.channelKey(conn.sourceModuleId, conn.sourcePortId)) ??
+                this.busChannels.get(conn.sourceModuleId);
             if (port !== undefined) {
                 out.push({
-                    host: MULTICAST_ADDR,
                     port,
                     connectionId: connId,
                     sourceModuleId: conn.sourceModuleId,

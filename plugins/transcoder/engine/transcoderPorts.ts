@@ -77,10 +77,9 @@ export interface ResolvedEncode {
     sceneCut: number;
 }
 
-/** A rendition with its allocated UDP endpoint + resolved encoder settings. */
+/** A rendition with its allocated bus channel + resolved encoder settings. */
 export interface TranscoderOutput {
     portId: string;
-    host: string;
     port: number;
     rendition: Rendition;
     encode: ResolvedEncode;

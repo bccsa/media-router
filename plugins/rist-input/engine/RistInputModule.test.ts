@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RistInputModule } from './RistInputModule.js';
 
 function makeModule() {
@@ -6,8 +6,8 @@ function makeModule() {
     module.services = {
         instanceId: 'rist-in-1',
         mediaRouter: {
-            assignUdpPort: vi.fn(() => ({ host: '239.255.0.1', port: 41000 })),
-            getUdpEndpoint: vi.fn(() => ({ host: '239.255.0.1', port: 41000 })),
+            assignBusChannel: vi.fn(() => ({ port: 41000 })),
+            getBusChannel: vi.fn(() => ({ port: 41000 })),
         },
     };
     module.config = {};
@@ -22,21 +22,14 @@ function makeModule() {
 }
 
 describe('RistInputModule.buildPipeline', () => {
-    const savedTransport = process.env.MR_BUS_TRANSPORT;
-    afterEach(() => {
-        if (savedTransport === undefined) delete process.env.MR_BUS_TRANSPORT;
-        else process.env.MR_BUS_TRANSPORT = savedTransport;
-    });
-
     it('returns null when no bus port is assigned', () => {
         const { module } = makeModule();
-        module.services.mediaRouter.getUdpEndpoint = vi.fn(() => undefined);
+        module.services.mediaRouter.getBusChannel = vi.fn(() => undefined);
         module.log = { warn: vi.fn() };
         expect(module.buildPipeline({})).toBeNull();
     });
 
-    it('builds a live appsrc feeding the bus sink (udp transport)', () => {
-        delete process.env.MR_BUS_TRANSPORT;
+    it('builds a live appsrc feeding the bus fan-out tee', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({})!;
         expect(desc.pipeline).toContain(
@@ -44,16 +37,12 @@ describe('RistInputModule.buildPipeline', () => {
         );
         expect(desc.pipeline).toContain('caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188"');
         expect(desc.pipeline).toContain('leaky-type=downstream');
-        expect(desc.pipeline).toContain('udpsink name=usink host=239.255.0.1 port=41000');
-        expect(desc.restartOnError).toBe(true);
-    });
-
-    it('becomes a tee fan-out producer under the unixfd bus', () => {
-        process.env.MR_BUS_TRANSPORT = 'unixfd';
-        const { module } = makeModule();
-        const desc = module.buildPipeline({})!;
-        expect(desc.pipeline).toContain('tee name=busout_41000 allow-not-linked=true');
+        expect(desc.pipeline).toContain(
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'tee name=busout_41000 allow-not-linked=true',
+        );
         expect(desc.pipeline).not.toContain('udpsink');
+        expect(desc.restartOnError).toBe(true);
     });
 
     it('carries the librist receiver config with per-link rist:// URLs', () => {

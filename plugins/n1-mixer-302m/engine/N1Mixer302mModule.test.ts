@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { N1Mixer302mModule } from './N1Mixer302mModule.js';
 
 interface FakeSource {
-    host: string;
     port: number;
     connectionId: string;
     sourceModuleId: string;
@@ -14,7 +13,6 @@ interface FakeSource {
 
 function mkSource(sinkPortId: string, n = 0): FakeSource {
     return {
-        host: '239.255.0.1',
         port: 40100 + n,
         connectionId: `c-${sinkPortId}-${n}`,
         sourceModuleId: `src-${n}`,
@@ -28,19 +26,19 @@ function mkSource(sinkPortId: string, n = 0): FakeSource {
 function makeModule(sources: FakeSource[] = []) {
     const module = new N1Mixer302mModule() as any;
     let nextPort = 40200;
-    const assignUdpPort = vi.fn(() => ({ host: '239.255.0.1', port: nextPort++ }));
+    const assignBusChannel = vi.fn(() => ({ port: nextPort++ }));
     module.services = {
         instanceId: 'n1m-1',
         mediaRouter: {
-            getModuleUdpSources: vi.fn(() => sources),
-            assignUdpPort,
+            getModuleBusSources: vi.fn(() => sources),
+            assignBusChannel,
         },
     };
     module.config = {};
     const setHealth = vi.fn();
     module.setHealth = setHealth;
     module.setStatusData = vi.fn();
-    return { module, setHealth, assignUdpPort };
+    return { module, setHealth, assignBusChannel };
 }
 
 beforeEach(() => {
@@ -77,11 +75,11 @@ describe('N1Mixer302mModule.buildPipeline', () => {
     });
 
     it('allocates bus ports only for outputs with a contributing input', () => {
-        const { module, assignUdpPort } = makeModule([mkSource('in-0')]);
+        const { module, assignBusChannel } = makeModule([mkSource('in-0')]);
         const desc = module.buildPipeline({ pairCount: 2 });
         expect(desc).not.toBeNull();
-        expect(assignUdpPort).toHaveBeenCalledTimes(1);
-        expect(assignUdpPort).toHaveBeenCalledWith('n1m-1', 'out-1');
+        expect(assignBusChannel).toHaveBeenCalledTimes(1);
+        expect(assignBusChannel).toHaveBeenCalledWith('n1m-1', 'out-1');
         expect(desc!.pipeline).not.toContain('omix0');
         expect(desc!.pipeline).toContain('in0t. ! queue');
         expect(desc!.pipeline).toContain('! omix1.');
@@ -89,7 +87,7 @@ describe('N1Mixer302mModule.buildPipeline', () => {
 
     it('errors when the UDP port pool is exhausted', () => {
         const { module, setHealth } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
-        module.services.mediaRouter.assignUdpPort = vi.fn(() => null);
+        module.services.mediaRouter.assignBusChannel = vi.fn(() => null);
         expect(module.buildPipeline({ pairCount: 2 })).toBeNull();
         expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('port pool'));
     });
@@ -103,6 +101,8 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('audiomixer name=omix0 force-live=true');
         expect(desc!.pipeline).toContain('audiomixer name=omix1 force-live=true');
         expect(desc!.pipeline).toContain('avenc_s302m strict=experimental');
+        expect(desc!.pipeline).toContain('tee name=busout_40200 allow-not-linked=true');
+        expect(desc!.pipeline).toContain('tee name=busout_40201 allow-not-linked=true');
         expect(desc!.restartOnError).toBe(true);
         expect(module.setStatusData).toHaveBeenCalledWith('routing', {
             pairCount: 2,

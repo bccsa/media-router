@@ -125,7 +125,7 @@ export class TranscoderModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
 
-        const upstream = router.getModuleUdpSource(instanceId);
+        const upstream = router.getModuleBusSource(instanceId);
         if (!upstream) {
             this.setHealth('warning', 'No upstream MPEG-TS source connected');
             return null;
@@ -183,12 +183,12 @@ export class TranscoderModule extends GstPluginBase {
                 sceneCut: r.sceneCut ?? globalSceneCut,
             };
             const portId = outputPortId(i);
-            const ep = router.assignUdpPort(instanceId, portId);
+            const ep = router.assignBusChannel(instanceId, portId);
             if (!ep) {
                 this.setHealth('error', `UDP port pool exhausted while allocating ${portId}`);
                 return null;
             }
-            outputs.push({ portId, host: ep.host, port: ep.port, rendition: r, encode });
+            outputs.push({ portId, port: ep.port, rendition: r, encode });
         }
 
         const framerate = (config.framerate as number) ?? 50;
@@ -202,7 +202,7 @@ export class TranscoderModule extends GstPluginBase {
                 ? config.deinterlace
                 : 'auto';
         const result = buildPipeline({
-            input: { host: upstream.host, port: upstream.port, socketPath: upstream.socketPath },
+            input: { port: upstream.port, socketPath: upstream.socketPath },
             outputs,
             framerate,
             gopFrames,
@@ -215,7 +215,7 @@ export class TranscoderModule extends GstPluginBase {
 
         this.sinkNames = result.sinkNames;
         this.renditions = renditions;
-        this.setStatusData('input', { host: upstream.host, port: upstream.port });
+        this.setStatusData('input', { channel: upstream.port });
         // Headline codec/impl reflect what actually runs: the shared value when
         // every rendition resolves to the same one, else 'mixed'. Per-rendition
         // overrides are flagged inline in the renditions summary. (Derived from

@@ -2,7 +2,6 @@ import {
     DEFAULT_MPEGTS_ALIGNMENT,
     GstPluginBase,
     ThroughputPoller,
-    busTransport,
     busTeeName,
     capsStreamInfo,
     type PipelineDescription,
@@ -43,7 +42,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         publish: (sample) => this.publishThroughput(sample),
     });
     /** Bus egress element to poll for throughput, resolved at build time: the
-     *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
+     *  fan-out `tee` (busTeeName). */
     private busSinkName: string | undefined;
 
     // In-band stream-info state (KLV carousel), rebuilt on every pipeline
@@ -122,7 +121,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         // label from the stream array entry matching the sink port's index,
         // falling back to `sourceModuleId` from the connection record inside
         // the pipeline builder.
-        const allSources = router.getModuleUdpSources(instanceId);
+        const allSources = router.getModuleBusSources(instanceId);
         const muxedSources: UdpInputSource[] = allSources
             .filter(
                 (s) =>
@@ -133,7 +132,6 @@ export class MpegTsMuxerModule extends GstPluginBase {
                 const entry = entryForPort(config, s.sinkPortId);
                 return {
                     sinkPortId: s.sinkPortId,
-                    host: s.host,
                     port: s.port,
                     name: entry?.name,
                     sourceModuleId: s.sourceModuleId,
@@ -156,12 +154,12 @@ export class MpegTsMuxerModule extends GstPluginBase {
             return null;
         }
 
-        const endpoint = router.assignUdpPort(instanceId);
+        const endpoint = router.assignBusChannel(instanceId);
         if (!endpoint) {
             this.setHealth('error', 'No free UDP ports available');
             return null;
         }
-        this.busSinkName = busTransport() === 'unixfd' ? busTeeName(endpoint.port) : 'usink';
+        this.busSinkName = busTeeName(endpoint.port);
 
         const alignment = (config.alignment as number) ?? DEFAULT_MPEGTS_ALIGNMENT;
         // Stability-vs-latency is a per-use-case operator call, not a
@@ -185,7 +183,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         this.hasStreamInfo = result.hasStreamInfo;
         this.discovered.clear();
 
-        this.setStatusData('udp', { host: endpoint.host, port: endpoint.port });
+        this.setStatusData('bus', { channel: endpoint.port });
         this.setStatusData('inputs', { video: videoCount, audio: audioCount });
 
         return {
@@ -232,7 +230,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         const router = this.services?.mediaRouter;
         const instanceId = this.services?.instanceId ?? '';
         const bySinkPort = new Map(
-            (router?.getModuleUdpSources(instanceId) ?? []).map((s) => [
+            (router?.getModuleBusSources(instanceId) ?? []).map((s) => [
                 s.sinkPortId,
                 s.sourceModuleId,
             ]),

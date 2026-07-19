@@ -1,14 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AudioInput302mModule } from './AudioInput302mModule.js';
 
-function makeModule(opts: { udpPort?: number | null } = {}) {
+function makeModule(opts: { busPort?: number | null } = {}) {
     const module = new AudioInput302mModule() as any;
     module.services = {
         instanceId: 'ain-1',
         mediaRouter: {
-            assignUdpPort: vi.fn(() =>
-                opts.udpPort === null ? null : { host: '239.255.0.1', port: 41000 },
-            ),
+            assignBusChannel: vi.fn(() => (opts.busPort === null ? null : { port: 41000 })),
         },
     };
     module.config = {};
@@ -37,7 +35,11 @@ describe('AudioInput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain(
             'audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7',
         );
+        expect(desc!.pipeline).toContain(
+            'mpegtsmux latency=0 alignment=7 ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_41000 allow-not-linked=true',
+        );
         expect(desc!.restartOnError).toBe(true);
+        expect(module.setStatusData).toHaveBeenCalledWith('bus', { channel: 41000 });
     });
 
     it('clamps srcBufferMs to the 40ms floor', () => {
@@ -46,8 +48,8 @@ describe('AudioInput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('buffer-time=40000');
     });
 
-    it('health error when the UDP port pool is exhausted', () => {
-        const { module, setHealth } = makeModule({ udpPort: null });
+    it('health error when the bus channel pool is exhausted', () => {
+        const { module, setHealth } = makeModule({ busPort: null });
         expect(module.buildPipeline({ device: 'alsa_input.usb-mic' })).toBeNull();
         expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('No free UDP'));
     });

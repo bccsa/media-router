@@ -101,11 +101,11 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | Building... | Start from | Why |
 |---|---|---|
 | A GStreamer pipeline that consumes/produces audio | `audio-decoder` or `audio-encoder` | Simple `buildPipeline` + UDP I/O + stats polling |
-| A network ingress/egress plugin | `srt-input` / `srt-output` | UDP-port allocation, per-caller stats, badges |
+| A network ingress/egress plugin | `srt-input` / `srt-output` | Bus-channel allocation, per-caller stats, badges |
 | Plain MPEG-TS over IP (UDP/RTP) to/from a real NIC | `mpegts-ip-input` / `mpegts-ip-output` | `buildNetUdpSrc`/`buildNetUdpSink` (interface + TTL, full 224.–239. multicast), raw/RTP encapsulation, `tee` fan-out, `trackThroughput` bitrate |
 | A plugin that owns a hardware device (audio source/sink, V4L2, DRM) | `audio-input` / `audio-output` | `static registerServices` for device provider, watchdog hooks |
 | A CLI-tool wrapper (returns `null` from `buildPipeline`) | `rist-input` / `rist-output` | `ProcessManager` lifecycle, stderr parsing |
-| A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, publishes paced MPEG-TS on the bus (multicast under UDP, `unixfd-fanout.py` sidecar under unixfd), probes the source and reports `fieldOptions` |
+| A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, publishes paced MPEG-TS on the bus via the `unixfd-fanout.py` sidecar, probes the source and reports `fieldOptions` |
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
 | A multi-port plugin with variable port count | `ts-splitter` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
@@ -201,10 +201,10 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 | Type | Routing | Description |
 |------|---------|-------------|
 | `audio/pcm` | PipeWire loopback | Raw audio between PipeWire nodes |
-| `audio/302m` | Bus (unixfd/UDP) | SMPTE-302M PCM-in-MPEG-TS — timeline-preserving audio (valid TS on the wire) |
+| `audio/302m` | Bus (unixfd) | SMPTE-302M PCM-in-MPEG-TS — timeline-preserving audio (valid TS on the wire) |
 | `audio/opus` | Reserved | Encoded Opus audio |
 | `audio/aac` | Reserved | Encoded AAC audio |
-| `muxed/mpegts` | UDP multicast on loopback | MPEG-TS container (audio, video, subs) |
+| `muxed/mpegts` | Bus (unixfd) | MPEG-TS container (audio, video, subs) |
 | `video/raw` | Reserved | Raw video frames |
 | `video/h264` | Reserved | Encoded H.264 video |
 | `video/h265` | Reserved | Encoded H.265/HEVC video |
@@ -222,7 +222,7 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 - Cross-type connections are otherwise blocked (use encoder/decoder to bridge)
 - `maxConnections` is enforced on both source and target ports
 - An INPUT port with `maxConnections: -1` and `streamType: audio/302m` can receive N
-  sources — consume them with `getModuleUdpSources(id).filter(s => s.sinkPortId === ...)`
+  sources — consume them with `getModuleBusSources(id).filter(s => s.sinkPortId === ...)`
   and feed `buildAudioMixInput()` (see Engine Helpers) for implicit timeline-true mixing
 - Per-connection **channel maps** work on `audio/302m` edges like on `audio/pcm` ones
   (same `ChannelMapEntry[]`, same context menu): the map renders as an
@@ -798,12 +798,12 @@ SMPTE-302M (PCM-in-MPEG-TS) is the timeline-preserving audio transport between m
 - `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs? })` —
   N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
   a dark input silence-fills instead of stalling the mix). Returns `{ fragment, mixerName }`;
-  continue the chain from `${mixerName}. ! …`. Feed it `getModuleUdpSources(id)` entries
+  continue the chain from `${mixerName}. ! …`. Feed it `getModuleBusSources(id)` entries
   filtered by your input port. PTS-preserving by contract — never add `pulsesrc`,
   `do-timestamp`, or `tsparse set-timestamps` around it.
 - `build302mEncodeBranch({ format? })` — PCM → 302M-in-TS encode tail
   (`S32LE`/48 kHz/stereo, `avenc_s302m strict=experimental` — ffmpeg gates the encoder;
-  the bitstream is standard). Caller appends `buildUdpSink(...)`.
+  the bitstream is standard). Caller appends `buildBusSink(...)`.
 - `gstElementSupportsCaps(element, mediaType)` — caps-level capability probe. 302M in
   `mpegtsmux`/`tsdemux` needs **gst ≥ 1.26**; gate pcm features on
   `gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m')` in `initManifest` (real
@@ -1188,7 +1188,7 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 Always probe the stream — this detects both codec and channel count regardless of source (local encoder, SRT, RIST, external):
 
 ```typescript
-const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
 if (udpSource) {
     this.probeResult = await probeMpegTsStream(udpSource.host, udpSource.port, 3000);
     // probeResult.codec: 'opus' | 'aac' | 'mp2' | 'ac3' | 'unknown'
@@ -1252,68 +1252,60 @@ Volume is in percentage (0-500+).
 
 ---
 
-## UDP Multicast (Generic Plugin Infrastructure)
+## The Inter-Module Bus (Generic Plugin Infrastructure)
 
-Inter-module routing of `muxed/mpegts` streams uses UDP multicast on loopback (`239.255.0.x`, ports 40000-50000). `MediaRouter` exposes a generic UDP-port pool used by **any** plugin that produces or consumes a muxed/mpegts stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
+Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime, and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
 | Method on `services.mediaRouter` | Purpose |
 |---|---|
-| `assignUdpPort(instanceId, portId?)` | Acquire a port for this module (or a specific output port for multi-port plugins). Returns `{ host, port }` or `null` if the pool is exhausted. |
-| `getUdpEndpoint(instanceId, portId?)` | Re-read a previously-assigned endpoint (e.g. when the same plugin builds the pipeline a second time). |
-| `releaseUdpPort(instanceId, portId?)` | Release one specific slot. |
-| `releaseAllUdpPortsFor(instanceId)` | Release the bare slot **and** every per-port sub-slot. Called automatically on module stop. |
-| `getModuleUdpSource(sinkModuleId, sinkPortId?)` | From the *consumer* side: find the upstream encoder's port for a given input port. Returns `undefined` if no connection. |
+| `assignBusChannel(instanceId, portId?)` | Acquire a channel for this module (or a specific output port for multi-port plugins). Returns `{ port }` or `null` if the pool is exhausted. |
+| `getBusChannel(instanceId, portId?)` | Re-read a previously-assigned channel (e.g. when the same plugin builds the pipeline a second time). |
+| `releaseBusChannel(instanceId, portId?)` | Release one specific slot. |
+| `releaseAllBusChannelsFor(instanceId)` | Release the bare slot **and** every per-port sub-slot. Called automatically on module stop. |
+| `getModuleBusSource(sinkModuleId, sinkPortId?)` | From the *consumer* side: find the upstream producer's channel + this consumer's edge `socketPath` for a given input port. Returns `undefined` if no connection. |
 
 ### Producer pattern (encoder, muxer, SRT-in re-broadcasting…)
 
 ```typescript
+import { buildBusSink } from '@media-router/engine';
+
 buildPipeline(config: Record<string, unknown>): PipelineDescription {
     const instanceId = this.services?.instanceId ?? '';
-    const endpoint = this.services?.mediaRouter?.assignUdpPort(instanceId);
-    const udpSink = endpoint
-        ? `udpsink host=${endpoint.host} port=${endpoint.port} multicast-iface=lo auto-multicast=true sync=false`
-        : 'fakesink sync=false';
+    const endpoint = this.services?.mediaRouter?.assignBusChannel(instanceId);
+    const busSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink sync=false';
 
-    return { pipeline: `... ! mpegtsmux latency=0 alignment=7 ! ${udpSink}` };
+    return { pipeline: `... ! mpegtsmux latency=0 alignment=7 ! ${busSink}` };
 }
 ```
 
 For per-output-port allocation (e.g. MPEG-TS demuxer with N outputs), pass a `portId`:
 
 ```typescript
-const ep = router.assignUdpPort(instanceId, 'audio-0');
+const ep = router.assignBusChannel(instanceId, 'audio-0');
 ```
 
-### Producer pattern from Node (no GStreamer): paced sinks + the unixfd fan-out sidecar
+### Producer pattern from Node (no GStreamer): paced sink + the unixfd fan-out sidecar
 
-When the MPEG-TS bytes originate in Node (not in a GStreamer pipeline — e.g. hls-player's hls-pipe runner), the module must publish on **both** bus transports. A Node source must NEVER write straight to the multicast group and call it done — under `MR_BUS_TRANSPORT=unixfd` nobody is listening there and every consumer blocks forever in the socket gate.
-
-**The data path** is a paced sink from `@media-router/engine` (both share `PacedTsSink`'s pacing core: ~60 s read-ahead with back-pressuring `write`, 2 s pre-fill, stall re-anchor — so whole-segment bursts never overrun the receiver):
-
-- UDP transport → `PacedUdpTsSink(port, host)`: 1316-byte datagrams onto the loopback multicast bus (the `udpsrc` defaults in `buildUdpSrc` are tuned around it).
-- unixfd transport → `PacedUnixStreamTsSink(busIngestSocketPath(port))`: raw TS into the module's fan-out sidecar (below).
+When the MPEG-TS bytes originate in Node (not in a GStreamer pipeline — e.g. hls-player's hls-pipe runner), the module publishes through the fan-out sidecar's ingest socket. **The data path** is `PacedUnixStreamTsSink` from `@media-router/engine` (`PacedTsSink` pacing core: ~60 s read-ahead with back-pressuring `write`, 2 s pre-fill, stall re-anchor — so whole-segment bursts never overrun the sidecar's per-consumer queues):
 
 ```typescript
-import { PacedUdpTsSink, PacedUnixStreamTsSink, busTransport, busIngestSocketPath } from '@media-router/engine';
+import { PacedUnixStreamTsSink, busIngestSocketPath } from '@media-router/engine';
 
-const sink =
-    busTransport() === 'unixfd'
-        ? new PacedUnixStreamTsSink(busIngestSocketPath(endpoint.port))
-        : new PacedUdpTsSink(endpoint.port, endpoint.host); // iface defaults to loopback
+const sink = new PacedUnixStreamTsSink(busIngestSocketPath(endpoint.port));
 await sink.write(tsBytes, segmentDurationSec); // blocks only when the read-ahead buffer is full
 await sink.end(); // flush whole packets at media rate, then close
 ```
 
-Pass the `host`/`port` from `assignUdpPort` / `getUdpEndpoint` — never hardcode the multicast group. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
+Use the `port` from `assignBusChannel` / `getBusChannel` — never hardcode socket paths. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
 
 **The unixfd fan-out** is `unixfd-fanout.py` (engine `dist/child-process/`), a pure-stdlib python3 sidecar that stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
 
 ```typescript
 getBusAttachTarget(): BusAttachTarget | null {
-    return this.fanoutController; // null under UDP — the coordinator is a no-op there
+    return this.fanoutController;
 }
 
-// onStart (unixfd only): spawn the sidecar and bridge its stdio to the controller
+// onStart: spawn the sidecar and bridge its stdio to the controller
 this.fanoutController = new UnixFdFanoutController(
     () => this.fanout,
     () => this.services?.mediaRouter?.onProducerPlaying(this.services.instanceId), // reattach on every sidecar ready
@@ -1336,13 +1328,13 @@ Consumers return `null` from `buildPipeline` when no upstream is connected. The 
 
 ```typescript
 buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
-    const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-    if (!udpSource) {
+    const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+    if (!source) {
         this.setHealth('warning', 'No encoder connected');
         return null;
     }
-    const udpSrc = `udpsrc multicast-group=${udpSource.host} port=${udpSource.port} multicast-iface=lo auto-multicast=true`;
-    return { pipeline: `${udpSrc} ! tsdemux latency=0 ! opusdec ! ...` };
+    const busSrc = buildBusSrc({ port: source.port, socketPath: source.socketPath });
+    return { pipeline: `${busSrc} ! tsdemux latency=0 ! opusdec ! ...` };
 }
 ```
 
@@ -1353,7 +1345,7 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 | Property | Type | Description |
 |----------|------|-------------|
 | `pipeWire` | `PipeWireManager` | Create null-sinks, set volume, load loopbacks, list source/sink devices |
-| `mediaRouter` | `MediaRouter` | Assign/release UDP ports (`assignUdpPort` / `releaseUdpPort`), look up upstream UDP sources (`getModuleUdpSource`) |
+| `mediaRouter` | `MediaRouter` | Assign/release bus channels (`assignBusChannel` / `releaseBusChannel`), look up upstream bus sources (`getModuleBusSource`) |
 | `processManager` | `ProcessManager` | Spawn and manage external CLI tools (auto-killed on module stop — see below) |
 | `deviceProviders` | `DeviceProviderRegistry` | Register custom device types via `services.deviceProviders.register(...)`; prefer `registerPipeWireDeviceProvider` for PipeWire source/sink helpers |
 | `instanceId` | `string` | Unique module instance ID |
@@ -1455,7 +1447,7 @@ For processes that aren't the module's health-defining producer (auxiliary tools
 | 8080 | Manager HTTP + Socket.IO |
 | 8081 | Local Control Panel (Socket.IO) |
 | 8082 | Profile Manager |
-| 40000-50000 | UDP multicast (MPEG-TS inter-module routing) |
+| 40000-50000 | Bus channel ids (name unixfd socket paths — no sockets bound) |
 
 ---
 
@@ -1471,10 +1463,10 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | Audio Decoder | `plugins/audio-decoder/` | Stream probing (`probeMpegTsStream`), idle when no upstream connected (`null` from `buildPipeline`). **Requires `ts-splitter` to be installed** — that plugin's `static registerServices` provides the opus/aac/mp2/ac3 codec classifiers `probeMpegTsStream` consults. Without it, `probeResult.codec` always reports `'unknown'` and the decoder silently falls back to `decodebin`. |
 | SRT Input / Output | `plugins/srt-input/`, `plugins/srt-output/` | Per-caller stat polling, dynamic `statusSections` for multi-peer state, badges, `restartBackoffMs` tuning |
 | RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | **No GStreamer pipeline** — `ProcessManager` driving `ristreceiver` / `ristsender`, stderr-JSON stat parsing |
-| MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignUdpPort(instanceId, portId)`, `linkOnPadAdded` rules |
+| MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignBusChannel(instanceId, portId)`, `linkOnPadAdded` rules |
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
-| N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one force-live `audiomixer` per output (i ≠ o matrix), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignUdpPort` only for outputs with contributors |
+| N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one force-live `audiomixer` per output (i ≠ o matrix), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignBusChannel` only for outputs with contributors |
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates |
-| Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignUdpPort(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |
+| Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignBusChannel(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |

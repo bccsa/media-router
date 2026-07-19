@@ -5,7 +5,6 @@ import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 function outputs(...codecs: Array<'opus' | 'aac' | 'pcm'>): AudioTranscoderOutput[] {
     return codecs.map((codec, i) => ({
         portId: `out-${i}`,
-        host: '239.255.0.1',
         port: 41000 + i,
         rendition: { name: '', codec, bitrate: 128 },
     }));
@@ -13,8 +12,8 @@ function outputs(...codecs: Array<'opus' | 'aac' | 'pcm'>): AudioTranscoderOutpu
 
 const MPEGTS_FE = {
     mode: 'mpegts' as const,
-    host: '239.255.0.1',
     port: 40001,
+    socketPath: '/tmp/mr-bus-40001-abc123.sock',
     probedCodec: 'aac',
     bufferMs: 75,
 };
@@ -40,7 +39,9 @@ describe('buildPipeline (audio transcoder)', () => {
             volume: 1,
             tsAlignment: 7,
         })!;
-        expect(r.pipeline).toContain('tsdemux latency=0');
+        expect(r.pipeline).toContain(
+            'unixfdsrc socket-path=/tmp/mr-bus-40001-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0 ! tsdemux latency=0',
+        );
         // bufferMs honoured directly — no 300ms floor (no real-time sink here).
         expect(r.pipeline).toContain('queue leaky=0 max-size-time=75000000');
         expect(r.pipeline).toContain('aacparse ! avdec_aac');
@@ -63,8 +64,8 @@ describe('buildPipeline (audio transcoder)', () => {
             frontEnd: {
                 mode: 'mix',
                 sources: [
-                    { host: '239.255.0.1', port: 40010, connectionId: 'c1' },
-                    { host: '239.255.0.1', port: 40011, connectionId: 'c2' },
+                    { port: 40010, socketPath: '/tmp/mr-bus-40010-c1.sock', connectionId: 'c1' },
+                    { port: 40011, socketPath: '/tmp/mr-bus-40011-c2.sock', connectionId: 'c2' },
                 ],
                 latencyMs: 200,
             },
@@ -128,7 +129,26 @@ describe('buildPipeline (audio transcoder)', () => {
             tsAlignment: 7,
         })!;
         expect(r.sinks.map((s) => s.renditionIndex)).toEqual([0, 1, 2]);
-        expect(r.sinks).toHaveLength(3);
+        expect(r.sinks.map((s) => s.sinkName)).toEqual([
+            'busout_41000',
+            'busout_41001',
+            'busout_41002',
+        ]);
+    });
+
+    it('every rendition ends in its own pinned-caps bus fan-out tee (no udpsink)', () => {
+        const r = buildPipeline({
+            frontEnd: MPEGTS_FE,
+            outputs: outputs('opus', 'aac'),
+            channels: 2,
+            volume: 1,
+            tsAlignment: 7,
+        })!;
+        expect(r.pipeline).toContain(
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_41000 allow-not-linked=true',
+        );
+        expect(r.pipeline).toContain('tee name=busout_41001 allow-not-linked=true');
+        expect(r.pipeline).not.toContain('udpsink');
     });
 
     it('is PTS-preserving on BOTH front-ends: no pulsesrc / do-timestamp / tsparse re-stamping', () => {
@@ -136,7 +156,9 @@ describe('buildPipeline (audio transcoder)', () => {
             MPEGTS_FE,
             {
                 mode: 'mix' as const,
-                sources: [{ host: '239.255.0.1', port: 40010, connectionId: 'c1' }],
+                sources: [
+                    { port: 40010, socketPath: '/tmp/mr-bus-40010-c1.sock', connectionId: 'c1' },
+                ],
                 latencyMs: 200,
             },
         ]) {

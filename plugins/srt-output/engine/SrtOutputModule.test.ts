@@ -5,13 +5,16 @@ import { SrtOutputModule } from './SrtOutputModule.js';
 // and is covered by srtHelpers.test.ts. These tests focus on what the module
 // still owns directly: pipeline construction and the static status fields.
 
-function makeModule(opts: { upstream?: { host: string; port: number } | null; instanceId?: string } = {}) {
+function makeModule(opts: { upstream?: { port?: number; socketPath?: string } | null; instanceId?: string } = {}) {
     const module = new SrtOutputModule() as any;
     const upstream =
         opts.upstream === null
             ? null
-            : { host: opts.upstream?.host ?? '239.255.0.1', port: opts.upstream?.port ?? 41000 };
-    const getModuleUdpSource = vi.fn(() =>
+            : {
+                  port: opts.upstream?.port ?? 41000,
+                  socketPath: opts.upstream?.socketPath ?? '/tmp/mr-bus-41000-abc123.sock',
+              };
+    const getModuleBusSource = vi.fn(() =>
         upstream === null
             ? undefined
             : {
@@ -23,7 +26,7 @@ function makeModule(opts: { upstream?: { host: string; port: number } | null; in
     );
     module.services = {
         instanceId: opts.instanceId ?? 'srt-out-1',
-        mediaRouter: { getModuleUdpSource },
+        mediaRouter: { getModuleBusSource },
     };
     module.config = {};
     module.log = { info: vi.fn(), warn: vi.fn() };
@@ -32,7 +35,7 @@ function makeModule(opts: { upstream?: { host: string; port: number } | null; in
     const setBadge = vi.fn();
     module.setStatusData = setStatusData;
     module.setBadge = setBadge;
-    return { module, getModuleUdpSource, setStatusData, setBadge };
+    return { module, getModuleBusSource, setStatusData, setBadge };
 }
 
 describe('SrtOutputModule.buildPipeline', () => {
@@ -48,8 +51,11 @@ describe('SrtOutputModule.buildPipeline', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('udpsrc');
-        expect(desc!.pipeline).toContain('port=41000');
+        expect(desc!.pipeline).toContain(
+            'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock' +
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+        );
+        expect(desc!.pipeline).not.toContain('udpsrc');
         // Passthrough by default — no TS re-parsing (safest for lossy live streams).
         expect(desc!.pipeline).not.toContain('tsparse');
         expect(desc!.pipeline).toContain('srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"');

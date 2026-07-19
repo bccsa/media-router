@@ -1,6 +1,6 @@
 /**
  * Pipeline/config builder for the TS-splitter — pure (no module instance), so
- * the exact gst strings are unit-testable under both bus transports.
+ * the exact gst strings are unit-testable.
  *
  * Shape: `<bus src> ! appsink name=splitin` (input chain) plus one
  * `appsrc ! <bus sink>` top-level chain per PID output. The runner's tsSplit
@@ -8,11 +8,10 @@
  * (ts_split.py) and pushes each PID's SPTS into its appsrc — packet-level
  * pass-through, output cadence = ingest cadence.
  *
- * All transport variance lives in buildUdpSrc/buildUdpSink: under unixfd the
- * input is the consumer's edge socket and each output ends at the fan-out tee
- * (`busout_<port>`); under UDP they are plain udpsrc/udpsink.
+ * The input is the consumer's edge socket (`buildBusSrc`) and each output
+ * ends at the fan-out tee (`busout_<port>`, `buildBusSink`).
  */
-import { buildUdpSink, buildUdpSrc, busTransport, type TsSplitRunnerConfig } from '@media-router/engine';
+import { buildBusSink, buildBusSrc, type TsSplitRunnerConfig } from '@media-router/engine';
 
 export const INPUT_APPSINK = 'splitin';
 
@@ -21,8 +20,8 @@ export function pidAppsrcName(pid: number): string {
 }
 
 export interface SplitterPipelineInput {
-    input: { host: string; port: number; socketPath?: string };
-    outputs: Array<{ pid: number; streamType?: number; host: string; port: number }>;
+    input: { port: number; socketPath?: string };
+    outputs: Array<{ pid: number; streamType?: number; port: number }>;
     tsId?: number;
 }
 
@@ -30,41 +29,27 @@ export function buildSplitterPipeline(input: SplitterPipelineInput): {
     pipeline: string;
     tsSplit: TsSplitRunnerConfig;
 } {
-    const src = buildUdpSrc({
-        host: input.input.host,
+    // buildBusSrc already ends in a 5 s leaky ingress queue — it decouples
+    // the socket-drain thread from the python routing callback, so a stall
+    // sheds THERE (the bus's universal drain contract).
+    const src = buildBusSrc({
         port: input.input.port,
         socketPath: input.input.socketPath,
         name: 'netin',
     });
-    // Under unixfd buildUdpSrc already ends in a 5 s leaky ingress queue.
-    // Under UDP add one explicitly: it decouples udpsrc's socket-drain thread
-    // from the python routing callback, so a stall sheds HERE (the bus's
-    // universal drain contract) instead of overflowing the kernel rcvbuf.
-    const ingressQueue =
-        busTransport() === 'unixfd'
-            ? ''
-            : ' ! queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0';
-    const chains = [`${src}${ingressQueue} ! appsink name=${INPUT_APPSINK}`];
+    const chains = [`${src} ! appsink name=${INPUT_APPSINK}`];
 
     for (const out of input.outputs) {
         // Same producer shape as rist-input's appsrc: live (no preroll —
-        // satisfies the runner's playing watchdog), arrival-timestamped like
-        // udpsrc, bounded+leaky so a stalled output sheds its own buffers
-        // instead of growing memory or back-pressuring the router callback.
-        // async=false on the UDP sink: appsrc's is-live does NOT exempt the
-        // branch from preroll (verified gst 1.22 — the pipeline wedges in
-        // PAUSED until data flows), and these outputs may legitimately be
-        // dark. Ignored under unixfd (the chain ends at the fan-out tee).
+        // satisfies the runner's playing watchdog), arrival-timestamped,
+        // bounded+leaky so a stalled output sheds its own buffers instead of
+        // growing memory or back-pressuring the router callback. The chain
+        // ends at the fan-out tee, so no preroll concern on dark outputs.
         chains.push(
             `appsrc name=${pidAppsrcName(out.pid)} is-live=true do-timestamp=true format=time ` +
                 'caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ' +
                 'leaky-type=downstream max-bytes=4194304 ! ' +
-                buildUdpSink({
-                    host: out.host,
-                    port: out.port,
-                    name: `usink_0x${out.pid.toString(16)}`,
-                    async: false,
-                }),
+                buildBusSink(out.port),
         );
     }
 

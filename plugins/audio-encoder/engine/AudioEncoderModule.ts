@@ -2,8 +2,7 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
-    buildUdpSink,
-    busTransport,
+    buildBusSink,
     busTeeName,
     gstInspectMaxChannels,
     type PipelineDescription,
@@ -33,8 +32,8 @@ export class AudioEncoderModule extends GstPluginBase {
 
     protected liveUpdatableParams = ['bitrate', 'volume', 'audioEnabled'];
 
-    /** Bus egress element to poll for throughput, resolved at build time: the
-     *  fan-out `tee` (busTeeName) under unixfd, the `usink` udpsink under UDP. */
+    /** Bus egress element to poll for throughput, resolved at build time:
+     *  the fan-out `tee` (busTeeName). */
     private busSinkName: string | undefined;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
@@ -89,7 +88,7 @@ export class AudioEncoderModule extends GstPluginBase {
 
     private updateStatusData(): void {
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
+        const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
         this.setStatusData('encoder', {
             codec: (this.config.codec as string) ?? 'opus',
             bitrate: (this.config.bitrate as number) ?? 128,
@@ -97,9 +96,8 @@ export class AudioEncoderModule extends GstPluginBase {
             sampleRate: (this.config.sampleRate as number) ?? 48000,
             channels: (this.config.channels as number) ?? 2,
         });
-        this.setStatusData('udp', {
-            host: endpoint?.host ?? '—',
-            port: endpoint?.port ?? 0,
+        this.setStatusData('bus', {
+            channel: endpoint?.port ?? 0,
         });
     }
 
@@ -163,17 +161,11 @@ export class AudioEncoderModule extends GstPluginBase {
         // and added the same queue in commit 767f531).
         const encoderQueue = 'queue max-size-time=50000000 leaky=2 flush-on-eos=true';
 
-        // Encoder always gets a UDP multicast port assigned at startup.
+        // Encoder always gets a bus channel assigned at startup.
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.assignUdpPort(instanceId);
-        this.busSinkName = endpoint
-            ? busTransport() === 'unixfd'
-                ? busTeeName(endpoint.port)
-                : 'usink'
-            : undefined;
-        const udpSink = endpoint
-            ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
-            : 'fakesink name=usink sync=false';
+        const endpoint = this.services?.mediaRouter?.assignBusChannel(instanceId);
+        this.busSinkName = endpoint ? busTeeName(endpoint.port) : undefined;
+        const udpSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
 
         const tsAlignment = (config.tsAlignment as number) ?? 7;
         let tail: string;

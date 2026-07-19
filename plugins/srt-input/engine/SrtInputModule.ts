@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSink,
+    buildBusSink,
     SrtStatPoller,
     type PipelineDescription,
     type SrtStatPollerHost,
@@ -41,7 +41,7 @@ export class SrtInputModule extends GstPluginBase {
     async onStart(): Promise<void> {
         // SRT input gets a UDP port for local multicast output (same as encoders)
         if (this.services?.mediaRouter) {
-            this.services.mediaRouter.assignUdpPort(this.services.instanceId);
+            this.services.mediaRouter.assignBusChannel(this.services.instanceId);
         }
 
         await super.onStart();
@@ -95,7 +95,7 @@ export class SrtInputModule extends GstPluginBase {
         uri += '?' + params.join('&');
 
         // Get assigned UDP port for local multicast output
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(this.services.instanceId);
+        const endpoint = this.services?.mediaRouter?.getBusChannel(this.services.instanceId);
         const udpPort = endpoint?.port;
         if (!udpPort) {
             this.log.warn('No UDP port assigned — cannot output MPEG-TS');
@@ -112,7 +112,7 @@ export class SrtInputModule extends GstPluginBase {
         const pipeline = [
             `srtsrc name=src uri="${uri}" auto-reconnect=false`,
             'queue leaky=2 max-size-time=100000000 flush-on-eos=true',
-            buildUdpSink({ host: '239.255.0.1', port: udpPort }),
+            buildBusSink(udpPort),
         ].join(' ! ');
 
         return {

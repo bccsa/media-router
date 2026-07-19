@@ -72,7 +72,7 @@ export class N1Mixer302mModule extends GstPluginBase {
         // Group connected sources by input index; clamp guards stale edges in
         // the window after a pairCount shrink.
         const inputs = new Map<number, AudioMixSource[]>();
-        for (const s of router.getModuleUdpSources(instanceId)) {
+        for (const s of router.getModuleBusSources(instanceId)) {
             const m = /^in-(\d+)$/.exec(s.sinkPortId);
             if (!m) continue;
             const index = Number(m[1]);
@@ -89,12 +89,12 @@ export class N1Mixer302mModule extends GstPluginBase {
         const outputs: N1Output[] = [];
         for (const o of activeOutputIndices(inputs.keys(), pairCount)) {
             const portId = n1PortId('out', o);
-            const ep = router.assignUdpPort(instanceId, portId);
+            const ep = router.assignBusChannel(instanceId, portId);
             if (!ep) {
                 this.setHealth('error', `UDP port pool exhausted while allocating ${portId}`);
                 return null;
             }
-            outputs.push({ index: o, host: ep.host, port: ep.port });
+            outputs.push({ index: o, port: ep.port });
         }
 
         const pipeline = buildN1Pipeline({

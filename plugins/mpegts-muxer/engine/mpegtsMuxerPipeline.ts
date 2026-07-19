@@ -8,11 +8,10 @@
 import {
     audioStreamPid,
     buildBackpressureQueue,
+    buildBusSink,
+    buildBusSrc,
     buildLeakyQueue,
-    buildUdpSink,
-    buildUdpSrc,
     muxSinkPadName,
-    NET_UDP_RCV_BUF,
     TS_METADATA_PID,
     videoStreamPid,
     type PadLinkRule,
@@ -43,13 +42,12 @@ export interface DynamicPort {
 export interface UdpInputSource {
     /** Sink port id this connection arrives on (e.g. "video-0", "audio-2"). */
     sinkPortId: string;
-    host: string;
     port: number;
     /** Operator-set name for this input (live-updatable). Blank → fall back. */
     name?: string | null;
     /** Connected source module id (D4 name fallback when no operator name). */
     sourceModuleId?: string | null;
-    /** Per-consumer edge socket under unixfd (undefined on UDP multicast). */
+    /** Per-consumer edge socket (falls back to the channel socket). */
     socketPath?: string;
     /** Lipsync offset (ms) for this input's mux pad — see StreamEntry.offsetMs. */
     offsetMs?: number;
@@ -63,14 +61,16 @@ const AUDIO_PORT_PREFIX = 'audio-';
 const OUTPUT_PORT_ID = 'mpegts-out';
 
 /**
- * udpsrc timeout (5 s, in ns). A silent input — encoder dead, multicast
- * group never joined — is otherwise invisible: udpsrc posts no bus error, so
- * the muxer's aggregator quietly stalls its output with no signal to trigger
- * `restartOnError`. The runner turns the resulting `GstUDPSrcTimeout` element
- * message into an error event, so this makes a dark source recover via the
- * normal restart path instead of hanging until manually restarted.
+ * Per-input stall watchdog (5 s, in ms). A silent-but-connected input —
+ * producer alive but its source dark — is otherwise invisible: unixfdsrc
+ * posts no bus error, so the muxer's aggregator quietly stalls its output
+ * with no signal to trigger `restartOnError`. The `watchdog` element that
+ * `buildBusSrc` inserts for this option turns the silence into a tagged
+ * error event, so a dark source recovers via the normal restart path
+ * instead of hanging until manually restarted. (A DEAD producer needs no
+ * watchdog — its edge socket closes and unixfdsrc errors out on its own.)
  */
-const UDP_INPUT_TIMEOUT_NS = 5_000_000_000;
+const INPUT_STALL_TIMEOUT_MS = 5_000;
 
 /**
  * Default bound (ms) on each per-pad NON-leaky input queue (`queueLeaky`
@@ -79,7 +79,7 @@ const UDP_INPUT_TIMEOUT_NS = 5_000_000_000;
  * 160 ms, B-frame DTS delay ~120 ms — measured on gate01); 500 ms covers all
  * with margin. This is a runaway safety cap, not a latency budget:
  * steady-state occupancy equals the skew, and the cap only bites when a
- * sibling input genuinely stalls — where the udpsrc timeout (above) is the
+ * sibling input genuinely stalls — where the stall watchdog (above) is the
  * actual recovery. Operator-tunable via `queueDepthMs`.
  */
 const MUX_INPUT_QUEUE_MS = 500;
@@ -262,37 +262,32 @@ export function buildDynamicPorts(
  * buffering this branch needs.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
-    // No caps declared on udpsrc (matches the demuxer): negotiation falls to
-    // the udpsrc↔tsdemux pad intersection, and the packetizer auto-detects the
-    // packet size (188/192/204) from sync-byte spacing — verified end-to-end
-    // on a capsless `udpsrc ! tsdemux` loopback run.
-    const udpsrc = buildUdpSrc({
-        host: source.host,
+    const src = buildBusSrc({
         port: source.port,
-        timeoutNs: UDP_INPUT_TIMEOUT_NS,
-        bufferSize: NET_UDP_RCV_BUF,
         socketPath: source.socketPath,
+        name: `busin_${branchId}`,
+        stallTimeoutMs: INPUT_STALL_TIMEOUT_MS,
     });
-    // The udpsrc `timeout` is load-bearing on a MULTI-source mux, not just a
+    // The stall watchdog is load-bearing on a MULTI-source mux, not just a
     // nicety: `mpegtsmux` aggregates all its sink pads and CANNOT distinguish a
     // late pad from a dead one, so when any single input goes dark it stalls
     // the WHOLE combined output indefinitely (spike: `multi_source_dark_input.py`
     // — 1 output buffer in the 6.5 s after one of two inputs was killed). With
-    // no timeout that stall is silent and unrecoverable. The timeout turns it
-    // into a `GstUDPSrcTimeout` → runner error → `restartOnError` rebuild, which
-    // is the only available recovery: the healthy inputs are already frozen by
-    // the stall, so the restart disrupts nothing that was still flowing. The
-    // restart does loop while a source stays permanently dark — making the mux
-    // survive a dead input without a rebuild needs per-pad keepalive/fallback
-    // (a real feature, not a tuning knob), since mpegtsmux has no drop-dead-pad
-    // mode. `tsdemux latency=0` removes its default 700 ms input buffer — the
+    // no watchdog that stall is silent and unrecoverable. The watchdog turns it
+    // into a tagged runner error → `restartOnError` rebuild, which is the only
+    // available recovery: the healthy inputs are already frozen by the stall,
+    // so the restart disrupts nothing that was still flowing. The restart does
+    // loop while a source stays permanently dark — making the mux survive a
+    // dead input without a rebuild needs per-pad keepalive/fallback (a real
+    // feature, not a tuning knob), since mpegtsmux has no drop-dead-pad mode.
+    // `tsdemux latency=0` removes its default 700 ms input buffer — the
     // per-pad leaky queue downstream provides flow control.
-    return `${udpsrc} ! tsdemux latency=0 name=demux_${branchId}`;
+    return `${src} ! tsdemux latency=0 name=demux_${branchId}`;
 }
 
 export interface MuxerPipelineInputs {
     sources: UdpInputSource[];
-    output: { host: string; port: number };
+    output: { port: number };
     alignment: number;
     /** Input queue behaviour (defaults to false = non-leaky). See the
      *  queueLeaky doc above MUX_INPUT_QUEUE_MS. */
@@ -426,11 +421,10 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     const muxer =
         'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 ' +
         muxProps;
-    const sink = buildUdpSink({ name: 'usink', host: input.output.host, port: input.output.port });
-    // No leaky queue between mpegtsmux and udpsink: any drop here is a
-    // mid-stream UDP buffer (~1316 B = 7 TS packets, part of a frame's
-    // payload) and corrupts decode at the receiver. The 2 MB kernel UDP
-    // send buffer (≈4 s @ 4 Mbps) absorbs typical bursts on its own.
+    const sink = buildBusSink(input.output.port);
+    // No leaky queue between mpegtsmux and the bus tee: any drop here is a
+    // mid-stream TS slice (part of a frame's payload) and corrupts decode
+    // at the receiver.
     const pipeline = `${muxer} ! ${sink}${metadataBranch} ${branches.join(' ')}`;
 
     // Per-source pad-link rules: each tsdemux gets one rule per media type.

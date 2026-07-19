@@ -42,8 +42,8 @@ function createMockServices(overrides: Partial<ModuleServices> = {}): ModuleServ
             releaseAll: vi.fn().mockResolvedValue(undefined),
         } as any,
         mediaRouter: {
-            releaseUdpPort: vi.fn(),
-            releaseAllUdpPortsFor: vi.fn(),
+            releaseBusChannel: vi.fn(),
+            releaseAllBusChannelsFor: vi.fn(),
         } as any,
         processManager: {
             releaseAll: vi.fn().mockResolvedValue(undefined),
@@ -136,7 +136,7 @@ describe('ModuleInstance', () => {
 
         expect(services.processManager!.releaseAll).toHaveBeenCalledWith('inst-fail');
         expect(services.pipeWire!.releaseAll).toHaveBeenCalledWith('inst-fail');
-        expect(services.mediaRouter!.releaseAllUdpPortsFor).toHaveBeenCalledWith('inst-fail');
+        expect(services.mediaRouter!.releaseAllBusChannelsFor).toHaveBeenCalledWith('inst-fail');
     });
 
     it('stop() releases processes even for a module that never started', async () => {

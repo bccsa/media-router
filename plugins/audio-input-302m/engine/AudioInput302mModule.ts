@@ -1,7 +1,7 @@
 import {
     GstPluginBase,
     build302mEncodeBranch,
-    buildUdpSink,
+    buildBusSink,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -93,7 +93,7 @@ export class AudioInput302mModule extends GstPluginBase {
             return null;
         }
 
-        const endpoint = router.assignUdpPort(instanceId);
+        const endpoint = router.assignBusChannel(instanceId);
         if (!endpoint) {
             this.setHealth('error', 'No free UDP ports available');
             return null;
@@ -103,7 +103,7 @@ export class AudioInput302mModule extends GstPluginBase {
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const srcBufferUs =
             Math.max(40, Math.min(1000, Number(config.srcBufferMs ?? 60))) * 1000;
-        const sink = buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port });
+        const sink = buildBusSink(endpoint.port);
 
         const pipeline =
             `pulsesrc device=${device} buffer-time=${srcBufferUs}` +
@@ -112,7 +112,7 @@ export class AudioInput302mModule extends GstPluginBase {
             ` ! ${build302mEncodeBranch()} ! ${sink}`;
 
         this.setStatusData('input', { device });
-        this.setStatusData('udp', { host: endpoint.host, port: endpoint.port });
+        this.setStatusData('bus', { channel: endpoint.port });
         this.setHealth('ok');
 
         return {

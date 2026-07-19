@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSrc,
+    buildBusSrc,
     buildNetUdpSink,
     buildBackpressureQueue,
     isMulticastAddr,
@@ -70,7 +70,7 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         const destinations = this.resolveDestinations(config);
 
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!udpSource) {
             this.log.info('No MPEG-TS source connected — idle');
             return null;
@@ -89,9 +89,8 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         // gaps / macroblocking it can never recover (plain MPEG-TS/UDP has no
         // retransmit). Don't drop on the sender when the wire isn't dropping.
         const head = [
-            buildUdpSrc({
+            buildBusSrc({
                 name: 'busin',
-                host: udpSource.host,
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),

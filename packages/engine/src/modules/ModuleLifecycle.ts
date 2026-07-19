@@ -62,7 +62,7 @@ export class ModuleLifecycle {
             (instanceId, modConfig, pluginId) =>
                 this.resolvePortsForInstance(instanceId, modConfig, pluginId),
         );
-        // After MpegTsUdpExecutor restarts a consumer module (so its UDP
+        // After MpegTsBusExecutor restarts a consumer module (so its UDP
         // ports get allocated), give that consumer's outgoing connections
         // a fresh attempt — they may have been removed earlier by retry
         // exhaustion when those ports didn't exist yet (e.g. demuxer with

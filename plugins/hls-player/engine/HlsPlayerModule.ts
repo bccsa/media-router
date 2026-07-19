@@ -2,7 +2,6 @@ import {
     GstPluginBase,
     UnixFdFanoutController,
     busIngestSocketPath,
-    busTransport,
     formatBytes,
     type BusAttachTarget,
     type PipelineDescription,
@@ -13,7 +12,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolutionCapBitrateBps, resolveQuality } from './runnerOptions.js';
 
-/** Bus wire caps — identical to `buildUdpSink`'s unixfd capsfilter. */
+/** Bus wire caps — identical to `buildBusSink`'s capsfilter. */
 const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
 /**
@@ -84,10 +83,10 @@ function asArray(v: unknown): string[] {
  *
  * Pulls an HLS stream via the hls-pipe library (spawned as an isolated Node
  * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on the
- * inter-module bus — same producer contract as srt-input. Under UDP transport
- * the child multicasts directly (PacedUdpTsSink); under unixfd it streams into
- * this module's `unixfd-fanout.py` sidecar, which serves the per-consumer
- * edge sockets speaking the GstUnixFd protocol (see `startFanout`).
+ * inter-module bus — same producer contract as srt-input. The child streams
+ * into this module's `unixfd-fanout.py` sidecar, which serves the
+ * per-consumer edge sockets speaking the GstUnixFd protocol (see
+ * `startFanout`).
  *
  * On start it probes the master playlist to detect available audio / subtitle
  * languages and reports them as `fieldOptions`, so the settings panel can show
@@ -97,9 +96,9 @@ function asArray(v: unknown): string[] {
  */
 export class HlsPlayerModule extends GstPluginBase {
     private runner: ManagedProcess | null = null;
-    /** unixfd transport only: the GstUnixFd fan-out sidecar + its controller.
-     *  The sidecar owns the per-consumer edge sockets, so they survive runner
-     *  relaunches (URL changes) — consumers see a data gap, not a disconnect. */
+    /** The GstUnixFd fan-out sidecar + its controller. The sidecar owns the
+     *  per-consumer edge sockets, so they survive runner relaunches (URL
+     *  changes) — consumers see a data gap, not a disconnect. */
     private fanout: ManagedProcess | null = null;
     private fanoutController: UnixFdFanoutController | null = null;
     private playlistKind = '—';
@@ -123,21 +122,21 @@ export class HlsPlayerModule extends GstPluginBase {
             return;
         }
 
-        // Reserve the UDP egress port up front (same as encoders) so a URL
+        // Reserve the bus channel up front (same as encoders) so a URL
         // pasted later — applied live — can launch the runner without a restart.
         // Only `mediaRouter` is required for this; `processManager` is checked
         // later, when we actually need to spawn the runner.
-        this.services.mediaRouter.assignUdpPort(this.services.instanceId);
-        const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
+        this.services.mediaRouter.assignBusChannel(this.services.instanceId);
+        const endpoint = this.services.mediaRouter.getBusChannel(this.services.instanceId);
         if (!endpoint) {
-            this.setHealth('error', 'No UDP port assigned — cannot output MPEG-TS');
+            this.setHealth('error', 'No bus channel assigned — cannot output MPEG-TS');
             return;
         }
 
-        // Under unixfd the fan-out sidecar must run even while idle: it owns
-        // the per-consumer edge sockets, and consumers gate their start on
+        // The fan-out sidecar must run even while idle: it owns the
+        // per-consumer edge sockets, and consumers gate their start on
         // connecting to them (busSocketGate).
-        if (busTransport() === 'unixfd' && !this.startFanout(endpoint.port)) return;
+        if (!this.startFanout(endpoint.port)) return;
 
         this.running = true;
         this.ready = true;
@@ -160,10 +159,10 @@ export class HlsPlayerModule extends GstPluginBase {
             this.setHealth('error', 'processManager service unavailable — cannot spawn runner');
             return;
         }
-        if (!this.spawnRunner(url, endpoint.host, endpoint.port)) return;
+        if (!this.spawnRunner(url, endpoint.port)) return;
         this.setHealth('ok');
         this.updateSourceStatus();
-        // No GStreamer pipeline — the runner handles HLS → UDP.
+        // No GStreamer pipeline — the runner feeds the fan-out sidecar.
     }
 
     async onStop(): Promise<void> {
@@ -179,14 +178,13 @@ export class HlsPlayerModule extends GstPluginBase {
     }
 
     /** Bus fan-out commands go to our sidecar controller, not a gst runner
-     *  (there is none). Null under UDP transport — the coordinator is a no-op
-     *  there anyway. */
+     *  (there is none). */
     getBusAttachTarget(): BusAttachTarget | null {
         return this.fanoutController;
     }
 
     /**
-     * Spawn the GstUnixFd fan-out sidecar (unixfd transport only).
+     * Spawn the GstUnixFd fan-out sidecar.
      * @returns false when it could not be spawned (health already set).
      */
     private startFanout(port: number): boolean {
@@ -312,16 +310,16 @@ export class HlsPlayerModule extends GstPluginBase {
             this.log.info('Module stopped during probe — not spawning runner');
             return;
         }
-        this.services.mediaRouter.assignUdpPort(this.services.instanceId); // idempotent
-        const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
+        this.services.mediaRouter.assignBusChannel(this.services.instanceId); // idempotent
+        const endpoint = this.services.mediaRouter.getBusChannel(this.services.instanceId);
         if (!endpoint) return;
-        if (!this.spawnRunner(url, endpoint.host, endpoint.port)) return;
+        if (!this.spawnRunner(url, endpoint.port)) return;
         this.setHealth('ok');
         this.updateSourceStatus();
     }
 
     /** @returns false when the runner could not be spawned (health already set to error). */
-    private spawnRunner(url: string, host: string, port: number): boolean {
+    private spawnRunner(url: string, port: number): boolean {
         const runnerPath = resolveRunnerPath();
         if (!runnerPath) {
             this.setHealth(
@@ -334,7 +332,7 @@ export class HlsPlayerModule extends GstPluginBase {
             label: 'hls-pipe',
             command: process.execPath,
             args: [runnerPath],
-            env: { HLS_CONFIG: JSON.stringify(this.buildRunnerConfig(url, host, port)) },
+            env: { HLS_CONFIG: JSON.stringify(this.buildRunnerConfig(url, port)) },
             autoRestart: true,
             clearBadges: ['bitrate'],
             onStdout: (line) => this.parseStats(line),
@@ -356,7 +354,7 @@ export class HlsPlayerModule extends GstPluginBase {
         return true;
     }
 
-    private buildRunnerConfig(url: string, host: string, port: number): Record<string, unknown> {
+    private buildRunnerConfig(url: string, port: number): Record<string, unknown> {
         // Effective ABR bitrate cap = the tightest of: the explicit capBitrate
         // One "Quality" dropdown drives everything: resolveQuality maps it to an
         // internal quality + resolution ceiling, which becomes a bitrate cap via
@@ -371,16 +369,9 @@ export class HlsPlayerModule extends GstPluginBase {
         const caps = [explicitBps, resBps].filter((c) => c > 0);
         return {
             url,
-            host,
-            port,
-            // Egress descriptor — under unixfd the runner writes paced TS to
-            // the fan-out sidecar's ingest socket instead of the multicast
-            // group. `host`/`port` above stay for back-compat (old runner
-            // builds read them directly).
-            sink:
-                busTransport() === 'unixfd'
-                    ? { kind: 'unixfd', ingestPath: busIngestSocketPath(port) }
-                    : { kind: 'udp', host, port },
+            // Egress descriptor — the runner writes paced TS to the fan-out
+            // sidecar's ingest socket.
+            sink: { kind: 'unixfd', ingestPath: busIngestSocketPath(port) },
             quality: resolved.quality,
             capBitrateBps: caps.length ? Math.min(...caps) : 0,
             abrPreset: (this.config.abrPreset as string) ?? 'default',

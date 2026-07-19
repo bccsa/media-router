@@ -6,16 +6,15 @@
 
 import {
     buildTsUdpInput,
-    buildUdpSink,
+    buildBusSink,
     buildLeakyQueue,
     buildEncoderBranch,
-    busTransport,
     busTeeName,
 } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
 
 export interface TranscoderPipelineInputs {
-    input: { host: string; port: number; socketPath?: string };
+    input: { port: number; socketPath?: string };
     /** One output per rendition. Each carries its own fully-resolved encoder
      *  settings (`encode`: codec / impl / rateControl / speedPreset / h264Profile
      *  / sceneCut) — resolved in TranscoderModule (override ?? global) so this
@@ -96,7 +95,7 @@ export interface TranscoderPipelineResult {
  * Buffering / multicore decode: unlike a passthrough remux, this pipeline
  * DECODES, and frame-threaded software H.264 decode only parallelises across
  * cores when it can run ahead of the consumers. `bufferMs` sizes two queues:
- * the input jitter queue (`buildTsUdpInput`, udpsrc → queue → tsparse) and a
+ * the input jitter queue (`buildTsUdpInput`, bus src → queue → tsparse) and a
  * leaky RAW-frame queue placed AFTER the decoder, in front of videorate/tee.
  *
  * The raw buffer must NOT sit on the compressed stream (an earlier version put
@@ -134,7 +133,6 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // x264 encoders) at boot before the upstream has data. See the same rationale
     // in mpegtsDemuxerPipeline. The multi-source mpegts-muxer keeps its timeout.
     const tsInput = buildTsUdpInput({
-        host: input.input.host,
         port: input.input.port,
         socketPath: input.input.socketPath,
         jitterMs: bufferMs,
@@ -197,10 +195,9 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
             sceneCut: e.sceneCut,
             interlacedOutput: deinterlaceMode === 'off',
         });
-        const sink = buildUdpSink({ name: `usink_${i}`, host: out.host, port: out.port });
-        // Throughput element differs by transport: the fan-out `tee`
-        // (busTeeName) under unixfd, the named `usink_i` udpsink under UDP.
-        sinkNames.push(busTransport() === 'unixfd' ? busTeeName(out.port) : `usink_${i}`);
+        const sink = buildBusSink(out.port);
+        // Throughput element: the fan-out `tee` (busTeeName).
+        sinkNames.push(busTeeName(out.port));
         return `${q} ! ${scale} ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
     };
 

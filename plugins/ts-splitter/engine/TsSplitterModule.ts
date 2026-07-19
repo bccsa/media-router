@@ -82,7 +82,7 @@ export class TsSplitterModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
 
-        const upstream = router.getModuleUdpSource(instanceId, INPUT_PORT_ID);
+        const upstream = router.getModuleBusSource(instanceId, INPUT_PORT_ID);
         if (!upstream) {
             this.setHealth('warning', 'No upstream MPEG-TS source connected');
             return null;
@@ -94,16 +94,16 @@ export class TsSplitterModule extends GstPluginBase {
         // any output exists, so the first PIDs appear without manual config.
         const outputs = [];
         for (const s of discoveredStreams(config)) {
-            const ep = router.assignUdpPort(instanceId, pidPortId(s.pid));
+            const ep = router.assignBusChannel(instanceId, pidPortId(s.pid));
             if (!ep) {
                 this.setHealth('error', `UDP port pool exhausted while allocating ${pidPortId(s.pid)}`);
                 return null;
             }
-            outputs.push({ pid: s.pid, streamType: s.streamType, host: ep.host, port: ep.port });
+            outputs.push({ pid: s.pid, streamType: s.streamType, port: ep.port });
         }
 
         const { pipeline, tsSplit } = buildSplitterPipeline({
-            input: { host: upstream.host, port: upstream.port, socketPath: upstream.socketPath },
+            input: { port: upstream.port, socketPath: upstream.socketPath },
             outputs,
             tsId: (config.tsId as number) ?? 1,
         });
@@ -112,11 +112,11 @@ export class TsSplitterModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         await super.onStart();
-        const upstream = this.services?.mediaRouter?.getModuleUdpSource(
+        const upstream = this.services?.mediaRouter?.getModuleBusSource(
             this.services.instanceId,
             INPUT_PORT_ID,
         );
-        if (upstream) this.setStatusData('input', { host: upstream.host, port: upstream.port });
+        if (upstream) this.setStatusData('input', { channel: upstream.port });
         this.publishStatus();
     }
 

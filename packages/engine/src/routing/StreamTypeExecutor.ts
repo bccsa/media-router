@@ -47,7 +47,7 @@ export class StreamTypeExecutorRegistry {
      * Never register a second instance of the same executor class for an
      * alias instead: teardown dispatches by `handleType` (one slot), so
      * execute/teardown would split across instances and any per-instance
-     * state (e.g. MpegTsUdpExecutor's materialize-attempt tracking) would
+     * state (e.g. MpegTsBusExecutor's materialize-attempt tracking) would
      * desync.
      */
     register(executor: StreamTypeExecutor, extraStreamTypes: string[] = []): void {

@@ -39,10 +39,9 @@ export interface Rendition {
     audioType?: number;
 }
 
-/** A rendition with its allocated bus endpoint. */
+/** A rendition with its allocated bus channel. */
 export interface AudioTranscoderOutput {
     portId: string;
-    host: string;
     port: number;
     rendition: Rendition;
 }

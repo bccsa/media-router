@@ -4,15 +4,15 @@ import { AudioTranscoderModule } from './AudioTranscoderModule.js';
 interface HarnessOpts {
     mpegtsUpstream?: boolean;
     mixSources?: number;
-    udpPort?: number | null;
+    busPort?: number | null;
 }
 
 function makeModule(opts: HarnessOpts = {}) {
     const module = new AudioTranscoderModule() as any;
     let nextPort = 41000;
     const mixSources = Array.from({ length: opts.mixSources ?? 0 }, (_, i) => ({
-        host: '239.255.0.1',
         port: 40100 + i,
+        socketPath: `/tmp/mr-bus-${40100 + i}-x.sock`,
         connectionId: `c-mix-${i}`,
         sourceModuleId: `src-${i}`,
         sourcePortId: 'out-0',
@@ -22,11 +22,11 @@ function makeModule(opts: HarnessOpts = {}) {
     module.services = {
         instanceId: 'atx-1',
         mediaRouter: {
-            getModuleUdpSource: vi.fn((_id: string, portId?: string) =>
+            getModuleBusSource: vi.fn((_id: string, portId?: string) =>
                 opts.mpegtsUpstream && (portId === undefined || portId === 'mpegts-in')
                     ? {
-                          host: '239.255.0.1',
                           port: 40001,
+                          socketPath: '/tmp/mr-bus-40001-x.sock',
                           connectionId: 'c-up',
                           sourceModuleId: 'src-ts',
                           sourcePortId: 'mpegts-out',
@@ -34,9 +34,9 @@ function makeModule(opts: HarnessOpts = {}) {
                       }
                     : undefined,
             ),
-            getModuleUdpSources: vi.fn(() => mixSources),
-            assignUdpPort: vi.fn(() =>
-                opts.udpPort === null ? null : { host: '239.255.0.1', port: nextPort++ },
+            getModuleBusSources: vi.fn(() => mixSources),
+            assignBusChannel: vi.fn(() =>
+                opts.busPort === null ? null : { port: nextPort++ },
             ),
         },
     };
@@ -100,10 +100,10 @@ describe('AudioTranscoderModule.buildPipeline', () => {
 
     it('passes a mix source connection channelMap through as a mix-matrix', () => {
         const { module } = makeModule({ mixSources: 1 });
-        module.services.mediaRouter.getModuleUdpSources = vi.fn(() => [
+        module.services.mediaRouter.getModuleBusSources = vi.fn(() => [
             {
-                host: '239.255.0.1',
                 port: 40100,
+                socketPath: '/tmp/mr-bus-40100-x.sock',
                 connectionId: 'c-mix-0',
                 sourceModuleId: 'src-0',
                 sourcePortId: 'out-0',
@@ -141,18 +141,18 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('1.26'));
     });
 
-    it('allocates a distinct UDP port per rendition', () => {
+    it('allocates a distinct bus channel per rendition', () => {
         const { module } = makeModule({ mpegtsUpstream: true });
         const desc = module.buildPipeline({
             renditions: [{ codec: 'opus' }, { codec: 'aac' }],
         });
         expect(desc).not.toBeNull();
-        expect(module.services.mediaRouter.assignUdpPort).toHaveBeenCalledWith('atx-1', 'out-0');
-        expect(module.services.mediaRouter.assignUdpPort).toHaveBeenCalledWith('atx-1', 'out-1');
+        expect(module.services.mediaRouter.assignBusChannel).toHaveBeenCalledWith('atx-1', 'out-0');
+        expect(module.services.mediaRouter.assignBusChannel).toHaveBeenCalledWith('atx-1', 'out-1');
     });
 
-    it('health error when the UDP port pool is exhausted', () => {
-        const { module, setHealth } = makeModule({ mpegtsUpstream: true, udpPort: null });
+    it('health error when the bus channel pool is exhausted', () => {
+        const { module, setHealth } = makeModule({ mpegtsUpstream: true, busPort: null });
         expect(module.buildPipeline({ renditions: [{ codec: 'opus' }] })).toBeNull();
         expect(setHealth).toHaveBeenCalledWith('error', expect.stringContaining('exhausted'));
     });

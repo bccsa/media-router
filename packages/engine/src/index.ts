@@ -51,20 +51,22 @@ export {
 export { ThroughputPoller } from './plugins/ThroughputPoller.js';
 export type { ThroughputSample, ThroughputPollerOptions } from './plugins/ThroughputPoller.js';
 export {
-    buildUdpSrc,
-    buildUdpSink,
-    buildNetUdpSrc,
-    buildNetUdpSink,
-    busTransport,
+    buildBusSrc,
+    buildBusSink,
     busSocketPath,
     busTeeName,
     busEdgeSocketPath,
     busIngestSocketPath,
-    isMulticast,
+    BUS_WATCHDOG_PREFIX,
+} from './plugins/busHelpers.js';
+export type { BusSrcOpts } from './plugins/busHelpers.js';
+export {
+    buildNetUdpSrc,
+    buildNetUdpSink,
     isMulticastAddr,
     NET_UDP_RCV_BUF,
-} from './plugins/udpHelpers.js';
-export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/udpHelpers.js';
+} from './plugins/netUdpHelpers.js';
+export type { NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/netUdpHelpers.js';
 export {
     buildAudioMixInput,
     build302mEncodeBranch,
@@ -92,14 +94,7 @@ export { capsStreamInfo } from './plugins/streamCapsInfo.js';
 export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';
 export { formatBytes, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
-export {
-    PacedUdpTsSink,
-    packetizeTs,
-    TS_PACKET_BYTES,
-    TS_PACKETS_PER_DATAGRAM,
-    TS_DATAGRAM_BYTES,
-} from './plugins/PacedUdpTsSink.js';
-export { PacedTsSink } from './plugins/PacedTsSink.js';
+export { PacedTsSink, packetizeTs, TS_PACKET_BYTES } from './plugins/PacedTsSink.js';
 export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
@@ -127,6 +122,7 @@ export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
 export { UnixFdFanoutController } from './child-process/UnixFdFanoutController.js';
+export { probeUnixSocket } from './child-process/busSocketGate.js';
 export type { BusAttachTarget } from './child-process/UnixFdFanoutController.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export {
@@ -138,4 +134,4 @@ export type { ProbeResult, CodecClassifier } from './routing/MpegTsProbe.js';
 export { StreamTypeExecutorRegistry, makeConnLabel } from './routing/StreamTypeExecutor.js';
 export type { StreamTypeExecutor } from './routing/StreamTypeExecutor.js';
 export { PcmAudioExecutor } from './routing/PcmAudioExecutor.js';
-export { MpegTsUdpExecutor } from './routing/MpegTsUdpExecutor.js';
+export { MpegTsBusExecutor } from './routing/MpegTsBusExecutor.js';

@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { buildAudioMixInput, build302mEncodeBranch, mixMatrixClause } from './audio302mHelpers.js';
 
-const SRC = { host: '239.255.0.1', port: 40001, connectionId: 'c1' };
+const SRC = { port: 40001, connectionId: 'c1' };
 
 describe('buildAudioMixInput', () => {
     it('emits a force-live audiomixer with the latency budget applied', () => {
@@ -31,23 +31,22 @@ describe('buildAudioMixInput', () => {
 
     it('builds one branch per source, each ending at the mixer', () => {
         const { fragment } = buildAudioMixInput({
-            sources: [SRC, { host: '239.255.0.1', port: 40002, connectionId: 'c2' }],
+            sources: [SRC, { port: 40002, connectionId: 'c2' }],
         });
         expect(fragment.match(/! mixin\./g)).toHaveLength(2);
         expect(fragment.match(/avdec_s302m/g)).toHaveLength(2);
     });
 
-    it('uses the per-connection unixfd socket under unixfd transport', () => {
-        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
-        try {
-            const { fragment } = buildAudioMixInput({
-                sources: [{ ...SRC, socketPath: '/tmp/mr-bus-40001-abc.sock' }],
-            });
-            expect(fragment).toContain('unixfdsrc');
-            expect(fragment).toContain('socket-path=/tmp/mr-bus-40001-abc.sock');
-        } finally {
-            vi.unstubAllEnvs();
-        }
+    it('ingests each source over unixfd, defaulting to the channel socket', () => {
+        const { fragment } = buildAudioMixInput({ sources: [SRC] });
+        expect(fragment).toContain('unixfdsrc socket-path=/tmp/mr-bus-40001.sock');
+    });
+
+    it('uses the per-connection unixfd edge socket when supplied', () => {
+        const { fragment } = buildAudioMixInput({
+            sources: [{ ...SRC, socketPath: '/tmp/mr-bus-40001-abc.sock' }],
+        });
+        expect(fragment).toContain('unixfdsrc socket-path=/tmp/mr-bus-40001-abc.sock');
     });
 
     it('steers tsdemux pad selection with 302M caps (wrong-content TS fails soft)', () => {
@@ -132,7 +131,7 @@ describe('mixMatrixClause / per-connection channel maps', () => {
                     ],
                     sourceChannels: 1,
                 },
-                { host: '239.255.0.1', port: 40002, connectionId: 'c2' },
+                { port: 40002, connectionId: 'c2' },
             ],
         });
         expect(fragment).toContain(

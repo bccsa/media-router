@@ -113,12 +113,16 @@ Apply with `sudo sysctl --system` (or reboot). On image-based /
 read-only-rootfs deployments, bake the fragment into the image — runtime
 `sysctl -w` does not survive a rootfs swap.
 
-## unixfd Bus Transport (optional, `MR_BUS_TRANSPORT=unixfd`)
+## unixfd Bus Transport (REQUIRED)
 
-The inter-pipeline media bus defaults to UDP multicast on loopback. The
-zero-copy unixfd transport additionally requires:
+The inter-pipeline media bus is GStreamer unixfd IPC — this is the only bus
+transport (the legacy loopback-UDP-multicast bus and its
+`MR_BUS_TRANSPORT` switch were removed). The engine refuses to start
+without it. Hard requirements:
 
 - **GStreamer ≥ 1.24** — `unixfdsrc`/`unixfdsink` (in `plugins-bad`).
+  Stock Debian 12 ships 1.22 — dev boxes use the local prefix
+  (`source ~/gst-1.24/env.sh`); the fleet images ship 1.28.
 - **A patched `unixfdsink`** for production fan-out: stock unixfdsink
   (verified through 1.28.2) sends to clients on *blocking* sockets while
   holding the element's object lock, so a single stalled consumer freezes
@@ -127,8 +131,8 @@ zero-copy unixfd transport additionally requires:
   kick after 10 s dead; 4 MB client `SO_SNDBUF`; stale socket unlink before
   bind) is maintained with the deployment tooling, outside this repository.
 - The `wmem` sysctl values above.
-
-Without the patch, keep `MR_BUS_TRANSPORT` unset (UDP bus).
+- The `watchdog` element (`plugins-bad` debugutils) — bus source-silent
+  stall detection (`buildBusSrc({stallTimeoutMs})`).
 
 ## Optional Dependencies
 

@@ -4,29 +4,28 @@ import type { Connection, ActiveHandle } from './MediaRouter.js';
 import type { StreamTypeExecutor } from './StreamTypeExecutor.js';
 import type { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
 
-const log = createLogger('MpegTsUdpExecutor');
+const log = createLogger('MpegTsBusExecutor');
 
 /**
- * Built-in executor for `muxed/mpegts` connections over UDP multicast.
+ * Built-in executor for `muxed/mpegts` connections over the bus.
  *
  * The producer (any module that emits an MPEG-TS stream — muxer, encoder,
- * srt-input re-broadcast, etc.) has been assigned a UDP port via
- * `MediaRouter.assignUdpPort` before its pipeline started; this executor
- * looks that port up and restarts the consumer module so its `buildPipeline`
- * picks up the live `udpsrc` (via `services.mediaRouter.getModuleUdpSource`).
+ * srt-input re-broadcast, etc.) has been assigned a bus channel via
+ * `MediaRouter.assignBusChannel` before its pipeline started; this executor
+ * looks that channel up and restarts the consumer module so its
+ * `buildPipeline` picks up the live bus ingress (via
+ * `services.mediaRouter.getModuleBusSource`).
  *
  * Teardown stops then restarts the consumer so its `buildPipeline` returns
- * `null` (now that the connection is gone) and the module sits idle, freeing
- * its multicast subscription.
+ * `null` (now that the connection is gone) and the module sits idle.
  */
-export class MpegTsUdpExecutor implements StreamTypeExecutor {
+export class MpegTsBusExecutor implements StreamTypeExecutor {
     readonly streamType = 'muxed/mpegts';
-    readonly handleType = 'udp' as const;
+    readonly handleType = 'bus' as const;
 
     constructor(
         private moduleGetter: (id: string) => ModuleInstance | undefined,
         private getUdpPort: (moduleId: string, portId?: string) => number | undefined,
-        private multicastAddr: string,
         private connLabel: (conn: Connection) => string,
         /**
          * Invoked after the consumer module has been restarted in `execute`.
@@ -43,7 +42,7 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
         /**
          * Per-consumer unixfd bus fan-out. Attach the producer's edge branch
          * before starting the consumer (so its socket exists when the consumer's
-         * `unixfdsrc` connects); detach on teardown. No-op under UDP.
+         * `unixfdsrc` connects); detach on teardown.
          */
         private busFanout?: BusFanoutCoordinator,
     ) {}
@@ -66,28 +65,24 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
             // port. The previous silent-return path left consumers stuck on a
             // "no source" health warning until manual restart.
             throw new Error(
-                `MPEG-TS producer ${conn.sourceModuleId}:${conn.sourcePortId} has not assigned a UDP port yet`,
+                `MPEG-TS producer ${conn.sourceModuleId}:${conn.sourcePortId} has not assigned a bus channel yet`,
             );
         }
 
-        log.info(
-            { host: this.multicastAddr, udpPort },
-            `UDP MPEG-TS connection ${this.connLabel(conn)}`,
-        );
+        log.info({ channel: udpPort }, `Bus MPEG-TS connection ${this.connLabel(conn)}`);
 
         // Attach this consumer's dedicated fan-out branch on the producer FIRST,
         // so its edge socket exists by the time the consumer's `unixfdsrc`
-        // connects (the consumer's busSocketGate waits for it). Idempotent, and
-        // a no-op under UDP multicast.
+        // connects (the consumer's busSocketGate waits for it). Idempotent.
         this.busFanout?.attach(conn);
 
-        // Start/restart the consumer so it subscribes to the producer's multicast
+        // Start/restart the consumer so it connects to the producer's edge socket
         try {
             if (sinkModule.running) {
                 await sinkModule.stop();
             }
             await sinkModule.start();
-            log.info({ udpPort }, `Restarted consumer with udpsrc ${this.connLabel(conn)}`);
+            log.info({ channel: udpPort }, `Restarted consumer ${this.connLabel(conn)}`);
         } catch (err) {
             log.error({ err }, 'Failed to start consumer');
         }
@@ -116,8 +111,8 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
 
         return {
             connectionId: conn.id,
-            type: 'udp',
-            udpPort,
+            type: 'bus',
+            busChannel: udpPort,
         };
     }
 
@@ -146,7 +141,7 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
      * declared by the producer. A producer that simply hasn't finished
      * starting keeps the caller's retry contract (throw → ConnectionApplier
      * backoff) untouched. Existing consumers of the producer's other ports
-     * survive the bounce: `UdpPortManager.acquire` is sticky per owner key,
+     * survive the bounce: `BusChannelManager.acquire` is sticky per owner key,
      * so the rebuild re-lands on the same ports and their multicast
      * subscriptions stay valid.
      */
@@ -180,12 +175,12 @@ export class MpegTsUdpExecutor implements StreamTypeExecutor {
         skipModuleRestart: boolean,
     ): Promise<void> {
         log.info(
-            { connectionId: handle.connectionId, udpPort: handle.udpPort },
-            'Removing UDP connection',
+            { connectionId: handle.connectionId, channel: handle.busChannel },
+            'Removing bus connection',
         );
         this.materializeAttempted.delete(handle.connectionId);
 
-        // Tear down the producer's fan-out branch for this edge (no-op on UDP).
+        // Tear down the producer's fan-out branch for this edge.
         if (conn) this.busFanout?.detach(conn);
 
         if (skipModuleRestart) return;

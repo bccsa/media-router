@@ -32,7 +32,6 @@ const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
 
 const out = (i: number, rendition: Rendition, encode: ResolvedEncode = enc()): TranscoderOutput => ({
     portId: outputPortId(i),
-    host: '239.255.0.1',
     port: 41000 + i,
     rendition,
     encode,
@@ -169,7 +168,7 @@ describe('buildDynamicPorts', () => {
 
 describe('buildPipeline', () => {
     const base = {
-        input: { host: '239.0.0.1', port: 5004 },
+        input: { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
         framerate: 50,
         gopFrames: 50,
     };
@@ -187,30 +186,30 @@ describe('buildPipeline', () => {
         expect(res).not.toBeNull();
 
         const p = res.pipeline;
-        // Single static pipeline (no linkOnPadAdded): udpsrc → tsparse → tsdemux
-        // → decode once → conform framerate → tee → one leaf per rendition.
+        // Single static pipeline (no linkOnPadAdded): unixfdsrc → tsparse →
+        // tsdemux → decode once → conform framerate → tee → one leaf per
+        // rendition.
         expect(p).toContain('tsdemux latency=0');
-        expect(p).toContain(`port=${base.input.port}`);
+        expect(p).toContain(`unixfdsrc socket-path=${base.input.socketPath}`);
         expect(p.match(/avdec_h264/g)).toHaveLength(1); // decoded exactly once
         expect(p).toContain('framerate=50/1');
         expect(p).toContain('tee name=t');
         expect(p.match(/t\. !/g)).toHaveLength(2); // one tee branch per rendition
 
-        // Per-rendition scale + bitrate + its own mux + udpsink.
+        // Per-rendition scale + bitrate + its own mux + bus-egress tee.
         expect(p).toContain('video/x-raw,width=1920,height=1080');
         expect(p).toContain('video/x-raw,width=1280,height=720');
         expect(p).toContain('bitrate=5000');
         expect(p).toContain('bitrate=2500');
         expect(p).toContain('mux_0');
         expect(p).toContain('mux_1');
-        expect(p).toContain('usink_0');
-        expect(p).toContain('usink_1');
-        expect(p).toContain('port=41000');
-        expect(p).toContain('port=41001');
+        expect(p).toContain('tee name=busout_41000 allow-not-linked=true');
+        expect(p).toContain('tee name=busout_41001 allow-not-linked=true');
+        expect(p).not.toContain('udpsink');
 
-        // sinkNames is the single source of truth for the udpsink names the
-        // module polls for throughput — one per rendition, in order.
-        expect(res.sinkNames).toEqual(['usink_0', 'usink_1']);
+        // sinkNames is the single source of truth for the throughput-probe
+        // elements the module polls — the per-rendition fan-out tees, in order.
+        expect(res.sinkNames).toEqual(['busout_41000', 'busout_41001']);
     });
 
     it('filters tsdemux to video only so an audio pad cannot reach the decoder', () => {
@@ -291,7 +290,7 @@ describe('buildPipeline', () => {
 
 describe('deinterlacing', () => {
     const base = {
-        input: { host: '239.0.0.1', port: 5004 },
+        input: { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
         framerate: 50,
         gopFrames: 50,
     };
@@ -332,7 +331,7 @@ describe('deinterlacing', () => {
 
 describe('hardware scaling', () => {
     const base = {
-        input: { host: '239.0.0.1', port: 5004 },
+        input: { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
         framerate: 50,
         gopFrames: 50,
     };

@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSink,
+    buildBusSink,
     type PipelineDescription,
     type RistRunnerConfig,
 } from '@media-router/engine';
@@ -35,7 +35,7 @@ export class RistInputModule extends GstPluginBase {
         // Assign the bus output channel before buildPipeline reads it back.
         // The port is the channel identity (busout_<port> tee under unixfd).
         if (this.services?.mediaRouter) {
-            this.services.mediaRouter.assignUdpPort(this.services.instanceId);
+            this.services.mediaRouter.assignBusChannel(this.services.instanceId);
         }
 
         await super.onStart();
@@ -50,7 +50,7 @@ export class RistInputModule extends GstPluginBase {
     }
 
     buildPipeline(_config: Record<string, unknown>): PipelineDescription | null {
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(this.services.instanceId);
+        const endpoint = this.services?.mediaRouter?.getBusChannel(this.services.instanceId);
         if (!endpoint) {
             this.log.warn('No UDP port assigned — cannot output MPEG-TS');
             return null;
@@ -64,7 +64,7 @@ export class RistInputModule extends GstPluginBase {
             `appsrc name=${RIST_APPSRC} is-live=true do-timestamp=true format=time ` +
             'caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ' +
             'leaky-type=downstream max-bytes=4194304 ! ' +
-            buildUdpSink({ host: endpoint.host, port: endpoint.port, name: 'usink' });
+            buildBusSink(endpoint.port);
 
         const rist: RistRunnerConfig = {
             role: 'receiver',

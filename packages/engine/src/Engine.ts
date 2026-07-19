@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { createLogger, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
+import { probeGstElement } from './plugins/gstInspect.js';
 import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
@@ -241,6 +242,16 @@ export class Engine {
     async start(): Promise<void> {
         log.info('Starting...');
         await requirePwLink();
+        // The inter-module bus is unixfd-only — fail fast with a clear error
+        // instead of every consumer hanging on a socket that will never bind
+        // (stock Debian 12 gst 1.22 lacks unixfdsrc; dev boxes need
+        // `source ~/gst-1.24/env.sh`, fleet images ship gst 1.28).
+        if (!(await probeGstElement('unixfdsrc'))) {
+            throw new Error(
+                'GStreamer unixfdsrc not available — the inter-module bus requires ' +
+                    'GStreamer ≥ 1.24 with plugins-bad (see DEPENDENCIES.md, "unixfd Bus Transport").',
+            );
+        }
         await this.pipeWire.cleanupOrphans();
 
         const pluginCount = await this.pluginLoader.load({

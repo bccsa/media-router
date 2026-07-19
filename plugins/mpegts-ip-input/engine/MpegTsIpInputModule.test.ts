@@ -7,19 +7,19 @@ import { MpegTsIpInputModule } from './MpegTsIpInputModule.js';
 function makeModule(opts: { udpPort?: number | null } = {}) {
     const module = new MpegTsIpInputModule() as any;
     const udpPort = opts.udpPort === undefined ? 41000 : opts.udpPort;
-    const getUdpEndpoint = vi.fn(() =>
-        udpPort === null ? undefined : { host: '239.255.0.1', port: udpPort },
+    const getBusChannel = vi.fn(() =>
+        udpPort === null ? undefined : { port: udpPort },
     );
     module.services = {
         instanceId: 'mpegts-ip-in-1',
-        mediaRouter: { assignUdpPort: vi.fn(), getUdpEndpoint },
+        mediaRouter: { assignBusChannel: vi.fn(), getBusChannel },
     };
     module.config = {};
     module.log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
     module.setStatusData = vi.fn();
     module.setBadge = vi.fn();
     module.clearBadge = vi.fn();
-    return { module, getUdpEndpoint };
+    return { module, getBusChannel };
 }
 
 describe('MpegTsIpInputModule.buildPipeline', () => {
@@ -38,8 +38,9 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
         // unicast: bare port, no multicast-group
         expect(desc!.pipeline).toContain('udpsrc name=netsrc port=5000');
         expect(desc!.pipeline).not.toContain('multicast-group');
-        // raw TS caps, not RTP
-        expect(desc!.pipeline).toContain('video/mpegts');
+        // raw TS caps on the network udpsrc, not RTP
+        expect(desc!.pipeline).toMatch(/udpsrc name=netsrc [^!]*caps="video\/mpegts/);
+        expect(desc!.pipeline).not.toContain('application/x-rtp');
         expect(desc!.pipeline).not.toContain('rtpmp2tdepay');
         // No tsparse: it aggregates TS into >64KB buffers that the loopback
         // udpsink can't send (UDP datagram limit) and drops. Pure passthrough.
@@ -48,9 +49,12 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
         // loopback relay a leaky queue would shed TS packets on a sender burst →
         // continuity errors / macroblocking downstream. See buildBackpressureQueue.
         expect(desc!.pipeline).toMatch(/udpsrc name=netsrc[^!]*! queue leaky=0/);
-        // rebroadcasts on the loopback bus at the assigned port
-        expect(desc!.pipeline).toContain('host=239.255.0.1');
-        expect(desc!.pipeline).toContain('port=41000');
+        // rebroadcasts on the local bus at the assigned channel (fan-out tee)
+        expect(desc!.pipeline).toContain(
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'tee name=busout_41000 allow-not-linked=true',
+        );
+        expect(desc!.pipeline).not.toContain('udpsink');
         expect(desc!.restartOnError).toBe(true);
     });
 
@@ -81,7 +85,8 @@ describe('MpegTsIpInputModule.buildPipeline', () => {
     it('defaults to raw when encapsulation is auto and nothing was detected', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ encapsulation: 'auto' });
-        expect(desc!.pipeline).toContain('video/mpegts');
+        expect(desc!.pipeline).toMatch(/udpsrc name=netsrc [^!]*caps="video\/mpegts/);
+        expect(desc!.pipeline).not.toContain('application/x-rtp');
         expect(desc!.pipeline).not.toContain('rtpmp2tdepay');
     });
 

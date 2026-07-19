@@ -2,24 +2,25 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { bitrateBadge } from '@media-router/engine';
 import { TranscoderModule } from './TranscoderModule.js';
 
-function makeModule(opts: { upstream?: { host: string; port: number } | undefined } = {}) {
+function makeModule(opts: { upstream?: { port: number; socketPath: string } | undefined } = {}) {
     const module = new TranscoderModule();
-    const getModuleUdpSource = vi.fn(() =>
-        'upstream' in opts ? opts.upstream : { host: '239.0.0.1', port: 5004 },
+    const getModuleBusSource = vi.fn(() =>
+        'upstream' in opts
+            ? opts.upstream
+            : { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
     );
     let nextPort = 41000;
-    const assignUdpPort = vi.fn((_id: string, _portId?: string) => ({
-        host: '239.255.0.1',
+    const assignBusChannel = vi.fn((_id: string, _portId?: string) => ({
         port: nextPort++,
     }));
     (module as any).services = {
         instanceId: 'tc-1',
-        mediaRouter: { getModuleUdpSource, assignUdpPort },
+        mediaRouter: { getModuleBusSource, assignBusChannel },
     };
     (module as any).setHealth = vi.fn();
     (module as any).setStatusData = vi.fn();
     (module as any).setBadge = vi.fn();
-    return { module, getModuleUdpSource, assignUdpPort };
+    return { module, getModuleBusSource, assignBusChannel };
 }
 
 beforeEach(() => {
@@ -90,7 +91,7 @@ describe('buildPipeline', () => {
     });
 
     it('allocates a distinct UDP port per rendition and builds the pipeline', () => {
-        const { module, assignUdpPort } = makeModule();
+        const { module, assignBusChannel } = makeModule();
         (module as any).config = {
             codec: 'h264',
             framerate: 50,
@@ -102,8 +103,8 @@ describe('buildPipeline', () => {
         };
         const desc = module.buildPipeline((module as any).config)!;
         expect(desc).not.toBeNull();
-        expect(assignUdpPort).toHaveBeenCalledWith('tc-1', 'out-0');
-        expect(assignUdpPort).toHaveBeenCalledWith('tc-1', 'out-1');
+        expect(assignBusChannel).toHaveBeenCalledWith('tc-1', 'out-0');
+        expect(assignBusChannel).toHaveBeenCalledWith('tc-1', 'out-1');
         expect(desc.restartOnError).toBe(true);
         expect(desc.pipeline).toContain('tee name=t');
         expect((module as any).setStatusData).toHaveBeenCalledWith(
@@ -229,7 +230,7 @@ describe('TranscoderModule throughput (multi-counter ThroughputPoller)', () => {
         vi.setSystemTime(new Date(10_000));
         const module = makeModule().module as any;
         module.running = true;
-        module.sinkNames = ['usink_0', 'usink_1'];
+        module.sinkNames = ['busout_41000', 'busout_41001'];
         module.renditions = [
             { width: 1280, height: 720, bitrate: 2500 },
             { width: 640, height: 360, bitrate: 800 },
@@ -250,8 +251,8 @@ describe('TranscoderModule throughput (multi-counter ThroughputPoller)', () => {
     it('publishes a PER-RENDITION live bitrate section, not a single sum', async () => {
         const module = setup();
         // Over the first 2s tick: 625 kB → 2.5 Mbps; 200 kB → 0.8 Mbps.
-        module.getElementProperty = vi.fn(async (name: string) =>
-            name === 'usink_0' ? 625_000 : 200_000,
+        module.readBusSinkBytes = vi.fn(async (name: string) =>
+            name === 'busout_41000' ? 625_000 : 200_000,
         );
         await runOneTick(module);
 
@@ -278,8 +279,8 @@ describe('TranscoderModule throughput (multi-counter ThroughputPoller)', () => {
 
     it('skips the tick when a sink counter is unavailable (idle / not playing)', async () => {
         const module = setup();
-        module.getElementProperty = vi.fn(async (name: string) =>
-            name === 'usink_0' ? 625_000 : undefined,
+        module.readBusSinkBytes = vi.fn(async (name: string) =>
+            name === 'busout_41000' ? 625_000 : undefined,
         );
         await runOneTick(module);
         expect(module.setStatusData).not.toHaveBeenCalledWith('throughput', expect.anything());

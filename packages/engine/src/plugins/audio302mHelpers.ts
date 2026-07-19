@@ -1,5 +1,5 @@
 import type { ChannelMapEntry } from '@media-router/shared-types';
-import { buildUdpSrc } from './udpHelpers.js';
+import { buildBusSrc } from './busHelpers.js';
 
 /**
  * SMPTE-302M (PCM-in-MPEG-TS) pipeline helpers — the PTS-preserving audio
@@ -23,9 +23,8 @@ import { buildUdpSrc } from './udpHelpers.js';
  */
 
 export interface AudioMixSource {
-    host: string;
     port: number;
-    /** Per-consumer unixfd edge socket (undefined on UDP transport). */
+    /** Per-consumer unixfd edge socket (falls back to the channel socket). */
     socketPath?: string;
     connectionId: string;
     /**
@@ -119,7 +118,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         ` ! capsfilter name=${srcName} caps="audio/x-raw,rate=48000,channels=${channels}"`;
 
     const branches = opts.sources.map((s) => {
-        const src = buildUdpSrc({ host: s.host, port: s.port, socketPath: s.socketPath });
+        const src = buildBusSrc({ port: s.port, socketPath: s.socketPath });
         // Per-connection channel mapping on THIS branch's audioconvert.
         const matrix = s.channelMap?.length
             ? mixMatrixClause(s.channelMap, s.sourceChannels ?? 2, channels)
@@ -148,7 +147,7 @@ export interface Audio302mEncodeOpts {
  * standard); stereo is pinned — the encoder's channel ceiling varies by
  * gst-libav build (2 on ≤1.24, re-verify on newer). Ends in its own
  * `mpegtsmux latency=0 alignment=7` (single-ES TS, SRT-aligned) — the
- * caller appends `buildUdpSink(...)`.
+ * caller appends `buildBusSink(...)`.
  */
 export function build302mEncodeBranch(opts: Audio302mEncodeOpts = {}): string {
     const format = opts.format ?? 'S32LE';

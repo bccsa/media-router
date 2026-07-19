@@ -59,33 +59,42 @@ describe('buildBackpressureQueue', () => {
 });
 
 describe('buildTsUdpInput', () => {
-    it('chains udpsrc → leaky queue → tsparse with TS caps on udpsrc', () => {
-        const s = buildTsUdpInput({ host: '239.255.0.1', port: 5500 });
-        // udpsrc declares MPEG-TS caps so caps negotiation works before data flows
-        expect(s).toContain('udpsrc');
-        expect(s).toContain('multicast-group=239.255.0.1');
-        expect(s).toContain('caps="video/mpegts');
+    it('chains unixfdsrc bus ingress → jitter queue → tsparse', () => {
+        const s = buildTsUdpInput({ port: 5500 });
+        // Bus ingress connects the channel socket (caps arrive over the socket)
+        expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500.sock');
+        // buildBusSrc's leaky deep ingress queue (5 s)
+        expect(s).toContain('queue leaky=2 max-size-time=5000000000');
         // jitter queue defaults to 200 ms (absorbs encoder I-frame bursts)
         expect(s).toContain('queue leaky=2 max-size-time=200000000');
         // tsparse re-anchors PCR to local clock (the load-bearing fix)
         expect(s).toContain('tsparse set-timestamps=true');
-        // ordering: udpsrc, then queue, then tsparse
-        const idxUdp = s.indexOf('udpsrc');
-        const idxQueue = s.indexOf('queue');
+        // ordering: unixfdsrc, then jitter queue, then tsparse
+        const idxSrc = s.indexOf('unixfdsrc');
+        const idxJitter = s.indexOf('max-size-time=200000000');
         const idxTsparse = s.indexOf('tsparse');
-        expect(idxUdp).toBeLessThan(idxQueue);
-        expect(idxQueue).toBeLessThan(idxTsparse);
+        expect(idxSrc).toBeLessThan(idxJitter);
+        expect(idxJitter).toBeLessThan(idxTsparse);
     });
     it('honours a custom jitterMs', () => {
-        const s = buildTsUdpInput({ host: '127.0.0.1', port: 1, jitterMs: 100 });
+        const s = buildTsUdpInput({ port: 1, jitterMs: 100 });
         expect(s).toContain('max-size-time=100000000');
     });
-    it('forwards timeoutNs to udpsrc', () => {
-        const s = buildTsUdpInput({ host: '127.0.0.1', port: 1, timeoutNs: 5_000_000_000 });
-        expect(s).toContain('timeout=5000000000');
+    it('connects to the per-consumer edge socket when supplied', () => {
+        const s = buildTsUdpInput({ port: 1, socketPath: '/tmp/mr-bus-1-ab12cd.sock' });
+        expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-1-ab12cd.sock');
     });
-    it('emits the optional udpsrc name', () => {
-        const s = buildTsUdpInput({ host: '127.0.0.1', port: 1, udpsrcName: 'in0' });
-        expect(s).toContain('udpsrc name=in0');
+    it('inserts the bus stall watchdog when stallTimeoutMs is set', () => {
+        const s = buildTsUdpInput({ port: 1, udpsrcName: 'in0', stallTimeoutMs: 5000 });
+        expect(s).toContain(' ! watchdog name=buswd_in0 timeout=5000 ! ');
+    });
+    it('emits the optional element name on the unixfdsrc', () => {
+        const s = buildTsUdpInput({ port: 1, udpsrcName: 'in0' });
+        expect(s).toContain('unixfdsrc name=in0');
+    });
+    it('can preserve source PTS with setTimestamps=false (cross-pipeline A/V sync)', () => {
+        expect(buildTsUdpInput({ port: 1, setTimestamps: false })).toContain(
+            'tsparse set-timestamps=false',
+        );
     });
 });

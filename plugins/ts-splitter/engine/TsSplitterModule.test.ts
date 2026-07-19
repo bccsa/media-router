@@ -4,30 +4,29 @@ import { pidPortId } from './splitterPorts.js';
 
 function makeModule(opts: { upstream?: null | { port: number; socketPath?: string } } = {}) {
     const module = new TsSplitterModule();
-    const getModuleUdpSource = vi.fn(() =>
+    const getModuleBusSource = vi.fn(() =>
         opts.upstream === null
             ? undefined
             : {
-                  host: '239.255.0.1',
                   port: opts.upstream?.port ?? 40000,
                   connectionId: 'c-up',
                   sourceModuleId: 'ip-in-1',
                   sourcePortId: 'mpegts-out',
-                  socketPath: opts.upstream?.socketPath,
+                  socketPath: opts.upstream?.socketPath ?? '/tmp/mr-bus-40000-edge.sock',
               },
     );
     let nextPort = 41000;
     const allocated: Record<string, number> = {};
-    const assignUdpPort = vi.fn((modId: string, portId?: string) => {
+    const assignBusChannel = vi.fn((modId: string, portId?: string) => {
         const key = portId ? `${modId}:${portId}` : modId;
         if (!(key in allocated)) allocated[key] = nextPort++;
-        return { host: '239.255.0.1', port: allocated[key] };
+        return { port: allocated[key] };
     });
     (module as any).services = {
         instanceId: 'split-1',
-        mediaRouter: { getModuleUdpSource, assignUdpPort },
+        mediaRouter: { getModuleBusSource, assignBusChannel },
     };
-    return { module, getModuleUdpSource, assignUdpPort, allocated };
+    return { module, getModuleBusSource, assignBusChannel, allocated };
 }
 
 beforeEach(() => {
@@ -48,18 +47,21 @@ describe('TsSplitterModule.buildPipeline', () => {
     });
 
     it('zero persisted streams -> input-only pipeline (discovery-first)', () => {
-        const { module, assignUdpPort } = makeModule();
+        const { module, assignBusChannel } = makeModule();
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
+        expect(desc!.pipeline).toContain(
+            'unixfdsrc name=netin socket-path=/tmp/mr-bus-40000-edge.sock',
+        );
         expect(desc!.pipeline).toContain('appsink name=splitin');
         expect(desc!.pipeline).not.toContain('appsrc');
         expect(desc!.tsSplit).toMatchObject({ inputAppsink: 'splitin', outputs: [] });
         expect(desc!.restartOnError).toBe(true);
-        expect(assignUdpPort).not.toHaveBeenCalled();
+        expect(assignBusChannel).not.toHaveBeenCalled();
     });
 
     it('allocates one sticky endpoint per persisted stream and builds every output', () => {
-        const { module, assignUdpPort } = makeModule();
+        const { module, assignBusChannel } = makeModule();
         const config = {
             discoveredStreams: [
                 { pid: 0x65, streamType: 0x1b, media: 'video', codec: 'h264' },
@@ -68,8 +70,8 @@ describe('TsSplitterModule.buildPipeline', () => {
         };
         const desc = module.buildPipeline(config);
         expect(desc).not.toBeNull();
-        expect(assignUdpPort).toHaveBeenCalledWith('split-1', pidPortId(0x65));
-        expect(assignUdpPort).toHaveBeenCalledWith('split-1', pidPortId(0xc9));
+        expect(assignBusChannel).toHaveBeenCalledWith('split-1', pidPortId(0x65));
+        expect(assignBusChannel).toHaveBeenCalledWith('split-1', pidPortId(0xc9));
         expect(desc!.tsSplit!.outputs).toEqual([
             { pid: 0x65, appsrc: 'out_0x65', streamType: 0x1b, port: 41000 },
             { pid: 0xc9, appsrc: 'out_0xc9', streamType: 0x0f, port: 41001 },
@@ -80,7 +82,7 @@ describe('TsSplitterModule.buildPipeline', () => {
 
     it('port pool exhaustion -> error health + null', () => {
         const { module } = makeModule();
-        (module as any).services.mediaRouter.assignUdpPort = vi.fn(() => undefined);
+        (module as any).services.mediaRouter.assignBusChannel = vi.fn(() => undefined);
         const setHealth = vi.spyOn(module as any, 'setHealth').mockImplementation(() => undefined);
         const desc = module.buildPipeline({
             discoveredStreams: [{ pid: 0x65, streamType: 0x1b, media: 'video', codec: 'h264' }],

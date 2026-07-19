@@ -90,13 +90,12 @@ export class AudioTranscoderModule extends GstPluginBase {
         // decoder chain depends on it). Mix front-end needs no probe — its
         // content is 302M by contract.
         const instanceId = this.services?.instanceId ?? '';
-        const upstream = this.services?.mediaRouter?.getModuleUdpSource(
+        const upstream = this.services?.mediaRouter?.getModuleBusSource(
             instanceId,
             MPEGTS_INPUT_PORT_ID,
         );
         if (upstream) {
             this.probeResult = await probeMpegTsStream(
-                upstream.host,
                 upstream.port,
                 3000,
                 upstream.socketPath,
@@ -148,9 +147,9 @@ export class AudioTranscoderModule extends GstPluginBase {
         }
 
         // Front-end selection: mpegts-in wins when both inputs are wired.
-        const mpegtsSrc = router.getModuleUdpSource(instanceId, MPEGTS_INPUT_PORT_ID);
+        const mpegtsSrc = router.getModuleBusSource(instanceId, MPEGTS_INPUT_PORT_ID);
         const mixSources = router
-            .getModuleUdpSources(instanceId)
+            .getModuleBusSources(instanceId)
             .filter((s) => s.sinkPortId === AUDIO_INPUT_PORT_ID);
         if (!mpegtsSrc && mixSources.length === 0) {
             this.setHealth('warning', 'No input connected — wire MPEG-TS In or Audio In (302M)');
@@ -168,19 +167,18 @@ export class AudioTranscoderModule extends GstPluginBase {
         const outputs: AudioTranscoderOutput[] = [];
         for (let i = 0; i < renditions.length; i++) {
             const portId = outputPortId(i);
-            const ep = router.assignUdpPort(instanceId, portId);
+            const ep = router.assignBusChannel(instanceId, portId);
             if (!ep) {
                 this.setHealth('error', `UDP port pool exhausted while allocating ${portId}`);
                 return null;
             }
-            outputs.push({ portId, host: ep.host, port: ep.port, rendition: renditions[i] });
+            outputs.push({ portId, port: ep.port, rendition: renditions[i] });
         }
 
         const result = buildPipeline({
             frontEnd: mpegtsSrc
                 ? {
                       mode: 'mpegts',
-                      host: mpegtsSrc.host,
                       port: mpegtsSrc.port,
                       socketPath: mpegtsSrc.socketPath,
                       probedCodec: this.probeResult?.codec,

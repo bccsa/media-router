@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
-import { busEdgeSocketPath, busTeeName } from '../plugins/udpHelpers.js';
+import { busEdgeSocketPath, busTeeName } from '../plugins/busHelpers.js';
 import type { Connection } from './MediaRouter.js';
 
 function conn(over: Partial<Connection> = {}): Connection {
@@ -37,65 +37,48 @@ describe('BusFanoutCoordinator', () => {
         detach = vi.fn();
         target = { sendBusAttach: attach, sendBusDetach: detach };
     });
-    afterEach(() => vi.unstubAllEnvs());
 
-    describe('under unixfd', () => {
-        beforeEach(() => vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd'));
-
-        it('attaches a per-edge branch addressed by tee name + edge socket', () => {
-            const c = conn();
-            make().attach(c);
-            expect(attach).toHaveBeenCalledWith(busTeeName(PORT), busEdgeSocketPath(PORT, c.id));
-        });
-
-        it('detaches by the same edge socket', () => {
-            const c = conn();
-            make().detach(c);
-            expect(detach).toHaveBeenCalledWith(busEdgeSocketPath(PORT, c.id));
-        });
-
-        it('re-attaches only the producer\'s own muxed/mpegts source edges', () => {
-            const mine = conn();
-            const other = conn({
-                id: 'x:out-y:in',
-                sourceModuleId: 'someone-else',
-            });
-            const wrongType = conn({ id: 'z:out-w:in', streamType: 'audio/pcm' });
-            make({ connections: [mine, other, wrongType] }).reattachProducer('srt-input-a');
-            expect(attach).toHaveBeenCalledTimes(1);
-            expect(attach).toHaveBeenCalledWith(busTeeName(PORT), busEdgeSocketPath(PORT, mine.id));
-        });
-
-        it('no-ops when the producer has no allocated channel port yet', () => {
-            const c = conn();
-            new BusFanoutCoordinator(
-                () => ({ getBusAttachTarget: () => target }) as never,
-                () => undefined, // port not allocated
-                () => [c],
-            ).attach(c);
-            expect(attach).not.toHaveBeenCalled();
-        });
-
-        it('no-ops when the producer attach target is down', () => {
-            const c = conn();
-            new BusFanoutCoordinator(
-                () => ({ getBusAttachTarget: () => null }) as never,
-                () => PORT,
-                () => [c],
-            ).attach(c);
-            expect(attach).not.toHaveBeenCalled();
-        });
+    it('attaches a per-edge branch addressed by tee name + edge socket', () => {
+        const c = conn();
+        make().attach(c);
+        expect(attach).toHaveBeenCalledWith(busTeeName(PORT), busEdgeSocketPath(PORT, c.id));
     });
 
-    describe('under UDP transport', () => {
-        it('is a no-op (multicast fans out on its own)', () => {
-            const c = conn();
-            const coord = make({ connections: [c] });
-            coord.attach(c);
-            coord.detach(c);
-            coord.reattachProducer('srt-input-a');
-            expect(attach).not.toHaveBeenCalled();
-            expect(detach).not.toHaveBeenCalled();
+    it('detaches by the same edge socket', () => {
+        const c = conn();
+        make().detach(c);
+        expect(detach).toHaveBeenCalledWith(busEdgeSocketPath(PORT, c.id));
+    });
+
+    it('re-attaches only the producer\'s own muxed/mpegts source edges', () => {
+        const mine = conn();
+        const other = conn({
+            id: 'x:out-y:in',
+            sourceModuleId: 'someone-else',
         });
+        const wrongType = conn({ id: 'z:out-w:in', streamType: 'audio/pcm' });
+        make({ connections: [mine, other, wrongType] }).reattachProducer('srt-input-a');
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(attach).toHaveBeenCalledWith(busTeeName(PORT), busEdgeSocketPath(PORT, mine.id));
+    });
+
+    it('no-ops when the producer has no allocated channel port yet', () => {
+        const c = conn();
+        new BusFanoutCoordinator(
+            () => ({ getBusAttachTarget: () => target }) as never,
+            () => undefined, // port not allocated
+            () => [c],
+        ).attach(c);
+        expect(attach).not.toHaveBeenCalled();
+    });
+
+    it('no-ops when the producer attach target is down', () => {
+        const c = conn();
+        new BusFanoutCoordinator(
+            () => ({ getBusAttachTarget: () => null }) as never,
+            () => PORT,
+            () => [c],
+        ).attach(c);
+        expect(attach).not.toHaveBeenCalled();
     });
 });

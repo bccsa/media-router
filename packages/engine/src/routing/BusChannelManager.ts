@@ -1,6 +1,6 @@
 import { createLogger } from '@media-router/shared-types';
 
-const log = createLogger('UdpPortManager');
+const log = createLogger('BusChannelManager');
 
 const UDP_PORT_MIN = 40000;
 const UDP_PORT_MAX = 50000;
@@ -11,7 +11,7 @@ const UDP_PORT_MAX = 50000;
  * Any module or service can request a port by owner ID.
  * Ports are unique and freed when released.
  */
-export class UdpPortManager {
+export class BusChannelManager {
     /** owner → port */
     private allocated = new Map<string, number>();
     /** port → owner (reverse lookup for conflict detection) */

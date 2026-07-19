@@ -62,9 +62,7 @@ const END_FLAG = 1;
 const align8 = (n: number): number => (n + 7) & ~7;
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export type PacedSinkDescriptor =
-    | { kind: 'udp'; port: number; host: string }
-    | { kind: 'unixfd'; ingestPath: string };
+export type PacedSinkDescriptor = { kind: 'unixfd'; ingestPath: string };
 
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require('node:worker_threads');
@@ -74,9 +72,7 @@ const cap = workerData.ringDataBytes;
 const data = new Uint8Array(workerData.ring, 16, cap);
 const view = new DataView(workerData.ring, 16, cap);
 const desc = workerData.sink;
-const sink = desc.kind === 'unixfd'
-    ? new (require(workerData.unixSinkPath).PacedUnixStreamTsSink)(desc.ingestPath)
-    : new (require(workerData.udpSinkPath).PacedUdpTsSink)(desc.port, desc.host);
+const sink = new (require(workerData.unixSinkPath).PacedUnixStreamTsSink)(desc.ingestPath);
 const publish = () => { Atomics.store(counters, 0, BigInt(sink.bytesSent)); };
 const tick = setInterval(publish, 50);
 let chain = Promise.resolve();
@@ -143,7 +139,7 @@ const drainAvailable = () => {
 
 /**
  * SegmentSink façade whose pacing engine runs on a worker thread. Drop-in
- * for PacedUdpTsSink / PacedUnixStreamTsSink in the hls-pipe runner.
+ * for PacedUnixStreamTsSink in the hls-pipe runner.
  */
 export class WorkerPacedTsSink {
     private readonly worker: Worker;
@@ -178,7 +174,6 @@ export class WorkerPacedTsSink {
                 ring,
                 ringDataBytes: this.cap,
                 sink: desc,
-                udpSinkPath: req.resolve('@media-router/engine/dist/plugins/PacedUdpTsSink.js'),
                 unixSinkPath: req.resolve(
                     '@media-router/engine/dist/plugins/PacedUnixStreamTsSink.js',
                 ),

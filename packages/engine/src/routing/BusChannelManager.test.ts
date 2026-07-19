@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { UdpPortManager } from './UdpPortManager.js';
+import { BusChannelManager } from './BusChannelManager.js';
 
-describe('UdpPortManager', () => {
-    let mgr: UdpPortManager;
+describe('BusChannelManager', () => {
+    let mgr: BusChannelManager;
 
     beforeEach(() => {
-        mgr = new UdpPortManager();
+        mgr = new BusChannelManager();
     });
 
     it('allocates unique ports per owner and is idempotent per owner', () => {
@@ -36,7 +36,7 @@ describe('UdpPortManager', () => {
     });
 
     it('fresh allocations skip released sticky slots, surrendering them only under pool pressure', () => {
-        const small = new UdpPortManager(40000, 40001);
+        const small = new BusChannelManager(40000, 40001);
         expect(small.acquire('mod-a')).toBe(40000);
         small.release('mod-a');
         // Fresh owner skips mod-a's claimed slot while another port is free…

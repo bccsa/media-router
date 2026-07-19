@@ -2,6 +2,25 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
+
+// The module probes the producer's edge socket (no-tap resume mode) via the
+// engine's probeUnixSocket — mock just that export so tests control the
+// probe verdict without touching real unix sockets.
+vi.mock('@media-router/engine', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    probeUnixSocket: vi.fn(async () => false),
+}));
+
+// buildPipeline gates the fallback's resume tap on fs.existsSync(edge socket).
+// Wrap just that export in a pass-through spy so stall tests can force the
+// verdict; every other fs API (and existsSync by default) stays real for the
+// tmpdir-based wayland/cog tests below.
+vi.mock('fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('fs')>();
+    return { ...actual, existsSync: vi.fn(actual.existsSync) };
+});
+
+import { probeUnixSocket } from '@media-router/engine';
 import { VideoPlayerModule } from './VideoPlayerModule.js';
 import { currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
 import {
@@ -11,7 +30,11 @@ import {
     buildSink,
     resolveDecoderThreadType,
     resolveFallbackImagePath,
+    RESUME_SINK_NAME,
 } from './helpers/pipelines.js';
+
+const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
+const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
 
 describe('VideoPlayerModule helpers', () => {
     beforeEach(() => {
@@ -182,6 +205,37 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('textoverlay name=nov text="Standby"');
             expect(s).not.toContain('videotestsrc');
         });
+
+        it('omits the bus-resume tap when no resume socket is given', () => {
+            const s = buildFallbackOnlyPipeline('No video', 'autovideosink sync=false qos=true');
+            expect(s).not.toContain('unixfdsrc');
+            expect(s).not.toContain(RESUME_SINK_NAME);
+        });
+
+        it('appends the bus-resume tap (unixfdsrc → leaky queue → named fakesink) when a resume socket is given', () => {
+            // The tap keeps draining this module's own fan-out edge while the
+            // colour bars are up, so the module can poll `resume_sink` for byte
+            // progress (source resumed) without tearing the fallback down —
+            // the bus-native replacement for the old passive dgram probe.
+            const s = buildFallbackOnlyPipeline(
+                'No video',
+                'autovideosink sync=false qos=true',
+                undefined,
+                '/tmp/mr-bus-5500-abc.sock',
+            );
+            expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500-abc.sock');
+            // Leaky so the tap can never back-pressure the producer's edge.
+            expect(s).toContain(
+                'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0',
+            );
+            expect(s).toContain(`fakesink name=${RESUME_SINK_NAME} sync=false async=false`);
+            // Side chain, not spliced into the render path: the visible chain
+            // still ends at the sink, the tap follows after it.
+            expect(s.indexOf('autovideosink')).toBeLessThan(s.indexOf('unixfdsrc'));
+            // The fallback video branch is still intact.
+            expect(s).toContain('videotestsrc');
+            expect(s).toContain('textoverlay name=nov');
+        });
     });
 
     describe('resolveFallbackImagePath', () => {
@@ -243,32 +297,30 @@ describe('VideoPlayerModule helpers', () => {
     });
 
     describe('buildLivePipeline', () => {
-        it('wires udpsrc → tsdemux → decodebin → sink for multicast', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
-                host: '239.255.0.1',
-                port: 5000,
-            });
-            expect(s).toContain('udpsrc multicast-group=239.255.0.1 port=5000');
+        const busSource = { port: 5000, socketPath: '/tmp/mr-bus-5000-abc.sock' };
+
+        it('wires unixfdsrc → tsdemux → decodebin → sink off the bus edge socket', () => {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5000-abc.sock');
             expect(s).toContain('tsdemux');
             expect(s).toContain('decodebin');
             expect(s).toContain('kmssink name=sink');
+            // No UDP ingress remains — unixfd is the only bus transport.
+            expect(s).not.toContain('udpsrc');
             // No fallback branch when a source is connected.
             expect(s).not.toContain('input-selector');
             expect(s).not.toContain('videotestsrc');
         });
 
         it('re-anchors PTS by default (tsparse set-timestamps=true) — single-pipeline playout', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
-                host: '239.255.0.1',
-                port: 5000,
-            });
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).toContain('tsparse set-timestamps=true');
         });
 
         it('preserves source PTS when clock-locked (preserveSourcePts=true) so it shares the audio timeline', () => {
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
-                { host: '239.255.0.1', port: 5000 },
+                busSource,
                 false,
                 200,
                 true,
@@ -280,10 +332,7 @@ describe('VideoPlayerModule helpers', () => {
         it('passes native resolution through on the KMS/auto path (constrainSurface=false)', () => {
             // Forcing 1280×720 here would downscale a native-res broadcast
             // panel — only the wayland-fullscreen path needs the fixed size.
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
-                host: '239.255.0.1',
-                port: 5000,
-            });
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).toContain('videoconvert ! videoscale ! kmssink');
             expect(s).not.toContain('width=1280,height=720');
         });
@@ -294,7 +343,7 @@ describe('VideoPlayerModule helpers', () => {
             // `libwayland: error in client communication`.
             const s = buildLivePipeline(
                 'waylandsink name=sink sync=false fullscreen=true qos=true',
-                { host: '239.255.0.1', port: 5000 },
+                busSource,
                 true,
             );
             expect(s).toContain('videoscale add-borders=true');
@@ -302,31 +351,22 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('pixel-aspect-ratio=1/1');
         });
 
-        it('drops multicast-group for unicast sources', () => {
-            const s = buildLivePipeline('autovideosink sync=false qos=true', {
-                host: '127.0.0.1',
-                port: 6000,
-            });
-            expect(s).toContain('udpsrc port=6000');
-            expect(s).not.toContain('multicast-group');
+        it('arms a 5s stall watchdog on the bus ingress so a silent producer trips bus_stall', () => {
+            // The watchdog element replaces udpsrc's `timeout` property: the
+            // runner matches the `buswd` prefix on its ERROR and tags it
+            // `kind: 'bus_stall'`, which the module latches into fallback.
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
         });
-        it('arms udpsrc with a 5s timeout so a stalled stream triggers restart', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
-                host: '239.255.0.1',
-                port: 5000,
-            });
-            expect(s).toContain('timeout=5000000000');
-        });
-        it('inserts tsparse between udpsrc and tsdemux to re-anchor PCR to the local clock', () => {
-            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', {
-                host: '239.255.0.1',
-                port: 5000,
-            });
-            expect(s).toContain('tsparse set-timestamps=true');
-            const idxUdp = s.indexOf('udpsrc');
+
+        it('orders unixfdsrc → watchdog → tsparse → tsdemux (watchdog sees raw socket delivery)', () => {
+            const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            const idxSrc = s.indexOf('unixfdsrc');
+            const idxWd = s.indexOf('watchdog');
             const idxTsparse = s.indexOf('tsparse');
             const idxTsdemux = s.indexOf('tsdemux');
-            expect(idxUdp).toBeLessThan(idxTsparse);
+            expect(idxSrc).toBeLessThan(idxWd);
+            expect(idxWd).toBeLessThan(idxTsparse);
             expect(idxTsparse).toBeLessThan(idxTsdemux);
         });
     });
@@ -378,7 +418,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = new VideoPlayerModule();
             (module as any).services = {
                 instanceId: 'video-player-1',
-                mediaRouter: { getModuleUdpSource: vi.fn() },
+                mediaRouter: { getModuleBusSource: vi.fn() },
             };
             (module as any).setHealth = vi.fn();
             return module;
@@ -387,7 +427,7 @@ describe('VideoPlayerModule helpers', () => {
         it('returns a fallback-only pipeline when no source is connected', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue(undefined);
+            (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
             const desc = module.buildPipeline({ fallbackText: 'Nothing here', display: '' });
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Nothing here');
@@ -400,12 +440,12 @@ describe('VideoPlayerModule helpers', () => {
             );
         });
 
-        it('returns the live pipeline when a UDP source is assigned (KMS path)', () => {
+        it('returns the live pipeline when a bus source is assigned (KMS path)', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue({
-                host: '239.255.0.1',
+            (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue({
                 port: 5500,
+                socketPath: '/tmp/mr-bus-5500-abc.sock',
                 connectionId: 'enc-1:mpegts-out-player-1:mpegts-in',
                 sourceModuleId: 'enc-1',
                 sourcePortId: 'mpegts-out',
@@ -414,7 +454,8 @@ describe('VideoPlayerModule helpers', () => {
                 fallbackText: 'No video',
                 display: 'HDMI-A-1',
             });
-            expect(desc.pipeline).toContain('udpsrc multicast-group=239.255.0.1');
+            expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500-abc.sock');
+            expect(desc.pipeline).toContain('watchdog name=buswd_5500 timeout=5000');
             expect(desc.pipeline).toContain('tsdemux');
             expect(desc.pipeline).toContain('decodebin');
             // On a test machine without /sys/class/drm, resolveConnectorId returns
@@ -440,7 +481,7 @@ describe('VideoPlayerModule helpers', () => {
             process.env.XDG_RUNTIME_DIR = tmpRuntime;
             try {
                 const module = makeModule();
-                (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue(undefined);
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
                 const desc = module.buildPipeline({
                     fallbackText: 'No video',
                     display: 'DSI-2',
@@ -694,65 +735,244 @@ describe('VideoPlayerModule helpers', () => {
         });
     });
 
-    describe('UDP-stall fallback', () => {
+    describe('bus-stall fallback', () => {
+        const busSource = { port: 5500, socketPath: '/tmp/mr-bus-5500-abc.sock' };
+
         function makeModule() {
             const module = new VideoPlayerModule();
             (module as any).services = {
                 instanceId: 'video-player-1',
-                mediaRouter: { getModuleUdpSource: vi.fn() },
+                mediaRouter: { getModuleBusSource: vi.fn(() => busSource) },
             };
             (module as any).setHealth = vi.fn();
+            (module as any).log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
             return module;
         }
+
+        afterEach(() => {
+            // mockReset restores the creation-time implementations (vitest 3):
+            // probe → resolves false, existsSync → real fs passthrough.
+            probeUnixSocketMock.mockReset();
+            existsSyncMock.mockReset();
+            vi.restoreAllMocks();
+        });
 
         it('returns the live pipeline by default when a source is connected', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue({
-                host: '239.255.0.1',
-                port: 5500,
-            });
             const desc = module.buildPipeline({ display: '' });
             // Sanity: with no stall latched, live wins.
-            expect(desc.pipeline).toContain('udpsrc');
+            expect(desc.pipeline).toContain('unixfdsrc');
             expect(desc.pipeline).not.toContain('videotestsrc');
         });
 
-        it('returns the colour-bars fallback even with a UDP source connected when the stall flag is latched', () => {
-            // This is the user-visible behaviour we want: the source has
-            // a UDP mapping (so getModuleUdpSource returns a real host:port)
-            // but it stopped sending data and the runner posted a
-            // GstUDPSrcTimeout. The latched flag flips the next pipeline
-            // build over to videotestsrc + textoverlay so the display
-            // shows colour bars instead of a frozen frame.
+        it('a bus_stall error latches the flag and triggers a fallback rebuild', () => {
+            // The runner tags the stall watchdog's ERROR `kind: 'bus_stall'`.
+            // gst-runner's restartOnError would replay the same live pipeline,
+            // so the module must latch + trigger a full restart so
+            // buildPipeline is re-called with the flag set.
+            const module = makeModule();
+            const restart = vi
+                .spyOn(module as any, 'restartPipeline')
+                .mockResolvedValue(undefined);
+            const child = { on: vi.fn() };
+            (module as any).childProcess = child;
+            (module as any).installBusStallListener();
+            const errorHandler = child.on.mock.calls.find((c) => c[0] === 'error')![1];
+
+            errorHandler({ kind: 'other', message: 'not a stall' });
+            expect((module as any).busStallDetected).toBe(false);
+            expect(restart).not.toHaveBeenCalled();
+
+            errorHandler({ kind: 'bus_stall', message: 'buswd_5500: no data' });
+            expect((module as any).busStallDetected).toBe(true);
+            expect(restart).toHaveBeenCalledTimes(1);
+            expect((module as any).busResumeWatchdog).not.toBeNull();
+
+            // A repeat stall while already latched must not re-trigger.
+            errorHandler({ kind: 'bus_stall' });
+            expect(restart).toHaveBeenCalledTimes(1);
+
+            (module as any).clearBusStallState();
+        });
+
+        it('latched + edge socket exists → fallback carries the resume tap', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            (module as any).services.mediaRouter.getModuleUdpSource.mockReturnValue({
-                host: '239.255.0.1',
-                port: 5500,
-            });
-            (module as any).udpStallDetected = true;
+            (module as any).busStallDetected = true;
+            existsSyncMock.mockReturnValue(true);
             const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Source down');
-            expect(desc.pipeline).not.toContain('udpsrc');
+            expect(desc.pipeline).toContain(
+                `unixfdsrc socket-path=${busSource.socketPath}`,
+            );
+            expect(desc.pipeline).toContain(`fakesink name=${RESUME_SINK_NAME}`);
+            expect((module as any).resumeTapActive).toBe(true);
             expect((module as any).setHealth).toHaveBeenCalledWith(
                 'warning',
                 expect.stringContaining('Source silent'),
             );
         });
 
-        it('clears the stall flag and the UDP resume probe in clearUdpStallState (used on external stop)', () => {
+        it('latched but edge socket missing (producer down) → fallback without the tap', () => {
+            // A missing socket must not enter the pipeline: the runner's
+            // bus-socket gate would hold the colour bars hostage waiting for
+            // a dead producer to serve it.
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            (module as any).udpStallDetected = true;
-            // Stand-in for an open dgram socket — close() is the only method
-            // clearUdpStallState() touches.
-            const fakeSock = { close: vi.fn() };
-            (module as any).udpResumeProbe = fakeSock;
-            (module as any).clearUdpStallState();
-            expect((module as any).udpStallDetected).toBe(false);
-            expect((module as any).udpResumeProbe).toBeNull();
-            expect(fakeSock.close).toHaveBeenCalled();
+            (module as any).busStallDetected = true;
+            existsSyncMock.mockReturnValue(false);
+            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
+            expect(desc.pipeline).toContain('videotestsrc');
+            expect(desc.pipeline).not.toContain('unixfdsrc');
+            expect(desc.pipeline).not.toContain(RESUME_SINK_NAME);
+            expect((module as any).resumeTapActive).toBe(false);
+        });
+
+        it('no-source fallback never carries a tap even when a socket file exists', () => {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+            const module = makeModule();
+            (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+            existsSyncMock.mockReturnValue(true);
+            const desc = module.buildPipeline({ display: '' });
+            expect(desc.pipeline).toContain('videotestsrc');
+            expect(desc.pipeline).not.toContain('unixfdsrc');
+            expect((module as any).resumeTapActive).toBe(false);
+        });
+
+        describe('pollBusResume (tap mode)', () => {
+            it('clears the latch and restarts live when the tap byte counter advances', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const readBytes = vi
+                    .spyOn(module as any, 'readBusSinkBytes')
+                    .mockResolvedValue(1000);
+
+                // First tick: baseline only — no previous sample to compare.
+                await (module as any).pollBusResume();
+                expect(readBytes).toHaveBeenCalledWith(RESUME_SINK_NAME);
+                expect(restart).not.toHaveBeenCalled();
+                expect((module as any).busStallDetected).toBe(true);
+
+                // Counter flat: still stalled.
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+
+                // Counter advanced: source resumed → back to live.
+                readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume();
+                expect((module as any).busStallDetected).toBe(false);
+                expect(restart).toHaveBeenCalledTimes(1);
+                expect((module as any).busResumeWatchdog).toBeNull();
+            });
+
+            it('does nothing while a restart cycle is already in flight', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                (module as any).pipelineRestartInProgress = true;
+                const readBytes = vi.spyOn(module as any, 'readBusSinkBytes');
+                await (module as any).pollBusResume();
+                expect(readBytes).not.toHaveBeenCalled();
+            });
+        });
+
+        describe('pollBusResume (no-tap mode)', () => {
+            it('probes the edge socket and retries live once it answers', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = false;
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+
+                probeUnixSocketMock.mockResolvedValue(false);
+                await (module as any).pollBusResume();
+                expect(probeUnixSocketMock).toHaveBeenCalledWith(busSource.socketPath);
+                expect(restart).not.toHaveBeenCalled();
+                expect((module as any).busStallDetected).toBe(true);
+
+                // Producer respawned — socket answers → retry live directly.
+                probeUnixSocketMock.mockResolvedValue(true);
+                await (module as any).pollBusResume();
+                expect((module as any).busStallDetected).toBe(false);
+                expect(restart).toHaveBeenCalledTimes(1);
+            });
+        });
+
+        it('external stop wipes the stall state; internal restart preserves the latch', async () => {
+            const module = makeModule();
+
+            // Internal restart cycle: onStop runs with the in-progress latch
+            // set — the stall flag must survive so the rebuilt pipeline picks
+            // the fallback that triggered this very restart.
+            (module as any).busStallDetected = true;
+            (module as any).resumeTapActive = true;
+            (module as any).pipelineRestartInProgress = true;
+            await module.onStop();
+            expect((module as any).busStallDetected).toBe(true);
+
+            // External stop (user disabled / engine shutdown): fresh start
+            // must never inherit a stale fallback decision.
+            (module as any).pipelineRestartInProgress = false;
+            (module as any).startBusResumeWatchdog();
+            await module.onStop();
+            expect((module as any).busStallDetected).toBe(false);
+            expect((module as any).resumeTapActive).toBe(false);
+            expect((module as any).busResumeWatchdog).toBeNull();
+        });
+
+        it('installBusStallListener re-arms the resume poller when the latch survived an internal restart', () => {
+            const module = makeModule();
+            (module as any).busStallDetected = true;
+            (module as any).childProcess = null; // rebuild may have failed — poller must still run
+            (module as any).installBusStallListener();
+            expect((module as any).busResumeWatchdog).not.toBeNull();
+            (module as any).clearBusStallState();
+        });
+    });
+
+    describe('updateStatusData', () => {
+        it('reports the input source as the bus channel port', () => {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+            const module = new VideoPlayerModule();
+            (module as any).services = {
+                instanceId: 'video-player-1',
+                mediaRouter: {
+                    getModuleBusSource: vi.fn(() => ({
+                        port: 5500,
+                        socketPath: '/tmp/mr-bus-5500-abc.sock',
+                    })),
+                },
+            };
+            const setStatusData = vi.fn();
+            (module as any).setStatusData = setStatusData;
+            (module as any).updateStatusData();
+            expect(setStatusData).toHaveBeenCalledWith('input', {
+                source: 'bus 5500',
+                state: 'connected',
+            });
+        });
+
+        it('reports a dash when no source is connected', () => {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+            const module = new VideoPlayerModule();
+            (module as any).services = {
+                instanceId: 'video-player-1',
+                mediaRouter: { getModuleBusSource: vi.fn(() => undefined) },
+            };
+            const setStatusData = vi.fn();
+            (module as any).setStatusData = setStatusData;
+            (module as any).updateStatusData();
+            expect(setStatusData).toHaveBeenCalledWith('input', {
+                source: '—',
+                state: 'no source',
+            });
         });
     });
 
@@ -763,9 +983,9 @@ describe('VideoPlayerModule helpers', () => {
             (module as any).services = {
                 instanceId: 'video-player-1',
                 mediaRouter: {
-                    getModuleUdpSource: vi.fn(() =>
+                    getModuleBusSource: vi.fn(() =>
                         opts.hasSource
-                            ? { host: '239.255.0.1', port: 5500 }
+                            ? { port: 5500, socketPath: '/tmp/mr-bus-5500-abc.sock' }
                             : undefined,
                     ),
                 },
@@ -804,7 +1024,7 @@ describe('VideoPlayerModule helpers', () => {
             // *both* "no source" and "source-silent" states; the guard now
             // pushes the live update in either case.
             const { module, setProperty } = makeRunningModule({ hasSource: true });
-            (module as any).udpStallDetected = true;
+            (module as any).busStallDetected = true;
             await module.onLiveConfigUpdate({ fallbackText: 'Whats sup' });
             expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
         });

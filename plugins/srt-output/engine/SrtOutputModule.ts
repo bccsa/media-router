@@ -1,7 +1,7 @@
 import {
     GstPluginBase,
     buildBackpressureQueue,
-    buildUdpSrc,
+    buildBusSrc,
     SrtStatPoller,
     type PipelineDescription,
     type SrtStatPollerHost,
@@ -81,7 +81,7 @@ export class SrtOutputModule extends GstPluginBase {
 
         // Get the UDP source from the connected encoder/srt-input
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!udpSource) {
             this.log.info('No MPEG-TS source connected — idle');
             return null;
@@ -112,8 +112,7 @@ export class SrtOutputModule extends GstPluginBase {
                 ? [`tsparse alignment=${packetsPerDatagram} set-timestamps=false`]
                 : [];
         const pipeline = [
-            buildUdpSrc({
-                host: udpSource.host,
+            buildBusSrc({
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),

@@ -97,7 +97,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         }
 
         const sources = router
-            .getModuleUdpSources(instanceId)
+            .getModuleBusSources(instanceId)
             .filter((s) => s.sinkPortId === 'audio-in');
         if (sources.length === 0) {
             this.setHealth('warning', 'No 302M sources connected');

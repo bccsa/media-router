@@ -149,7 +149,7 @@ export class ConnectionApplier {
         const config = this.getConfig();
         if (!config) return;
 
-        // Cascade path (post consumer-restart via MpegTsUdpExecutor): the
+        // Cascade path (post consumer-restart via MpegTsBusExecutor): the
         // module we're re-applying for was just stopped/started to pick up a
         // producer's udpsrc, which recreated its PipeWire null-sink. Any live
         // pw-link handle on its *outgoing* edges now points at a destroyed
@@ -165,7 +165,7 @@ export class ConnectionApplier {
         const storedConns = (config.connections ?? []) as StoredConnection[];
         for (const conn of storedConns) {
             // `outgoingOnly` is used by the post-consumer-restart cascade
-            // (MpegTsUdpExecutor.onConsumerRestarted): re-applying the just-
+            // (MpegTsBusExecutor.onConsumerRestarted): re-applying the just-
             // restarted module's *incoming* edges would restart it again,
             // re-firing the cascade — an infinite restart loop. It bites
             // multi-input consumers hardest (e.g. mpegts-muxer: 2 encoder

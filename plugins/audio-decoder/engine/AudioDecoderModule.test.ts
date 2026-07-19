@@ -1,13 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AudioDecoderModule } from './AudioDecoderModule.js';
 
-function makeModule(opts: { upstream?: { host: string; port: number } | null } = {}) {
+function makeModule(opts: { upstream?: { port: number; socketPath?: string } | null } = {}) {
     const module = new AudioDecoderModule() as any;
+    const port = opts.upstream?.port ?? 41000;
     const upstream =
         opts.upstream === null
             ? null
-            : { host: opts.upstream?.host ?? '239.255.0.1', port: opts.upstream?.port ?? 41000 };
-    const getModuleUdpSource = vi.fn(() =>
+            : {
+                  port,
+                  socketPath: opts.upstream?.socketPath ?? `/tmp/mr-bus-${port}-abc123.sock`,
+              };
+    const getModuleBusSource = vi.fn(() =>
         upstream === null
             ? undefined
             : {
@@ -19,7 +23,7 @@ function makeModule(opts: { upstream?: { host: string; port: number } | null } =
     );
     module.services = {
         instanceId: 'dec-1',
-        mediaRouter: { getModuleUdpSource },
+        mediaRouter: { getModuleBusSource },
     };
     module.config = {};
     module.probeResult = null;
@@ -29,7 +33,7 @@ function makeModule(opts: { upstream?: { host: string; port: number } | null } =
     });
     const setHealth = vi.fn();
     module.setHealth = setHealth;
-    return { module, getModuleUdpSource, setHealth };
+    return { module, getModuleBusSource, setHealth };
 }
 
 describe('AudioDecoderModule.buildPipeline', () => {
@@ -39,6 +43,16 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const { module, setHealth } = makeModule({ upstream: null });
         expect(module.buildPipeline({})).toBeNull();
         expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('No encoder'));
+    });
+
+    it('reads its per-consumer unixfd edge socket with the leaky bus-ingress queue', () => {
+        const { module } = makeModule();
+        module.probeResult = { codec: 'opus' };
+        const desc = module.buildPipeline({});
+        expect(desc!.pipeline).toContain(
+            'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0 ! tsdemux',
+        );
+        expect(desc!.pipeline).not.toContain('udpsrc');
     });
 
     it.each([

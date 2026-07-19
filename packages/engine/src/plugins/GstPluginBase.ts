@@ -5,7 +5,6 @@ import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
-import { busTransport } from './udpHelpers.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -448,21 +447,16 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /**
-     * Cumulative bytes pushed into a bus egress sink, transport-agnostic.
-     * udpsink exposes `bytes-served`; unixfdsink has no byte counter, so
-     * count bytes on its sink pad via the runner's throughput tracker.
-     * `track_throughput` is idempotent per element, so re-arming on every
-     * read is safe — and it survives child-process respawns, which drop
-     * the python-side trackers.
+     * Cumulative bytes pushed into the bus-egress tee. The tee has no byte
+     * counter of its own, so count bytes on its sink pad via the runner's
+     * throughput tracker. `track_throughput` is idempotent per element, so
+     * re-arming on every read is safe — and it survives child-process
+     * respawns, which drop the python-side trackers.
      */
     protected async readBusSinkBytes(element: string): Promise<number | undefined> {
-        if (busTransport() === 'unixfd') {
-            await this.trackThroughput(element, 'sink');
-            const total = (await this.getThroughput())[element]?.total_bytes;
-            return typeof total === 'number' ? total : undefined;
-        }
-        const served = await this.getElementProperty(element, 'bytes-served');
-        return typeof served === 'number' ? served : undefined;
+        await this.trackThroughput(element, 'sink');
+        const total = (await this.getThroughput())[element]?.total_bytes;
+        return typeof total === 'number' ? total : undefined;
     }
 
     /** Start tracking throughput on a named element's pad. */

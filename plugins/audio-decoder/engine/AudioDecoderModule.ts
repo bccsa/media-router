@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSrc,
+    buildBusSrc,
     type PipelineDescription,
     type ModuleServices,
     probeMpegTsStream,
@@ -24,12 +24,11 @@ export class AudioDecoderModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
 
         // 1. Probe the stream for codec (and channels if available — opus includes it, AAC doesn't)
         if (udpSource) {
             this.probeResult = await probeMpegTsStream(
-                udpSource.host,
                 udpSource.port,
                 3000,
                 udpSource.socketPath,
@@ -44,7 +43,7 @@ export class AudioDecoderModule extends GstPluginBase {
 
         // 2. Resolve channel count from multiple sources (first available wins):
         //    - Stream probe caps (reliable for opus, unavailable for AAC/ADTS)
-        //    - Upstream encoder config (available after encoder starts — getModuleUdpSource reads it)
+        //    - Upstream encoder config (available after encoder starts — getModuleBusSource reads it)
         //    - Stored decoder config (from previous run's emitConfigUpdate)
         //    - Default: 2
         const probedCh = this.probeResult?.channels;
@@ -109,21 +108,15 @@ export class AudioDecoderModule extends GstPluginBase {
 
         // Check if we have a UDP source assigned by MediaRouter
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
 
         if (!udpSource) {
             this.setHealth('warning', 'No encoder connected');
             return null;
         }
 
-        // 256 KB kernel buffer (was 64 KB). Bigger headroom against short
-        // scheduler hiccups without any latency cost — kernel UDP receive
-        // buffer is purely a back-pressure safety net, not a steady-state
-        // delay. The leaky queue after `tsdemux` still bounds latency.
-        const udpSrc = buildUdpSrc({
-            host: udpSource.host,
+        const udpSrc = buildBusSrc({
             port: udpSource.port,
-            bufferSize: 262_144,
             socketPath: udpSource.socketPath,
         });
 

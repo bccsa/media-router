@@ -2,11 +2,9 @@
  * hls-pipe runner — spawned by HlsPlayerModule as an isolated Node child.
  *
  * Embeds hls-pipe's Extractor and writes paced canonical MPEG-TS to the
- * module's bus egress instead of stdout, so stdout stays free for one-line
- * JSON stats the parent parses. The egress is picked by `cfg.sink`: the
- * loopback multicast group under UDP transport (PacedUdpTsSink), or the
- * module's unixfd-fanout sidecar ingest socket under unixfd
- * (PacedUnixStreamTsSink). hls-pipe is ESM-only; this file compiles to CJS
+ * module's unixfd-fanout sidecar ingest socket (PacedUnixStreamTsSink)
+ * instead of stdout, so stdout stays free for one-line JSON stats the parent
+ * parses. hls-pipe is ESM-only; this file compiles to CJS
  * (like the rest of the plugin) and loads it via dynamic `import()`, which
  * NodeNext preserves natively for CJS→ESM interop.
  *
@@ -33,19 +31,17 @@ async function main(): Promise<void> {
     const { Extractor, makeOutputMode, DEFAULT_ABR_CONFIG, UNSTABLE_NETWORK_ABR_CONFIG } =
         await import('hls-pipe');
 
-    // Paced sink — releases each segment's datagrams at the media rate so the
-    // receiver (udpsrc kernel buffer, or the sidecar's per-consumer queues)
-    // doesn't overflow. `sink` descriptor picks the transport; absent (old
-    // module build) falls back to the legacy host/port multicast fields.
+    // Paced sink — releases each segment's datagrams at the media rate so
+    // the sidecar's per-consumer queues don't overflow.
     // Runs on a WORKER THREAD (WorkerPacedTsSink): the extractor's
     // per-segment fetch/decrypt/demux/mux is one main-thread macrotask, which
     // used to starve the drain timers and stall the wire ~100 ms at every
     // segment boundary.
-    const sink = new WorkerPacedTsSink(
-        cfg.sink?.kind === 'unixfd'
-            ? { kind: 'unixfd', ingestPath: cfg.sink.ingestPath }
-            : { kind: 'udp', port: cfg.port, host: cfg.host },
-    );
+    if (cfg.sink?.kind !== 'unixfd') {
+        process.stderr.write('hls-pipe-runner: missing unixfd sink descriptor\n');
+        process.exit(2);
+    }
+    const sink = new WorkerPacedTsSink({ kind: 'unixfd', ingestPath: cfg.sink.ingestPath });
 
     const abort = new AbortController();
     const stop = (): void => abort.abort();

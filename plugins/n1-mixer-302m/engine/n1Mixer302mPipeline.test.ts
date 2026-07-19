@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { AudioMixSource } from '@media-router/engine';
 import {
     activeOutputIndices,
@@ -10,7 +10,6 @@ import {
 
 function mkSource(i: number, n = 0): AudioMixSource {
     return {
-        host: '239.255.0.1',
         port: 40100 + i * 10 + n,
         connectionId: `c-${i}-${n}`,
         socketPath: `/tmp/mr-bus-${40100 + i * 10 + n}-abcdef.sock`,
@@ -24,10 +23,8 @@ function mkInputs(indices: number[], sourcesPer = 1): Map<number, AudioMixSource
 }
 
 function mkOutputs(indices: number[]): N1Output[] {
-    return indices.map((o) => ({ index: o, host: '239.255.0.1', port: 40200 + o }));
+    return indices.map((o) => ({ index: o, port: 40200 + o }));
 }
-
-afterEach(() => vi.unstubAllEnvs());
 
 describe('readPairCount', () => {
     it('defaults to 4 and clamps to 2–16', () => {
@@ -98,7 +95,10 @@ describe('buildN1Pipeline', () => {
         // One 302M encode + bus sink per output, one decode per source branch.
         expect(pipeline.match(/avenc_s302m/g)).toHaveLength(4);
         expect(pipeline.match(/avdec_s302m/g)).toHaveLength(4);
-        expect(pipeline).toContain('udpsink name=usink_0 host=239.255.0.1 port=40200');
+        expect(pipeline).toContain(
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_40200 allow-not-linked=true',
+        );
+        expect(pipeline.match(/tee name=busout_/g)).toHaveLength(4);
     });
 
     it('sums multiple sources wired to one input port', () => {
@@ -149,8 +149,7 @@ describe('buildN1Pipeline', () => {
         expect(pipeline).toContain('audiomixer name=omix0 force-live=true latency=50000000');
     });
 
-    it('unixfd transport: per-edge sockets in, fan-out tees out', () => {
-        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
+    it('per-edge unixfd sockets in, fan-out tees out', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1]),
             outputs: mkOutputs([0, 1]),

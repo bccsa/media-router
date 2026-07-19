@@ -53,13 +53,13 @@ export function packetizeTs(
  * MPEG-TS sink core that **paces output to the media rate** while letting the
  * producer download ahead into a buffer — the shared engine of the
  * non-GStreamer Node producer egress (hls-player), transport supplied by the
- * subclass (`PacedUdpTsSink` → multicast bus, `PacedUnixStreamTsSink` → the
- * unixfd fan-out sidecar's ingest socket).
+ * subclass (`PacedUnixStreamTsSink` → the unixfd fan-out sidecar's ingest
+ * socket).
  *
  * Implements the sink contract `write(chunk, mediaSeconds)` + `end()` (see
  * hls-pipe's `SegmentSink`). Producers deliver a whole segment per `write`;
- * sending those bytes downstream at once overruns the receiver (a udpsrc
- * kernel buffer, or the sidecar's 500 ms per-consumer queues) and shreds the
+ * sending those bytes downstream at once overruns the receiver (the sidecar's
+ * 500 ms per-consumer queues) and shreds the
  * stream — the other producers avoid this only because a real-time source
  * (srtsrc, pulsesrc) paces them. We reconstruct that pacing:
  *

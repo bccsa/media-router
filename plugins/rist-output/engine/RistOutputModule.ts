@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSrc,
+    buildBusSrc,
     type PipelineDescription,
     type RistRunnerConfig,
 } from '@media-router/engine';
@@ -62,7 +62,7 @@ export class RistOutputModule extends GstPluginBase {
         // Bus source from the connected producer (per-consumer edge socket
         // under unixfd — same resolution as every other bus consumer).
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!udpSource) {
             this.log.info('No MPEG-TS source connected — idle');
             return null;
@@ -71,8 +71,7 @@ export class RistOutputModule extends GstPluginBase {
         // appsink properties (bounded/dropping/unsynced) are applied by the
         // runner when it wires librist — the string only names the element.
         const pipeline = [
-            buildUdpSrc({
-                host: udpSource.host,
+            buildBusSrc({
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),

@@ -6,11 +6,10 @@ function makeModule() {
     module.services = {
         instanceId: 'rist-out-1',
         mediaRouter: {
-            getModuleUdpSource: vi.fn(() => ({
-                host: '239.255.0.1',
+            getModuleBusSource: vi.fn(() => ({
                 port: 41000,
                 connectionId: 'c1',
-                socketPath: undefined,
+                socketPath: '/tmp/mr-bus-41000-abc123.sock',
             })),
         },
     };
@@ -26,44 +25,23 @@ function makeModule() {
 }
 
 describe('RistOutputModule.buildPipeline', () => {
-    const savedTransport = process.env.MR_BUS_TRANSPORT;
-    afterEach(() => {
-        if (savedTransport === undefined) delete process.env.MR_BUS_TRANSPORT;
-        else process.env.MR_BUS_TRANSPORT = savedTransport;
-    });
-
     it('returns null when no MPEG-TS source is connected', () => {
         const { module } = makeModule();
-        module.services.mediaRouter.getModuleUdpSource = vi.fn(() => undefined);
+        module.services.mediaRouter.getModuleBusSource = vi.fn(() => undefined);
         module.log = { info: vi.fn() };
         expect(module.buildPipeline({})).toBeNull();
     });
 
-    it('reads the bus and drains into the librist appsink (udp transport)', () => {
-        delete process.env.MR_BUS_TRANSPORT;
+    it('reads its per-consumer edge socket and drains into the librist appsink', () => {
         const { module } = makeModule();
-        const desc = module.buildPipeline({})!;
-        expect(desc.pipeline).toContain('udpsrc multicast-group=239.255.0.1 port=41000');
-        expect(desc.pipeline).toContain('appsink name=ristsink');
-        expect(desc.restartOnError).toBe(true);
-    });
-
-    it('reads its per-consumer edge socket under the unixfd bus', () => {
-        process.env.MR_BUS_TRANSPORT = 'unixfd';
-        const { module } = makeModule();
-        module.services.mediaRouter.getModuleUdpSource = vi.fn(() => ({
-            host: '239.255.0.1',
-            port: 41000,
-            connectionId: 'c1',
-            socketPath: '/tmp/mr-bus-41000-abc123.sock',
-        }));
         const desc = module.buildPipeline({})!;
         expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock');
-        // The queue between unixfdsrc and the appsink is buildUdpSrc's drain
+        // The queue between unixfdsrc and the appsink is buildBusSrc's drain
         // contract — presence matters here, its tuning is the builder's test.
         expect(desc.pipeline).toMatch(/unixfdsrc[^!]+! queue /);
         expect(desc.pipeline).toContain('appsink name=ristsink');
         expect(desc.pipeline).not.toContain('udpsrc');
+        expect(desc.restartOnError).toBe(true);
     });
 
     it('carries the librist sender config with per-link rist:// URLs', () => {

@@ -8,9 +8,9 @@
  *   - the default `mpegtsmux alignment` (=7, packed UDP).
  */
 
-import { buildUdpSrc } from './udpHelpers.js';
+import { buildBusSrc } from './busHelpers.js';
 
-/** Default `mpegtsmux alignment`. 7 = pack 7 TS packets per UDP buffer (1316 B). */
+/** Default `mpegtsmux alignment`. 7 = pack 7 TS packets per buffer (1316 B). */
 export const DEFAULT_MPEGTS_ALIGNMENT = 7;
 
 /**
@@ -82,15 +82,14 @@ export function buildLeakyQueue(bufferMs: number): string {
  * Non-leaky bounded `queue` — back-pressures (blocks upstream) when full instead
  * of dropping the oldest buffer.
  *
- * Use this on the LOOPBACK redistribution stages (the mpegts-ip relay and the
- * demuxer's per-pad re-mux branches) where the tail is a `udpsink` to a `lo`
- * multicast group. On loopback the sink always drains (UDP send never blocks on
- * the receiver, and the kernel send path is effectively instant), so the queue
- * sits near-empty — contributing ≈0 latency — and only buffers a transient
- * burst (a big I-frame, mpegtsmux aggregation, a thread wakeup) instead of
- * shedding a whole access unit the way `leaky=2` does. On a lossless link
- * (wired, same switch) shedding frames is pure damage: the wire isn't dropping,
- * so neither should we. The `bufferMs` bound is a memory/runaway safety cap that
+ * Use this on the LOCAL redistribution stages (the mpegts-ip relay and the
+ * demuxer's per-pad re-mux branches) where the tail is the bus-egress tee. The
+ * tee always drains (`allow-not-linked=true`, per-edge branches shed on their
+ * own leaky queues), so this queue sits near-empty — contributing ≈0 latency —
+ * and only buffers a transient burst (a big I-frame, mpegtsmux aggregation, a
+ * thread wakeup) instead of shedding a whole access unit the way `leaky=2`
+ * does. On a lossless local hop shedding frames is pure damage: the transport
+ * isn't dropping, so neither should we. The `bufferMs` bound is a memory/runaway safety cap that
  * a healthy clean-link path never approaches; reaching it (a genuinely stuck
  * consumer) back-pressures rather than silently corrupting the stream.
  *
@@ -105,22 +104,19 @@ export function buildBackpressureQueue(bufferMs: number): string {
 }
 
 export interface TsUdpInputOpts {
-    host: string;
     port: number;
-    /** Optional `udpsrc name=…` so callers can address it (e.g. for live props). */
+    /** Optional element name so callers can address the ingress (e.g. for live props). */
     udpsrcName?: string;
-    /** Jitter buffer length in milliseconds (default 200). Absorbs UDP delivery
+    /** Jitter buffer length in milliseconds (default 200). Absorbs delivery
      *  jitter so downstream tsdemux doesn't see late bursts as discontinuities.
      *  200 ms covers encoder I-frame bursts on fast motion; 50 ms (the previous
      *  default) routinely overflowed and surfaced as visible "packet loss". */
     jitterMs?: number;
-    /** udpsrc timeout in nanoseconds; the runner translates the resulting
-     *  `GstUDPSrcTimeout` element message into a bus error so the restart path
-     *  triggers when a stream goes silent. */
-    timeoutNs?: number;
-    /** Per-consumer edge socket under unixfd (from MediaRouter.getModuleUdpSource);
-     *  undefined on UDP multicast. */
+    /** Per-consumer edge socket (from MediaRouter). Falls back to the
+     *  channel-level socket when absent. */
     socketPath?: string;
+    /** Source-silent watchdog (ms) — see `BusSrcOpts.stallTimeoutMs`. */
+    stallTimeoutMs?: number;
     /**
      * `tsparse set-timestamps` (default true). True re-anchors PTS/DTS from PCR
      * to the local timeline — the right default for single-pipeline playout and
@@ -132,13 +128,13 @@ export interface TsUdpInputOpts {
 }
 
 /**
- * Canonical inbound MPEG-TS UDP receive chain:
- *   udpsrc ! queue (jitter) ! tsparse set-timestamps=true
+ * Canonical inbound MPEG-TS bus receive chain:
+ *   unixfdsrc (+ leaky ingress) ! queue (jitter) ! tsparse set-timestamps=true
  *
  * Why each piece:
- *   - `udpsrc` declares MPEG-TS caps so caps negotiation works before the
- *     first packet arrives.
- *   - `queue leaky=2` (200 ms) absorbs UDP delivery jitter and encoder
+ *   - `buildBusSrc` connects this consumer's fan-out edge; caps arrive over
+ *     the socket from the producer.
+ *   - `queue leaky=2` (200 ms) absorbs delivery jitter and encoder
  *     I-frame bursts; without enough headroom here a short burst of late
  *     packets is seen by tsdemux as a discontinuity and triggers a costly
  *     resync — which the user perceives as packet loss on fast motion.
@@ -149,15 +145,13 @@ export interface TsUdpInputOpts {
  *     the upstream encoder's clock with its own and drift over time.
  */
 export function buildTsUdpInput(opts: TsUdpInputOpts): string {
-    const udpsrc = buildUdpSrc({
-        host: opts.host,
+    const src = buildBusSrc({
         port: opts.port,
-        caps: 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188',
         name: opts.udpsrcName,
-        timeoutNs: opts.timeoutNs,
         socketPath: opts.socketPath,
+        stallTimeoutMs: opts.stallTimeoutMs,
     });
     const queue = buildLeakyQueue(opts.jitterMs ?? 200);
     const setTs = opts.setTimestamps ?? true;
-    return `${udpsrc} ! ${queue} ! tsparse set-timestamps=${setTs}`;
+    return `${src} ! ${queue} ! tsparse set-timestamps=${setTs}`;
 }

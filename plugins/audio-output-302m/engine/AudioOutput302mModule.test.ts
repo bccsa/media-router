@@ -4,7 +4,6 @@ import { AudioOutput302mModule } from './AudioOutput302mModule.js';
 function makeModule(opts: { sources?: number } = {}) {
     const module = new AudioOutput302mModule() as any;
     const sources = Array.from({ length: opts.sources ?? 0 }, (_, i) => ({
-        host: '239.255.0.1',
         port: 40100 + i,
         connectionId: `c-${i}`,
         sourceModuleId: `src-${i}`,
@@ -15,7 +14,7 @@ function makeModule(opts: { sources?: number } = {}) {
     }));
     module.services = {
         instanceId: 'aout-1',
-        mediaRouter: { getModuleUdpSources: vi.fn(() => sources) },
+        mediaRouter: { getModuleBusSources: vi.fn(() => sources) },
     };
     module.config = {};
     const setHealth = vi.fn();
@@ -61,14 +60,9 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('volume name=vol volume=0.00');
     });
 
-    it('consumes the per-connection unixfd edge sockets under unixfd transport', () => {
-        vi.stubEnv('MR_BUS_TRANSPORT', 'unixfd');
-        try {
-            const { module } = makeModule({ sources: 1 });
-            const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
-            expect(desc!.pipeline).toContain('socket-path=/tmp/mr-bus-40100-x.sock');
-        } finally {
-            vi.unstubAllEnvs();
-        }
+    it('consumes the per-connection unixfd edge sockets', () => {
+        const { module } = makeModule({ sources: 1 });
+        const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
+        expect(desc!.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40100-x.sock');
     });
 });

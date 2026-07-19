@@ -178,7 +178,7 @@ exit 0 = PASS). Observed:
 ### Phase 5 — Output pacing (opt-in burst smoothing)  *(done)*
 
 **Problem.** A bursty source (the hls-player emits at HLS segment boundaries —
-its own `PacedUdpTsSink` paces to media rate, but Node event-loop stalls during
+its own paced sink (`PacedUnixStreamTsSink`) paces to media rate, but Node event-loop stalls during
 segment transmux cause micro-bursts) feeds `udpsrc ! tsdemux`, and each
 per-output branch ends in a SMALL queue. Video uses `leaky=2
 max-size-buffers=2` (2 frames); audio `leaky=2 max-size-time=50ms`. Under a

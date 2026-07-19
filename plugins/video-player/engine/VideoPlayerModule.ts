@@ -1,9 +1,8 @@
-import * as dgram from 'dgram';
 import * as fs from 'fs';
 import {
     GstPluginBase,
-    isMulticast,
     probeGstElement,
+    probeUnixSocket,
     type EngineServices,
     type ModuleServices,
     type PipelineDescription,
@@ -24,6 +23,7 @@ import {
     buildSink,
     resolveDecoderThreadType,
     resolveFallbackImagePath,
+    RESUME_SINK_NAME,
     type SinkSelectionEnv,
 } from './helpers/pipelines.js';
 
@@ -32,8 +32,8 @@ type SinkAvailability = { wayland: boolean; kms: boolean };
 /**
  * Video Player plugin.
  *
- * Terminal sink module. Consumes an MPEG-TS stream from the UDP multicast
- * routing layer, decodes it, and renders to a DRM/KMS display. When no
+ * Terminal sink module. Consumes an MPEG-TS stream from the inter-module
+ * bus, decodes it, and renders to a DRM/KMS display. When no
  * source is connected (or when the connected source stops flowing), it
  * shows a SMPTE test pattern with a "No video detected" overlay so the
  * display never goes blank.
@@ -42,7 +42,7 @@ type SinkAvailability = { wayland: boolean; kms: boolean };
  */
 export class VideoPlayerModule extends GstPluginBase {
     // `fallbackText` is "live" only in the *fallback* pipeline — the `nov`
-    // textoverlay element doesn't exist in the live (udpsrc → decodebin)
+    // textoverlay element doesn't exist in the live (bus → decodebin)
     // pipeline. With a source connected, a fallbackText change is silently
     // deferred to the next fallback render. See onLiveConfigUpdate for the
     // hasSource guard that enforces this.
@@ -66,10 +66,10 @@ export class VideoPlayerModule extends GstPluginBase {
     private static waylandSessionIdent: string = '';
     /**
      * Per-instance latch so concurrent restart triggers (wayland session
-     * change, cog respawn, UDP stall) collapse to one onStop+onStart cycle.
+     * change, cog respawn, bus stall) collapse to one onStop+onStart cycle.
      * Also doubles as "we're in an internal restart, don't clear state that
      * needs to survive the rebuild" — `onStop` checks this before clearing
-     * the UDP-stall latch.
+     * the bus-stall latch.
      */
     private pipelineRestartInProgress = false;
     /** A restart trigger arrived mid-cycle — run one follow-up cycle so the
@@ -87,28 +87,31 @@ export class VideoPlayerModule extends GstPluginBase {
     private cogPollTimer: NodeJS.Timeout | null = null;
     private lastCogPid: number | undefined = undefined;
 
-    // Source-silent fallback. When the UDP source's `timeout` fires the
-    // Python runner tags the error with `kind: 'udp_timeout'`. We latch
-    // a flag so the next pipeline build returns the colour-bars fallback
-    // instead of looping on a live pipeline that's just going to time
-    // out again. The latch is cleared by `udpResumeProbe` below the
-    // moment a real packet arrives on the source port.
-    private udpStallDetected = false;
+    // Source-silent fallback. When the live pipeline's stall watchdog fires
+    // (no buffer off the bus socket for 5 s) the Python runner tags the
+    // error with `kind: 'bus_stall'`. We latch a flag so the next pipeline
+    // build returns the colour-bars fallback instead of looping on a live
+    // pipeline that's just going to stall again. The latch is cleared by
+    // the resume poller below the moment bytes flow again.
+    private busStallDetected = false;
     /**
-     * Passive UDP listener bound to the source port while we're on the
-     * colour-bars fallback. The moment a single packet arrives we know the
-     * source has resumed and can switch the pipeline back to live — no
-     * periodic retry (which would tear down the visible fallback every
-     * cycle and leave a black gap during the 5s udpsrc probe).
+     * Whether the current fallback pipeline carries the bus-resume tap
+     * (`unixfdsrc ! fakesink resume_sink` draining this module's own
+     * fan-out edge). Built in only when the edge socket existed at build
+     * time — see buildPipeline.
      */
-    private udpResumeProbe: dgram.Socket | null = null;
+    private resumeTapActive = false;
+    /** Last byte count read off the resume tap — advance = source resumed. */
+    private lastResumeBytes: number | undefined;
     /**
-     * Watchdog interval — checks once a second that the resume probe is
-     * still alive while we're latched in fallback, recreating it if not.
-     * Runs on all hosts (not just wayland), since UDP stall can happen on
-     * any sink path.
+     * 1 Hz resume poller, alive while we're latched in fallback. With the
+     * tap active it reads the tap's byte counter (bytes advancing = source
+     * resumed → switch back to live, colour bars visible the whole wait —
+     * same no-black-gap property the old passive dgram probe had). Without
+     * the tap (producer socket was missing) it probes for the edge socket
+     * reappearing and then retries live directly.
      */
-    private udpResumeWatchdog: NodeJS.Timeout | null = null;
+    private busResumeWatchdog: NodeJS.Timeout | null = null;
 
     static registerServices(services: EngineServices): void {
         services.deviceProviders.register({
@@ -160,22 +163,22 @@ export class VideoPlayerModule extends GstPluginBase {
         }
         await super.onStart();
         this.updateStatusData();
-        this.installUdpStallListener();
+        this.installBusStallListener();
         VideoPlayerModule.registerForWaylandRestartWatch(this);
         this.startCogPollWatch();
     }
 
     async onStop(): Promise<void> {
         this.stopCogPollWatch();
-        this.stopUdpResumeWatchdog();
+        this.stopBusResumeWatchdog();
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
-        // we deliberately keep the UDP-stall latch + its resume probe alive so
-        // the rebuilt pipeline picks the fallback path that triggered this
-        // very restart. On an external stop (user disabled, engine shutdown)
-        // we wipe the state — a fresh start should never inherit a stale
-        // fallback decision.
+        // we deliberately keep the bus-stall latch alive so the rebuilt
+        // pipeline picks the fallback path that triggered this very restart
+        // (onStart re-arms the resume poller from the latch). On an external
+        // stop (user disabled, engine shutdown) we wipe the state — a fresh
+        // start should never inherit a stale fallback decision.
         if (!this.pipelineRestartInProgress) {
-            this.clearUdpStallState();
+            this.clearBusStallState();
         }
         VideoPlayerModule.unregisterForWaylandRestartWatch(this);
         await super.onStop();
@@ -183,21 +186,22 @@ export class VideoPlayerModule extends GstPluginBase {
 
     /**
      * Subscribe to the fresh childProcess created by super.onStart() so we
-     * can react to UDP-timeout events with a fallback switch instead of
-     * looping on the live pipeline.
+     * can react to bus-stall events with a fallback switch instead of
+     * looping on the live pipeline. Also (re)arms the resume poller when a
+     * restart cycle rebuilt the pipeline with the latch already set.
      */
-    private installUdpStallListener(): void {
+    private installBusStallListener(): void {
+        if (this.busStallDetected) this.startBusResumeWatchdog();
         if (!this.childProcess) return;
         this.childProcess.on('error', (data: { kind?: string; message?: string }) => {
-            if (data?.kind !== 'udp_timeout') return;
-            if (this.udpStallDetected) return;
-            this.log.info('UDP source went silent — switching to fallback pattern');
-            this.udpStallDetected = true;
-            this.startUdpResumeProbe();
-            this.startUdpResumeWatchdog();
+            if (data?.kind !== 'bus_stall') return;
+            if (this.busStallDetected) return;
+            this.log.info('Bus source went silent — switching to fallback pattern');
+            this.busStallDetected = true;
+            this.startBusResumeWatchdog();
             // gst-runner's restartOnError will replay the *same* live pipeline
             // desc — it doesn't ask the plugin for a new one. Trigger a full
-            // restart so buildPipeline is re-called with udpStallDetected set
+            // restart so buildPipeline is re-called with busStallDetected set
             // and the colour-bars fallback is actually built. The latch in
             // restartPipeline coalesces this with any other in-flight restart.
             this.restartPipeline().catch(() => {
@@ -207,115 +211,72 @@ export class VideoPlayerModule extends GstPluginBase {
     }
 
     /**
-     * Open a passive dgram socket on the source's UDP port and wait for the
-     * first packet. Arrival = source resumed = switch back to live. Beats
-     * the old periodic-retry approach because the colour-bars fallback
-     * stays continuously visible while we wait (no 5 s black gap every
-     * retry interval) and resume latency is bounded by the time of one
-     * UDP packet rather than by an arbitrary timer.
-     *
-     * SO_REUSEADDR lets us share the bind with gst-runner's own udpsrc
-     * (which, when live is *attempted*, also binds the same port). While
-     * we're in fallback gst-runner isn't listening, so the probe is alone
-     * on the port.
+     * One resume-poller tick. TAP MODE (fallback built with the resume tap):
+     * read the tap's sink-pad byte counter via the runner's throughput
+     * tracker; bytes advancing = the producer is emitting again → clear the
+     * latch and rebuild live. The colour-bars fallback stays continuously
+     * visible while we wait (no black gap), resume latency ≤ ~2 ticks.
+     * NO-TAP MODE (edge socket was missing at build time — producer down):
+     * probe for the socket reappearing (same connect-probe the consumer
+     * start gate uses) and then retry live directly — a freshly respawned
+     * producer is most likely flowing, and if it is dark the live
+     * pipeline's stall watchdog just sends us back here within 5 s.
      */
-    private startUdpResumeProbe(): void {
-        if (this.udpResumeProbe) return;
+    private async pollBusResume(): Promise<void> {
+        if (!this.busStallDetected || this.pipelineRestartInProgress) return;
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-        if (!udpSource) return;
-        const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-        // Don't close the probe on a transient socket error. Reported bug:
-        // player ran for hours on fallback, source resumed, player stayed
-        // on fallback until manually restarted. Cause: a stray dgram
-        // `error` (e.g. an ICMP unreachable echo on another mcast member)
-        // tore down the probe; we then sat permanently deaf with no
-        // recovery. Logging keeps the visibility; the watchdog
-        // (`ensureUdpResumeProbe`, ticking every second alongside the
-        // cog watcher) re-creates the probe if it really did die.
-        sock.on('error', (err) => {
-            this.log.debug({ err }, 'UDP resume probe socket error (keeping probe alive)');
-        });
+        const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+        if (!source) return;
         let resumed = false;
-        sock.on('message', () => {
-            if (resumed) return;
-            resumed = true;
-            this.log.info('Source resumed — restarting live pipeline');
-            this.stopUdpResumeProbe();
-            this.udpStallDetected = false;
-            this.restartPipeline().catch(() => {
-                /* logged inside */
-            });
-        });
-        sock.bind(udpSource.port, () => {
-            try {
-                if (isMulticast(udpSource.host)) {
-                    // Engine-internal mcast traffic flows on loopback
-                    // (`multicast-iface=lo` in the engine's udpsrc/udpsink
-                    // pipelines). Calling `addMembership` without an
-                    // interface picks the default route's interface
-                    // (eth0/wlan0) and misses every packet — the probe
-                    // sits silent forever and the player never returns
-                    // from fallback. Join explicitly on 127.0.0.1.
-                    sock.addMembership(udpSource.host, '127.0.0.1');
-                }
-            } catch (err) {
-                this.log.debug({ err, host: udpSource.host }, 'addMembership failed on resume probe');
+        if (this.resumeTapActive) {
+            const bytes = await this.readBusSinkBytes(RESUME_SINK_NAME);
+            if (
+                bytes !== undefined &&
+                this.lastResumeBytes !== undefined &&
+                bytes > this.lastResumeBytes
+            ) {
+                resumed = true;
             }
+            if (bytes !== undefined) this.lastResumeBytes = bytes;
+        } else if (source.socketPath && (await probeUnixSocket(source.socketPath))) {
+            resumed = true;
+        }
+        if (!resumed || !this.busStallDetected) return;
+        this.log.info('Source resumed — restarting live pipeline');
+        this.busStallDetected = false;
+        this.stopBusResumeWatchdog();
+        this.restartPipeline().catch(() => {
+            /* logged inside */
         });
-        this.udpResumeProbe = sock;
     }
 
-    /**
-     * Watchdog: when we're latched in fallback (`udpStallDetected`) but
-     * the probe socket is gone — e.g. the dgram subsystem closed it
-     * outside our control, or an addMembership renew failed — recreate
-     * it. Without this safety net, a single missed probe meant the
-     * player stayed on fallback forever, and the operator had to manually
-     * restart the module to recover.
-     */
-    private ensureUdpResumeProbe(): void {
-        if (!this.udpStallDetected) return;
-        if (this.udpResumeProbe) return;
-        this.startUdpResumeProbe();
-    }
-
-    private startUdpResumeWatchdog(): void {
-        if (this.udpResumeWatchdog) return;
-        // 1 Hz is plenty — worst case is one extra second of fallback
-        // after a transient probe loss. Lifetime is bounded to "we're
-        // latched in fallback": started in the udp-timeout listener
-        // alongside `startUdpResumeProbe`, stopped in `stopUdpResumeProbe`.
-        this.udpResumeWatchdog = setInterval(() => {
-            this.ensureUdpResumeProbe();
+    private startBusResumeWatchdog(): void {
+        if (this.busResumeWatchdog) return;
+        this.lastResumeBytes = undefined;
+        // 1 Hz is plenty — worst case is one extra second of fallback.
+        // Lifetime is bounded to "we're latched in fallback": armed by the
+        // bus_stall listener (and re-armed by installBusStallListener after
+        // each internal restart), stopped on resume / external stop.
+        this.busResumeWatchdog = setInterval(() => {
+            this.pollBusResume().catch((err) => {
+                this.log.debug({ err }, 'bus resume poll failed');
+            });
         }, 1000);
     }
 
-    private stopUdpResumeWatchdog(): void {
-        if (this.udpResumeWatchdog) {
-            clearInterval(this.udpResumeWatchdog);
-            this.udpResumeWatchdog = null;
+    private stopBusResumeWatchdog(): void {
+        if (this.busResumeWatchdog) {
+            clearInterval(this.busResumeWatchdog);
+            this.busResumeWatchdog = null;
         }
-    }
-
-    private stopUdpResumeProbe(): void {
-        if (!this.udpResumeProbe) return;
-        try {
-            this.udpResumeProbe.close();
-        } catch {
-            /* already closed */
-        }
-        this.udpResumeProbe = null;
-        // The watchdog only exists to keep the probe alive while we're
-        // latched in fallback. Once the probe is intentionally closed
-        // (resume detected or external stop) there's nothing for it to do.
-        this.stopUdpResumeWatchdog();
+        this.lastResumeBytes = undefined;
     }
 
     /** Wipe stall state on an external stop — fresh start should never inherit a stale fallback decision. */
-    private clearUdpStallState(): void {
-        this.stopUdpResumeProbe();
-        this.udpStallDetected = false;
+    private clearBusStallState(): void {
+        this.stopBusResumeWatchdog();
+        this.busStallDetected = false;
+        this.resumeTapActive = false;
     }
 
     /**
@@ -372,14 +333,14 @@ export class VideoPlayerModule extends GstPluginBase {
     /**
      * Trigger a clean pipeline restart against the *current* wayland session.
      * Used by the runtime-dir watcher (compositor socket replaced), the
-     * cog-PID watcher (kiosk browser respawned), and the UDP stall/resume
+     * cog-PID watcher (kiosk browser respawned), and the bus stall/resume
      * switches. Callers log their own trigger reason first; this method only
      * logs failure.
      *
      * A trigger that lands while a cycle is mid-flight queues ONE follow-up
      * cycle instead of being dropped. Dropping it froze the player on a stale
      * build: source went silent → fallback restart started → source resumed
-     * 2 s later (clearing `udpStallDetected`) → the resume restart was
+     * 2 s later (clearing `busStallDetected`) → the resume restart was
      * discarded by the old in-progress latch → the fallback pipeline (built
      * from the stale flag) stayed up forever with healthy data underneath.
      * The follow-up cycle re-runs buildPipeline against the LATEST state, so
@@ -503,16 +464,16 @@ export class VideoPlayerModule extends GstPluginBase {
         Object.assign(this.config, changes);
         if ('fallbackText' in changes) {
             // The `nov` text overlay only exists in the *fallback* pipeline
-            // (videotestsrc branch). The fallback runs when there's no UDP
+            // (videotestsrc branch). The fallback runs when there's no bus
             // source assigned, OR when the source is assigned but silent
-            // (udpStallDetected — colour-bars-while-source-down path). In
+            // (busStallDetected — colour-bars-while-source-down path). In
             // both states the element exists and the live push is safe.
             // With a healthy live source there's no `nov` element and the
             // new text takes effect the next time the fallback pipeline is
             // built (source disconnect, stall, module restart).
             const instanceId = this.services?.instanceId ?? '';
-            const hasSource = !!this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-            const fallbackPipelineActive = !hasSource || this.udpStallDetected;
+            const hasSource = !!this.services?.mediaRouter?.getModuleBusSource(instanceId);
+            const fallbackPipelineActive = !hasSource || this.busStallDetected;
             if (fallbackPipelineActive) {
                 const text = changes.fallbackText as string;
                 await this.setElementProperty('nov', 'text', text).catch((err) =>
@@ -577,8 +538,8 @@ export class VideoPlayerModule extends GstPluginBase {
         const waylandFullscreen = sinkEnv.wayland && sinkEnv.waylandSession;
 
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-        const sourceSilent = !!udpSource && this.udpStallDetected;
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+        const sourceSilent = !!udpSource && this.busStallDetected;
         const useFallback = !udpSource || sourceSilent;
 
         if (active.substituted) {
@@ -595,12 +556,29 @@ export class VideoPlayerModule extends GstPluginBase {
         }
 
         if (useFallback) {
+            // Resume tap: only when we latched on a SILENT source and its edge
+            // socket is currently being served — a missing socket (producer
+            // down, or no source at all) must not enter the pipeline, or the
+            // runner's bus-socket gate would hold the colour bars hostage
+            // waiting for it. existsSync is the best sync check available
+            // here; a stale socket file only costs one restartOnError cycle.
+            const resumeSocket =
+                sourceSilent && udpSource.socketPath && fs.existsSync(udpSource.socketPath)
+                    ? udpSource.socketPath
+                    : undefined;
+            this.resumeTapActive = !!resumeSocket;
             return {
-                pipeline: buildFallbackOnlyPipeline(fallback, sinkElement, fallbackImage),
+                pipeline: buildFallbackOnlyPipeline(
+                    fallback,
+                    sinkElement,
+                    fallbackImage,
+                    resumeSocket,
+                ),
                 restartOnError: true,
                 env,
             };
         }
+        this.resumeTapActive = false;
 
         return {
             pipeline: buildLivePipeline(
@@ -619,9 +597,9 @@ export class VideoPlayerModule extends GstPluginBase {
 
     private updateStatusData(): void {
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         this.setStatusData('input', {
-            source: udpSource ? `${udpSource.host}:${udpSource.port}` : '—',
+            source: udpSource ? `bus ${udpSource.port}` : '—',
             state: udpSource ? 'connected' : 'no source',
         });
 

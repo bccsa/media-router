@@ -11,10 +11,9 @@
 
 import {
     buildAudioMixInput,
-    buildUdpSink,
-    buildUdpSrc,
+    buildBusSink,
+    buildBusSrc,
     busTeeName,
-    busTransport,
     build302mEncodeBranch,
     type AudioMixSource,
 } from '@media-router/engine';
@@ -22,7 +21,6 @@ import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
 export interface MpegTsFrontEnd {
     mode: 'mpegts';
-    host: string;
     port: number;
     socketPath?: string;
     /** Probed source codec — picks the parser+decoder chain. */
@@ -126,10 +124,8 @@ export function buildPipeline(
     let frontEnd: string;
     if (input.frontEnd.mode === 'mpegts') {
         const fe = input.frontEnd;
-        const src = buildUdpSrc({
-            host: fe.host,
+        const src = buildBusSrc({
             port: fe.port,
-            bufferSize: 262_144,
             socketPath: fe.socketPath,
         });
         const bufferNs = Math.max(50, Math.min(5000, fe.bufferMs)) * 1_000_000;
@@ -164,9 +160,9 @@ export function buildPipeline(
         // back-pressure only holds the tee for the burst's processing time.
         const leafQueue =
             'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0 flush-on-eos=true';
-        const sink = buildUdpSink({ name: `usink_${i}`, host: out.host, port: out.port });
+        const sink = buildBusSink(out.port);
         sinks.push({
-            sinkName: busTransport() === 'unixfd' ? busTeeName(out.port) : `usink_${i}`,
+            sinkName: busTeeName(out.port),
             renditionIndex: i,
         });
         return `t. ! ${leafQueue} ! ${encodeTail(out.rendition, input.tsAlignment)} ! ${sink}`;

@@ -5,19 +5,21 @@ import { MpegTsIpOutputModule } from './MpegTsIpOutputModule.js';
 function makeModule(opts: { hasSource?: boolean } = {}) {
     const module = new MpegTsIpOutputModule() as any;
     const hasSource = opts.hasSource ?? true;
-    const getModuleUdpSource = vi.fn(() =>
-        hasSource ? { host: '239.255.0.1', port: 41000 } : undefined,
+    const getModuleBusSource = vi.fn(() =>
+        hasSource
+            ? { port: 41000, socketPath: '/tmp/mr-bus-41000-abc123.sock' }
+            : undefined,
     );
     module.services = {
         instanceId: 'mpegts-ip-out-1',
-        mediaRouter: { getModuleUdpSource },
+        mediaRouter: { getModuleBusSource },
     };
     module.config = {};
     module.log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
     module.setStatusData = vi.fn();
     module.setBadge = vi.fn();
     module.clearBadge = vi.fn();
-    return { module, getModuleUdpSource };
+    return { module, getModuleBusSource };
 }
 
 describe('MpegTsIpOutputModule.buildPipeline', () => {
@@ -43,7 +45,10 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
             destinations: [{ host: '239.1.1.1', port: 5000 }],
         });
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('udpsrc name=busin');
+        expect(desc!.pipeline).toContain(
+            'unixfdsrc name=busin socket-path=/tmp/mr-bus-41000-abc123.sock',
+        );
+        expect(desc!.pipeline).not.toContain('udpsrc');
         // Passthrough by default — no TS re-parsing (safest for lossy live streams).
         expect(desc!.pipeline).not.toContain('tsparse');
         expect(desc!.pipeline).toContain('udpsink name=netsink host=239.1.1.1 port=5000');
@@ -60,8 +65,7 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
             ttl: 32,
             destinations: [{ host: '10.9.16.20', port: 5000 }],
         });
-        // Assert on the network sink portion — the loopback bus source legitimately
-        // carries multicast-iface=lo (it reads 239.255.0.1), which isn't the sink.
+        // Assert on the network sink portion only.
         const sink = desc!.pipeline.slice(desc!.pipeline.indexOf('udpsink'));
         expect(sink).toContain('host=10.9.16.20 port=5000 ttl=32');
         expect(sink).not.toContain('ttl-mc');

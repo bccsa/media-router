@@ -195,10 +195,25 @@ export function resolveFallbackImagePath(raw: string): string | undefined {
  * path needs decodebin dynamic-pad linking and a `loopOnEos` flag on the
  * containing `PipelineDescription`.
  */
+/** Element name of the fallback pipeline's bus-resume tap sink — the module
+ *  polls its sink-pad byte counter to detect the source flowing again. */
+export const RESUME_SINK_NAME = 'resume_sink';
+
 export function buildFallbackOnlyPipeline(
     fallbackText: string,
     sinkElement: string,
     imagePath?: string,
+    /**
+     * Consumer edge socket to keep draining while the fallback is up. When
+     * set, a side chain `unixfdsrc ! queue leaky ! fakesink` taps this
+     * module's own fan-out edge so the module can poll `resume_sink` for
+     * bytes (source resumed → switch back to live) without tearing down the
+     * visible fallback — the bus replacement for the old passive dgram
+     * probe. Pass it ONLY when the socket currently exists: the runner's
+     * bus-socket gate would otherwise hold the whole fallback pipeline (and
+     * the colour bars) hostage waiting for a dead producer's socket.
+     */
+    resumeSocketPath?: string,
 ): string {
     // Fixed surface size (+ explicit framerate, since neither videotestsrc
     // nor a single imagefreeze frame implies one). Always constrained: the
@@ -208,33 +223,40 @@ export function buildFallbackOnlyPipeline(
     const source = imagePath
         ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${SURFACE_CAPS},framerate=30/1`
         : `videotestsrc is-live=true pattern=smpte ! ${SURFACE_CAPS},framerate=30/1`;
+    const resumeTap = resumeSocketPath
+        ? ` unixfdsrc socket-path=${resumeSocketPath}` +
+          ' ! queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
+          ` ! fakesink name=${RESUME_SINK_NAME} sync=false async=false`
+        : '';
     return (
         `${source} ` +
         `! textoverlay name=nov text="${fallbackText}" valignment=center halignment=center font-desc="Sans Bold 48" ` +
-        `! videoconvert ! ${sinkElement}`
+        `! videoconvert ! ${sinkElement}${resumeTap}`
     );
 }
 
 /**
- * Active-source pipeline. Goes straight from `udpsrc` to the configured sink
- * with no fallback branch — the test-pattern fallback only runs when the
- * module has no source assigned (`buildFallbackOnlyPipeline`). Stream drops
- * trigger the engine's `restartOnError` loop, which gets re-armed by the
- * 5s `udpsrc` timeout below: if the source goes silent for 5s the runner
- * tears the pipeline down and rebuilds with a fresh demuxer/decoder, so
- * when the stream comes back we don't try to resume a stale state.
+ * Active-source pipeline. Goes straight from the bus ingress to the
+ * configured sink with no fallback branch — the test-pattern fallback only
+ * runs when the module has no source assigned (`buildFallbackOnlyPipeline`).
+ * A silent-but-connected source trips the 5 s stall watchdog below: the
+ * runner tags it `kind: 'bus_stall'` and the module latches the colour-bars
+ * fallback instead of looping on a live pipeline that will just stall again.
+ * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
+ * errors out into the normal restart path.
  *
- * Inbound chain is `udpsrc ! queue ! tsparse ! tsdemux` (via `buildTsUdpInput`)
- * — `tsparse` re-anchors PCR to the local clock so multi-stage encode/remux
- * paths don't accumulate clock drift as session latency. `decodebin` handles
- * any codec inside the MPEG-TS; the post-tsdemux `queue leaky=2` drops oldest
- * if the decoder falls behind so latency doesn't accumulate on slow renderers.
+ * Inbound chain is `unixfdsrc ! queue ! tsparse ! tsdemux` (via
+ * `buildTsUdpInput`) — `tsparse` re-anchors PCR to the local clock so
+ * multi-stage encode/remux paths don't accumulate clock drift as session
+ * latency. `decodebin` handles any codec inside the MPEG-TS; the post-tsdemux
+ * `queue leaky=2` drops oldest if the decoder falls behind so latency doesn't
+ * accumulate on slow renderers.
  */
-const UDP_STREAM_TIMEOUT_NS = 5_000_000_000;
+const STREAM_STALL_TIMEOUT_MS = 5_000;
 
 export function buildLivePipeline(
     sinkElement: string,
-    udpSource: { host: string; port: number },
+    udpSource: { port: number; socketPath?: string },
     constrainSurface = false,
     /**
      * Pre-decode buffer (ms). 200 ms is right for live SRT/RIST where latency
@@ -259,9 +281,9 @@ export function buildLivePipeline(
     // cap) gives HLS chains a multi-second jitter buffer that absorbs sender
     // bursts; SRT/RIST (`bufferMs=200`) keeps the original tight latency.
     const tsInput = buildTsUdpInput({
-        host: udpSource.host,
         port: udpSource.port,
-        timeoutNs: UDP_STREAM_TIMEOUT_NS,
+        socketPath: udpSource.socketPath,
+        stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
         jitterMs: bufferMs,
         // Keep source PTS when clock-locked to the audio pipeline; re-anchor
         // otherwise (the load-bearing default for standalone playout).

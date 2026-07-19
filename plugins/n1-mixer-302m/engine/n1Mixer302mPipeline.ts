@@ -11,7 +11,7 @@
 
 import {
     buildAudioMixInput,
-    buildUdpSink,
+    buildBusSink,
     build302mEncodeBranch,
     type AudioMixSource,
 } from '@media-router/engine';
@@ -70,11 +70,10 @@ export function buildN1Ports(pairCount: number): DynamicPort[] {
     return ports;
 }
 
-/** An output with its allocated bus endpoint (only outputs with ≥1
+/** An output with its allocated bus channel (only outputs with ≥1
  *  contributing input are built/allocated). */
 export interface N1Output {
     index: number;
-    host: string;
     port: number;
 }
 
@@ -133,11 +132,7 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     }
 
     for (const out of outputs) {
-        const sink = buildUdpSink({
-            name: `usink_${out.index}`,
-            host: out.host,
-            port: out.port,
-        });
+        const sink = buildBusSink(out.port);
         parts.push(
             `audiomixer name=omix${out.index} force-live=true ` +
                 `latency=${OUTPUT_MIX_LATENCY_NS} min-upstream-latency=${OUTPUT_MIX_LATENCY_NS}` +
