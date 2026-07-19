@@ -105,6 +105,35 @@ describe('ProcessManager', () => {
         expect(pm.list('nonexistent')).toEqual([]);
     });
 
+    it('releaseAll also kills a process spawned during its own teardown', async () => {
+        const first = pm.spawn('owner-1', {
+            label: 'first',
+            command: 'sleep',
+            args: ['60'],
+            autoRestart: false,
+        });
+        await new Promise((r) => setTimeout(r, 100));
+
+        // Mimic an in-flight live config update that finishes its async work
+        // after the stop began (hls-player's probe → spawnRunner window).
+        let late: ReturnType<typeof pm.spawn> | null = null;
+        first.once('stopped', () => {
+            late = pm.spawn('owner-1', {
+                label: 'late',
+                command: 'sleep',
+                args: ['60'],
+                autoRestart: false,
+            });
+        });
+
+        await pm.releaseAll('owner-1');
+
+        expect(late).not.toBeNull();
+        expect(late!.isRunning).toBe(false);
+        expect(pm.list('owner-1')).toHaveLength(0);
+        expect(pm.activeCount).toBe(0);
+    });
+
     it('releaseAll is safe for unknown owner', async () => {
         await expect(pm.releaseAll('nonexistent')).resolves.toBeUndefined();
     });

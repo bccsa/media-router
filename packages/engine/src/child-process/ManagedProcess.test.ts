@@ -212,6 +212,27 @@ describe('ManagedProcess', () => {
         expect(proc.isRunning).toBe(false);
     }, 10000);
 
+    it('a second stop still kills a child that survived the first', async () => {
+        const proc = create({
+            label: 'term-ignorer-twice',
+            command: '/bin/sh',
+            args: ['-c', 'trap "" TERM; sleep 60'],
+        });
+        proc.start();
+        await new Promise((r) => setTimeout(r, 150));
+
+        // First stop is abandoned mid-flight (SIGTERM delivered, child alive).
+        // The entry guard used to read `child.killed` — true from that signal —
+        // so every later stop returned instantly claiming success while the
+        // process kept running, untracked.
+        const abandoned = proc.stop();
+        await new Promise((r) => setTimeout(r, 100));
+
+        await proc.stop();
+        expect(proc.isRunning).toBe(false);
+        await abandoned;
+    }, 15000);
+
     it('writeLine returns false without a stdin pipe or when not running', async () => {
         const noPipe = create({ label: 'no-stdin', command: 'sleep', args: ['10'] });
         noPipe.start();

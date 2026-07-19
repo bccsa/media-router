@@ -205,7 +205,15 @@ export class ManagedProcess extends EventEmitter {
     async stop(): Promise<void> {
         this.clearRestartTimer();
 
-        if (!this.child || this.child.killed) return;
+        // Liveness is `exitCode === null`, never `killed` — Node sets `killed`
+        // the moment a signal is DELIVERED, so gating on it here made a second
+        // (or concurrent) stop return "success" instantly for a still-running
+        // child and null out `this.child`, untracking a live process forever.
+        // Same defect as the SIGKILL escalation below; both must use exitCode.
+        if (!this.child || this.child.exitCode !== null) {
+            this.child = null;
+            return;
+        }
 
         const child = this.child;
 
