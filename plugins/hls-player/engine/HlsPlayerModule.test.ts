@@ -289,6 +289,33 @@ describe('HlsPlayerModule runner health', () => {
         module.parseStats(JSON.stringify({ stats: { bitrateMbps: 1.0, bytesSent: 1 } }));
         expect(module.setHealth).toHaveBeenCalledWith('ok');
     });
+
+    it('a clean runner exit (VOD complete) requests a module self-stop', async () => {
+        const { module, spawn } = makeModule();
+        module.config = { url: 'https://example.com/a.m3u8' };
+        await module.onStart();
+        const selfStop = vi.fn();
+        module.on('selfStop', selfStop);
+
+        const proc = spawn.mock.results[0]!.value as EventEmitter;
+        proc.emit('stopped', 0, null);
+        expect(selfStop).toHaveBeenCalledWith(expect.stringContaining('ended'));
+    });
+
+    it('a killed or crashed runner does NOT request a self-stop', async () => {
+        const { module, spawn } = makeModule();
+        module.config = { url: 'https://example.com/a.m3u8' };
+        await module.onStart();
+        const selfStop = vi.fn();
+        module.on('selfStop', selfStop);
+
+        const proc = spawn.mock.results[0]!.value as EventEmitter & { destroyed: boolean };
+        proc.emit('stopped', null, 'SIGKILL'); // killed (relaunch/OOM)
+        proc.emit('stopped', 1, null); // crash — restart policy handles it
+        proc.destroyed = true;
+        proc.emit('stopped', 0, null); // deliberate module stop
+        expect(selfStop).not.toHaveBeenCalled();
+    });
 });
 
 describe('HlsPlayerModule under unixfd transport', () => {

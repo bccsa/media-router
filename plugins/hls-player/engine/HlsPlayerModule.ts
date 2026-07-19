@@ -304,6 +304,14 @@ export class HlsPlayerModule extends GstPluginBase {
         }
 
         await this.probe(url);
+        // `probe` is an unbounded network fetch — the module can be stopped
+        // while it is in flight. Without this re-check we would spawn a runner
+        // into an ownership set the engine has already released, leaving it
+        // alive and auto-restarting with nothing tracking it.
+        if (!this.running) {
+            this.log.info('Module stopped during probe — not spawning runner');
+            return;
+        }
         this.services.mediaRouter.assignUdpPort(this.services.instanceId); // idempotent
         const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
         if (!endpoint) return;
@@ -331,6 +339,19 @@ export class HlsPlayerModule extends GstPluginBase {
             clearBadges: ['bitrate'],
             onStdout: (line) => this.parseStats(line),
             onStderr: (line) => this.log.info(line),
+        });
+        // A clean exit means the runner ran out of playlist — the VOD window
+        // ended. That is a natural end of playback, not a fault: stop the
+        // module cleanly (no crash-restart, no respawn loop replaying the
+        // asset with a multi-second gap). Deliberate teardown paths don't
+        // reach here: module stop / URL relaunch destroy the process
+        // (`destroyed`), crashes exit non-zero, kills carry a signal.
+        const proc = this.runner;
+        proc.on('stopped', (code: number | null, signal: string | null) => {
+            if (proc.destroyed || !this.running || this.runner !== proc) return;
+            if (code === 0 && signal === null) {
+                this.requestSelfStop('Stream ended (playlist complete)');
+            }
         });
         return true;
     }

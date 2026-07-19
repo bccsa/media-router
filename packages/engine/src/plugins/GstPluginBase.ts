@@ -527,6 +527,20 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.emit('stateChange', this.getState());
     }
 
+    /**
+     * Ask the engine to STOP this module cleanly — the module ran to a natural
+     * end (e.g. a VOD stream finished) and should land in the same disabled
+     * state a user stop produces: pipeline down, connections removed, no
+     * crash-restart, and config re-applies don't revive it until re-enabled.
+     * Routed `plugin → ModuleInstance → ModuleManager → ModuleLifecycle
+     * .disable()`; the stop happens asynchronously AFTER the current tick, so
+     * it is safe to call from process-exit callbacks.
+     */
+    protected requestSelfStop(reason: string): void {
+        this.log.info({ reason }, 'Module requested self-stop');
+        this.emit('selfStop', reason);
+    }
+
     // --- Device presence watchdog (hardware hot-plug) ---
     //
     // The polling, transition, and concurrency logic lives in `DeviceWatchdog`

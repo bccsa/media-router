@@ -719,6 +719,23 @@ Health values: `'ok'` (green dot), `'warning'` (amber dot), `'error'` (red dot),
 
 The pipeline automatically sets health to `'ok'` when playing and `'stopped'` when null. Plugins override this for custom status (e.g. decoder with no connection → warning).
 
+### Clean Self-Stop (`requestSelfStop`)
+
+A module whose media ran to a **natural end** (e.g. hls-player finishing a VOD
+window) should stop cleanly rather than sit in a warning state or respawn-loop
+the asset:
+
+```typescript
+this.requestSelfStop('Stream ended (playlist complete)');
+```
+
+The engine routes this through the same path as a user disable: pipeline down,
+connections removed, `enabled=false` — persisted to the manager (patch channel)
+so the stop survives config re-pushes and shows in the UI. The stop runs
+asynchronously after the current tick, so it is safe to call from process-exit
+callbacks. Do **not** use it for faults — crashes should exit non-zero and let
+the restart policy handle recovery.
+
 ### Static Hooks (Class-Level, Not Instance-Level)
 
 Two optional **static** methods on the module class run **once per plugin class** during engine startup — before any module instances exist. They let a plugin probe the host for capabilities and contribute engine-wide services.

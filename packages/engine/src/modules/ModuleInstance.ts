@@ -59,14 +59,22 @@ export class ModuleInstance extends EventEmitter {
             this.emit('configUpdated', this.instanceId, changes);
         };
 
+        // A plugin that ran to a natural end (VOD finished) asks the engine to
+        // stop it cleanly — forwarded upward for ModuleLifecycle.disable().
+        const onSelfStop = (reason: string) => {
+            this.emit('selfStopRequested', this.instanceId, reason);
+        };
+
         emitter.on('vuData', onVuData);
         emitter.on('stateChange', onStateChange);
         emitter.on('configUpdated', onConfigUpdated);
+        emitter.on('selfStop', onSelfStop);
 
         this.pluginListeners.push(
             { event: 'vuData', handler: onVuData },
             { event: 'stateChange', handler: onStateChange },
             { event: 'configUpdated', handler: onConfigUpdated },
+            { event: 'selfStop', handler: onSelfStop },
         );
     }
 
@@ -123,6 +131,11 @@ export class ModuleInstance extends EventEmitter {
                     'onStop cleanup after failed start',
                 );
             }
+            // A failed onStart may already have spawned processes or claimed
+            // resources (hls-player spawns its unixfd fan-out sidecar as its
+            // first act). `_running` stays false here, so nothing else will
+            // ever release them — every later stop skips this instance.
+            await this.releaseResources();
             // Re-init on the next start attempt: plugins cache settings in
             // onInit (e.g. audio-output's device name), and a start that
             // failed on bad config would otherwise retry against the stale
@@ -133,16 +146,36 @@ export class ModuleInstance extends EventEmitter {
         this.emitStateChange();
     }
 
-    /** Stop the module. */
+    /**
+     * Stop the module.
+     *
+     * `onStop` only runs for a module that actually started, but resource
+     * release runs unconditionally: a module can own live processes while
+     * `_running` is false (a start that threw part-way, or a plugin that
+     * spawned before its own guard flipped), and skipping the release there
+     * left those processes orphaned past every subsequent stop.
+     */
     async stop(): Promise<void> {
-        if (!this._running) return;
-        try {
-            await this.plugin.onStop();
-        } catch (err) {
-            log.error({ err, instanceId: this.instanceId }, 'Module stop failed');
+        const wasRunning = this._running;
+        if (wasRunning) {
+            try {
+                await this.plugin.onStop();
+            } catch (err) {
+                log.error({ err, instanceId: this.instanceId }, 'Module stop failed');
+            }
+            this._running = false;
         }
-        this._running = false;
-        // Auto-cleanup PipeWire resources owned by this module
+        await this.releaseResources();
+        if (wasRunning) this.emitStateChange();
+    }
+
+    /**
+     * Release everything the engine owns on the module's behalf — PipeWire
+     * nodes, spawned processes, UDP port slots. Idempotent and safe to call for
+     * a module that never started; each step is guarded so one failure can't
+     * skip the rest.
+     */
+    private async releaseResources(): Promise<void> {
         if (this.services?.pipeWire) {
             try {
                 await this.services.pipeWire.releaseAll(this.instanceId);
@@ -153,7 +186,6 @@ export class ModuleInstance extends EventEmitter {
                 );
             }
         }
-        // Auto-cleanup spawned processes owned by this module
         if (this.services?.processManager) {
             try {
                 await this.services.processManager.releaseAll(this.instanceId);
@@ -169,7 +201,6 @@ export class ModuleInstance extends EventEmitter {
         if (this.services?.mediaRouter) {
             this.services.mediaRouter.releaseAllUdpPortsFor(this.instanceId);
         }
-        this.emitStateChange();
     }
 
     /** Stop and destroy the module (final cleanup). */

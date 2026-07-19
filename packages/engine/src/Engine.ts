@@ -148,6 +148,28 @@ export class Engine {
             this.pluginLoader,
         );
 
+        // A plugin that ran to a natural end (e.g. VOD finished) stops through
+        // the same path as a user disable: pipeline down, connections removed,
+        // enabled=false locally so a config re-apply doesn't revive it. The
+        // flag is also patched up to the manager (same channel as dynamic
+        // ports) so the stop persists in SQLite / shows in the UI instead of
+        // being silently undone by the next full config push.
+        this.moduleManager.on('selfStopRequested', (id: string, reason: string) => {
+            log.info({ moduleId: id, reason }, 'Module self-stop — disabling');
+            void this.lifecycle
+                .disable(id)
+                .then(() => {
+                    const ops = [
+                        { op: 'replace' as const, path: `/modules/${id}/enabled`, value: false },
+                    ];
+                    this.managerConnection.send('patch', { ops });
+                    this.lcpServer.broadcastConfigUpdate(ops);
+                })
+                .catch((err: unknown) => {
+                    log.error({ moduleId: id, err }, 'Self-stop disable failed');
+                });
+        });
+
         // When a module generates dynamic ports, push as patch to manager + LCP
         this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {
             log.info(

@@ -129,6 +129,12 @@ export class ModuleManager extends EventEmitter {
             this.emit('configUpdated', id, changes);
         });
 
+        // Forward clean self-stop requests (plugin ran to a natural end) —
+        // the Engine routes these to ModuleLifecycle.disable().
+        instance.on('selfStopRequested', (id: string, reason: string) => {
+            this.emit('selfStopRequested', id, reason);
+        });
+
         this.modules.set(instanceId, instance);
         return instance;
     }
@@ -156,11 +162,17 @@ export class ModuleManager extends EventEmitter {
         this.emit('moduleDeleted', instanceId);
     }
 
-    /** Stop all running modules. */
+    /**
+     * Stop all modules.
+     *
+     * Deliberately unfiltered: a module whose `running` is false can still own
+     * live processes (a start that threw after spawning), and `stop()` guards
+     * `onStop` internally, so a not-running module costs only its resource
+     * sweep. Filtering on `running` here is what let those processes survive
+     * every stop.
+     */
     async stopAll(): Promise<void> {
-        const promises = Array.from(this.modules.values())
-            .filter((m) => m.running)
-            .map((m) => m.stop());
+        const promises = Array.from(this.modules.values()).map((m) => m.stop());
         await Promise.allSettled(promises);
     }
 

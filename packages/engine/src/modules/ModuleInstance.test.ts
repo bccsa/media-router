@@ -123,6 +123,32 @@ describe('ModuleInstance', () => {
         expect(instance.running).toBe(false);
     });
 
+    it('start() releases spawned processes when onStart throws', async () => {
+        // A plugin can spawn (hls-player's fan-out sidecar is its first act)
+        // before the throw. `_running` stays false, so without this release
+        // nothing ever kills those processes — every later stop skips the
+        // instance entirely.
+        const services = createMockServices();
+        const inst = new ModuleInstance('inst-fail', 'hls-player', plugin, {}, services);
+        plugin.onStart.mockRejectedValueOnce(new Error('start fail'));
+
+        await expect(inst.start()).rejects.toThrow('start fail');
+
+        expect(services.processManager!.releaseAll).toHaveBeenCalledWith('inst-fail');
+        expect(services.pipeWire!.releaseAll).toHaveBeenCalledWith('inst-fail');
+        expect(services.mediaRouter!.releaseAllUdpPortsFor).toHaveBeenCalledWith('inst-fail');
+    });
+
+    it('stop() releases processes even for a module that never started', async () => {
+        const services = createMockServices();
+        const inst = new ModuleInstance('inst-dormant', 'hls-player', plugin, {}, services);
+
+        await inst.stop();
+
+        expect(plugin.onStop).not.toHaveBeenCalled(); // never started — nothing to unwind
+        expect(services.processManager!.releaseAll).toHaveBeenCalledWith('inst-dormant');
+    });
+
     it('failed start re-runs onInit on retry so config fixes take effect', async () => {
         // First start fails (e.g. no device configured yet)
         plugin.onStart.mockRejectedValueOnce(new Error('No audio device configured'));
@@ -255,6 +281,13 @@ describe('ModuleInstance', () => {
         instance.on('configUpdated', spy);
         plugin.emit('configUpdated', { volume: 90 });
         expect(spy).toHaveBeenCalledWith('inst-1', { volume: 90 });
+    });
+
+    it('forwards selfStop requests from plugin', () => {
+        const spy = vi.fn();
+        instance.on('selfStopRequested', spy);
+        plugin.emit('selfStop', 'Stream ended (playlist complete)');
+        expect(spy).toHaveBeenCalledWith('inst-1', 'Stream ended (playlist complete)');
     });
 
     // ---- applyConfigUpdate ----
