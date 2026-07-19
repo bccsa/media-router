@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as dgram from 'dgram';
 import { FragmentTransport } from './FragmentTransport.js';
 import {
@@ -9,6 +9,15 @@ import {
     MAX_PAYLOAD_SIZE,
     HEADER_SIZE,
 } from './fragmentation.js';
+
+// Deterministic stand-in for the shared DNS cache: one known hostname maps to
+// a fixed IP, everything else passes through (also keeps the tests that use
+// throwaway addresses like 'a' from firing real dns.lookup calls).
+vi.mock('./dnsCache.js', () => ({
+    dnsCache: {
+        resolve: (host: string) => (host === 'mgr.example.com' ? '9.9.9.9' : host),
+    },
+}));
 
 const rinfo = (address = '1.1.1.1', port = 1): dgram.RemoteInfo =>
     ({ address, port, family: 'IPv4', size: 0 }) as dgram.RemoteInfo;
@@ -165,6 +174,30 @@ describe('FragmentTransport', () => {
 
             // genuine peer → served
             t.receive(encodeNack(mid, [0]), rinfo('9.9.9.9', 5));
+            expect(sender.sent.length).toBe(before + 1);
+        });
+
+        it('sends to the cache-resolved IP when given a hostname', () => {
+            const sender = fakeSock();
+            t = new FragmentTransport(sender.sock);
+            t.send(Buffer.from('hi'), 7100, 'mgr.example.com', false);
+            expect(sender.sent[0].address).toBe('9.9.9.9');
+        });
+
+        it('retains the resolved IP so a NACK from the real peer is served', () => {
+            // With the hostname stored instead, rinfo.address (always an IP)
+            // could never match and NACK service would be silently dead for
+            // hostname-configured peers.
+            const sender = fakeSock();
+            t = new FragmentTransport(sender.sock);
+            const mid = t.send(
+                Buffer.alloc(MAX_PAYLOAD_SIZE * 2, 'D'),
+                7100,
+                'mgr.example.com',
+                true,
+            );
+            const before = sender.sent.length;
+            t.receive(encodeNack(mid, [0]), rinfo('9.9.9.9', 7100));
             expect(sender.sent.length).toBe(before + 1);
         });
 
