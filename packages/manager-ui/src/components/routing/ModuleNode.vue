@@ -25,6 +25,8 @@ import { getFaceComponent } from '@/composables/usePluginFaceComponent';
 import { patch } from '@/composables/usePatch';
 import { useResizableCard } from '@/composables/useResizableCard';
 import { useLongPress } from '@/composables/useLongPress';
+import { upstreamPorts } from '@/utils/upstreamLabels';
+import { codecChip, compactPortLabel } from '@/utils/portDisplay';
 
 const props = defineProps<{ data: ModuleState }>();
 
@@ -128,6 +130,43 @@ function isVisiblePort(p: { id: string; hideWhenUnconnected?: boolean }): boolea
 const inputPorts = computed(
     () => props.data.ports?.filter((p) => p.direction === 'input').filter(isVisiblePort) ?? [],
 );
+
+/** Input-pin id → compact identity of the connected upstream port(s): one
+ *  value by priority (in-band name → ISO language → decimal PID) plus a
+ *  codec chip. Only ports carrying structured `streamInfo` are mirrored —
+ *  the point is reflecting STREAM identity on the receiving pin; a plain
+ *  role label ("MPEG-TS Out") adds nothing. */
+const upstreamPins = computed(() => {
+    const engine = engineStore.getEngine(engineId);
+    const result = new Map<string, Array<{ text: string; chip: ReturnType<typeof codecChip> }>>();
+    if (!engine) return result;
+    const ports = upstreamPorts(engine.modules, engine.connections, props.data.instanceId);
+    for (const [sinkPortId, srcPorts] of ports) {
+        const items = srcPorts
+            .filter((src) => src.streamInfo)
+            .map((src) => ({ text: compactPortLabel(src), chip: codecChip(src) }));
+        if (items.length) result.set(sinkPortId, items);
+    }
+    return result;
+});
+
+interface PinItem {
+    text: string;
+    chip: ReturnType<typeof codecChip>;
+    /** Identity derived from the connected upstream port (accent-tinted). */
+    mirrored?: boolean;
+}
+
+/** What an input pin displays — stream identity when available, by priority:
+ *  the pin's OWN streamInfo (muxer stream entries) → the connected upstream
+ *  port's identity → the plain role label. Same compact one-value form as
+ *  output pins everywhere. */
+function inputPinItems(port: (typeof inputPorts.value)[number]): PinItem[] {
+    if (port.streamInfo) return [{ text: compactPortLabel(port), chip: codecChip(port) }];
+    const mirrored = upstreamPins.value.get(port.id);
+    if (mirrored?.length) return mirrored.map((m) => ({ ...m, mirrored: true }));
+    return [{ text: port.label || port.id, chip: null }];
+}
 const outputPorts = computed(
     () => props.data.ports?.filter((p) => p.direction === 'output').filter(isVisiblePort) ?? [],
 );
@@ -438,28 +477,58 @@ const portColorMap: Record<string, string> = {
             </template>
         </div>
 
-        <!-- Port labels -->
-        <div ref="portsEl" class="px-3 py-1 flex justify-between">
-            <div class="space-y-1">
-                <div v-for="port in inputPorts" :key="port.id" class="h-5 flex items-center">
+        <!-- Port labels. Every row is a single line (h-5) because the
+             connection dots are absolutely positioned at fixed ROW_STEP
+             offsets — a wrapping label bleeds over the neighbouring rows and
+             detaches the text from its dot. Pins show ONE compact value
+             (in-band name → ISO language → decimal PID; role label otherwise)
+             plus a small codec chip; anything longer ellipsizes (min-w-0
+             columns + truncate). Full detail lives in the stats modal. -->
+        <div ref="portsEl" class="px-3 py-1 flex justify-between gap-2">
+            <div class="space-y-1 min-w-0">
+                <div v-for="port in inputPorts" :key="port.id" class="h-5 flex items-center min-w-0">
                     <span
                         v-if="(port.maxConnections ?? -1) === -1"
-                        class="text-[8px] opacity-40 mr-0.5"
+                        class="text-[8px] opacity-40 mr-0.5 shrink-0"
                         >&#8734;</span
                     >
-                    <span class="text-[10px] pl-2 text-muted">{{ port.label || port.id }}</span>
+                    <span class="pl-2 shrink-0" />
+                    <!-- Stream identity when available (own config → mirrored
+                         from the connected upstream port), else role label. -->
+                    <template v-for="(item, i) in inputPinItems(port)" :key="`${port.id}-${i}`">
+                        <span v-if="i > 0" class="text-[10px] mx-0.5 opacity-40 shrink-0">+</span>
+                        <span
+                            class="text-[10px] truncate"
+                            :class="item.mirrored ? 'text-accent/80' : 'text-muted'"
+                            >{{ item.text }}</span
+                        >
+                        <span
+                            v-if="item.chip"
+                            class="text-[8px] leading-none px-1 py-0.5 ml-0.5 rounded shrink-0"
+                            :class="item.chip.classes"
+                            >{{ item.chip.text }}</span
+                        >
+                    </template>
                 </div>
             </div>
-            <div class="space-y-1">
+            <div class="space-y-1 min-w-0">
                 <div
                     v-for="port in outputPorts"
                     :key="port.id"
-                    class="h-5 flex items-center justify-end"
+                    class="h-5 flex items-center justify-end min-w-0"
                 >
-                    <span class="text-[10px] pr-2 text-muted">{{ port.label || port.id }}</span>
+                    <span class="text-[10px] pr-1 text-muted truncate">{{
+                        compactPortLabel(port)
+                    }}</span>
+                    <span
+                        v-if="codecChip(port)"
+                        class="text-[8px] leading-none px-1 py-0.5 mr-1 rounded shrink-0"
+                        :class="codecChip(port)!.classes"
+                        >{{ codecChip(port)!.text }}</span
+                    >
                     <span
                         v-if="(port.maxConnections ?? -1) === -1"
-                        class="text-[8px] opacity-40 ml-0.5"
+                        class="text-[8px] opacity-40 ml-0.5 shrink-0"
                         >&#8734;</span
                     >
                 </div>
