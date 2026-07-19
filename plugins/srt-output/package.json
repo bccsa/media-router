@@ -86,6 +86,11 @@
                     },
                     "default": 0,
                     "description": "Wire datagram packing. Passthrough (default) relays bus datagrams as-is — no TS re-parsing, lowest CPU, and safest for lossy live streams. 1/7 force a specific SRT payload size (inserts tsparse) — only needed when the bus datagram size differs from the wire size."
+                },
+                "outputPacing": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Smooth bursty delivery to wire cadence by re-timing from the stream's PCR and sending on schedule. Fixes receivers with small jitter buffers going choppy on hold-and-burst sources (e.g. a mux aggregator upstream), at the cost of up to one burst interval of added latency. Leave off for lossy or PCR-degraded sources — re-timing amplifies their errors."
                 }
             }
         },
