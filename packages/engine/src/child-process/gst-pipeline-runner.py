@@ -1529,7 +1529,8 @@ def _try_bus_attach(tee_name, socket):
             return True
         entry = {"branch": branch, "tee": tee, "tee_src": tee_src,
                  "tee_name": tee_name, "queue": None, "sink_pad": None,
-                 "progressed": False, "stall": 0, "probe_id": None}
+                 "progressed": False, "stall": 0, "probe_id": None,
+                 "soft_healed": False}
         it2 = branch.iterate_recurse()
         while True:
             r2, el2 = it2.next()
@@ -1561,27 +1562,42 @@ def _try_bus_attach(tee_name, socket):
 
 
 def _arm_bus_progress_probe(entry):
-    """One-shot buffer probe on the edge sink's pad — sets the progress flag."""
+    """One-shot buffer probe on the edge sink's pad — sets the progress flag.
+
+    Single-writer protocol (root cause of the false-stall cascades, fixed
+    2026-07-21): the callback must NEVER write `probe_id`. The old protocol
+    (`_cb` cleared probe_id on fire) raced the watchdog's re-arm — when the
+    fresh probe fired between `add_probe()` returning and the id being
+    stored, the stale id blocked every future re-arm, detection silently
+    died on a healthy flowing edge, and 3 ticks later the watchdog
+    destructively reset it (consumer -5 → module restart → mux dead-input
+    rebuilds → on-air dropouts, ~1 false reset/80 min fleet-wide). Now only
+    the watchdog tick writes `probe_id`: it clears it on the progressed path
+    (progressed ⇒ the one-shot fired ⇒ the stored id is dead) before
+    re-arming, so a stale store self-corrects one tick later instead of
+    latching forever.
+    """
     pad = entry.get("sink_pad")
     if pad is None or entry.get("probe_id") is not None:
         return
 
     def _cb(_pad, _info):
         entry["progressed"] = True
-        entry["probe_id"] = None
         return Gst.PadProbeReturn.REMOVE
 
     entry["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _cb)
 
 
 def _arm_tee_progress_probe(tentry):
-    """One-shot buffer probe on the tee's sink pad — 'the producer has data'."""
+    """One-shot buffer probe on the tee's sink pad — 'the producer has data'.
+    Same single-writer protocol as _arm_bus_progress_probe (the callback
+    never writes probe_id); this side's latch was benign — tee_flowing stuck
+    False just disabled detection — but both paths stay uniform."""
     if tentry.get("probe_id") is not None:
         return
 
     def _cb(_pad, _info):
         tentry["progressed"] = True
-        tentry["probe_id"] = None
         return Gst.PadProbeReturn.REMOVE
 
     tentry["probe_id"] = tentry["pad"].add_probe(Gst.PadProbeType.BUFFER, _cb)
@@ -1605,6 +1621,10 @@ def _bus_stall_watchdog():
             tee_flowing[tname] = tentry["progressed"]
             if tentry["progressed"]:
                 tentry["progressed"] = False
+                # progressed ⇒ the one-shot fired ⇒ any stored id is dead.
+                # Clearing it HERE (single writer) is what makes a racy
+                # stale store self-correct instead of blocking re-arms.
+                tentry["probe_id"] = None
                 _arm_tee_progress_probe(tentry)
         except Exception:  # noqa: BLE001
             tee_flowing[tname] = False
@@ -1616,6 +1636,10 @@ def _bus_stall_watchdog():
             if entry["progressed"]:
                 entry["progressed"] = False
                 entry["stall"] = 0
+                entry["soft_healed"] = False
+                # progressed ⇒ the one-shot fired ⇒ any stored id is dead
+                # (see _arm_bus_progress_probe: single-writer protocol).
+                entry["probe_id"] = None
                 _arm_bus_progress_probe(entry)
                 continue
             # No edge progress this tick. Only counts as a stall when the tee
@@ -1627,6 +1651,22 @@ def _bus_stall_watchdog():
                 entry["stall"] += 1
                 if entry["stall"] >= _BUS_STALL_TICKS:
                     tee_name = entry["tee_name"]
+                    if not entry.get("soft_healed"):
+                        # First recovery attempt is non-destructive: a branch
+                        # latched by a state race un-wedges with a plain
+                        # re-sync (repro-validated) and the consumer's socket
+                        # survives. Only if the edge stays silent for another
+                        # full window does the destructive reset run.
+                        entry["soft_healed"] = True
+                        entry["stall"] = 0
+                        try:
+                            entry["branch"].sync_state_with_parent()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        emit_event({"event": "warning",
+                                    "message": f"bus edge silent {_BUS_STALL_TICKS} ticks "
+                                               f"(tee flowing) — soft re-sync {socket}"})
+                        continue
                     emit_event({"event": "warning",
                                 "message": f"bus edge stalled (tee flowing, edge sink "
                                            f"silent {entry['stall']} ticks) — resetting {socket}"})
@@ -2240,4 +2280,14 @@ if __name__ == "__main__":
         sys.stderr.write(f"[gst-runner.py] Fatal: {e}\n")
         sys.stderr.write(traceback.format_exc())
         sys.stderr.flush()
-        sys.exit(1)
+        os._exit(1)
+    # Skip CPython finalization: gi/GStreamer worker threads (librist logging,
+    # bus watches, streaming threads mid-unwind) race Py_Finalize and crash
+    # deterministically in libpython (SIGSEGV at fixed offset, observed on
+    # every cascade's module restart — the crash left stale sockets and
+    # stretched consumer outages past the muxers' 5 s dead-input watchdog).
+    # The runner is a disposable child: everything worth flushing is flushed,
+    # the pipeline is NULL, so a hard exit is strictly safer here.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
