@@ -27,6 +27,7 @@ const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
     speedPreset: 'ultrafast',
     h264Profile: 'auto',
     sceneCut: 40,
+    cpbSeconds: 1,
     ...over,
 });
 

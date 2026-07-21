@@ -155,6 +155,16 @@ export class TranscoderModule extends GstPluginBase {
         const globalSceneCut = Number.isFinite(rawSceneCut)
             ? Math.min(100, Math.max(0, rawSceneCut))
             : 40;
+        // HRD/CPB depth (seconds of the rate cap). Bounds worst-case bursts —
+        // above all scene-cut keyframes — so a fixed-rate link can deliver
+        // every frame near its deadline. 1 s = classic vbv-bufsize default;
+        // lower it when the delivery path has little headroom over the
+        // stream rate (measured: 0.4 s keeps a 5 Mbps 1080p50 rendition's
+        // IDRs deliverable over a ~2x-headroom RIST path).
+        const rawCpb = Number(config.cpbSeconds);
+        const globalCpbSeconds = Number.isFinite(rawCpb)
+            ? Math.min(2, Math.max(0.1, rawCpb))
+            : 1;
 
         // Resolve each rendition's effective encoder settings (override ??
         // global) and its concrete impl. The impl is resolved PER rendition
@@ -181,6 +191,7 @@ export class TranscoderModule extends GstPluginBase {
                 speedPreset: r.speedPreset ?? globalSpeedPreset,
                 h264Profile: r.h264Profile ?? globalH264Profile,
                 sceneCut: r.sceneCut ?? globalSceneCut,
+                cpbSeconds: r.cpbSeconds ?? globalCpbSeconds,
             };
             const portId = outputPortId(i);
             const ep = router.assignBusChannel(instanceId, portId);

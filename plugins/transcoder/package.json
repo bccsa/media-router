@@ -99,6 +99,13 @@
                                 "x-advanced": true,
                                 "x-showWhen": "encoderImpl=software,auto",
                                 "description": "Override scene-cut threshold for this rendition (software x264/x265 only; 0 = off). Blank = inherit."
+                            },
+                            "cpbSeconds": {
+                                "type": "number",
+                                "minimum": 0.1,
+                                "maximum": 2,
+                                "x-advanced": true,
+                                "description": "Override HRD buffer depth (seconds) for this rendition. Blank = inherit."
                             }
                         }
                     },
@@ -192,6 +199,18 @@
                     "x-step": 5,
                     "description": "Scene-cut detection threshold for software x264/x265 (H.264/H.265 only; ignored by V4L2 and VA-API hardware). When the encoder detects a hard cut it inserts an adaptive keyframe there, so the picture snaps clean at the cut instead of blocking until the next scheduled keyframe. 40 is x264's default; higher = more sensitive (more keyframes, more bitrate); 0 = off (strict fixed-GOP — use for byte-aligned ABR renditions). Note: tune=zerolatency runs with no lookahead, so detection is reactive rather than optimally placed. Applies to every rendition and rebuilds the pipeline.",
                     "x-showWhen": "encoderImpl=software,auto"
+                },
+                "cpbSeconds": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 2,
+                    "default": 1,
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-unit": "s",
+                    "x-advanced": true,
+                    "description": "HRD buffer depth in seconds of the rate cap (x264/x265 vbv-bufsize, VA-API cpb-size). Bounds the encoder's worst-case burst — above all scene-cut keyframes: an oversized keyframe must be serialized over the link at the stream rate, so it (and every frame queued behind it) lands late at the receiver and gets dropped there. 1 s is the classic default; lower it toward 0.3–0.5 s when the delivery path has little bandwidth headroom (long-haul RIST/SRT) at some cost in keyframe quality. Applies to every rendition and rebuilds the pipeline.",
+                    "x-showWhen": "encoderImpl=software,va,auto"
                 },
                 "framerate": {
                     "type": "number",

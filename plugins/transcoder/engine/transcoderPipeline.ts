@@ -193,6 +193,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
             speedPreset: e.speedPreset,
             h264Profile: e.h264Profile,
             sceneCut: e.sceneCut,
+            cpbSeconds: e.cpbSeconds,
             interlacedOutput: deinterlaceMode === 'off',
         });
         const sink = buildBusSink(out.port);

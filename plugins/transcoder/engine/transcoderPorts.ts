@@ -53,6 +53,7 @@ export interface RenditionOverrides {
     speedPreset?: SpeedPreset;
     h264Profile?: H264Profile;
     sceneCut?: number;
+    cpbSeconds?: number;
 }
 
 /** One configured output rendition (size/bitrate + optional encoder overrides). */
@@ -75,6 +76,9 @@ export interface ResolvedEncode {
     speedPreset: SpeedPreset;
     h264Profile: H264Profile;
     sceneCut: number;
+    /** HRD/CPB depth in seconds of the rate cap — bounds scene-cut IDR bursts
+     *  (see buildEncoderBranch.cpbSeconds). */
+    cpbSeconds: number;
 }
 
 /** A rendition with its allocated bus channel + resolved encoder settings. */
@@ -133,6 +137,7 @@ export function readRenditions(config: Record<string, unknown>): Rendition[] {
             speedPreset: readEnum(e.speedPreset, SPEED_PRESETS),
             h264Profile: readEnum(e.h264Profile, H264_PROFILES),
             sceneCut: readSceneCutOverride(e.sceneCut),
+            cpbSeconds: readCpbSecondsOverride(e.cpbSeconds),
         };
     });
 }
@@ -154,6 +159,13 @@ function readSceneCutOverride(value: unknown): number | undefined {
     if (value === undefined || value === null || value === '') return undefined;
     const n = Math.round(Number(value));
     return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : undefined;
+}
+
+/** CPB depth override, clamped to a sane 0.1–2 s; blank/invalid = inherit. */
+function readCpbSecondsOverride(value: unknown): number | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(2, Math.max(0.1, n)) : undefined;
 }
 
 /** Display label for a rendition's port: operator name, else `WxH`. */

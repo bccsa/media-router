@@ -122,6 +122,16 @@ export interface EncoderBranchOptions {
     speedPreset?: SpeedPreset;
     h264Profile?: H264Profile;
     sceneCut?: number;
+    /** HRD/CPB depth in seconds of the rate cap (default 1). Bounds the encoder's
+     *  worst-case burst — above all scene-cut keyframes: a fixed-rate link
+     *  serializes an oversized IDR over hundreds of ms, landing it (and every
+     *  frame queued behind it) past the receiver's deadline (measured live:
+     *  409 KB IDR at 5 Mbps CBR → ~370 ms late at the far end → vMix video
+     *  drops ~10:1 over audio, OBS audio stutter). Maps to x264/x265
+     *  `vbv-bufsize` and VA-API `cpb-size` (which otherwise defaults to
+     *  "auto" — effectively unbounded, violating this module's CBR contract).
+     *  Smaller = tighter burst bound / lower keyframe quality. */
+    cpbSeconds?: number;
     /** The frames being encoded are interlaced fields passed through undeinterlaced
      *  (transcoder "keep interlaced" mode). Only x264 can signal this in the
      *  bitstream (`interlaced=true`); VA-API/V4L2 have no interlaced encode mode,
@@ -143,6 +153,7 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
         speedPreset = 'ultrafast',
         h264Profile = 'auto',
         sceneCut = 40,
+        cpbSeconds = 1,
         interlacedOutput = false,
     } = opts;
     const bps = bitrateKbps * 1000;
@@ -152,6 +163,8 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
     // overrun the downstream UDP/SRT buffer too hard. CBR pins peak = average
     // (vbv-maxrate = bitrate) and pads to hold the rate constant.
     const vbvMax = cbr ? bitrateKbps : Math.round(bitrateKbps * 1.5);
+    // HRD buffer depth (kbit): vbv-bufsize / cpb-size = rate cap x cpbSeconds.
+    const cpbKbit = Math.max(1, Math.round(vbvMax * cpbSeconds));
     if (impl === 'v4l2') {
         // video_bitrate_mode: 1 = CBR, 0 = VBR.
         const mode = cbr ? 1 : 0;
@@ -173,10 +186,10 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
         const tu = VA_TARGET_USAGE[speedPreset];
         if (codec === 'h264') {
             const profCaps = h264Profile === 'auto' ? '' : ` ! video/x-h264,profile=${h264Profile}`;
-            return `vah264enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} b-frames=0${profCaps} ! h264parse config-interval=1`;
+            return `vah264enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} b-frames=0 cpb-size=${cpbKbit}${profCaps} ! h264parse config-interval=1`;
         }
         if (codec === 'h265') {
-            return `vah265enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} b-frames=0 ! h265parse config-interval=1`;
+            return `vah265enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} b-frames=0 cpb-size=${cpbKbit} ! h265parse config-interval=1`;
         }
         if (codec === 'av1') {
             return `vaav1enc name=${name} bitrate=${bitrateKbps} rate-control=${rc} target-usage=${tu} key-int-max=${kif} ! av1parse`;
@@ -191,8 +204,8 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
             // default 40; 0 = off for strict fixed-GOP ABR alignment).
             const opts =
                 (cbr
-                    ? `nal-hrd=cbr:vbv-maxrate=${bitrateKbps}:vbv-bufsize=${bitrateKbps}`
-                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${vbvMax}`) + `:scenecut=${sceneCut}`;
+                    ? `nal-hrd=cbr:vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}`
+                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${cpbKbit}`) + `:scenecut=${sceneCut}`;
             // Force the profile via a src capsfilter (x264enc has no `profile`
             // property); x264 then drops CABAC / 8x8dct etc. to comply. 'auto'
             // adds no filter and leaves x264 to pick.
@@ -203,8 +216,8 @@ export function buildEncoderBranch(opts: EncoderBranchOptions): string {
         if (codec === 'h265') {
             const opts =
                 (cbr
-                    ? `vbv-maxrate=${bitrateKbps}:vbv-bufsize=${bitrateKbps}:strict-cbr=1`
-                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${vbvMax}`) + `:scenecut=${sceneCut}`;
+                    ? `vbv-maxrate=${bitrateKbps}:vbv-bufsize=${cpbKbit}:strict-cbr=1`
+                    : `vbv-maxrate=${vbvMax}:vbv-bufsize=${cpbKbit}`) + `:scenecut=${sceneCut}`;
             return `x265enc name=${name} bitrate=${bitrateKbps} tune=zerolatency speed-preset=${speedPreset} key-int-max=${kif} option-string="${opts}" ! h265parse config-interval=1`;
         }
         if (codec === 'av1') {
