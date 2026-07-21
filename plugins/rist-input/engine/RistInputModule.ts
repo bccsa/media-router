@@ -71,6 +71,7 @@ export class RistInputModule extends GstPluginBase {
             urls: this.links().map(buildRistUrl),
             profile: (this.config.profile as number) ?? 1,
             buffer: (this.config.buffer as number) ?? 1000,
+            sessionTimeout: (this.config.sessionTimeout as number) || undefined,
             secret: (this.config.secret as string) || undefined,
             encType: (this.config.encryptionType as number) || undefined,
             statsInterval: (this.config.statsInterval as number) ?? 1000,

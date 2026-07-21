@@ -260,6 +260,12 @@ export interface RistRunnerConfig {
     profile?: number;
     /** Recovery buffer in ms — folded into each URL as `buffer=`. */
     buffer?: number;
+    /** Receiver flow session timeout in ms — folded in as `session-timeout=`.
+     *  librist deletes a flow after this long with no data (default 2000 ms);
+     *  on links with brief blackouts or restart-prone senders, ~10000 ms keeps
+     *  the flow alive through the gap (brief freeze) instead of a
+     *  delete/reconnect churn that cascades into downstream rebuilds. */
+    sessionTimeout?: number;
     /** Encryption pre-shared secret — folded into each URL as `secret=`. */
     secret?: string;
     /** AES key size for `secret` (128 | 256) — folded in as `aes-type=`. */

@@ -174,7 +174,8 @@ def versions():
     )
 
 
-def augment_url(url, buffer_ms=None, secret=None, aes_type=None):
+def augment_url(url, buffer_ms=None, secret=None, aes_type=None,
+                session_timeout_ms=None):
     """Fold the module-level buffer/encryption settings into a rist:// URL as
     query params (urlparam.h) — the same fields the CLI's -b/-s/-e set on the
     parsed peer config. Params already present in the URL win (appended params
@@ -183,6 +184,8 @@ def augment_url(url, buffer_ms=None, secret=None, aes_type=None):
     extra = []
     if buffer_ms and "buffer=" not in url:
         extra.append(f"buffer={int(buffer_ms)}")
+    if session_timeout_ms and "session-timeout=" not in url:
+        extra.append(f"session-timeout={int(session_timeout_ms)}")
     if secret and "secret=" not in url:
         extra.append(f"secret={secret}")
         if aes_type and "aes-type=" not in url:

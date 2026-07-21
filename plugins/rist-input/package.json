@@ -89,6 +89,13 @@
                     "default": 1000,
                     "description": "Retransmission buffer (ms)"
                 },
+                "sessionTimeout": {
+                    "type": "number",
+                    "default": 0,
+                    "x-unit": "ms",
+                    "x-advanced": true,
+                    "description": "Flow session timeout (ms). 0 = librist default (2000). How long the receiver tolerates NO data before deleting the flow and reconnecting from scratch. On links with brief blackouts or restart-prone senders, ~10000 keeps the flow alive through the gap — playback freezes for the gap only, instead of a delete/reconnect that cascades into downstream pipeline rebuilds."
+                },
                 "secret": {
                     "type": "string",
                     "default": "",

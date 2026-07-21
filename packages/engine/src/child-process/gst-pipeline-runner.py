@@ -1927,6 +1927,7 @@ def _start_rist(pipe, cfg):
 
     profile = int(cfg.get("profile", 1))
     buffer_ms = cfg.get("buffer")
+    session_timeout_ms = cfg.get("sessionTimeout")
     secret = cfg.get("secret") or None
     enc_type = cfg.get("encType")
     stats_ms = int(cfg.get("statsInterval", 1000))
@@ -1944,7 +1945,8 @@ def _start_rist(pipe, cfg):
                                      npd=bool(cfg.get("npd")))
         for url in urls:
             ctx.add_peer(librist.augment_url(
-                url, buffer_ms=buffer_ms, secret=secret, aes_type=enc_type))
+                url, buffer_ms=buffer_ms, secret=secret, aes_type=enc_type,
+                session_timeout_ms=session_timeout_ms))
         if stats_ms > 0:
             ctx.set_stats_callback(stats_ms, _on_rist_stats)
 

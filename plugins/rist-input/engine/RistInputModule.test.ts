@@ -57,6 +57,7 @@ describe('RistInputModule.buildPipeline', () => {
             secret: 's3cret',
             encryptionType: 128,
             statsInterval: 500,
+            sessionTimeout: 10000,
         };
         const desc = module.buildPipeline({})!;
         expect(desc.rist).toMatchObject({
@@ -66,12 +67,20 @@ describe('RistInputModule.buildPipeline', () => {
             secret: 's3cret',
             encType: 128,
             statsInterval: 500,
+            sessionTimeout: 10000,
             appElement: 'ristsrc',
         });
         expect(desc.rist.urls).toEqual([
             'rist://@0.0.0.0:5004?weight=50&cname=link1',
             'rist://10.0.0.9:5006?weight=10&cname=link2',
         ]);
+    });
+
+    it('omits sessionTimeout when unset/zero (librist default applies)', () => {
+        const { module } = makeModule();
+        module.config = { sessionTimeout: 0 };
+        const desc = module.buildPipeline({})!;
+        expect(desc.rist.sessionTimeout).toBeUndefined();
     });
 
     it('defaults to a single listener link on :5004', () => {
