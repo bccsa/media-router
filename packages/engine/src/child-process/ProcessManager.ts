@@ -3,6 +3,9 @@ import { ManagedProcess, type ManagedProcessOptions } from './ManagedProcess.js'
 
 const log = createLogger('ProcessManager');
 
+/** Drain passes in `releaseAll` before giving up on a re-spawning owner. */
+const MAX_RELEASE_PASSES = 3;
+
 export interface ProcessInfo {
     label: string;
     pid: number | undefined;
@@ -55,14 +58,42 @@ export class ProcessManager {
         }
     }
 
-    /** Kill all processes owned by a module. Called automatically on module stop. */
+    /**
+     * Kill all processes owned by a module. Called automatically on module stop.
+     *
+     * Drains in passes rather than snapshot-then-delete: `destroy()` takes up to
+     * ~3 s per process (SIGTERM grace + SIGKILL escalation), and a plugin can
+     * spawn into the *same* set during that await — e.g. hls-player's live URL
+     * update finishing its network probe after the stop began. Deleting the map
+     * entry unconditionally stranded that process alive, untracked, and (with
+     * `autoRestart`) respawning forever, immune to every later stop.
+     */
     async releaseAll(ownerId: string): Promise<void> {
-        const set = this.ownership.get(ownerId);
-        if (!set || set.size === 0) return;
+        // Re-read the set every pass rather than holding a reference: the last
+        // process leaving drops the map entry (see the `stopped` handler in
+        // `spawn`), so a spawn during teardown installs a BRAND NEW set. A held
+        // reference would look empty while the new set quietly filled up.
+        //
+        // Bounded: spawns during teardown come from in-flight async work that
+        // itself terminates. The cap stops a pathological respawn loop from
+        // hanging module stop forever — the leftovers are logged, not hidden.
+        for (let pass = 0; pass < MAX_RELEASE_PASSES; pass++) {
+            const set = this.ownership.get(ownerId);
+            if (!set || set.size === 0) break;
+            const procs = [...set];
+            log.info({ ownerId, count: procs.length, pass }, 'Releasing all processes');
+            await Promise.allSettled(procs.map((p) => p.destroy()));
+            for (const p of procs) set.delete(p);
+        }
 
-        const procs = [...set];
-        log.info({ ownerId, count: procs.length }, 'Releasing all processes');
-        await Promise.allSettled(procs.map((p) => p.destroy()));
+        const remaining = this.ownership.get(ownerId);
+        if (remaining && remaining.size > 0) {
+            log.error(
+                { ownerId, remaining: remaining.size },
+                'Processes still spawning after release passes — leaving them tracked',
+            );
+            return;
+        }
         this.ownership.delete(ownerId);
     }
 

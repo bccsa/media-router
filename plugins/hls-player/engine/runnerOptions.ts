@@ -7,10 +7,12 @@
  */
 import type { AbrConfig, LatencyConfig, QualityHint } from 'hls-pipe';
 
+/** Bus egress descriptor — the paced sink the runner instantiates. */
+export type RunnerSink = { kind: 'unixfd'; ingestPath: string };
+
 export interface RunnerConfig {
     url: string;
-    host: string;
-    port: number;
+    sink: RunnerSink;
     // 'auto' = ABR (switches; capBitrateBps caps the ceiling).
     // 'highest'/'lowest' = pin the top/bottom variant (no ABR).
     // 'fixed' = pin the highest variant at/under the resolution ceiling

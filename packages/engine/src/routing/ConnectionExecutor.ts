@@ -12,7 +12,7 @@ const log = createLogger('ConnectionExecutor');
  *
  * Per-stream-type implementation logic lives in:
  *   - `PcmAudioExecutor` (`audio/pcm`)
- *   - `MpegTsUdpExecutor` (`muxed/mpegts`)
+ *   - `MpegTsBusExecutor` (`muxed/mpegts`)
  */
 export class ConnectionExecutor {
     constructor(private registry: StreamTypeExecutorRegistry) {}

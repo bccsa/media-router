@@ -259,6 +259,7 @@ export function applyJsonPatch(obj: Record<string, unknown> | null, ops: PatchOp
 /** Default edge colors for stream types in the routing editor. */
 export const STREAM_TYPE_COLORS: Record<string, string> = {
     'audio/pcm': '#3b82f6',
+    'audio/302m': '#06b6d4',
     'muxed/mpegts': '#f59e0b',
     'video/raw': '#10b981',
 };
@@ -268,6 +269,7 @@ export const STREAM_TYPE_COLORS: Record<string, string> = {
 /** Media stream type — determines routing domain and port compatibility. */
 export type StreamType =
     | 'audio/pcm' // Raw PCM audio (PipeWire routing)
+    | 'audio/302m' // PCM-in-MPEG-TS (SMPTE 302M) over the loopback bus — PTS-preserving
     | 'audio/opus' // Encoded Opus audio
     | 'audio/aac' // Encoded AAC audio
     | 'video/raw' // Raw video frames
@@ -276,6 +278,25 @@ export type StreamType =
     | 'muxed/mpegts' // MPEG-TS container (audio + video + subs)
     | 'text/subtitle' // Subtitle stream (SRT, ASS, etc.)
     | 'data/generic'; // Generic data (metadata, control, etc.)
+
+/**
+ * TS-family stream types: both are valid MPEG-TS on the wire. `audio/302m`
+ * is a semantic flag ("this TS carries SMPTE-302M PCM audio — wire it to
+ * audio pins for mixing") — it must still be able to ride any TS transport
+ * (SRT/RIST/IP outputs) and any TS source must be wireable into an audio
+ * mixing pin (fails soft downstream via a tsdemux caps filter when the
+ * content isn't 302M).
+ */
+const TS_FAMILY: ReadonlySet<string> = new Set(['muxed/mpegts', 'audio/302m']);
+
+/**
+ * Port wiring compatibility: exact match, or both sides in the TS family.
+ * Single source of truth — used by the engine's PortRegistry AND the
+ * manager-ui connection validator (import it, don't duplicate the rule).
+ */
+export function streamTypesCompatible(source: string, sink: string): boolean {
+    return source === sink || (TS_FAMILY.has(source) && TS_FAMILY.has(sink));
+}
 
 // --- Module Ports -----------------------------------------------------------
 
@@ -497,7 +518,7 @@ export interface Device {
 
 /** dgram-comms wire protocol message envelope. */
 export interface DgramMessage {
-    type: 'data' | 'keepAlive' | 'ack' | 'connect' | 'connected';
+    type: 'data' | 'keepAlive' | 'ack' | 'connect' | 'connected' | 'reset';
     /** Client identifier. */
     clientID: string;
     /** Encryption IV (hex string). */

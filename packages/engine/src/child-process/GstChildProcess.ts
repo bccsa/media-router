@@ -147,6 +147,15 @@ export class GstChildProcess extends EventEmitter {
             this.emit('error', data);
         });
 
+        // unixfd socket-gate progress: the runner is waiting (indefinitely)
+        // for producer edge sockets before launching the pipeline. Forwarded
+        // so the module can surface a health warning naming the pending
+        // sockets — without it a gated module reports healthy while nothing
+        // runs. `pending: []` clears the signal (gate opened).
+        this.ipc.on('busGate', (data) => {
+            this.emit('busGate', data);
+        });
+
         // Monitor child exit for auto-restart
         this.child.on('exit', (code) => {
             this.running = false;
@@ -172,6 +181,8 @@ export class GstChildProcess extends EventEmitter {
                 clock: this.pipelineDesc.clock,
                 decoderThreadType: this.pipelineDesc.decoderThreadType ?? 'auto',
                 busReports: this.pipelineDesc.busReports ?? [],
+                rist: this.pipelineDesc.rist,
+                tsSplit: this.pipelineDesc.tsSplit,
             });
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });
@@ -270,6 +281,26 @@ export class GstChildProcess extends EventEmitter {
         // the element exists, unblocking the mux.
         if (!this.ipc) return;
         this.ipc.sendEvent('setKlvPayload', { element, payload });
+    }
+
+    /**
+     * Attach a per-consumer bus fan-out branch (`tee. ! queue leaky ! unixfdsink`)
+     * on the producer's egress tee, so a new consumer reads its own isolated
+     * socket. Fire-and-forget, and gated only on IPC — NOT on `running`: the
+     * BusFanoutCoordinator re-attaches on the producer's 'playing' edge (a fresh
+     * restartOnError process rebuilds from the base string with no branches), and
+     * the attach must be queued to the runner the moment its IPC is up. The runner
+     * is idempotent per socket, so a duplicate attach is a no-op.
+     */
+    sendBusAttach(tee: string, socket: string): void {
+        if (!this.ipc) return;
+        this.ipc.sendEvent('busAttach', { tee, socket });
+    }
+
+    /** Detach a per-consumer bus fan-out branch by its edge socket. Fire-and-forget. */
+    sendBusDetach(socket: string): void {
+        if (!this.ipc) return;
+        this.ipc.sendEvent('busDetach', { socket });
     }
 
     /** Set a property on a named GStreamer element (live, no restart). */

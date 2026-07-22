@@ -20,7 +20,7 @@ Usage:
 
 import gi
 gi.require_version('Gst', '1.0')
-from gi.repository import Gst, GLib, Gio
+from gi.repository import Gst, GLib
 
 import json
 import math
@@ -259,7 +259,37 @@ def on_bus_message(bus, message):
 
     if t == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
-        emit_event({"event": "error", "message": str(err.message), "debug": debug or ""})
+        src = message.src
+        element = (src.get_name() or "") if src is not None else ""
+        # CONTAINMENT: an error originating inside a per-consumer fan-out
+        # branch (`busedge_*` bin — edge unixfdsink bind/send failure) must
+        # never kill the producer pipeline: that restart-storms the producer's
+        # whole consumer subtree over ONE consumer's edge (the same class of
+        # cascade the attach-time fix removed). Detach the failed branch and
+        # keep running; the engine re-attaches the edge on the next connect /
+        # producer-PLAYING reconcile, and the affected consumer's own gate +
+        # restart path recovers it independently.
+        edge = _busedge_ancestor(src)
+        if edge is not None:
+            edge_socket = _socket_for_busedge(edge)
+            if edge_socket:
+                _teardown_bus_branch(edge_socket)
+            emit_event({"event": "warning",
+                        "message": f"bus edge failed ({element}): {err.message} — "
+                                   f"branch detached, producer unaffected"})
+            return True
+        # A `watchdog` element inserted by buildBusSrc's stallTimeoutMs
+        # (named `buswd_*`) firing means the bus source is silent but
+        # connected. Tag the error so modules can treat source-silent
+        # differently from a hard failure (e.g. video-player's colour-bars
+        # fallback) — the unixfd equivalent of `GstUDPSrcTimeout` below.
+        if element.startswith("buswd"):
+            emit_event({"event": "error", "kind": "bus_stall",
+                        "message": str(err.message),
+                        "debug": debug or "", "element": element})
+        else:
+            emit_event({"event": "error", "message": str(err.message),
+                        "debug": debug or "", "element": element})
         # Stop the pipeline on error
         if pipeline:
             pipeline.set_state(Gst.State.NULL)
@@ -635,6 +665,8 @@ def _parser_prefix_for_pad(pad, rule_id):
     the single-branch and tee fan-out link paths."""
     caps = pad.get_current_caps() or pad.query_caps(None)
     parser = _parser_for_caps(caps)
+    emit_event({"event": "warning",
+                "message": f"DEBUG parser pick: pad={pad.get_name()} caps={caps.to_string()[:120] if caps else None} parser={parser!r}"})
     if parser is None:
         caps_name = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else 'unknown'
         warn_key = f"{rule_id}::{caps_name}"
@@ -734,6 +766,13 @@ def _install_pad_link_rule(pipe, rule):
                                         # PID isn't listed is ignored. Fixes the
                                         # positional fragility for PID-based ports
                                         # (mpegts-demuxer, plan Phase 3).
+      "padOffsetNs": -700000000,        # optional — GstPad.set_offset() on the
+                                        # linkTo request pad, applied BEFORE the
+                                        # link (the sticky segment propagates at
+                                        # link time). Positive delays, negative
+                                        # advances (early buffers clip at segment
+                                        # start). Requires linkTo; not applied on
+                                        # the matchPids tee-fanout path.
     }
 
     By default the Nth pad of the matching media type is connected to
@@ -760,6 +799,8 @@ def _install_pad_link_rule(pipe, rule):
     # Optional PID→branch matching (plan Phase 3). When present, the pad's PID
     # picks the branch index; absent, we fall back to pad-added order.
     match_pids = rule.get("matchPids") or []
+    # Optional timestamp offset (ns) on the linkTo request pad (lipsync knob).
+    pad_offset_ns = rule.get("padOffsetNs")
 
     def on_pad_added(_element, pad):
         if media_filter and _pad_caps_media(pad) != media_filter:
@@ -837,6 +878,10 @@ def _install_pad_link_rule(pipe, rule):
                     emit_event({"event": "error",
                                 "message": f"linkOnPadAdded: could not request sink pad on {link_to_name} ({rule_id})"})
                     return
+                # Apply the pad offset BEFORE linking — the sticky segment
+                # event propagates at link time and must already carry it.
+                if pad_offset_ns:
+                    req_pad.set_offset(int(pad_offset_ns))
                 outer_link = src_pad.link(req_pad)
                 if outer_link != Gst.PadLinkReturn.OK:
                     emit_event({"event": "error",
@@ -846,7 +891,9 @@ def _install_pad_link_rule(pipe, rule):
             emit_event({"event": "pad_linked",
                         "rule": rule_id,
                         "index": index,
-                        "padName": pad.get_name()})
+                        "padName": pad.get_name(),
+                        **({"padOffsetNs": int(pad_offset_ns)}
+                           if (pad_offset_ns and link_to_name) else {})})
         except GLib.Error as e:
             emit_event({"event": "error",
                         "message": f"linkOnPadAdded: branch parse failed: {e.message}"})
@@ -931,71 +978,6 @@ def _apply_net_clock(pipe, clock_cfg):
     # value would make every buffer "late" and break playback.
 
 
-def _isolate_loopback_bus_udpsrc(pipe):
-    """Group-bind every loopback-bus udpsrc so foreign unicast can't pollute it.
-
-    GStreamer's udpsrc binds INADDR_ANY:port on Linux even when a
-    multicast-group is set, so any unicast datagram sprayed at that port is
-    delivered into the pipeline and interleaved with the bus TS. Seen live on
-    a fleet box: a remote RIST peer's control packets (60/64-byte keepalives)
-    landed on ports colliding with the bus allocator range (40000+), and the
-    SRT output forwarded them to MediaMTX, which rejected the whole publish
-    with "received packet with size 60 not multiple of 188".
-
-    Fix: pre-create the socket ourselves, bound to the GROUP address
-    (239.x:port) — the kernel then only delivers datagrams addressed to the
-    group, excluding all unicast — and hand it to udpsrc via its `socket`
-    property. Membership is joined on `lo` explicitly (the bus convention),
-    with `auto-multicast` disabled so udpsrc doesn't double-join.
-
-    Only touches udpsrc elements with `multicast-iface=lo` AND a `239.`
-    address — the loopback-bus signature from buildUdpSrc. Network-facing
-    sources (mpegts-ip-input on a real NIC, ristsrc's internal udpsrc pair)
-    use other ifaces/addresses and keep stock behaviour. Any failure falls
-    back to udpsrc's own ANY-bind (today's behaviour) with a warning.
-    """
-    it = pipe.iterate_recurse()
-    while True:
-        result, element = it.next()
-        if result == Gst.IteratorResult.RESYNC:
-            it.resync()
-            continue
-        if result != Gst.IteratorResult.OK:
-            break
-        factory = element.get_factory()
-        if not factory or factory.get_name() != 'udpsrc':
-            continue
-        try:
-            iface = element.get_property('multicast-iface')
-            addr = element.get_property('address')
-            port = element.get_property('port')
-        except (TypeError, GLib.Error):
-            continue
-        if iface != 'lo' or not addr or not addr.startswith('239.'):
-            continue
-        try:
-            gsock = Gio.Socket.new(Gio.SocketFamily.IPV4,
-                                   Gio.SocketType.DATAGRAM,
-                                   Gio.SocketProtocol.UDP)
-            buf = element.get_property('buffer-size') or 0
-            if buf > 0:
-                gsock.set_option(pysocket.SOL_SOCKET, pysocket.SO_RCVBUF, buf)
-            # allow_reuse=True — several consumers of one producer share a port
-            gsock.bind(Gio.InetSocketAddress.new_from_string(addr, port), True)
-            gsock.join_multicast_group(Gio.InetAddress.new_from_string(addr),
-                                       False, 'lo')
-            element.set_property('auto-multicast', False)
-            element.set_property('socket', gsock)
-            sys.stderr.write(
-                f"[gst-runner.py] bus udpsrc {addr}:{port} group-bound "
-                f"(foreign unicast excluded)\n")
-            sys.stderr.flush()
-        except GLib.Error as e:
-            emit_event({"event": "warning",
-                        "message": f"bus udpsrc isolation failed for {addr}:{port} "
-                                   f"— falling back to ANY-bind: {e.message}"})
-
-
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
@@ -1025,11 +1007,6 @@ def handle_start(data):
     except GLib.Error as e:
         emit_event({"event": "error", "message": f"Pipeline parse error: {e.message}"})
         return
-
-    # Harden the loopback bus BEFORE any state change: group-bound sockets
-    # must be handed to udpsrc while it is still NULL (it opens/binds on
-    # READY). See _isolate_loopback_bus_udpsrc for the why.
-    _isolate_loopback_bus_udpsrc(pipeline)
 
     # Cross-pipeline A/V sync (opt-in): slave this pipeline to a shared net
     # clock + base-time so it presents on the SAME timeline as its sibling
@@ -1070,6 +1047,22 @@ def handle_start(data):
         if r.get("element") and r.get("structure")
     }
 
+    # librist half of a RIST module — wired BEFORE PLAYING so the appsink
+    # can never see data without its handler; appsrc pushes before PLAYING
+    # just FLUSH-drop (live-source semantics, satisfies the NO_PREROLL
+    # invariant of the playing watchdog above).
+    if not _start_rist(pipeline, data.get("rist")):
+        pipeline.set_state(Gst.State.NULL)
+        pipeline = None
+        return
+
+    # ts-splitter half of a ts-splitter module — same before-PLAYING wiring
+    # contract as the rist block above.
+    if not _start_ts_split(pipeline, data.get("tsSplit")):
+        pipeline.set_state(Gst.State.NULL)
+        pipeline = None
+        return
+
     # Set up bus watch
     bus = pipeline.get_bus()
     bus.add_signal_watch()
@@ -1099,6 +1092,9 @@ def handle_stop(data=None):
     """Stop the pipeline."""
     global pipeline, running
     _cancel_playing_watchdog()
+    _clear_pending_bus_attaches()
+    _stop_rist()
+    _stop_ts_split()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
@@ -1168,6 +1164,14 @@ def handle_get_property(data):
     except Exception as e:
         emit_command_error(req_id, f"get_property failed: {e}")
 
+# Stats reads currently running, by element name. srtsrc blocks its 'stats'
+# property getter while (re)connecting; a blocked read on the main context
+# would freeze every other command until it returns (RPC-timeout pile-up in
+# the parent), so reads run on worker threads with at most one in flight per
+# element.
+stats_reads_in_flight = set()
+stats_reads_lock = threading.Lock()
+
 def handle_get_stats(data):
     """Read the 'stats' property from a named element (e.g. srtsrc, srtserversrc)."""
     req_id = data.get("id")
@@ -1182,15 +1186,29 @@ def handle_get_stats(data):
         emit_command_error(req_id, f"Element not found: {element_name}")
         return
 
-    try:
-        stats = element.get_property("stats")
-        stats_dict = gst_structure_to_dict(stats) if isinstance(stats, Gst.Structure) else {}
-        result = {"event": "stats", "element": element_name, "data": stats_dict}
-        if req_id:
-            result["id"] = req_id
-        emit_event(result)
-    except Exception as e:
-        emit_command_error(req_id, f"get_stats failed: {e}")
+    with stats_reads_lock:
+        if element_name in stats_reads_in_flight:
+            emit_command_error(
+                req_id, f"stats read for {element_name} still in progress (element busy)")
+            return
+        stats_reads_in_flight.add(element_name)
+
+    def read_and_emit():
+        try:
+            stats = element.get_property("stats")
+            stats_dict = gst_structure_to_dict(stats) if isinstance(stats, Gst.Structure) else {}
+            result = {"event": "stats", "element": element_name, "data": stats_dict}
+            if req_id:
+                result["id"] = req_id
+            emit_event(result)
+        except Exception as e:
+            emit_command_error(req_id, f"get_stats failed: {e}")
+        finally:
+            with stats_reads_lock:
+                stats_reads_in_flight.discard(element_name)
+
+    threading.Thread(target=read_and_emit, daemon=True,
+                     name=f"stats-{element_name}").start()
 
 def _pad_probe_cb(pad, info, element_name):
     """Pad probe callback — counts bytes flowing through."""
@@ -1316,6 +1334,850 @@ def handle_set_klv_payload(data):
     _push_klv_carousel()
 
 
+# ---------------------------------------------------------------------------
+# Per-consumer bus fan-out (unixfd transport)
+# ---------------------------------------------------------------------------
+# A producer's bus egress is a `tee` (built by buildUdpSink); the engine's
+# BusFanoutCoordinator attaches ONE `queue leaky=2 ! unixfdsink` branch per
+# consumer edge at runtime. This is the isolation the shared unixfdsink lacked:
+# unixfdsink sends under its object lock with blocking sockets, so a shared
+# sink froze every sibling when one consumer stalled; a per-consumer branch
+# with a leaky queue sheds only its own buffers, so a consumer that restarts,
+# crash-loops, or stalls in preroll can never back up the producer or a sibling.
+#
+# Keyed by edge socket path so attach is idempotent — a re-applied connection
+# or a producer-restart re-attach is a no-op when the branch already exists.
+#
+# Convergence design decisions (gate01 24-stream incident, 2026-07-16):
+# - Edge branches are attached DYNAMICALLY only — static pre-creation in the
+#   pipeline string was evaluated and rejected: unixfdsink binds its socket at
+#   NULL→READY during sync_state_with_parent (verified gst 1.24 + 1.28), so a
+#   dynamic attach already publishes the socket before any data flows; static
+#   branches would bypass the _bus_branches idempotency (double-bind on
+#   re-attach) and be invisible to bus_detach, for no latency win on the real
+#   long pole (demuxer tees are pad-added, i.e. data-gated).
+# - A producer respawn remains CONSUMER-pipeline-fatal by design: consumers'
+#   unixfdsrc dies, and their restart goes through the (indefinite, spawn-free)
+#   busSocketGate — one cheap gated respawn per consumer per real producer
+#   restart, matching UDP-bus semantics. In-place unixfdsrc swap was rejected:
+#   a sourceless pipeline can't hold sinks in preroll, and the added state
+#   machine isn't worth ~1s on an infrequent operator action.
+# - Errors INSIDE a busedge_* branch are contained (branch detached, warning
+#   emitted) — see on_bus_message. A single consumer's edge failure must never
+#   kill the producer; that cascade is what kept large graphs from converging.
+_bus_branches = {}      # socket_path -> dict(branch, tee, tee_src, tee_name, queue, sink_pad, progressed, stall, probe_id)
+# Monotonic edge-topology version: bumped on every fan-out attach/detach so
+# consumers of the wired-state (the ts-splitter's wired-only gating) can
+# cheaply detect changes with one int compare per buffer.
+_bus_topology_version = 0
+_bus_branch_seq = 0
+# Edge-stall watchdog (gate01 wedge, 2026-07-16): stock unixfdsink's send
+# BLOCKS forever on a connected client that stops reading (~208KB kernel
+# sndbuf ≈ 60ms of a 28Mbps stream) while holding the sink object lock —
+# freezing the producer's whole chain. A consumer stuck mid-startup is
+# exactly such a client (unixfdsrc connects at READY, reads only at
+# PLAYING). The watchdog samples each edge branch every 2s via a one-shot
+# buffer probe on the unixfdsink's sink pad; a branch whose queue holds
+# data but whose sink saw no buffer for 3 consecutive ticks is torn down
+# and RE-CREATED in place (fresh sink, same socket path): the zombie
+# client gets EOF → its runner errors → gated respawn → clean reconnect.
+# Self-healing on both sides with no engine round-trip.
+_BUS_STALL_TICK_MS = 2000
+_BUS_STALL_TICKS = 3
+_bus_stall_timer_id = None
+# Per-tee input progress flags: {tee_name: {"pad": tee_sink_pad, "progressed": bool, "probe_id": id}}
+# The discriminator that makes edge resets safe: an edge is reset only when
+# its TEE keeps receiving data while the edge's sink delivers nothing — a
+# dark/idle source (tee idle) never triggers resets, so an idle-but-healthy
+# edge is left alone.
+_bus_tee_progress = {}
+# Attaches whose tee doesn't exist YET. The mpegts-demuxer creates its output
+# tees dynamically at pad-added time (when source data flows), so on a busy
+# multi-stream startup a tee can legitimately take longer than any fixed
+# deadline (measured: gate01's 24-stream graph). Pending attaches therefore
+# retry INDEFINITELY (bus_detach or pipeline stop cancels them) and never
+# escalate to an error: an `error` event is pipeline-fatal to GstRunner, and
+# killing the PRODUCER because one consumer edge isn't ready yet restart-storms
+# the whole graph. One warning is emitted once per socket after ~10s so the
+# wait is visible in logs.
+_pending_bus_attaches = {}   # socket_path -> [tee_name, attempts_so_far]
+_bus_retry_timer_id = None
+_BUS_ATTACH_WARN_AFTER = 40   # ~10 s at 250 ms — log once, keep retrying
+# Edges whose probe-gated teardown hasn't completed yet (see
+# _teardown_bus_branch). An attach for one of these is deferred through the
+# same 250 ms pending-retry path as a not-yet-created tee.
+_bus_teardowns = set()
+
+def _remove_stale_bus_socket(socket_path):
+    # unixfdsink cannot bind over an existing socket file, and a runner that
+    # dies hard (SIGKILL on engine stop, SIGSEGV) never unlinks its path. Edge
+    # paths are deterministic, so the next attach is guaranteed to collide and
+    # the producer crash-loops. Unlink only if nothing is listening — a live
+    # listener means another producer owns the edge (ghost engine), and
+    # binding over it must stay a loud failure, not a silent takeover.
+    if not os.path.exists(socket_path):
+        return
+    probe = pysocket.socket(pysocket.AF_UNIX, pysocket.SOCK_STREAM)
+    probe.settimeout(0.2)
+    try:
+        probe.connect(socket_path)
+        emit_event({"event": "warning",
+                    "message": f"bus_attach: live producer already on {socket_path} — not unlinking"})
+    except OSError:
+        try:
+            os.unlink(socket_path)
+            emit_event({"event": "warning",
+                        "message": f"bus_attach: unlinked stale bus socket {socket_path}"})
+        except OSError:
+            pass
+    finally:
+        probe.close()
+
+
+def _try_bus_attach(tee_name, socket):
+    """Attach one branch. Returns True on success, False if the tee isn't up yet."""
+    global _bus_branch_seq
+    if pipeline is None:
+        return True
+    if socket in _bus_teardowns:
+        return False  # old branch still detaching — caller queues a retry
+    existing = _bus_branches.get(socket)
+    if existing is not None:
+        # Idempotent re-attach (connection re-apply / producer-PLAYING
+        # reconcile). NOT a plain no-op: an attach that landed while the
+        # pipeline's own state change was in progress can leave the branch
+        # stuck at READY — a bin's state cascade misses children added
+        # mid-transition, and sync_state_with_parent latches whatever state
+        # the parent momentarily had. A READY branch has inactive pads, so
+        # the tee's first sticky-event push returns FLUSHING and the whole
+        # upstream chain freezes (observed live: netsrc blocked, rx_queue
+        # full, sink accepting clients but never receiving a caps event).
+        # Re-syncing here lets the engine's PLAYING re-attach bump the
+        # branch to the now-settled parent state.
+        try:
+            existing["branch"].sync_state_with_parent()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    tee = pipeline.get_by_name(tee_name)
+    if tee is None:
+        return False  # tee not created yet — caller queues a retry
+    _remove_stale_bus_socket(socket)
+    try:
+        # wait-for-connection=false is LOAD-BEARING (gate01 wedge, 2026-07-16):
+        # stock unixfdsink KICKS a client on any send failure (silently — the
+        # GST_ERROR goes to the disabled gst debug log), and with the default
+        # wait-for-connection=true the NEXT render then blocks FOREVER on
+        # wait_for_connection_cond once the client table is empty — freezing
+        # the producer's whole chain (observed: netsrc rx_queue full, 2.4M
+        # kernel drops, zero data on every edge). With per-consumer fan-out,
+        # "no client → drop and keep flowing" is exactly the UDP-multicast
+        # semantic this bus replaces; a kicked/gone consumer recovers through
+        # its own busSocketGate + restart path without touching the producer.
+        # 500 ms edge queue, NOT 200: a RIST-fed producer delivers in hold-and-
+        # burst cycles — librist withholds ~1 RTT (measured up to ~250 ms at
+        # RTT 200) while a retransmit is in flight, then releases the backlog
+        # at line rate. The burst momentarily outruns the client's ~208 KB
+        # kernel sndbuf, unixfdsink blocks, and a 200 ms queue overflowed and
+        # shed mid-burst — corrupting PAT/PMT/media on an otherwise LOSSLESS
+        # feed (measured on .211 bus 40000: 10 CC errors/min on the bus vs 1
+        # on the wire, engine librist lost=0). 500 ms absorbs the worst
+        # observed hold (~253 ms) with 2x headroom; memory cost is trivial
+        # (≈340 KB at 5.4 Mbps). Still leaky=2 — a genuinely stalled consumer
+        # must shed here, never back-pressure the producer.
+        branch = Gst.parse_bin_from_description(
+            "queue leaky=2 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0"
+            f" ! unixfdsink socket-path={socket} sync=false async=false"
+            " wait-for-connection=false",
+            True,
+        )
+        _bus_branch_seq += 1
+        branch.set_name(f"busedge_{_bus_branch_seq}")
+        # Add the leaf to the tee's OWN parent bin, not the top-level pipeline:
+        # the mpegts-demuxer's tee lives inside a per-pad branch bin, and linking
+        # a tee request pad to an element in a different bin fails WRONG_HIERARCHY
+        # (same reason _link_pad_to_branches_via_tee keeps its tee a direct child).
+        parent = tee.get_parent() or pipeline
+        parent.add(branch)
+        # Activate the branch BEFORE linking it to the tee. The link is what
+        # exposes the pad to dataflow: when an attach races the pipeline's
+        # own NULL→PLAYING transition, the bin's state cascade misses a child
+        # added mid-change, and the tee's first sticky-event push into the
+        # still-inactive pad returns FLUSHING — which pauses the producer's
+        # upstream queue task PERMANENTLY (observed live on gate01: netsrc
+        # blocked, rx_queue full, edge sink accepting clients but never
+        # receiving a caps event; no later state-sync can restart the paused
+        # task). An unlinked branch activates trivially, so add → activate →
+        # link removes the race. Target the pipeline's PENDING state —
+        # sync_state_with_parent would latch the mid-transition current
+        # state (READY) instead.
+        _, st_cur, st_pend = pipeline.get_state(0)
+        branch.set_state(st_pend if st_pend != Gst.State.VOID_PENDING else st_cur)
+        tee_src = tee.request_pad_simple("src_%u")
+        if tee_src is None:
+            emit_event({"event": "warning", "message": f"bus_attach: no tee src pad ({tee_name})"})
+            branch.set_state(Gst.State.NULL)
+            parent.remove(branch)
+            return True  # don't retry a structural failure
+        link_ret = tee_src.link(branch.get_static_pad("sink"))
+        if link_ret != Gst.PadLinkReturn.OK:
+            emit_event({"event": "warning",
+                        "message": f"bus_attach: link failed ({link_ret}) {socket}"})
+            tee.release_request_pad(tee_src)
+            branch.set_state(Gst.State.NULL)
+            parent.remove(branch)
+            return True
+        entry = {"branch": branch, "tee": tee, "tee_src": tee_src,
+                 "tee_name": tee_name, "queue": None, "sink_pad": None,
+                 "progressed": False, "stall": 0, "probe_id": None,
+                 "soft_healed": False}
+        it2 = branch.iterate_recurse()
+        while True:
+            r2, el2 = it2.next()
+            if r2 == Gst.IteratorResult.RESYNC:
+                it2.resync()
+                continue
+            if r2 != Gst.IteratorResult.OK:
+                break
+            f2 = el2.get_factory()
+            fname = f2.get_name() if f2 else ''
+            if fname == 'unixfdsink':
+                entry["sink_pad"] = el2.get_static_pad('sink')
+            elif fname == 'queue':
+                entry["queue"] = el2
+        _bus_branches[socket] = entry
+        globals()["_bus_topology_version"] += 1
+        _arm_bus_progress_probe(entry)
+        if tee_name not in _bus_tee_progress:
+            tpad = tee.get_static_pad('sink')
+            if tpad is not None:
+                _bus_tee_progress[tee_name] = {"pad": tpad, "progressed": False, "probe_id": None}
+                _arm_tee_progress_probe(_bus_tee_progress[tee_name])
+        _ensure_bus_stall_timer()
+        emit_event({"event": "bus_attached", "tee": tee_name, "socket": socket})
+        return True
+    except GLib.Error as e:
+        emit_event({"event": "warning", "message": f"bus_attach parse failed: {e.message}"})
+        return True
+
+
+def _arm_bus_progress_probe(entry):
+    """One-shot buffer probe on the edge sink's pad — sets the progress flag.
+
+    Single-writer protocol (root cause of the false-stall cascades, fixed
+    2026-07-21): the callback must NEVER write `probe_id`. The old protocol
+    (`_cb` cleared probe_id on fire) raced the watchdog's re-arm — when the
+    fresh probe fired between `add_probe()` returning and the id being
+    stored, the stale id blocked every future re-arm, detection silently
+    died on a healthy flowing edge, and 3 ticks later the watchdog
+    destructively reset it (consumer -5 → module restart → mux dead-input
+    rebuilds → on-air dropouts, ~1 false reset/80 min fleet-wide). Now only
+    the watchdog tick writes `probe_id`: it clears it on the progressed path
+    (progressed ⇒ the one-shot fired ⇒ the stored id is dead) before
+    re-arming, so a stale store self-corrects one tick later instead of
+    latching forever.
+    """
+    pad = entry.get("sink_pad")
+    if pad is None or entry.get("probe_id") is not None:
+        return
+
+    def _cb(_pad, _info):
+        entry["progressed"] = True
+        return Gst.PadProbeReturn.REMOVE
+
+    entry["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _cb)
+
+
+def _arm_tee_progress_probe(tentry):
+    """One-shot buffer probe on the tee's sink pad — 'the producer has data'.
+    Same single-writer protocol as _arm_bus_progress_probe (the callback
+    never writes probe_id); this side's latch was benign — tee_flowing stuck
+    False just disabled detection — but both paths stay uniform."""
+    if tentry.get("probe_id") is not None:
+        return
+
+    def _cb(_pad, _info):
+        tentry["progressed"] = True
+        return Gst.PadProbeReturn.REMOVE
+
+    tentry["probe_id"] = tentry["pad"].add_probe(Gst.PadProbeType.BUFFER, _cb)
+
+
+def _ensure_bus_stall_timer():
+    global _bus_stall_timer_id
+    if _bus_stall_timer_id is None and _bus_branches:
+        _bus_stall_timer_id = GLib.timeout_add(_BUS_STALL_TICK_MS, _bus_stall_watchdog)
+
+
+def _bus_stall_watchdog():
+    """Detect and reset edge branches whose sink stopped draining (see the
+    watchdog comment above). Never raises — a watchdog fault must not take
+    the runner down."""
+    global _bus_stall_timer_id
+    # Snapshot per-tee progress for this tick, then re-arm the tee probes.
+    tee_flowing = {}
+    for tname, tentry in _bus_tee_progress.items():
+        try:
+            tee_flowing[tname] = tentry["progressed"]
+            if tentry["progressed"]:
+                tentry["progressed"] = False
+                # progressed ⇒ the one-shot fired ⇒ any stored id is dead.
+                # Clearing it HERE (single writer) is what makes a racy
+                # stale store self-correct instead of blocking re-arms.
+                tentry["probe_id"] = None
+                _arm_tee_progress_probe(tentry)
+        except Exception:  # noqa: BLE001
+            tee_flowing[tname] = False
+    for socket in list(_bus_branches.keys()):
+        entry = _bus_branches.get(socket)
+        if entry is None:
+            continue
+        try:
+            if entry["progressed"]:
+                entry["progressed"] = False
+                entry["stall"] = 0
+                entry["soft_healed"] = False
+                # progressed ⇒ the one-shot fired ⇒ any stored id is dead
+                # (see _arm_bus_progress_probe: single-writer protocol).
+                entry["probe_id"] = None
+                _arm_bus_progress_probe(entry)
+                continue
+            # No edge progress this tick. Only counts as a stall when the tee
+            # itself IS receiving data (dark source ≠ stuck edge). The stuck
+            # buffer usually sits inside the sink's blocked render (already
+            # popped from the queue), so queue level can read 0 — do not gate
+            # on it.
+            if tee_flowing.get(entry["tee_name"], False):
+                entry["stall"] += 1
+                if entry["stall"] >= _BUS_STALL_TICKS:
+                    tee_name = entry["tee_name"]
+                    if not entry.get("soft_healed"):
+                        # First recovery attempt is non-destructive: a branch
+                        # latched by a state race un-wedges with a plain
+                        # re-sync (repro-validated) and the consumer's socket
+                        # survives. Only if the edge stays silent for another
+                        # full window does the destructive reset run.
+                        entry["soft_healed"] = True
+                        entry["stall"] = 0
+                        try:
+                            entry["branch"].sync_state_with_parent()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        emit_event({"event": "warning",
+                                    "message": f"bus edge silent {_BUS_STALL_TICKS} ticks "
+                                               f"(tee flowing) — soft re-sync {socket}"})
+                        continue
+                    emit_event({"event": "warning",
+                                "message": f"bus edge stalled (tee flowing, edge sink "
+                                           f"silent {entry['stall']} ticks) — resetting {socket}"})
+                    _teardown_bus_branch(socket)
+                    # Teardown is probe-gated (async): queue the re-create so
+                    # it lands after the old branch actually releases the
+                    # socket and tee pad.
+                    _attach_or_queue(tee_name, socket)
+            else:
+                entry["stall"] = 0
+        except Exception:  # noqa: BLE001
+            pass
+    if not _bus_branches:
+        for tentry in _bus_tee_progress.values():
+            try:
+                if tentry.get("probe_id") is not None:
+                    tentry["pad"].remove_probe(tentry["probe_id"])
+            except Exception:  # noqa: BLE001
+                pass
+        _bus_tee_progress.clear()
+        _bus_stall_timer_id = None
+        return False
+    return True
+
+def _retry_pending_bus_attaches():
+    global _bus_retry_timer_id
+    for socket in list(_pending_bus_attaches.keys()):
+        tee_name, attempts = _pending_bus_attaches[socket]
+        if _try_bus_attach(tee_name, socket):
+            _pending_bus_attaches.pop(socket, None)
+        else:
+            attempts += 1
+            if attempts == _BUS_ATTACH_WARN_AFTER:
+                emit_event({"event": "warning",
+                            "message": f"bus_attach: tee {tee_name} not up yet for {socket} — still retrying"})
+            _pending_bus_attaches[socket] = [tee_name, attempts]
+    if not _pending_bus_attaches:
+        _bus_retry_timer_id = None
+        return False   # stop the timer
+    return True
+
+def _attach_or_queue(tee_name, socket):
+    """Attach now, or queue the persistent 250 ms retry (tee not created yet,
+    or the edge's previous branch is still mid-teardown)."""
+    global _bus_retry_timer_id
+    if _try_bus_attach(tee_name, socket):
+        _pending_bus_attaches.pop(socket, None)
+        return
+    _pending_bus_attaches[socket] = [tee_name, 0]
+    if _bus_retry_timer_id is None:
+        _bus_retry_timer_id = GLib.timeout_add(250, _retry_pending_bus_attaches)
+
+
+def handle_bus_attach(data):
+    """Attach a per-consumer fan-out branch to a producer's egress tee."""
+    tee_name = data.get("tee", "")
+    socket = data.get("socket", "")
+    if not tee_name or not socket:
+        return
+    _attach_or_queue(tee_name, socket)
+
+
+def _clear_pending_bus_attaches():
+    _pending_bus_attaches.clear()
+    _bus_teardowns.clear()
+
+
+def _teardown_bus_branch(socket):
+    """Tear down one fan-out branch by edge socket. Returns True if it existed.
+
+    Shared by `bus_detach` (engine-driven), the on_bus_message busedge error
+    containment, and the stall watchdog's in-place edge reset.
+
+    Teardown happens BEHIND A BLOCKING PAD PROBE on the tee src pad — the
+    canonical dynamic-unlink recipe. The producer pushes from its own
+    streaming thread; deactivating the branch mid-push (the old order:
+    NULL → unlink → release) makes that in-flight push return FLUSHING,
+    which silently pauses the producer's basesrc task FOREVER — no bus
+    error, appsrc queue pins at max-bytes with leaky-drop, every edge on
+    the bus goes dark until the module restarts. That is exactly what
+    killed the live RIST producer when a consumer module was restarted
+    (.211, 2026-07-16 21:37). Reproduced 5/5 at ~500 pkt/s with the naked
+    teardown; 5/5 clean with this probe (repro5.py, 2026-07-17).
+    BLOCK_DOWNSTREAM intercepts between buffers when flowing; IDLE fires
+    immediately when the pad is quiet, so a dark producer detaches at once.
+
+    The actual teardown is therefore ASYNCHRONOUS. `_bus_teardowns` marks
+    the edge until the probe fires; `_try_bus_attach` treats a mid-teardown
+    socket as "not ready yet" (returns False → caller's 250 ms retry), so
+    a fast detach→attach on the same edge path can't bind over the dying
+    branch's socket or double-request the tee pad.
+    """
+    # Cancel a not-yet-satisfied attach for this edge, if any.
+    _pending_bus_attaches.pop(socket, None)
+    entry = _bus_branches.pop(socket, None)
+    if entry is None:
+        return False
+    globals()["_bus_topology_version"] += 1
+    branch, tee, tee_src = entry["branch"], entry["tee"], entry["tee_src"]
+    try:
+        # Drop a pending progress probe so its closure can't fire on a pad of
+        # a removed branch.
+        if entry.get("probe_id") is not None and entry.get("sink_pad") is not None:
+            entry["sink_pad"].remove_probe(entry["probe_id"])
+            entry["probe_id"] = None
+    except Exception:  # noqa: BLE001
+        pass
+
+    def _finish(pad, _info):
+        # Runs with the tee src pad blocked (or idle): the producer's
+        # streaming thread cannot be inside this branch anymore.
+        try:
+            peer = pad.get_peer()
+            if peer is not None:
+                pad.unlink(peer)
+            branch.set_state(Gst.State.NULL)
+            parent = branch.get_parent()
+            if parent is not None:
+                parent.remove(branch)
+            # unixfdsink does not unlink its socket file on NULL; remove it so
+            # a later attach on this edge doesn't hit the stale-file bind
+            # failure.
+            try:
+                os.unlink(socket)
+            except OSError:
+                pass
+            # Release the request pad from the main loop, not from its own
+            # probe (validated in repro5; avoids re-entering the tee under
+            # the probe's pad lock).
+            GLib.idle_add(_release_tee_pad, tee, pad)
+            emit_event({"event": "bus_detached", "socket": socket})
+        except Exception:  # noqa: BLE001 — teardown must never crash the runner
+            pass
+        finally:
+            _bus_teardowns.discard(socket)
+        return Gst.PadProbeReturn.REMOVE
+
+    _bus_teardowns.add(socket)
+    try:
+        tee_src.add_probe(
+            Gst.PadProbeType.BLOCK_DOWNSTREAM | Gst.PadProbeType.IDLE, _finish)
+    except Exception:  # noqa: BLE001 — pad already dead: fall back to direct teardown
+        _bus_teardowns.discard(socket)
+        try:
+            branch.set_state(Gst.State.NULL)
+            parent = branch.get_parent()
+            if parent is not None:
+                parent.remove(branch)
+            try:
+                os.unlink(socket)
+            except OSError:
+                pass
+            emit_event({"event": "bus_detached", "socket": socket})
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
+def _release_tee_pad(tee, pad):
+    try:
+        tee.release_request_pad(pad)
+    except Exception:  # noqa: BLE001
+        pass
+    return False  # one-shot idle source
+
+
+def _busedge_ancestor(obj):
+    """Nearest `busedge_*` fan-out branch bin above a message source, or None."""
+    while obj is not None:
+        try:
+            name = obj.get_name() or ''
+        except Exception:  # noqa: BLE001 — never let attribution crash the bus watch
+            return None
+        if name.startswith('busedge_'):
+            return obj
+        obj = obj.get_parent()
+    return None
+
+
+def _socket_for_busedge(edge_bin):
+    """Reverse-lookup the edge socket path owning a busedge branch bin."""
+    for sock, entry in _bus_branches.items():
+        if entry["branch"] is edge_bin:
+            return sock
+    return None
+
+
+def handle_bus_detach(data):
+    """Detach and tear down a per-consumer fan-out branch by edge socket."""
+    _teardown_bus_branch(data.get("socket", ""))
+
+
+# ---------------------------------------------------------------------------
+# librist integration (rist-input / rist-output as native gst modules)
+#
+# The RIST plugins used to spawn the ristreceiver/ristsender CLI and relay
+# through a loopback UDP socket. Driving librist in-process instead moves
+# payloads straight between librist and a named appsrc/appsink, so RIST
+# modules ride the same bus transport as every other gst module (tee fan-out
+# under unixfd) with no intermediate datagram hop. See librist.py (same dir)
+# for the ctypes binding and its ABI-stability strategy.
+# ---------------------------------------------------------------------------
+_rist_ctx = None          # librist.RistReceiver | librist.RistSender
+_rist_thread = None       # receiver push loop (daemon)
+_rist_stop = threading.Event()
+
+# 7 x 188 — the classic TS-over-datagram unit. Sender payloads are re-chunked
+# to this so a large bus buffer (mpegtsmux with wide alignment) never exceeds
+# what a RIST datagram carried under the old CLI relay. Buffers on this bus
+# are 188-aligned by caps, so 1316-byte slices stay packet-aligned.
+_RIST_WRITE_CHUNK = 1316
+
+
+def _rist_log(_level, msg):
+    # librist logs arrive on librist's own threads; plain stderr lines join
+    # the runner's debug stream without touching the JSON event channel.
+    sys.stderr.write(f"[librist] {msg}\n")
+
+
+def _on_rist_stats(stats_json):
+    # Called on a librist thread — emit_event is thread-safe (event_lock).
+    # Same JSON shape the CLI printed on stderr ({"receiver-stats":...} /
+    # {"sender-stats":...}), so the plugin's parser carries over unchanged.
+    try:
+        payload = json.loads(stats_json)
+    except (json.JSONDecodeError, ValueError):
+        return
+    emit_plugin_event("rist:stats", payload)
+
+
+def _start_rist(pipe, cfg):
+    """Bring up the librist half of a RIST module pipeline.
+
+    Returns True when no rist config is present or librist is up; on failure
+    emits an `error` event (the parent's restart/backoff path applies) and
+    returns False so handle_start can abort the pipeline.
+    """
+    global _rist_ctx, _rist_thread
+    if not cfg:
+        return True
+    try:
+        import librist
+    except Exception as e:  # noqa: BLE001 — a missing/broken .so must fail loudly
+        emit_event({"event": "error", "message": f"librist unavailable: {e}"})
+        return False
+
+    role = cfg.get("role", "")
+    urls = cfg.get("urls") or []
+    element_name = cfg.get("appElement", "")
+    element = pipe.get_by_name(element_name)
+    if not element or not urls or role not in ("receiver", "sender"):
+        emit_event({
+            "event": "error",
+            "message": (f"rist config invalid (role={role!r}, element="
+                        f"{element_name!r} found={bool(element)}, {len(urls)} url(s))"),
+        })
+        return False
+
+    profile = int(cfg.get("profile", 1))
+    buffer_ms = cfg.get("buffer")
+    session_timeout_ms = cfg.get("sessionTimeout")
+    secret = cfg.get("secret") or None
+    enc_type = cfg.get("encType")
+    stats_ms = int(cfg.get("statsInterval", 1000))
+
+    ctx = None
+    try:
+        lib_ver, api_ver = librist.versions()
+        sys.stderr.write(
+            f"[gst-runner.py] librist {lib_ver} (API {api_ver}) "
+            f"role={role} peers={len(urls)} element={element_name}\n")
+        if role == "receiver":
+            ctx = librist.RistReceiver(profile=profile, log_fn=_rist_log)
+        else:
+            ctx = librist.RistSender(profile=profile, log_fn=_rist_log,
+                                     npd=bool(cfg.get("npd")))
+        for url in urls:
+            ctx.add_peer(librist.augment_url(
+                url, buffer_ms=buffer_ms, secret=secret, aes_type=enc_type,
+                session_timeout_ms=session_timeout_ms))
+        if stats_ms > 0:
+            ctx.set_stats_callback(stats_ms, _on_rist_stats)
+
+        if role == "receiver":
+            _rist_stop.clear()
+
+            def _push_loop():
+                # Blocking read releases the GIL; appsrc push-buffer is
+                # thread-safe. A push before PLAYING / during teardown returns
+                # FLUSHING and the buffer drops — live-source semantics,
+                # exactly what udpsrc did under the CLI relay.
+                while not _rist_stop.is_set():
+                    try:
+                        data = ctx.read(100)
+                    except librist.RistError as e:
+                        emit_event({"event": "warning",
+                                    "message": f"librist read failed: {e}"})
+                        break
+                    if not data:
+                        continue
+                    try:
+                        element.emit("push-buffer", Gst.Buffer.new_wrapped(data))
+                    except Exception:  # noqa: BLE001 — teardown race
+                        pass
+
+            _rist_thread = threading.Thread(
+                target=_push_loop, daemon=True, name="rist-reader")
+        else:
+            # appsink → librist. Properties are set here (not in the pipeline
+            # string) so the drain contract can't drift: bounded + dropping +
+            # unsynced. data_write only copies into librist's own buffers, so
+            # the streaming thread is never held hostage.
+            element.set_property("emit-signals", True)
+            element.set_property("sync", False)
+            element.set_property("max-buffers", 64)
+            element.set_property("drop", True)
+
+            def _on_sample(sink):
+                smp = sink.emit("pull-sample")
+                if not smp:
+                    return Gst.FlowReturn.OK
+                buf = smp.get_buffer()
+                ok, mi = buf.map(Gst.MapFlags.READ)
+                if not ok:
+                    return Gst.FlowReturn.OK
+                try:
+                    data = bytes(mi.data)
+                    for off in range(0, len(data), _RIST_WRITE_CHUNK):
+                        ctx.write(data[off:off + _RIST_WRITE_CHUNK])
+                except librist.RistError:
+                    pass  # transient send failure — recovery is librist's job
+                finally:
+                    buf.unmap(mi)
+                return Gst.FlowReturn.OK
+
+            element.connect("new-sample", _on_sample)
+
+        ctx.start()
+        _rist_ctx = ctx
+        if _rist_thread is not None:
+            _rist_thread.start()
+        return True
+    except librist.RistError as e:
+        emit_event({"event": "error", "message": f"librist start failed: {e}"})
+        if ctx is not None:
+            try:
+                ctx.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
+def _stop_rist():
+    global _rist_ctx, _rist_thread
+    _rist_stop.set()
+    if _rist_thread is not None:
+        _rist_thread.join(timeout=2)
+        _rist_thread = None
+    if _rist_ctx is not None:
+        # destroy() joins librist's threads — no stats/log/data callback can
+        # fire after it returns, so dropping the refs is safe.
+        try:
+            _rist_ctx.destroy()
+        except Exception:  # noqa: BLE001 — teardown must never crash the runner
+            pass
+        _rist_ctx = None
+
+
+# ---------------------------------------------------------------------------
+# ts-splitter integration (packet-level per-PID SPTS outputs)
+#
+# The ts-splitter plugin's pipeline is `<bus src> ! appsink` plus one
+# `appsrc ! <bus sink>` chain per PID output. This glue drains the appsink on
+# its streaming thread, routes packets in a single pass (ts_split.SplitterCore)
+# and pushes one joined buffer per (input buffer, output) — packet-level
+# pass-through, so output cadence equals ingest cadence (no PES assembly, no
+# demuxer hold-and-burst). See ts_split.py for the core's contract.
+# ---------------------------------------------------------------------------
+_ts_split = None          # {"core": SplitterCore, "appsrcs": {pid: element}} while active
+
+
+def _start_ts_split(pipe, cfg):
+    """Bring up the ts-splitter half of a ts-splitter module pipeline.
+
+    Returns True when no tsSplit config is present or the splitter is wired;
+    on failure emits an `error` event (the parent's restart/backoff path
+    applies) and returns False so handle_start can abort the pipeline.
+    """
+    global _ts_split
+    if not cfg:
+        return True
+    try:
+        import ts_split
+    except Exception as e:  # noqa: BLE001 — a missing core must fail loudly
+        emit_event({"event": "error", "message": f"ts_split unavailable: {e}"})
+        return False
+
+    appsink = pipe.get_by_name(cfg.get("inputAppsink", ""))
+    if appsink is None:
+        emit_event({"event": "error",
+                    "message": f"tsSplit: input appsink not found: {cfg.get('inputAppsink')!r}"})
+        return False
+    appsrcs = {}
+    outputs = []
+    # Wired-only gating map: pid -> busout tee name, for outputs whose egress
+    # tee exists in this pipeline (unixfd transport). Such an output is
+    # produced only while its tee has >= 1 attached fan-out edge — an unwired
+    # pin is discarded at the routing lookup (no PSI rewrite, no join, no
+    # push). Outputs without a port, or whose tee is absent (UDP transport:
+    # fixed udpsink, no fan-out), stay always-on.
+    gated = {}
+    for out in cfg.get("outputs") or []:
+        el = pipe.get_by_name(out.get("appsrc", ""))
+        if el is None:
+            emit_event({"event": "error",
+                        "message": f"tsSplit: output appsrc not found: {out.get('appsrc')!r}"})
+            return False
+        pid = int(out["pid"])
+        appsrcs[pid] = el
+        outputs.append((pid, out.get("streamType")))
+        port = out.get("port")
+        if port is not None and pipe.get_by_name(f"busout_{int(port)}") is not None:
+            gated[pid] = f"busout_{int(port)}"
+    # Empty outputs is valid: the input-only pipeline still runs discovery so
+    # the module can learn the source's PIDs before any port is wired.
+
+    def _on_discovered(streams, pcr_pid, es_info):
+        # Called from the appsink streaming thread — emit_event is
+        # lock-protected (same precedent as the librist stats callback).
+        # esInfo = the ES's raw PMT descriptor-loop bytes (hex): carries the
+        # natively-signalled identity (ISO 639 language, registration, …) the
+        # module layers into its labels.
+        emit_plugin_event("tssplit:discovered", {
+            "streams": [{"pid": p, "streamType": t,
+                         "esInfo": es_info.get(p, b"").hex()} for p, t in streams],
+            "pcrPid": pcr_pid,
+        })
+
+    def _on_desync(dropped):
+        emit_event({"event": "warning",
+                    "message": f"tsSplit: resynced after {dropped} garbage bytes"})
+
+    core = ts_split.SplitterCore(int(cfg.get("tsId", 1)), outputs,
+                                 on_discovered=_on_discovered,
+                                 on_desync=_on_desync)
+
+    # Drain contract set here, not in the pipeline string, so it can't drift.
+    # drop=False (unlike the rist sender): this feeds the lossless local bus,
+    # and the routing callback is ~1% core — overflow should back-pressure
+    # into the upstream LEAKY ingress queue (the bus's universal shed point),
+    # never silently vanish at a hidden 64-buffer cliff here.
+    appsink.set_property("emit-signals", True)
+    appsink.set_property("sync", False)
+    # async=false: keep the appsink OUT of preroll. Without it the pipeline
+    # wedges in PAUSED until the first buffer arrives (verified gst 1.22) —
+    # a dark upstream would then hit the PLAYING watchdog and restart-loop,
+    # exactly the demuxer failure mode this module exists to avoid.
+    appsink.set_property("async", False)
+    appsink.set_property("max-buffers", 64)
+    appsink.set_property("drop", False)
+
+    # Wired-state cache for the gating check: one int compare per buffer in
+    # steady state; the enabled set is recomputed only when an edge attaches
+    # or detaches (_bus_topology_version bumps on the GLib main loop; a
+    # briefly stale read here self-heals on the next buffer).
+    gate_state = {"ver": -1}
+
+    def _refresh_gate():
+        gate_state["ver"] = _bus_topology_version
+        active = {e["tee_name"] for e in _bus_branches.values()}
+        enabled = [p for p in appsrcs
+                   if p not in gated or gated[p] in active]
+        core.set_enabled(enabled)
+
+    def _on_sample(sink):
+        smp = sink.emit("pull-sample")
+        if not smp:
+            return Gst.FlowReturn.OK
+        if gated and gate_state["ver"] != _bus_topology_version:
+            _refresh_gate()
+        buf = smp.get_buffer()
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+        try:
+            data = bytes(mi.data)   # one copy; feed()'s memoryviews point at THIS
+        finally:
+            buf.unmap(mi)
+        # push-buffer never blocks (appsrc block=false default; each output
+        # appsrc is bounded by leaky-type=downstream in the pipeline string),
+        # so routing in-callback cannot deadlock the input streaming thread.
+        for pid, payload in core.feed(data).items():
+            try:
+                appsrcs[pid].emit("push-buffer", Gst.Buffer.new_wrapped(payload))
+            except Exception:  # noqa: BLE001 — teardown race
+                pass
+        return Gst.FlowReturn.OK
+
+    appsink.connect("new-sample", _on_sample)
+    _ts_split = {"core": core, "appsrcs": appsrcs}
+    return True
+
+
+def _stop_ts_split():
+    # No threads to join: all splitter work rides the appsink streaming
+    # thread, which the pipeline's NULL transition stops. A runner-internal
+    # respawn replays the same start payload, so state rebuilds itself.
+    global _ts_split
+    _ts_split = None
+
+
 # Command dispatch
 CMD_HANDLERS = {
     "start": handle_start,
@@ -1326,6 +2188,8 @@ CMD_HANDLERS = {
     "track_throughput": handle_track_throughput,
     "get_throughput": handle_get_throughput,
     "set_klv_payload": handle_set_klv_payload,
+    "bus_attach": handle_bus_attach,
+    "bus_detach": handle_bus_detach,
 }
 
 def dispatch_command(line):
@@ -1418,4 +2282,14 @@ if __name__ == "__main__":
         sys.stderr.write(f"[gst-runner.py] Fatal: {e}\n")
         sys.stderr.write(traceback.format_exc())
         sys.stderr.flush()
-        sys.exit(1)
+        os._exit(1)
+    # Skip CPython finalization: gi/GStreamer worker threads (librist logging,
+    # bus watches, streaming threads mid-unwind) race Py_Finalize and crash
+    # deterministically in libpython (SIGSEGV at fixed offset, observed on
+    # every cascade's module restart — the crash left stale sockets and
+    # stretched consumer outages past the muxers' 5 s dead-input watchdog).
+    # The runner is a disposable child: everything worth flushing is flushed,
+    # the pipeline is NULL, so a hard exit is strictly safer here.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

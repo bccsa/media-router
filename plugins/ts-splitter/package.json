@@ -1,0 +1,48 @@
+{
+    "name": "@media-router/plugin-ts-splitter",
+    "version": "2.0.0",
+    "private": true,
+    "description": "TS-Splitter — extracts elementary streams from an MPEG-TS at TS-packet level (no demux/remux round-trip)",
+    "mediaRouter": {
+        "pluginId": "ts-splitter",
+        "displayName": "TS Splitter",
+        "description": "Splits one muxed/mpegts stream into per-PID single-ES outputs at the transport-packet level — packets pass through as they arrive, so output cadence equals ingest cadence (no tsdemux/mpegtsmux round-trip, no I-frame hold-and-burst). Streams are auto-discovered. Coexists with the MPEG-TS Demuxer.",
+        "color": "#06b6d4",
+        "icon": "split",
+        "category": "processing",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {}
+        },
+        "statusSections": [
+            {
+                "id": "input",
+                "label": "Input",
+                "fields": [
+                    { "key": "host", "label": "Multicast" },
+                    { "key": "port", "label": "Port" }
+                ]
+            },
+            {
+                "id": "streams",
+                "label": "Detected Streams",
+                "fields": [
+                    { "key": "detected", "label": "Count" }
+                ]
+            }
+        ],
+        "engine": "./engine/TsSplitterModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

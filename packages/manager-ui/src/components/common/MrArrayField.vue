@@ -15,6 +15,11 @@ const props = defineProps<{
     label?: string;
     description?: string;
     disabled?: boolean;
+    /** Top-level schema keys of the module — an x-advanced item field only gets
+     *  inherit semantics when a SAME-NAMED module-global exists (video-transcoder
+     *  overrides). Without one (e.g. audio-transcoder opus knobs) the field is
+     *  just visually tucked into Advanced and carries its own default. */
+    globalKeys?: string[];
     /** The module's full config, used to resolve item-relative `x-showWhen` when
      *  the controlling field is inherited (item value absent → fall back here). */
     globalConfig?: Record<string, unknown>;
@@ -34,7 +39,9 @@ const items = computed(() => {
         const patched = { ...(item as Record<string, unknown>) };
         for (const [key, rawProp] of Object.entries(props.schema.properties!)) {
             const prop = rawProp as Record<string, unknown>;
-            if (prop['x-advanced']) continue;
+            // Inheritable overrides stay absent (= inherit the global); advanced
+            // fields WITHOUT a global are ordinary fields and get their default.
+            if (isInheritable(key, !!prop['x-advanced'])) continue;
             if (patched[key] === undefined && prop.default !== undefined) {
                 patched[key] = prop.default;
             }
@@ -46,6 +53,11 @@ const items = computed(() => {
 interface Field extends ItemField {
     default: unknown;
     showWhen?: string;
+}
+
+/** Inherit semantics only exist when the module declares a same-named global. */
+function isInheritable(key: string, advanced: boolean): boolean {
+    return advanced && (props.globalKeys ?? []).includes(key);
 }
 
 const fields = computed<Field[]>(() => {
@@ -60,6 +72,7 @@ const fields = computed<Field[]>(() => {
             enumValues: prop.enum as unknown[] | undefined,
             enumLabels: prop['x-enumLabels'] as Record<string, string> | undefined,
             advanced: !!prop['x-advanced'],
+            inheritable: isInheritable(key, !!prop['x-advanced']),
             showWhen: prop['x-showWhen'] as string | undefined,
         };
     });
@@ -90,9 +103,11 @@ function isVisible(field: Field, item: Record<string, unknown>): boolean {
 
 function addItem() {
     const newItem: Record<string, unknown> = {};
-    // Seed only the primary fields; advanced/override fields stay absent so a new
-    // item inherits every global by default.
-    for (const f of primaryFields.value) {
+    // Seed primary + non-inheritable advanced fields; inheritable overrides stay
+    // absent so a new item inherits every global by default.
+    for (const f of fields.value) {
+        if (f.inheritable) continue;
+        if (f.advanced && f.default === undefined) continue;
         newItem[f.key] = f.default ?? (f.type === 'number' ? 0 : '');
     }
     emit('update:modelValue', [...items.value, newItem]);

@@ -180,4 +180,66 @@ describe('ManagedProcess', () => {
         proc.start();
         expect(proc.isRunning).toBe(false);
     });
+
+    it('writeLine feeds stdin when the pipe is enabled', async () => {
+        const lines: string[] = [];
+        const proc = create({
+            label: 'stdin-echo',
+            command: 'cat',
+            stdin: true,
+            onStdout: (line) => lines.push(line),
+        });
+        proc.start();
+        await new Promise((r) => setTimeout(r, 100));
+        expect(proc.writeLine('{"cmd":"bus_attach"}')).toBe(true);
+        await vi.waitFor(() => expect(lines).toContain('{"cmd":"bus_attach"}'));
+    });
+
+    it('escalates to SIGKILL when the child ignores SIGTERM', async () => {
+        const proc = create({
+            label: 'term-ignorer',
+            command: '/bin/sh',
+            args: ['-c', 'trap "" TERM; sleep 60'],
+        });
+        proc.start();
+        await new Promise((r) => setTimeout(r, 150));
+        expect(proc.isRunning).toBe(true);
+
+        // Without the exitCode-based liveness check, stop() returned with the
+        // TERM-ignoring child still alive (child.killed is true the moment the
+        // signal is DELIVERED, so the old `!child.killed` guard never fired).
+        await proc.stop();
+        expect(proc.isRunning).toBe(false);
+    }, 10000);
+
+    it('a second stop still kills a child that survived the first', async () => {
+        const proc = create({
+            label: 'term-ignorer-twice',
+            command: '/bin/sh',
+            args: ['-c', 'trap "" TERM; sleep 60'],
+        });
+        proc.start();
+        await new Promise((r) => setTimeout(r, 150));
+
+        // First stop is abandoned mid-flight (SIGTERM delivered, child alive).
+        // The entry guard used to read `child.killed` — true from that signal —
+        // so every later stop returned instantly claiming success while the
+        // process kept running, untracked.
+        const abandoned = proc.stop();
+        await new Promise((r) => setTimeout(r, 100));
+
+        await proc.stop();
+        expect(proc.isRunning).toBe(false);
+        await abandoned;
+    }, 15000);
+
+    it('writeLine returns false without a stdin pipe or when not running', async () => {
+        const noPipe = create({ label: 'no-stdin', command: 'sleep', args: ['10'] });
+        noPipe.start();
+        await new Promise((r) => setTimeout(r, 100));
+        expect(noPipe.writeLine('x')).toBe(false);
+
+        const dead = create({ label: 'dead-stdin', command: 'cat', stdin: true });
+        expect(dead.writeLine('x')).toBe(false); // never started
+    });
 });

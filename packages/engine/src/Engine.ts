@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { createLogger, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
+import { probeGstElement } from './plugins/gstInspect.js';
 import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
@@ -148,6 +149,28 @@ export class Engine {
             this.pluginLoader,
         );
 
+        // A plugin that ran to a natural end (e.g. VOD finished) stops through
+        // the same path as a user disable: pipeline down, connections removed,
+        // enabled=false locally so a config re-apply doesn't revive it. The
+        // flag is also patched up to the manager (same channel as dynamic
+        // ports) so the stop persists in SQLite / shows in the UI instead of
+        // being silently undone by the next full config push.
+        this.moduleManager.on('selfStopRequested', (id: string, reason: string) => {
+            log.info({ moduleId: id, reason }, 'Module self-stop — disabling');
+            void this.lifecycle
+                .disable(id)
+                .then(() => {
+                    const ops = [
+                        { op: 'replace' as const, path: `/modules/${id}/enabled`, value: false },
+                    ];
+                    this.managerConnection.send('patch', { ops });
+                    this.lcpServer.broadcastConfigUpdate(ops);
+                })
+                .catch((err: unknown) => {
+                    log.error({ moduleId: id, err }, 'Self-stop disable failed');
+                });
+        });
+
         // When a module generates dynamic ports, push as patch to manager + LCP
         this.lifecycle.onDynamicPortsResolved = (moduleId, ports) => {
             log.info(
@@ -219,6 +242,16 @@ export class Engine {
     async start(): Promise<void> {
         log.info('Starting...');
         await requirePwLink();
+        // The inter-module bus is unixfd-only — fail fast with a clear error
+        // instead of every consumer hanging on a socket that will never bind
+        // (stock Debian 12 gst 1.22 lacks unixfdsrc; dev boxes need
+        // `source ~/gst-1.24/env.sh`, fleet images ship gst 1.28).
+        if (!(await probeGstElement('unixfdsrc'))) {
+            throw new Error(
+                'GStreamer unixfdsrc not available — the inter-module bus requires ' +
+                    'GStreamer ≥ 1.24 with plugins-bad (see DEPENDENCIES.md, "unixfd Bus Transport").',
+            );
+        }
         await this.pipeWire.cleanupOrphans();
 
         const pluginCount = await this.pluginLoader.load({

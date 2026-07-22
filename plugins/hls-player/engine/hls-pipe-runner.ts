@@ -1,10 +1,11 @@
 /*
  * hls-pipe runner — spawned by HlsPlayerModule as an isolated Node child.
  *
- * Embeds hls-pipe's Extractor and writes canonical MPEG-TS to a UDP multicast
- * group (PacedUdpTsSink) instead of stdout, so stdout stays free for one-line
- * JSON stats the parent parses. hls-pipe is ESM-only; this file compiles to
- * CJS (like the rest of the plugin) and loads it via dynamic `import()`, which
+ * Embeds hls-pipe's Extractor and writes paced canonical MPEG-TS to the
+ * module's unixfd-fanout sidecar ingest socket (PacedUnixStreamTsSink)
+ * instead of stdout, so stdout stays free for one-line JSON stats the parent
+ * parses. hls-pipe is ESM-only; this file compiles to CJS
+ * (like the rest of the plugin) and loads it via dynamic `import()`, which
  * NodeNext preserves natively for CJS→ESM interop.
  *
  * Config arrives as a JSON blob in the HLS_CONFIG env var. Exit codes drive the
@@ -12,10 +13,8 @@
  * restart), non-zero = error (auto-restart with backoff).
  */
 import type { ExtractorOptions } from 'hls-pipe';
-// Deep import: this child only needs the sink — pulling in the engine's index
-// would load the whole engine (Fastify, comms, …) into every runner process.
-import { PacedUdpTsSink } from '@media-router/engine/dist/plugins/PacedUdpTsSink.js';
 import { buildExtractorOverrides, type RunnerConfig } from './runnerOptions.js';
+import { WorkerPacedTsSink } from './workerPacedSink.js';
 
 function emitStats(bitrateMbps: number, bytesSent: number): void {
     process.stdout.write(JSON.stringify({ stats: { bitrateMbps, bytesSent } }) + '\n');
@@ -32,9 +31,17 @@ async function main(): Promise<void> {
     const { Extractor, makeOutputMode, DEFAULT_ABR_CONFIG, UNSTABLE_NETWORK_ABR_CONFIG } =
         await import('hls-pipe');
 
-    // Paced multicast sink — releases each segment's datagrams at the media
-    // rate so the receiver's UDP buffer doesn't overflow.
-    const sink = new PacedUdpTsSink(cfg.port, cfg.host);
+    // Paced sink — releases each segment's datagrams at the media rate so
+    // the sidecar's per-consumer queues don't overflow.
+    // Runs on a WORKER THREAD (WorkerPacedTsSink): the extractor's
+    // per-segment fetch/decrypt/demux/mux is one main-thread macrotask, which
+    // used to starve the drain timers and stall the wire ~100 ms at every
+    // segment boundary.
+    if (cfg.sink?.kind !== 'unixfd') {
+        process.stderr.write('hls-pipe-runner: missing unixfd sink descriptor\n');
+        process.exit(2);
+    }
+    const sink = new WorkerPacedTsSink({ kind: 'unixfd', ingestPath: cfg.sink.ingestPath });
 
     const abort = new AbortController();
     const stop = (): void => abort.abort();

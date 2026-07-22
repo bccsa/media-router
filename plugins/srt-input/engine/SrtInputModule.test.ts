@@ -11,15 +11,11 @@ import { SrtInputModule } from './SrtInputModule.js';
 function makeModule(opts: { udpPort?: number | null; instanceId?: string } = {}) {
     const module = new SrtInputModule() as any;
     const udpPort = opts.udpPort === undefined ? 41000 : opts.udpPort;
-    const assignUdpPort = vi.fn(() =>
-        udpPort === null ? null : { host: '239.255.0.1', port: udpPort },
-    );
-    const getUdpEndpoint = vi.fn(() =>
-        udpPort === null ? undefined : { host: '239.255.0.1', port: udpPort },
-    );
+    const assignBusChannel = vi.fn(() => (udpPort === null ? null : { port: udpPort }));
+    const getBusChannel = vi.fn(() => (udpPort === null ? undefined : { port: udpPort }));
     module.services = {
         instanceId: opts.instanceId ?? 'srt-in-1',
-        mediaRouter: { assignUdpPort, getUdpEndpoint },
+        mediaRouter: { assignBusChannel, getBusChannel },
     };
     module.config = {};
     module.log = { warn: vi.fn(), debug: vi.fn() };
@@ -28,7 +24,7 @@ function makeModule(opts: { udpPort?: number | null; instanceId?: string } = {})
     const setBadge = vi.fn();
     module.setStatusData = setStatusData;
     module.setBadge = setBadge;
-    return { module, assignUdpPort, getUdpEndpoint, setStatusData, setBadge };
+    return { module, assignBusChannel, getBusChannel, setStatusData, setBadge };
 }
 
 describe('SrtInputModule.buildPipeline', () => {
@@ -45,8 +41,11 @@ describe('SrtInputModule.buildPipeline', () => {
         const desc = module.buildPipeline({});
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('srtsrc name=src uri="srt://0.0.0.0:9000?mode=listener&latency=125"');
-        expect(desc!.pipeline).toContain('udpsink');
-        expect(desc!.pipeline).toContain('port=41000');
+        expect(desc!.pipeline).toContain(
+            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'tee name=busout_41000 allow-not-linked=true',
+        );
+        expect(desc!.pipeline).not.toContain('udpsink');
     });
 
     it('includes streamId, passphrase, and pbkeylen when configured', () => {

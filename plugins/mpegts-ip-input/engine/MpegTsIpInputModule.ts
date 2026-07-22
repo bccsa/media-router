@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSink,
+    buildBusSink,
     buildNetUdpSrc,
     buildBackpressureQueue,
     isMulticastAddr,
@@ -44,7 +44,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
     async onStart(): Promise<void> {
         // Assign a UDP port for local-bus multicast output (same as srt-input).
         if (this.services?.mediaRouter) {
-            this.services.mediaRouter.assignUdpPort(this.services.instanceId);
+            this.services.mediaRouter.assignBusChannel(this.services.instanceId);
         }
 
         // When encapsulation is `auto`, sniff the first packet so the module
@@ -125,7 +125,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
         const jitterMs = (config.jitterMs as number) ?? 200;
 
         // Local-bus port for downstream modules.
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(this.services.instanceId);
+        const endpoint = this.services?.mediaRouter?.getBusChannel(this.services.instanceId);
         const udpPort = endpoint?.port;
         if (!udpPort) {
             this.log.warn('No UDP port assigned — cannot output MPEG-TS');
@@ -182,7 +182,7 @@ export class MpegTsIpInputModule extends GstPluginBase {
             netSrc,
             ...depay,
             buildBackpressureQueue(jitterMs),
-            buildUdpSink({ host: '239.255.0.1', port: udpPort }),
+            buildBusSink(udpPort),
         ].join(' ! ');
 
         return {

@@ -5,10 +5,12 @@ import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
 import { newModuleInstanceId } from '@/utils/ids';
+import { streamTypesCompatible } from '@media-router/shared-types';
 
 /** Edge colors by stream type — matches CSS variables in main.css. */
 const STREAM_TYPE_COLORS: Record<string, string> = {
     'audio/pcm': '#3b82f6',
+    'audio/302m': '#06b6d4',
     'muxed/mpegts': '#f59e0b',
     'video/raw': '#10b981',
 };
@@ -189,7 +191,9 @@ export function useGraphSync(
         const hasInput = srcPort.direction === 'input' || tgtPort.direction === 'input';
         if (!hasOutput || !hasInput) return false;
 
-        if (srcPort.streamType !== tgtPort.streamType) return false;
+        // Exact match or TS-family (muxed/mpegts ↔ audio/302m) — same rule the
+        // engine's PortRegistry enforces; shared-types is the single source.
+        if (!streamTypesCompatible(srcPort.streamType, tgtPort.streamType)) return false;
 
         const connections = engine.value?.connections ?? [];
         for (const port of [srcPort, tgtPort]) {

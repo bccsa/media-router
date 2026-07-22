@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createLogger } from '@media-router/shared-types';
+import { busSocketPath } from '../plugins/busHelpers.js';
 
 const log = createLogger('MpegTsProbe');
 
@@ -56,30 +57,24 @@ export function _resetCodecClassifiersForTests(): void {
 }
 
 /**
- * Probes an MPEG-TS UDP multicast stream to detect the audio codec.
+ * Probes an MPEG-TS bus channel to detect the audio codec.
  *
  * Runs a short `gst-launch` pipeline with `-v` and parses the negotiated
  * caps from `tsdemux`. Codec identification is delegated to the registered
  * classifiers — see `registerCodecClassifier`.
  */
 export function probeMpegTsStream(
-    host: string,
     port: number,
     timeoutMs = 3000,
+    socketPath?: string,
 ): Promise<ProbeResult> {
     return new Promise((resolve) => {
-        // Multicast (239.x) uses multicast-group, unicast (127.x) uses plain port
-        const isMulticast = host.startsWith('239.');
-        const udpSrcArgs = isMulticast
-            ? [
-                  'udpsrc',
-                  `multicast-group=${host}`,
-                  `port=${port}`,
-                  'multicast-iface=lo',
-                  'auto-multicast=true',
-                  'num-buffers=50',
-              ]
-            : ['udpsrc', `port=${port}`, 'num-buffers=50'];
+        // The probe connects to the caller's per-consumer EDGE socket (already
+        // attached on the producer's tee before the consumer started),
+        // mirroring buildBusSrc. Falls back to the channel socket only if no
+        // edge socket was supplied.
+        const unixSocket = socketPath ?? busSocketPath(port);
+        const udpSrcArgs = ['unixfdsrc', `socket-path=${unixSocket}`, 'num-buffers=50'];
         // `parsebin` sits between tsdemux and the sink so the negotiated caps
         // carry `channels`/`rate`. The bare tsdemux pad omits the channel count
         // for AAC/ADTS (`audio/mpeg, mpegversion=4, stream-format=adts`) — it
@@ -97,7 +92,7 @@ export function probeMpegTsStream(
             'fakesink',
         ];
 
-        log.info({ host, port }, 'Probing MPEG-TS stream');
+        log.info({ port, socket: unixSocket }, 'Probing MPEG-TS stream');
 
         let resolved = false;
         const child = execFile(
@@ -116,14 +111,14 @@ export function probeMpegTsStream(
                 const rawCaps = selectAudioCaps(output);
 
                 if (!rawCaps) {
-                    log.warn({ host, port }, 'No audio caps detected');
+                    log.warn({ port }, 'No audio caps detected');
                     resolve({ codec: 'unknown', rawCaps: '' });
                     return;
                 }
 
                 const result = classifyCaps(rawCaps);
                 log.info(
-                    { host, port, codec: result.codec, channels: result.channels, rawCaps },
+                    { port, codec: result.codec, channels: result.channels, rawCaps },
                     'Detected codec',
                 );
                 resolve(result);

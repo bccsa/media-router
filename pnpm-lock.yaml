@@ -284,7 +284,25 @@ importers:
         specifier: ^25.5.0
         version: 25.5.0
 
+  plugins/audio-input-302m:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/audio-output:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/audio-output-302m:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/audio-transcoder:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
@@ -298,12 +316,6 @@ importers:
       hls-pipe:
         specifier: workspace:*
         version: link:../../packages/hls-pipe
-
-  plugins/mpegts-demuxer:
-    dependencies:
-      '@media-router/engine':
-        specifier: workspace:*
-        version: link:../../packages/engine
 
   plugins/mpegts-ip-input:
     dependencies:
@@ -324,6 +336,12 @@ importers:
         version: link:../../packages/engine
 
   plugins/n1-mixer:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/n1-mixer-302m:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
@@ -360,6 +378,12 @@ importers:
         version: link:../../packages/engine
 
   plugins/transcoder:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/ts-splitter:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*

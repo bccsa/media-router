@@ -2,18 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { bitrateBadge } from '@media-router/engine';
 import { AudioEncoderModule } from './AudioEncoderModule.js';
 
-function makeModule(opts: { udpPort?: number | null } = {}) {
+function makeModule(opts: { busPort?: number | null } = {}) {
     const module = new AudioEncoderModule() as any;
-    const udpPort = opts.udpPort === undefined ? 41000 : opts.udpPort;
-    const assignUdpPort = vi.fn(() =>
-        udpPort === null ? null : { host: '239.255.0.1', port: udpPort },
-    );
-    const getUdpEndpoint = vi.fn(() =>
-        udpPort === null ? undefined : { host: '239.255.0.1', port: udpPort },
-    );
+    const busPort = opts.busPort === undefined ? 41000 : opts.busPort;
+    const assignBusChannel = vi.fn(() => (busPort === null ? null : { port: busPort }));
+    const getBusChannel = vi.fn(() => (busPort === null ? undefined : { port: busPort }));
     module.services = {
         instanceId: 'enc-1',
-        mediaRouter: { assignUdpPort, getUdpEndpoint },
+        mediaRouter: { assignBusChannel, getBusChannel },
     };
     module.config = {};
     Object.defineProperty(module, 'pwNodeName', {
@@ -24,20 +20,37 @@ function makeModule(opts: { udpPort?: number | null } = {}) {
     const setBadge = vi.fn();
     module.setStatusData = setStatusData;
     module.setBadge = setBadge;
-    return { module, assignUdpPort, getUdpEndpoint, setStatusData, setBadge };
+    return { module, assignBusChannel, getBusChannel, setStatusData, setBadge };
 }
 
 describe('AudioEncoderModule.buildPipeline', () => {
     beforeEach(() => vi.clearAllMocks());
 
-    it('builds an opus path by default with the encoder bitrate and ts mux', () => {
+    it('builds an opus path by default with the encoder bitrate, ts mux, and bus fan-out tee', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({});
         expect(desc.pipeline).toContain('pulsesrc device=MR_PW_enc-1.monitor');
         expect(desc.pipeline).toContain('opusenc bitrate=128000');
-        expect(desc.pipeline).toContain('mpegtsmux latency=0 alignment=7');
-        expect(desc.pipeline).toContain('udpsink');
-        expect(desc.pipeline).toContain('port=41000');
+        expect(desc.pipeline).toContain(
+            'mpegtsmux latency=0 alignment=7 ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_41000 allow-not-linked=true',
+        );
+        expect(desc.pipeline).not.toContain('udpsink');
+    });
+
+    it('pins the pulsesrc ring to srcBufferMs (default 200 ms = the previous implicit gst default, clamped to 40 ms floor)', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({}).pipeline).toContain(
+            'pulsesrc device=MR_PW_enc-1.monitor buffer-time=200000',
+        );
+        expect(module.buildPipeline({ srcBufferMs: 60 }).pipeline).toContain(
+            'buffer-time=60000',
+        );
+        expect(module.buildPipeline({ srcBufferMs: 5 }).pipeline).toContain(
+            'buffer-time=40000',
+        );
+        expect(module.buildPipeline({ srcBufferMs: 5000 }).pipeline).toContain(
+            'buffer-time=1000000',
+        );
     });
 
     it('builds an AAC path when codec=aac', () => {
@@ -58,11 +71,11 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).not.toContain('aac-is=false');
     });
 
-    it('falls back to fakesink when no UDP port can be assigned', () => {
-        const { module } = makeModule({ udpPort: null });
+    it('falls back to fakesink when no bus channel can be assigned', () => {
+        const { module } = makeModule({ busPort: null });
         const desc = module.buildPipeline({});
         expect(desc.pipeline).toContain('fakesink name=usink');
-        expect(desc.pipeline).not.toContain('udpsink');
+        expect(desc.pipeline).not.toContain('tee name=busout');
     });
 
     it('threads tsAlignment through to mpegtsmux', () => {
@@ -121,19 +134,16 @@ describe('AudioEncoderModule.updateStatusData', () => {
         );
     });
 
-    it('populates the udp section with the assigned endpoint when available', () => {
+    it('populates the bus section with the assigned channel when available', () => {
         const { module, setStatusData } = makeModule();
         module.updateStatusData();
-        expect(setStatusData).toHaveBeenCalledWith(
-            'udp',
-            expect.objectContaining({ host: '239.255.0.1', port: 41000 }),
-        );
+        expect(setStatusData).toHaveBeenCalledWith('bus', { channel: 41000 });
     });
 
-    it('renders placeholders in the udp section when no port is assigned', () => {
-        const { module, setStatusData } = makeModule({ udpPort: null });
+    it('renders channel 0 in the bus section when no channel is assigned', () => {
+        const { module, setStatusData } = makeModule({ busPort: null });
         module.updateStatusData();
-        expect(setStatusData).toHaveBeenCalledWith('udp', { host: '—', port: 0 });
+        expect(setStatusData).toHaveBeenCalledWith('bus', { channel: 0 });
     });
 });
 

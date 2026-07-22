@@ -59,6 +59,11 @@ export class ExponentialBackoff {
     nextDelay(): number | null {
         if (this.exhausted) return null;
 
+        // Requesting a delay IS a failure — it must interrupt a pending
+        // stability window, or a success followed by a failure within
+        // stabilityMs would still zero the attempt counter mid-retry-loop.
+        this.clearStabilityTimer();
+
         const base = Math.min(this.baseDelayMs * Math.pow(2, this._attempts), this.maxDelayMs);
         const jitter = 1 + (Math.random() - 0.5) * 0.5; // 0.75 .. 1.25
         this._attempts++;

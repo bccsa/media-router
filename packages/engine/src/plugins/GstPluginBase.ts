@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type { ModuleRuntimeState, ModuleHealth } from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
+import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
@@ -44,6 +45,16 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess(): GstChildProcess | null {
+        return this.childProcess;
+    }
+
+    /**
+     * Where the BusFanoutCoordinator sends this producer's unixfd
+     * `bus_attach`/`bus_detach`. The gst runner handles them natively; a
+     * non-GStreamer producer overrides this with its own fan-out controller
+     * (hls-player → UnixFdFanoutController + unixfd-fanout.py sidecar).
+     */
+    getBusAttachTarget(): BusAttachTarget | null {
         return this.childProcess;
     }
 
@@ -97,6 +108,15 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
                 this.ready = true;
                 this.health = 'ok';
                 this.error = undefined;
+                // Re-attach this producer's per-consumer bus fan-out branches:
+                // a runner-internal respawn rebuilds the pipeline from the base
+                // string with the egress tee but NO branches, so without this a
+                // producer restart would strand every consumer. Idempotent and a
+                // no-op under UDP / for non-producers. Done directly (not via the
+                // overridable onPipelinePlaying) so a subclass override can't drop it.
+                if (this.services?.instanceId) {
+                    this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
+                }
                 // Fires on EVERY playing transition, including a runner-internal
                 // crash-restart (which rebuilds the pipeline from the original
                 // string, dropping any live element state). Subclasses re-seed
@@ -125,6 +145,24 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         this.childProcess.on('error', (data: { message: string }) => {
             this.setHealth('error', data.message);
+        });
+
+        // unixfd socket-gate progress: the runner waits indefinitely for
+        // producer edge sockets before launching. Surface the wait as a
+        // health warning naming the pending sockets — otherwise a gated
+        // module reports 'ok' forever while nothing runs (e.g. a consumer
+        // whose producer is disabled). Cleared when the gate opens
+        // (pending: []) and superseded by the 'playing' health flip.
+        this.childProcess.on('busGate', (data: { pending: string[] }) => {
+            if (data.pending.length > 0) {
+                this.setStatusData('bus', {
+                    'Waiting for producer': data.pending.join(', '),
+                });
+                this.setHealth('warning', `Waiting for producer bus socket(s): ${data.pending.join(', ')}`);
+            } else {
+                this.setStatusData('bus', {});
+                if (this.health === 'warning') this.setHealth('ok');
+            }
         });
 
         await this.childProcess.start(desc);
@@ -408,6 +446,19 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
     }
 
+    /**
+     * Cumulative bytes pushed into the bus-egress tee. The tee has no byte
+     * counter of its own, so count bytes on its sink pad via the runner's
+     * throughput tracker. `track_throughput` is idempotent per element, so
+     * re-arming on every read is safe — and it survives child-process
+     * respawns, which drop the python-side trackers.
+     */
+    protected async readBusSinkBytes(element: string): Promise<number | undefined> {
+        await this.trackThroughput(element, 'sink');
+        const total = (await this.getThroughput())[element]?.total_bytes;
+        return typeof total === 'number' ? total : undefined;
+    }
+
     /** Start tracking throughput on a named element's pad. */
     protected async trackThroughput(element: string, pad = 'src'): Promise<void> {
         if (!this.childProcess?.isRunning) return;
@@ -431,13 +482,28 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
     }
 
+    /** Elements whose last stats read failed — logged once per outage, not per poll. */
+    private statsFailureLogged = new Set<string>();
+
     /** Read the 'stats' property from a named element (e.g. srtsrc). */
     protected async getElementStats(element: string): Promise<Record<string, unknown>> {
         if (!this.childProcess?.isRunning) return {};
         try {
-            return await this.childProcess.getStats(element);
+            const stats = await this.childProcess.getStats(element);
+            if (this.statsFailureLogged.delete(element)) {
+                this.log.debug({ element }, 'getElementStats recovered');
+            }
+            return stats;
         } catch (err) {
-            this.log.debug({ err, element }, 'getElementStats failed');
+            // Pollers hit this every tick while an element blocks its stats
+            // getter (srtsrc mid-reconnect) — one line per outage is enough.
+            if (!this.statsFailureLogged.has(element)) {
+                this.statsFailureLogged.add(element);
+                this.log.debug(
+                    { err, element },
+                    'getElementStats failed (suppressing repeats until it recovers)',
+                );
+            }
             return {};
         }
     }
@@ -453,6 +519,20 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.health = health;
         this.error = error;
         this.emit('stateChange', this.getState());
+    }
+
+    /**
+     * Ask the engine to STOP this module cleanly — the module ran to a natural
+     * end (e.g. a VOD stream finished) and should land in the same disabled
+     * state a user stop produces: pipeline down, connections removed, no
+     * crash-restart, and config re-applies don't revive it until re-enabled.
+     * Routed `plugin → ModuleInstance → ModuleManager → ModuleLifecycle
+     * .disable()`; the stop happens asynchronously AFTER the current tick, so
+     * it is safe to call from process-exit callbacks.
+     */
+    protected requestSelfStop(reason: string): void {
+        this.log.info({ reason }, 'Module requested self-stop');
+        this.emit('selfStop', reason);
     }
 
     // --- Device presence watchdog (hardware hot-plug) ---

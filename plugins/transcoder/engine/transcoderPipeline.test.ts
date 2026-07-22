@@ -27,12 +27,12 @@ const enc = (over: Partial<ResolvedEncode> = {}): ResolvedEncode => ({
     speedPreset: 'ultrafast',
     h264Profile: 'auto',
     sceneCut: 40,
+    cpbSeconds: 1,
     ...over,
 });
 
 const out = (i: number, rendition: Rendition, encode: ResolvedEncode = enc()): TranscoderOutput => ({
     portId: outputPortId(i),
-    host: '239.255.0.1',
     port: 41000 + i,
     rendition,
     encode,
@@ -169,7 +169,7 @@ describe('buildDynamicPorts', () => {
 
 describe('buildPipeline', () => {
     const base = {
-        input: { host: '239.0.0.1', port: 5004 },
+        input: { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
         framerate: 50,
         gopFrames: 50,
     };
@@ -187,30 +187,30 @@ describe('buildPipeline', () => {
         expect(res).not.toBeNull();
 
         const p = res.pipeline;
-        // Single static pipeline (no linkOnPadAdded): udpsrc → tsparse → tsdemux
-        // → decode once → conform framerate → tee → one leaf per rendition.
+        // Single static pipeline (no linkOnPadAdded): unixfdsrc → tsparse →
+        // tsdemux → decode once → conform framerate → tee → one leaf per
+        // rendition.
         expect(p).toContain('tsdemux latency=0');
-        expect(p).toContain(`port=${base.input.port}`);
+        expect(p).toContain(`unixfdsrc socket-path=${base.input.socketPath}`);
         expect(p.match(/avdec_h264/g)).toHaveLength(1); // decoded exactly once
         expect(p).toContain('framerate=50/1');
         expect(p).toContain('tee name=t');
         expect(p.match(/t\. !/g)).toHaveLength(2); // one tee branch per rendition
 
-        // Per-rendition scale + bitrate + its own mux + udpsink.
+        // Per-rendition scale + bitrate + its own mux + bus-egress tee.
         expect(p).toContain('video/x-raw,width=1920,height=1080');
         expect(p).toContain('video/x-raw,width=1280,height=720');
         expect(p).toContain('bitrate=5000');
         expect(p).toContain('bitrate=2500');
         expect(p).toContain('mux_0');
         expect(p).toContain('mux_1');
-        expect(p).toContain('usink_0');
-        expect(p).toContain('usink_1');
-        expect(p).toContain('port=41000');
-        expect(p).toContain('port=41001');
+        expect(p).toContain('tee name=busout_41000 allow-not-linked=true');
+        expect(p).toContain('tee name=busout_41001 allow-not-linked=true');
+        expect(p).not.toContain('udpsink');
 
-        // sinkNames is the single source of truth for the udpsink names the
-        // module polls for throughput — one per rendition, in order.
-        expect(res.sinkNames).toEqual(['usink_0', 'usink_1']);
+        // sinkNames is the single source of truth for the throughput-probe
+        // elements the module polls — the per-rendition fan-out tees, in order.
+        expect(res.sinkNames).toEqual(['busout_41000', 'busout_41001']);
     });
 
     it('filters tsdemux to video only so an audio pad cannot reach the decoder', () => {
@@ -286,6 +286,108 @@ describe('buildPipeline', () => {
         expect(p).toContain('x264enc');
         expect(p).toContain('speed-preset=medium');
         expect(p).toContain('x265enc');
+    });
+});
+
+describe('deinterlacing', () => {
+    const base = {
+        input: { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+        framerate: 50,
+        gopFrames: 50,
+    };
+
+    it('inserts an auto deinterlacer between the raw buffer and videorate by default', () => {
+        const p = buildPipeline({ ...base, outputs: [out(0, r())] })!.pipeline;
+        // mode=auto self-detects from decoded buffer flags: interlaced content is
+        // deinterlaced, progressive passes through — the "auto by default" contract.
+        expect(p).toMatch(/! deinterlace mode=auto ! videorate ! video\/x-raw,framerate=50\/1/);
+    });
+
+    it('force mode deinterlaces unconditionally', () => {
+        const p = buildPipeline({ ...base, deinterlace: 'force', outputs: [out(0, r())] })!.pipeline;
+        expect(p).toContain('deinterlace mode=interlaced ! videorate');
+        expect(p).not.toContain('mode=auto');
+    });
+
+    it('off omits the deinterlacer entirely (interlaced pass-through)', () => {
+        const p = buildPipeline({ ...base, deinterlace: 'off', outputs: [out(0, r())] })!.pipeline;
+        expect(p).not.toContain('deinterlace');
+    });
+
+    it('off flags interlaced output on the software x264 branch only', () => {
+        const sw = buildPipeline({ ...base, deinterlace: 'off', outputs: [out(0, r())] })!.pipeline;
+        expect(sw).toMatch(/x264enc [^!]*interlaced=true/);
+        // VA-API has no interlaced encode mode — flag must not leak there.
+        const va = buildPipeline({
+            ...base,
+            deinterlace: 'off',
+            outputs: [out(0, r(), enc({ impl: 'va' }))],
+        })!.pipeline;
+        expect(va).not.toContain('interlaced=true');
+        // And deinterlaced modes never set it.
+        const auto = buildPipeline({ ...base, outputs: [out(0, r())] })!.pipeline;
+        expect(auto).not.toContain('interlaced=true');
+    });
+});
+
+describe('hardware scaling', () => {
+    const base = {
+        input: { port: 5004, socketPath: '/tmp/mr-bus-5004-abc123.sock' },
+        framerate: 50,
+        gopFrames: 50,
+    };
+
+    it('va renditions scale on the GPU via vapostproc when available', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { va: true },
+            outputs: [out(0, r(), enc({ impl: 'va' }))],
+        })!.pipeline;
+        expect(p).toContain('vapostproc ! video/x-raw(memory:VAMemory),width=1280,height=720');
+        expect(p).not.toContain('videoscale');
+        expect(p).not.toContain('videoconvert');
+    });
+
+    it('va renditions fall back to the software chain when vapostproc is absent', () => {
+        const p = buildPipeline({
+            ...base,
+            outputs: [out(0, r(), enc({ impl: 'va' }))],
+        })!.pipeline;
+        expect(p).not.toContain('vapostproc');
+        expect(p).toMatch(/videoscale ! video\/x-raw,width=1280,height=720 ! videoconvert/);
+    });
+
+    it('v4l2 renditions scale on the Pi ISP via v4l2convert when available', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { v4l2: true },
+            outputs: [out(0, r(), enc({ impl: 'v4l2' }))],
+        })!.pipeline;
+        expect(p).toContain('v4l2convert ! video/x-raw,width=1280,height=720');
+        expect(p).not.toContain('videoscale');
+    });
+
+    it('v4l2 renditions fall back to the software chain when v4l2convert is absent', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { va: true }, // va scaler present, v4l2 not
+            outputs: [out(0, r(), enc({ impl: 'v4l2' }))],
+        })!.pipeline;
+        expect(p).not.toContain('v4l2convert');
+        expect(p).toContain('videoscale');
+    });
+
+    it('mixes hardware and software scaling across renditions', () => {
+        const p = buildPipeline({
+            ...base,
+            hwScalers: { va: true },
+            outputs: [
+                out(0, r({ width: 1920, height: 1080 }), enc({ impl: 'va' })),
+                out(1, r({ width: 854, height: 480 })),
+            ],
+        })!.pipeline;
+        expect(p).toContain('vapostproc ! video/x-raw(memory:VAMemory),width=1920,height=1080');
+        expect(p).toMatch(/videoscale ! video\/x-raw,width=854,height=480 ! videoconvert/);
     });
 });
 

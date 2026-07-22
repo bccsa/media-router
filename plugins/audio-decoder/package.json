@@ -89,12 +89,37 @@
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",
-                    "description": "Post-tsdemux jitter buffer. Keep low (100) for live SRT/RIST; raise (e.g. 1500) for HLS to absorb mid-stream join + decoder CPU spikes. Adds end-to-end latency."
+                    "description": "Post-tsdemux jitter buffer (non-leaky). Unset defaults to 300. Keep low (50-100) for smooth splitter-fed live inputs — on re-encode paths its standing fill lands 1:1 as audio-late A/V skew; raise (e.g. 1500) for HLS or bursty demuxer-fed sources to absorb mid-stream join + decoder CPU spikes."
+                },
+                "sinkBufferMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 80,
+                    "maximum": 1000,
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "ms",
+                    "description": "Audio sink ring buffer. 200 bridges the source's PES-burst spacing; lower only during a measured tuning pass (underflow/crackle risk). Contributes to the standing audio latency on re-encode paths."
                 },
                 "clockSync": {
                     "type": "boolean",
                     "default": false,
                     "description": "Lock to the shared engine clock so audio stays in sync with a video-player fed from the same source (no drift over time). Turn ON for both this decoder and the matching video-player when you split one stream into separate audio + video playout. Leave OFF for standalone/low-latency audio."
+                },
+                "lowLatencySync": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Deterministic playout anchor (lipsync fix for re-encode paths): render at PTS + Sync offset instead of on arrival, so the decoder→encoder loop stops accumulating standing latency into the re-encoded audio timeline. Late timelines (mid-stream joins, restarts) play immediately rather than going silent. Ignored when Clock sync is ON."
+                },
+                "syncOffsetMs": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": 0,
+                    "maximum": 2000,
+                    "x-widget": "slider",
+                    "x-step": 50,
+                    "x-unit": "ms",
+                    "description": "Optional pacing margin for Low-latency sync (0 = arrival-anchored, minimal latency). Raise toward the source's burst spacing (~150-200 ms) only if underflow gaps appear; whatever is set becomes standing audio latency."
                 },
                 "lcpVisible": {
                     "type": "boolean",

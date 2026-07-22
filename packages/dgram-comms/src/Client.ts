@@ -172,6 +172,7 @@ export class Client extends EventEmitter {
             connectionTimeout: this.connectionTimeout,
             missedKeepaliveThreshold: this.missedKeepaliveThreshold,
             onDisconnect: () => {
+                if (this.destroyed) return; // destroy() is silent by contract
                 const cur = this.pathStates[index];
                 if (!cur) return;
                 cur.connected = false;

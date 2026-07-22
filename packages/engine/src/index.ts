@@ -5,6 +5,9 @@ export type {
     PluginModule,
     PipelineDescription,
     PadLinkRule,
+    RistRunnerConfig,
+    TsSplitRunnerConfig,
+    TsSplitOutput,
     EngineServices,
     ModuleServices,
 } from './plugins/PluginModule.js';
@@ -20,7 +23,12 @@ export {
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
 export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './system/drmConnectors.js';
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
-export { probeGstElement, gstInspectMaxChannels, findLadspaElement } from './plugins/gstInspect.js';
+export {
+    probeGstElement,
+    gstInspectMaxChannels,
+    gstElementSupportsCaps,
+    findLadspaElement,
+} from './plugins/gstInspect.js';
 export {
     ENCODER_ELEMENTS,
     SPEED_PRESETS,
@@ -43,15 +51,32 @@ export {
 export { ThroughputPoller } from './plugins/ThroughputPoller.js';
 export type { ThroughputSample, ThroughputPollerOptions } from './plugins/ThroughputPoller.js';
 export {
-    buildUdpSrc,
-    buildUdpSink,
+    buildBusSrc,
+    buildBusSink,
+    busSocketPath,
+    busTeeName,
+    busEdgeSocketPath,
+    busIngestSocketPath,
+    BUS_WATCHDOG_PREFIX,
+} from './plugins/busHelpers.js';
+export type { BusSrcOpts } from './plugins/busHelpers.js';
+export {
     buildNetUdpSrc,
     buildNetUdpSink,
-    isMulticast,
     isMulticastAddr,
     NET_UDP_RCV_BUF,
-} from './plugins/udpHelpers.js';
-export type { UdpSrcOpts, UdpSinkOpts, NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/udpHelpers.js';
+} from './plugins/netUdpHelpers.js';
+export type { NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/netUdpHelpers.js';
+export {
+    buildAudioMixInput,
+    build302mEncodeBranch,
+    mixMatrixClause,
+} from './plugins/audio302mHelpers.js';
+export type {
+    AudioMixSource,
+    AudioMixInputOpts,
+    Audio302mEncodeOpts,
+} from './plugins/audio302mHelpers.js';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_VIDEO_PID_BASE,
@@ -65,15 +90,12 @@ export {
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
+export { capsStreamInfo } from './plugins/streamCapsInfo.js';
+export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';
 export { formatBytes, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
-export {
-    PacedUdpTsSink,
-    packetizeTs,
-    TS_PACKET_BYTES,
-    TS_PACKETS_PER_DATAGRAM,
-    TS_DATAGRAM_BYTES,
-} from './plugins/PacedUdpTsSink.js';
+export { PacedTsSink, packetizeTs, TS_PACKET_BYTES } from './plugins/PacedTsSink.js';
+export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
@@ -99,6 +121,9 @@ export type { DeviceFormatState, DeviceDetection } from './audio/deviceFormat.js
 export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
+export { UnixFdFanoutController } from './child-process/UnixFdFanoutController.js';
+export { probeUnixSocket } from './child-process/busSocketGate.js';
+export type { BusAttachTarget } from './child-process/UnixFdFanoutController.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export {
     probeMpegTsStream,
@@ -109,4 +134,4 @@ export type { ProbeResult, CodecClassifier } from './routing/MpegTsProbe.js';
 export { StreamTypeExecutorRegistry, makeConnLabel } from './routing/StreamTypeExecutor.js';
 export type { StreamTypeExecutor } from './routing/StreamTypeExecutor.js';
 export { PcmAudioExecutor } from './routing/PcmAudioExecutor.js';
-export { MpegTsUdpExecutor } from './routing/MpegTsUdpExecutor.js';
+export { MpegTsBusExecutor } from './routing/MpegTsBusExecutor.js';

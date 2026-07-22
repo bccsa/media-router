@@ -1,9 +1,19 @@
-import { GstPluginBase, formatBytes, type PipelineDescription } from '@media-router/engine';
+import {
+    GstPluginBase,
+    UnixFdFanoutController,
+    busIngestSocketPath,
+    formatBytes,
+    type BusAttachTarget,
+    type PipelineDescription,
+} from '@media-router/engine';
 import type { ManagedProcess } from '@media-router/engine';
 import type { AlternateRendition } from 'hls-pipe';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolutionCapBitrateBps, resolveQuality } from './runnerOptions.js';
+
+/** Bus wire caps — identical to `buildBusSink`'s capsfilter. */
+const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
 /**
  * Locate the compiled runner. `__dirname` is `dist/` in production, but the
@@ -16,6 +26,22 @@ function resolveRunnerPath(): string | null {
         join(__dirname, '..', 'dist', 'hls-pipe-runner.js'),
     ];
     return candidates.find((p) => existsSync(p)) ?? null;
+}
+
+/**
+ * Locate the engine's unixfd fan-out sidecar. Resolved off the engine's entry
+ * point (dist/index.js) rather than require.resolve on the .py itself — the
+ * engine's `exports` map doesn't cover it, and `existsSync` keeps the check
+ * honest when the engine dist is stale (built before the sidecar existed).
+ */
+function resolveFanoutScript(): string | null {
+    try {
+        const engineMain = require.resolve('@media-router/engine');
+        const script = join(engineMain, '..', 'child-process', 'unixfd-fanout.py');
+        return existsSync(script) ? script : null;
+    } catch {
+        return null;
+    }
 }
 
 type Option = { value: string; label: string };
@@ -56,8 +82,11 @@ function asArray(v: unknown): string[] {
  * HLS Player plugin.
  *
  * Pulls an HLS stream via the hls-pipe library (spawned as an isolated Node
- * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on local
- * UDP multicast for downstream modules — same producer contract as srt-input.
+ * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on the
+ * inter-module bus — same producer contract as srt-input. The child streams
+ * into this module's `unixfd-fanout.py` sidecar, which serves the
+ * per-consumer edge sockets speaking the GstUnixFd protocol (see
+ * `startFanout`).
  *
  * On start it probes the master playlist to detect available audio / subtitle
  * languages and reports them as `fieldOptions`, so the settings panel can show
@@ -67,6 +96,11 @@ function asArray(v: unknown): string[] {
  */
 export class HlsPlayerModule extends GstPluginBase {
     private runner: ManagedProcess | null = null;
+    /** The GstUnixFd fan-out sidecar + its controller. The sidecar owns the
+     *  per-consumer edge sockets, so they survive runner relaunches (URL
+     *  changes) — consumers see a data gap, not a disconnect. */
+    private fanout: ManagedProcess | null = null;
+    private fanoutController: UnixFdFanoutController | null = null;
     private playlistKind = '—';
     /** Variant ladder from the last master-playlist probe (bitrate + height),
      *  used to turn a `maxHeight` ceiling into a bitrate cap. Empty for media
@@ -88,16 +122,22 @@ export class HlsPlayerModule extends GstPluginBase {
             return;
         }
 
-        // Reserve the UDP egress port up front (same as encoders) so a URL
+        // Reserve the bus channel up front (same as encoders) so a URL
         // pasted later — applied live — can launch the runner without a restart.
         // Only `mediaRouter` is required for this; `processManager` is checked
         // later, when we actually need to spawn the runner.
-        this.services.mediaRouter.assignUdpPort(this.services.instanceId);
-        const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
+        this.services.mediaRouter.assignBusChannel(this.services.instanceId);
+        const endpoint = this.services.mediaRouter.getBusChannel(this.services.instanceId);
         if (!endpoint) {
-            this.setHealth('error', 'No UDP port assigned — cannot output MPEG-TS');
+            this.setHealth('error', 'No bus channel assigned — cannot output MPEG-TS');
             return;
         }
+
+        // The fan-out sidecar must run even while idle: it owns the
+        // per-consumer edge sockets, and consumers gate their start on
+        // connecting to them (busSocketGate).
+        if (!this.startFanout(endpoint.port)) return;
+
         this.running = true;
         this.ready = true;
 
@@ -119,20 +159,88 @@ export class HlsPlayerModule extends GstPluginBase {
             this.setHealth('error', 'processManager service unavailable — cannot spawn runner');
             return;
         }
-        if (!this.spawnRunner(url, endpoint.host, endpoint.port)) return;
+        if (!this.spawnRunner(url, endpoint.port)) return;
         this.setHealth('ok');
         this.updateSourceStatus();
-        // No GStreamer pipeline — the runner handles HLS → UDP.
+        // No GStreamer pipeline — the runner feeds the fan-out sidecar.
     }
 
     async onStop(): Promise<void> {
-        // ProcessManager auto-kills the runner on module stop; just drop the ref.
+        // ProcessManager auto-kills the runner + sidecar on module stop; just drop the refs.
         this.runner = null;
+        this.fanout = null;
+        this.fanoutController = null;
         await super.onStop();
     }
 
     buildPipeline(): PipelineDescription | null {
         return null;
+    }
+
+    /** Bus fan-out commands go to our sidecar controller, not a gst runner
+     *  (there is none). */
+    getBusAttachTarget(): BusAttachTarget | null {
+        return this.fanoutController;
+    }
+
+    /**
+     * Spawn the GstUnixFd fan-out sidecar.
+     * @returns false when it could not be spawned (health already set).
+     */
+    private startFanout(port: number): boolean {
+        if (this.fanout) return true; // restart path — already up
+        if (!this.services?.processManager) {
+            this.setHealth('error', 'processManager service unavailable — cannot spawn fan-out');
+            return false;
+        }
+        const script = resolveFanoutScript();
+        if (!script) {
+            this.setHealth('error', 'unixfd-fanout.py not found — build the engine (pnpm build)');
+            return false;
+        }
+        this.fanoutController = new UnixFdFanoutController(
+            () => this.fanout,
+            // Every sidecar `ready` (first start and each autoRestart respawn):
+            // the controller has replayed its own desired edges; this reattach
+            // covers connections created while the module was down, which only
+            // the engine-side coordinator knows about.
+            () => {
+                if (this.services?.instanceId) {
+                    this.services.mediaRouter?.onProducerPlaying(this.services.instanceId);
+                }
+                this.restoreIdleHealth();
+            },
+        );
+        this.fanout = this.spawnRunnerProcess({
+            label: 'unixfd-fanout',
+            command: 'python3',
+            args: [script, '--ingest', busIngestSocketPath(port), '--caps', BUS_TS_CAPS],
+            autoRestart: true,
+            stdin: true,
+            onStdout: (line) => this.handleFanoutLine(line),
+            onStderr: (line) => this.log.warn({ src: 'unixfd-fanout' }, line),
+        });
+        return true;
+    }
+
+    private handleFanoutLine(line: string): void {
+        const msg = this.fanoutController?.handleLine(line);
+        if (!msg) return;
+        const stats = msg.stats as { clients?: number; drops?: Record<string, number> } | undefined;
+        if (stats) {
+            const drops = Object.values(stats.drops ?? {}).reduce((a, b) => a + b, 0);
+            this.setStatusData('bus', { consumers: stats.clients ?? 0, 'shed buffers': drops });
+        } else if (msg.event === 'error' || msg.event === 'warning') {
+            this.log.warn({ src: 'unixfd-fanout' }, String(msg.message ?? ''));
+        }
+    }
+
+    /** Re-assert the idle warning after a sidecar respawn set transient
+     *  crash/restart health — a URL-less module is 'waiting', not 'ok'. */
+    private restoreIdleHealth(): void {
+        if (this.running && !String(this.config.url ?? '').trim()) {
+            this.setHealth('warning', 'Waiting for HLS URL');
+        }
     }
 
     /**
@@ -194,16 +302,24 @@ export class HlsPlayerModule extends GstPluginBase {
         }
 
         await this.probe(url);
-        this.services.mediaRouter.assignUdpPort(this.services.instanceId); // idempotent
-        const endpoint = this.services.mediaRouter.getUdpEndpoint(this.services.instanceId);
+        // `probe` is an unbounded network fetch — the module can be stopped
+        // while it is in flight. Without this re-check we would spawn a runner
+        // into an ownership set the engine has already released, leaving it
+        // alive and auto-restarting with nothing tracking it.
+        if (!this.running) {
+            this.log.info('Module stopped during probe — not spawning runner');
+            return;
+        }
+        this.services.mediaRouter.assignBusChannel(this.services.instanceId); // idempotent
+        const endpoint = this.services.mediaRouter.getBusChannel(this.services.instanceId);
         if (!endpoint) return;
-        if (!this.spawnRunner(url, endpoint.host, endpoint.port)) return;
+        if (!this.spawnRunner(url, endpoint.port)) return;
         this.setHealth('ok');
         this.updateSourceStatus();
     }
 
     /** @returns false when the runner could not be spawned (health already set to error). */
-    private spawnRunner(url: string, host: string, port: number): boolean {
+    private spawnRunner(url: string, port: number): boolean {
         const runnerPath = resolveRunnerPath();
         if (!runnerPath) {
             this.setHealth(
@@ -216,16 +332,29 @@ export class HlsPlayerModule extends GstPluginBase {
             label: 'hls-pipe',
             command: process.execPath,
             args: [runnerPath],
-            env: { HLS_CONFIG: JSON.stringify(this.buildRunnerConfig(url, host, port)) },
+            env: { HLS_CONFIG: JSON.stringify(this.buildRunnerConfig(url, port)) },
             autoRestart: true,
             clearBadges: ['bitrate'],
             onStdout: (line) => this.parseStats(line),
             onStderr: (line) => this.log.info(line),
         });
+        // A clean exit means the runner ran out of playlist — the VOD window
+        // ended. That is a natural end of playback, not a fault: stop the
+        // module cleanly (no crash-restart, no respawn loop replaying the
+        // asset with a multi-second gap). Deliberate teardown paths don't
+        // reach here: module stop / URL relaunch destroy the process
+        // (`destroyed`), crashes exit non-zero, kills carry a signal.
+        const proc = this.runner;
+        proc.on('stopped', (code: number | null, signal: string | null) => {
+            if (proc.destroyed || !this.running || this.runner !== proc) return;
+            if (code === 0 && signal === null) {
+                this.requestSelfStop('Stream ended (playlist complete)');
+            }
+        });
         return true;
     }
 
-    private buildRunnerConfig(url: string, host: string, port: number): Record<string, unknown> {
+    private buildRunnerConfig(url: string, port: number): Record<string, unknown> {
         // Effective ABR bitrate cap = the tightest of: the explicit capBitrate
         // One "Quality" dropdown drives everything: resolveQuality maps it to an
         // internal quality + resolution ceiling, which becomes a bitrate cap via
@@ -240,8 +369,9 @@ export class HlsPlayerModule extends GstPluginBase {
         const caps = [explicitBps, resBps].filter((c) => c > 0);
         return {
             url,
-            host,
-            port,
+            // Egress descriptor — the runner writes paced TS to the fan-out
+            // sidecar's ingest socket.
+            sink: { kind: 'unixfd', ingestPath: busIngestSocketPath(port) },
             quality: resolved.quality,
             capBitrateBps: caps.length ? Math.min(...caps) : 0,
             abrPreset: (this.config.abrPreset as string) ?? 'default',

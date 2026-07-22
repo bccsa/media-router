@@ -22,7 +22,7 @@
                     "type": "array",
                     "maxItems": 8,
                     "default": [{ "name": "" }],
-                    "description": "Video input streams — \"+ Add\" creates another input port. Each name is broadcast in-band so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
+                    "description": "Video input streams — \"+ Add\" creates another input port. Each name is broadcast in-band (stream-info channel) so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -35,11 +35,25 @@
                     "type": "array",
                     "maxItems": 16,
                     "default": [{ "name": "" }],
-                    "description": "Audio input streams — \"+ Add\" creates another input port. Each name is broadcast in-band so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
+                    "description": "Audio input streams — \"+ Add\" creates another input port. Each name is broadcast in-band (stream-info channel) so a downstream demuxer labels its output; blank falls back to the connected source module's name.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" }
+                            "name": { "type": "string", "default": "", "description": "Stream name (optional)" },
+                            "language": {
+                                "type": "string",
+                                "default": "",
+                                "description": "ISO 639 language code (2/3-letter, e.g. en / eng / deu) written into the output PMT as this stream's language descriptor — the standard signalling every receiver understands. Blank passes the source stream's own language through unchanged. Applied at pipeline build — changing it restarts the muxer."
+                            },
+                            "offsetMs": {
+                                "type": "number",
+                                "default": 0,
+                                "minimum": -2000,
+                                "maximum": 2000,
+                                "x-step": 10,
+                                "x-unit": "ms",
+                                "description": "Lipsync offset for this audio input on the mux timeline. Negative advances audio — set to minus the measured audio-late skew to cancel a stable path delay with no added latency (costs ~|offset| of clipped audio at pipeline start). Re-measure after changing audio-path buffering. Applied at pad-link time — changing it restarts the muxer."
+                            }
                         }
                     },
                     "x-liveUpdatable": true
@@ -70,6 +84,12 @@
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",
+                    "x-liveUpdatable": false
+                },
+                "emitStreamInfo": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Broadcast the in-band stream-info channel (names + codec info for streams MPEG-TS can't signal natively) on the private metadata PID 0x1f0, with the PCR pinned to the first media stream. Natively-signalled data (codec stream types, language descriptors) is always on the wire regardless. Turn off only for strict external receivers that reject unknown private PIDs.",
                     "x-liveUpdatable": false
                 }
             }

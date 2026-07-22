@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MediaRouter } from './MediaRouter.js';
+import { busEdgeSocketPath } from '../plugins/busHelpers.js';
 import type { ModulePort } from '@media-router/shared-types';
 
 /** Helper to register a standard audio source + sink pair. */
@@ -218,13 +219,13 @@ describe('MediaRouter', () => {
         expect(router.getConnections()).toHaveLength(0);
     });
 
-    // --- getModuleUdpSource ---
+    // --- getModuleBusSource ---
 
-    it('getModuleUdpSource returns undefined when no MPEG-TS connection exists', () => {
-        expect(router.getModuleUdpSource('decoder')).toBeUndefined();
+    it('getModuleBusSource returns undefined when no MPEG-TS connection exists', () => {
+        expect(router.getModuleBusSource('decoder')).toBeUndefined();
     });
 
-    it('getModuleUdpSource finds upstream encoder for a decoder', async () => {
+    it('getModuleBusSource finds upstream encoder for a decoder', async () => {
         registerMpegtsPair(router);
 
         // Set up dependencies with a module getter that returns config + lifecycle
@@ -237,41 +238,109 @@ describe('MediaRouter', () => {
         router.setDependencies({} as any, mockModuleGetter);
 
         // Assign an encoder port
-        const endpoint = router.assignUdpPort('encoder');
+        const endpoint = router.assignBusChannel('encoder');
         expect(endpoint).not.toBeNull();
 
         // Create the MPEG-TS connection
         await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
 
-        const source = router.getModuleUdpSource('decoder');
+        const source = router.getModuleBusSource('decoder');
         expect(source).toBeDefined();
-        expect(source!.host).toBe('239.255.0.1');
         expect(source!.port).toBe(endpoint!.port);
         expect(source!.channels).toBe(2);
         expect(source!.connectionId).toBe('encoder:mpegts-out-decoder:mpegts-in');
+        // Consumer always reads its own per-edge fan-out socket.
+        expect(source!.socketPath).toBe(
+            busEdgeSocketPath(endpoint!.port, 'encoder:mpegts-out-decoder:mpegts-in'),
+        );
     });
 
-    it('getModuleUdpSource returns undefined when encoder has no UDP port', async () => {
+    it('getModuleBusSource(s) resolve audio/302m connections (TS-family bus type)', async () => {
+        router.registerPorts('atx', [
+            { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: 'PCM 302M' },
+        ]);
+        router.registerPorts('aout', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+        ]);
+        router.setDependencies({} as any, (id: string) =>
+            id === 'aout'
+                ? ({ config: {}, running: false, stop: vi.fn(), start: vi.fn() } as any)
+                : ({ config: {}, running: false } as any),
+        );
+        const ep = router.assignBusChannel('atx', 'out-0');
+        expect(ep).not.toBeNull();
+        await router.createConnection('atx', 'out-0', 'aout', 'audio-in');
+
+        const single = router.getModuleBusSource('aout');
+        expect(single).toBeDefined();
+        expect(single!.port).toBe(ep!.port);
+        expect(single!.streamType).toBe('audio/302m');
+        expect(single!.socketPath).toBe(
+            busEdgeSocketPath(ep!.port, 'atx:out-0-aout:audio-in'),
+        );
+
+        const all = router.getModuleBusSources('aout');
+        expect(all).toHaveLength(1);
+        expect(all[0].sinkPortId).toBe('audio-in');
+        expect(all[0].streamType).toBe('audio/302m');
+    });
+
+    it('updateChannelMap accepts audio/302m edges and exposes the map via getModuleBusSources', async () => {
+        router.registerPorts('atx', [
+            { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: 'PCM 302M' },
+        ]);
+        router.registerPorts('aout', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+        ]);
+        router.setDependencies({} as any, (id: string) =>
+            id === 'aout'
+                ? ({ config: {}, running: false, stop: vi.fn(), start: vi.fn() } as any)
+                : ({ config: {}, running: false } as any),
+        );
+        router.assignBusChannel('atx', 'out-0');
+        const connId = await router.createConnection('atx', 'out-0', 'aout', 'audio-in');
+
+        const map = [
+            { srcChannel: 0, dstChannel: 0, gain: 0.5 },
+            { srcChannel: 1, dstChannel: 0, gain: 0.5 },
+        ];
+        await router.updateChannelMap(connId, map);
+        expect(router.getModuleBusSources('aout')[0].channelMap).toEqual(map);
+    });
+
+    it('getModuleBusSource returns undefined when encoder has no bus channel', async () => {
         registerMpegtsPair(router);
 
         router.setDependencies({} as any, () => undefined);
         await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
 
-        // No encoder port assigned — should return undefined
-        expect(router.getModuleUdpSource('decoder')).toBeUndefined();
+        // No encoder channel assigned — should return undefined
+        expect(router.getModuleBusSource('decoder')).toBeUndefined();
     });
 
     it('createConnection rethrows when executor.execute throws — and removes the zombie connection', async () => {
         // Regression guard for the connection-ordering fix: applying a
         // child MPEG-TS connection before its parent races on the source's
-        // UDP-port assignment. ConnectionExecutor.executeUdp throws in that
+        // bus-channel assignment. MpegTsBusExecutor.execute throws in that
         // case; MediaRouter must surface that throw to ConnectionApplier so
         // the retry path (connectWithRetry / topoSortMpegtsConns) can react.
         // Previous behaviour was to swallow the error and silently delete
         // the connection, leaving the decoder stuck on warning.
         registerMpegtsPair(router);
 
-        // Sink module exists; source has no assigned UDP port → executeUdp throws.
+        // Sink module exists; source has no assigned bus channel → execute throws.
         const mockModuleGetter = vi.fn().mockImplementation((id: string) => {
             if (id === 'decoder')
                 return { config: {}, running: false, stop: vi.fn(), start: vi.fn() };
@@ -281,75 +350,74 @@ describe('MediaRouter', () => {
 
         await expect(
             router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in'),
-        ).rejects.toThrow(/has not assigned a UDP port/);
+        ).rejects.toThrow(/has not assigned a bus channel/);
 
         // Zombie connection must be removed — getConnections sees nothing.
         expect(router.getConnections()).toHaveLength(0);
     });
 
-    // --- assignUdpPort / getUdpEndpoint ---
+    // --- assignBusChannel / getBusChannel ---
 
-    it('assignUdpPort allocates a port with multicast address', () => {
-        const result = router.assignUdpPort('enc-1');
+    it('assignBusChannel allocates a channel port', () => {
+        const result = router.assignBusChannel('enc-1');
         expect(result).not.toBeNull();
-        expect(result!.host).toBe('239.255.0.1');
         expect(typeof result!.port).toBe('number');
     });
 
-    it('assignUdpPort returns same port for same module', () => {
-        const first = router.assignUdpPort('enc-1');
-        const second = router.assignUdpPort('enc-1');
+    it('assignBusChannel returns same port for same module', () => {
+        const first = router.assignBusChannel('enc-1');
+        const second = router.assignBusChannel('enc-1');
         expect(first).toEqual(second);
     });
 
-    it('getUdpEndpoint returns undefined for unallocated module', () => {
-        expect(router.getUdpEndpoint('unknown')).toBeUndefined();
+    it('getBusChannel returns undefined for unallocated module', () => {
+        expect(router.getBusChannel('unknown')).toBeUndefined();
     });
 
-    it('getUdpEndpoint returns endpoint after assignment', () => {
-        router.assignUdpPort('enc-1');
-        const endpoint = router.getUdpEndpoint('enc-1');
+    it('getBusChannel returns the channel after assignment', () => {
+        const assigned = router.assignBusChannel('enc-1');
+        const endpoint = router.getBusChannel('enc-1');
         expect(endpoint).toBeDefined();
-        expect(endpoint!.host).toBe('239.255.0.1');
+        expect(endpoint).toEqual({ port: assigned!.port });
     });
 
-    it('releaseUdpPort frees the port', () => {
-        router.assignUdpPort('enc-1');
-        router.releaseUdpPort('enc-1');
-        expect(router.getUdpEndpoint('enc-1')).toBeUndefined();
+    it('releaseBusChannel frees the port', () => {
+        router.assignBusChannel('enc-1');
+        router.releaseBusChannel('enc-1');
+        expect(router.getBusChannel('enc-1')).toBeUndefined();
     });
 
-    // --- per-port UDP allocation (multi-output mpeg-ts plugins) ---
+    // --- per-port bus-channel allocation (multi-output mpeg-ts plugins) ---
 
-    it('assignUdpPort with portId allocates a separate slot per output port', () => {
-        const a = router.assignUdpPort('demux-1', 'out-0');
-        const b = router.assignUdpPort('demux-1', 'out-1');
-        const primary = router.assignUdpPort('demux-1');
+    it('assignBusChannel with portId allocates a separate slot per output port', () => {
+        const a = router.assignBusChannel('demux-1', 'out-0');
+        const b = router.assignBusChannel('demux-1', 'out-1');
+        const primary = router.assignBusChannel('demux-1');
         expect(a).not.toEqual(b);
         expect(a).not.toEqual(primary);
         expect(b).not.toEqual(primary);
     });
 
-    it('getUdpEndpoint resolves per-port slot independently from the bare module key', () => {
-        router.assignUdpPort('demux-1', 'out-0');
-        expect(router.getUdpEndpoint('demux-1')).toBeUndefined();
-        expect(router.getUdpEndpoint('demux-1', 'out-0')).toBeDefined();
+    it('getBusChannel resolves per-port slot independently from the bare module key', () => {
+        router.assignBusChannel('demux-1', 'out-0');
+        expect(router.getBusChannel('demux-1')).toBeUndefined();
+        expect(router.getBusChannel('demux-1', 'out-0')).toBeDefined();
     });
 
-    it('releaseAllUdpPortsFor sweeps the bare slot and every per-port sub-slot', () => {
-        router.assignUdpPort('demux-1');
-        router.assignUdpPort('demux-1', 'out-0');
-        router.assignUdpPort('demux-1', 'out-1');
-        router.assignUdpPort('other-mod');
-        router.releaseAllUdpPortsFor('demux-1');
-        expect(router.getUdpEndpoint('demux-1')).toBeUndefined();
-        expect(router.getUdpEndpoint('demux-1', 'out-0')).toBeUndefined();
-        expect(router.getUdpEndpoint('demux-1', 'out-1')).toBeUndefined();
+    it('releaseAllBusChannelsFor sweeps the bare slot and every per-port sub-slot', () => {
+        router.assignBusChannel('demux-1');
+        router.assignBusChannel('demux-1', 'out-0');
+        router.assignBusChannel('demux-1', 'out-1');
+        router.assignBusChannel('other-mod');
+        router.releaseAllBusChannelsFor('demux-1');
+        expect(router.getBusChannel('demux-1')).toBeUndefined();
+        expect(router.getBusChannel('demux-1', 'out-0')).toBeUndefined();
+        expect(router.getBusChannel('demux-1', 'out-1')).toBeUndefined();
         // unrelated modules untouched
-        expect(router.getUdpEndpoint('other-mod')).toBeDefined();
+        expect(router.getBusChannel('other-mod')).toBeDefined();
     });
 
-    it('getModuleUdpSource prefers the per-port slot when the source has one allocated', async () => {
+    it('getModuleBusSource prefers the per-port slot when the source has one allocated', async () => {
         // Source advertises two muxed/mpegts outputs; sink has one input.
         router.registerPorts('demux-1', [
             { id: 'out-0', direction: 'output', streamType: 'muxed/mpegts', label: 'A' },
@@ -358,25 +426,25 @@ describe('MediaRouter', () => {
         router.registerPorts('player-1', [
             { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'In' },
         ]);
-        router.assignUdpPort('demux-1', 'out-0');
-        router.assignUdpPort('demux-1', 'out-1');
+        router.assignBusChannel('demux-1', 'out-0');
+        router.assignBusChannel('demux-1', 'out-1');
         await router.createConnection('demux-1', 'out-1', 'player-1', 'mpegts-in');
-        const src = router.getModuleUdpSource('player-1');
+        const src = router.getModuleBusSource('player-1');
         expect(src).toBeDefined();
         expect(src!.sourcePortId).toBe('out-1');
-        expect(src!.port).toBe(router.getUdpEndpoint('demux-1', 'out-1')!.port);
+        expect(src!.port).toBe(router.getBusChannel('demux-1', 'out-1')!.port);
     });
 
-    it('getModuleUdpSource falls back to module-level allocation for legacy single-port encoders', async () => {
+    it('getModuleBusSource falls back to module-level allocation for legacy single-port encoders', async () => {
         registerMpegtsPair(router);
-        router.assignUdpPort('encoder');
+        router.assignBusChannel('encoder');
         await router.createConnection('encoder', 'mpegts-out', 'decoder', 'mpegts-in');
-        const src = router.getModuleUdpSource('decoder');
+        const src = router.getModuleBusSource('decoder');
         expect(src).toBeDefined();
-        expect(src!.port).toBe(router.getUdpEndpoint('encoder')!.port);
+        expect(src!.port).toBe(router.getBusChannel('encoder')!.port);
     });
 
-    it('getModuleUdpSources returns one entry per connected muxed/mpegts source', async () => {
+    it('getModuleBusSources returns one entry per connected muxed/mpegts source', async () => {
         // Two encoders feeding one muxer.
         router.registerPorts('enc-a', [
             { id: 'mpegts-out', direction: 'output', streamType: 'muxed/mpegts', label: 'A' },
@@ -388,11 +456,11 @@ describe('MediaRouter', () => {
             { id: 'in-0', direction: 'input', streamType: 'muxed/mpegts', label: 'In0' },
             { id: 'in-1', direction: 'input', streamType: 'muxed/mpegts', label: 'In1' },
         ]);
-        router.assignUdpPort('enc-a');
-        router.assignUdpPort('enc-b');
+        router.assignBusChannel('enc-a');
+        router.assignBusChannel('enc-b');
         await router.createConnection('enc-a', 'mpegts-out', 'mux-1', 'in-0');
         await router.createConnection('enc-b', 'mpegts-out', 'mux-1', 'in-1');
-        const sources = router.getModuleUdpSources('mux-1');
+        const sources = router.getModuleBusSources('mux-1');
         expect(sources).toHaveLength(2);
         expect(sources.map((s) => s.sinkPortId).sort()).toEqual(['in-0', 'in-1']);
     });
@@ -493,9 +561,9 @@ describe('MediaRouter', () => {
 
     // --- invalidateOutgoingPwLinks (consumer-restart cascade) ---
 
-    it('invalidateOutgoingPwLinks drops the source pw-link so it re-executes, but leaves mpegts/udp edges', async () => {
+    it('invalidateOutgoingPwLinks drops the source pw-link so it re-executes, but leaves mpegts/bus edges', async () => {
         // Regression guard for the mid-chain restart cascade: when a consumer
-        // (decoder) is stopped/started to pick up a producer's udpsrc it
+        // (decoder) is stopped/started to pick up a producer's bus ingress it
         // recreates its null-sink, orphaning its downstream pw-link. The stale
         // handle must be dropped so a re-apply re-links against the new node —
         // otherwise createConnection's "already exists" skip leaves the encoder
@@ -542,9 +610,9 @@ describe('MediaRouter', () => {
             { id: 'mpegts-in', direction: 'input', streamType: 'muxed/mpegts', label: 'TsIn' },
         ]);
 
-        router.assignUdpPort('enc');
+        router.assignBusChannel('enc');
         await router.createConnection('dec', 'audio-out', 'enc', 'audio-in'); // pw-link handle
-        await router.createConnection('enc', 'mpegts-out', 'srt', 'mpegts-in'); // udp handle
+        await router.createConnection('enc', 'mpegts-out', 'srt', 'mpegts-in'); // bus handle
         expect(router.getConnections()).toHaveLength(2);
 
         // Decoder restarted mid-chain → its outgoing pw-link handle is stale.
@@ -557,7 +625,7 @@ describe('MediaRouter', () => {
         ]);
         expect(pipeWire.pwUnlinkByName).toHaveBeenCalled();
 
-        // The mpegts/udp edge sourced by 'enc' is left intact — udp handles
+        // The mpegts/bus edge sourced by 'enc' is left intact — bus handles
         // survive a source restart, so re-executing them would just bounce the
         // sink for nothing.
         await router.invalidateOutgoingPwLinks('enc');

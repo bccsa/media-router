@@ -135,3 +135,4 @@ graphify-out/
 # Python bytecode (gst-pipeline-runner imports during spikes/tests)
 __pycache__/
 *.pyc
+.env.local

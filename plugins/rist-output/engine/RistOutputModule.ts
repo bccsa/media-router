@@ -1,10 +1,9 @@
 import {
     GstPluginBase,
-    isMulticast,
+    buildBusSrc,
     type PipelineDescription,
-    type ModuleServices,
+    type RistRunnerConfig,
 } from '@media-router/engine';
-import type { ManagedProcess } from '@media-router/engine';
 
 interface RistLink {
     mode: 'listener' | 'caller';
@@ -14,107 +13,40 @@ interface RistLink {
     cname: string;
 }
 
+/** `name=` of the appsink the runner drains into its librist sender. */
+const RIST_APPSINK = 'ristsink';
+
 /**
  * RIST Output plugin.
  *
- * Receives local MPEG-TS via UDP multicast and sends it over the network
- * via RIST using the `ristsender` CLI tool (spawned via ProcessManager).
- * Pure MPEG-TS passthrough.
+ * Reads local MPEG-TS off the inter-module bus as a normal gst consumer
+ * (per-edge unixfdsrc under the fan-out bus, udpsrc on the legacy udp bus)
+ * and sends it over the network via RIST — librist driven in-process by the
+ * pipeline runner (ctypes binding), fed from this module's appsink. No
+ * intermediate UDP relay hop, unlike the old ristsender CLI which could only
+ * read the bus through its own loopback UDP socket.
  *
- * Uses CLI tools for full feature support: per-link weight, cname,
- * advanced profiles, encryption, NPD.
+ * librist (not the gst ristsink element, which is Simple-Profile/RTP only) is
+ * kept for full feature support: per-link weight, cname, main/advanced
+ * profiles, encryption, NPD.
  */
 export class RistOutputModule extends GstPluginBase {
-    private sender: ManagedProcess | null = null;
-    private lastStats: Record<string, string | number> = {};
     private peerLastSeen = new Map<number, number>(); // peerId → timestamp
     private peerCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
     async onStart(): Promise<void> {
-        // Get the UDP source from the connected encoder/srt-input
-        const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
-        if (!udpSource) {
-            this.log.info('No MPEG-TS source connected — idle');
-            return;
-        }
+        await super.onStart();
 
-        // The loopback bus is multicast: join the group on lo (a bare udp://
-        // multicast input would join on the default route's NIC, not lo).
-        const inputUrl = isMulticast(udpSource.host)
-            ? `udp://${udpSource.host}:${udpSource.port}?miface=lo`
-            : `udp://${udpSource.host}:${udpSource.port}`;
-
-        // Build RIST output URLs from links config
-        const links = (this.config.links as RistLink[]) ?? [
-            { mode: 'caller', address: 'localhost', port: 5004, weight: 50, cname: 'link1' },
-        ];
-        const outputUrls = links
-            .map((link) => {
-                const params: string[] = [];
-                if (link.weight !== undefined) params.push(`weight=${link.weight}`);
-                if (link.cname) params.push(`cname=${link.cname}`);
-                // RIST URL: rist://@host:port for listener, rist://host:port for caller
-                const addr =
-                    link.mode === 'listener'
-                        ? `@${link.address || '0.0.0.0'}`
-                        : link.address || 'localhost';
-                return `rist://${addr}:${link.port}${params.length ? '?' + params.join('&') : ''}`;
-            })
-            .join(',');
-
-        // Build CLI args
-        const args = ['-i', inputUrl, '-o', outputUrls];
+        const links = this.links();
         const profile = (this.config.profile as number) ?? 1;
-        const buffer = (this.config.buffer as number) ?? 1000;
-        const secret = (this.config.secret as string) ?? '';
-        const encType = (this.config.encryptionType as number) ?? 0;
-        const statsInterval = (this.config.statsInterval as number) ?? 1000;
-        const npd = (this.config.nullPacketDeletion as boolean) ?? false;
-
-        args.push('-p', String(profile));
-        args.push('-b', String(buffer));
-        args.push('-S', String(statsInterval));
-        args.push('-v', '6');
-        if (secret) {
-            args.push('-s', secret);
-            args.push('-e', String(encType));
-        }
-        if (npd) args.push('-n');
-
-        // Set running state immediately (no GStreamer pipeline — CLI is our process)
-        this.running = true;
-        this.ready = true;
-        this.setHealth('ok');
-
-        // Spawn ristsender via ProcessManager (shared health wiring:
-        // restarting → warning, exhausted/spawn-fail → error, badges cleared)
-        if (this.services?.processManager) {
-            this.sender = this.spawnRunnerProcess({
-                label: 'ristsender',
-                command: 'ristsender',
-                args,
-                autoRestart: true,
-                clearBadges: ['quality', 'connections'],
-                onStderr: (line) => {
-                    if (line.includes('-stats"')) this.parseStats(line);
-                    // Non-stats lines are logged by ManagedProcess at warn level
-                },
-            });
-            this.sender.on('started', () => this.setHealth('ok'));
-        }
-
-        // Update status display
         this.setStatusData('connection', {
             profile: ['simple', 'main', 'advanced'][profile] ?? 'main',
             linkCount: links.length,
-            encrypted: secret ? 'Yes' : 'No',
+            encrypted: (this.config.secret as string) ? 'Yes' : 'No',
         });
 
         // Periodic cleanup of stale peers (detect disconnects even when no new stats arrive)
         this.peerCleanupTimer = setInterval(() => this.cleanupStalePeers(), 2000);
-
-        // Don't call super.onStart() — no GStreamer pipeline needed
     }
 
     async onStop(): Promise<void> {
@@ -122,15 +54,57 @@ export class RistOutputModule extends GstPluginBase {
             clearInterval(this.peerCleanupTimer);
             this.peerCleanupTimer = null;
         }
-        this.sender = null;
-        this.lastStats = {};
         this.peerLastSeen.clear();
         await super.onStop();
     }
 
     buildPipeline(_config: Record<string, unknown>): PipelineDescription | null {
-        // No GStreamer pipeline — ristsender CLI handles the UDP → RIST conversion
-        return null;
+        // Bus source from the connected producer (per-consumer edge socket
+        // under unixfd — same resolution as every other bus consumer).
+        const instanceId = this.services?.instanceId ?? '';
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
+        if (!udpSource) {
+            this.log.info('No MPEG-TS source connected — idle');
+            return null;
+        }
+
+        // appsink properties (bounded/dropping/unsynced) are applied by the
+        // runner when it wires librist — the string only names the element.
+        const pipeline = [
+            buildBusSrc({
+                port: udpSource.port,
+                socketPath: udpSource.socketPath,
+            }),
+            `appsink name=${RIST_APPSINK}`,
+        ].join(' ! ');
+
+        const rist: RistRunnerConfig = {
+            role: 'sender',
+            urls: this.links().map(buildRistUrl),
+            profile: (this.config.profile as number) ?? 1,
+            buffer: (this.config.buffer as number) ?? 1000,
+            secret: (this.config.secret as string) || undefined,
+            encType: (this.config.encryptionType as number) || undefined,
+            npd: (this.config.nullPacketDeletion as boolean) ?? false,
+            statsInterval: (this.config.statsInterval as number) ?? 1000,
+            appElement: RIST_APPSINK,
+        };
+
+        return { pipeline, restartOnError: true, rist };
+    }
+
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel === 'rist:stats') {
+            this.applyStats(payload as Record<string, any>);
+        }
+    }
+
+    private links(): RistLink[] {
+        return (
+            (this.config.links as RistLink[]) ?? [
+                { mode: 'caller', address: 'localhost', port: 5004, weight: 50, cname: 'link1' },
+            ]
+        );
     }
 
     private cleanupStalePeers(): void {
@@ -158,68 +132,70 @@ export class RistOutputModule extends GstPluginBase {
         }
     }
 
-    private parseStats(line: string): void {
-        // RIST CLI outputs one JSON line per peer per stats interval
-        const jsonStart = line.indexOf('{');
-        if (jsonStart < 0) return;
-        try {
-            const json = JSON.parse(line.substring(jsonStart));
-            const peer = json?.['sender-stats']?.peer;
-            if (!peer?.stats) return;
+    /** Render a librist sender-stats payload (same JSON the CLI printed —
+     *  one object per peer per stats interval). */
+    private applyStats(json: Record<string, any>): void {
+        const peer = json?.['sender-stats']?.peer;
+        if (!peer?.stats) return;
 
-            const s = peer.stats;
-            const peerId = peer.id ?? 0;
-            const cname = peer.cname || `Link ${peerId}`;
-            const sectionId = `peer-${peerId}`;
+        const s = peer.stats;
+        const peerId = peer.id ?? 0;
+        const cname = peer.cname || `Link ${peerId}`;
+        const sectionId = `peer-${peerId}`;
 
-            // Per-link stats
-            this.setStatusData(sectionId, {
-                quality: typeof s.quality === 'number' ? s.quality : 0,
-                sent: Number(s.sent ?? 0),
-                retransmitted: Number(s.retransmitted ?? 0),
-                bandwidth: typeof s.bandwidth === 'number' ? `${s.bandwidth} kbps` : '—',
-                rtt:
-                    typeof s.avg_rtt === 'number'
-                        ? `${s.avg_rtt.toFixed(2)}`
-                        : String(s.rtt ?? '—'),
-            });
+        // Per-link stats
+        this.setStatusData(sectionId, {
+            quality: typeof s.quality === 'number' ? s.quality : 0,
+            sent: Number(s.sent ?? 0),
+            retransmitted: Number(s.retransmitted ?? 0),
+            bandwidth: typeof s.bandwidth === 'number' ? `${s.bandwidth} kbps` : '—',
+            rtt: typeof s.avg_rtt === 'number' ? `${s.avg_rtt.toFixed(2)}` : String(s.rtt ?? '—'),
+        });
 
-            // Dynamic section per peer
-            const peerFields = [
-                { key: 'quality', label: 'Quality', unit: '%' },
-                { key: 'sent', label: 'Packets Sent' },
-                { key: 'retransmitted', label: 'Retransmitted' },
-                { key: 'bandwidth', label: 'Bandwidth' },
-                { key: 'rtt', label: 'RTT', unit: 'ms' },
+        // Dynamic section per peer
+        const peerFields = [
+            { key: 'quality', label: 'Quality', unit: '%' },
+            { key: 'sent', label: 'Packets Sent' },
+            { key: 'retransmitted', label: 'Retransmitted' },
+            { key: 'bandwidth', label: 'Bandwidth' },
+            { key: 'rtt', label: 'RTT', unit: 'ms' },
+        ];
+
+        // Ensure this peer's section exists in dynamic sections
+        const existing = this.dynamicStatusSections.find((sec) => sec.id === sectionId);
+        if (!existing) {
+            this.dynamicStatusSections = [
+                ...this.dynamicStatusSections,
+                { id: sectionId, label: cname || `Link ${peerId}`, fields: peerFields },
             ];
-
-            // Ensure this peer's section exists in dynamic sections
-            const existing = this.dynamicStatusSections.find((sec) => sec.id === sectionId);
-            if (!existing) {
-                this.dynamicStatusSections = [
-                    ...this.dynamicStatusSections,
-                    { id: sectionId, label: cname || `Link ${peerId}`, fields: peerFields },
-                ];
-            }
-
-            // Track connected peers with timestamp
-            this.peerLastSeen.set(peerId, Date.now());
-            this.cleanupStalePeers();
-
-            // Update badges
-            this.setBadge('quality', {
-                icon: 'signal',
-                text: `${s.quality ?? 0}%`,
-                color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444',
-            });
-            const peerCount = this.peerLastSeen.size;
-            this.setBadge('connections', {
-                icon: 'link',
-                text: `${peerCount}`,
-                color: peerCount > 0 ? '#10b981' : '#6b7280',
-            });
-        } catch {
-            /* not a stats line */
         }
+
+        // Track connected peers with timestamp
+        this.peerLastSeen.set(peerId, Date.now());
+        this.cleanupStalePeers();
+
+        // Update badges
+        this.setBadge('quality', {
+            icon: 'signal',
+            text: `${s.quality ?? 0}%`,
+            color: s.quality >= 90 ? '#10b981' : s.quality >= 50 ? '#f59e0b' : '#ef4444',
+        });
+        const peerCount = this.peerLastSeen.size;
+        this.setBadge('connections', {
+            icon: 'link',
+            text: `${peerCount}`,
+            color: peerCount > 0 ? '#10b981' : '#6b7280',
+        });
     }
+}
+
+/** rist:// URL for one link — per-link params (weight, cname) stay in the URL. */
+function buildRistUrl(link: RistLink): string {
+    const params: string[] = [];
+    if (link.weight !== undefined) params.push(`weight=${link.weight}`);
+    if (link.cname) params.push(`cname=${link.cname}`);
+    // RIST URL: rist://@host:port for listener, rist://host:port for caller
+    const addr =
+        link.mode === 'listener' ? `@${link.address || '0.0.0.0'}` : link.address || 'localhost';
+    return `rist://${addr}:${link.port}${params.length ? '?' + params.join('&') : ''}`;
 }

@@ -7,6 +7,7 @@ import {
     bitrateBadge,
     resolveImpl,
     probeEncoderAvailability,
+    probeGstElement,
     applyEncoderAvailabilityToManifest,
     type CodecId,
     type H264Profile,
@@ -60,7 +61,7 @@ export class TranscoderModule extends GstPluginBase {
         getBytes: async () => {
             if (!this.running || this.sinkNames.length === 0) return undefined;
             const served = await Promise.all(
-                this.sinkNames.map((name) => this.getElementProperty(name, 'bytes-served')),
+                this.sinkNames.map((name) => this.readBusSinkBytes(name)),
             );
             if (served.some((v) => typeof v !== 'number')) return undefined;
             return Object.fromEntries(this.sinkNames.map((name, i) => [name, served[i] as number]));
@@ -71,9 +72,19 @@ export class TranscoderModule extends GstPluginBase {
     /** Runtime availability map — populated by `initManifest` after probing. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
 
+    /** Hardware scaler availability (vapostproc / v4l2convert), probed alongside
+     *  the encoders. Renditions on a hardware encoder impl get their scale stage
+     *  offloaded to the matching hardware scaler when it's installed. */
+    private static hwScalers: { va: boolean; v4l2: boolean } = { va: false, v4l2: false };
+
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
+        const [availability, vapost, v4l2conv] = await Promise.all([
+            probeEncoderAvailability(ENCODER_ELEMENTS),
+            probeGstElement('vapostproc'),
+            probeGstElement('v4l2convert'),
+        ]);
         TranscoderModule.availableImpls = availability;
+        TranscoderModule.hwScalers = { va: vapost, v4l2: v4l2conv };
         applyEncoderAvailabilityToManifest(manifest, availability);
     }
 
@@ -85,6 +96,11 @@ export class TranscoderModule extends GstPluginBase {
     /** Exposed for tests. */
     static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
         TranscoderModule.availableImpls = availability;
+    }
+
+    /** Exposed for tests. */
+    static setHwScalers(hwScalers: { va: boolean; v4l2: boolean }): void {
+        TranscoderModule.hwScalers = hwScalers;
     }
 
     /** One MPEG-TS input + one MPEG-TS output per configured rendition. */
@@ -109,7 +125,7 @@ export class TranscoderModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         if (!router) return null;
 
-        const upstream = router.getModuleUdpSource(instanceId);
+        const upstream = router.getModuleBusSource(instanceId);
         if (!upstream) {
             this.setHealth('warning', 'No upstream MPEG-TS source connected');
             return null;
@@ -139,6 +155,16 @@ export class TranscoderModule extends GstPluginBase {
         const globalSceneCut = Number.isFinite(rawSceneCut)
             ? Math.min(100, Math.max(0, rawSceneCut))
             : 40;
+        // HRD/CPB depth (seconds of the rate cap). Bounds worst-case bursts —
+        // above all scene-cut keyframes — so a fixed-rate link can deliver
+        // every frame near its deadline. 1 s = classic vbv-bufsize default;
+        // lower it when the delivery path has little headroom over the
+        // stream rate (measured: 0.4 s keeps a 5 Mbps 1080p50 rendition's
+        // IDRs deliverable over a ~2x-headroom RIST path).
+        const rawCpb = Number(config.cpbSeconds);
+        const globalCpbSeconds = Number.isFinite(rawCpb)
+            ? Math.min(2, Math.max(0.1, rawCpb))
+            : 1;
 
         // Resolve each rendition's effective encoder settings (override ??
         // global) and its concrete impl. The impl is resolved PER rendition
@@ -165,33 +191,42 @@ export class TranscoderModule extends GstPluginBase {
                 speedPreset: r.speedPreset ?? globalSpeedPreset,
                 h264Profile: r.h264Profile ?? globalH264Profile,
                 sceneCut: r.sceneCut ?? globalSceneCut,
+                cpbSeconds: r.cpbSeconds ?? globalCpbSeconds,
             };
             const portId = outputPortId(i);
-            const ep = router.assignUdpPort(instanceId, portId);
+            const ep = router.assignBusChannel(instanceId, portId);
             if (!ep) {
                 this.setHealth('error', `UDP port pool exhausted while allocating ${portId}`);
                 return null;
             }
-            outputs.push({ portId, host: ep.host, port: ep.port, rendition: r, encode });
+            outputs.push({ portId, port: ep.port, rendition: r, encode });
         }
 
         const framerate = (config.framerate as number) ?? 50;
         const gopFrames = (config.gopFrames as number) ?? 50;
         const bufferMs = (config.bufferMs as number) ?? 200;
         const decodeThreads = config.cpuDecodeThreading === 'single' ? 'single' : 'multi';
+        // Validated against the known set like the encoder enums above, so a
+        // malformed config can't splice into the gst-launch string.
+        const deinterlace =
+            config.deinterlace === 'force' || config.deinterlace === 'off'
+                ? config.deinterlace
+                : 'auto';
         const result = buildPipeline({
-            input: { host: upstream.host, port: upstream.port },
+            input: { port: upstream.port, socketPath: upstream.socketPath },
             outputs,
             framerate,
             gopFrames,
             bufferMs,
             decodeThreads,
+            deinterlace,
+            hwScalers: TranscoderModule.hwScalers,
         });
         if (!result) return null;
 
         this.sinkNames = result.sinkNames;
         this.renditions = renditions;
-        this.setStatusData('input', { host: upstream.host, port: upstream.port });
+        this.setStatusData('input', { channel: upstream.port });
         // Headline codec/impl reflect what actually runs: the shared value when
         // every rendition resolves to the same one, else 'mixed'. Per-rendition
         // overrides are flagged inline in the renditions summary. (Derived from

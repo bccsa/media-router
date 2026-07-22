@@ -42,8 +42,10 @@ onMounted(async () => {
     }
 });
 
-const categories = ['protocol', 'codec', 'processing', 'utility'];
+const categories = ['input', 'output', 'protocol', 'codec', 'processing', 'utility'];
 const categoryLabels: Record<string, string> = {
+    input: 'Input',
+    output: 'Output',
     protocol: 'Protocol',
     codec: 'Codec',
     processing: 'Processing',
@@ -64,6 +66,12 @@ const groupedPlugins = computed(() => {
         const items = filteredPlugins.value.filter((p) => p.category === cat);
         if (items.length > 0) groups[cat] = items;
     }
+    // Unknown categories get their own trailing groups so new plugin
+    // categories never silently vanish from the palette.
+    for (const p of filteredPlugins.value) {
+        if (categories.includes(p.category)) continue;
+        (groups[p.category] ??= []).push(p);
+    }
     return groups;
 });
 
@@ -79,11 +87,13 @@ function addModule() {
 function portColor(st: string) {
     return st === 'audio/pcm'
         ? 'var(--port-audio-pcm)'
-        : st === 'muxed/mpegts'
-          ? 'var(--port-muxed-mpegts)'
-          : st === 'video/raw'
-            ? 'var(--port-video-raw)'
-            : '#6b7280';
+        : st === 'audio/302m'
+          ? '#06b6d4'
+          : st === 'muxed/mpegts'
+            ? 'var(--port-muxed-mpegts)'
+            : st === 'video/raw'
+              ? 'var(--port-video-raw)'
+              : '#6b7280';
 }
 </script>
 

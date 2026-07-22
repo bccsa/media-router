@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ConnectionExecutor } from './ConnectionExecutor.js';
 import { PcmAudioExecutor } from './PcmAudioExecutor.js';
-import { MpegTsUdpExecutor } from './MpegTsUdpExecutor.js';
+import { MpegTsBusExecutor } from './MpegTsBusExecutor.js';
 import { StreamTypeExecutorRegistry, makeConnLabel } from './StreamTypeExecutor.js';
 import type { Connection, ActiveHandle } from './MediaRouter.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -51,22 +51,22 @@ function makeMockPipeWire(): {
 describe('ConnectionExecutor', () => {
     let pw: ReturnType<typeof makeMockPipeWire>;
     let modules: Map<string, ModuleInstance>;
-    let udpPorts: Map<string, number>;
+    let busChannels: Map<string, number>;
     let executor: ConnectionExecutor;
 
     beforeEach(() => {
         pw = makeMockPipeWire();
         modules = new Map();
-        udpPorts = new Map();
+        busChannels = new Map();
         const moduleGetter = (id: string) => modules.get(id);
-        const getUdpPort = (id: string) => udpPorts.get(id);
+        const getUdpPort = (id: string) => busChannels.get(id);
         const connLabel = makeConnLabel((id) => id.toUpperCase());
         const registry = new StreamTypeExecutorRegistry();
         registry.register(
             new PcmAudioExecutor(pw as unknown as PipeWireManager, moduleGetter, connLabel),
         );
         registry.register(
-            new MpegTsUdpExecutor(moduleGetter, getUdpPort, '239.0.0.1', connLabel),
+            new MpegTsBusExecutor(moduleGetter, getUdpPort, connLabel),
         );
         executor = new ConnectionExecutor(registry);
     });
@@ -111,18 +111,18 @@ describe('ConnectionExecutor', () => {
             expect(pw.pwLink).toHaveBeenCalledTimes(2);
         });
 
-        it('dispatches muxed/mpegts to UDP', async () => {
+        it('dispatches muxed/mpegts to the bus', async () => {
             const sinkMod = makeMockModule();
             modules.set('sink-mod', sinkMod);
-            udpPorts.set('src-mod', 5004);
+            busChannels.set('src-mod', 5004);
 
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
             const result = await executor.execute(conn);
 
             expect(result).toEqual({
                 connectionId: conn.id,
-                type: 'udp',
-                udpPort: 5004,
+                type: 'bus',
+                busChannel: 5004,
             });
         });
     });
@@ -399,20 +399,20 @@ describe('ConnectionExecutor', () => {
         });
     });
 
-    // --- executeUdp ---
+    // --- MpegTsBusExecutor.execute ---
 
-    describe('executeUdp (muxed/mpegts)', () => {
+    describe('bus execute (muxed/mpegts)', () => {
         it('returns null when decoder module is missing', async () => {
-            udpPorts.set('src-mod', 5004);
+            busChannels.set('src-mod', 5004);
             const result = await executor.execute(makeConnection({ streamType: 'muxed/mpegts' }));
             expect(result).toBeNull();
         });
 
-        it('throws when encoder has no assigned port — caller (ConnectionApplier) retries once the encoder is up', async () => {
+        it('throws when producer has no assigned bus channel — caller (ConnectionApplier) retries once the producer is up', async () => {
             modules.set('sink-mod', makeMockModule());
             await expect(
                 executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
-            ).rejects.toThrow(/has not assigned a UDP port/);
+            ).rejects.toThrow(/has not assigned a bus channel/);
         });
 
         function makeMockProducer(overrides: Partial<ModuleInstance> = {}): ModuleInstance {
@@ -428,10 +428,10 @@ describe('ConnectionExecutor', () => {
             } as Partial<ModuleInstance>);
         }
 
-        it('restarts a running producer whose declared port has no UDP allocation yet, then connects', async () => {
+        it('restarts a running producer whose declared port has no bus allocation yet, then connects', async () => {
             const producer = makeMockProducer({
                 start: vi.fn(async () => {
-                    udpPorts.set('src-mod', 5004);
+                    busChannels.set('src-mod', 5004);
                 }),
             });
             modules.set('src-mod', producer);
@@ -441,7 +441,11 @@ describe('ConnectionExecutor', () => {
 
             expect(producer.stop).toHaveBeenCalled();
             expect(producer.start).toHaveBeenCalled();
-            expect(result).toEqual({ connectionId: 'src:out-sink:in', type: 'udp', udpPort: 5004 });
+            expect(result).toEqual({
+                connectionId: 'src:out-sink:in',
+                type: 'bus',
+                busChannel: 5004,
+            });
         });
 
         it('does not restart a producer that does not declare the port — throws for the retry path', async () => {
@@ -451,7 +455,7 @@ describe('ConnectionExecutor', () => {
 
             await expect(
                 executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
-            ).rejects.toThrow(/has not assigned a UDP port/);
+            ).rejects.toThrow(/has not assigned a bus channel/);
             expect(producer.stop).not.toHaveBeenCalled();
         });
 
@@ -464,7 +468,7 @@ describe('ConnectionExecutor', () => {
 
             await expect(
                 executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
-            ).rejects.toThrow(/has not assigned a UDP port/);
+            ).rejects.toThrow(/has not assigned a bus channel/);
             expect(producer.stop).not.toHaveBeenCalled();
         });
 
@@ -479,7 +483,7 @@ describe('ConnectionExecutor', () => {
 
             await expect(
                 executor.execute(makeConnection({ streamType: 'muxed/mpegts' })),
-            ).rejects.toThrow(/has not assigned a UDP port/);
+            ).rejects.toThrow(/has not assigned a bus channel/);
         });
 
         it('restarts the producer at most once per connection across retries', async () => {
@@ -491,15 +495,15 @@ describe('ConnectionExecutor', () => {
             modules.set('sink-mod', makeMockModule());
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
 
-            await expect(executor.execute(conn)).rejects.toThrow(/has not assigned a UDP port/);
-            await expect(executor.execute(conn)).rejects.toThrow(/has not assigned a UDP port/);
+            await expect(executor.execute(conn)).rejects.toThrow(/has not assigned a bus channel/);
+            await expect(executor.execute(conn)).rejects.toThrow(/has not assigned a bus channel/);
             expect(producer.stop).toHaveBeenCalledTimes(1);
         });
 
         it('stops and restarts a running decoder', async () => {
             const sinkMod = makeMockModule({ running: true });
             modules.set('sink-mod', sinkMod);
-            udpPorts.set('src-mod', 5004);
+            busChannels.set('src-mod', 5004);
 
             await executor.execute(makeConnection({ streamType: 'muxed/mpegts' }));
 
@@ -510,7 +514,7 @@ describe('ConnectionExecutor', () => {
         it('starts a non-running decoder without stopping first', async () => {
             const sinkMod = makeMockModule({ running: false });
             modules.set('sink-mod', sinkMod);
-            udpPorts.set('src-mod', 5004);
+            busChannels.set('src-mod', 5004);
 
             await executor.execute(makeConnection({ streamType: 'muxed/mpegts' }));
 
@@ -525,14 +529,14 @@ describe('ConnectionExecutor', () => {
                 }),
             });
             modules.set('sink-mod', sinkMod);
-            udpPorts.set('src-mod', 5004);
+            busChannels.set('src-mod', 5004);
 
             const result = await executor.execute(makeConnection({ streamType: 'muxed/mpegts' }));
 
             expect(result).toEqual({
                 connectionId: 'src:out-sink:in',
-                type: 'udp',
-                udpPort: 5004,
+                type: 'bus',
+                busChannel: 5004,
             });
         });
     });
@@ -613,11 +617,11 @@ describe('ConnectionExecutor', () => {
             expect(pw.pwUnlinkAllBetween).not.toHaveBeenCalled();
         });
 
-        it('restarts running decoder on UDP teardown (skipModuleRestart=false)', async () => {
+        it('restarts running decoder on bus teardown (skipModuleRestart=false)', async () => {
             const sinkMod = makeMockModule({ running: true });
             modules.set('sink-mod', sinkMod);
 
-            const handle: ActiveHandle = { connectionId: 'c1', type: 'udp', udpPort: 5004 };
+            const handle: ActiveHandle = { connectionId: 'c1', type: 'bus', busChannel: 5004 };
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
 
             await executor.teardown(handle, conn, false);
@@ -626,11 +630,11 @@ describe('ConnectionExecutor', () => {
             expect(sinkMod.start).toHaveBeenCalled();
         });
 
-        it('does not restart decoder on UDP teardown when skipModuleRestart=true', async () => {
+        it('does not restart decoder on bus teardown when skipModuleRestart=true', async () => {
             const sinkMod = makeMockModule({ running: true });
             modules.set('sink-mod', sinkMod);
 
-            const handle: ActiveHandle = { connectionId: 'c1', type: 'udp', udpPort: 5004 };
+            const handle: ActiveHandle = { connectionId: 'c1', type: 'bus', busChannel: 5004 };
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
 
             await executor.teardown(handle, conn, true);
@@ -643,7 +647,7 @@ describe('ConnectionExecutor', () => {
             const sinkMod = makeMockModule({ running: false });
             modules.set('sink-mod', sinkMod);
 
-            const handle: ActiveHandle = { connectionId: 'c1', type: 'udp', udpPort: 5004 };
+            const handle: ActiveHandle = { connectionId: 'c1', type: 'bus', busChannel: 5004 };
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
 
             await executor.teardown(handle, conn, false);
@@ -653,7 +657,7 @@ describe('ConnectionExecutor', () => {
         });
 
         it('skips decoder restart when conn is undefined', async () => {
-            const handle: ActiveHandle = { connectionId: 'c1', type: 'udp', udpPort: 5004 };
+            const handle: ActiveHandle = { connectionId: 'c1', type: 'bus', busChannel: 5004 };
 
             await executor.teardown(handle, undefined, false);
 
@@ -662,7 +666,7 @@ describe('ConnectionExecutor', () => {
         });
 
         it('skips decoder restart when sink module is not found', async () => {
-            const handle: ActiveHandle = { connectionId: 'c1', type: 'udp', udpPort: 5004 };
+            const handle: ActiveHandle = { connectionId: 'c1', type: 'bus', busChannel: 5004 };
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
 
             // sink-mod not in modules map
@@ -680,7 +684,7 @@ describe('ConnectionExecutor', () => {
             });
             modules.set('sink-mod', sinkMod);
 
-            const handle: ActiveHandle = { connectionId: 'c1', type: 'udp', udpPort: 5004 };
+            const handle: ActiveHandle = { connectionId: 'c1', type: 'bus', busChannel: 5004 };
             const conn = makeConnection({ streamType: 'muxed/mpegts' });
 
             // Should not throw — best effort
@@ -713,7 +717,7 @@ describe('ConnectionExecutor', () => {
 
         it('works without displayNameResolver', async () => {
             const moduleGetter = (id: string) => modules.get(id);
-            const getUdpPort = (id: string) => udpPorts.get(id);
+            const getUdpPort = (id: string) => busChannels.get(id);
             const connLabel = makeConnLabel(); // no resolver
             const registry = new StreamTypeExecutorRegistry();
             registry.register(
@@ -724,7 +728,7 @@ describe('ConnectionExecutor', () => {
                 ),
             );
             registry.register(
-                new MpegTsUdpExecutor(moduleGetter, getUdpPort, '239.0.0.1', connLabel),
+                new MpegTsBusExecutor(moduleGetter, getUdpPort, '239.0.0.1', connLabel),
             );
             const execNoResolver = new ConnectionExecutor(registry);
 

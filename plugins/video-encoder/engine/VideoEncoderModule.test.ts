@@ -282,16 +282,16 @@ describe('VideoEncoderModule', () => {
     describe('buildPipeline', () => {
         function makeModule() {
             const module = new VideoEncoderModule();
-            const assignUdpPort = vi.fn(() => ({ host: '239.255.0.1', port: 5000 }));
-            const getUdpEndpoint = vi.fn(() => ({ host: '239.255.0.1', port: 5000 }));
+            const assignBusChannel = vi.fn(() => ({ port: 5000 }));
+            const getBusChannel = vi.fn(() => ({ port: 5000 }));
             (module as any).services = {
                 instanceId: 'video-enc-1',
-                mediaRouter: { assignUdpPort, getUdpEndpoint },
+                mediaRouter: { assignBusChannel, getBusChannel },
             };
             return module;
         }
 
-        it('produces a valid H.264 V4L2 pipeline with udpsink + mpegtsmux', () => {
+        it('produces a valid H.264 V4L2 pipeline ending in the bus fan-out tee', () => {
             VideoEncoderModule.setAvailableImpls({
                 h264: ['v4l2', 'software'],
                 h265: [],
@@ -313,10 +313,34 @@ describe('VideoEncoderModule', () => {
             expect(desc!.pipeline).toContain('v4l2src device=/dev/video-nonexistent-for-test');
             expect(desc!.pipeline).toContain('v4l2h264enc name=venc0');
             expect(desc!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
+            // Bus egress: pinned TS caps + per-consumer fan-out tee. The
+            // unixfdsink branches are attached at runtime by the coordinator;
+            // allow-not-linked lets the encoder run with zero consumers.
             expect(desc!.pipeline).toContain(
-                'udpsink name=usink host=239.255.0.1 port=5000 multicast-iface=lo auto-multicast=true buffer-size=4194304 sync=false',
+                'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                    'tee name=busout_5000 allow-not-linked=true',
             );
+            expect(desc!.pipeline).not.toContain('udpsink');
+            expect((module as any).busSinkName).toBe('busout_5000');
             expect(desc!.restartOnError).toBe(true);
+        });
+
+        it('falls back to a fakesink when no bus channel endpoint is assigned', () => {
+            VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
+            const module = makeModule();
+            (module as any).services.mediaRouter.getBusChannel.mockReturnValue(undefined);
+            const desc = module.buildPipeline({
+                device: '/dev/video-nonexistent-for-test',
+                codec: 'h264',
+                encoderImpl: 'v4l2',
+                resolution: '1920x1080',
+                framerate: 30,
+                bitrate: 4000,
+                keyframeInterval: 60,
+            });
+            expect(desc!.pipeline).toContain('fakesink name=usink sync=false');
+            expect(desc!.pipeline).not.toContain('tee name=busout_');
+            expect((module as any).busSinkName).toBeUndefined();
         });
 
         it('inserts a leaky source-side queue (100ms) so encoder stalls do not back-pressure v4l2src into kernel-level frame drops', () => {
@@ -344,7 +368,7 @@ describe('VideoEncoderModule', () => {
             expect(idxQueue).toBeLessThan(idxConvert);
         });
 
-        it('connects mpegtsmux straight to udpsink with no leaky queue between — a leaky queue here would drop mid-stream UDP buffers and corrupt decode', () => {
+        it('connects mpegtsmux straight to the bus egress with no leaky queue between — a drop there would slice the TS mid-stream and corrupt decode', () => {
             VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
             const module = makeModule();
             const desc = module.buildPipeline({
@@ -356,7 +380,7 @@ describe('VideoEncoderModule', () => {
                 bitrate: 4000,
                 keyframeInterval: 60,
             });
-            expect(desc!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! udpsink/);
+            expect(desc!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! capsfilter/);
         });
 
         it('returns null + sets health warning when no device is configured', () => {
@@ -398,7 +422,7 @@ describe('VideoEncoderModule', () => {
             const module = new VideoEncoderModule() as any;
             module.services = {
                 instanceId: 'video-enc-1',
-                mediaRouter: { getUdpEndpoint: vi.fn(() => ({ host: '239.255.0.1', port: 5000 })) },
+                mediaRouter: { getBusChannel: vi.fn(() => ({ port: 5000 })) },
             };
             module.config = { codec: 'h264', resolution: '1920x1080', framerate: 30, bitrate: 6000 };
             module.setStatusData = vi.fn();
@@ -417,6 +441,19 @@ describe('VideoEncoderModule', () => {
                 'encoder',
                 expect.objectContaining({ bitrate: 6000 }),
             );
+        });
+
+        it('reports the assigned bus channel in the bus stats section', () => {
+            const module = makeStatsModule();
+            module.updateStatusData();
+            expect(module.setStatusData).toHaveBeenCalledWith('bus', { channel: 5000 });
+        });
+
+        it('reports channel 0 when no bus channel is assigned', () => {
+            const module = makeStatsModule();
+            module.services.mediaRouter.getBusChannel.mockReturnValue(undefined);
+            module.updateStatusData();
+            expect(module.setStatusData).toHaveBeenCalledWith('bus', { channel: 0 });
         });
 
         it('puts the live rate in the popup and a bitrate badge on the face', () => {

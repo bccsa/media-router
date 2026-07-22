@@ -27,6 +27,25 @@ export interface PortInfo {
      * connections always remain valid.
      */
     hideWhenUnconnected?: boolean;
+    /**
+     * Structured stream identity for compact pin display (see
+     * `utils/portDisplay.ts`): one value shown by priority — in-band name →
+     * ISO 639 language → decimal PID — plus a codec chip. `label` stays the
+     * full descriptive string (fallback + stats detail).
+     */
+    streamInfo?: PortStreamInfo;
+}
+
+/** Stream identity a port can carry (splitter/demuxer PID ports, muxer
+ *  stream inputs). All fields optional — absent means unknown. */
+export interface PortStreamInfo {
+    /** In-band / operator-set stream name (KLV channel). */
+    name?: string;
+    /** ISO 639 language code (e.g. `nor`). */
+    language?: string;
+    pid?: number;
+    codec?: string;
+    media?: string;
 }
 
 export interface StatusSectionDef {

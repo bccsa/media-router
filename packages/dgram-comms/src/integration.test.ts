@@ -294,4 +294,109 @@ describe('Server + Client integration', () => {
         expect(s.connected).toBe(false);
         udp.close();
     });
+
+    const startServer = async (password: string, port = 0) =>
+        new Promise<{ s: Server; port: number }>((resolve) => {
+            const s = new Server({
+                port,
+                encryptionKeys: { 'engine-x': password },
+            });
+            s['udpSocket'].bind(port, '127.0.0.1', () => {
+                s['udpSocket'].on('message', (msg: Buffer, rinfo: unknown) => {
+                    s['onPacket'](msg, rinfo as Parameters<(typeof s)['onPacket']>[1]);
+                });
+                resolve({ s, port: s['udpSocket'].address().port });
+            });
+        });
+
+    it('a reset from a restarted server drives immediate reconnect (not the watchdog)', async () => {
+        // A fresh Server on the same port has forgotten every socketID. The
+        // client's next packet on the stale ID must draw an encrypted 'reset'
+        // and re-handshake within ~1-2s — far below its own watchdog window
+        // (~12s here) which was previously the only way to notice.
+        const password = 'reset-secret';
+
+        const first = await startServer(password);
+        server = first.s;
+        client = new Client({
+            clientId: 'engine-x',
+            paths: [{ host: '127.0.0.1', port: first.port }],
+            encryptionKey: password,
+            connectionTimeout: 8000, // watchdog death ≥ 12s — must not be the recovery path
+        });
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('initial connect timeout')), 3000);
+            client.on('connected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+
+        // Replace the server on the same port — all socketIDs forgotten.
+        await server.stop();
+        const second = await startServer(password, first.port);
+        server = second.s;
+
+        const disconnected = new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('no disconnect from reset')), 4000);
+            client.once('disconnected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+
+        // Client still believes it's connected; this send carries the stale
+        // socketID and must trigger the reset.
+        client.send('probe', { n: 1 });
+
+        await disconnected;
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('no reconnect after reset')), 5000);
+            client.once('connected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+        expect(client.connected).toBe(true);
+    }, 15000);
+
+    it('handshake survives lossy connected replies on the same Client instance', async () => {
+        // Drop the first 3 'connected' replies. The 1s path-level connect
+        // retries (same session nonce → server re-acks the same socketID)
+        // plus the guaranteed-delivery resends must complete the handshake
+        // without any client rebuild — the old 5s fresh-client teardown
+        // discarded exactly this state on lossy WANs.
+        const password = 'lossy-secret';
+
+        const first = await startServer(password);
+        server = first.s;
+
+        const origSend = server['transport'].send.bind(server['transport']);
+        let dropped = 0;
+        vi.spyOn(server['transport'], 'send').mockImplementation(
+            (buf: Buffer, port: number, address: string, reliable: boolean) => {
+                if (dropped < 3 && buf.toString().includes('"type":"connected"')) {
+                    dropped++;
+                    return 0;
+                }
+                return origSend(buf, port, address, reliable);
+            },
+        );
+
+        client = new Client({
+            clientId: 'engine-x',
+            paths: [{ host: '127.0.0.1', port: first.port }],
+            encryptionKey: password,
+            connectionTimeout: 2000,
+        });
+
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('handshake did not survive loss')), 8000);
+            client.on('connected', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+        expect(dropped).toBe(3);
+    }, 12000);
 });

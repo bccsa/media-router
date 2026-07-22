@@ -1,0 +1,60 @@
+{
+    "name": "@media-router/plugin-n1-mixer-302m",
+    "version": "2.0.0",
+    "private": true,
+    "description": "N-1 mix-minus audio mixer on the 302M bus — each output gets all inputs except its own paired input",
+    "mediaRouter": {
+        "pluginId": "n1-mixer-302m",
+        "displayName": "N-1 Audio Mixer (302M)",
+        "description": "Broadcast mix-minus on the 302M bus: each output hears all inputs except its own return, timeline-aligned",
+        "color": "#a855f7",
+        "icon": "shuffle",
+        "category": "processing",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "pairCount": {
+                    "type": "number",
+                    "minimum": 2,
+                    "maximum": 16,
+                    "default": 4,
+                    "description": "Number of input/output pairs"
+                },
+                "mixLatencyMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 50,
+                    "maximum": 2000,
+                    "x-widget": "slider",
+                    "x-step": 25,
+                    "x-unit": "ms",
+                    "description": "Mix latency budget — how long each input mix waits for lagging sources before emitting; starved sources are silence-filled."
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "routing",
+                "label": "N-1 Routing",
+                "fields": [
+                    { "key": "pairCount", "label": "Pairs" },
+                    { "key": "connectedInputs", "label": "Connected Inputs" },
+                    { "key": "activeOutputs", "label": "Active Outputs" }
+                ]
+            }
+        ],
+        "engine": "./engine/N1Mixer302mModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

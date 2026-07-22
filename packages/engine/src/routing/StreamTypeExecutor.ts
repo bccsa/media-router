@@ -39,8 +39,20 @@ export class StreamTypeExecutorRegistry {
     private readonly byStreamType = new Map<string, StreamTypeExecutor>();
     private readonly byHandleType = new Map<string, StreamTypeExecutor>();
 
-    register(executor: StreamTypeExecutor): void {
+    /**
+     * Register an executor for its own `streamType` (+ optional aliases).
+     *
+     * `extraStreamTypes` maps additional stream types onto the SAME instance —
+     * used for `audio/302m`, which rides the MPEG-TS transport unchanged.
+     * Never register a second instance of the same executor class for an
+     * alias instead: teardown dispatches by `handleType` (one slot), so
+     * execute/teardown would split across instances and any per-instance
+     * state (e.g. MpegTsBusExecutor's materialize-attempt tracking) would
+     * desync.
+     */
+    register(executor: StreamTypeExecutor, extraStreamTypes: string[] = []): void {
         this.byStreamType.set(executor.streamType, executor);
+        for (const st of extraStreamTypes) this.byStreamType.set(st, executor);
         this.byHandleType.set(executor.handleType, executor);
     }
 

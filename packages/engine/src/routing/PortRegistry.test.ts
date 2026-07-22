@@ -135,6 +135,41 @@ describe('PortRegistry', () => {
             expect(registry.validateCompatibility(src, sink).compatible).toBe(true);
         });
 
+        it('allows the TS family both ways (audio/302m is valid MPEG-TS)', () => {
+            const mk = (streamType: 'audio/302m' | 'muxed/mpegts', direction: 'input' | 'output'): ModulePort => ({
+                id: direction === 'output' ? 'out' : 'in',
+                direction,
+                streamType,
+                label: 'p',
+            });
+            // 302M rendition → SRT/RIST/UDP transport input
+            expect(
+                registry.validateCompatibility(mk('audio/302m', 'output'), mk('muxed/mpegts', 'input'))
+                    .compatible,
+            ).toBe(true);
+            // srt/rist-input TS → 302M mixing pin
+            expect(
+                registry.validateCompatibility(mk('muxed/mpegts', 'output'), mk('audio/302m', 'input'))
+                    .compatible,
+            ).toBe(true);
+        });
+
+        it('rejects audio/pcm ↔ audio/302m (PipeWire pins are not TS pins)', () => {
+            const src: ModulePort = {
+                id: 'out',
+                direction: 'output',
+                streamType: 'audio/pcm',
+                label: 'Out',
+            };
+            const sink: ModulePort = {
+                id: 'in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+            };
+            expect(registry.validateCompatibility(src, sink).compatible).toBe(false);
+        });
+
         it('rejects different stream types', () => {
             const src: ModulePort = {
                 id: 'out',

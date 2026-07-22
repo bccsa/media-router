@@ -121,7 +121,7 @@ export class PcmAudioExecutor implements StreamTypeExecutor {
         // has no PW_SETTLE_MS wait (ModuleLifecycle wires it directly). A silent
         // null instead makes createConnection drop the connection record and the
         // caller log a false "Connected" — the edge is then gone with no retry
-        // until a manual restart. Same asymmetry MpegTsUdpExecutor already
+        // until a manual restart. Same asymmetry MpegTsBusExecutor already
         // avoids by throwing on a not-yet-assigned UDP port.
         if (srcPorts.length === 0) {
             throw new Error(

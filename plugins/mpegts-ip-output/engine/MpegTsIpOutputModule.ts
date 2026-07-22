@@ -1,6 +1,6 @@
 import {
     GstPluginBase,
-    buildUdpSrc,
+    buildBusSrc,
     buildNetUdpSink,
     buildBackpressureQueue,
     isMulticastAddr,
@@ -66,10 +66,11 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         const encapsulation = (config.encapsulation as string) ?? 'raw';
         const iface = (config.interface as string) ?? '';
         const ttl = (config.ttl as number) ?? 16;
+        const packetsPerDatagram = (config.packetsPerDatagram as number) ?? 0;
         const destinations = this.resolveDestinations(config);
 
         const instanceId = this.services?.instanceId ?? '';
-        const udpSource = this.services?.mediaRouter?.getModuleUdpSource(instanceId);
+        const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!udpSource) {
             this.log.info('No MPEG-TS source connected — idle');
             return null;
@@ -88,9 +89,21 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         // gaps / macroblocking it can never recover (plain MPEG-TS/UDP has no
         // retransmit). Don't drop on the sender when the wire isn't dropping.
         const head = [
-            buildUdpSrc({ name: 'busin', host: udpSource.host, port: udpSource.port }),
+            buildBusSrc({
+                name: 'busin',
+                port: udpSource.port,
+                socketPath: udpSource.socketPath,
+            }),
             buildBackpressureQueue(200),
         ];
+        // Passthrough by default (packetsPerDatagram=0): forward bus datagrams
+        // as-is, no TS parsing. Only re-chunk to a specific wire size when forced
+        // (>= 1) — parsing/re-chunking a lossy live stream can scramble the
+        // picture, and for a same-size passthrough it is needless. In RTP mode
+        // rtpmp2tpay governs the final datagram size regardless.
+        if (packetsPerDatagram >= 1) {
+            head.push(`tsparse alignment=${packetsPerDatagram} set-timestamps=false`);
+        }
         if (encapsulation === 'rtp') head.push('rtpmp2tpay');
 
         const makeSink = (dest: Destination, name: string): string =>

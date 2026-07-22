@@ -2,13 +2,13 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
-    buildUdpSink,
+    buildBusSink,
+    busTeeName,
     gstInspectMaxChannels,
     type PipelineDescription,
     type ModuleServices,
     type ThroughputSample,
 } from '@media-router/engine';
-
 /**
  * Audio Encoder plugin.
  *
@@ -31,6 +31,10 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     protected liveUpdatableParams = ['bitrate', 'volume', 'audioEnabled'];
+
+    /** Bus egress element to poll for throughput, resolved at build time:
+     *  the fan-out `tee` (busTeeName). */
+    private busSinkName: string | undefined;
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
         await super.onInit(config, services);
@@ -71,8 +75,7 @@ export class AudioEncoderModule extends GstPluginBase {
     });
 
     private async readSinkBytes(): Promise<number | undefined> {
-        const served = await this.getElementProperty('usink', 'bytes-served');
-        return typeof served === 'number' ? served : undefined;
+        return this.busSinkName ? this.readBusSinkBytes(this.busSinkName) : undefined;
     }
 
     private publishThroughput(sample: ThroughputSample): void {
@@ -85,7 +88,7 @@ export class AudioEncoderModule extends GstPluginBase {
 
     private updateStatusData(): void {
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
+        const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
         this.setStatusData('encoder', {
             codec: (this.config.codec as string) ?? 'opus',
             bitrate: (this.config.bitrate as number) ?? 128,
@@ -93,9 +96,8 @@ export class AudioEncoderModule extends GstPluginBase {
             sampleRate: (this.config.sampleRate as number) ?? 48000,
             channels: (this.config.channels as number) ?? 2,
         });
-        this.setStatusData('udp', {
-            host: endpoint?.host ?? '—',
-            port: endpoint?.port ?? 0,
+        this.setStatusData('bus', {
+            channel: endpoint?.port ?? 0,
         });
     }
 
@@ -143,8 +145,13 @@ export class AudioEncoderModule extends GstPluginBase {
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const gstVolume = (volumePct / 100).toFixed(2);
 
-        // Read from our null-sink's monitor
-        const source = `pulsesrc device=${this.pwNodeName}.monitor`;
+        // Read from our null-sink's monitor. `srcBufferMs` pins the pulsesrc
+        // ring size (previously the implicit gst default of 200 ms) — this
+        // ring is part of the standing audio latency on re-encode paths;
+        // lower only during a measured tuning pass (overrun/crackle risk).
+        const srcBufferUs =
+            Math.max(40, Math.min(1000, Number(config.srcBufferMs ?? 200))) * 1000;
+        const source = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=${srcBufferUs}`;
         const format = `audioconvert ! audioresample ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
         const vol = `volume name=vol volume=${gstVolume}`;
         const level =
@@ -154,12 +161,11 @@ export class AudioEncoderModule extends GstPluginBase {
         // and added the same queue in commit 767f531).
         const encoderQueue = 'queue max-size-time=50000000 leaky=2 flush-on-eos=true';
 
-        // Encoder always gets a UDP multicast port assigned at startup.
+        // Encoder always gets a bus channel assigned at startup.
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.assignUdpPort(instanceId);
-        const udpSink = endpoint
-            ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
-            : 'fakesink name=usink sync=false';
+        const endpoint = this.services?.mediaRouter?.assignBusChannel(instanceId);
+        this.busSinkName = endpoint ? busTeeName(endpoint.port) : undefined;
+        const udpSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
 
         const tsAlignment = (config.tsAlignment as number) ?? 7;
         let tail: string;

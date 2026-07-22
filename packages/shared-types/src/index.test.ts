@@ -9,7 +9,7 @@ import type {
     ControlIpcMessage,
     PluginManifest,
 } from './index';
-import { applyJsonPatch, coerceArray } from './index';
+import { applyJsonPatch, coerceArray, streamTypesCompatible } from './index';
 
 describe('shared-types', () => {
     it('StreamType accepts valid values', () => {
@@ -173,5 +173,27 @@ describe('coerceArray', () => {
         // Defensive: only recover items that look like array elements.
         const corrupted = { '-': { id: 'a' }, garbage: 'string', also: null };
         expect(coerceArray(corrupted)).toEqual([{ id: 'a' }]);
+    });
+});
+
+describe('streamTypesCompatible', () => {
+    it('accepts exact matches', () => {
+        expect(streamTypesCompatible('audio/pcm', 'audio/pcm')).toBe(true);
+        expect(streamTypesCompatible('muxed/mpegts', 'muxed/mpegts')).toBe(true);
+        expect(streamTypesCompatible('audio/302m', 'audio/302m')).toBe(true);
+    });
+
+    it('accepts the TS family in both directions (302M is valid MPEG-TS)', () => {
+        // 302M rendition → SRT/RIST/IP transport pins
+        expect(streamTypesCompatible('audio/302m', 'muxed/mpegts')).toBe(true);
+        // srt/rist input → 302M mixing pins (fails soft downstream on wrong content)
+        expect(streamTypesCompatible('muxed/mpegts', 'audio/302m')).toBe(true);
+    });
+
+    it('rejects everything else (audio/pcm is NOT TS-family)', () => {
+        expect(streamTypesCompatible('audio/pcm', 'audio/302m')).toBe(false);
+        expect(streamTypesCompatible('audio/302m', 'audio/pcm')).toBe(false);
+        expect(streamTypesCompatible('audio/pcm', 'muxed/mpegts')).toBe(false);
+        expect(streamTypesCompatible('video/raw', 'muxed/mpegts')).toBe(false);
     });
 });

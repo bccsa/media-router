@@ -5,6 +5,7 @@ import {
     encodeNack,
     decodeNack,
 } from './fragmentation.js';
+import { dnsCache } from './dnsCache.js';
 
 interface SentEntry {
     packets: Buffer[];
@@ -89,9 +90,17 @@ export class FragmentTransport {
      * messageId — the caller uses it to `release` on ACK or `resend` on timeout.
      */
     send(buf: Buffer, port: number, address: string, reliable: boolean): number {
+        // Resolve a hostname once per message, not per datagram — dgram.send()
+        // dns.lookup()s a name on EVERY call, each occupying a libuv threadpool
+        // slot, and at real send rates (keepalives + one send per fragment) the
+        // pool saturates and datagrams queue behind DNS for tens of seconds
+        // (see DnsCache). Retaining the IP also makes the NACK endpoint check
+        // below workable for hostname configs: rinfo.address is always an IP
+        // and could never equal a stored hostname.
+        const ip = dnsCache.resolve(address);
         const { messageId, packets } = fragmentWithId(buf);
         for (const packet of packets) {
-            this.udpSocket.send(packet, port, address);
+            this.udpSocket.send(packet, port, ip);
         }
         if (reliable) {
             const prev = this.sent.get(messageId);
@@ -99,7 +108,7 @@ export class FragmentTransport {
             this.sent.set(messageId, {
                 packets,
                 port,
-                address,
+                address: ip,
                 expiry: setTimeout(() => this.sent.delete(messageId), this.retainMs),
             });
         }
@@ -110,8 +119,9 @@ export class FragmentTransport {
     resend(messageId: number, port: number, address: string): void {
         const entry = this.sent.get(messageId);
         if (!entry) return;
+        const ip = dnsCache.resolve(address);
         for (const packet of entry.packets) {
-            this.udpSocket.send(packet, port, address);
+            this.udpSocket.send(packet, port, ip);
         }
     }
 

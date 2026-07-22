@@ -2,7 +2,8 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
-    buildUdpSink,
+    buildBusSink,
+    busTeeName,
     listV4l2Devices,
     ENCODER_ELEMENTS,
     buildEncoderBranch,
@@ -39,6 +40,10 @@ export class VideoEncoderModule extends GstPluginBase {
         getBytes: () => this.readSinkBytes(),
         publish: (sample) => this.publishThroughput(sample),
     });
+
+    /** Bus egress element to poll for throughput, resolved at build time:
+     *  the fan-out `tee` (busTeeName). */
+    private busSinkName: string | undefined;
 
     /** Runtime availability map — populated by `initManifest` after probing each encoder element. */
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
@@ -84,7 +89,7 @@ export class VideoEncoderModule extends GstPluginBase {
 
     async onStart(): Promise<void> {
         const instanceId = this.services?.instanceId ?? '';
-        this.services?.mediaRouter?.assignUdpPort(instanceId);
+        this.services?.mediaRouter?.assignBusChannel(instanceId);
 
         await super.onStart();
         this.updateStatusData();
@@ -142,18 +147,16 @@ export class VideoEncoderModule extends GstPluginBase {
         });
 
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
-        const udpSink = endpoint
-            ? buildUdpSink({ name: 'usink', host: endpoint.host, port: endpoint.port })
-            : 'fakesink name=usink sync=false';
+        const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
+        this.busSinkName = endpoint ? busTeeName(endpoint.port) : undefined;
+        const udpSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
 
-        // No leaky queue between mpegtsmux and udpsink: any drop here is a
-        // mid-stream UDP buffer (~1316 B = 7 TS packets) and corrupts decode
-        // at the receiver. The 2 MB kernel UDP send buffer absorbs typical
-        // bursts on its own. The source→encoder boundary still has its own
-        // queue placed by `buildV4l2Source` immediately after v4l2src, where
-        // it's needed to protect the V4L2 kernel ringbuffer from filling up
-        // under back-pressure.
+        // No leaky queue between mpegtsmux and the bus tee: any drop here is a
+        // mid-stream TS slice and corrupts decode at the receiver. The
+        // source→encoder boundary still has its own queue placed by
+        // `buildV4l2Source` immediately after v4l2src, where it's needed to
+        // protect the V4L2 kernel ringbuffer from filling up under
+        // back-pressure.
         const pipeline = `${source} ! ${encoder} ! mpegtsmux name=mux latency=0 alignment=7 ! ${udpSink}`;
 
         return {
@@ -205,16 +208,14 @@ export class VideoEncoderModule extends GstPluginBase {
             bitrate,
         });
         const instanceId = this.services?.instanceId ?? '';
-        const endpoint = this.services?.mediaRouter?.getUdpEndpoint(instanceId);
-        this.setStatusData('udp', {
-            host: endpoint?.host ?? '—',
-            port: endpoint?.port ?? 0,
+        const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
+        this.setStatusData('bus', {
+            channel: endpoint?.port ?? 0,
         });
     }
 
     private async readSinkBytes(): Promise<number | undefined> {
-        const served = await this.getElementProperty('usink', 'bytes-served');
-        return typeof served === 'number' ? served : undefined;
+        return this.busSinkName ? this.readBusSinkBytes(this.busSinkName) : undefined;
     }
 
     private publishThroughput(sample: ThroughputSample): void {

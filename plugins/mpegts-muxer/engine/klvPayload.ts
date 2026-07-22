@@ -4,9 +4,17 @@
  *
  * Kept free of GStreamer / engine imports so it's unit-testable with plain
  * inputs. The runner pushes the JSON this produces onto the fixed metadata PID
- * on a ~1 s carousel; the demuxer parses it back (see the demuxer's
- * `klvNames.ts`). This is a wire protocol crossing version boundaries during
- * rolling fleet upgrades — resist adding fields beyond `pid`/`media`/`name`.
+ * on a carousel; the demuxer parses it back (see the demuxer's `klvNames.ts`).
+ * This is a wire protocol crossing version boundaries during rolling fleet
+ * upgrades — the version stays 1 and new fields are OPTIONAL (v1 receivers
+ * read `pid`/`name` and ignore extras).
+ *
+ * Layering rule: KLV carries ONLY what MPEG-TS cannot express natively.
+ * Freeform names always; `codec`/`channels`/`rate` solely for streams with no
+ * native TS signalling (WebVTT, unknown/private payloads — `nativeTs === false`
+ * from the engine's `capsStreamInfo`). Natively-signalled codecs (h264, aac,
+ * 302M via BSSD, …) and language (ISO 639 descriptor) are already on the wire
+ * in the PMT and are never duplicated here.
  */
 
 /** Wire-format version. Receivers ignore unknown versions (plan section 3). */
@@ -20,6 +28,11 @@ export interface KlvStreamEntry {
     media: KlvStreamMedia;
     /** Operator-facing label. */
     name: string;
+    /** Codec id — present ONLY for codecs MPEG-TS cannot signal natively
+     *  (see the layering rule in the file header). */
+    codec?: string;
+    channels?: number;
+    rate?: number;
 }
 
 export interface KlvPayload {
@@ -48,6 +61,13 @@ export interface NamedStreamInput {
     name?: string | null;
     /** `sourceModuleId` from the engine's connection records (D4 fallback). */
     sourceModuleId?: string | null;
+    /**
+     * Codec identity discovered from the stream's actual pad caps at runtime
+     * (the engine's `capsStreamInfo` result). The builder applies the layering
+     * rule: codec/channels/rate reach the wire only when `nativeTs` is false —
+     * natively-signalled codecs are already fully expressed in the PMT.
+     */
+    discovered?: { codec?: string; nativeTs: boolean; channels?: number; rate?: number };
 }
 
 /**
@@ -73,7 +93,22 @@ export function resolveStreamName(input: NamedStreamInput): string {
 export function buildKlvPayload(inputs: NamedStreamInput[]): KlvPayload {
     const streams = [...inputs]
         .sort((a, b) => a.pid - b.pid)
-        .map((i) => ({ pid: i.pid, media: i.media, name: resolveStreamName(i) }));
+        .map((i) => {
+            const entry: KlvStreamEntry = {
+                pid: i.pid,
+                media: i.media,
+                name: resolveStreamName(i),
+            };
+            // Layering rule (file header): codec info only for streams the TS
+            // wire can't describe itself.
+            const d = i.discovered;
+            if (d?.codec && !d.nativeTs) {
+                entry.codec = d.codec;
+                if (d.channels) entry.channels = d.channels;
+                if (d.rate) entry.rate = d.rate;
+            }
+            return entry;
+        });
     return { v: KLV_PAYLOAD_VERSION, streams };
 }
 

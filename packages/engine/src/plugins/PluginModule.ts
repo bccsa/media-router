@@ -1,5 +1,6 @@
 import type { PluginManifest } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
+import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
@@ -92,6 +93,13 @@ export interface PluginModule {
     }>;
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess?(): GstChildProcess | null;
+    /**
+     * Where the BusFanoutCoordinator sends this producer's unixfd
+     * `bus_attach`/`bus_detach` commands. Defaults to the gst child process
+     * (GstPluginBase); a non-GStreamer producer overrides it with its own
+     * fan-out controller (hls-player → UnixFdFanoutController).
+     */
+    getBusAttachTarget?(): BusAttachTarget | null;
     /** Count of running child processes owned by this module. */
     getProcessCount?(): number;
 }
@@ -188,6 +196,86 @@ export interface PipelineDescription {
      * `level` element and keys its gain envelope off `level:sclevel`.
      */
     busReports?: BusReport[];
+    /**
+     * librist half of a RIST module pipeline. When set, the runner drives
+     * librist in-process (ctypes binding, `librist.py`): a `receiver` pushes
+     * every RIST payload into the named appsrc; a `sender` drains the named
+     * appsink into librist. This replaces the ristreceiver/ristsender CLI
+     * relay and its loopback UDP hop, so RIST modules ride the normal bus
+     * transport (tee fan-out under unixfd) like any other gst module. librist
+     * stats arrive on the `rist:stats` plugin-event channel (same JSON shape
+     * the CLI printed on stderr).
+     */
+    rist?: RistRunnerConfig;
+    /**
+     * TS-splitter half of a ts-splitter module pipeline. When set, the runner
+     * drains the named appsink (muxed MPEG-TS), routes 188-byte packets per
+     * PID in a single pass (`ts_split.py`), and pushes each PID's single-ES
+     * SPTS — PAT/PMT re-injected, master PCR copied onto non-PCR-owner
+     * outputs — into that output's named appsrc, one push per input buffer.
+     * Packet-level pass-through: no PES assembly, so output cadence equals
+     * ingest cadence (the mpegts-demuxer's hold-and-burst does not occur).
+     * Source PMT discovery arrives on the `tssplit:discovered` plugin-event
+     * channel as `{ streams: [{pid, streamType}], pcrPid }`.
+     */
+    tsSplit?: TsSplitRunnerConfig;
+}
+
+/** One per-PID SPTS output of the ts-splitter runner core. */
+export interface TsSplitOutput {
+    /** TS PID routed to this output. */
+    pid: number;
+    /** `name=` of the appsrc in `pipeline` receiving this PID's SPTS. */
+    appsrc: string;
+    /** Persisted PMT stream_type — seeds the output PMT until live discovery corrects it. */
+    streamType?: number;
+    /**
+     * Bus port of this output's egress tee (`busout_<port>`). Under unixfd
+     * the runner gates production on the tee having at least one attached
+     * fan-out edge — an unwired pin costs nothing (no PSI rewrite, no join,
+     * no appsrc push; packets discarded at the routing lookup). Omitted, or
+     * when the tee doesn't exist (UDP transport), the output is always
+     * produced.
+     */
+    port?: number;
+}
+
+/** ts-splitter runner config — see PipelineDescription.tsSplit. */
+export interface TsSplitRunnerConfig {
+    /** `name=` of the appsink in `pipeline` carrying the muxed TS input. */
+    inputAppsink: string;
+    /** transport_stream_id stamped into each output's rebuilt PAT (default 1). */
+    tsId?: number;
+    /** May be empty — the runner still runs source discovery on the input. */
+    outputs: TsSplitOutput[];
+}
+
+/** librist runner config — see PipelineDescription.rist. */
+export interface RistRunnerConfig {
+    /** `receiver` feeds the named appsrc; `sender` drains the named appsink. */
+    role: 'receiver' | 'sender';
+    /** rist:// peer URLs; per-link params (weight, cname, …) stay in the URL. */
+    urls: string[];
+    /** RIST profile: 0 simple, 1 main (default), 2 advanced. */
+    profile?: number;
+    /** Recovery buffer in ms — folded into each URL as `buffer=`. */
+    buffer?: number;
+    /** Receiver flow session timeout in ms — folded in as `session-timeout=`.
+     *  librist deletes a flow after this long with no data (default 2000 ms);
+     *  on links with brief blackouts or restart-prone senders, ~10000 ms keeps
+     *  the flow alive through the gap (brief freeze) instead of a
+     *  delete/reconnect churn that cascades into downstream rebuilds. */
+    sessionTimeout?: number;
+    /** Encryption pre-shared secret — folded into each URL as `secret=`. */
+    secret?: string;
+    /** AES key size for `secret` (128 | 256) — folded in as `aes-type=`. */
+    encType?: number;
+    /** NULL-packet deletion (sender only). */
+    npd?: boolean;
+    /** librist stats interval in ms → `rist:stats` plugin events (0 disables). */
+    statsInterval?: number;
+    /** `name=` of the appsrc (receiver) / appsink (sender) in `pipeline`. */
+    appElement: string;
 }
 
 /** A bus-message subscription — see PipelineDescription.busReports. */
@@ -248,4 +336,14 @@ export interface PadLinkRule {
      * contract is used unchanged.
      */
     matchPids?: number[];
+    /**
+     * Optional — timestamp offset (ns) applied via `GstPad.set_offset()` on
+     * the `linkTo` request pad before linking. Positive delays the stream on
+     * the target's timeline; negative advances it (buffers whose shifted
+     * running-time falls before the segment start are clipped — costs that
+     * much stream at startup, nothing steady-state). Requires `linkTo`;
+     * ignored on the `matchPids` tee-fanout path. First consumer: mpegts-muxer
+     * per-audio-input lipsync offset (cancels a measured constant path skew).
+     */
+    padOffsetNs?: number;
 }
