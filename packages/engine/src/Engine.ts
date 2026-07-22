@@ -129,6 +129,7 @@ export class Engine {
             // Lazy: runController is assigned further down in this constructor,
             // and this closure is only invoked at command-dispatch time.
             isEngineRunning: () => this.runController.isRunning,
+            broadcastRunIntent: (running) => this.lcpServer.broadcastEngineRunning(running),
             startModules: () => this.startModules(),
             stopModules: () => this.stopModules(),
             resetEngine: () => this.resetEngine(),
@@ -277,7 +278,9 @@ export class Engine {
         }
 
         this._running = true;
-        this.lcpServer.broadcastEngineRunning(true);
+        // Modules are not started yet at process boot (manager-driven
+        // auto-start comes later) — broadcast the real module run state.
+        this.lcpServer.broadcastEngineRunning(this.runController.isRunning);
         log.info('Started');
     }
 
@@ -443,7 +446,11 @@ export class Engine {
             }
         }
         return {
-            engineRunning: this._running,
+            // Module run intent, NOT the engine-process `_running` flag — the
+            // process flag is true from boot to shutdown, so reporting it here
+            // reset every reconnecting LCP to "running" while all modules were
+            // stopped (observed on WAN-accessed LCPs where the socket churns).
+            engineRunning: this.runController.isRunning,
             ip: this.deviceIps[0] ?? '127.0.0.1',
             ips: this.deviceIps,
             hostname: this.deviceHostname,

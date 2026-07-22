@@ -276,6 +276,41 @@ describe('wireEngineEvents — state resync heartbeat', () => {
     });
 });
 
+describe('wireEngineEvents — LCP lifecycle commands', () => {
+    let stubs: Stubs;
+    let ctx: EngineEventContext;
+
+    beforeEach(() => {
+        stubs = makeStubs();
+        ctx = makeCtx(stubs);
+        wireEngineEvents(ctx);
+    });
+
+    it.each(['start', 'stop'] as const)(
+        'dispatches %s locally and notifies the manager guaranteed',
+        (action) => {
+            stubs.lcpServer.emit('control', { action });
+
+            expect(ctx.commandDispatcher.dispatch).toHaveBeenCalledWith({ command: action });
+            // Guaranteed on purpose: this message flips the manager's persisted
+            // desired-run-state — if it's lost, the 10s engineRunningState
+            // reconcile reverts the operator's LCP action.
+            expect(stubs.managerConnection.send).toHaveBeenCalledWith(
+                'lcpEngineCommand',
+                { command: action },
+                { guaranteeDelivery: true },
+            );
+        },
+    );
+
+    it('ignores unknown control actions', () => {
+        stubs.lcpServer.emit('control', { action: 'reboot' });
+
+        expect(ctx.commandDispatcher.dispatch).not.toHaveBeenCalled();
+        expect(stubs.managerConnection.send).not.toHaveBeenCalled();
+    });
+});
+
 describe('wireEngineEvents — module state batching', () => {
     let stubs: Stubs;
 

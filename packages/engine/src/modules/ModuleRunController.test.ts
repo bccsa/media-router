@@ -41,23 +41,27 @@ describe('ModuleRunController', () => {
             expect(observedDuringStartAll).toBe(true);
         });
 
-        it('fires onChange(true) only after a successful startAll', async () => {
+        it('fires onChange(true) immediately — before startAll resolves', async () => {
+            // onChange broadcasts run *intent*, not completion: waiting for
+            // startAll left the LCP lagging a manager-initiated start by the
+            // whole pipeline bring-up (10-20s) while manager browsers
+            // updated instantly.
             const { controller, startAll, onChange } = makeController();
             await controller.start();
             expect(startAll).toHaveBeenCalledOnce();
             expect(onChange).toHaveBeenCalledExactlyOnceWith(true);
-            // onChange must fire after startAll resolves, not before.
-            expect(startAll.mock.invocationCallOrder[0]).toBeLessThan(
-                onChange.mock.invocationCallOrder[0],
+            expect(onChange.mock.invocationCallOrder[0]).toBeLessThan(
+                startAll.mock.invocationCallOrder[0],
             );
         });
 
-        it('rolls back isRunning and does NOT broadcast when startAll throws', async () => {
+        it('rolls back isRunning and broadcasts the rollback when startAll throws', async () => {
             // The flag is reported to the manager via the engineRunningState
             // handshake — if we left it true after a failed startAll, the
             // manager would see "already running, just push config" forever
             // and never re-issue the start command. Roll back to false so
-            // the next reconnect prompts a fresh start attempt.
+            // the next reconnect prompts a fresh start attempt, and broadcast
+            // the rollback so the LCP's intent-first "running" is corrected.
             const err = new Error('start failed');
             const { controller, onChange } = makeController({
                 startAll: async () => {
@@ -66,7 +70,8 @@ describe('ModuleRunController', () => {
             });
             await expect(controller.start()).rejects.toThrow('start failed');
             expect(controller.isRunning).toBe(false);
-            expect(onChange).not.toHaveBeenCalled();
+            expect(onChange).toHaveBeenNthCalledWith(1, true);
+            expect(onChange).toHaveBeenNthCalledWith(2, false);
         });
 
         it('reverts cleanly so a follow-up start() attempt can run startAll again', async () => {
@@ -101,19 +106,20 @@ describe('ModuleRunController', () => {
             expect(observedDuringStopAll).toBe(false);
         });
 
-        it('fires onChange(false) only after a successful stopAll', async () => {
+        it('fires onChange(false) immediately — before stopAll resolves', async () => {
             const { controller, stopAll, onChange } = makeController();
             await controller.start();
             onChange.mockClear();
+            stopAll.mockClear();
             await controller.stop();
             expect(stopAll).toHaveBeenCalledOnce();
             expect(onChange).toHaveBeenCalledExactlyOnceWith(false);
-            expect(stopAll.mock.invocationCallOrder[0]).toBeLessThan(
-                onChange.mock.invocationCallOrder[0],
+            expect(onChange.mock.invocationCallOrder[0]).toBeLessThan(
+                stopAll.mock.invocationCallOrder[0],
             );
         });
 
-        it('preserves stopped intent on stopAll failure but does NOT broadcast', async () => {
+        it('preserves stopped intent on stopAll failure — broadcast already matches', async () => {
             const err = new Error('stop failed');
             const { controller, onChange } = makeController({
                 stopAll: async () => {
@@ -124,7 +130,7 @@ describe('ModuleRunController', () => {
             onChange.mockClear();
             await expect(controller.stop()).rejects.toThrow('stop failed');
             expect(controller.isRunning).toBe(false);
-            expect(onChange).not.toHaveBeenCalled();
+            expect(onChange).toHaveBeenCalledExactlyOnceWith(false);
         });
     });
 });

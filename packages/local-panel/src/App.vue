@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue';
 import { useSocketStore } from '@/stores/socket';
 import { useModuleStore } from '@/stores/modules';
 import { patch } from '@/composables/usePatch';
+import { useEngineLifecycle } from '@/composables/useEngineLifecycle';
 import MixerStrip from '@/components/MixerStrip.vue';
 import { getStripComponent } from '@/composables/usePluginStripComponent';
 
@@ -31,15 +32,7 @@ function onMute(moduleId: string, muted: boolean) {
     patch.moduleSetting(moduleId, 'audioEnabled', !muted);
 }
 
-function startEngine() {
-    moduleStore.engineRunning = true;
-    socketStore.emit('start');
-}
-
-function stopEngine() {
-    moduleStore.engineRunning = false;
-    socketStore.emit('stop');
-}
+const { enginePending, sendEngineCommand } = useEngineLifecycle();
 </script>
 
 <template>
@@ -115,11 +108,19 @@ function stopEngine() {
                 <button
                     v-if="moduleStore.engineRunning"
                     class="engine-btn stop"
-                    @click="stopEngine"
+                    :disabled="enginePending || !socketStore.connected"
+                    @click="sendEngineCommand('stop')"
                 >
-                    Stop
+                    {{ enginePending ? 'Stopping…' : 'Stop' }}
                 </button>
-                <button v-else class="engine-btn start" @click="startEngine">Start</button>
+                <button
+                    v-else
+                    class="engine-btn start"
+                    :disabled="enginePending || !socketStore.connected"
+                    @click="sendEngineCommand('start')"
+                >
+                    {{ enginePending ? 'Starting…' : 'Start' }}
+                </button>
             </div>
         </header>
 
@@ -293,6 +294,11 @@ body {
 .engine-btn.stop {
     background: #ef4444;
     color: white;
+}
+
+.engine-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 .mixer-area {

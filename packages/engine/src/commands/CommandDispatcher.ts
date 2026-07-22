@@ -13,6 +13,16 @@ export interface CommandContext {
     currentConfig: Record<string, unknown> | null;
     /** Engine-level run intent (ModuleRunController.isRunning). Gates single-module starts. */
     isEngineRunning: () => boolean;
+    /**
+     * Echo the target run state to the LCP the moment a lifecycle command is
+     * accepted. The run flag itself flips at execution (ModuleRunController),
+     * but execution queues behind commandLock — a stop dispatched during a
+     * start's pipeline bring-up (~16s of connection application + bus-consumer
+     * restarts) would otherwise sit invisible until the lock frees, while the
+     * manager showed the new state instantly. The execution-time broadcast
+     * still follows and agrees (or corrects, on a failed startAll).
+     */
+    broadcastRunIntent: (running: boolean) => void;
     startModules: () => Promise<void>;
     stopModules: () => Promise<void>;
     resetEngine: () => Promise<void>;
@@ -42,6 +52,10 @@ export class CommandDispatcher {
     }
 
     private scheduleLifecycle(command: 'start' | 'stop' | 'reset'): void {
+        // Reset keeps the current intent — it's a stop+start, not a state change.
+        if (command !== 'reset') {
+            this.ctx.broadcastRunIntent(command === 'start');
+        }
         if (this.lifecycleBusy) {
             log.info(
                 { command, replaced: this.pendingLifecycle },

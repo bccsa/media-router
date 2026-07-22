@@ -39,12 +39,18 @@ export class ModuleRunController {
      *  - Flag set *before* awaiting `startAll` so a concurrent patch handler
      *    reading `isRunning` mid-flight sees the new intent and doesn't drop
      *    a freshly-added module on the floor.
-     *  - `onChange` fires only on success — broadcasting "running" while
-     *    startAll threw would misrepresent reality to the LCP.
-     *  - **On throw, roll the flag back to `false`.** The flag is reported to
-     *    the manager via the `engineRunningState` handshake on every
-     *    reconnect; `EngineEventForwarder` interprets `engine.running=true`
-     *    as "already running, just push config" and skips the `start`
+     *  - `onChange` fires immediately with the flag — it broadcasts run
+     *    *intent*, not completion. Everything else already reports intent
+     *    (the LCP init payload, the manager's `engine:running` which fires
+     *    on click); broadcasting only after startAll completed left the LCP
+     *    button lagging a manager-initiated start by the whole pipeline
+     *    bring-up (10-20s of connection application + bus-consumer
+     *    restarts), while manager browsers updated instantly.
+     *  - **On throw, roll the flag back to `false` and broadcast the
+     *    rollback.** The flag is reported to the manager via the
+     *    `engineRunningState` handshake on every reconnect;
+     *    `EngineEventForwarder` interprets `engine.running=true` as
+     *    "already running, just push config" and skips the `start`
      *    command. If we left the flag at `true` after a failed startAll,
      *    the engine would be permanently locked out of retries (manager
      *    sees claim, doesn't send start; engine never re-attempts) with
@@ -54,24 +60,26 @@ export class ModuleRunController {
      */
     async start(): Promise<void> {
         this._running = true;
+        this.onChange(true);
         try {
             await this.lifecycle.startAll();
         } catch (err) {
             this._running = false;
+            this.onChange(false);
             throw err;
         }
-        this.onChange(true);
     }
 
     /**
-     * Stop all modules. Same split as `start`: flag clears first (so a
-     * clone-during-stop in the await window won't auto-start), broadcast
-     * fires only on a clean stop.
+     * Stop all modules. Same split as `start`: flag clears and broadcasts
+     * first (so a clone-during-stop in the await window won't auto-start,
+     * and the LCP flips in the same beat as the manager). A stopAll throw
+     * keeps the stopped intent — the broadcast already matches it.
      */
     async stop(): Promise<void> {
         this._running = false;
-        await this.lifecycle.stopAll();
         this.onChange(false);
+        await this.lifecycle.stopAll();
         log.debug('Modules stopped');
     }
 }

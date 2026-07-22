@@ -113,15 +113,21 @@ export function wireEngineEvents(ctx: EngineEventContext): void {
         ctx.commandDispatcher.dispatch(command as Record<string, unknown>);
     });
 
-    // LCP lifecycle commands (start/stop)
+    // LCP lifecycle commands (start/stop). The manager notification is
+    // guaranteed: it updates the manager's persisted desired-run-state, and if
+    // it's lost the 10s engineRunningState reconcile actively reverts the
+    // operator's action (stop undone by an auto-start within one heartbeat).
+    // Rare operator-initiated traffic — no retransmit-flood risk (that rule is
+    // for repeating telemetry, see the deviceList note below).
     ctx.lcpServer.on('control', (command: unknown) => {
         const cmd = command as Record<string, unknown>;
-        if (cmd.action === 'start') {
-            ctx.commandDispatcher.dispatch({ command: 'start' });
-            ctx.managerConnection.send('lcpEngineCommand', { command: 'start' });
-        } else if (cmd.action === 'stop') {
-            ctx.commandDispatcher.dispatch({ command: 'stop' });
-            ctx.managerConnection.send('lcpEngineCommand', { command: 'stop' });
+        if (cmd.action === 'start' || cmd.action === 'stop') {
+            ctx.commandDispatcher.dispatch({ command: cmd.action });
+            ctx.managerConnection.send(
+                'lcpEngineCommand',
+                { command: cmd.action },
+                { guaranteeDelivery: true },
+            );
         }
     });
 

@@ -19,6 +19,7 @@ function createMockContext(): CommandContext {
         } as any,
         currentConfig: { modules: {}, connections: [] },
         isEngineRunning: vi.fn().mockReturnValue(true),
+        broadcastRunIntent: vi.fn(),
         startModules: vi.fn().mockResolvedValue(undefined),
         stopModules: vi.fn().mockResolvedValue(undefined),
         resetEngine: vi.fn().mockResolvedValue(undefined),
@@ -63,6 +64,44 @@ describe('CommandDispatcher', () => {
             dispatcher.dispatch({ command: 'reset' });
             await flush();
             expect(ctx.resetEngine).toHaveBeenCalledOnce();
+        });
+
+        it('broadcasts the run intent synchronously on dispatch', () => {
+            dispatcher.dispatch({ command: 'start' });
+            expect(ctx.broadcastRunIntent).toHaveBeenCalledExactlyOnceWith(true);
+            dispatcher.dispatch({ command: 'stop' });
+            expect(ctx.broadcastRunIntent).toHaveBeenLastCalledWith(false);
+        });
+
+        it('reset does not broadcast an intent change', () => {
+            dispatcher.dispatch({ command: 'reset' });
+            expect(ctx.broadcastRunIntent).not.toHaveBeenCalled();
+        });
+
+        it('broadcasts a queued stop immediately while a slow start still holds the lock', async () => {
+            // The regression this guards: stop pressed during a 16s pipeline
+            // bring-up queued behind commandLock, so the LCP kept showing
+            // "running" until the bring-up finished — while the manager
+            // flipped instantly.
+            let resolveStart!: () => void;
+            (ctx.startModules as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+                new Promise<void>((r) => (resolveStart = r)),
+            );
+            // A module is running once start completes — otherwise the pending
+            // stop is legitimately skipped as "already in desired state".
+            (ctx.moduleManager.getAllStates as ReturnType<typeof vi.fn>).mockReturnValue({
+                'mod-1': { running: true },
+            });
+            dispatcher.dispatch({ command: 'start' });
+            dispatcher.dispatch({ command: 'stop' });
+
+            // stop is queued (start unresolved) but the intent already went out
+            expect(ctx.stopModules).not.toHaveBeenCalled();
+            expect(ctx.broadcastRunIntent).toHaveBeenLastCalledWith(false);
+
+            resolveStart();
+            await flush();
+            expect(ctx.stopModules).toHaveBeenCalledOnce();
         });
 
         it('dispatch reboot calls rebootHost', async () => {
