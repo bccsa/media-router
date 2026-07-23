@@ -1,6 +1,6 @@
 import { createLogger } from '@media-router/shared-types';
 import type { ModuleInstance } from '../modules/ModuleInstance.js';
-import type { Connection } from './MediaRouter.js';
+import { BUS_STREAM_TYPES, type Connection } from './MediaRouter.js';
 import { busTeeName, busEdgeSocketPath } from '../plugins/busHelpers.js';
 
 const log = createLogger('BusFanout');
@@ -70,7 +70,11 @@ export class BusFanoutCoordinator {
      */
     reattachProducer(moduleId: string): void {
         for (const conn of this.getConnections()) {
-            if (conn.sourceModuleId === moduleId && conn.streamType === 'muxed/mpegts') {
+            // BUS_STREAM_TYPES, not just muxed/mpegts: `audio/302m` edges ride
+            // the identical fan-out. Filtering them out here stranded every
+            // consumer of a restarted 302M producer (mixer/302m-input) in
+            // "Waiting for producer bus socket(s)" until a manual restart.
+            if (conn.sourceModuleId === moduleId && BUS_STREAM_TYPES.has(conn.streamType)) {
                 this.attach(conn);
             }
         }

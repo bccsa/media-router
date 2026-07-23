@@ -50,7 +50,7 @@ describe('BusFanoutCoordinator', () => {
         expect(detach).toHaveBeenCalledWith(busEdgeSocketPath(PORT, c.id));
     });
 
-    it('re-attaches only the producer\'s own muxed/mpegts source edges', () => {
+    it('re-attaches only the producer\'s own bus-carried source edges', () => {
         const mine = conn();
         const other = conn({
             id: 'x:out-y:in',
@@ -60,6 +60,19 @@ describe('BusFanoutCoordinator', () => {
         make({ connections: [mine, other, wrongType] }).reattachProducer('srt-input-a');
         expect(attach).toHaveBeenCalledTimes(1);
         expect(attach).toHaveBeenCalledWith(busTeeName(PORT), busEdgeSocketPath(PORT, mine.id));
+    });
+
+    it('re-attaches audio/302m edges too — a restarted 302M producer (mixer) must not strand its consumers', () => {
+        // Regression: reattachProducer filtered on streamType === 'muxed/mpegts'
+        // only, so a restarted audio-mixer's output branch never re-attached and
+        // downstream sat in "Waiting for producer bus socket(s)" forever.
+        const c302m = conn({
+            id: 'srt-input-a:mpegts-out-aout:audio-in',
+            streamType: 'audio/302m',
+        });
+        make({ connections: [c302m] }).reattachProducer('srt-input-a');
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(attach).toHaveBeenCalledWith(busTeeName(PORT), busEdgeSocketPath(PORT, c302m.id));
     });
 
     it('no-ops when the producer has no allocated channel port yet', () => {

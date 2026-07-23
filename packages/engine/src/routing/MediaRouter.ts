@@ -18,7 +18,7 @@ const log = createLogger('MediaRouter');
  * `audio/302m` is SMPTE-302M PCM in a standard MPEG-TS — same wire format,
  * same executor, same per-edge sockets as `muxed/mpegts`.
  */
-const BUS_STREAM_TYPES: ReadonlySet<string> = new Set(['muxed/mpegts', 'audio/302m']);
+export const BUS_STREAM_TYPES: ReadonlySet<string> = new Set(['muxed/mpegts', 'audio/302m']);
 
 export interface Connection {
     id: string;
