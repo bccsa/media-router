@@ -38,8 +38,9 @@ describe('buildLeakyQueue', () => {
             'queue leaky=2 max-size-time=50000000 max-size-buffers=0 max-size-bytes=0',
         );
     });
-    it('clamps negative values to 0', () => {
-        expect(buildLeakyQueue(-10)).toContain('max-size-time=0');
+    it('floors 0/negative to 20 ms — all-zero bounds would mean UNLIMITED, never-leaking', () => {
+        expect(buildLeakyQueue(0)).toContain('max-size-time=20000000');
+        expect(buildLeakyQueue(-10)).toContain('max-size-time=20000000');
     });
     it('clamps absurdly large values to 5 seconds', () => {
         expect(buildLeakyQueue(99_999)).toContain('max-size-time=5000000000');
@@ -52,8 +53,9 @@ describe('buildBackpressureQueue', () => {
             'queue leaky=0 max-size-time=200000000 max-size-buffers=0 max-size-bytes=0',
         );
     });
-    it('clamps negative values to 0 and huge values to 5 s, like buildLeakyQueue', () => {
-        expect(buildBackpressureQueue(-10)).toContain('max-size-time=0');
+    it('floors 0/negative to 20 ms and clamps huge values to 5 s, like buildLeakyQueue', () => {
+        expect(buildBackpressureQueue(-10)).toContain('max-size-time=20000000');
+        expect(buildBackpressureQueue(0)).toContain('max-size-time=20000000');
         expect(buildBackpressureQueue(99_999)).toContain('max-size-time=5000000000');
     });
 });

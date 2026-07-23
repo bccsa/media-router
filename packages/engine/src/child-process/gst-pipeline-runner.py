@@ -901,6 +901,132 @@ def _install_pad_link_rule(pipe, rule):
     src.connect("pad-added", on_pad_added)
 
 
+# ---------------------------------------------------------------------------
+# preserveSourceTimeline — carry the SOURCE PES timeline through a tsdemux
+# ---------------------------------------------------------------------------
+# tsdemux erases the source timeline (buffer PTS rebased ~0 on an identity
+# segment), so everything downstream — including this pipeline's own output
+# mpegtsmux — stamps a fresh per-incarnation timeline. Downstream muxers then
+# anchor A/V branches by ARRIVAL, and every restart re-rolls lipsync (the
+# 2026-07-23 incident; TodoNotes:20). This opt-in feature latches the first
+# PES PTS per PID on the demux SINK pad, then shifts each media src pad onto
+# the source timeline via GstPad.set_offset() so output PES PTS/PCR carry
+# source values. Restart ⇒ re-latch ⇒ same timeline. Mid-stream source
+# discontinuities and the 26.5 h PTS wrap are NOT followed (plan non-goals) —
+# the offset is per-incarnation, exactly like today's anchor.
+_preserve_timeline = None   # {"latch", "sink_pad", "sink_probe_id", "pending"}
+
+
+def _clear_preserve_timeline():
+    global _preserve_timeline
+    _preserve_timeline = None
+
+
+def _install_preserve_timeline(pipe, cfg):
+    """cfg = {"demux": "<element name>"} from the pipeline description."""
+    global _preserve_timeline
+    _clear_preserve_timeline()
+    if not cfg:
+        return
+    demux_name = cfg.get("demux")
+    demux = pipe.get_by_name(demux_name) if demux_name else None
+    if not demux:
+        sys.stderr.write(
+            f"[gst-runner.py] preserveSourceTimeline: element "
+            f"'{demux_name}' not found — feature disabled for this run\n")
+        return
+    import ts_timeline  # lazy, pure stdlib (ts_split pattern)
+
+    state = {"latch": ts_timeline.TimelineLatch(),
+             "sink_pad": demux.get_static_pad("sink"),
+             "sink_probe_id": None,
+             "pending": 0,       # armed src pads still awaiting their offset
+             "attempts": {}}     # per-PID unlatched-buffer retry counts
+    _preserve_timeline = state
+
+    def on_sink_buffer(_pad, info):
+        buf = info.get_buffer()
+        if buf is not None:
+            ok, mi = buf.map(Gst.MapFlags.READ)
+            if ok:
+                try:
+                    state["latch"].feed(bytes(mi.data))
+                finally:
+                    buf.unmap(mi)
+        return Gst.PadProbeReturn.OK
+
+    def maybe_release_sink_probe():
+        # All armed pads resolved → the latch has served its purpose; drop the
+        # per-buffer sink probe so steady state pays nothing. A later new pad
+        # (not a shape these single-ES pipelines produce) logs and runs
+        # un-shifted rather than blocking.
+        if state["pending"] == 0 and state["sink_probe_id"] is not None:
+            state["sink_pad"].remove_probe(state["sink_probe_id"])
+            state["sink_probe_id"] = None
+
+    def on_first_buffer(pad, info, pid):
+        buf = info.get_buffer()
+        if buf is None:
+            # Non-buffer item on a BLOCK|BUFFER probe — let it through and
+            # stay armed (returning OK would keep the pad blocked forever).
+            return Gst.PadProbeReturn.PASS
+        pts = buf.pts
+        if pts == Gst.CLOCK_TIME_NONE:
+            # A PTS-less leading buffer (e.g. codec headers mid-resync): pass
+            # it through and keep waiting for the first STAMPED buffer — giving
+            # up here would run the whole incarnation un-shifted (seen live
+            # 2026-07-23 during the swap-starvation churn).
+            return Gst.PadProbeReturn.PASS
+        off = state["latch"].offset_ns(pid, pts)
+        if off is None:
+            # Latch hasn't seen a PES PTS for this PID yet (e.g. the leading
+            # PES carried none). Pass and retry on subsequent buffers, bounded
+            # so a pathological stream can't pay probe overhead forever.
+            state["attempts"][pid] = state["attempts"].get(pid, 0) + 1
+            if state["attempts"][pid] < 300:
+                return Gst.PadProbeReturn.PASS
+            state["pending"] -= 1
+            sys.stderr.write(
+                f"[gst-runner.py] preserveSourceTimeline: PID 0x{pid:x} never "
+                f"latched a source PTS — pad {pad.get_name()} left un-shifted\n")
+            maybe_release_sink_probe()
+            return Gst.PadProbeReturn.REMOVE
+        state["pending"] -= 1
+        pad.set_offset(off)
+        sys.stderr.write(
+            f"[gst-runner.py] preserveSourceTimeline: {pad.get_name()} "
+            f"pid=0x{pid:x} offsetNs={off} (sourcePts90k="
+            f"{state['latch'].first_pts.get(pid)} firstBufPtsNs={pts})\n")
+        maybe_release_sink_probe()
+        return Gst.PadProbeReturn.REMOVE
+
+    def on_demux_pad_added(_element, pad):
+        name = pad.get_name() or ""
+        if not (name.startswith("audio_") or name.startswith("video_")):
+            return
+        pid = _pid_from_tsdemux_pad_name(name)
+        if pid is None:
+            sys.stderr.write(
+                f"[gst-runner.py] preserveSourceTimeline: no PID in pad name "
+                f"'{name}' — pad left un-shifted\n")
+            return
+        if state["sink_probe_id"] is None:
+            sys.stderr.write(
+                f"[gst-runner.py] preserveSourceTimeline: late pad '{name}' "
+                f"after latch release — pad left un-shifted\n")
+            return
+        state["pending"] += 1
+        # BLOCK|BUFFER: the callback runs with the pad blocked BEFORE the
+        # first buffer passes, so the recomputed segment (set_offset) reaches
+        # downstream ahead of that buffer. Validated on the rig (plan gate 1).
+        pad.add_probe(Gst.PadProbeType.BLOCK | Gst.PadProbeType.BUFFER,
+                      on_first_buffer, pid)
+
+    state["sink_probe_id"] = state["sink_pad"].add_probe(
+        Gst.PadProbeType.BUFFER, on_sink_buffer)
+    demux.connect("pad-added", on_demux_pad_added)
+
+
 # GstNet is optional: only sync-enabled pipelines carry a `clock` config. If
 # the typelib is missing we log once and run on the default clock (unsynced) —
 # never fatal, so a box without GstNet still plays, just without cross-pipeline
@@ -1019,6 +1145,10 @@ def handle_start(data):
     for rule in pad_link_rules:
         _install_pad_link_rule(pipeline, rule)
 
+    # Source-timeline preservation (opt-in; must be armed BEFORE PLAYING so
+    # the sink-pad latch sees the very first TS bytes).
+    _install_preserve_timeline(pipeline, data.get("preserveSourceTimeline"))
+
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
     # report per pad (PID + caps + media type) regardless of what's routed.
@@ -1093,6 +1223,7 @@ def handle_stop(data=None):
     global pipeline, running
     _cancel_playing_watchdog()
     _clear_pending_bus_attaches()
+    _clear_preserve_timeline()
     _stop_rist()
     _stop_ts_split()
     if pipeline:

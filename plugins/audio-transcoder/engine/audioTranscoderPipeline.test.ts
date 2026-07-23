@@ -39,7 +39,7 @@ describe('buildPipeline (audio transcoder)', () => {
             tsAlignment: 7,
         })!;
         expect(r.pipeline).toContain(
-            'unixfdsrc socket-path=/tmp/mr-bus-40001-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0 ! tsdemux latency=0',
+            'unixfdsrc socket-path=/tmp/mr-bus-40001-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0 ! tsdemux name=demux latency=0',
         );
         // bufferMs honoured directly — no 300ms floor (no real-time sink here).
         expect(r.pipeline).toContain('queue leaky=0 max-size-time=75000000');

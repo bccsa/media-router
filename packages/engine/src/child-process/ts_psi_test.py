@@ -76,4 +76,49 @@ check("PCR packet keeps the PID's cc", (pk[3] & 0x0F) == 7)
 check("read_pcr round-trips build_pcr_packet", p.read_pcr(pk) == pcr)
 check("read_pcr is None on a payload-only packet", p.read_pcr(p.null_packet()) is None)
 
+
+# PES PTS extraction (timeline latch relies on this).
+def pes_ts_packet(pid, pts=None, dts=None, stream_id=0xE0, pusi=True, af_len=None):
+    """Hand-build one TS packet whose payload starts a PES header."""
+    hdr = bytearray([p.SYNC,
+                     (0x40 if pusi else 0x00) | ((pid >> 8) & 0x1F),
+                     pid & 0xFF,
+                     0x10])                       # payload only, cc=0
+    body = bytearray()
+    if af_len is not None:
+        hdr[3] |= 0x20                            # adaptation field present
+        body += bytes([af_len]) + b"\x00" * af_len
+    pes = bytearray(b"\x00\x00\x01") + bytes([stream_id]) + b"\x00\x00"
+    flags = (0x80 if pts is not None else 0) | (0x40 if dts is not None else 0)
+    fields = bytearray()
+
+    def stamp(prefix, v):
+        return bytes([(prefix << 4) | (((v >> 30) & 0x07) << 1) | 1,
+                      (v >> 22) & 0xFF, (((v >> 15) & 0x7F) << 1) | 1,
+                      (v >> 7) & 0xFF, ((v & 0x7F) << 1) | 1])
+
+    if pts is not None and dts is not None:
+        fields += stamp(0x3, pts) + stamp(0x1, dts)
+    elif pts is not None:
+        fields += stamp(0x2, pts)
+    pes += bytes([0x80, flags, len(fields)]) + fields
+    body += pes
+    pkt = bytes(hdr) + bytes(body)
+    return pkt + b"\xff" * (p.PKT - len(pkt))
+
+
+BIG_PTS = 0x1_2345_6789 & 0x1_FFFF_FFFF          # exercises PTS[32]
+check("PES PTS round-trip", p.read_pes_pts(pes_ts_packet(0x65, pts=BIG_PTS)) == BIG_PTS)
+check("PES PTS+DTS round-trip",
+      p.read_pes_pts(pes_ts_packet(0x65, pts=90000, dts=87000)) == 90000)
+check("PES without PTS -> None", p.read_pes_pts(pes_ts_packet(0x65)) is None)
+check("non-PUSI packet -> None",
+      p.read_pes_pts(pes_ts_packet(0x65, pts=90000, pusi=False)) is None)
+check("PSI packet -> None", p.read_pes_pts(pat) is None)
+check("adaptation-only packet -> None", p.read_pes_pts(p.build_pcr_packet(0x65, 300)) is None)
+check("padding stream -> None",
+      p.read_pes_pts(pes_ts_packet(0x65, pts=90000, stream_id=0xBE)) is None)
+check("PES behind adaptation field",
+      p.read_pes_pts(pes_ts_packet(0x65, pts=4500, af_len=10)) == 4500)
+
 print("\nALL ts_psi TESTS PASSED")

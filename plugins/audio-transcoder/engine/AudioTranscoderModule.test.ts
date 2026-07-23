@@ -81,10 +81,27 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('tsdemux latency=0');
+        expect(desc!.pipeline).toContain('tsdemux name=demux latency=0');
         expect(desc!.pipeline).toContain('aacparse ! avdec_aac');
         expect(desc!.pipeline).not.toContain('audiomixer');
         expect(desc!.restartOnError).toBe(true);
+    });
+
+    it('carries preserveSourceTimeline targeting the named demux by default', () => {
+        const { module } = makeModule({});
+        module.probeResult = { codec: 'aac' };
+        const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
+        expect(desc!.preserveSourceTimeline).toEqual({ demux: 'demux' });
+    });
+
+    it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {
+        const { module } = makeModule({});
+        module.probeResult = { codec: 'aac' };
+        const desc = module.buildPipeline({
+            renditions: [{ codec: 'opus' }],
+            preserveSourceTimeline: false,
+        });
+        expect(desc!.preserveSourceTimeline).toBeUndefined();
     });
 
     it('a 302M-declared source decodes the same way (probe → avdec_s302m)', () => {

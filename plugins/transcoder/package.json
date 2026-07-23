@@ -255,13 +255,19 @@
                 },
                 "bufferMs": {
                     "type": "number",
-                    "minimum": 0,
+                    "minimum": 100,
                     "maximum": 2000,
                     "default": 200,
-                    "description": "Buffer (ms) — sizes the network jitter queue and the decoded-frame buffer that lets the decoder work ahead. Absorbs timing jitter so a momentary stall drops fewer frames (less macroblocking). It does NOT add decode cores. 200 ms is a sane default; lower it for tighter latency, raise it if you still see drops. Costs this much latency.",
+                    "description": "Buffer (ms) — sizes the network jitter queue and the decoded-frame buffer that lets the decoder work ahead. Absorbs timing jitter so a momentary stall drops fewer frames (less macroblocking). It does NOT add decode cores. 200 ms is a sane default; lower it for tighter latency, raise it if you still see drops. Costs this much latency. Floored at 100 ms — below that, a scene-cut keyframe burst back-pressures into the compressed input and sheds H.264 mid-GOP (ghosting/scrambling until the next keyframe).",
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms"
+                },
+                "preserveSourceTimeline": {
+                    "type": "boolean",
+                    "default": true,
+                    "x-advanced": true,
+                    "description": "Carry the SOURCE stream's timestamps through the transcode (default on). Output PTS/PCR then match the input's, so downstream muxers align this video with its sibling audio by real timestamps and lipsync survives module restarts. Turn off only to fall back to the previous per-start timeline behaviour."
                 }
             }
         },

@@ -73,7 +73,13 @@ export function buildLeakyQueue(bufferMs: number): string {
     // to keep a runaway caller from queuing tens of seconds of latency; for
     // HLS chains the operator legitimately wants 2-3 s of jitter buffer here
     // to absorb sender-side event-loop stalls at segment boundaries.
-    const clamped = Math.max(0, Math.min(5000, bufferMs));
+    // 20 ms floor: `max-size-time=0` with the other bounds 0 is UNLIMITED in
+    // GStreamer — the leaky policy silently never fires and any transient
+    // consumer stall accumulates as permanent standing latency (and, on a
+    // raw-video queue, unbounded memory). A 20 ms leaky bound adds no
+    // steady-state latency (the queue sits near-empty); it only bites during
+    // a stall, which is exactly when shedding is wanted.
+    const clamped = Math.max(20, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
     return `queue leaky=2 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
 }
@@ -98,7 +104,10 @@ export function buildLeakyQueue(bufferMs: number): string {
  * dropping (leaky) is the correct bound — back-pressure would stall playout.
  */
 export function buildBackpressureQueue(bufferMs: number): string {
-    const clamped = Math.max(0, Math.min(5000, bufferMs));
+    // Same 20 ms floor as buildLeakyQueue: all-zero bounds mean UNLIMITED, so
+    // a stuck consumer would grow this queue without ever back-pressuring —
+    // the opposite of this helper's contract.
+    const clamped = Math.max(20, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
     return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
 }

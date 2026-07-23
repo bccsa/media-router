@@ -19,6 +19,12 @@ import {
 } from '@media-router/engine';
 import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
+/** `name=` of the input tsdemux — target of `preserveSourceTimeline`. The
+ *  runner shifts its src pads onto the source timeline, which also moves the
+ *  `perfect-timestamp=true` encoders' anchor to source values (the sample-
+ *  count ladder then reproduces the source PTS exactly). */
+export const DEMUX_NAME = 'demux';
+
 /** The single wired source — any TS-family stream; the probe picks the
  *  decoder. Summing multiple sources is the audio-mixer plugin's job. */
 export interface TranscoderSource {
@@ -130,7 +136,7 @@ export function buildPipeline(
     });
     const bufferNs = Math.max(50, Math.min(5000, fe.bufferMs)) * 1_000_000;
     const frontEnd =
-        `${src} ! tsdemux latency=0` +
+        `${src} ! tsdemux name=${DEMUX_NAME} latency=0` +
         ` ! queue leaky=0 max-size-time=${bufferNs} max-size-buffers=0 max-size-bytes=0` +
         ` ! ${decoderChainFor(fe.probedCodec)}`;
     // A connection channel map renders as a `mix-matrix` on the trunk's

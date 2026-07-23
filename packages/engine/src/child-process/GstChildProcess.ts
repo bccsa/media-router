@@ -183,6 +183,7 @@ export class GstChildProcess extends EventEmitter {
                 busReports: this.pipelineDesc.busReports ?? [],
                 rist: this.pipelineDesc.rist,
                 tsSplit: this.pipelineDesc.tsSplit,
+                preserveSourceTimeline: this.pipelineDesc.preserveSourceTimeline,
             });
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });

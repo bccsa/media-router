@@ -247,6 +247,25 @@ export interface PipelineDescription {
      * channel as `{ streams: [{pid, streamType}], pcrPid }`.
      */
     tsSplit?: TsSplitRunnerConfig;
+    /**
+     * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
+     * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
+     * rebased ~0 per incarnation), so a transcoding pipeline's output mux
+     * stamps a fresh timeline every (re)start and downstream muxers anchor its
+     * A/V branches by arrival — restarts re-roll lipsync. When set, the runner
+     * latches the first PES PTS per PID on the demux sink pad and shifts each
+     * media src pad onto the source timeline via `GstPad.set_offset()`, so
+     * output PES PTS/PCR carry source values and every restart re-derives the
+     * SAME timeline. Scope: per-incarnation only — mid-stream source
+     * discontinuities and the 26.5 h 33-bit PTS wrap are not followed.
+     */
+    preserveSourceTimeline?: PreserveSourceTimelineConfig;
+}
+
+/** Config for `PipelineDescription.preserveSourceTimeline`. */
+export interface PreserveSourceTimelineConfig {
+    /** `name=` of the tsdemux whose branches must carry the source timeline. */
+    demux: string;
 }
 
 /** One per-PID SPTS output of the ts-splitter runner core. */
