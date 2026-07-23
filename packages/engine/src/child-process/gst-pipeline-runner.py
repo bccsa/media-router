@@ -941,28 +941,84 @@ def _install_preserve_timeline(pipe, cfg):
              "sink_pad": demux.get_static_pad("sink"),
              "sink_probe_id": None,
              "pending": 0,       # armed src pads still awaiting their offset
-             "attempts": {}}     # per-PID unlatched-buffer retry counts
+             "attempts": {},     # per-PID unlatched-buffer retry counts
+             "watch": False,     # post-latch discontinuity watch active
+             "last": {},         # per-PID last observed PES PTS (watch mode)
+             "anom": 0,          # consecutive anomalous deltas
+             "nbuf": 0,          # buffer stride counter (watch samples 1-in-8)
+             "fired": False}
     _preserve_timeline = state
+
+    # Post-latch discontinuity watch: a genuine mid-stream source PTS jump
+    # (upstream encoder restart, playout switch) stales every latched offset
+    # and silently re-rolls downstream A/V pairing. The modular delta below is
+    # 33-bit-wrap-immune (a legal 2^33 crossing reads as a tiny delta — proven
+    # a non-event in the 2026-07-23 wrap drill), so anything beyond the
+    # thresholds is a REAL discontinuity: emit a `timeline_discont` pipeline
+    # error and let the normal restartOnError path rebuild + re-latch within
+    # seconds. Sampled 1-in-8 buffers; two consecutive anomalies required.
+    _WATCH_STRIDE = 8
+    _FWD_TICKS = 5 * 90000     # forward jump > 5 s
+    _BACK_TICKS = 90000        # backward jump > 1 s
+
+    def watch_scan(data):
+        for pkt in ts_timeline.iter_packets(data):
+            if not (pkt[1] & 0x40):
+                continue
+            pts = ts_timeline.read_pes_pts(pkt)
+            if pts is None:
+                continue
+            pid = ts_timeline.ts_pid(pkt)
+            lastp = state["last"].get(pid)
+            state["last"][pid] = pts
+            if lastp is None:
+                continue
+            d = (pts - lastp) % ts_timeline.PTS_WRAP
+            if d > ts_timeline.PTS_WRAP // 2:
+                d -= ts_timeline.PTS_WRAP
+            if d > _FWD_TICKS or d < -_BACK_TICKS:
+                state["anom"] += 1
+                if state["anom"] >= 2 and not state["fired"]:
+                    state["fired"] = True
+                    emit_event({
+                        "event": "error",
+                        "kind": "timeline_discont",
+                        "message": (
+                            f"source timeline discontinuity on pid 0x{pid:x}"
+                            f" ({lastp} -> {pts}, {d / 90000.0:+.2f}s) — "
+                            f"restarting pipeline to re-latch"),
+                    })
+                return
+        state["anom"] = 0
 
     def on_sink_buffer(_pad, info):
         buf = info.get_buffer()
-        if buf is not None:
-            ok, mi = buf.map(Gst.MapFlags.READ)
-            if ok:
-                try:
-                    state["latch"].feed(bytes(mi.data))
-                finally:
-                    buf.unmap(mi)
+        if buf is None or state["fired"]:
+            return Gst.PadProbeReturn.OK
+        if state["watch"]:
+            state["nbuf"] += 1
+            if state["nbuf"] % _WATCH_STRIDE:
+                return Gst.PadProbeReturn.OK
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if ok:
+            try:
+                data = bytes(mi.data)
+            finally:
+                buf.unmap(mi)
+            state["latch"].feed(data)     # latch-once per PID; cheap when done
+            if state["watch"]:
+                watch_scan(data)
         return Gst.PadProbeReturn.OK
 
     def maybe_release_sink_probe():
-        # All armed pads resolved → the latch has served its purpose; drop the
-        # per-buffer sink probe so steady state pays nothing. A later new pad
-        # (not a shape these single-ES pipelines produce) logs and runs
-        # un-shifted rather than blocking.
-        if state["pending"] == 0 and state["sink_probe_id"] is not None:
-            state["sink_pad"].remove_probe(state["sink_probe_id"])
-            state["sink_probe_id"] = None
+        # All armed pads resolved → switch the sink probe from full-rate
+        # latching into the sampled discontinuity watch (kept for the life of
+        # the pipeline; ~1-in-8 buffers pay a header scan).
+        if state["pending"] == 0 and not state["watch"]:
+            state["watch"] = True
+            sys.stderr.write(
+                "[gst-runner.py] preserveSourceTimeline: all pads shifted — "
+                "watching for source discontinuities\n")
 
     def on_first_buffer(pad, info, pid):
         buf = info.get_buffer()
@@ -1009,11 +1065,6 @@ def _install_preserve_timeline(pipe, cfg):
             sys.stderr.write(
                 f"[gst-runner.py] preserveSourceTimeline: no PID in pad name "
                 f"'{name}' — pad left un-shifted\n")
-            return
-        if state["sink_probe_id"] is None:
-            sys.stderr.write(
-                f"[gst-runner.py] preserveSourceTimeline: late pad '{name}' "
-                f"after latch release — pad left un-shifted\n")
             return
         state["pending"] += 1
         # BLOCK|BUFFER: the callback runs with the pad blocked BEFORE the

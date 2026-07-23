@@ -52,6 +52,13 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('"event": "bus_reinput_done"');
     });
 
+    it('the runner detects source timeline discontinuities post-latch', () => {
+        // The watch emits a `timeline_discont`-tagged pipeline error so the
+        // normal restartOnError path re-latches; modular delta math keeps the
+        // legal 33-bit wrap invisible (2026-07-23 wrap drill).
+        expect(runnerSource).toContain('"kind": "timeline_discont"');
+    });
+
     it('the runner implements the preserveSourceTimeline start option', () => {
         // GstChildProcess sends `preserveSourceTimeline: { demux }` in the
         // start payload (PipelineDescription contract); the runner must read
