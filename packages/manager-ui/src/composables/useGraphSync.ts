@@ -5,7 +5,11 @@ import { useEngineStore } from '@/stores/engines';
 import { useSocketStore } from '@/stores/socket';
 import { patch } from '@/composables/usePatch';
 import { newModuleInstanceId } from '@/utils/ids';
-import { streamTypesCompatible } from '@media-router/shared-types';
+import { useToast } from '@/composables/useToast';
+import {
+    validateCandidateConnection,
+    type ValidationResult,
+} from '@/utils/connectionValidation';
 
 /** Edge colors by stream type — matches CSS variables in main.css. */
 const STREAM_TYPE_COLORS: Record<string, string> = {
@@ -36,6 +40,7 @@ export function useGraphSync(
 ) {
     const socket = useSocketStore();
     const engineStore = useEngineStore();
+    const toast = useToast();
     const { fitView, setCenter, screenToFlowCoordinate, onNodesInitialized, findNode } =
         useVueFlow();
     const hasInitialFit = ref(false);
@@ -180,41 +185,35 @@ export function useGraphSync(
 
     // --- Connection validation ---
 
-    function isValidConnection(connection: Connection): boolean {
+    /**
+     * Resolve the dragged handles to ports and delegate to the pure validator
+     * (`utils/connectionValidation.ts` — tested there). Every reject carries
+     * a human-readable reason so `onConnect` can explain the silent Vue Flow
+     * snap-back via a toast.
+     */
+    function validateConnection(connection: Connection): ValidationResult {
         const srcModule = engine.value?.modules[connection.source!];
         const tgtModule = engine.value?.modules[connection.target!];
         const srcPort = srcModule?.ports?.find((p) => p.id === connection.sourceHandle);
         const tgtPort = tgtModule?.ports?.find((p) => p.id === connection.targetHandle);
-        if (!srcPort || !tgtPort) return false;
+        if (!srcPort || !tgtPort) return { ok: false, reason: 'Port not found' };
+        return validateCandidateConnection(
+            { moduleId: connection.source!, port: srcPort },
+            { moduleId: connection.target!, port: tgtPort },
+            engine.value?.connections ?? [],
+        );
+    }
 
-        const hasOutput = srcPort.direction === 'output' || tgtPort.direction === 'output';
-        const hasInput = srcPort.direction === 'input' || tgtPort.direction === 'input';
-        if (!hasOutput || !hasInput) return false;
-
-        // Exact match or TS-family (muxed/mpegts ↔ audio/302m) — same rule the
-        // engine's PortRegistry enforces; shared-types is the single source.
-        if (!streamTypesCompatible(srcPort.streamType, tgtPort.streamType)) return false;
-
-        const connections = engine.value?.connections ?? [];
-        for (const port of [srcPort, tgtPort]) {
-            const max = port.maxConnections ?? -1;
-            if (max === 0) return false;
-            if (max > 0) {
-                const moduleId = port === srcPort ? connection.source! : connection.target!;
-                const count = connections.filter(
-                    (c) =>
-                        (c.sourceModuleId === moduleId && c.sourcePortId === port.id) ||
-                        (c.sinkModuleId === moduleId && c.sinkPortId === port.id),
-                ).length;
-                if (count >= max) return false;
-            }
-        }
-
-        return true;
+    function isValidConnection(connection: Connection): boolean {
+        return validateConnection(connection).ok;
     }
 
     function onConnect(connection: Connection) {
-        if (!isValidConnection(connection)) return;
+        const verdict = validateConnection(connection);
+        if (!verdict.ok) {
+            toast.show(verdict.reason);
+            return;
+        }
 
         const srcModule = engine.value?.modules[connection.source!];
         const srcPort = srcModule?.ports?.find((p) => p.id === connection.sourceHandle);

@@ -154,6 +154,32 @@ describe('PortRegistry', () => {
             ).toBe(true);
         });
 
+        it('acceptsStreamTypes opts an input out of TS-family leniency (ts-splitter)', () => {
+            const sink: ModulePort = {
+                id: 'in',
+                direction: 'input',
+                streamType: 'muxed/mpegts',
+                label: 'MPEG-TS In',
+                acceptsStreamTypes: ['muxed/mpegts'],
+            };
+            const muxed: ModulePort = {
+                id: 'out',
+                direction: 'output',
+                streamType: 'muxed/mpegts',
+                label: 'Out',
+            };
+            const s302m: ModulePort = {
+                id: 'out',
+                direction: 'output',
+                streamType: 'audio/302m',
+                label: 'Out',
+            };
+            expect(registry.validateCompatibility(muxed, sink).compatible).toBe(true);
+            const rejected = registry.validateCompatibility(s302m, sink);
+            expect(rejected.compatible).toBe(false);
+            expect(rejected.reason).toContain('accepts only muxed/mpegts');
+        });
+
         it('rejects audio/pcm ↔ audio/302m (PipeWire pins are not TS pins)', () => {
             const src: ModulePort = {
                 id: 'out',

@@ -67,6 +67,18 @@ export class PortRegistry {
             };
         }
 
+        // Plugin-declared exact-match accept list — opts this input out of
+        // TS-family leniency (see ModulePort.acceptsStreamTypes).
+        if (
+            sinkPort.acceptsStreamTypes &&
+            !sinkPort.acceptsStreamTypes.includes(sourcePort.streamType)
+        ) {
+            return {
+                compatible: false,
+                reason: `Port accepts only ${sinkPort.acceptsStreamTypes.join(', ')} — got ${sourcePort.streamType}`,
+            };
+        }
+
         if (sourcePort.streamType === 'audio/pcm') {
             const srcCh = sourcePort.channelConfig?.channels;
             const sinkCh = sinkPort.channelConfig?.channels;

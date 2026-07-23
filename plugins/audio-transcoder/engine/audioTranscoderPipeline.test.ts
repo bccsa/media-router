@@ -10,8 +10,7 @@ function outputs(...codecs: Array<'opus' | 'aac' | 'pcm'>): AudioTranscoderOutpu
     }));
 }
 
-const MPEGTS_FE = {
-    mode: 'mpegts' as const,
+const SOURCE = {
     port: 40001,
     socketPath: '/tmp/mr-bus-40001-abc123.sock',
     probedCodec: 'aac',
@@ -22,7 +21,7 @@ describe('buildPipeline (audio transcoder)', () => {
     it('returns null with zero outputs', () => {
         expect(
             buildPipeline({
-                frontEnd: MPEGTS_FE,
+                source: SOURCE,
                 outputs: [],
                 channels: 2,
                 volume: 1,
@@ -31,9 +30,9 @@ describe('buildPipeline (audio transcoder)', () => {
         ).toBeNull();
     });
 
-    it('mpegts front-end: decode-once with parser-before-decoder, low non-leaky dejitter', () => {
+    it('decode-once front-end: with parser-before-decoder, low non-leaky dejitter', () => {
         const r = buildPipeline({
-            frontEnd: MPEGTS_FE,
+            source: SOURCE,
             outputs: outputs('opus'),
             channels: 2,
             volume: 1,
@@ -48,9 +47,9 @@ describe('buildPipeline (audio transcoder)', () => {
         expect(r.pipeline.match(/avdec_aac/g)).toHaveLength(1);
     });
 
-    it('mpegts front-end clamps bufferMs to the 50ms floor', () => {
+    it('clamps bufferMs to the 50ms floor', () => {
         const r = buildPipeline({
-            frontEnd: { ...MPEGTS_FE, bufferMs: 0 },
+            source: { ...SOURCE, bufferMs: 0 },
             outputs: outputs('opus'),
             channels: 2,
             volume: 1,
@@ -59,29 +58,9 @@ describe('buildPipeline (audio transcoder)', () => {
         expect(r.pipeline).toContain('max-size-time=50000000');
     });
 
-    it('mix front-end: audiomixer fan-in, no decoder chain', () => {
-        const r = buildPipeline({
-            frontEnd: {
-                mode: 'mix',
-                sources: [
-                    { port: 40010, socketPath: '/tmp/mr-bus-40010-c1.sock', connectionId: 'c1' },
-                    { port: 40011, socketPath: '/tmp/mr-bus-40011-c2.sock', connectionId: 'c2' },
-                ],
-                latencyMs: 200,
-            },
-            outputs: outputs('aac'),
-            channels: 2,
-            volume: 1,
-            tsAlignment: 7,
-        })!;
-        expect(r.pipeline).toContain('audiomixer name=mixin force-live=true');
-        expect(r.pipeline.match(/! mixin\./g)).toHaveLength(2);
-        expect(r.pipeline).toContain('mixin_out. ! audioconvert');
-    });
-
     it('encode leaves use NON-leaky queues — the decoder emits ~150ms PES-batch bursts, and a small leaky queue sheds most of every burst (gate01 stutter bug)', () => {
         const r = buildPipeline({
-            frontEnd: MPEGTS_FE,
+            source: SOURCE,
             outputs: outputs('opus', 'aac'),
             channels: 2,
             volume: 1,
@@ -93,7 +72,7 @@ describe('buildPipeline (audio transcoder)', () => {
 
     it('shared trunk carries volume + VU level and one tee branch per rendition', () => {
         const r = buildPipeline({
-            frontEnd: MPEGTS_FE,
+            source: SOURCE,
             outputs: outputs('opus', 'pcm', 'aac'),
             channels: 2,
             volume: 0.5,
@@ -106,7 +85,7 @@ describe('buildPipeline (audio transcoder)', () => {
 
     it('encodes per rendition: opus / 302M / aac, each with its own TS mux', () => {
         const r = buildPipeline({
-            frontEnd: MPEGTS_FE,
+            source: SOURCE,
             outputs: outputs('opus', 'pcm', 'aac'),
             channels: 2,
             volume: 1,
@@ -122,7 +101,7 @@ describe('buildPipeline (audio transcoder)', () => {
 
     it('sinks carry rendition indexes so a pcm rendition never misaligns throughput labels', () => {
         const r = buildPipeline({
-            frontEnd: MPEGTS_FE,
+            source: SOURCE,
             outputs: outputs('opus', 'pcm', 'aac'),
             channels: 2,
             volume: 1,
@@ -138,7 +117,7 @@ describe('buildPipeline (audio transcoder)', () => {
 
     it('every rendition ends in its own pinned-caps bus fan-out tee (no udpsink)', () => {
         const r = buildPipeline({
-            frontEnd: MPEGTS_FE,
+            source: SOURCE,
             outputs: outputs('opus', 'aac'),
             channels: 2,
             volume: 1,
@@ -151,28 +130,38 @@ describe('buildPipeline (audio transcoder)', () => {
         expect(r.pipeline).not.toContain('udpsink');
     });
 
-    it('is PTS-preserving on BOTH front-ends: no pulsesrc / do-timestamp / tsparse re-stamping', () => {
-        for (const frontEnd of [
-            MPEGTS_FE,
-            {
-                mode: 'mix' as const,
-                sources: [
-                    { port: 40010, socketPath: '/tmp/mr-bus-40010-c1.sock', connectionId: 'c1' },
+    it('is PTS-preserving: no pulsesrc / do-timestamp / tsparse re-stamping', () => {
+        const r = buildPipeline({
+            source: SOURCE,
+            outputs: outputs('opus', 'pcm'),
+            channels: 2,
+            volume: 1,
+            tsAlignment: 7,
+        })!;
+        expect(r.pipeline).not.toContain('pulsesrc');
+        expect(r.pipeline).not.toContain('do-timestamp');
+        expect(r.pipeline).not.toContain('set-timestamps');
+    });
+
+    it('inlines a channel map as a trunk mix-matrix with pinned output caps (no mixer element)', () => {
+        const r = buildPipeline({
+            source: {
+                ...SOURCE,
+                channelMap: [
+                    { srcChannel: 0, dstChannel: 0, gain: 0.5 },
+                    { srcChannel: 1, dstChannel: 0, gain: 0.5 },
                 ],
-                latencyMs: 200,
             },
-        ]) {
-            const r = buildPipeline({
-                frontEnd,
-                outputs: outputs('opus', 'pcm'),
-                channels: 2,
-                volume: 1,
-                tsAlignment: 7,
-            })!;
-            expect(r.pipeline).not.toContain('pulsesrc');
-            expect(r.pipeline).not.toContain('do-timestamp');
-            expect(r.pipeline).not.toContain('set-timestamps');
-        }
+            outputs: outputs('opus'),
+            channels: 2,
+            volume: 1,
+            tsAlignment: 7,
+        })!;
+        expect(r.pipeline).not.toContain('audiomixer');
+        expect(r.pipeline).toContain(
+            'mix-matrix="<<(float)0.5000, (float)0.5000>, <(float)0.0000, (float)0.0000>>"',
+        );
+        expect(r.pipeline).toContain('audio/x-raw,channels=2');
     });
 });
 

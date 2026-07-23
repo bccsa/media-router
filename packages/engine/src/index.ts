@@ -10,6 +10,7 @@ export type {
     TsSplitOutput,
     EngineServices,
     ModuleServices,
+    DynamicPort,
 } from './plugins/PluginModule.js';
 export { DeviceProviderRegistry } from './system/DeviceProviderRegistry.js';
 export type { DeviceProvider } from './system/DeviceProviderRegistry.js';
@@ -71,12 +72,16 @@ export {
     buildAudioMixInput,
     build302mEncodeBranch,
     mixMatrixClause,
+    probe302mSupport,
 } from './plugins/audio302mHelpers.js';
 export type {
     AudioMixSource,
     AudioMixInputOpts,
     Audio302mEncodeOpts,
 } from './plugins/audio302mHelpers.js';
+// Re-exported for plugins (per-connection channel maps on mix inputs) —
+// plugin packages depend on @media-router/engine only, not shared-types.
+export type { ChannelMapEntry } from '@media-router/shared-types';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_VIDEO_PID_BASE,

@@ -20,6 +20,13 @@ export interface PortInfo {
     maxConnections?: number;
     /** Whether user can change maxConnections at runtime. */
     userConfigurable?: boolean;
+    /** Display hint: input consumes EITHER TS family (muxed TS or 302M) —
+     *  rendered as a half-orange/half-cyan dot. Plugin-declared. */
+    acceptsAnyTs?: boolean;
+    /** Exact-match accept list — opts an input out of TS-family leniency
+     *  (e.g. ts-splitter takes only genuinely muxed TS). Plugin-declared;
+     *  enforced by the engine and mirrored in the connection validator. */
+    acceptsStreamTypes?: string[];
     /**
      * Display hint from the engine: hide this port while no edge references
      * it (e.g. mpegts-demuxer legacy positional ports once PID ports exist).

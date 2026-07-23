@@ -115,6 +115,13 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(output.maxConnections).toBe(-1);
         });
 
+        it('audio inputs accept either TS family (dual-color dot); video inputs do not', () => {
+            const ports = buildDynamicPorts(entries(1), entries(1));
+            // An audio slot takes an audio ES in a muxed TS OR a 302M stream.
+            expect(ports.find((p) => p.id === 'audio-0')!.acceptsAnyTs).toBe(true);
+            expect(ports.find((p) => p.id === 'video-0')!.acceptsAnyTs).toBeUndefined();
+        });
+
         it('carries name/language streamInfo on configured entries, none on blank ones', () => {
             const ports = buildDynamicPorts(
                 [{ name: 'Cam 1', offsetMs: 0, language: '' }],

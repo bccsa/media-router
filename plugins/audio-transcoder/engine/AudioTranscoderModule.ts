@@ -2,8 +2,7 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
-    gstElementSupportsCaps,
-    probeGstElement,
+    probe302mSupport,
     probeMpegTsStream,
     type PipelineDescription,
     type ProbeResult,
@@ -11,8 +10,7 @@ import {
 } from '@media-router/engine';
 import { buildPipeline } from './audioTranscoderPipeline.js';
 import {
-    AUDIO_INPUT_PORT_ID,
-    MPEGTS_INPUT_PORT_ID,
+    INPUT_PORT_ID,
     buildDynamicPorts,
     outputPortId,
     readRenditions,
@@ -25,9 +23,14 @@ import {
 /**
  * Audio Transcoder plugin (decode-once → N renditions).
  *
- * One audio source in — MPEG-TS (any supported codec, decoded once) or an
- * N-way 302M PCM mix input — re-encoded into several renditions (Opus, AAC,
- * PCM 302M), each on its own output port.
+ * ONE input port, ONE source (`maxConnections: 1`) — any TS-family stream;
+ * the start-time probe picks the decoder chain (Opus/AAC/MP2/AC-3/302M/…).
+ * A connection channel map is inlined as a `mix-matrix` on the trunk — no
+ * mixer element, no added latency. Summing several sources is the separate
+ * audio-mixer plugin's job (wire it in front of this module).
+ *
+ * The decoded audio feeds the shared re-encode: several renditions (Opus,
+ * AAC, PCM 302M), each on its own output port.
  *
  * TIMELINE-TRUE BY DESIGN: the whole path lives in one GStreamer pipeline,
  * so the source PTS flow through decode → encode unchanged. This replaces
@@ -44,7 +47,7 @@ import {
 export class AudioTranscoderModule extends GstPluginBase {
     protected liveUpdatableParams = ['volume', 'audioEnabled'];
 
-    /** Probed mpegts-in stream info (null on the mix front-end). */
+    /** Probed input stream info (null while nothing is wired). */
     private probeResult: ProbeResult | null = null;
     /** Sink counter names captured at build time, with their rendition index. */
     private sinks: Array<{ sinkName: string; renditionIndex: number }> = [];
@@ -54,11 +57,7 @@ export class AudioTranscoderModule extends GstPluginBase {
     private static s302mSupported = false;
 
     static async initManifest(_manifest: Record<string, any>): Promise<void> {
-        const [enc, mux] = await Promise.all([
-            probeGstElement('avenc_s302m'),
-            gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m'),
-        ]);
-        AudioTranscoderModule.s302mSupported = enc && mux;
+        AudioTranscoderModule.s302mSupported = await probe302mSupport();
     }
 
     /** Exposed for tests. */
@@ -86,20 +85,12 @@ export class AudioTranscoderModule extends GstPluginBase {
     }
 
     async onStart(): Promise<void> {
-        // Probe the mpegts input's codec before the pipeline builds (the
-        // decoder chain depends on it). Mix front-end needs no probe — its
-        // content is 302M by contract.
-        const instanceId = this.services?.instanceId ?? '';
-        const upstream = this.services?.mediaRouter?.getModuleBusSource(
-            instanceId,
-            MPEGTS_INPUT_PORT_ID,
-        );
-        if (upstream) {
-            this.probeResult = await probeMpegTsStream(
-                upstream.port,
-                3000,
-                upstream.socketPath,
-            );
+        // Probe the input's codec before the pipeline builds (the decoder
+        // chain depends on it). Always probed — even a 302M-declared source —
+        // to keep one uniform flow; the probe detects s302m like any codec.
+        const source = this.inputSource();
+        if (source) {
+            this.probeResult = await probeMpegTsStream(source.port, 3000, source.socketPath);
             this.log.info({ codec: this.probeResult.codec }, 'Stream probe');
         } else {
             this.probeResult = null;
@@ -115,14 +106,7 @@ export class AudioTranscoderModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        Object.assign(this.config, changes);
-        if ('volume' in changes || 'audioEnabled' in changes) {
-            const audioOff = (this.config.audioEnabled as boolean) === false;
-            const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => {
-                this.log.debug({ err }, 'Volume update failed (pipeline may not be running)');
-            });
-        }
+        await this.applyVolumeLiveUpdate(changes);
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -146,17 +130,10 @@ export class AudioTranscoderModule extends GstPluginBase {
             return null;
         }
 
-        // Front-end selection: mpegts-in wins when both inputs are wired.
-        const mpegtsSrc = router.getModuleBusSource(instanceId, MPEGTS_INPUT_PORT_ID);
-        const mixSources = router
-            .getModuleBusSources(instanceId)
-            .filter((s) => s.sinkPortId === AUDIO_INPUT_PORT_ID);
-        if (!mpegtsSrc && mixSources.length === 0) {
-            this.setHealth('warning', 'No input connected — wire MPEG-TS In or Audio In (302M)');
+        const source = this.inputSource();
+        if (!source) {
+            this.setHealth('warning', 'No input connected — wire an audio source to Audio In');
             return null;
-        }
-        if (mpegtsSrc && mixSources.length > 0) {
-            this.setHealth('warning', 'Both inputs wired — Audio In (302M) is ignored while MPEG-TS In is connected');
         }
 
         const audioOff = (config.audioEnabled as boolean) === false;
@@ -176,19 +153,16 @@ export class AudioTranscoderModule extends GstPluginBase {
         }
 
         const result = buildPipeline({
-            frontEnd: mpegtsSrc
-                ? {
-                      mode: 'mpegts',
-                      port: mpegtsSrc.port,
-                      socketPath: mpegtsSrc.socketPath,
-                      probedCodec: this.probeResult?.codec,
-                      bufferMs: Number(config.bufferMs ?? 75),
-                  }
-                : {
-                      mode: 'mix',
-                      sources: mixSources,
-                      latencyMs: Number(config.mixLatencyMs ?? 200),
-                  },
+            source: {
+                port: source.port,
+                socketPath: source.socketPath,
+                probedCodec: this.probeResult?.codec,
+                bufferMs: Number(config.bufferMs ?? 75),
+                channelMap: source.channelMap,
+                // Matrix input dimension from the probe — a 5.1 source with a
+                // stereo-pinned matrix would fail caps negotiation.
+                sourceChannels: this.probeResult?.channels,
+            },
             outputs,
             channels,
             volume: volumePct / 100,
@@ -199,14 +173,22 @@ export class AudioTranscoderModule extends GstPluginBase {
         this.sinks = result.sinks;
         this.renditions = renditions;
         this.setStatusData('input', {
-            mode: mpegtsSrc
-                ? `MPEG-TS (${this.probeResult?.codec ?? 'auto'})`
-                : `302M mix (${mixSources.length} source${mixSources.length === 1 ? '' : 's'})`,
+            mode: this.probeResult?.codec ?? 'auto',
         });
         this.setStatusData('encoder', {
             renditions: renditions.map((r) => renditionLabel(r)).join(', '),
         });
-        if (!(mpegtsSrc && mixSources.length > 0)) this.setHealth('ok');
+        if (!this.probeResult || this.probeResult.codec === 'unknown') {
+            // Probe saw no audio (source still starting?) — decodebin fallback
+            // is degraded and stays until the next restart re-probes. Surface
+            // it instead of a silent 'ok'.
+            this.setHealth(
+                'warning',
+                'Source codec unknown — using generic decoder; restart module to re-probe once the source is live',
+            );
+        } else {
+            this.setHealth('ok');
+        }
 
         return {
             pipeline: result.pipeline,
@@ -215,6 +197,14 @@ export class AudioTranscoderModule extends GstPluginBase {
     }
 
     // --- internals ---
+
+    /** The single bus source wired to the input port (cap 1), if any. */
+    private inputSource() {
+        const instanceId = this.services?.instanceId ?? '';
+        return (this.services?.mediaRouter?.getModuleBusSources(instanceId) ?? []).find(
+            (s: { sinkPortId: string }) => s.sinkPortId === INPUT_PORT_ID,
+        );
+    }
 
     private publishThroughput(
         total: ThroughputSample,

@@ -435,6 +435,25 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         }
     }
 
+    /**
+     * Shared `volume`/`audioEnabled` live-update: merges the changes into
+     * config and drives the pipeline's `volume name=vol` element (gst element
+     * only — no pactl, to avoid double-attenuation). Call from
+     * `onLiveConfigUpdate` in any module whose trunk carries the standard
+     * `volume name=vol` fader; modules with extra live params call this first
+     * and handle the rest after.
+     */
+    protected async applyVolumeLiveUpdate(changes: Record<string, unknown>): Promise<void> {
+        Object.assign(this.config, changes);
+        if ('volume' in changes || 'audioEnabled' in changes) {
+            const audioOff = (this.config.audioEnabled as boolean) === false;
+            const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
+            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => {
+                this.log.debug({ err }, 'Volume update failed (pipeline may not be running)');
+            });
+        }
+    }
+
     /** Get a property from a named GStreamer element. */
     protected async getElementProperty(element: string, property: string): Promise<unknown> {
         if (!this.childProcess?.isRunning) return undefined;

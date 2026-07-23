@@ -35,6 +35,9 @@ export type RawPort = {
      * now any plugin opting in via this flag participates.
      */
     requiresOrderedApply?: boolean;
+    /** Exact-match accept list — opts an input out of TS-family leniency.
+     *  See `ModulePort.acceptsStreamTypes`. */
+    acceptsStreamTypes?: string[];
 };
 
 export interface StoredConnection {

@@ -43,7 +43,7 @@ _prgname = os.environ.get('MR_GLIB_PRGNAME')
 if _prgname:
     GLib.set_prgname(_prgname)
 
-Gst.init(None)
+Gst.init([])  # [] not None: None breaks under pygobject < 3.48 with gst 1.28 typelibs
 
 # ---------------------------------------------------------------------------
 # Globals

@@ -1,7 +1,6 @@
 import {
     GstPluginBase,
-    gstElementSupportsCaps,
-    probeGstElement,
+    probe302mSupport,
     type AudioMixSource,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -36,11 +35,7 @@ export class N1Mixer302mModule extends GstPluginBase {
     private static s302mSupported = false;
 
     static async initManifest(_manifest: Record<string, any>): Promise<void> {
-        const [enc, mux] = await Promise.all([
-            probeGstElement('avenc_s302m'),
-            gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m'),
-        ]);
-        N1Mixer302mModule.s302mSupported = enc && mux;
+        N1Mixer302mModule.s302mSupported = await probe302mSupport();
     }
 
     /** Exposed for tests. */

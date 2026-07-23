@@ -121,8 +121,10 @@ transport (the legacy loopback-UDP-multicast bus and its
 without it. Hard requirements:
 
 - **GStreamer ≥ 1.24** — `unixfdsrc`/`unixfdsink` (in `plugins-bad`).
-  Stock Debian 12 ships 1.22 — dev boxes use the local prefix
-  (`source ~/gst-1.24/env.sh`); the fleet images ship 1.28.
+  Stock Debian 12 ships 1.22 — dev boxes install a trimmed 1.28 build to
+  `/usr/local` (shadows the apt 1.22; Debian 1.22 plugins like srt/rist/
+  alsa/pipewire load on the 1.28 core via `GST_PLUGIN_PATH` set in
+  `/etc/environment`); the fleet images ship 1.28.
 - **A patched `unixfdsink`** for production fan-out: stock unixfdsink
   (verified through 1.28.2) sends to clients on *blocking* sockets while
   holding the element's object lock, so a single stalled consumer freezes

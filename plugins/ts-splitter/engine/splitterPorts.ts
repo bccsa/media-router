@@ -3,39 +3,20 @@
  *
  * The splitter is a clean slate vs the old demuxer: PID-based output ports only
  * (no legacy positional `video-N`/`audio-N`), keyed on the numeric PID the
- * runner discovers. Pure (no engine imports) so the diff/serialise logic is
- * unit-testable with plain objects — the module owns the side effects.
+ * runner discovers. Pure (type-only engine imports) so the diff/serialise
+ * logic is unit-testable with plain objects — the module owns the side effects.
  *
  * Discovery populates the persisted `discoveredStreams` config but never removes
  * from it (a configured-but-absent stream keeps its port so a downstream stays
  * wired when the source briefly goes dark).
  */
 import { streamLabel, streamTypeInfo, type StreamMedia } from './streamTypes.js';
+import type { DynamicPort } from '@media-router/engine';
+
+export type { DynamicPort };
 
 export const INPUT_PORT_ID = 'mpegts-in';
 const PID_OUT_PREFIX = 'pid-';
-
-export interface DynamicPort {
-    id: string;
-    direction: 'input' | 'output';
-    streamType: 'muxed/mpegts';
-    label: string;
-    maxConnections: number;
-    /** Downstream consumers of these outputs must wait for the runner to be up
-     *  before wiring — see the demuxer's DynamicPort note; applied by
-     *  ConnectionApplier. */
-    requiresOrderedApply?: boolean;
-    /** Structured stream identity for compact pin display in the UI (one
-     *  value by priority: in-band name → ISO 639 language → decimal PID,
-     *  plus a codec chip). `label` stays the full descriptive string. */
-    streamInfo?: {
-        name?: string;
-        language?: string;
-        pid?: number;
-        codec?: string;
-        media?: string;
-    };
-}
 
 export interface DiscoveredStreamConfig {
     pid: number;
@@ -67,6 +48,7 @@ export function buildDynamicPorts(discovered: DiscoveredStreamConfig[]): Dynamic
             streamType: 'muxed/mpegts',
             label: 'MPEG-TS In',
             maxConnections: 1,
+            acceptsStreamTypes: ['muxed/mpegts'],
         },
     ];
     for (const s of [...discovered].sort((a, b) => a.pid - b.pid)) {

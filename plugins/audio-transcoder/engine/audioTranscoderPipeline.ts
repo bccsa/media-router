@@ -10,17 +10,18 @@
  */
 
 import {
-    buildAudioMixInput,
     buildBusSink,
     buildBusSrc,
     busTeeName,
     build302mEncodeBranch,
-    type AudioMixSource,
+    mixMatrixClause,
+    type ChannelMapEntry,
 } from '@media-router/engine';
 import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
-export interface MpegTsFrontEnd {
-    mode: 'mpegts';
+/** The single wired source — any TS-family stream; the probe picks the
+ *  decoder. Summing multiple sources is the audio-mixer plugin's job. */
+export interface TranscoderSource {
     port: number;
     socketPath?: string;
     /** Probed source codec — picks the parser+decoder chain. */
@@ -30,16 +31,17 @@ export interface MpegTsFrontEnd {
      *  pure arrival latency at downstream muxers (trapped fill in a
      *  non-leaky queue never drains — in-rate = out-rate). */
     bufferMs: number;
-}
-
-export interface MixFrontEnd {
-    mode: 'mix';
-    sources: AudioMixSource[];
-    latencyMs: number;
+    /** Per-connection channel map (gain/routing), rendered inline as a
+     *  `mix-matrix` on the trunk `audioconvert` — no mixer element needed
+     *  for a gain map. */
+    channelMap?: ChannelMapEntry[];
+    /** Channel count of the source stream (matrix input dimension).
+     *  Default 2 — the v1 302M encode branch is stereo-pinned. */
+    sourceChannels?: number;
 }
 
 export interface AudioTranscoderPipelineInputs {
-    frontEnd: MpegTsFrontEnd | MixFrontEnd;
+    source: TranscoderSource;
     outputs: AudioTranscoderOutput[];
     channels: number;
     volume: number; // 0..1.5 gst scale
@@ -113,37 +115,34 @@ function encodeTail(r: AudioTranscoderOutput['rendition'], tsAlignment: number):
 }
 
 /**
- * Assemble the full pipeline: front-end → shared trunk (convert, volume, VU
- * level, tee) → one encode leaf per rendition.
+ * Assemble the full pipeline: demux+decode front-end → shared trunk (convert,
+ * volume, VU level, tee) → one encode leaf per rendition.
  */
 export function buildPipeline(
     input: AudioTranscoderPipelineInputs,
 ): AudioTranscoderPipelineResult | null {
     if (input.outputs.length === 0) return null;
 
-    let frontEnd: string;
-    if (input.frontEnd.mode === 'mpegts') {
-        const fe = input.frontEnd;
-        const src = buildBusSrc({
-            port: fe.port,
-            socketPath: fe.socketPath,
-        });
-        const bufferNs = Math.max(50, Math.min(5000, fe.bufferMs)) * 1_000_000;
-        frontEnd =
-            `${src} ! tsdemux latency=0` +
-            ` ! queue leaky=0 max-size-time=${bufferNs} max-size-buffers=0 max-size-bytes=0` +
-            ` ! ${decoderChainFor(fe.probedCodec)}`;
-    } else {
-        const { fragment, mixerName } = buildAudioMixInput({
-            sources: input.frontEnd.sources,
-            channels: input.channels,
-            latencyMs: input.frontEnd.latencyMs,
-        });
-        frontEnd = `${fragment} ${mixerName}.`;
-    }
+    const fe = input.source;
+    const src = buildBusSrc({
+        port: fe.port,
+        socketPath: fe.socketPath,
+    });
+    const bufferNs = Math.max(50, Math.min(5000, fe.bufferMs)) * 1_000_000;
+    const frontEnd =
+        `${src} ! tsdemux latency=0` +
+        ` ! queue leaky=0 max-size-time=${bufferNs} max-size-buffers=0 max-size-bytes=0` +
+        ` ! ${decoderChainFor(fe.probedCodec)}`;
+    // A connection channel map renders as a `mix-matrix` on the trunk's
+    // audioconvert, with pinned output caps — the matrix row count must
+    // match the negotiated channel count.
+    const trunkMatrix = fe.channelMap?.length
+        ? mixMatrixClause(fe.channelMap, fe.sourceChannels ?? 2, input.channels) +
+          ` ! audio/x-raw,channels=${input.channels}`
+        : '';
 
     const trunk =
-        `audioconvert ! volume name=vol volume=${input.volume.toFixed(2)}` +
+        `audioconvert${trunkMatrix} ! volume name=vol volume=${input.volume.toFixed(2)}` +
         ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
         ' ! tee name=t';
 

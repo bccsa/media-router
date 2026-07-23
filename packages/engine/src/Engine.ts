@@ -245,8 +245,8 @@ export class Engine {
         await requirePwLink();
         // The inter-module bus is unixfd-only — fail fast with a clear error
         // instead of every consumer hanging on a socket that will never bind
-        // (stock Debian 12 gst 1.22 lacks unixfdsrc; dev boxes need
-        // `source ~/gst-1.24/env.sh`, fleet images ship gst 1.28).
+        // (stock Debian 12 gst 1.22 lacks unixfdsrc; dev boxes install a
+        // 1.28 build to /usr/local, fleet images ship gst 1.28).
         if (!(await probeGstElement('unixfdsrc'))) {
             throw new Error(
                 'GStreamer unixfdsrc not available — the inter-module bus requires ' +

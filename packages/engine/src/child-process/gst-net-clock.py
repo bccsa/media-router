@@ -38,7 +38,7 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GstNet", "1.0")
 from gi.repository import Gst, GstNet, GLib
 
-Gst.init(None)
+Gst.init([])  # [] not None: None breaks under pygobject < 3.48 with gst 1.28 typelibs
 
 
 def _audio_clock():

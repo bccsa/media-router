@@ -108,15 +108,7 @@ export class AudioEncoderModule extends GstPluginBase {
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
-        Object.assign(this.config, changes);
-        if ('volume' in changes || 'audioEnabled' in changes) {
-            const audioOff = (this.config.audioEnabled as boolean) === false;
-            const volumePct = audioOff ? 0 : ((this.config.volume as number) ?? 100);
-            // Volume controlled via GStreamer element only — no pactl to avoid double-attenuation
-            await this.setElementProperty('vol', 'volume', volumePct / 100).catch((err) => {
-                this.log.debug({ err }, 'Volume update failed (pipeline may not be running)');
-            });
-        }
+        await this.applyVolumeLiveUpdate(changes);
         if ('bitrate' in changes) {
             const codec = (this.config.codec as string) ?? 'opus';
             const elementName = codec === 'aac' ? 'avenc_aac0' : 'opusenc0';
