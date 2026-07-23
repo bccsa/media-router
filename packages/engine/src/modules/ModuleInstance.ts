@@ -300,6 +300,21 @@ export class ModuleInstance extends EventEmitter {
         return this.plugin.getProcessCount?.() ?? 0;
     }
 
+    /** Live-input-swap capability for a sink port (see PluginModule). */
+    getLiveInputSwap(sinkPortId: string): { element: string } | null {
+        return this.plugin.getLiveInputSwap?.(sinkPortId) ?? null;
+    }
+
+    /** Refresh the stored pipeline description after a live input swap. */
+    async refreshPipelineDescription(): Promise<boolean> {
+        return (await this.plugin.refreshPipelineDescription?.()) ?? false;
+    }
+
+    /** Set module health (routing-layer conditions, e.g. pending input swap). */
+    setHealth(health: 'ok' | 'warning' | 'error' | 'stopped', error?: string): void {
+        this.plugin.setHealth?.(health, error);
+    }
+
     /** Get the underlying plugin. */
     getPlugin(): PluginModule {
         return this.plugin;

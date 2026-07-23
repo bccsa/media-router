@@ -15,6 +15,12 @@ import { buildBusSink, buildBusSrc, type TsSplitRunnerConfig } from '@media-rout
 
 export const INPUT_APPSINK = 'splitin';
 
+/** `name=` of the input `unixfdsrc` — the target of the engine's live
+ *  input-swap (`bus_reinput`): the source edge can be re-pointed without
+ *  restarting this module, so its output appsrc chains (and every
+ *  downstream consumer) stay up across a head-end source switch. */
+export const INPUT_SRC_NAME = 'netin';
+
 export function pidAppsrcName(pid: number): string {
     return `out_0x${pid.toString(16)}`;
 }
@@ -35,7 +41,7 @@ export function buildSplitterPipeline(input: SplitterPipelineInput): {
     const src = buildBusSrc({
         port: input.input.port,
         socketPath: input.input.socketPath,
-        name: 'netin',
+        name: INPUT_SRC_NAME,
     });
     const chains = [`${src} ! appsink name=${INPUT_APPSINK}`];
 

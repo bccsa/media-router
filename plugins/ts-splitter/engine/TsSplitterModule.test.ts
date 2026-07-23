@@ -80,6 +80,12 @@ describe('TsSplitterModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('appsrc name=out_0xc9');
     });
 
+    it('declares live input swap on mpegts-in targeting the input unixfdsrc', () => {
+        const { module } = makeModule();
+        expect(module.getLiveInputSwap('mpegts-in')).toEqual({ element: 'netin' });
+        expect(module.getLiveInputSwap('pid-0x65')).toBeNull();
+    });
+
     it('port pool exhaustion -> error health + null', () => {
         const { module } = makeModule();
         (module as any).services.mediaRouter.assignBusChannel = vi.fn(() => undefined);

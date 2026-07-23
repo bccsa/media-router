@@ -45,6 +45,13 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('"bus_detach"');
     });
 
+    it('the gst runner handles the bus_reinput wire command (live input swap)', () => {
+        expect(runnerSource).toContain('"bus_reinput"');
+        expect(runnerSource).toContain('def handle_bus_reinput');
+        // The tracked-RPC response event GstRunner resolves on.
+        expect(runnerSource).toContain('"event": "bus_reinput_done"');
+    });
+
     it('the runner implements the preserveSourceTimeline start option', () => {
         // GstChildProcess sends `preserveSourceTimeline: { demux }` in the
         // start payload (PipelineDescription contract); the runner must read
