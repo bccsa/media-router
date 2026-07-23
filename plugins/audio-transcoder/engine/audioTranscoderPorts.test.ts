@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    AUDIO_INPUT_PORT_ID,
-    MPEGTS_INPUT_PORT_ID,
+    INPUT_PORT_ID,
     buildDynamicPorts,
     outputPortId,
     readRenditions,
@@ -44,14 +43,18 @@ describe('renditionLabel', () => {
 });
 
 describe('buildDynamicPorts', () => {
-    it('always exposes both fixed inputs with the right types and caps', () => {
+    it('exposes ONE single-source input, TS-family typed (mixing is the audio-mixer plugin)', () => {
         const ports = buildDynamicPorts([]);
-        const mpegts = ports.find((p) => p.id === MPEGTS_INPUT_PORT_ID)!;
-        const audio = ports.find((p) => p.id === AUDIO_INPUT_PORT_ID)!;
-        expect(mpegts.streamType).toBe('muxed/mpegts');
-        expect(mpegts.maxConnections).toBe(1);
-        expect(audio.streamType).toBe('audio/302m');
-        expect(audio.maxConnections).toBe(-1);
+        const inputs = ports.filter((p) => p.direction === 'input');
+        expect(inputs).toHaveLength(1);
+        expect(inputs[0].id).toBe(INPUT_PORT_ID);
+        // Id stays 'mpegts-in' for wire-compat with existing graphs.
+        expect(inputs[0].id).toBe('mpegts-in');
+        expect(inputs[0].streamType).toBe('muxed/mpegts');
+        expect(inputs[0].maxConnections).toBe(1);
+        expect(inputs[0].label).toBe('Audio In');
+        // Decode-capable input → dual-family dot in the UI.
+        expect(inputs[0].acceptsAnyTs).toBe(true);
     });
 
     it('types outputs per rendition codec: pcm → audio/302m, opus/aac → muxed/mpegts', () => {

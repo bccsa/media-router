@@ -46,6 +46,9 @@ describe('buildN1Ports', () => {
             streamType: 'audio/302m',
             label: 'In 1',
             maxConnections: -1,
+            // Strict intake: only genuine 302M sources — a muxed TS goes
+            // through a transcoder first.
+            acceptsStreamTypes: ['audio/302m'],
         });
         expect(ports[4]).toEqual({
             id: 'out-0',

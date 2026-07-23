@@ -26,6 +26,9 @@ describe('buildDynamicPorts', () => {
         const ports = buildDynamicPorts([]);
         expect(ports.map((p) => p.id)).toEqual([INPUT_PORT_ID]);
         expect(ports[0]).toMatchObject({ direction: 'input', maxConnections: 1 });
+        // Strict accept list: a 302M stream is valid TS but has nothing to
+        // split — opt out of TS-family leniency.
+        expect(ports[0].acceptsStreamTypes).toEqual(['muxed/mpegts']);
     });
 
     it('adds one output per discovered stream, sorted by PID', () => {

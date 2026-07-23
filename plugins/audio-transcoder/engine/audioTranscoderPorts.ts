@@ -6,26 +6,13 @@
  * `audioTranscoderPipeline.ts`.
  */
 
-export type PortDirection = 'input' | 'output';
+import type { DynamicPort } from '@media-router/engine';
+
+export type { DynamicPort };
 
 export type AudioCodec = 'opus' | 'aac' | 'pcm';
 
 const AUDIO_CODECS: readonly AudioCodec[] = ['opus', 'aac', 'pcm'];
-
-export interface DynamicPort {
-    id: string;
-    direction: PortDirection;
-    /** Opus/AAC renditions emit plain TS; `pcm` renditions emit SMPTE-302M TS
-     *  typed `audio/302m` so the UI wires them like audio. Both are valid
-     *  MPEG-TS and TS-family-compatible with any TS transport pin. */
-    streamType: 'muxed/mpegts' | 'audio/302m';
-    label: string;
-    maxConnections: number;
-    /** Output ports carry MPEG-TS, so downstream consumers must wait for this
-     *  pipeline to be PLAYING before they can be wired — same contract as the
-     *  encoder / muxer / video-transcoder outputs. */
-    requiresOrderedApply?: boolean;
-}
 
 /** One configured output rendition. Opus knobs are per-rendition (they shape
  *  that rendition's encoder only); absent values take the schema defaults. */
@@ -46,8 +33,9 @@ export interface AudioTranscoderOutput {
     rendition: Rendition;
 }
 
-export const MPEGTS_INPUT_PORT_ID = 'mpegts-in';
-export const AUDIO_INPUT_PORT_ID = 'audio-in';
+/** The single input port. Id stays `mpegts-in` for wire-compat with existing
+ *  graphs (the former separate `audio-in` 302M port was folded into it). */
+export const INPUT_PORT_ID = 'mpegts-in';
 const OUTPUT_PORT_PREFIX = 'out-';
 const MAX_RENDITIONS = 8;
 
@@ -111,26 +99,20 @@ export function renditionLabel(r: Rendition): string {
 }
 
 /**
- * Build the dynamic port list: the two fixed inputs + one output per
- * rendition. Both inputs are always present so sources can be wired before
- * renditions are configured; `mpegts-in` wins when both are connected
- * (enforced in the module).
+ * Build the dynamic port list: one fixed single-source input + one output per
+ * rendition. The input accepts any TS-family source (muxed TS of any codec,
+ * or a 302M stream — the probe picks the decoder); summing several sources
+ * is the audio-mixer plugin's job, so this port is capped at 1.
  */
 export function buildDynamicPorts(renditions: Rendition[]): DynamicPort[] {
     const ports: DynamicPort[] = [
         {
-            id: MPEGTS_INPUT_PORT_ID,
+            id: INPUT_PORT_ID,
             direction: 'input',
             streamType: 'muxed/mpegts',
-            label: 'MPEG-TS In',
+            label: 'Audio In',
             maxConnections: 1,
-        },
-        {
-            id: AUDIO_INPUT_PORT_ID,
-            direction: 'input',
-            streamType: 'audio/302m',
-            label: 'Audio In (302M mix)',
-            maxConnections: -1,
+            acceptsAnyTs: true,
         },
     ];
     renditions.forEach((r, i) => {

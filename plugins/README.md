@@ -108,6 +108,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | A Node-library wrapper that emits MPEG-TS + auto-detects config from the source | `hls-player` | Spawns a Node child running an ESM library (hls-pipe) via dynamic `import()`, publishes paced MPEG-TS on the bus via the `unixfd-fanout.py` sidecar, probes the source and reports `fieldOptions` |
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
 | A multi-port plugin with variable port count | `ts-splitter` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
+| A bus-native N→1 audio processing plugin (302M in/out, per-connection channel maps) | `audio-mixer` | `buildAudioMixInput` fan-in + `build302mEncodeBranch`, `probe302mSupport()` gating, shared `applyVolumeLiveUpdate` fader, `ThroughputPoller` badge |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
 
 The Quick Start example above is a minimal skeleton — for anything non-trivial, copying a real plugin will save more time than reading docs.
@@ -195,6 +196,8 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 | `label` | `string` | Yes | Display label on the module node |
 | `maxConnections` | `number` | No | Max connections: `-1` = unlimited (default), `0` = disabled/hidden, `1+` = fixed limit |
 | `userConfigurable` | `boolean` | No | If true, user can change `maxConnections` at runtime (e.g. N-1 mixer) |
+| `acceptsAnyTs` | `boolean` | No | Display hint for inputs that meaningfully consume EITHER TS family (muxed TS or 302M — e.g. the audio-transcoder's decode input): the UI renders the dot half muxed-orange / half 302M-cyan. Don't set it on plain TS transport pins |
+| `acceptsStreamTypes` | `string[]` | No | Exact-match accept list for an input — opts out of TS-family leniency where family-compatible wiring is a dead end (e.g. ts-splitter: `["muxed/mpegts"]` — a 302M stream is valid TS but has nothing to split). Enforced by the engine, mirrored with a toast reason in the UI. Don't set it on TS transport pins (SRT/RIST/IP outputs must keep accepting 302M) |
 
 ### Stream Types
 
@@ -217,10 +220,19 @@ Ports define what a module can connect to. Each port has a direction, stream typ
 - Stream types must match (`audio/pcm` ↔ `audio/pcm`, `muxed/mpegts` ↔ `muxed/mpegts`) —
   the shared rule is `streamTypesCompatible()` in `@media-router/shared-types`
 - Exception — the **TS family**: `audio/302m` ↔ `muxed/mpegts` wire in both directions
-  (302M is valid MPEG-TS, so it rides SRT/RIST/UDP transports; wrong-content TS into an
-  audio pin fails soft via a `audio/x-smpte-302m` caps filter after tsdemux)
+  (302M is valid MPEG-TS, so it rides SRT/RIST/UDP transports). Ports that want
+  stricter intake declare `acceptsStreamTypes` — the 302M mixing/output pins take only
+  `audio/302m`-declared sources (route a muxed TS through an Audio Transcoder first)
 - Cross-type connections are otherwise blocked (use encoder/decoder to bridge)
-- `maxConnections` is enforced on both source and target ports
+- `maxConnections` is enforced on both source and target ports — it is the PLUGIN's
+  declaration of what its input can consume (`1` on every muxed/mpegts input: two TS
+  streams on one pin are never meaningful; `-1` only where the pipeline actually sums
+  its sources). The router core stays policy-free — declarations describe transport,
+  not content (an SRT input's `muxed/mpegts` output may well carry 302M from a remote
+  device), so only the plugin can know what's mixable
+- Rejected connections surface a reason via toast in the routing editor
+  (`validateConnection` in `useGraphSync`) — any new wiring rule must return a
+  human-readable reason, not silently `false`
 - An INPUT port with `maxConnections: -1` and `streamType: audio/302m` can receive N
   sources — consume them with `getModuleBusSources(id).filter(s => s.sinkPortId === ...)`
   and feed `buildAudioMixInput()` (see Engine Helpers) for implicit timeline-true mixing
@@ -804,10 +816,16 @@ SMPTE-302M (PCM-in-MPEG-TS) is the timeline-preserving audio transport between m
 - `build302mEncodeBranch({ format? })` — PCM → 302M-in-TS encode tail
   (`S32LE`/48 kHz/stereo, `avenc_s302m strict=experimental` — ffmpeg gates the encoder;
   the bitstream is standard). Caller appends `buildBusSink(...)`.
-- `gstElementSupportsCaps(element, mediaType)` — caps-level capability probe. 302M in
-  `mpegtsmux`/`tsdemux` needs **gst ≥ 1.26**; gate pcm features on
-  `gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m')` in `initManifest` (real
-  example: [`audio-transcoder`](audio-transcoder/engine/AudioTranscoderModule.ts)).
+- `probe302mSupport()` — the one-call runtime gate for 302M features: probes
+  `avenc_s302m` AND `mpegtsmux` accepting `audio/x-smpte-302m` (**gst ≥ 1.26**). Call it
+  once from `static initManifest` and cache the flag (real examples:
+  [`audio-transcoder`](audio-transcoder/engine/AudioTranscoderModule.ts),
+  [`audio-mixer`](audio-mixer/engine/AudioMixerModule.ts)). The underlying
+  `gstElementSupportsCaps(element, mediaType)` stays available for other caps probes.
+- `applyVolumeLiveUpdate(changes)` (protected on `GstPluginBase`) — the shared
+  `volume`/`audioEnabled` live-update for any pipeline with the standard
+  `volume name=vol` fader: merges config + drives the element (gst only, no pactl).
+  Call it from `onLiveConfigUpdate`; handle extra live params after it.
 - `capsStreamInfo(capsString)` — codec id + `nativeTs` flag + channels/rate/language from
   a serialized caps string (e.g. the `caps` field of `stream:discovered` events).
   `nativeTs` drives the in-band metadata layering rule (see the carousel section above):

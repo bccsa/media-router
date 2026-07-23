@@ -30,6 +30,7 @@ export function mapPorts(raw: RawPort[]) {
         streamType: p.streamType as StreamType,
         label: p.label ?? p.id,
         maxConnections: p.maxConnections ?? -1,
+        acceptsStreamTypes: p.acceptsStreamTypes as StreamType[] | undefined,
     }));
 }
 

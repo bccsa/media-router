@@ -14,18 +14,10 @@ import {
     buildBusSink,
     build302mEncodeBranch,
     type AudioMixSource,
+    type DynamicPort,
 } from '@media-router/engine';
 
-export type PortDirection = 'input' | 'output';
-
-export interface DynamicPort {
-    id: string;
-    direction: PortDirection;
-    streamType: 'audio/302m';
-    label: string;
-    maxConnections: number;
-    requiresOrderedApply?: boolean;
-}
+export type { DynamicPort };
 
 export const MIN_PAIRS = 2;
 export const MAX_PAIRS = 16;
@@ -55,6 +47,7 @@ export function buildN1Ports(pairCount: number): DynamicPort[] {
             streamType: 'audio/302m',
             label: `In ${i + 1}`,
             maxConnections: -1,
+            acceptsStreamTypes: ['audio/302m'],
         });
     }
     for (let i = 0; i < pairCount; i++) {

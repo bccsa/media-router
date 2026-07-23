@@ -21,7 +21,8 @@
                 "direction": "input",
                 "streamType": "audio/302m",
                 "label": "Audio In (302M)",
-                "maxConnections": -1
+                "maxConnections": -1,
+                "acceptsStreamTypes": ["audio/302m"]
             }
         ],
         "configSchema": {

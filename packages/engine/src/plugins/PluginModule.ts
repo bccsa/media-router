@@ -1,4 +1,4 @@
-import type { PluginManifest } from '@media-router/shared-types';
+import type { PluginManifest, StreamType } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
@@ -6,6 +6,40 @@ import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
 import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 import type { ClockAuthority } from '../child-process/ClockAuthority.js';
+
+/**
+ * A dynamically resolved module port — the one shared shape every plugin's
+ * `getDynamicPorts` returns (previously re-declared per plugin). Field
+ * semantics match `ModulePort` in shared-types plus the engine-side apply
+ * hints (`requiresOrderedApply`) and UI display hints.
+ */
+export interface DynamicPort {
+    id: string;
+    direction: 'input' | 'output';
+    streamType: StreamType;
+    label: string;
+    /** -1 = unlimited, 0 = disabled/hidden, 1+ = fixed limit. */
+    maxConnections?: number;
+    /** Apply this port's outgoing connections in topological order after the
+     *  producer pipeline is up (lazy port allocation on pipeline start). */
+    requiresOrderedApply?: boolean;
+    /** Exact-match accept list — opts an input out of TS-family leniency.
+     *  See `ModulePort.acceptsStreamTypes`. */
+    acceptsStreamTypes?: StreamType[];
+    /** Display hint: input consumes EITHER TS family (muxed TS or 302M) —
+     *  rendered as a dual-color dot. Only for decode-capable inputs. */
+    acceptsAnyTs?: boolean;
+    /** Structured stream identity for compact pin display in the UI (one
+     *  value by priority: in-band name → ISO 639 language → decimal PID,
+     *  plus a codec chip). `label` stays the full descriptive string. */
+    streamInfo?: {
+        name?: string;
+        language?: string;
+        pid?: number;
+        codec?: string;
+        media?: string;
+    };
+}
 
 /** Services passed to a plugin's static `registerServices` hook (once per plugin class). */
 export interface EngineServices {
@@ -84,13 +118,7 @@ export interface PluginModule {
      * should default the parameter to `this.config` so direct/test calls still
      * work.
      */
-    getDynamicPorts?(config?: Record<string, unknown>): Array<{
-        id: string;
-        direction: 'input' | 'output';
-        streamType: string;
-        label: string;
-        maxConnections?: number;
-    }>;
+    getDynamicPorts?(config?: Record<string, unknown>): DynamicPort[];
     /** Return the GStreamer child process (for MPEG-TS piping). */
     getChildProcess?(): GstChildProcess | null;
     /**

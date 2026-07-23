@@ -6,7 +6,7 @@
     "mediaRouter": {
         "pluginId": "audio-transcoder",
         "displayName": "Audio Transcoder",
-        "description": "Decodes one audio source (MPEG-TS or 302M PCM mix input) once and re-encodes it into several renditions — Opus, AAC, or PCM 302M — each on its own output port. Preserves the source timeline end-to-end (no PipeWire re-stamping), so downstream muxers keep A/V sync.",
+        "description": "Decodes one audio source (any TS-family stream — Opus, AAC, MP2, AC-3, or 302M PCM; the codec is probed) once and re-encodes it into several renditions — Opus, AAC, or PCM 302M — each on its own output port. Preserves the source timeline end-to-end (no PipeWire re-stamping), so downstream muxers keep A/V sync. To sum several sources first, wire them through an Audio Mixer.",
         "color": "#06b6d4",
         "icon": "audio-waveform",
         "category": "codec",
@@ -131,17 +131,7 @@
                     "x-widget": "slider",
                     "x-step": 25,
                     "x-unit": "ms",
-                    "description": "Post-demux jitter buffer (MPEG-TS input). No real-time sink in the encode path, so keep this low — standing fill in this non-leaky queue adds arrival latency at downstream muxers. Raise for HLS/bursty sources only."
-                },
-                "mixLatencyMs": {
-                    "type": "number",
-                    "default": 200,
-                    "minimum": 50,
-                    "maximum": 2000,
-                    "x-widget": "slider",
-                    "x-step": 25,
-                    "x-unit": "ms",
-                    "description": "Mix latency budget (302M audio input) — how long the mixer waits for lagging inputs before emitting; starved inputs are silence-filled."
+                    "description": "Post-demux jitter buffer (single-source input). No real-time sink in the encode path, so keep this low — standing fill in this non-leaky queue adds arrival latency at downstream muxers. Raise for HLS/bursty sources only."
                 },
                 "tsAlignment": {
                     "type": "number",

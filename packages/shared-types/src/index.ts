@@ -283,9 +283,10 @@ export type StreamType =
  * TS-family stream types: both are valid MPEG-TS on the wire. `audio/302m`
  * is a semantic flag ("this TS carries SMPTE-302M PCM audio — wire it to
  * audio pins for mixing") — it must still be able to ride any TS transport
- * (SRT/RIST/IP outputs) and any TS source must be wireable into an audio
- * mixing pin (fails soft downstream via a tsdemux caps filter when the
- * content isn't 302M).
+ * (SRT/RIST/IP outputs). Ports that want stricter intake than the family
+ * rule declare `ModulePort.acceptsStreamTypes` (e.g. 302M mixing pins take
+ * only `audio/302m`-declared sources; a muxed TS goes through a transcoder
+ * first).
  */
 const TS_FAMILY: ReadonlySet<string> = new Set(['muxed/mpegts', 'audio/302m']);
 
@@ -325,6 +326,14 @@ export interface ModulePort {
     maxConnections?: number;
     /** Whether the user can change maxConnections at runtime (e.g. N-1 mixer). */
     userConfigurable?: boolean;
+    /**
+     * Exact-match accept list for an INPUT port — opts out of TS-family
+     * leniency. Plugin-declared: set it where family-compatible wiring is a
+     * dead end (e.g. the ts-splitter's input takes only genuinely muxed TS —
+     * a 302M stream is valid TS but has nothing to split). Absent = the
+     * normal `streamTypesCompatible` rule applies.
+     */
+    acceptsStreamTypes?: StreamType[];
 }
 
 // --- Connections ------------------------------------------------------------

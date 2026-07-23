@@ -1,5 +1,6 @@
 import type { ChannelMapEntry } from '@media-router/shared-types';
 import { buildBusSrc } from './busHelpers.js';
+import { probeGstElement, gstElementSupportsCaps } from './gstInspect.js';
 
 /**
  * SMPTE-302M (PCM-in-MPEG-TS) pipeline helpers — the PTS-preserving audio
@@ -21,6 +22,19 @@ import { buildBusSrc } from './busHelpers.js';
  * fleet runs 1.28; older dev runtimes can only exercise these strings in
  * unit tests). 302M itself is 48 kHz-only.
  */
+
+/**
+ * Probe gst runtime support for 302M-in-TS: the libav encoder AND
+ * mpegtsmux accepting `audio/x-smpte-302m` caps (gst ≥ 1.26). Every 302M
+ * module runs this once from its static `initManifest` and caches the flag.
+ */
+export async function probe302mSupport(): Promise<boolean> {
+    const [enc, mux] = await Promise.all([
+        probeGstElement('avenc_s302m'),
+        gstElementSupportsCaps('mpegtsmux', 'audio/x-smpte-302m'),
+    ]);
+    return enc && mux;
+}
 
 export interface AudioMixSource {
     port: number;
