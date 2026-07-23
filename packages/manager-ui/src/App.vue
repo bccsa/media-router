@@ -3,6 +3,7 @@ import { onMounted } from 'vue';
 import AppHeader from '@/components/common/AppHeader.vue';
 import AppSidebar from '@/components/common/AppSidebar.vue';
 import DisconnectedOverlay from '@/components/common/DisconnectedOverlay.vue';
+import MrToastHost from '@/components/common/MrToastHost.vue';
 import { useSocketStore } from '@/stores/socket';
 import { useThemeStore } from '@/stores/theme';
 
@@ -24,5 +25,6 @@ onMounted(() => {
             </main>
         </div>
         <DisconnectedOverlay />
+        <MrToastHost />
     </div>
 </template>

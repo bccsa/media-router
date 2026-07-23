@@ -267,6 +267,21 @@ const portColorMap: Record<string, string> = {
     'text/subtitle': '#9b59b6',
     'data/generic': '#7f8c8d',
 };
+
+/**
+ * Handle fill. Solid by the port's stream type; a port that declares
+ * `acceptsAnyTs` (an input that meaningfully consumes EITHER TS family —
+ * e.g. the audio-transcoder decoding a muxed TS or a 302M stream) splits
+ * half muxed-orange / half 302M-cyan. Plugin-declared — pure TS transport
+ * pins (splitter, SRT/RIST outputs) stay solid even though TS-family
+ * wiring compatibility applies to them too.
+ */
+function handleBackground(port: { streamType: string; acceptsAnyTs?: boolean }): string {
+    if (port.acceptsAnyTs) {
+        return `linear-gradient(180deg, ${portColorMap['muxed/mpegts']} 50%, ${portColorMap['audio/302m']} 50%)`;
+    }
+    return portColorMap[port.streamType] ?? '#6b7280';
+}
 </script>
 
 <template>
@@ -564,7 +579,7 @@ const portColorMap: Record<string, string> = {
             class="!w-3 !h-3 !rounded-full !border-2 !border-surface"
             :style="{
                 top: handleTop(i),
-                backgroundColor: portColorMap[port.streamType] ?? '#6b7280',
+                background: handleBackground(port),
             }"
         />
 
@@ -579,7 +594,7 @@ const portColorMap: Record<string, string> = {
             class="!w-3 !h-3 !rounded-full !border-2 !border-surface"
             :style="{
                 top: handleTop(i),
-                backgroundColor: portColorMap[port.streamType] ?? '#6b7280',
+                background: handleBackground(port),
             }"
         />
     </div>
