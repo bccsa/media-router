@@ -15,29 +15,13 @@ import {
     TS_METADATA_PID,
     videoStreamPid,
     type PadLinkRule,
+    type DynamicPort,
 } from '@media-router/engine';
 
-export type PortDirection = 'input' | 'output';
-
-export interface DynamicPort {
-    id: string;
-    direction: PortDirection;
-    streamType: 'muxed/mpegts';
-    label: string;
-    maxConnections: number;
-    /**
-     * Marks output ports whose downstream consumers must wait for this
-     * pipeline to be PLAYING before they can be wired. Read by
-     * `ConnectionApplier` to apply such connections first with a settle
-     * delay (replaces the pre-extraction hardcoded `streamType === 'muxed/mpegts'`).
-     */
-    requiresOrderedApply?: boolean;
-    /** Structured stream identity for compact pin display in the UI (one
-     *  value by priority: name → ISO 639 language → decimal PID). No PID
-     *  here — muxer PIDs are assigned by CONNECTED-source ordinal at build
-     *  time, so a port-index PID would lie on partially-wired setups. */
-    streamInfo?: { name?: string; language?: string; media?: string };
-}
+// Shared engine type. Note: muxer ports never set `streamInfo.pid` — muxer
+// PIDs are assigned by CONNECTED-source ordinal at build time, so a
+// port-index PID would lie on partially-wired setups.
+export type { DynamicPort };
 
 export interface UdpInputSource {
     /** Sink port id this connection arrives on (e.g. "video-0", "audio-2"). */
@@ -234,6 +218,9 @@ export function buildDynamicPorts(
             streamType: 'muxed/mpegts',
             label: `Audio ${i + 1}`,
             maxConnections: 1,
+            // Audio slots take an audio ES in a muxed TS OR a 302M stream
+            // (PCM muxes into the program like any audio) — dual-color dot.
+            acceptsAnyTs: true,
             ...(streamInfo ? { streamInfo } : {}),
         });
     }
