@@ -268,6 +268,17 @@ export interface PipelineDescription {
      */
     tsSplit?: TsSplitRunnerConfig;
     /**
+     * Report-only video-info probe for a TS passthrough pipeline. The runner
+     * watches the named appsink (a leaky tap off the egress tee), discovers
+     * the FIRST video ES of the FIRST program and emits `tsprobe:videoinfo`
+     * plugin events: `{pid, codec, width, height, interlaced, fps, scrambled,
+     * display}` — `display` pre-formatted ("1920×1080i50"), geometry fields
+     * null until the SPS parses (H.264/H.265 only; MPEG-1/2 report codec
+     * only). Cheap by design: full scan until the first SPS, then 1-in-64
+     * buffer sampling. Never affects routing.
+     */
+    tsProbe?: TsProbeRunnerConfig;
+    /**
      * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
      * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
      * rebased ~0 per incarnation), so a transcoding pipeline's output mux
@@ -315,6 +326,12 @@ export interface TsSplitRunnerConfig {
     tsId?: number;
     /** May be empty — the runner still runs source discovery on the input. */
     outputs: TsSplitOutput[];
+}
+
+/** TS video-info probe config — see PipelineDescription.tsProbe. */
+export interface TsProbeRunnerConfig {
+    /** `name=` of the tap appsink in `pipeline` receiving the muxed TS. */
+    appsink: string;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

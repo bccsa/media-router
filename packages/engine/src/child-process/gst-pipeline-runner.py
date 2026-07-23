@@ -1244,6 +1244,12 @@ def handle_start(data):
         pipeline = None
         return
 
+    # Report-only TS video-info probe (`tsProbe` config) — same wiring window.
+    if not _start_ts_probe(pipeline, data.get("tsProbe")):
+        pipeline.set_state(Gst.State.NULL)
+        pipeline = None
+        return
+
     # Set up bus watch
     bus = pipeline.get_bus()
     bus.add_signal_watch()
@@ -1277,6 +1283,7 @@ def handle_stop(data=None):
     _clear_preserve_timeline()
     _stop_rist()
     _stop_ts_split()
+    _stop_ts_probe()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
@@ -2345,9 +2352,17 @@ def _start_ts_split(pipe, cfg):
         emit_event({"event": "warning",
                     "message": f"tsSplit: resynced after {dropped} garbage bytes"})
 
+    def _on_videoinfo(pid, info):
+        # Streaming-thread callback, like _on_discovered. Ephemeral status —
+        # the module renders `display` and never persists it.
+        import ts_video_info
+        emit_plugin_event("tssplit:videoinfo", {
+            **info, "pid": pid, "display": ts_video_info.format_video_info(info)})
+
     core = ts_split.SplitterCore(int(cfg.get("tsId", 1)), outputs,
                                  on_discovered=_on_discovered,
-                                 on_desync=_on_desync)
+                                 on_desync=_on_desync,
+                                 on_videoinfo=_on_videoinfo)
 
     # Drain contract set here, not in the pipeline string, so it can't drift.
     # drop=False (unlike the rist sender): this feeds the lossless local bus,
@@ -2412,6 +2427,122 @@ def _stop_ts_split():
     # respawn replays the same start payload, so state rebuilds itself.
     global _ts_split
     _ts_split = None
+
+
+_ts_probe = None          # truthy while a tsProbe appsink is wired
+
+
+def _start_ts_probe(pipe, cfg):
+    """Report-only TS video-info probe (`tsProbe: {appsink}` config): watch a
+    passthrough pipeline's TS bytes via a tap appsink, discover the first
+    program's video ES and emit `tsprobe:videoinfo` plugin events with the
+    SPS-derived parameters. Never touches routing; a probe failure past
+    wiring is swallowed (KLV-reader philosophy). Returns True when no config
+    is present or the probe is wired; a missing appsink the module explicitly
+    asked for is still a hard error (matches tsSplit).
+
+    CPU strategy: every buffer is processed until the first SPS parses
+    (seconds), then 1 buffer in PROBE_SAMPLE_STRIDE keeps discovery + the
+    SPS byte-compare alive at ~1.5% duty on a 30 Mbps feed. Buffers arrive
+    datagram-aligned (7x188); a misaligned buffer yields nothing from
+    iter_packets — harmless on a report-only path.
+    """
+    global _ts_probe
+    if not cfg:
+        return True
+    try:
+        import ts_psi
+        import ts_video_info
+    except Exception as e:  # noqa: BLE001
+        emit_event({"event": "error", "message": f"ts_video_info unavailable: {e}"})
+        return False
+    appsink = pipe.get_by_name(cfg.get("appsink", ""))
+    if appsink is None:
+        emit_event({"event": "error",
+                    "message": f"tsProbe: appsink not found: {cfg.get('appsink')!r}"})
+        return False
+
+    PROBE_SAMPLE_STRIDE = 64
+    VIDEO_TYPES = {ts_psi.STREAM_TYPE_MPEG2_VIDEO: 'mpeg2', 0x01: 'mpeg1',
+                   ts_psi.STREAM_TYPE_AVC: 'h264', ts_psi.STREAM_TYPE_HEVC: 'h265'}
+    st = {"disc": ts_psi.PsiDiscovery(), "probe": None, "stable": False, "n": 0}
+
+    def _emit(pid, codec, info=None):
+        payload = {"pid": pid, "codec": codec, "width": None, "height": None,
+                   "interlaced": None, "fps": None, "scrambled": None,
+                   "display": None}
+        if info:
+            payload.update(info)
+            payload["display"] = ts_video_info.format_video_info(info)
+        emit_plugin_event("tsprobe:videoinfo", payload)
+
+    def _on_pmt():
+        for pid, stype in st["disc"].pmt["streams"]:
+            codec = VIDEO_TYPES.get(stype)
+            if codec is None:
+                continue
+            old = st["probe"]
+            if old is not None and old.pid == pid and old.codec == codec:
+                return                       # unchanged video ES — keep state
+            st["stable"] = False
+            if codec in ('h264', 'h265'):
+                st["probe"] = ts_video_info.VideoInfoProbe(pid, codec)
+            else:
+                st["probe"] = None           # mpeg1/2: codec-only report
+            _emit(pid, codec)                # early codec line for the UI
+            return                           # first video ES of first program
+
+    def _on_sample(sink):
+        smp = sink.emit("pull-sample")
+        if not smp:
+            return Gst.FlowReturn.OK
+        st["n"] += 1
+        if st["stable"] and st["n"] % PROBE_SAMPLE_STRIDE:
+            return Gst.FlowReturn.OK
+        buf = smp.get_buffer()
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+        try:
+            data = bytes(mi.data)
+        finally:
+            buf.unmap(mi)
+        try:
+            probe = st["probe"]
+            psi = []
+            for pkt in ts_psi.iter_packets(data):
+                pid = ts_psi.ts_pid(pkt)
+                if pid == 0 or pid == st["disc"].pmt_pid:
+                    psi.append(pkt)
+                if probe is not None and pid == probe.pid:
+                    info = probe.feed(pkt)
+                    if info is not None:
+                        st["stable"] = True
+                        _emit(pid, probe.codec, info)
+            if st["disc"].feed(psi):
+                _on_pmt()
+        except Exception:  # noqa: BLE001 — report-only: never hurt the pipeline
+            pass
+        return Gst.FlowReturn.OK
+
+    appsink.set_property("emit-signals", True)
+    appsink.set_property("sync", False)
+    # async=false: keep the tap out of preroll — a dark input must not wedge
+    # the passthrough pipeline in PAUSED (same lesson as the tsSplit appsink).
+    appsink.set_property("async", False)
+    # drop=true, small bound: report-only tap must shed, never back-pressure
+    # the tee it hangs off (deliberately opposite of tsSplit's drop=False).
+    appsink.set_property("max-buffers", 8)
+    appsink.set_property("drop", True)
+    appsink.connect("new-sample", _on_sample)
+    _ts_probe = True
+    return True
+
+
+def _stop_ts_probe():
+    # State rides the appsink streaming thread; NULL transition stops it.
+    global _ts_probe
+    _ts_probe = None
 
 
 # Command dispatch

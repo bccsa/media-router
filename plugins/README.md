@@ -618,6 +618,20 @@ interface PipelineDescription {
      */
     tsSplit?: TsSplitRunnerConfig;
     /**
+     * Report-only TS video-info probe (ts_video_info.py): the runner watches
+     * the named appsink (tap the module's egress tee through a LEAKY queue —
+     * `busout_<port>. ! queue leaky=downstream max-size-buffers=64 ! appsink
+     * name=tsprobe`), discovers the first video ES of the first program and
+     * emits `tsprobe:videoinfo` plugin events `{pid, codec, width, height,
+     * interlaced, fps, scrambled, display}` — `display` pre-formatted
+     * ("1920×1080i50"), geometry null until the SPS parses (H.264/H.265;
+     * MPEG-1/2 report codec only). Full scan until the first SPS, then 1-in-64
+     * buffer sampling. Any TS-carrying input module can adopt it — see
+     * `mpegts-ip-input`. (The ts-splitter gets the same info per routed video
+     * PID on `tssplit:videoinfo`, no extra config.)
+     */
+    tsProbe?: TsProbeRunnerConfig;
+    /**
      * Carry the SOURCE PES timeline through the named tsdemux. tsdemux erases
      * the source timeline (buffer PTS rebased ~0 per incarnation), so a
      * transcoding pipeline's output mux stamps a fresh timeline every

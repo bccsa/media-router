@@ -3,6 +3,7 @@ import {
     buildBusSink,
     buildNetUdpSrc,
     buildBackpressureQueue,
+    busTeeName,
     isMulticastAddr,
     formatBytes,
     bitrateBadge,
@@ -61,6 +62,9 @@ export class MpegTsIpInputModule extends GstPluginBase {
             if (data.state === 'stopped' || data.state === 'error') {
                 this.setBadge('status', { icon: 'radio', text: 'Waiting', color: '#6b7280' });
                 this.clearBadge('bitrate');
+                // Probe state died with the python child — never show stale
+                // geometry across a restart.
+                this.setStatusData('video', { video: '—' });
             }
         });
 
@@ -185,11 +189,33 @@ export class MpegTsIpInputModule extends GstPluginBase {
             buildBusSink(udpPort),
         ].join(' ! ');
 
+        // Video-info tap off the egress tee (report-only, `tsProbe` glue):
+        // leaky queue is mandatory — a stalled appsink branch on a tee stalls
+        // ALL branches, including the loopback relay this module exists for.
+        const probeTap =
+            ` ${busTeeName(udpPort)}. ! queue leaky=downstream max-size-buffers=64 ` +
+            '! appsink name=tsprobe';
+
         return {
-            pipeline,
+            pipeline: pipeline + probeTap,
             restartOnError: true,
             restartBackoffMs: { baseMs: 2000, maxMs: 10000 },
+            tsProbe: { appsink: 'tsprobe' },
         };
+    }
+
+    /** `tsprobe:videoinfo` → the popup's Video line. Geometry fields are null
+     *  until the SPS parses; `display` is pre-formatted ("1920×1080i50"). */
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel !== 'tsprobe:videoinfo') return;
+        const p = payload as { codec?: string; display?: string; scrambled?: boolean };
+        this.setStatusData('video', {
+            video: p.display
+                ? `${p.display} (${p.codec})`
+                : p.scrambled
+                  ? `${p.codec ?? ''} (scrambled)`.trim()
+                  : (p.codec ?? '—'),
+        });
     }
 
     private async pollStats(): Promise<void> {
@@ -245,5 +271,6 @@ export class MpegTsIpInputModule extends GstPluginBase {
             encapsulation: configured === 'auto' ? `${effective} (auto)` : effective,
             multicast: isMulticastAddr(address) ? 'Yes' : 'No',
         });
+        this.setStatusData('video', { video: '—' });
     }
 }

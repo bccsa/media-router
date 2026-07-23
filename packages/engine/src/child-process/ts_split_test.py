@@ -321,6 +321,62 @@ o.version = 31
 o.update(ts_psi.STREAM_TYPE_HEVC, OPUS_DESC)
 check("update: version wraps mod 32", o.version == 0)
 
+
+# --- on_videoinfo: SPS parsed from a routed video PID --------------------------------
+import ts_video_info  # noqa: E402  (kept local to the video-info tests)
+
+H264_SPS = bytes.fromhex(
+    "67640028ad843fff9087fff210ffffffffffffffff087fffffffffffffff"
+    "2cc501e0113f780a10101014000003000400000300ca50")   # 1920×1080i50 (real capture)
+
+
+def video_pes_pkts(pid, sps, cc0=0):
+    """Annex-B [SPS + filler IDR] in one PES, split into TS packets."""
+    es = b"\x00\x00\x00\x01" + sps + b"\x00\x00\x01\x65" + b"\xaa" * 300
+    pes = bytes([0, 0, 1, 0xE0, 0, 0, 0x80, 0x00, 0x00]) + es
+    pkts = []
+    cc = cc0
+    first = True
+    for off in range(0, len(pes), 184):
+        chunk = pes[off:off + 184]
+        pkt = bytes([ts_psi.SYNC, (0x40 if first else 0x00) | ((pid >> 8) & 0x1F),
+                     pid & 0xFF, 0x10 | (cc & 0x0F)]) + chunk
+        first = False
+        cc = (cc + 1) & 0x0F
+        pkts.append(pkt + b"\xff" * (ts_psi.PKT - len(pkt)))
+    return pkts
+
+
+vi_events = []
+core_v = ts_split.SplitterCore(1, [(VIDEO_PID, None)],
+                               on_videoinfo=lambda pid, info: vi_events.append((pid, info)))
+vsrc = []
+vsrc.append(ts_psi.build_pat(7, {1: PMT_PID}, 0))
+vsrc.append(ts_psi.build_pmt(PMT_PID, 1, VIDEO_PID,
+                             [(VIDEO_PID, ts_psi.STREAM_TYPE_AVC),
+                              (AUDIO_PID, ts_psi.STREAM_TYPE_AAC)], 0))
+core_v.feed(b"".join(vsrc))                       # PMT parses -> probe created
+core_v.feed(b"".join(video_pes_pkts(VIDEO_PID, H264_SPS)))
+check("on_videoinfo fires with pid + geometry",
+      len(vi_events) == 1 and vi_events[0][0] == VIDEO_PID
+      and vi_events[0][1]["width"] == 1920 and vi_events[0][1]["interlaced"] is True)
+core_v.feed(b"".join(video_pes_pkts(VIDEO_PID, H264_SPS, cc0=4)))
+check("on_videoinfo silent on unchanged SPS", len(vi_events) == 1)
+
+# audio-only PMT -> no probe, never fires
+vi_a = []
+core_a = ts_split.SplitterCore(1, [(AUDIO_PID, None)],
+                               on_videoinfo=lambda pid, info: vi_a.append(pid))
+core_a.feed(ts_psi.build_pat(7, {1: PMT_PID}, 0) +
+            ts_psi.build_pmt(PMT_PID, 1, AUDIO_PID,
+                             [(AUDIO_PID, ts_psi.STREAM_TYPE_AAC)], 0) +
+            b"".join(video_pes_pkts(AUDIO_PID, H264_SPS)))
+check("audio-only PMT never fires on_videoinfo", vi_a == [])
+
+# codec change in the PMT replaces the probe -> next SPS re-parses as new codec
+check("probe map keyed to PMT codec",
+      core_v._probes[VIDEO_PID].codec == 'h264')
+
 print()
 if _failures:
     print("FAILURES:", ", ".join(_failures))

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type { PadLinkRule, BusReport, RistRunnerConfig, TsSplitRunnerConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
+import type { PadLinkRule, BusReport, RistRunnerConfig, TsSplitRunnerConfig, TsProbeRunnerConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
@@ -23,6 +23,7 @@ export interface RunnerStartOptions {
     busReports?: BusReport[];
     rist?: RistRunnerConfig;
     tsSplit?: TsSplitRunnerConfig;
+    tsProbe?: TsProbeRunnerConfig;
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
 }
 

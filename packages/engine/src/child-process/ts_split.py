@@ -43,6 +43,7 @@ wired).
 from __future__ import annotations
 
 import ts_psi
+import ts_video_info
 
 PKT = ts_psi.PKT
 SYNC = ts_psi.SYNC
@@ -126,14 +127,20 @@ class SplitterCore:
     reader layers ISO labels from these when no in-band names exist).
     `on_desync(dropped_bytes)`: optional, rate-limited by the caller's cadence
     (fires once per feed() call that had to resync).
+    `on_videoinfo(pid, info)`: optional; fires when a video PID's SPS is first
+    parsed or changes (info dict from ts_video_info.VideoInfoProbe) — status
+    reporting only, never affects routing.
     """
 
-    def __init__(self, ts_id: int, outputs, on_discovered=None, on_desync=None):
+    def __init__(self, ts_id: int, outputs, on_discovered=None, on_desync=None,
+                 on_videoinfo=None):
         self.outputs = {int(pid): SplitOutput(int(pid), ts_id, stype)
                         for pid, stype in outputs}
         self.disc = ts_psi.PsiDiscovery()
         self.on_discovered = on_discovered
         self.on_desync = on_desync
+        self.on_videoinfo = on_videoinfo
+        self._probes = {}            # pid -> VideoInfoProbe (video PIDs only)
         self.pcr_pid = None
         self.master_pcr = None
         self.desync_bytes = 0        # lifetime counter, readable by the glue
@@ -164,6 +171,15 @@ class SplitterCore:
             if pid in known:
                 o.update(known[pid], es_info.get(pid, b""))
             o.needs_pcr = pid != self.pcr_pid
+        # SPS probes for the PMT's video PIDs (status reporting). Kept across
+        # unrelated PMT changes; a codec change replaces the probe, so the
+        # next SPS re-parses under the new codec.
+        codecs = {ts_psi.STREAM_TYPE_AVC: 'h264', ts_psi.STREAM_TYPE_HEVC: 'h265'}
+        self._probes = {
+            pid: (old if (old := self._probes.get(pid)) and old.codec == codec
+                  else ts_video_info.VideoInfoProbe(pid, codec))
+            for pid, stype in streams if (codec := codecs.get(stype))
+        }
         if self.on_discovered is not None:
             self.on_discovered(streams, self.pcr_pid, es_info)
 
@@ -198,6 +214,11 @@ class SplitterCore:
             pid = ((data[off + 1] & 0x1F) << 8) | data[off + 2]
             if pid in outputs:
                 buckets.setdefault(pid, []).append(mv[off:off + PKT])
+            probe = self._probes.get(pid)
+            if probe is not None:
+                info = probe.feed(mv[off:off + PKT])
+                if info is not None and self.on_videoinfo is not None:
+                    self.on_videoinfo(pid, info)
             if pid == 0 or (pmt_pid_before is not None and pid == pmt_pid_before):
                 psi_pkts.append(data[off:off + PKT])   # real copy: discovery retains these
             if pid == pcr_pid:

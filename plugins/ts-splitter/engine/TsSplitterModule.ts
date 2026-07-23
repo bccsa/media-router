@@ -47,6 +47,9 @@ import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './st
 export class TsSplitterModule extends GstPluginBase {
     /** Streams seen live this run (PID-keyed). Drives ports + status. */
     private readonly discovered = new Map<number, DiscoveredStreamConfig>();
+    /** Live SPS-derived video parameters per pid ("1920×1080i50 (h264)") —
+     *  ephemeral status, deliberately NOT part of discoveredStreams config. */
+    private readonly videoInfo = new Map<number, string>();
 
     private static classifiersRegistered = false;
 
@@ -134,10 +137,23 @@ export class TsSplitterModule extends GstPluginBase {
 
     async onStop(): Promise<void> {
         this.discovered.clear();
+        this.videoInfo.clear();
         await super.onStop();
     }
 
     protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel === 'tssplit:videoinfo') {
+            // Ephemeral status only — NEVER merged into the persisted
+            // discoveredStreams config (would churn port re-resolution for a
+            // cosmetic value). `display` is pre-formatted by the runner.
+            const p = payload as { pid?: number; codec?: string; display?: string };
+            const pid = Number(p?.pid);
+            if (Number.isFinite(pid) && p.display) {
+                this.videoInfo.set(pid, `${p.display} (${p.codec})`);
+                this.publishStatus();
+            }
+            return;
+        }
         if (channel !== 'tssplit:discovered') return;
         const streams = (
             payload as { streams?: Array<{ pid: number; streamType: number; esInfo?: string }> }
@@ -194,6 +210,7 @@ export class TsSplitterModule extends GstPluginBase {
             fields: [
                 { key: 'media', label: 'Media' },
                 { key: 'codec', label: 'Codec' },
+                { key: 'video', label: 'Video' },
                 { key: 'language', label: 'Language' },
                 { key: 'pid', label: 'PID' },
                 { key: 'pidDec', label: 'PID (dec)' },
@@ -203,6 +220,7 @@ export class TsSplitterModule extends GstPluginBase {
             this.setStatusData(`stream-${s.pid}`, {
                 media: s.media,
                 codec: s.codec,
+                video: this.videoInfo.get(s.pid) ?? '—',
                 language: s.language ?? '—',
                 pid: formatPid(s.pid),
                 pidDec: s.pid,
