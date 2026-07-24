@@ -189,6 +189,57 @@ describe('GstRunner — Python event routing', () => {
         expect((response?.data as { event: string }).event).toBe('property_set');
     });
 
+    it('resolves busReinput via the runner bus_reinput_done event (tracked RPC)', () => {
+        runner.handleControlMessage({
+            id: 'rpc-ri',
+            type: 'request',
+            action: 'busReinput',
+            data: { element: 'netin', socket: '/tmp/mr-bus-40000-new.sock' },
+        });
+        const pending = (runner as unknown as {
+            ipc: { pending: Map<string, unknown> };
+        }).ipc.pending;
+        expect(pending.size).toBe(1);
+        const [reqId] = [...pending.keys()];
+
+        emit({ event: 'bus_reinput_done', id: reqId });
+
+        const response = lastByType('response');
+        expect(response?.id).toBe('rpc-ri');
+    });
+
+    it('busReinput failure surfaces as command_error (executor falls back to restart)', () => {
+        runner.handleControlMessage({
+            id: 'rpc-ri2',
+            type: 'request',
+            action: 'busReinput',
+            data: { element: 'netin', socket: '/tmp/x.sock' },
+        });
+        const pending = (runner as unknown as {
+            ipc: { pending: Map<string, unknown> };
+        }).ipc.pending;
+        const [reqId] = [...pending.keys()];
+
+        emit({ event: 'command_error', id: reqId, message: "element 'netin' not found" });
+
+        const response = lastByType('response');
+        expect(response?.id).toBe('rpc-ri2');
+        expect(response?.data).toEqual({ error: "element 'netin' not found" });
+    });
+
+    it('updatePipeline replaces the replay description (post-swap crash-restarts use it)', () => {
+        runner.handleControlMessage({
+            id: 'rpc-up',
+            type: 'request',
+            action: 'updatePipeline',
+            data: { pipeline: 'fakesrc ! fakesink', restartOnError: false },
+        });
+        expect(lastByType('response')?.id).toBe('rpc-up');
+        expect(
+            (runner as unknown as { lastStart: { pipeline: string } }).lastStart.pipeline,
+        ).toBe('fakesrc ! fakesink');
+    });
+
     it('forwards the error source `element` on pipeline error events', () => {
         // Attribution from the gst bus message source — diagnostics and
         // per-element policies (e.g. a udpsrc timeout names its udpsrc).

@@ -937,6 +937,30 @@ getPipeWireNodeForPort(portId: string): { source?: string; sink?: string } {
 
 Real examples: [`n1-mixer`](n1-mixer/engine/N1MixerModule.ts) (per-port PipeWire nodes), [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts) and [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts) (dynamic outputs/inputs based on stream counts).
 
+### Live Input Swap (`getLiveInputSwap`)
+
+By default, adding or removing a `muxed/mpegts` connection **restarts the sink
+module** (its `buildPipeline` must re-run). For a SINGLE-INPUT module whose
+pipeline shape does not depend on which source feeds it, that restart is pure
+damage: the module's own producer sockets close and every downstream consumer
+restarts too (the head-end switch cascade). Opt out by declaring the input
+`unixfdsrc` swappable:
+
+```typescript
+getLiveInputSwap(sinkPortId: string): { element: string } | null {
+    return sinkPortId === INPUT_PORT_ID ? { element: INPUT_SRC_NAME } : null;
+}
+```
+
+The engine then handles a source re-wire make-before-break: the removed edge
+stays attached for a 15 s window (module health shows a warning); a matching
+add re-points the named `unixfdsrc` at the new edge socket via the runner's
+`bus_reinput` command — outputs and downstream consumers never notice. Window
+expiry (a plain disconnect) runs the classic teardown. Only declare this for
+ports where a source swap changes NOTHING in `buildPipeline` besides the input
+socket; modules whose branch set depends on the source (mpegts-muxer) must
+keep the restart. Real example: [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts).
+
 ### Device Watchdog (Hardware Hot-Plug)
 
 Plugins bound to a specific hardware device (USB mic, HDMI display, V4L2 camera) can opt into a hot-plug watchdog that polls PipeWire every 2 s and calls subclass hooks on disconnect/reconnect. Override `getWatchedDeviceName()` to enable; the base class handles the polling.

@@ -63,6 +63,28 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         return (this.childProcess?.isRunning ? 1 : 0) + (this.vuProcess?.isRunning ? 1 : 0);
     }
 
+    /**
+     * Re-derive the pipeline description from current config/connections and
+     * store it as the restart-replay copy — WITHOUT touching the live
+     * pipeline. Called after a live mutation the pipeline already absorbed
+     * (`bus_reinput` input swap): the swap changed which edge socket the
+     * running `unixfdsrc` reads, so a later crash-restart must rebuild/gate on
+     * the NEW socket, not replay the original description forever against a
+     * socket that no longer exists. Returns false when there is nothing to
+     * refresh (no child, or buildPipeline now returns null).
+     */
+    async refreshPipelineDescription(): Promise<boolean> {
+        if (!this.childProcess) return false;
+        const desc = this.buildPipeline(this.config);
+        if (!desc) return false;
+        if (desc.clockSync && this.services?.clockAuthority) {
+            const clock = await this.services.clockAuthority.getClockConfig();
+            if (clock) desc.clock = clock;
+        }
+        await this.childProcess.updatePipelineDesc(desc);
+        return true;
+    }
+
     /** PipeWire node name for this module instance. */
     protected get pwNodeName(): string {
         if (!this.services?.instanceId) {
@@ -533,8 +555,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         this.emit('vuData', data);
     }
 
-    /** Set health status with optional error message. */
-    protected setHealth(health: ModuleHealth, error?: string): void {
+    /** Set health status with optional error message. Public: the routing
+     *  layer also surfaces module-scoped conditions here (e.g. the live
+     *  input-swap pending window — MpegTsBusExecutor). */
+    setHealth(health: ModuleHealth, error?: string): void {
         this.health = health;
         this.error = error;
         this.emit('stateChange', this.getState());

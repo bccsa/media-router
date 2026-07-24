@@ -1990,6 +1990,60 @@ def handle_bus_detach(data):
     _teardown_bus_branch(data.get("socket", ""))
 
 
+def handle_bus_reinput(data):
+    """Re-point a named `unixfdsrc` at a new edge socket WITHOUT rebuilding
+    the pipeline — the make-before-break half of a live input swap on a
+    single-input bus sink (ts-splitter head-end). `socket-path` is construct-
+    time-only on unixfdsrc, so the element is replaced: stop → unlink →
+    remove → fresh unixfdsrc (same name, new socket) → add → link → sync.
+    Responds `bus_reinput_done` (tracked RPC) only after the new element is
+    linked and state-synced, so the parent may then detach the OLD edge.
+    On any failure it responds `command_error` and the executor falls back to
+    the classic stop/start restart.
+    """
+    req_id = data.get("id")
+    name = data.get("element", "")
+    socket = data.get("socket", "")
+    if not pipeline:
+        emit_command_error(req_id, "bus_reinput: no pipeline")
+        return
+    if not name or not socket:
+        emit_command_error(req_id, "bus_reinput: element and socket required")
+        return
+    old = pipeline.get_by_name(name)
+    if old is None:
+        emit_command_error(req_id, f"bus_reinput: element '{name}' not found")
+        return
+    src_pad = old.get_static_pad("src")
+    peer = src_pad.get_peer() if src_pad else None
+    if peer is None:
+        emit_command_error(req_id, f"bus_reinput: '{name}' has no linked src pad")
+        return
+    try:
+        # Stopping the source stops dataflow on this branch — no pad blocking
+        # needed (the ingress queue downstream simply runs dry for the gap).
+        old.set_state(Gst.State.NULL)
+        src_pad.unlink(peer)
+        pipeline.remove(old)
+
+        new = Gst.ElementFactory.make("unixfdsrc", name)
+        if new is None:
+            emit_command_error(req_id, "bus_reinput: unixfdsrc factory unavailable")
+            return
+        new.set_property("socket-path", socket)
+        pipeline.add(new)
+        link = new.get_static_pad("src").link(peer)
+        if link != Gst.PadLinkReturn.OK:
+            emit_command_error(req_id, f"bus_reinput: relink failed ({link})")
+            return
+        new.sync_state_with_parent()
+    except GLib.Error as e:
+        emit_command_error(req_id, f"bus_reinput: {e.message}")
+        return
+    sys.stderr.write(f"[gst-runner.py] bus_reinput: {name} -> {socket}\n")
+    emit_event({"event": "bus_reinput_done", "id": req_id})
+
+
 # ---------------------------------------------------------------------------
 # librist integration (rist-input / rist-output as native gst modules)
 #
@@ -2321,6 +2375,7 @@ CMD_HANDLERS = {
     "set_klv_payload": handle_set_klv_payload,
     "bus_attach": handle_bus_attach,
     "bus_detach": handle_bus_detach,
+    "bus_reinput": handle_bus_reinput,
 }
 
 def dispatch_command(line):

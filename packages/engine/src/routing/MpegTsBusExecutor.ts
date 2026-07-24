@@ -3,6 +3,7 @@ import type { ModuleInstance } from '../modules/ModuleInstance.js';
 import type { Connection, ActiveHandle } from './MediaRouter.js';
 import type { StreamTypeExecutor } from './StreamTypeExecutor.js';
 import type { BusFanoutCoordinator } from './BusFanoutCoordinator.js';
+import { PendingInputSwaps, performLiveSwap } from './LiveInputSwap.js';
 
 const log = createLogger('MpegTsBusExecutor');
 
@@ -75,6 +76,26 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
         // so its edge socket exists by the time the consumer's `unixfdsrc`
         // connects (the consumer's busSocketGate waits for it). Idempotent.
         this.busFanout?.attach(conn);
+
+        // Live input swap: a remove on this sink:port opened a pending window
+        // (see teardown) — the sink is still running against the OLD edge.
+        // Re-point its input at the new edge instead of restarting it, so its
+        // own producer sockets stay up and the downstream graph never notices.
+        const pending = this.pendingSwaps.claim(conn);
+        if (pending) {
+            const swapped = await performLiveSwap({
+                sink: sinkModule,
+                conn,
+                oldConn: pending.conn,
+                udpPort,
+                busFanout: this.busFanout,
+            });
+            if (swapped) {
+                return { connectionId: conn.id, type: 'bus', busChannel: udpPort };
+            }
+            // Fall through: performLiveSwap already detached the old edge —
+            // the classic restart below rebuilds against the new connection.
+        }
 
         // Start/restart the consumer so it connects to the producer's edge socket
         try {
@@ -169,6 +190,13 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
         return this.getUdpPort(conn.sourceModuleId, conn.sourcePortId);
     }
 
+    /**
+     * Deferred-teardown windows for swap-capable single-input sinks (see
+     * LiveInputSwap). While a window is open the OLD producer edge stays
+     * attached (make-before-break) and the sink keeps running.
+     */
+    private pendingSwaps = new PendingInputSwaps();
+
     async teardown(
         handle: ActiveHandle,
         conn: Connection | undefined,
@@ -180,25 +208,50 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
         );
         this.materializeAttempted.delete(handle.connectionId);
 
+        // Live-swap-capable sink: defer the ENTIRE physical teardown (edge
+        // detach + sink restart) — a matching add within the window re-points
+        // the input live; expiry runs the classic path below. The sink keeps
+        // streaming the old source meanwhile, surfaced as a health warning.
+        if (conn && !skipModuleRestart) {
+            const sink = this.moduleGetter(conn.sinkModuleId);
+            if (
+                sink?.running &&
+                sink.getLiveInputSwap?.(conn.sinkPortId) &&
+                sink.getChildProcess?.()
+            ) {
+                sink.setHealth?.(
+                    'warning',
+                    'Input disconnect pending — still streaming previous source',
+                );
+                this.pendingSwaps.defer({ conn }, async (entry) => {
+                    this.busFanout?.detach(entry.conn);
+                    await this.restartSinkIdle(entry.conn);
+                });
+                return;
+            }
+        }
+
         // Tear down the producer's fan-out branch for this edge.
         if (conn) this.busFanout?.detach(conn);
 
         if (skipModuleRestart) return;
 
-        // Stop then restart the sink so its buildPipeline returns null
-        // (connection already deleted) and it sits idle.
-        if (conn) {
-            const sink = this.moduleGetter(conn.sinkModuleId);
-            if (sink?.running) {
-                try {
-                    await sink.stop();
-                    await sink.start();
-                } catch (err) {
-                    log.debug(
-                        { err, moduleId: conn.sinkModuleId },
-                        'Consumer restart after disconnect failed',
-                    );
-                }
+        if (conn) await this.restartSinkIdle(conn);
+    }
+
+    /** Classic disconnect: stop then restart the sink so its buildPipeline
+     *  returns null (connection already deleted) and it sits idle. */
+    private async restartSinkIdle(conn: Connection): Promise<void> {
+        const sink = this.moduleGetter(conn.sinkModuleId);
+        if (sink?.running) {
+            try {
+                await sink.stop();
+                await sink.start();
+            } catch (err) {
+                log.debug(
+                    { err, moduleId: conn.sinkModuleId },
+                    'Consumer restart after disconnect failed',
+                );
             }
         }
     }

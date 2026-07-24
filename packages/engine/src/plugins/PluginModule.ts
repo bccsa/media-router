@@ -130,6 +130,26 @@ export interface PluginModule {
     getBusAttachTarget?(): BusAttachTarget | null;
     /** Count of running child processes owned by this module. */
     getProcessCount?(): number;
+    /**
+     * Opt a SINGLE-INPUT bus sink into live input swapping: when the operator
+     * re-wires the given input port's source, `MpegTsBusExecutor` re-points
+     * the named `unixfdsrc` at the new edge socket (make-before-break) instead
+     * of stop/starting the module — so the module's own producer sockets stay
+     * up and the downstream graph never notices (the 2026-07-23 head-end
+     * switch cascade). Return null (or omit) for ports whose pipeline SHAPE
+     * depends on the source — those keep the classic restart.
+     */
+    getLiveInputSwap?(sinkPortId: string): { element: string } | null;
+    /**
+     * Re-derive and store the pipeline description after a live mutation the
+     * running pipeline already absorbed (bus_reinput input swap), so
+     * crash-restarts replay the CURRENT graph. Implemented by GstPluginBase;
+     * returns false when there is nothing to refresh.
+     */
+    refreshPipelineDescription?(): Promise<boolean>;
+    /** Set module health (implemented by the plugin bases; used by the
+     *  routing layer for module-scoped conditions like a pending input swap). */
+    setHealth?(health: 'ok' | 'warning' | 'error' | 'stopped', error?: string): void;
 }
 
 /**

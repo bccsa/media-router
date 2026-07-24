@@ -170,24 +170,34 @@ export class GstChildProcess extends EventEmitter {
 
         // Send the pipeline to the child
         try {
-            await this.ipc.sendRequest('startPipeline', {
-                pipeline: this.pipelineDesc.pipeline,
-                useStdioForData: this.pipelineDesc.useStdioForData ?? false,
-                restartOnError: this.pipelineDesc.restartOnError ?? false,
-                restartBackoffMs: this.pipelineDesc.restartBackoffMs,
-                linkOnPadAdded: this.pipelineDesc.linkOnPadAdded ?? [],
-                readKlvNames: this.pipelineDesc.readKlvNames ?? false,
-                env: this.pipelineDesc.env ?? {},
-                clock: this.pipelineDesc.clock,
-                decoderThreadType: this.pipelineDesc.decoderThreadType ?? 'auto',
-                busReports: this.pipelineDesc.busReports ?? [],
-                rist: this.pipelineDesc.rist,
-                tsSplit: this.pipelineDesc.tsSplit,
-                preserveSourceTimeline: this.pipelineDesc.preserveSourceTimeline,
-            });
+            await this.ipc.sendRequest('startPipeline', this.startPayload(this.pipelineDesc));
         } catch (err) {
             this.emit('error', { message: `Failed to start pipeline: ${err}` });
         }
+    }
+
+    /**
+     * The runner-relevant subset of the description, enumerated EXPLICITLY
+     * (a field missing here is silently lost — the decoderThreadType trap).
+     * Shared by `startPipeline` and `updatePipelineDesc` so the replay copy
+     * can never drift from the start copy.
+     */
+    private startPayload(desc: PipelineDescription): Record<string, unknown> {
+        return {
+            pipeline: desc.pipeline,
+            useStdioForData: desc.useStdioForData ?? false,
+            restartOnError: desc.restartOnError ?? false,
+            restartBackoffMs: desc.restartBackoffMs,
+            linkOnPadAdded: desc.linkOnPadAdded ?? [],
+            readKlvNames: desc.readKlvNames ?? false,
+            env: desc.env ?? {},
+            clock: desc.clock,
+            decoderThreadType: desc.decoderThreadType ?? 'auto',
+            busReports: desc.busReports ?? [],
+            rist: desc.rist,
+            tsSplit: desc.tsSplit,
+            preserveSourceTimeline: desc.preserveSourceTimeline,
+        };
     }
 
     /** Stop the pipeline and child process. */
@@ -302,6 +312,32 @@ export class GstChildProcess extends EventEmitter {
     sendBusDetach(socket: string): void {
         if (!this.ipc) return;
         this.ipc.sendEvent('busDetach', { socket });
+    }
+
+    /**
+     * Live input re-point (single-input bus sinks): re-target the named
+     * `unixfdsrc` at a new edge socket without rebuilding the pipeline — the
+     * make-before-break half of a source swap. Tracked RPC (NOT fire-and-
+     * forget): it resolves only once the Python side has the new source
+     * linked and playing, so the caller may then safely detach the OLD edge.
+     */
+    async busReinput(element: string, socket: string): Promise<void> {
+        if (!this.ipc || !this.running) throw new Error('busReinput: pipeline not running');
+        const result = await this.ipc.sendRequest('busReinput', { element, socket }, 5000);
+        throwIfRpcError(result, `busReinput(${element})`);
+    }
+
+    /**
+     * Replace the stored pipeline description after a live mutation (input
+     * swap): the fork-layer restart path rebuilds from `pipelineDesc`, and
+     * the runner-layer respawn replays its own copy — without this update a
+     * later crash-restart replays the ORIGINAL description and gates forever
+     * on an edge socket that no longer exists.
+     */
+    async updatePipelineDesc(desc: PipelineDescription): Promise<void> {
+        this.pipelineDesc = desc;
+        if (!this.ipc || !this.running) return;
+        await this.ipc.sendRequest('updatePipeline', this.startPayload(desc), 2000);
     }
 
     /** Set a property on a named GStreamer element (live, no restart). */

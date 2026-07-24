@@ -13,7 +13,7 @@ import {
     type DiscoveredStreamConfig,
     type DynamicPort,
 } from './splitterPorts.js';
-import { buildSplitterPipeline } from './splitterPipeline.js';
+import { buildSplitterPipeline, INPUT_SRC_NAME } from './splitterPipeline.js';
 import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './streamTypes.js';
 
 /**
@@ -108,6 +108,18 @@ export class TsSplitterModule extends GstPluginBase {
             tsId: (config.tsId as number) ?? 1,
         });
         return { pipeline, restartOnError: true, tsSplit };
+    }
+
+    /**
+     * Live input swap (engine `bus_reinput`): the splitter's pipeline shape
+     * does not depend on WHICH source feeds it — the input `unixfdsrc` can be
+     * re-pointed at a new edge socket while every output appsrc chain (and
+     * all downstream consumers) keeps running. Discovery re-converges from
+     * the new source's PSI on the same channel. This is what makes a
+     * head-end source switch non-destructive (2026-07-23 incident).
+     */
+    getLiveInputSwap(sinkPortId: string): { element: string } | null {
+        return sinkPortId === INPUT_PORT_ID ? { element: INPUT_SRC_NAME } : null;
     }
 
     async onStart(): Promise<void> {

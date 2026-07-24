@@ -174,6 +174,31 @@ export class GstRunner {
                 break;
             }
 
+            case 'busReinput': {
+                // Live input re-point: swap the named unixfdsrc onto a new edge
+                // socket without a pipeline rebuild. Tracked — the executor must
+                // know the swap landed before it detaches the old edge.
+                const d = msg.data as { element: string; socket: string };
+                const reqId = this.makeRequestId('reinput');
+                this.ipc.trackPending(reqId, msg.id, 'bus_reinput');
+                this.python?.sendCommand({
+                    cmd: 'bus_reinput',
+                    element: d.element,
+                    socket: d.socket,
+                    id: reqId,
+                });
+                break;
+            }
+
+            case 'updatePipeline': {
+                // Replace the replay description after a live mutation so a
+                // runner-layer respawn rebuilds with the CURRENT sockets, not
+                // the ones from the original start.
+                this.lastStart = msg.data as RunnerStartOptions;
+                this.ipc.sendResponse(msg.id, { ok: true });
+                break;
+            }
+
             default:
                 console.warn(`[gst-runner] Unknown action: ${msg.action}`);
                 this.ipc.sendResponse(msg.id, { error: `Unknown action: ${msg.action}` });
@@ -317,6 +342,7 @@ export class GstRunner {
             case 'throughput':
             case 'property_set':
             case 'tracking':
+            case 'bus_reinput_done':
                 // Round-trip response from a tracked Python request. The
                 // confirmation-only emissions (property_set, tracking) also
                 // carry an id now so the parent's setProperty/trackThroughput
