@@ -8,6 +8,7 @@ export type {
     RistRunnerConfig,
     TsSplitRunnerConfig,
     TsSplitOutput,
+    TsProbeRunnerConfig,
     EngineServices,
     ModuleServices,
     DynamicPort,

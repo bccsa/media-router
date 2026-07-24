@@ -189,3 +189,50 @@ describe('MpegTsIpInputModule.pollStats', () => {
         expect(module.clearBadge).toHaveBeenCalledWith('bitrate');
     });
 });
+
+describe('MpegTsIpInputModule video-info probe', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    it('taps the egress tee with a leaky queue + appsink and requests tsProbe', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({});
+        // Leaky tap: a stalled probe branch must never stall the relay tee.
+        expect(desc!.pipeline).toContain(
+            'busout_41000. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
+        );
+        expect(desc!.tsProbe).toEqual({ appsink: 'tsprobe' });
+    });
+
+    it('renders display + codec into the video status line', () => {
+        const { module } = makeModule();
+        module.onPluginEvent('tsprobe:videoinfo', {
+            pid: 0x65, codec: 'h264', width: 1920, height: 1080,
+            interlaced: true, fps: 25, display: '1920×1080i50',
+        });
+        expect(module.setStatusData).toHaveBeenCalledWith('video', {
+            video: '1920×1080i50 (h264)',
+        });
+    });
+
+    it('codec-only payload (pre-SPS / mpeg2) shows just the codec', () => {
+        const { module } = makeModule();
+        module.onPluginEvent('tsprobe:videoinfo', { pid: 0x65, codec: 'mpeg2', display: null });
+        expect(module.setStatusData).toHaveBeenCalledWith('video', { video: 'mpeg2' });
+    });
+
+    it('scrambled stream is labeled as such', () => {
+        const { module } = makeModule();
+        module.onPluginEvent('tsprobe:videoinfo', {
+            pid: 0x65, codec: 'h264', display: null, scrambled: true,
+        });
+        expect(module.setStatusData).toHaveBeenCalledWith('video', {
+            video: 'h264 (scrambled)',
+        });
+    });
+
+    it('ignores unrelated plugin-event channels', () => {
+        const { module } = makeModule();
+        module.onPluginEvent('stream:discovered', { pid: 0x65 });
+        expect(module.setStatusData).not.toHaveBeenCalled();
+    });
+});

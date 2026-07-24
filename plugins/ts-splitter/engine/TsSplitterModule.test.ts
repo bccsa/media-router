@@ -195,3 +195,56 @@ describe('TsSplitterModule discovery', () => {
         expect(spy).not.toHaveBeenCalled();
     });
 });
+
+describe('TsSplitterModule video info', () => {
+    function discoveredModule() {
+        const { module } = makeModule();
+        (module as any).config = {};
+        vi.spyOn(module as any, 'emitConfigUpdate').mockImplementation((changes: any) => {
+            Object.assign((module as any).config, changes);
+        });
+        (module as any).onPluginEvent('tssplit:discovered', {
+            streams: [
+                { pid: 0x65, streamType: 0x1b },
+                { pid: 0xc9, streamType: 0x0f },
+            ],
+            pcrPid: 0x65,
+        });
+        return module;
+    }
+
+    it('tssplit:videoinfo fills the video row of that stream, others stay —', () => {
+        const module = discoveredModule();
+        (module as any).onPluginEvent('tssplit:videoinfo', {
+            pid: 0x65, codec: 'h264', width: 1920, height: 1080,
+            interlaced: true, fps: 25, display: '1920×1080i50',
+        });
+        expect((module as any).statusData['stream-101'].video).toBe('1920×1080i50 (h264)');
+        expect((module as any).statusData['stream-201'].video).toBe('—');
+    });
+
+    it('videoinfo is ephemeral: never persisted via emitConfigUpdate', () => {
+        const module = discoveredModule();
+        const emitSpy = (module as any).emitConfigUpdate as ReturnType<typeof vi.fn>;
+        const callsBefore = emitSpy.mock.calls.length;
+        (module as any).onPluginEvent('tssplit:videoinfo', {
+            pid: 0x65, codec: 'h264', display: '1920×1080i50',
+        });
+        expect(emitSpy.mock.calls.length).toBe(callsBefore);
+    });
+
+    it('codec-only payload (no display) changes nothing', () => {
+        const module = discoveredModule();
+        (module as any).onPluginEvent('tssplit:videoinfo', { pid: 0x65, codec: 'mpeg2', display: null });
+        expect((module as any).statusData['stream-101'].video).toBe('—');
+    });
+
+    it('onStop clears the video map', async () => {
+        const module = discoveredModule();
+        (module as any).onPluginEvent('tssplit:videoinfo', {
+            pid: 0x65, codec: 'h264', display: '1920×1080i50',
+        });
+        await module.onStop();
+        expect((module as any).videoInfo.size).toBe(0);
+    });
+});

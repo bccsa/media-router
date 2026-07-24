@@ -1,3 +1,7 @@
 packages:
-    - 'packages/*'
-    - 'plugins/*'
+  - 'packages/*'
+  - 'plugins/*'
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  vue-demi: true

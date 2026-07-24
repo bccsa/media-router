@@ -102,6 +102,16 @@
                         "label": "Bytes Received"
                     }
                 ]
+            },
+            {
+                "id": "video",
+                "label": "Video",
+                "fields": [
+                    {
+                        "key": "video",
+                        "label": "Detected"
+                    }
+                ]
             }
         ],
         "engine": "./engine/MpegTsIpInputModule.ts"
