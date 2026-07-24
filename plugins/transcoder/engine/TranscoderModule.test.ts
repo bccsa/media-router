@@ -113,6 +113,23 @@ describe('buildPipeline', () => {
         );
     });
 
+    it('carries preserveSourceTimeline targeting the named demux by default', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+        })!;
+        expect(desc.preserveSourceTimeline).toEqual({ demux: 'demux' });
+    });
+
+    it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {
+        const { module } = makeModule();
+        const desc = module.buildPipeline({
+            renditions: [{ width: 1280, height: 720, bitrate: 2500 }],
+            preserveSourceTimeline: false,
+        })!;
+        expect(desc.preserveSourceTimeline).toBeUndefined();
+    });
+
     it('exposes per-rendition target bitrates in the encoder stats', () => {
         const { module } = makeModule();
         module.buildPipeline({

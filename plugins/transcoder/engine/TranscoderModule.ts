@@ -16,7 +16,7 @@ import {
     type SpeedPreset,
     type ThroughputSample,
 } from '@media-router/engine';
-import { buildPipeline } from './transcoderPipeline.js';
+import { buildPipeline, DEMUX_NAME } from './transcoderPipeline.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -249,6 +249,14 @@ export class TranscoderModule extends GstPluginBase {
         return {
             pipeline: result.pipeline,
             restartOnError: true,
+            // Restart-proof lipsync (default on): output PES PTS/PCR carry the
+            // SOURCE timeline instead of a fresh per-incarnation rebase, so
+            // downstream muxers align this video with its sibling audio by real
+            // PTS. `preserveSourceTimeline: false` in settings is the per-module
+            // rollback (x-advanced).
+            ...(config.preserveSourceTimeline === false
+                ? {}
+                : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
         };
     }
 

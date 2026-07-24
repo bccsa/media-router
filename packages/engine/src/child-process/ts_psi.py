@@ -105,6 +105,36 @@ def read_pcr(pkt: bytes):
     return base * 300 + ext
 
 
+
+# Stream ids whose PES packets carry no optional header, hence never a PTS
+# (ISO 13818-1 §2.4.3.7): program_stream_map, padding, private_stream_2,
+# ECM, EMM, DSM-CC, H.222.1 type E, program_stream_directory.
+_PES_NO_HEADER_IDS = frozenset({0xBC, 0xBE, 0xBF, 0xF0, 0xF1, 0xF2, 0xF8, 0xFF})
+
+
+def read_pes_pts(pkt: bytes):
+    """Return the 33-bit 90 kHz PTS of the PES header starting in this packet,
+    or None. A PES header can only start on a payload-unit boundary, so PUSI is
+    required; PSI sections fail the 00 00 01 start-code check naturally (their
+    payload begins with a pointer_field). The 33-bit value wraps every ~26.5 h —
+    callers latching it as a timeline anchor inherit that hazard.
+    """
+    if not ts_pusi(pkt) or not ts_has_payload(pkt):
+        return None
+    off = payload_offset(pkt)
+    p = pkt[off:]
+    if len(p) < 14 or p[0] != 0x00 or p[1] != 0x00 or p[2] != 0x01:
+        return None
+    if p[3] in _PES_NO_HEADER_IDS:
+        return None
+    if (p[6] & 0xC0) != 0x80:   # '10' marker bits of the optional PES header
+        return None
+    if not (p[7] & 0x80):       # PTS_DTS_flags — PTS absent
+        return None
+    return (((p[9] >> 1) & 0x07) << 30) | (p[10] << 22) | ((p[11] >> 1) << 15) \
+        | (p[12] << 7) | (p[13] >> 1)
+
+
 def build_pcr_packet(pid: int, pcr27: int, cc: int = 0) -> bytes:
     """A PCR-only TS packet (adaptation field, no payload) on `pid`.
 

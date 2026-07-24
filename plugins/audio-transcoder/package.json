@@ -133,6 +133,12 @@
                     "x-unit": "ms",
                     "description": "Post-demux jitter buffer (single-source input). No real-time sink in the encode path, so keep this low — standing fill in this non-leaky queue adds arrival latency at downstream muxers. Raise for HLS/bursty sources only."
                 },
+                "preserveSourceTimeline": {
+                    "type": "boolean",
+                    "default": true,
+                    "x-advanced": true,
+                    "description": "Carry the SOURCE stream's timestamps through the transcode (default on). Output PTS then match the input's, so downstream muxers align this audio with its sibling video by real timestamps and lipsync survives module restarts. Turn off only to fall back to the previous per-start timeline behaviour."
+                },
                 "tsAlignment": {
                     "type": "number",
                     "enum": [0, 1, 7],

@@ -45,6 +45,15 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('"bus_detach"');
     });
 
+    it('the runner implements the preserveSourceTimeline start option', () => {
+        // GstChildProcess sends `preserveSourceTimeline: { demux }` in the
+        // start payload (PipelineDescription contract); the runner must read
+        // that exact key and define the installer, or the feature is silently
+        // lost (the decoderThreadType trap).
+        expect(runnerSource).toContain('data.get("preserveSourceTimeline")');
+        expect(runnerSource).toContain('def _install_preserve_timeline');
+    });
+
     it('the non-gst fan-out sidecar speaks the same wire commands', () => {
         const sidecarSource = readFileSync(
             join(__dirname, '..', 'child-process', 'unixfd-fanout.py'),

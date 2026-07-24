@@ -13,6 +13,11 @@ import {
 } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
 
+/** `name=` of the input tsdemux — the target of `preserveSourceTimeline`
+ *  (the runner latches source PES PTS on its sink pad and shifts its media
+ *  src pads onto the source timeline). */
+export const DEMUX_NAME = 'demux';
+
 export interface TranscoderPipelineInputs {
     input: { port: number; socketPath?: string };
     /** One output per rendition. Each carries its own fully-resolved encoder
@@ -115,7 +120,15 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
 
     const fps = input.framerate;
     const kif = Math.max(1, Math.round(input.gopFrames));
-    const bufferMs = input.bufferMs ?? 200;
+    // 100 ms floor: this value sizes the input jitter queue AND the raw-frame
+    // work-ahead queue — both leaky. Historically `0` meant an UNLIMITED queue
+    // (the helper emitted no bound), so operator configs carry 0 as "minimal".
+    // With real bounds, 20 ms of raw buffer is a single frame at 50 fps:
+    // encoder admission back-pressure then reaches the compressed input and
+    // sheds H.264 mid-GOP — measured live 2026-07-23 as ghosting/scrambling
+    // after scene cuts. 100 ms is the smallest depth that rides out a
+    // scene-cut IDR burst.
+    const bufferMs = Math.max(100, input.bufferMs ?? 200);
     const deinterlaceMode = input.deinterlace ?? 'auto';
 
     // setTimestamps=false: `tsparse set-timestamps=true` re-stamps from PCR and
@@ -249,7 +262,7 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     // (moved into the leaves so it runs on the small downscaled frame).
     // videorate runs on its own thread via the raw buffer queue.
     const pipeline =
-        `${tsInput} ! tsdemux latency=0 ! ${videoCaps} ! ${decoder} ! ${rawBuffer} ! ` +
+        `${tsInput} ! tsdemux name=${DEMUX_NAME} latency=0 ! ${videoCaps} ! ${decoder} ! ${rawBuffer} ! ` +
         `${deinterlacer}videorate ! video/x-raw,framerate=${fps}/1 ! tee name=t ${teeBranches}`;
 
     return { pipeline, sinkNames };

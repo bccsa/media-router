@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildPipeline } from './transcoderPipeline.js';
+import { buildPipeline, DEMUX_NAME } from './transcoderPipeline.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -190,7 +190,8 @@ describe('buildPipeline', () => {
         // Single static pipeline (no linkOnPadAdded): unixfdsrc → tsparse →
         // tsdemux → decode once → conform framerate → tee → one leaf per
         // rendition.
-        expect(p).toContain('tsdemux latency=0');
+        // Named demux — the runner's preserveSourceTimeline targets this name.
+        expect(p).toContain(`tsdemux name=${DEMUX_NAME} latency=0`);
         expect(p).toContain(`unixfdsrc socket-path=${base.input.socketPath}`);
         expect(p.match(/avdec_h264/g)).toHaveLength(1); // decoded exactly once
         expect(p).toContain('framerate=50/1');
@@ -213,12 +214,19 @@ describe('buildPipeline', () => {
         expect(res.sinkNames).toEqual(['busout_41000', 'busout_41001']);
     });
 
+    it('floors bufferMs at 100 ms — sub-100 leaky bounds shed compressed H.264 mid-GOP', () => {
+        const res = buildPipeline({ ...base, bufferMs: 0, outputs: [out(0, r())] })!;
+        // Both the jitter queue and the raw-frame queue must carry the floor.
+        expect(res.pipeline).not.toContain('max-size-time=20000000 ');
+        expect(res.pipeline).toContain('max-size-time=100000000');
+    });
+
     it('filters tsdemux to video only so an audio pad cannot reach the decoder', () => {
         const res = buildPipeline({ ...base, outputs: [out(0, r())] })!;
         // Capsfilter must sit directly on the tsdemux output (before any queue),
         // restricting to video codecs — otherwise an A/V source links its audio
         // pad into videoconvert and dies with "Internal data stream error".
-        expect(res.pipeline).toMatch(/tsdemux latency=0 ! capsfilter caps="video\/x-h264"/);
+        expect(res.pipeline).toMatch(/tsdemux name=demux latency=0 ! capsfilter caps="video\/x-h264"/);
     });
 
     it('passes the GOP frame count straight through as key-int-max', () => {

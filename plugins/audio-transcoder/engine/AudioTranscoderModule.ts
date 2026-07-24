@@ -8,7 +8,7 @@ import {
     type ProbeResult,
     type ThroughputSample,
 } from '@media-router/engine';
-import { buildPipeline } from './audioTranscoderPipeline.js';
+import { buildPipeline, DEMUX_NAME } from './audioTranscoderPipeline.js';
 import {
     INPUT_PORT_ID,
     buildDynamicPorts,
@@ -193,6 +193,13 @@ export class AudioTranscoderModule extends GstPluginBase {
         return {
             pipeline: result.pipeline,
             restartOnError: true,
+            // Restart-proof lipsync (default on): shifts the demux branches onto
+            // the SOURCE timeline, which also anchors the perfect-timestamp
+            // encoders at source values — output PES PTS then match the source
+            // and downstream muxers align by real PTS across restarts.
+            ...(config.preserveSourceTimeline === false
+                ? {}
+                : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
         };
     }
 
