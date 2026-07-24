@@ -28,6 +28,7 @@ STREAM_TYPE_MPEG2_VIDEO = 0x02
 STREAM_TYPE_PRIVATE_PES = 0x06  # DVB subtitles / teletext ride here
 STREAM_TYPE_AAC = 0x0F
 STREAM_TYPE_AVC = 0x1B
+STREAM_TYPE_HEVC = 0x24
 STREAM_TYPE_KLV = 0x15  # metadata in PES (KLV carousel lives on its own PID)
 
 PCR_HZ = 27_000_000            # PCR is a 27 MHz clock (90 kHz base * 300 + 9-bit ext)

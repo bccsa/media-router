@@ -62,6 +62,14 @@ class SplitOutput:
         # for descriptor-identified codecs (Opus = stream_type 0x06 +
         # registration descriptor) dropping it destroys the codec identity.
         self.es_info = b""
+        # PMT version_number, bumped by update() whenever the advertised
+        # stream identity changes. Consumers only re-parse a PSI section when
+        # its version changes (ISO 13818-1; GStreamer's seen_section_before
+        # compares version, never content) — a rewrite at the same version is
+        # invisible to a running demuxer, which then keeps the OLD codec's
+        # parser on the NEW codec's bytes (observed live: transcoder switched
+        # H264→H265 and every downstream re-mux dropped video entirely).
+        self.version = 0
         self.needs_pcr = False       # set on discovery: True when pid != source PCR pid
         self.cc_pat = 0
         self.cc_pmt = 0
@@ -69,12 +77,23 @@ class SplitOutput:
         self.last_pcr = None
         self.since_psi = SPLIT_PSI_INTERVAL_PKTS   # force PSI before the first ES
 
+    def update(self, stream_type: int, es_info: bytes):
+        """Adopt the source-discovered stream identity. A change bumps the
+        PMT version (mod 32) and forces the carousel to re-emit before the
+        next ES packet, so running consumers re-parse immediately."""
+        if stream_type == self.stream_type and es_info == self.es_info:
+            return
+        self.stream_type = stream_type
+        self.es_info = es_info
+        self.version = (self.version + 1) & 0x1F
+        self.since_psi = SPLIT_PSI_INTERVAL_PKTS
+
     def psi(self):
         pat = ts_psi.build_pat(self.ts_id, {1: SPLIT_PMT_PID}, self.cc_pat)
         self.cc_pat = (self.cc_pat + 1) & 0x0F
         pmt = ts_psi.build_pmt(SPLIT_PMT_PID, 1, self.pid,
                                [(self.pid, self.stream_type, self.es_info)],
-                               self.cc_pmt)
+                               self.cc_pmt, self.version)
         self.cc_pmt = (self.cc_pmt + 1) & 0x0F
         return [pat, pmt]
 
@@ -143,8 +162,7 @@ class SplitterCore:
         known = dict(streams)
         for pid, o in self.outputs.items():
             if pid in known:
-                o.stream_type = known[pid]
-                o.es_info = es_info.get(pid, b"")
+                o.update(known[pid], es_info.get(pid, b""))
             o.needs_pcr = pid != self.pcr_pid
         if self.on_discovered is not None:
             self.on_discovered(streams, self.pcr_pid, es_info)

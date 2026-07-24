@@ -252,6 +252,75 @@ core_g.set_enabled([])
 out_3 = core_g.feed(source[:188 * 40])
 check("all-disabled feed returns empty dict", out_3 == {})
 
+# --- mid-stream codec change bumps the PMT version -----------------------------------
+# A consumer only re-parses a PSI section when version_number changes (ISO
+# 13818-1; GStreamer's seen_section_before compares version, never content),
+# so a stream_type rewrite at the same version leaves a running tsdemux on the
+# old codec's parser forever (live failure: gate01 H264→H265, downstream
+# re-mux dropped video entirely).
+
+
+def pmt_version(ts: bytes):
+    sec = ts_psi.first_section(
+        [p for p in ts_psi.iter_packets(ts) if ts_psi.ts_pid(p) == ts_split.SPLIT_PMT_PID],
+        ts_split.SPLIT_PMT_PID)
+    return (sec[5] >> 1) & 0x1F if sec else None
+
+
+def build_video_source(stream_type, n_video=400, psi_every=2):
+    out = []
+    cc_pat = cc_pmt = cc_v = 0
+    for i in range(n_video):
+        if i % psi_every == 0:
+            out.append(ts_psi.build_pat(7, {1: PMT_PID}, cc_pat)); cc_pat = (cc_pat + 1) & 0xF
+            out.append(ts_psi.build_pmt(PMT_PID, 1, VIDEO_PID,
+                                        [(VIDEO_PID, stream_type)], cc_pmt))
+            cc_pmt = (cc_pmt + 1) & 0xF
+        out.append(es_packet(VIDEO_PID, cc_v, pusi=(i % 10 == 0))); cc_v = (cc_v + 1) & 0xF
+    return b"".join(out)
+
+
+events_c = []
+core_c = ts_split.SplitterCore(1, [(VIDEO_PID, None)],
+                               on_discovered=lambda s, p, e: events_c.append(tuple(s)))
+before = b"".join(core_c.feed(build_video_source(ts_psi.STREAM_TYPE_AVC)).values())
+check("pre-switch PMT advertises AVC at version 0",
+      ts_psi.parse_pmt([p for p in ts_psi.iter_packets(before)
+                        if ts_psi.ts_pid(p) == ts_split.SPLIT_PMT_PID],
+                       ts_split.SPLIT_PMT_PID)["streams"] == [(VIDEO_PID, ts_psi.STREAM_TYPE_AVC)]
+      and pmt_version(before) == 0)
+
+# Switch codec. Discovery latches the OLDEST retained PSI section and only
+# re-parses every 500 feeds, so push >128 new PMT packets (evicts the AVC
+# ones), then idle-feed across a 500-boundary.
+hevc_src = build_video_source(ts_psi.STREAM_TYPE_HEVC)
+after_parts = [b"".join(core_c.feed(hevc_src[off:off + 2 * PKT]).values())
+               for off in range(0, len(hevc_src), 2 * PKT)]
+for _ in range(500):
+    core_c.feed(b"")
+tail = b"".join(core_c.feed(hevc_src[:40 * PKT]).values())
+check("codec change re-discovered", events_c[-1] == ((VIDEO_PID, ts_psi.STREAM_TYPE_HEVC),))
+tail_pmt = ts_psi.parse_pmt([p for p in ts_psi.iter_packets(tail)
+                             if ts_psi.ts_pid(p) == ts_split.SPLIT_PMT_PID],
+                            ts_split.SPLIT_PMT_PID)
+check("post-switch PMT advertises HEVC", tail_pmt is not None
+      and tail_pmt["streams"] == [(VIDEO_PID, ts_psi.STREAM_TYPE_HEVC)])
+check("post-switch PMT version bumped", pmt_version(tail) == 1)
+tail_pkts = list(ts_psi.iter_packets(tail))
+check("codec change forces PSI before next ES",
+      tail_pkts and ts_psi.ts_pid(tail_pkts[0]) == 0x0000
+      and ts_psi.ts_pid(tail_pkts[1]) == ts_split.SPLIT_PMT_PID)
+
+# update() unit behaviour: no-op on same identity, bump on change, wraps mod 32.
+o = ts_split.SplitOutput(VIDEO_PID, 1, ts_psi.STREAM_TYPE_AVC)
+o.update(ts_psi.STREAM_TYPE_AVC, b"")
+check("update: same identity keeps version", o.version == 0)
+o.update(ts_psi.STREAM_TYPE_AVC, OPUS_DESC)
+check("update: es_info change bumps version", o.version == 1)
+o.version = 31
+o.update(ts_psi.STREAM_TYPE_HEVC, OPUS_DESC)
+check("update: version wraps mod 32", o.version == 0)
+
 print()
 if _failures:
     print("FAILURES:", ", ".join(_failures))
