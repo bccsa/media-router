@@ -41,4 +41,28 @@ quiet = t.TimelineLatch()
 quiet.feed(pes_ts_packet(0x65) + p.build_pat(1, {1: 0x100}))
 check("no latch from PTS-less PES / PSI", quiet.first_pts == {})
 
+# Epoch-consistent latching astride the 33-bit boundary (the 2026-07-16
+# mid-wrap-restart failure mode): first PID latches just BELOW 2^33, second
+# just after the wrap — the second must unwrap UP onto the first's epoch.
+W = t.PTS_WRAP
+straddle = t.TimelineLatch()
+straddle.feed(pes_ts_packet(0x65, pts=W - 9000))       # 100 ms pre-wrap
+straddle.feed(pes_ts_packet(0xCC, pts=4500))           # 50 ms post-wrap
+check("post-wrap PID unwraps onto the pre-wrap epoch",
+      straddle.first_pts[0xCC] == W + 4500)
+check("epoch-consistent offsets differ by real skew only",
+      straddle.offset_ns(0xCC, 0) - straddle.offset_ns(0x65, 0)
+      == t.pts90k_to_ns(W + 4500) - t.pts90k_to_ns(W - 9000))
+
+# Mirror case: first PID latches post-wrap, straggler arrives pre-wrap —
+# unwraps DOWN (slightly negative), never 26.5 h away.
+mirror = t.TimelineLatch()
+mirror.feed(pes_ts_packet(0x65, pts=4500))
+mirror.feed(pes_ts_packet(0xCC, pts=W - 9000))
+check("pre-wrap straggler unwraps down beside the epoch",
+      mirror.first_pts[0xCC] == -9000)
+
+# unwrap_near is identity when no boundary is involved.
+check("unwrap_near identity", t.unwrap_near(900000, 900900) == 900000)
+
 print("\nALL ts_timeline TESTS PASSED")
