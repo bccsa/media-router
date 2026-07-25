@@ -10,6 +10,8 @@ network access during build — any packaging system can consume the standard
 | Directory | What | Portability |
 |---|---|---|
 | `mrts/` | MPEG-TS packet core: PSI parse/build + discovery (`ts_psi`), the packet-level splitter (`ts_split`), H.264/H.265 SPS probe (`ts_video_info`, `sps_parse`), and the `mrts_cli` test harness | Any platform with a C++17 compiler (Linux, macOS, …) |
+| `libmrbus/` | GstUnixFd bus transport: fan-out server (per-client leaky send queues, CAPS-first, memfd + SCM_RIGHTS), raw-TS ingest buffering, stdin/stdout JSON control plane | Linux only (`memfd_create`, fd passing) |
+| `mr-bus-fanout/` | Fan-out sidecar binary for non-GStreamer bus producers — drop-in replacement for `unixfd-fanout.py` (same CLI, control verbs, and events) | Linux only |
 
 `mrts` is a byte-for-byte behavioral port of the Python reference modules in
 `packages/engine/src/child-process/` (`ts_split.py`, `ts_psi.py`,
@@ -33,6 +35,9 @@ Standard variables are honored: `CXX`, `CXXFLAGS`, `AR`, `DESTDIR`,
 make -C native CXX=aarch64-linux-gnu-g++
 ```
 
+On hosts without a cross toolchain, `native/build-dev.sh` builds static
+`linux/arm64` binaries via Docker (never required by `pnpm build` or `make`).
+
 `native/build-host.sh` builds just the portable core with the host toolchain —
 this is what the vitest parity suite invokes; the suite skips gracefully when
 no C++ compiler or python3 is available.
@@ -46,3 +51,8 @@ no C++ compiler or python3 is available.
   garbage, descriptor-identified codecs, mid-stream codec change), runs it
   through the Python core and the native core with identical chunking, and
   compares every output PID byte-for-byte.
+- `unixfdFanout.test.ts` (part of `pnpm test`, Linux only) — GstUnixFd
+  protocol conformance, parameterized over BOTH fan-out implementations (the
+  python reference sidecar and `mr-bus-fanout`) against the same protocol
+  clients. On non-Linux hosts both legs skip (`memfd_create`); run them via
+  Docker or on a Linux box.

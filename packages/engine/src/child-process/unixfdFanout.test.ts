@@ -1,17 +1,23 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { connect, type Socket } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SIDECAR = join(__dirname, 'unixfd-fanout.py');
+/** Native drop-in (built by `make -C native` on Linux / build-dev.sh). */
+const NATIVE_SIDECAR = join(__dirname, '../../../../native/mr-bus-fanout/mr-bus-fanout');
 const CLIENT = join(__dirname, 'unixfd-fanout.test-client.py');
 const CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 /** Must match the sidecar's BUFFER_BYTES (128 TS packets). */
 const BUFFER_BYTES = 128 * 188;
 
 const havePython = spawnSync('python3', ['--version']).status === 0;
+// The protocol needs Linux on the sidecar side (memfd_create); the python
+// leg is skipped off-Linux for the same reason the native one is.
+const isLinux = process.platform === 'linux';
+const haveNative = isLinux && existsSync(NATIVE_SIDECAR);
 
 /** Synthetic TS: 0x47 sync + 187×0xAA per packet, so all-0x47 data can't
  *  fake the client's stride alignment check. */
@@ -51,11 +57,13 @@ async function waitFor<T>(probe: () => T | undefined, what: string, timeoutMs = 
 }
 
 /**
- * Full GstUnixFd protocol round-trips against the real sidecar, with a python
+ * Full GstUnixFd protocol round-trips against a real sidecar, with a python
  * stand-in for unixfdsrc on the consumer end (receiving SCM_RIGHTS fds needs
- * python on both sides — Node can't).
+ * python — Node can't). Parameterized over both server implementations: the
+ * python reference (unixfd-fanout.py) and the native drop-in (mr-bus-fanout)
+ * — identical CLI, verbs, and events, so the suite body is shared verbatim.
  */
-describe.skipIf(!havePython)('unixfd-fanout.py protocol', () => {
+function conformanceSuite(spawnSidecar: (ingest: string) => ChildProcess) {
     const cleanups: Array<() => void> = [];
     afterEach(() => {
         cleanups.splice(0).forEach((fn) => fn());
@@ -80,9 +88,7 @@ describe.skipIf(!havePython)('unixfd-fanout.py protocol', () => {
         const ingest = join(dir, 'ingest.sock');
         const edge = join(dir, 'edge.sock');
 
-        const sidecar = spawn('python3', [SIDECAR, '--ingest', ingest, '--caps', CAPS], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-        });
+        const sidecar = spawnSidecar(ingest);
         cleanups.push(() => sidecar.kill('SIGKILL'));
         sidecar.stderr!.on('data', (d: Buffer) => process.stderr.write(d));
         const sidecarEvents = jsonLines(sidecar);
@@ -191,4 +197,20 @@ describe.skipIf(!havePython)('unixfd-fanout.py protocol', () => {
         const exit = await r.clientExit;
         expect(exit).toBe(0);
     }, 15000);
+}
+
+describe.skipIf(!havePython || !isLinux)('unixfd-fanout.py protocol', () => {
+    conformanceSuite((ingest) =>
+        spawn('python3', [SIDECAR, '--ingest', ingest, '--caps', CAPS], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+        }),
+    );
+});
+
+describe.skipIf(!havePython || !haveNative)('mr-bus-fanout (native) protocol', () => {
+    conformanceSuite((ingest) =>
+        spawn(NATIVE_SIDECAR, ['--ingest', ingest, '--caps', CAPS], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+        }),
+    );
 });
