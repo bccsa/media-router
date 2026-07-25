@@ -163,6 +163,7 @@ export const useSocketStore = defineStore('socket', () => {
                 cpu: number;
                 mem: number;
                 temp: number | null;
+                undervoltage?: boolean;
                 processCount?: number;
                 ip?: string;
                 ips?: string[];
@@ -174,6 +175,7 @@ export const useSocketStore = defineStore('socket', () => {
                     cpu: data.cpu,
                     mem: data.mem,
                     temp: data.temp,
+                    undervoltage: data.undervoltage,
                     processCount: data.processCount,
                 });
                 if (data.ip || data.ips || data.hostname || data.buildNumber) {

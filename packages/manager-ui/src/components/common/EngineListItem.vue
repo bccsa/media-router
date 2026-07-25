@@ -2,6 +2,7 @@
 import { useRoute } from 'vue-router';
 import type { EngineState } from '@/stores/engines';
 import { statColorClass } from '@/composables/useStatColor';
+import { getLucideIcon } from '@/composables/useLucideIcons';
 
 defineProps<{ engine: EngineState }>();
 const emit = defineEmits<{ contextmenu: [ev: MouseEvent, engineId: string] }>();
@@ -45,6 +46,15 @@ const route = useRoute();
                 :class="statColorClass(engine.system.temp, 70, 80)"
             >
                 {{ engine.system.temp }}°C
+            </span>
+            <!-- Icon-only (no tooltip); aria-label carries meaning for a11y and
+                 is a stable hook independent of async icon resolution. -->
+            <span
+                v-if="engine.system.undervoltage"
+                class="text-warning shrink-0 inline-flex items-center"
+                aria-label="Under-voltage detected"
+            >
+                <component :is="getLucideIcon('zap')" :size="11" />
             </span>
         </div>
     </RouterLink>

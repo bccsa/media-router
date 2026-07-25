@@ -9,6 +9,12 @@ export interface SystemStats {
     cpu: number;
     mem: number;
     temp: number | null;
+    /**
+     * Raspberry Pi under-voltage warning. Only ever `true` (and only once the
+     * collector has latched — see below); omitted otherwise, so non-Pi hosts and
+     * healthy boxes send nothing.
+     */
+    undervoltage?: boolean;
     processCount?: number;
     ip?: string;
     ips?: string[];
@@ -138,6 +144,51 @@ export function readCpuTemp(
 }
 
 /**
+ * Read the Raspberry Pi under-voltage flag.
+ *
+ * The `raspberrypi_hwmon` firmware driver exposes a hwmon device named
+ * `rpi_volt` with a single attribute `in0_lcrit_alarm`: `1` = the 5 V rail has
+ * sagged below the critical threshold (the firmware is throttling the ARM
+ * clock), `0` = OK. This is the same signal Raspberry Pi OS surfaces as its
+ * on-screen lightning-bolt icon. It is world-readable, so the engine reads it
+ * unprivileged.
+ *
+ * Returns:
+ *   - `true`  — under-voltage right now
+ *   - `false` — sensor present, rail OK
+ *   - `null`  — no `rpi_volt` device (non-Pi hardware) or hwmon unreadable;
+ *               "can't determine", deliberately distinct from `false` so callers
+ *               never raise a false alarm on x86 dev hosts.
+ *
+ * Note: this Yocto image ships no `vcgencmd`, so `in0_lcrit_alarm` is the only
+ * interface and it reports only the *live* state (no voltage value, no firmware
+ * sticky-bit history) — persistence is the caller's job (see the collector's
+ * debounce-and-latch below).
+ */
+export function readUndervoltage(hwmonRoot = '/sys/class/hwmon'): boolean | null {
+    let devices: string[];
+    try {
+        devices = fs.readdirSync(hwmonRoot);
+    } catch {
+        return null; // no hwmon subsystem
+    }
+    for (const dev of devices) {
+        const base = `${hwmonRoot}/${dev}`;
+        try {
+            if (fs.readFileSync(`${base}/name`, 'utf-8').trim() !== 'rpi_volt') continue;
+        } catch {
+            continue;
+        }
+        try {
+            return parseInt(fs.readFileSync(`${base}/in0_lcrit_alarm`, 'utf-8'), 10) === 1;
+        } catch {
+            return null; // device present but attribute unreadable
+        }
+    }
+    return null; // no rpi_volt device — not a Pi
+}
+
+/**
  * Periodically collects CPU, memory, and temperature stats.
  * Calls the provided callback with each sample.
  */
@@ -147,11 +198,36 @@ export class SystemStatsCollector {
     private prevCpuIdle = 0;
     private sampleCount = 0;
     private cachedBuildNumber: string | null = null;
+    // Under-voltage debounce + latch. `streak` counts consecutive under-voltage
+    // samples; the latch arms after 2 (~2-4s) so a lone boot-inrush blip doesn't
+    // permanently flag a healthy box, and stays armed until this process
+    // restarts (a genuine power fault sags repeatedly, so it re-arms in seconds
+    // after a restart if still faulty).
+    private undervoltageStreak = 0;
+    private undervoltageLatched = false;
 
     constructor(
         private onStats: (stats: SystemStats) => void,
         private intervalMs = 2000,
     ) {}
+
+    /**
+     * Debounce-then-latch step for the under-voltage flag. Feeds one reading
+     * (`true`/`false`/`null`) through the streak counter and the sticky latch,
+     * logs once when it arms, and returns whether the emitted stats should carry
+     * `undervoltage: true`. A `null` reading (no sensor) resets the streak like
+     * an OK read, so non-Pi hosts never latch. Extracted from the tick so the
+     * 2-consecutive boundary is unit-testable without driving the interval.
+     */
+    private updateUndervoltage(reading: boolean | null): boolean {
+        if (reading === true) this.undervoltageStreak++;
+        else this.undervoltageStreak = 0;
+        if (this.undervoltageStreak >= 2 && !this.undervoltageLatched) {
+            this.undervoltageLatched = true;
+            log.warn('Under-voltage detected — CPU is being throttled; check PSU/USB-C cable');
+        }
+        return this.undervoltageLatched;
+    }
 
     start(): void {
         if (this.timer) return;
@@ -180,6 +256,8 @@ export class SystemStatsCollector {
                     mem: memPercent,
                     temp: readCpuTemp(),
                 };
+
+                if (this.updateUndervoltage(readUndervoltage())) stats.undervoltage = true;
 
                 // Include IP + hostname + build on first sample and every 30 samples (~60s)
                 if (this.sampleCount % 30 === 0) {

@@ -128,6 +128,7 @@ export interface SystemStats {
     cpu: number; // CPU usage %
     mem: number; // Memory usage %
     temp: number | null; // CPU temperature °C
+    undervoltage?: boolean; // Pi under-voltage warning (latched true; omitted otherwise)
     processCount?: number; // Spawned child processes
 }
 

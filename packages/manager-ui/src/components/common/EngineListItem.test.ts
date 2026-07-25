@@ -55,6 +55,32 @@ describe('EngineListItem', () => {
         expect(wrapper.text()).toContain('60°C');
     });
 
+    it('shows the under-voltage warning icon when the flag is set', () => {
+        const wrapper = mount(EngineListItem, {
+            props: {
+                engine: makeEngine({
+                    online: true,
+                    system: { cpu: 33, mem: 50, temp: 60, undervoltage: true },
+                }),
+            },
+            global: { plugins: [withRouter()] },
+        });
+        expect(wrapper.find('[aria-label="Under-voltage detected"]').exists()).toBe(true);
+    });
+
+    it('has no under-voltage icon when the flag is unset', () => {
+        const wrapper = mount(EngineListItem, {
+            props: {
+                engine: makeEngine({
+                    online: true,
+                    system: { cpu: 33, mem: 50, temp: 60 },
+                }),
+            },
+            global: { plugins: [withRouter()] },
+        });
+        expect(wrapper.find('[aria-label="Under-voltage detected"]').exists()).toBe(false);
+    });
+
     it('hides system stats when offline', () => {
         const wrapper = mount(EngineListItem, {
             props: {
