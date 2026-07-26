@@ -12,6 +12,7 @@ network access during build — any packaging system can consume the standard
 | `mrts/` | MPEG-TS packet core: PSI parse/build + discovery (`ts_psi`), the packet-level splitter (`ts_split`), H.264/H.265 SPS probe (`ts_video_info`, `sps_parse`), and the `mrts_cli` test harness | Any platform with a C++17 compiler (Linux, macOS, …) |
 | `libmrbus/` | GstUnixFd bus transport: fan-out server (per-client leaky send queues, CAPS-first, memfd + SCM_RIGHTS), raw-TS ingest buffering, stdin/stdout JSON control plane | Linux only (`memfd_create`, fd passing) |
 | `mr-bus-fanout/` | Fan-out sidecar binary for non-GStreamer bus producers — drop-in replacement for `unixfd-fanout.py` (same CLI, control verbs, and events) | Linux only |
+| `mr-tssplit/` | Native TS-splitter child: bus-client input → `mrts` packet router → one fan-out server per output PID; engine-compatible control verbs (`bus_attach`/`bus_detach`/`reinput`) and runner-identical `tssplit:*` events | Linux only |
 
 `mrts` is a byte-for-byte behavioral port of the Python reference modules in
 `packages/engine/src/child-process/` (`ts_split.py`, `ts_psi.py`,
@@ -56,3 +57,9 @@ no C++ compiler or python3 is available.
   python reference sidecar and `mr-bus-fanout`) against the same protocol
   clients. On non-Linux hosts both legs skip (`memfd_create`); run them via
   Docker or on a Linux box.
+- `mrTssplit.test.ts` (part of `pnpm test`, Linux only) — end-to-end
+  mr-tssplit integration over real GstUnixFd sockets: a python unixfdsink
+  stand-in (`unixfd-test-server.py`) feeds the parity fixture and verifies a
+  RELEASE_BUFFER for every input buffer; capture clients hash every output
+  edge against the python core; covers wired-only gating, make-before-break
+  `reinput` continuity, and input stall events.

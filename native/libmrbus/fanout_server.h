@@ -47,6 +47,7 @@ class FanoutServer {
     void broadcast(const uint8_t* data, size_t len);
 
     size_t client_count() const { return clients_.size(); }
+    size_t edge_count() const { return edges_.size(); }
     bool edge_has_client(const std::string& path) const;
     const std::map<std::string, long long>& drops() const { return drops_; }
 

@@ -7,3 +7,4 @@ mrts/tests/ts_psi_test
 mrts/tests/ts_split_test
 mrts/tests/ts_video_info_test
 mr-bus-fanout/mr-bus-fanout
+mr-tssplit/mr-tssplit

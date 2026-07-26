@@ -9,7 +9,7 @@
 # (memfd_create, SCM_RIGHTS) and is skipped elsewhere.
 SUBDIRS = mrts
 ifeq ($(shell uname -s),Linux)
-SUBDIRS += libmrbus mr-bus-fanout
+SUBDIRS += libmrbus mr-bus-fanout mr-tssplit
 endif
 
 all test clean install:

@@ -5,14 +5,14 @@ CXX      ?= c++
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++17 -Wall -Wextra
 
-OBJS = control.o fanout_server.o ingest.o
+OBJS = control.o fanout_server.o ingest.o bus_client.o
 
 all: libmrbus.a
 
 libmrbus.a: $(OBJS)
 	$(AR) rcs $@ $(OBJS)
 
-%.o: %.cpp busproto.h control.h fanout_server.h ingest.h
+%.o: %.cpp busproto.h control.h fanout_server.h ingest.h bus_client.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 test:
