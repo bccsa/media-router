@@ -1,7 +1,12 @@
 import {
     GstPluginBase,
+    NativeSinkController,
     registerCodecClassifier,
+    resolveNativeBinary,
+    type BusAttachTarget,
     type EngineServices,
+    type LiveSwapTarget,
+    type ManagedProcess,
     type PipelineDescription,
 } from '@media-router/engine';
 import {
@@ -13,7 +18,8 @@ import {
     type DiscoveredStreamConfig,
     type DynamicPort,
 } from './splitterPorts.js';
-import { buildSplitterPipeline, INPUT_SRC_NAME } from './splitterPipeline.js';
+import { buildSpawnArgs, dispatchRunnerEvent } from './nativeRunner.js';
+import { INPUT_SRC_NAME } from './splitterPipeline.js';
 import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './streamTypes.js';
 
 /**
@@ -27,15 +33,22 @@ import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './st
  * wire; packet pass-through inherits the wire cadence and drops the
  * mini-mux's 1.2 s latency budget.
  *
- * The splitting itself runs inside gst-pipeline-runner.py (`tsSplit` config,
- * ts_split.py core — the librist embedding pattern): the module's pipeline is
- * `bus src ! appsink` plus one `appsrc ! bus sink` chain per PID output. All
- * discovered outputs are ALWAYS produced into their fan-out tees
- * (`allow-not-linked`) — an unconsumed tee is nearly free, so there is no
- * add/remove-output protocol and no connection polling. Wiring a PID that was
- * discovered after the last build is the engine's existing
- * materializeProducerPort bounce: buildPipeline re-runs and the new branch
- * appears; sticky port allocation keeps sibling consumers stable.
+ * The data path is the NATIVE child `mr-tssplit` (native/mr-tssplit — the
+ * C++ port of ts_split.py measured at ~1/60th the CPU of the python/gst
+ * shell): a GstUnixFd client on the input edge, the packet router, and one
+ * fan-out server per output PID. There is no GStreamer pipeline at all —
+ * `buildPipeline` returns null and the child is a ManagedProcess
+ * (hls-player's producer pattern). Bus attach/detach and the live input
+ * swap's `reinput` ride the child's stdin via `NativeSinkController`; its
+ * stdout `plugin_event` lines are byte-compatible with the old runner's, so
+ * `onPluginEvent` below is unchanged from the gst generation.
+ *
+ * All discovered outputs are declared to the child (`--out` per PID) but an
+ * output only produces packets while its tee has an attached fan-out edge
+ * (wired-only gating, in the child). Wiring a PID discovered after the last
+ * spawn is the engine's materializeProducerPort bounce: the module restarts
+ * and the new `--out` appears; sticky port allocation keeps sibling
+ * consumers stable.
  *
  * Source PMT discovery arrives on the `tssplit:discovered` plugin-event
  * channel and is persisted to `discoveredStreams` config (never removed — a
@@ -50,6 +63,9 @@ export class TsSplitterModule extends GstPluginBase {
     /** Live SPS-derived video parameters per pid ("1920×1080i50 (h264)") —
      *  ephemeral status, deliberately NOT part of discoveredStreams config. */
     private readonly videoInfo = new Map<number, string>();
+
+    private splitProc: ManagedProcess | null = null;
+    private controller: NativeSinkController | null = null;
 
     private static classifiersRegistered = false;
 
@@ -80,65 +96,118 @@ export class TsSplitterModule extends GstPluginBase {
         return buildDynamicPorts(discoveredStreams(config));
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
-        const router = this.services?.mediaRouter;
-        const instanceId = this.services?.instanceId ?? '';
-        if (!router) return null;
-
-        const upstream = router.getModuleBusSource(instanceId, INPUT_PORT_ID);
-        if (!upstream) {
-            this.setHealth('warning', 'No upstream MPEG-TS source connected');
-            return null;
-        }
-
-        // Allocate (sticky, owner-keyed `${instanceId}:pid-0x…`) an endpoint
-        // per persisted stream and build EVERY output — always-produce.
-        // Zero persisted streams ⇒ input-only pipeline: discovery runs before
-        // any output exists, so the first PIDs appear without manual config.
-        const outputs = [];
-        for (const s of discoveredStreams(config)) {
-            const ep = router.assignBusChannel(instanceId, pidPortId(s.pid));
-            if (!ep) {
-                this.setHealth('error', `UDP port pool exhausted while allocating ${pidPortId(s.pid)}`);
-                return null;
-            }
-            outputs.push({ pid: s.pid, streamType: s.streamType, port: ep.port });
-        }
-
-        const { pipeline, tsSplit } = buildSplitterPipeline({
-            input: { port: upstream.port, socketPath: upstream.socketPath },
-            outputs,
-            tsId: (config.tsId as number) ?? 1,
-        });
-        return { pipeline, restartOnError: true, tsSplit };
+    /** No GStreamer pipeline — the data path is the native child. */
+    buildPipeline(_config: Record<string, unknown>): PipelineDescription | null {
+        return null;
     }
 
     /**
-     * Live input swap (engine `bus_reinput`): the splitter's pipeline shape
-     * does not depend on WHICH source feeds it — the input `unixfdsrc` can be
-     * re-pointed at a new edge socket while every output appsrc chain (and
-     * all downstream consumers) keeps running. Discovery re-converges from
-     * the new source's PSI on the same channel. This is what makes a
-     * head-end source switch non-destructive (2026-07-23 incident).
+     * Live input swap: the splitter's shape does not depend on WHICH source
+     * feeds it — the native child re-points its input client at a new edge
+     * socket (`reinput` verb, make-before-break) while every output fan-out
+     * (and all downstream consumers) keeps running. Discovery re-converges
+     * from the new source's PSI. `element` is the legacy gst RPC field; the
+     * native child ignores it (one input).
      */
     getLiveInputSwap(sinkPortId: string): { element: string } | null {
         return sinkPortId === INPUT_PORT_ID ? { element: INPUT_SRC_NAME } : null;
     }
 
+    /** Bus fan-out + reinput both ride the native child's stdin. */
+    getBusAttachTarget(): BusAttachTarget | null {
+        return this.splitProc ? this.controller : null;
+    }
+
+    getLiveSwapTarget(): LiveSwapTarget | null {
+        return this.splitProc ? this.controller : null;
+    }
+
     async onStart(): Promise<void> {
         await super.onStart();
-        const upstream = this.services?.mediaRouter?.getModuleBusSource(
-            this.services.instanceId,
-            INPUT_PORT_ID,
+        const router = this.services?.mediaRouter;
+        const instanceId = this.services?.instanceId ?? '';
+        const upstream = router?.getModuleBusSource(instanceId, INPUT_PORT_ID);
+        if (!router || !upstream) {
+            this.setHealth('warning', 'No upstream MPEG-TS source connected');
+            this.publishStatus();
+            return;   // idle — no child until an input is wired
+        }
+
+        // Allocate (sticky, owner-keyed `${instanceId}:pid-0x…`) an endpoint
+        // per persisted stream and declare EVERY output to the child. Zero
+        // persisted streams ⇒ input-only: discovery runs before any output
+        // exists, so the first PIDs appear without manual config.
+        const outputs = [];
+        for (const s of discoveredStreams(this.config)) {
+            const ep = router.assignBusChannel(instanceId, pidPortId(s.pid));
+            if (!ep) {
+                this.setHealth('error', `UDP port pool exhausted while allocating ${pidPortId(s.pid)}`);
+                return;
+            }
+            outputs.push({ pid: s.pid, streamType: s.streamType, port: ep.port });
+        }
+
+        const binary = resolveNativeBinary('mr-tssplit');
+        if (!binary) {
+            this.setHealth('error', 'mr-tssplit binary not found — build native/ (see native/README.md)');
+            return;
+        }
+        this.controller = new NativeSinkController(
+            () => this.splitProc,
+            // Every child `ready` (first start + each autoRestart respawn):
+            // the controller replayed its own desired edges; this reattach
+            // covers connections created while the module was down, which
+            // only the engine-side coordinator knows about.
+            () => {
+                router.onProducerPlaying(instanceId);
+                this.setHealth('ok');
+            },
         );
-        if (upstream) this.setStatusData('input', { channel: upstream.port });
+        this.splitProc = this.spawnRunnerProcess({
+            label: 'mr-tssplit',
+            command: binary,
+            args: buildSpawnArgs({
+                inputSocketPath: upstream.socketPath,
+                tsId: (this.config.tsId as number) ?? 1,
+                outputs,
+            }),
+            autoRestart: true,
+            stdin: true,
+            onStdout: (line) => this.handleRunnerLine(line),
+            onStderr: (line) => this.log.warn({ src: 'mr-tssplit' }, line),
+        });
+        this.running = true;
+        this.setStatusData('input', { channel: upstream.port });
         this.publishStatus();
     }
 
     async onStop(): Promise<void> {
+        // ProcessManager.releaseAll kills the child; drop refs so a stale
+        // controller can't write into the next incarnation.
+        this.splitProc = null;
+        this.controller = null;
         this.discovered.clear();
         this.videoInfo.clear();
         await super.onStop();
+    }
+
+    private handleRunnerLine(line: string): void {
+        const msg = this.controller?.handleLine(line);
+        if (!msg) return;
+        dispatchRunnerEvent(msg, {
+            onPluginEvent: (channel, payload) => this.onPluginEvent(channel, payload),
+            // Input silence is source-side, not a module failure — same
+            // semantics as the gst path's bus_stall warning.
+            onInputStalled: (ms) =>
+                this.setHealth('warning', `Input stalled — no data for ${ms} ms`),
+            onInputResumed: () => this.setHealth('ok'),
+            onStats: (stats) => {
+                this.setStatusData('io', {
+                    consumers: stats.clients ?? 0,
+                    inKbps: stats.in_kbps ?? 0,
+                });
+            },
+        });
     }
 
     protected onPluginEvent(channel: string, payload: unknown): void {

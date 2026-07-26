@@ -1,6 +1,6 @@
 import type { PluginManifest, StreamType } from '@media-router/shared-types';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
-import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
+import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
 import type { PipeWireManager } from '../audio/PipeWireManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { ProcessManager } from '../child-process/ProcessManager.js';
@@ -140,6 +140,13 @@ export interface PluginModule {
      * depends on the source — those keep the classic restart.
      */
     getLiveInputSwap?(sinkPortId: string): { element: string } | null;
+    /**
+     * Target of the tracked `bus_reinput` RPC that executes a live input swap.
+     * Defaults to the gst child process; a native (non-GStreamer) sink
+     * overrides it with its own controller (ts-splitter →
+     * `NativeSinkController`).
+     */
+    getLiveSwapTarget?(): LiveSwapTarget | null;
     /**
      * Re-derive and store the pipeline description after a live mutation the
      * running pipeline already absorbed (bus_reinput input swap), so

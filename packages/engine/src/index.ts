@@ -128,9 +128,10 @@ export type { DeviceFormatState, DeviceDetection } from './audio/deviceFormat.js
 export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
-export { UnixFdFanoutController } from './child-process/UnixFdFanoutController.js';
+export { UnixFdFanoutController, NativeSinkController } from './child-process/UnixFdFanoutController.js';
 export { probeUnixSocket } from './child-process/busSocketGate.js';
-export type { BusAttachTarget } from './child-process/UnixFdFanoutController.js';
+export type { BusAttachTarget, LiveSwapTarget } from './child-process/UnixFdFanoutController.js';
+export { resolveNativeBinary } from './child-process/nativeBinaries.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export {
     probeMpegTsStream,

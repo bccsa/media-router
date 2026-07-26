@@ -72,13 +72,27 @@ describe('performLiveSwap', () => {
         const sink = {
             running: true,
             getLiveInputSwap: vi.fn(() => ({ element: 'netin' })),
-            getChildProcess: vi.fn(() => ({ busReinput })),
+            getLiveSwapTarget: vi.fn(() => ({ busReinput })),
             refreshPipelineDescription: vi.fn(async () => true),
             setHealth: vi.fn(),
             ...overrides,
         } as unknown as ModuleInstance;
         return { sink, busReinput };
     }
+
+    it('detaches the old edge and returns false when there is no swap target', async () => {
+        const { sink } = sinkStub({ getLiveSwapTarget: vi.fn(() => null) });
+        const detach = vi.fn();
+        const ok = await performLiveSwap({
+            sink,
+            conn: conn('new'),
+            oldConn: conn('old'),
+            udpPort: 40001,
+            busFanout: { detach } as never,
+        });
+        expect(ok).toBe(false);
+        expect(detach).toHaveBeenCalledWith(expect.objectContaining({ id: 'old' }));
+    });
 
     it('detaches the old edge and returns false when the sink lost the capability', async () => {
         const { sink } = sinkStub({ getLiveInputSwap: vi.fn(() => null) });

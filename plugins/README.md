@@ -968,12 +968,21 @@ getLiveInputSwap(sinkPortId: string): { element: string } | null {
 
 The engine then handles a source re-wire make-before-break: the removed edge
 stays attached for a 15 s window (module health shows a warning); a matching
-add re-points the named `unixfdsrc` at the new edge socket via the runner's
-`bus_reinput` command — outputs and downstream consumers never notice. Window
-expiry (a plain disconnect) runs the classic teardown. Only declare this for
-ports where a source swap changes NOTHING in `buildPipeline` besides the input
-socket; modules whose branch set depends on the source (mpegts-muxer) must
-keep the restart. Real example: [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts).
+add re-points the input at the new edge socket via a tracked `bus_reinput`
+RPC — outputs and downstream consumers never notice. Window expiry (a plain
+disconnect) runs the classic teardown. Only declare this for ports where a
+source swap changes NOTHING in the module's shape besides the input socket;
+modules whose branch set depends on the source (mpegts-muxer) must keep the
+restart.
+
+The RPC target defaults to the gst child process (the runner re-points the
+named `unixfdsrc`). A NATIVE sink (no GStreamer pipeline) overrides
+`getLiveSwapTarget()` with a `NativeSinkController` — the engine then sends
+its child a `{"cmd":"reinput","socket":…}` stdin verb and awaits
+`reinput_done`. Real example: [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts),
+whose data path is the native `mr-tssplit` child (`native/` tree, resolved at
+runtime with `resolveNativeBinary()` — env `MR_NATIVE_BIN_DIR` override, then
+`/usr/bin`, then the repo's `native/` build output).
 
 ### Device Watchdog (Hardware Hot-Plug)
 
@@ -1368,7 +1377,7 @@ await sink.end(); // flush whole packets at media rate, then close
 
 Use the `port` from `assignBusChannel` / `getBusChannel` — never hardcode socket paths. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
 
-**The unixfd fan-out** is `unixfd-fanout.py` (engine `dist/child-process/`), a pure-stdlib python3 sidecar that stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
+**The unixfd fan-out** is `unixfd-fanout.py` (engine `dist/child-process/`), a pure-stdlib python3 sidecar that stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). (A native C++ drop-in with the identical CLI/verbs/events, `mr-bus-fanout`, lives in the repo's `native/` tree; the same controller drives either.) The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
 
 ```typescript
 getBusAttachTarget(): BusAttachTarget | null {

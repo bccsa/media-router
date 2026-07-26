@@ -170,7 +170,10 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
         if (this.materializeAttempted.has(conn.id)) return undefined;
         const producer = this.moduleGetter(conn.sourceModuleId);
         if (!producer?.running) return undefined;
-        if (!producer.getChildProcess?.()) return undefined;
+        // "Has a live producer" = a gst child OR a native producer's own bus
+        // attach target (ts-splitter's mr-tssplit controller). A running-but-
+        // idle producer has neither and would rebuild to idle again.
+        if (!producer.getChildProcess?.() && !producer.getBusAttachTarget?.()) return undefined;
         const declared = producer
             .getDynamicPorts?.()
             ?.some((p) => p.id === conn.sourcePortId && p.direction === 'output');
@@ -217,7 +220,7 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
             if (
                 sink?.running &&
                 sink.getLiveInputSwap?.(conn.sinkPortId) &&
-                sink.getChildProcess?.()
+                sink.getLiveSwapTarget?.()
             ) {
                 sink.setHealth?.(
                     'warning',
