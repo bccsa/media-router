@@ -22,6 +22,16 @@
  */
 
 /**
+ * The caps EVERY bus producer publishes — identity, not a hint. unixfd carries
+ * caps across the socket and `tsdemux` rejects caps-less buffers, so both
+ * producer paths must publish exactly this and nothing more: the GStreamer
+ * egress (`buildBusSink`) and the `unixfd-fanout.py` sidecar (`--caps`).
+ *
+ * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
+ */
+export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
+
+/**
  * Channel-level socket path for one bus channel. Used only as the fallback
  * socket for a channel with no per-consumer fan-out; the live path is
  * `busEdgeSocketPath` (one socket per consumer edge).
@@ -151,7 +161,7 @@ export function buildBusSrc(opts: BusSrcOpts): string {
 
 /**
  * Bus egress (fan-out point) for a producer:
- *   capsfilter (pinned TS caps) ! tee busout_<port> allow-not-linked=true
+ *   capssetter (replace) ! capsfilter (pinned TS caps) ! tee busout_<port>
  *
  * The actual `unixfdsink` branches are attached one per consumer at runtime
  * via `bus_attach` (`gst-pipeline-runner.py`), each
@@ -162,13 +172,27 @@ export function buildBusSrc(opts: BusSrcOpts): string {
  *
  * `allow-not-linked=true` lets the producer run with zero consumers attached
  * (buffers dropped at the tee) — consumers wire in later without a producer
- * rebuild. The capsfilter pins TS caps (unixfd transports caps; tsdemux
- * rejects caps-less buffers), inherited by every attached branch. The tee's
- * sink pad is the throughput-probe target (`busTeeName`).
+ * rebuild. The tee's sink pad is the throughput-probe target (`busTeeName`).
+ *
+ * The `capssetter … replace=true` DROPS incoming caps fields, and exists for
+ * exactly one of them: `mpegtsmux` publishes the PAT/PMT it generated FIRST
+ * into a `streamheader` caps field. That snapshot is taken before the
+ * dynamically-linked media pads exist (mux pads are requested at tsdemux
+ * pad-added), so it can name the wrong PCR PID and omit whole streams — and it
+ * is never refreshed when the live PMT is corrected. unixfd carries caps
+ * verbatim across the socket, so the stale header reaches consumers, and
+ * `srtsink` replays it to every newly connected caller for the pipeline's
+ * lifetime: a receiver's FIRST PMT was a snapshot of a pipeline that no longer
+ * exists. Stripping costs a new caller nothing — real PSI repeats ~10×/s.
+ * A capsfilter alone cannot do this: caps intersection is a field UNION, so it
+ * preserves upstream fields it does not mention. It stays behind the capssetter
+ * as the negotiation guard (a producer that somehow emits non-TS caps must
+ * still fail loudly rather than publish them).
  */
 export function buildBusSink(port: number): string {
     return (
-        'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+        `capssetter caps="${BUS_TS_CAPS}" replace=true ! ` +
+        `capsfilter caps="${BUS_TS_CAPS}" ! ` +
         `tee name=${busTeeName(port)} allow-not-linked=true`
     );
 }

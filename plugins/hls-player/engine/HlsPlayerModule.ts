@@ -1,4 +1,5 @@
 import {
+    BUS_TS_CAPS,
     GstPluginBase,
     UnixFdFanoutController,
     busIngestSocketPath,
@@ -11,9 +12,6 @@ import type { AlternateRendition } from 'hls-pipe';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolutionCapBitrateBps, resolveQuality } from './runnerOptions.js';
-
-/** Bus wire caps — identical to `buildBusSink`'s capsfilter. */
-const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
 /**
  * Locate the compiled runner. `__dirname` is `dist/` in production, but the

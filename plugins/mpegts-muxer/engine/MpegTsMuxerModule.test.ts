@@ -185,7 +185,11 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 alignment: 7,
             });
             const p = result!.pipeline;
-            expect(p).toMatch(/mpegtsmux name=mux[^!]+! capsfilter caps="video\/mpegts/);
+            // capssetter is the first element of the bus egress (caps-only, no
+            // buffering) — the point of the assertion is that nothing that can
+            // DROP sits between the mux and the tee.
+            expect(p).toMatch(/mpegtsmux name=mux[^!]+! capssetter caps="video\/mpegts/);
+            expect(p).not.toMatch(/mpegtsmux name=mux[^!]+! queue/);
         });
         it('emits one demux branch per input plus a single mpegtsmux ! bus-egress chain and per-media link rules', () => {
             const result = buildPipeline({
@@ -199,7 +203,8 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(result).not.toBeNull();
             expect(result!.pipeline).toContain('mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7');
             expect(result!.pipeline).toContain(
-                'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
+                    'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                     'tee name=busout_40010 allow-not-linked=true',
             );
             expect(result!.pipeline.match(/tsdemux latency=0 name=demux_/g)).toHaveLength(2);
