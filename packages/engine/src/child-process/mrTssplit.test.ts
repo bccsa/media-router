@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -65,10 +67,32 @@ function sha256(path: string): string {
     return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+/**
+ * Cumulative fan-out shed count across every edge, from the child's `stats`
+ * events. The fan-out drops any message left unsent past its 500 ms leaky
+ * budget, so a capture client starved of CPU (a loaded CI box running many
+ * suites in parallel) loses bytes by DESIGN — which would surface downstream
+ * as an inscrutable sha256 mismatch. Asserting this first turns that into a
+ * self-explaining failure. Zero when no stats line has arrived yet (short
+ * tests): absence of evidence, so it never fails spuriously.
+ */
+function shedCount(events: Array<Record<string, unknown>>): number {
+    const last = events.filter((e) => e.stats).at(-1)?.stats as
+        | { drops?: Record<string, number> }
+        | undefined;
+    return Object.values(last?.drops ?? {}).reduce((a, b) => a + b, 0);
+}
+
+const SHED_MSG =
+    'fan-out shed buffers — the capture client was starved of CPU, so the ' +
+    'byte-exactness check below is meaningless (test-environment problem, ' +
+    'not a splitter continuity defect)';
+
 describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
     let dir: string;
     let fixture: string;
-    const expected: Record<number, string> = {};   // pid -> sha256 (python ref)
+    const expected: Record<number, string> = {};       // pid -> sha256 (python ref)
+    const expectedSize: Record<number, number> = {};   // pid -> byte count (python ref)
     const cleanups: Array<() => void> = [];
 
     beforeAll(() => {
@@ -85,7 +109,11 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
                 '--chunk', String(CHUNK), '--out-dir', refDir, fixture,
             ], { cwd: __dirname, encoding: 'utf8' }).status,
         ).toBe(0);
-        for (const pid of PIDS) expected[pid] = sha256(join(refDir, `out_0x${pid.toString(16)}.ts`));
+        for (const pid of PIDS) {
+            const ref = join(refDir, `out_0x${pid.toString(16)}.ts`);
+            expected[pid] = sha256(ref);
+            expectedSize[pid] = statSync(ref).size;
+        }
     }, 120_000);
 
     afterEach(() => cleanups.splice(0).forEach((fn) => fn()));
@@ -97,7 +125,7 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         inputSock: string;
         edge: (pid: number) => string;
         attach: (pid: number) => Promise<void>;
-        captureClient: (pid: number, file: string) => Promise<ChildProcess>;
+        captureClient: (pid: number, file: string, expectBytes?: number) => Promise<ChildProcess>;
         verdictOf: (proc: ChildProcess) => Promise<{ buffers: number; bytes: number; sha256: string }>;
         send: (cmd: Record<string, unknown>) => void;
     }
@@ -123,8 +151,13 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
                 `attached ${pid}`,
             );
         };
-        const captureClient = async (pid: number, file: string) => {
-            const c = spawn('python3', [CLIENT, edge(pid), '--capture', file], {
+        const captureClient = async (pid: number, file: string, expectBytes?: number) => {
+            // expectBytes ends the capture deterministically; without it the
+            // client only stops when the edge is detached, which TRUNCATES
+            // whatever the fan-out still had queued (see the client docstring).
+            const args = [CLIENT, edge(pid), '--capture', file];
+            if (expectBytes !== undefined) args.push('--expect-bytes', String(expectBytes));
+            const c = spawn('python3', args, {
                 stdio: ['ignore', 'pipe', 'inherit'],
             });
             cleanups.push(() => c.kill('SIGKILL'));
@@ -156,7 +189,9 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         const r = await rig();
         for (const pid of PIDS) await r.attach(pid);
         const caps = await Promise.all(
-            PIDS.map((pid) => r.captureClient(pid, join(dir, `cap-a-${pid}.ts`))),
+            PIDS.map((pid) =>
+                r.captureClient(pid, join(dir, `cap-a-${pid}.ts`), expectedSize[pid]),
+            ),
         );
         const srv = server(r.inputSock, fixture, '--hold');
         await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'all buffers released', 60000);
@@ -184,8 +219,11 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
 
         await waitFor(() => r.events.find((e) => 'stats' in e), 'stats event', 5000);
 
-        for (const pid of PIDS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
+        // Verdicts first (the clients self-terminate on the expected byte
+        // count), THEN detach — detaching first would discard queued output.
         const verdicts = await Promise.all(caps.map((c) => r.verdictOf(c)));
+        expect(shedCount(r.events), SHED_MSG).toBe(0);
+        for (const pid of PIDS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
         verdicts.forEach((v, i) => {
             expect(v.sha256, `pid 0x${PIDS[i].toString(16)} differs from python core`).toBe(
                 expected[PIDS[i]],
@@ -231,7 +269,9 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         const r = await rig();
         for (const pid of PIDS) await r.attach(pid);
         const caps = await Promise.all(
-            PIDS.map((pid) => r.captureClient(pid, join(dir, `cap-c-${pid}.ts`))),
+            PIDS.map((pid) =>
+                r.captureClient(pid, join(dir, `cap-c-${pid}.ts`), expectedSize[pid]),
+            ),
         );
         const data = readFileSync(fixture);
         const mid = Math.floor(data.length / 2 / CHUNK) * CHUNK;
@@ -252,8 +292,9 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         );
         await waitFor(() => s2.evs.find((e) => e.event === 'done'), 'half2 consumed', 60000);
 
-        for (const pid of PIDS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
         const verdicts = await Promise.all(caps.map((c) => r.verdictOf(c)));
+        expect(shedCount(r.events), SHED_MSG).toBe(0);
+        for (const pid of PIDS) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
         // Continuity across the swap = identical bytes to the single-source
         // reference (splitter state, PSI cadence and CCs carry over).
         verdicts.forEach((v, i) => {

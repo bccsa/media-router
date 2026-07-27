@@ -10,11 +10,12 @@ and prints one JSON verdict per buffer.
 
 Usage: unixfd-fanout.test-client.py <edge socket> [--buffers N]
        unixfd-fanout.test-client.py <edge socket> --capture <file>
+                                    [--expect-bytes N]
 
---capture mode (mrTssplit.test.ts): consume NEW_BUFFERs until the server
-closes the connection (edge detach), appending every payload to <file> and
-releasing each buffer; the final verdict reports byte/buffer totals and a
-sha256 of the captured stream.
+--capture mode (mrTssplit.test.ts): consume NEW_BUFFERs into <file>, releasing
+each buffer, and print a verdict with byte/buffer totals and the stream sha256.
+Ends after --expect-bytes bytes when given (deterministic — required by hash
+comparisons), otherwise when the peer closes the connection.
 """
 
 import hashlib
@@ -51,44 +52,78 @@ def ts_aligned(data):
     )
 
 
-def capture(sock, path):
-    """Consume buffers until the server closes; write payloads to `path`."""
+_U64 = struct.Struct('<Q')
+_RELEASE_HDR = HEADER.pack(COMMAND_TYPE_RELEASE_BUFFER, 8)
+
+
+def capture(sock, path, expect_bytes=0):
+    """Consume buffers into `path`, reporting a verdict when done.
+
+    `expect_bytes` > 0 makes termination DETERMINISTIC: the capture ends as
+    soon as that many payload bytes have arrived. Callers that compare a
+    whole-stream hash MUST use it — the alternative (ending on `bus_detach`)
+    truncates the capture, because detaching closes the client socket and
+    discards whatever the fan-out still had queued for it. That is correct
+    producer behaviour (a detached consumer is gone), so the test must let
+    the data arrive first rather than race it. With `expect_bytes` == 0 the
+    capture simply runs until the peer closes.
+
+    The receive loop is deliberately lean: the fan-out sheds any message left
+    unsent past its 500 ms leaky budget, so a slow consumer loses bytes.
+    Payloads are only appended to a list here — the file write and the sha256
+    happen once at the end — and the per-buffer struct work uses unpack_from
+    (no slice copies) with a pre-packed RELEASE header.
+    """
     sock.settimeout(15)
-    out = open(path, 'wb')
-    digest = hashlib.sha256()
+    chunks = []
     buffers = total = 0
     while True:
+        # The ENTIRE exchange is guarded: a `bus_detach` closes this socket at
+        # an arbitrary point, so the disconnect can land mid-message (between
+        # the header and its payload) or while the RELEASE is going out. That
+        # is a normal end of capture, not an error — but recv_exact raises
+        # EOFError and sendall raises OSError, which unguarded would kill the
+        # client before it prints its verdict (observed as an intermittent
+        # "timed out waiting for capture verdict" under parallel load).
+        fds = []
         try:
             header, fds, _flags, _addr = socket.recv_fds(sock, HEADER.size, 4)
-        except OSError:
-            break
-        if not header:
+            if not header:
+                break                        # clean EOF at a message boundary
+            cmd, size = HEADER.unpack(header)
+            payload = recv_exact(sock, size)
+            if cmd == COMMAND_TYPE_CAPS:
+                # Proof of ACCEPTANCE (not just connect) — the test gates data
+                # flow on this so no broadcast can precede the accept.
+                print(json.dumps({'caps': payload.rstrip(b'\0').decode()}), flush=True)
+                continue
+            if cmd != COMMAND_TYPE_NEW_BUFFER:
+                continue
+            if len(fds) != 1:
+                print(json.dumps({'error': f'buffer without fd (fds={len(fds)})'}),
+                      flush=True)
+                return 1
+            mem_size, mem_offset = MEMORY.unpack_from(payload, NEW_BUFFER.size)
+            data = os.pread(fds[0], mem_size, mem_offset)
+            chunks.append(data)
+            buffers += 1
+            total += len(data)
+            sock.sendall(_RELEASE_HDR + _U64.pack(_U64.unpack_from(payload, 0)[0]))
+            if expect_bytes and total >= expect_bytes:
+                break                        # deterministic end — see docstring
+        except (OSError, EOFError):
             break                            # edge detached — normal end
-        cmd, size = HEADER.unpack(header)
-        payload = recv_exact(sock, size)
-        if cmd == COMMAND_TYPE_CAPS:
-            # Proof of ACCEPTANCE (not just connect) — the test gates data
-            # flow on this so no broadcast can precede the accept.
-            print(json.dumps({'caps': payload.rstrip(b'\0').decode()}), flush=True)
-            continue
-        if cmd != COMMAND_TYPE_NEW_BUFFER:
-            continue
-        if len(fds) != 1:
-            print(json.dumps({'error': f'buffer without fd (fds={len(fds)})'}), flush=True)
-            return 1
-        mem_size, mem_offset = MEMORY.unpack(
-            payload[NEW_BUFFER.size:NEW_BUFFER.size + MEMORY.size])
-        data = os.pread(fds[0], mem_size, mem_offset)
-        os.close(fds[0])
-        out.write(data)
-        digest.update(data)
-        buffers += 1
-        total += len(data)
-        buf_id = NEW_BUFFER.unpack(payload[:NEW_BUFFER.size])[0]
-        sock.sendall(HEADER.pack(COMMAND_TYPE_RELEASE_BUFFER, 8) + struct.pack('<Q', buf_id))
-    out.close()
+        finally:
+            for fd in fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    blob = b''.join(chunks)
+    with open(path, 'wb') as out:
+        out.write(blob)
     print(json.dumps({'captured': {'buffers': buffers, 'bytes': total,
-                                   'sha256': digest.hexdigest()}}), flush=True)
+                                   'sha256': hashlib.sha256(blob).hexdigest()}}), flush=True)
     return 0
 
 
@@ -101,7 +136,10 @@ def main():
     print(json.dumps({'event': 'client-connected'}), flush=True)
 
     if len(sys.argv) > 3 and sys.argv[2] == '--capture':
-        return capture(sock, sys.argv[3])
+        expect = 0
+        if len(sys.argv) > 5 and sys.argv[4] == '--expect-bytes':
+            expect = int(sys.argv[5])
+        return capture(sock, sys.argv[3], expect)
 
     # --- CAPS must arrive first, before any buffer ---
     header, fds, _flags, _addr = socket.recv_fds(sock, HEADER.size, 4)
