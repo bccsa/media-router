@@ -4,6 +4,7 @@ import {
     UnixFdFanoutController,
     busIngestSocketPath,
     formatBytes,
+    resolveNativeBinary,
     type BusAttachTarget,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -27,19 +28,29 @@ function resolveRunnerPath(): string | null {
 }
 
 /**
- * Locate the engine's unixfd fan-out sidecar. Resolved off the engine's entry
- * point (dist/index.js) rather than require.resolve on the .py itself — the
- * engine's `exports` map doesn't cover it, and `existsSync` keeps the check
- * honest when the engine dist is stale (built before the sidecar existed).
+ * How to launch the GstUnixFd fan-out. Prefers the native `mr-bus-fanout`
+ * binary (native/ tree) and falls back to the python sidecar, which speaks
+ * the identical CLI, control verbs and events — the two are interchangeable
+ * and the conformance suite runs both against the same protocol clients.
+ * Returns null when neither is present.
  */
-function resolveFanoutScript(): string | null {
+function resolveFanout(): { command: string; prefix: string[]; label: string } | null {
+    const native = resolveNativeBinary('mr-bus-fanout');
+    if (native) return { command: native, prefix: [], label: 'mr-bus-fanout' };
+    // The python sidecar is resolved off the engine's entry point rather than
+    // require.resolve on the .py itself — the engine's `exports` map doesn't
+    // cover it, and `existsSync` keeps the check honest when the engine dist
+    // is stale (built before the sidecar existed).
     try {
         const engineMain = require.resolve('@media-router/engine');
         const script = join(engineMain, '..', 'child-process', 'unixfd-fanout.py');
-        return existsSync(script) ? script : null;
+        if (existsSync(script)) {
+            return { command: 'python3', prefix: [script], label: 'unixfd-fanout' };
+        }
     } catch {
-        return null;
+        /* engine not resolvable */
     }
+    return null;
 }
 
 type Option = { value: string; label: string };
@@ -82,7 +93,8 @@ function asArray(v: unknown): string[] {
  * Pulls an HLS stream via the hls-pipe library (spawned as an isolated Node
  * child by `hls-pipe-runner.ts`) and re-broadcasts canonical MPEG-TS on the
  * inter-module bus — same producer contract as srt-input. The child streams
- * into this module's `unixfd-fanout.py` sidecar, which serves the
+ * into this module's fan-out sidecar (the native `mr-bus-fanout`, or the
+ * python `unixfd-fanout.py` when the binary is absent), which serves the
  * per-consumer edge sockets speaking the GstUnixFd protocol (see
  * `startFanout`).
  *
@@ -191,9 +203,12 @@ export class HlsPlayerModule extends GstPluginBase {
             this.setHealth('error', 'processManager service unavailable — cannot spawn fan-out');
             return false;
         }
-        const script = resolveFanoutScript();
-        if (!script) {
-            this.setHealth('error', 'unixfd-fanout.py not found — build the engine (pnpm build)');
+        const fanout = resolveFanout();
+        if (!fanout) {
+            this.setHealth(
+                'error',
+                'no bus fan-out available — build native/ (mr-bus-fanout) or the engine (pnpm build)',
+            );
             return false;
         }
         this.fanoutController = new UnixFdFanoutController(
@@ -210,13 +225,17 @@ export class HlsPlayerModule extends GstPluginBase {
             },
         );
         this.fanout = this.spawnRunnerProcess({
-            label: 'unixfd-fanout',
-            command: 'python3',
-            args: [script, '--ingest', busIngestSocketPath(port), '--caps', BUS_TS_CAPS],
+            label: fanout.label,
+            command: fanout.command,
+            args: [
+                ...fanout.prefix,
+                '--ingest', busIngestSocketPath(port),
+                '--caps', BUS_TS_CAPS,
+            ],
             autoRestart: true,
             stdin: true,
             onStdout: (line) => this.handleFanoutLine(line),
-            onStderr: (line) => this.log.warn({ src: 'unixfd-fanout' }, line),
+            onStderr: (line) => this.log.warn({ src: fanout.label }, line),
         });
         return true;
     }
@@ -229,7 +248,7 @@ export class HlsPlayerModule extends GstPluginBase {
             const drops = Object.values(stats.drops ?? {}).reduce((a, b) => a + b, 0);
             this.setStatusData('bus', { consumers: stats.clients ?? 0, 'shed buffers': drops });
         } else if (msg.event === 'error' || msg.event === 'warning') {
-            this.log.warn({ src: 'unixfd-fanout' }, String(msg.message ?? ''));
+            this.log.warn({ src: 'bus-fanout' }, String(msg.message ?? ''));
         }
     }
 
