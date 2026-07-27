@@ -11,6 +11,7 @@ import {
 } from '@media-router/engine';
 import {
     INPUT_PORT_ID,
+    INPUT_SRC_NAME,
     buildDynamicPorts,
     discoveredStreams,
     mergeDiscovered,
@@ -19,7 +20,6 @@ import {
     type DynamicPort,
 } from './splitterPorts.js';
 import { buildSpawnArgs, dispatchRunnerEvent } from './nativeRunner.js';
-import { INPUT_SRC_NAME } from './splitterPipeline.js';
 import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './streamTypes.js';
 
 /**

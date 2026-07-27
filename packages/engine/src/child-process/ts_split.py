@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
-"""Packet-level MPEG-TS splitter core — the transport-free heart of the
-ts-splitter plugin (driven by gst-pipeline-runner.py's `tsSplit` glue).
+"""Packet-level MPEG-TS splitter core.
+
+REFERENCE IMPLEMENTATION — NOT A RUNTIME CODE PATH. The shipping splitter is
+the native `mr-tssplit` child (native/mrts, a byte-for-byte C++ port of this
+module); this file is no longer imported by the engine and is deliberately NOT
+copied into `dist/` by the engine build.
+
+It is retained as the EXECUTABLE SPECIFICATION for the golden parity test
+(packages/engine/src/child-process/nativeSplitParity.test.ts), which drives
+this core and the C++ core over the same synthetic MPTS and requires
+sha256-identical per-PID output. An independent second implementation is what
+makes that test meaningful — deleting this file would delete the guarantee.
+Keep it in sync with any deliberate behaviour change to the C++ core, and keep
+ts_split_test.py passing (`python3 ts_split_test.py`).
 
 Splits one muxed TS into per-PID single-ES SPTS outputs by forwarding the
 selected PIDs' 188-byte packets AS THEY ARRIVE — no PES assembly, no
@@ -10,14 +22,14 @@ at 19.6 Mbps, measured on gate01), so its outputs are hold-and-burst even
 when the wire is smooth. Packet pass-through inherits the wire cadence.
 
 Ported from the abandoned feat-ts-splitter-combiner branch's tsduck-runner
-Splitter/Output (split mode never used TSDuck), reworked for the embedded
-appsink/appsrc shape:
+Splitter/Output (split mode never used TSDuck), reworked for an embedded
+buffer-in/buffers-out shape:
   - ONE routing pass per input buffer (dict bucket by PID) instead of the
     branch's per-output packet rescan — O(pkts), not O(outputs × pkts).
   - One joined bytes payload per (input buffer, output) — the caller makes
-    exactly one appsrc push per entry of the dict `feed()` returns. Batching
-    never crosses input buffers: packets that arrived together leave
-    together, with zero added latency.
+    exactly one downstream push per entry of the dict `feed()` returns.
+    Batching never crosses input buffers: packets that arrived together
+    leave together, with zero added latency.
   - No sockets, no threads, no Gst: bytes in, {pid: bytes} out. Unit-tested
     by ts_split_test.py (`python3 ts_split_test.py`).
 
@@ -35,10 +47,10 @@ Per-output SPTS surgery (branch-proven values):
   - ES packets pass through byte-identical — source continuity counters are
     preserved, so downstream CC accounting sees exactly the wire.
 
-Not ported (v1): KLV/SDT stream naming (the mpegts-demuxer keeps that duty),
-add_output/remove_output runtime protocol (outputs are fixed per pipeline
-build; the engine rebuilds the module when a newly discovered port is first
-wired).
+Not ported: KLV/SDT stream naming (the mpegts-demuxer keeps that duty),
+add_output/remove_output runtime protocol (outputs are fixed per child
+lifetime; the engine rebuilds the module when a newly discovered port is
+first wired).
 """
 from __future__ import annotations
 

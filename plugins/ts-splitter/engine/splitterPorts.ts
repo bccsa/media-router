@@ -16,6 +16,15 @@ import type { DynamicPort } from '@media-router/engine';
 export type { DynamicPort };
 
 export const INPUT_PORT_ID = 'mpegts-in';
+
+/**
+ * Legacy element name reported by `getLiveInputSwap`. The gst generation named
+ * the input `unixfdsrc` this and the runner re-pointed it by name; the native
+ * child has exactly one input and ignores the field, but the engine's swap
+ * contract (`{ element }`) still carries it.
+ */
+export const INPUT_SRC_NAME = 'netin';
+
 const PID_OUT_PREFIX = 'pid-';
 
 export interface DiscoveredStreamConfig {

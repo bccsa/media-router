@@ -6,8 +6,6 @@ export type {
     PipelineDescription,
     PadLinkRule,
     RistRunnerConfig,
-    TsSplitRunnerConfig,
-    TsSplitOutput,
     TsProbeRunnerConfig,
     EngineServices,
     ModuleServices,

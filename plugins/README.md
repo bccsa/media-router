@@ -608,16 +608,6 @@ interface PipelineDescription {
     /** In-runner librist (RIST without the CLI relay) — see rist-input/-output. */
     rist?: RistRunnerConfig;
     /**
-     * In-runner packet-level TS splitter (ts_split.py): the runner drains the
-     * named appsink, routes 188-byte packets per PID in a single pass and
-     * pushes each PID's SPTS (PAT/PMT re-injected, master PCR copied onto
-     * non-PCR-owner outputs) into that output's named appsrc — one push per
-     * input buffer. No PES assembly, so output cadence = ingest cadence.
-     * Source discovery arrives on the `tssplit:discovered` plugin-event
-     * channel. See the `ts-splitter` plugin.
-     */
-    tsSplit?: TsSplitRunnerConfig;
-    /**
      * Report-only TS video-info probe (ts_video_info.py): the runner watches
      * the named appsink (tap the module's egress tee through a LEAKY queue —
      * `busout_<port>. ! queue leaky=downstream max-size-buffers=64 ! appsink

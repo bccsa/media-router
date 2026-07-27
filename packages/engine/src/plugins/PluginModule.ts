@@ -263,18 +263,6 @@ export interface PipelineDescription {
      */
     rist?: RistRunnerConfig;
     /**
-     * TS-splitter half of a ts-splitter module pipeline. When set, the runner
-     * drains the named appsink (muxed MPEG-TS), routes 188-byte packets per
-     * PID in a single pass (`ts_split.py`), and pushes each PID's single-ES
-     * SPTS — PAT/PMT re-injected, master PCR copied onto non-PCR-owner
-     * outputs — into that output's named appsrc, one push per input buffer.
-     * Packet-level pass-through: no PES assembly, so output cadence equals
-     * ingest cadence (the mpegts-demuxer's hold-and-burst does not occur).
-     * Source PMT discovery arrives on the `tssplit:discovered` plugin-event
-     * channel as `{ streams: [{pid, streamType}], pcrPid }`.
-     */
-    tsSplit?: TsSplitRunnerConfig;
-    /**
      * Report-only video-info probe for a TS passthrough pipeline. The runner
      * watches the named appsink (a leaky tap off the egress tee), discovers
      * the FIRST video ES of the FIRST program and emits `tsprobe:videoinfo`
@@ -304,35 +292,6 @@ export interface PipelineDescription {
 export interface PreserveSourceTimelineConfig {
     /** `name=` of the tsdemux whose branches must carry the source timeline. */
     demux: string;
-}
-
-/** One per-PID SPTS output of the ts-splitter runner core. */
-export interface TsSplitOutput {
-    /** TS PID routed to this output. */
-    pid: number;
-    /** `name=` of the appsrc in `pipeline` receiving this PID's SPTS. */
-    appsrc: string;
-    /** Persisted PMT stream_type — seeds the output PMT until live discovery corrects it. */
-    streamType?: number;
-    /**
-     * Bus port of this output's egress tee (`busout_<port>`). Under unixfd
-     * the runner gates production on the tee having at least one attached
-     * fan-out edge — an unwired pin costs nothing (no PSI rewrite, no join,
-     * no appsrc push; packets discarded at the routing lookup). Omitted, or
-     * when the tee doesn't exist (UDP transport), the output is always
-     * produced.
-     */
-    port?: number;
-}
-
-/** ts-splitter runner config — see PipelineDescription.tsSplit. */
-export interface TsSplitRunnerConfig {
-    /** `name=` of the appsink in `pipeline` carrying the muxed TS input. */
-    inputAppsink: string;
-    /** transport_stream_id stamped into each output's rebuilt PAT (default 1). */
-    tsId?: number;
-    /** May be empty — the runner still runs source discovery on the input. */
-    outputs: TsSplitOutput[];
 }
 
 /** TS video-info probe config — see PipelineDescription.tsProbe. */

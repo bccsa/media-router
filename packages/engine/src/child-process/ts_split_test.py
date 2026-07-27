@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Self-checking tests for ts_split.py (no GStreamer, no engine).
 
+ts_split.py is the reference implementation the native C++ splitter is
+parity-tested against (see its module docstring); these tests keep that
+reference honest. The equivalent C++ suite is native/mrts/tests/.
+
 Run:  python3 ts_split_test.py
 """
 import sys
