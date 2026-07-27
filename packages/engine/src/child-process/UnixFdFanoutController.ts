@@ -89,6 +89,10 @@ export class UnixFdFanoutController implements BusAttachTarget {
  *  (the caller then falls back to the classic module restart). */
 const REINPUT_TIMEOUT_MS = 6_000;
 
+/** Ceiling on an unanswered `add_output`; on timeout the caller restarts the
+ *  module instead (the respawn declares the output via argv). */
+const ADD_OUTPUT_TIMEOUT_MS = 6_000;
+
 /**
  * Controller for a native bus SINK child (mr-tssplit): everything the fan-out
  * controller does, plus the `reinput` verb — the native equivalent of the gst
@@ -102,6 +106,13 @@ export class NativeSinkController extends UnixFdFanoutController implements Live
         reject: (err: Error) => void;
         timer: ReturnType<typeof setTimeout>;
     } | null = null;
+
+    /** In-flight `add_output` calls, keyed by pid (several can overlap when a
+     *  source reveals multiple new PIDs in one discovery). */
+    private readonly pendingOutputs = new Map<
+        number,
+        { resolve: () => void; reject: (err: Error) => void }
+    >();
 
     /** `element` is part of the gst RPC shape; the native child has exactly
      *  one input, so only the socket travels. */
@@ -129,6 +140,36 @@ export class NativeSinkController extends UnixFdFanoutController implements Live
         });
     }
 
+    /**
+     * Declare an output discovered after the child spawned (its `--out` set is
+     * fixed at spawn). Resolves on `output_added` — only then does the tee
+     * exist, so the caller must await this before the engine attaches an edge
+     * to it. Rejection is the caller's cue to fall back to a module restart,
+     * which respawns the child with the new output in argv.
+     */
+    addOutput(pid: number, tee: string): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingOutputs.delete(pid);
+                reject(new Error(`add_output ${pid} timed out`));
+            }, ADD_OUTPUT_TIMEOUT_MS);
+            this.pendingOutputs.get(pid)?.reject(new Error('superseded by a newer add_output'));
+            this.pendingOutputs.set(pid, {
+                resolve: () => {
+                    clearTimeout(timer);
+                    this.pendingOutputs.delete(pid);
+                    resolve();
+                },
+                reject: (err) => {
+                    clearTimeout(timer);
+                    this.pendingOutputs.delete(pid);
+                    reject(err);
+                },
+            });
+            this.write({ cmd: 'add_output', pid, tee });
+        });
+    }
+
     override handleLine(line: string): Record<string, unknown> | null {
         const msg = super.handleLine(line);
         if (!msg) return null;
@@ -138,6 +179,14 @@ export class NativeSinkController extends UnixFdFanoutController implements Live
             this.pendingReinput?.reject(
                 new Error(typeof msg.message === 'string' ? msg.message : 'reinput failed'),
             );
+        } else if (msg.event === 'output_added') {
+            this.pendingOutputs.get(Number(msg.pid))?.resolve();
+        } else if (msg.event === 'output_add_failed') {
+            this.pendingOutputs
+                .get(Number(msg.pid))
+                ?.reject(
+                    new Error(typeof msg.message === 'string' ? msg.message : 'add_output failed'),
+                );
         }
         return msg;
     }

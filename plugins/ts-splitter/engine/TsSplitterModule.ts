@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     NativeSinkController,
+    busTeeName,
     registerCodecClassifier,
     resolveNativeBinary,
     type BusAttachTarget,
@@ -66,6 +67,9 @@ export class TsSplitterModule extends GstPluginBase {
 
     private splitProc: ManagedProcess | null = null;
     private controller: NativeSinkController | null = null;
+    /** PIDs the RUNNING child has an output for — its `--out` set at spawn
+     *  plus everything since added live. Empty while no child runs. */
+    private readonly declaredPids = new Set<number>();
 
     private static classifiersRegistered = false;
 
@@ -146,6 +150,8 @@ export class TsSplitterModule extends GstPluginBase {
             }
             outputs.push({ pid: s.pid, streamType: s.streamType, port: ep.port });
         }
+        this.declaredPids.clear();
+        for (const o of outputs) this.declaredPids.add(o.pid);
 
         const binary = resolveNativeBinary('mr-tssplit');
         if (!binary) {
@@ -186,6 +192,7 @@ export class TsSplitterModule extends GstPluginBase {
         // controller can't write into the next incarnation.
         this.splitProc = null;
         this.controller = null;
+        this.declaredPids.clear();
         this.discovered.clear();
         this.videoInfo.clear();
         await super.onStop();
@@ -260,6 +267,42 @@ export class TsSplitterModule extends GstPluginBase {
         const next = mergeDiscovered(discoveredStreams(this.config), [...this.discovered.values()]);
         if (next) this.emitConfigUpdate({ discoveredStreams: next });
         this.publishStatus();
+        void this.declareNewOutputs();
+    }
+
+    /**
+     * Give the running child an output for every discovered PID it does not
+     * have yet (`add_output`), so wiring a late-discovered port needs no
+     * module restart. Allocating the bus channel here also means the engine
+     * finds the port already assigned, so `materializeProducerPort` never has
+     * to bounce us. Best-effort: on any failure the output simply stays
+     * undeclared and the engine's restart path materialises it as before.
+     */
+    private async declareNewOutputs(): Promise<void> {
+        const router = this.services?.mediaRouter;
+        const instanceId = this.services?.instanceId ?? '';
+        if (!router || !this.controller || !this.splitProc) return;
+        for (const s of this.discovered.values()) {
+            if (this.declaredPids.has(s.pid)) continue;
+            const ep = router.assignBusChannel(instanceId, pidPortId(s.pid));
+            if (!ep) {
+                this.log.warn({ pid: s.pid }, 'No bus channel for late-discovered PID');
+                continue;
+            }
+            // Mark BEFORE awaiting: a second discovery event for the same PID
+            // must not race a duplicate verb (the child is idempotent, but the
+            // engine should not spam it either).
+            this.declaredPids.add(s.pid);
+            try {
+                await this.controller.addOutput(s.pid, busTeeName(ep.port));
+            } catch (err) {
+                this.declaredPids.delete(s.pid);
+                this.log.warn(
+                    { err, pid: s.pid },
+                    'add_output failed — the port materialises on the next restart',
+                );
+            }
+        }
     }
 
     private publishStatus(): void {

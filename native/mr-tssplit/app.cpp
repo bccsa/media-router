@@ -139,6 +139,31 @@ void App::reinput(const std::string& socket_path) {
     pending_deadline_ns_ = mrbus::mono_ns() + 5'000'000'000;
 }
 
+void App::add_output(int pid, const std::string& tee) {
+    for (const auto& o : outputs_) {
+        if (o.pid == pid || o.tee == tee) {
+            // Idempotent: a replayed verb (or a respawn that already declared
+            // the pid via --out) must not create a second listener.
+            emit("{\"event\":\"output_added\",\"pid\":" + std::to_string(pid) +
+                 ",\"tee\":\"" + json_escape(tee) + "\",\"idempotent\":true}");
+            return;
+        }
+    }
+    if (!core_->add_output(pid)) {
+        emit("{\"event\":\"output_add_failed\",\"pid\":" + std::to_string(pid) +
+             ",\"message\":\"" + json_escape("core rejected pid") + "\"}");
+        return;
+    }
+    Output o;
+    o.pid = pid;
+    o.tee = tee;
+    o.server = std::make_unique<mrbus::FanoutServer>(opts_.caps, emit);
+    outputs_.push_back(std::move(o));
+    refresh_gating();
+    emit("{\"event\":\"output_added\",\"pid\":" + std::to_string(pid) +
+         ",\"tee\":\"" + json_escape(tee) + "\"}");
+}
+
 void App::prepare_poll(std::vector<pollfd>& fds) const {
     if (input_) input_->prepare_poll(fds);
     if (pending_input_) pending_input_->prepare_poll(fds);

@@ -464,5 +464,41 @@ int main() {
     core_a.feed(asrc.data(), asrc.size());
     CHECK("audio-only PMT never fires on_videoinfo", vi_a.empty());
 
+    // --- add_output on a RUNNING core (late-discovered PID) ---
+    // A pid declared after startup must: be rejected as a duplicate, start
+    // gated (nothing wired), adopt the identity discovery already found, and
+    // then emit a PSI-first, byte-identical ES stream once enabled.
+    SplitterCore core_add(1, {{VIDEO_PID, -1}});
+    core_add.feed(source.data(), source.size());          // discovery runs
+    CHECK("add_output rejects an existing pid", !core_add.add_output(VIDEO_PID));
+    CHECK("add_output rejects an out-of-range pid", !core_add.add_output(0x2000));
+    CHECK("add_output accepts a new pid", core_add.add_output(AUDIO_PID));
+    // Gated until wired: no batches for the new pid yet.
+    bool audio_before = false;
+    for (const auto& bt : core_add.feed(source.data(), 188 * 40))
+        if (bt.pid == AUDIO_PID) audio_before = true;
+    CHECK("added output stays gated until an edge attaches", !audio_before);
+    core_add.set_enabled({VIDEO_PID, AUDIO_PID});
+    Bytes added_out;
+    for (size_t off = 0; off < source.size(); off += 1000) {
+        size_t n = std::min<size_t>(1000, source.size() - off);
+        for (const auto& bt : core_add.feed(source.data() + off, n))
+            if (bt.pid == AUDIO_PID)
+                added_out.insert(added_out.end(), bt.data->begin(), bt.data->end());
+    }
+    auto added_pkts = packets_of(added_out);
+    CHECK("added output leads with its PSI carousel",
+          added_pkts.size() >= 2 && ts_pid(added_pkts[0].data()) == 0x0000 &&
+              ts_pid(added_pkts[1].data()) == SPLIT_PMT_PID);
+    std::vector<Bytes> added_pmt_pkts;
+    for (auto& p : added_pkts)
+        if (ts_pid(p.data()) == SPLIT_PMT_PID) added_pmt_pkts.push_back(p);
+    auto added_pmt = parse_pmt(deque_of(added_pmt_pkts), SPLIT_PMT_PID);
+    CHECK("added output adopts the DISCOVERED stream_type (not the AVC default)",
+          added_pmt && added_pmt->streams.size() == 1 &&
+              added_pmt->streams[0].stream_type == STREAM_TYPE_AAC);
+    CHECK("added output re-injects PCR (it is not the source PCR pid)",
+          !adaptation_only(added_out, AUDIO_PID).empty());
+
     return test_summary("ts_split");
 }

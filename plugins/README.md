@@ -974,6 +974,14 @@ whose data path is the native `mr-tssplit` child (`native/` tree, resolved at
 runtime with `resolveNativeBinary()` — env `MR_NATIVE_BIN_DIR` override, then
 `/usr/bin`, then the repo's `native/` build output).
 
+`NativeSinkController` also exposes `addOutput(pid, tee)` for a producer whose
+output set is fixed at spawn: a port discovered mid-run is declared on the
+RUNNING child (`{"cmd":"add_output",…}` → `output_added`) instead of forcing
+the `materializeProducerPort` restart. The module allocates the bus channel at
+discovery time, so the engine finds the port already assigned and never has to
+bounce the producer. A rejected/timed-out verb simply leaves the port
+undeclared — the restart path still materialises it.
+
 ### Device Watchdog (Hardware Hot-Plug)
 
 Plugins bound to a specific hardware device (USB mic, HDMI display, V4L2 camera) can opt into a hot-plug watchdog that polls PipeWire every 2 s and calls subclass hooks on disconnect/reconnect. Override `getWatchedDeviceName()` to enable; the base class handles the polling.

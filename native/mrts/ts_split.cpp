@@ -42,7 +42,7 @@ void SplitOutput::batch(const uint8_t* const* chunks, size_t count,
 
 SplitterCore::SplitterCore(int ts_id, const std::vector<OutputSpec>& outputs,
                            SplitterCallbacks callbacks)
-    : cb_(std::move(callbacks)) {
+    : ts_id_(ts_id), cb_(std::move(callbacks)) {
     std::memset(out_lut_, -1, sizeof out_lut_);
     std::memset(probe_lut_, -1, sizeof probe_lut_);
     for (const auto& spec : outputs) {
@@ -54,6 +54,27 @@ SplitterCore::SplitterCore(int ts_id, const std::vector<OutputSpec>& outputs,
     enabled_.assign(outputs_.size(), true);
     buckets_.resize(outputs_.size());
     batch_bufs_.resize(outputs_.size());
+}
+
+bool SplitterCore::add_output(int pid, int stream_type) {
+    if (pid < 0 || pid > 0x1FFF) return false;
+    if (out_lut_[pid] >= 0) return false;        // already an output
+    out_lut_[pid] = (int16_t)outputs_.size();
+    outputs_.emplace_back(pid, ts_id_,
+                          stream_type >= 0 ? stream_type : STREAM_TYPE_AVC);
+    enabled_.push_back(false);                   // gated until an edge attaches
+    buckets_.emplace_back();
+    batch_bufs_.emplace_back();
+    // Adopt whatever the source PMT already told us about this PID (the
+    // caller learned the pid FROM discovery, so this is the common case).
+    if (disc_.pmt()) {
+        const PmtStream* match = nullptr;
+        for (const auto& s : disc_.pmt()->streams)
+            if (s.pid == pid) match = &s;        // last entry wins (python parity)
+        if (match) outputs_.back().update(match->stream_type, match->es_info);
+        outputs_.back().needs_pcr = pid != pcr_pid_;
+    }
+    return true;
 }
 
 void SplitterCore::set_enabled(const std::vector<int>& pids) {

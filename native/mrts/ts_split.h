@@ -81,6 +81,16 @@ class SplitterCore {
     // gets its PSI carousel and PCR re-injection forced.
     void set_enabled(const std::vector<int>& pids);
 
+    // Declare a new output PID on a RUNNING core (the child's `add_output`
+    // verb): a PID discovered after startup gets its output without the
+    // respawn the fixed `--out` set would otherwise require. Returns false if
+    // the pid is already an output or out of range. The new output starts
+    // DISABLED (nothing is wired to it yet) and adopts the identity discovery
+    // has already established, so its first batch advertises the right
+    // stream_type/descriptors. Never call during feed() — the poll loop
+    // serialises control verbs against routing.
+    bool add_output(int pid, int stream_type = -1);
+
     // Route one input buffer. Returned batches are invalidated by the next
     // feed() call. Order = first-appearance order in the buffer.
     const std::vector<Batch>& feed(const uint8_t* data, size_t len);
@@ -92,6 +102,7 @@ class SplitterCore {
   private:
     void apply_discovery();
 
+    int ts_id_;
     std::vector<SplitOutput> outputs_;
     int16_t out_lut_[8192];          // pid -> outputs_ index, -1 = none
     std::vector<bool> enabled_;      // per outputs_ index

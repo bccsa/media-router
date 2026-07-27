@@ -9,9 +9,12 @@
 //   {"cmd":"bus_attach","tee":"busout_<port>","socket":"<edge>"}
 //   {"cmd":"bus_detach","socket":"<edge>"}
 //   {"cmd":"reinput","socket":"<new input edge>"}   (make-before-break)
+//   {"cmd":"add_output","pid":<int>,"tee":"busout_<port>"}  (late-discovered
+//        PID — declares its output live instead of forcing a respawn)
 // Events (stdout JSON lines): ready, attached/detached, plugin_event
 // (tssplit:discovered / tssplit:videoinfo — runner-identical payloads),
-// input_stalled/input_resumed, desync, reinput_done/reinput_failed, stats.
+// input_stalled/input_resumed, desync, reinput_done/reinput_failed,
+// output_added/output_add_failed, stats.
 //
 // Usage: mr-tssplit --input <edge socket> --caps <BUS_TS_CAPS> [--ts-id 1]
 //                   [--stall-ms 2000] --out 0x100:busout_40001[:0x1b] ...
@@ -120,6 +123,10 @@ int main(int argc, char** argv) {
                         app.bus_detach(cmd["socket"]);
                     else if (cmd["cmd"] == "reinput" && !cmd["socket"].empty())
                         app.reinput(cmd["socket"]);
+                    else if (cmd["cmd"] == "add_output" && !cmd["pid"].empty() &&
+                             !cmd["tee"].empty())
+                        app.add_output((int)std::strtol(cmd["pid"].c_str(), nullptr, 0),
+                                       cmd["tee"]);
                 }
                 continue;
             }

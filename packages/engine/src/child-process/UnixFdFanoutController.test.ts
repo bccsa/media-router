@@ -126,6 +126,38 @@ describe('NativeSinkController reinput RPC', () => {
         await expect(second).resolves.toBeUndefined();
     });
 
+    it('add_output resolves on output_added for its pid', async () => {
+        const p = ctrl.addOutput(0x141, 'busout_41002');
+        expect(JSON.parse(written[0])).toEqual({
+            cmd: 'add_output', pid: 0x141, tee: 'busout_41002',
+        });
+        ctrl.handleLine('{"event":"output_added","pid":321,"tee":"busout_41002"}');
+        await expect(p).resolves.toBeUndefined();
+    });
+
+    it('add_output rejects on output_add_failed', async () => {
+        const p = ctrl.addOutput(0x141, 'busout_41002');
+        ctrl.handleLine('{"event":"output_add_failed","pid":321,"message":"core rejected pid"}');
+        await expect(p).rejects.toThrow('core rejected pid');
+    });
+
+    it('concurrent add_outputs settle independently by pid', async () => {
+        const a = ctrl.addOutput(0x141, 'busout_1');
+        const b = ctrl.addOutput(0x142, 'busout_2');
+        ctrl.handleLine('{"event":"output_added","pid":322}');
+        await expect(b).resolves.toBeUndefined();
+        ctrl.handleLine('{"event":"output_added","pid":321}');
+        await expect(a).resolves.toBeUndefined();
+    });
+
+    it('add_output times out when the child never answers', async () => {
+        vi.useFakeTimers();
+        const p = ctrl.addOutput(0x141, 'busout_41002');
+        const outcome = expect(p).rejects.toThrow('timed out');
+        await vi.advanceTimersByTimeAsync(7000);
+        await outcome;
+    });
+
     it('inherits attach replay-on-ready from the fan-out controller', () => {
         ctrl.sendBusAttach('busout_41000', '/tmp/a.sock');
         written = [];

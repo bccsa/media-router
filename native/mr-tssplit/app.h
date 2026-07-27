@@ -36,6 +36,10 @@ class App {
     void bus_attach(const std::string& tee, const std::string& socket_path);
     void bus_detach(const std::string& socket_path);
     void reinput(const std::string& socket_path);
+    // Declare a PID discovered after startup, without a respawn: binds its
+    // fan-out listener and adds the routing output (gated until an edge
+    // attaches). Emits `output_added` / `output_add_failed`.
+    void add_output(int pid, const std::string& tee);
 
     // Poll-loop integration.
     void prepare_poll(std::vector<pollfd>& fds) const;

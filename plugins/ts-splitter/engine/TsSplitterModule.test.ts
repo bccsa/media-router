@@ -203,6 +203,55 @@ describe('TsSplitterModule native child (onStart)', () => {
         expect(module.getLiveSwapTarget()).toBeNull();
     });
 
+    it('a late-discovered PID is declared live via add_output (no respawn)', async () => {
+        const { module, spawned, assignBusChannel } = makeModule();
+        vi.spyOn(module as any, 'emitConfigUpdate').mockImplementation((changes: any) => {
+            Object.assign((module as any).config, changes);
+        });
+        await module.onStart();                       // spawns with zero outputs
+        const proc = spawned[0].proc;
+        proc.writeLine.mockClear();
+        const onStdout = spawned[0].opts.onStdout as (line: string) => void;
+
+        onStdout(
+            JSON.stringify({
+                event: 'plugin_event',
+                channel: 'tssplit:discovered',
+                payload: { streams: [{ pid: 0x65, streamType: 0x1b }], pcrPid: 0x65 },
+            }),
+        );
+        await vi.waitFor(() => expect(proc.writeLine).toHaveBeenCalled());
+        expect(assignBusChannel).toHaveBeenCalledWith('split-1', pidPortId(0x65));
+        expect(JSON.parse(proc.writeLine.mock.calls[0][0])).toEqual({
+            cmd: 'add_output',
+            pid: 0x65,
+            tee: 'busout_41000',
+        });
+        // Only ONE process was ever spawned — the point of the verb.
+        expect(spawned).toHaveLength(1);
+    });
+
+    it('PIDs already declared at spawn are not re-added', async () => {
+        const { module, spawned } = makeModule();
+        (module as any).config = {
+            discoveredStreams: [{ pid: 0x65, streamType: 0x1b, media: 'video', codec: 'h264' }],
+        };
+        vi.spyOn(module as any, 'emitConfigUpdate').mockImplementation(() => undefined);
+        await module.onStart();                       // 0x65 is in argv already
+        const proc = spawned[0].proc;
+        proc.writeLine.mockClear();
+        const onStdout = spawned[0].opts.onStdout as (line: string) => void;
+        onStdout(
+            JSON.stringify({
+                event: 'plugin_event',
+                channel: 'tssplit:discovered',
+                payload: { streams: [{ pid: 0x65, streamType: 0x1b }], pcrPid: 0x65 },
+            }),
+        );
+        await new Promise((r) => setTimeout(r, 20));
+        expect(proc.writeLine).not.toHaveBeenCalled();
+    });
+
     it('declares live input swap on mpegts-in only', () => {
         const { module } = makeModule();
         expect(module.getLiveInputSwap('mpegts-in')).toEqual({ element: 'netin' });

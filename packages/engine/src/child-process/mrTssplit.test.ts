@@ -304,6 +304,94 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         });
     }, 120_000);
 
+    it('add_output declares a PID mid-stream without disturbing flowing outputs', async () => {
+        // Spawn knowing ONLY the video pid; 0xc9 arrives later (the
+        // late-discovery case that used to force a module respawn).
+        const d = join(dir, `addout-${rigSeq}`);
+        mkdirSync(d);
+        const inputSock = join(d, 'in.sock');
+        const split = spawn(MR_TSSPLIT, [
+            '--input', inputSock, '--caps', CAPS, '--out', '0x65:busout_101',
+        ], { stdio: ['pipe', 'pipe', 'inherit'] });
+        cleanups.push(() => split.kill('SIGKILL'));
+        const events = jsonLines(split);
+        const send = (cmd: Record<string, unknown>) =>
+            split.stdin!.write(JSON.stringify(cmd) + '\n');
+        await waitFor(() => events.find((e) => e.event === 'ready'), 'ready');
+
+        const videoEdge = join(d, 'edge-video.sock');
+        const audioEdge = join(d, 'edge-audio.sock');
+        send({ cmd: 'bus_attach', tee: 'busout_101', socket: videoEdge });
+        await waitFor(() => events.find((e) => e.event === 'attached'), 'video attached');
+
+        const capVideo = spawn('python3', [
+            CLIENT, videoEdge, '--capture', join(dir, 'cap-e-video.ts'),
+            '--expect-bytes', String(expectedSize[0x65]),
+        ], { stdio: ['ignore', 'pipe', 'inherit'] });
+        cleanups.push(() => capVideo.kill('SIGKILL'));
+        const videoEvs = jsonLines(capVideo);
+        await waitFor(() => videoEvs.find((e) => e.caps), 'video client accepted');
+
+        // An unknown tee is refused while the pid is undeclared.
+        send({ cmd: 'bus_attach', tee: 'busout_201', socket: audioEdge });
+        await waitFor(
+            () => events.find((e) => e.event === 'warning' && String(e.message).includes('busout_201')),
+            'unknown-tee warning',
+        );
+
+        // Pace the source: the fixture otherwise streams out in ~1 s, faster
+        // than discovery -> add_output -> attach -> python client startup, and
+        // the late output would join after the stream had already finished.
+        // The pause is well inside the 2 s stall window, so no stall fires.
+        const srv = server(inputSock, fixture, '--hold', '--pause-after', '150',
+                           '--pause-ms', '2500');
+        await waitFor(() => events.find((e) => e.channel === 'tssplit:discovered'), 'discovery');
+
+        // Declare 0xc9 LIVE — no respawn.
+        send({ cmd: 'add_output', pid: 0xc9, tee: 'busout_201' });
+        const added = await waitFor(
+            () => events.find((e) => e.event === 'output_added'),
+            'output_added',
+        );
+        expect(added.pid).toBe(0xc9);
+        send({ cmd: 'bus_attach', tee: 'busout_201', socket: audioEdge });
+        await waitFor(
+            () => events.find((e) => e.event === 'attached' && e.socket === audioEdge),
+            'audio attached',
+        );
+        const capAudio = spawn('python3', [
+            CLIENT, audioEdge, '--capture', join(dir, 'cap-e-audio.ts'),
+        ], { stdio: ['ignore', 'pipe', 'inherit'] });
+        cleanups.push(() => capAudio.kill('SIGKILL'));
+        const audioEvs = jsonLines(capAudio);
+        await waitFor(() => audioEvs.find((e) => e.caps), 'audio client accepted');
+
+        // The video capture self-terminates on its expected byte count.
+        const videoVerdict = await waitFor(
+            () => videoEvs.find((e) => e.captured),
+            'video verdict',
+            60000,
+        );
+        // THE POINT: the pre-existing output is byte-identical to the
+        // single-source reference — adding an output mid-stream disturbed
+        // nothing that was already flowing.
+        expect(
+            (videoVerdict.captured as { sha256: string }).sha256,
+            'flowing output was disturbed by add_output',
+        ).toBe(expected[0x65]);
+        expect(split.exitCode).toBeNull();   // one process throughout, no respawn
+
+        send({ cmd: 'bus_detach', socket: audioEdge });
+        const audioVerdict = await waitFor(() => audioEvs.find((e) => e.captured), 'audio verdict');
+        const audioCap = audioVerdict.captured as { bytes: number };
+        expect(audioCap.bytes).toBeGreaterThan(0);
+        // The late output leads with its PSI carousel so a fresh consumer locks.
+        const audioBytes = readFileSync(join(dir, 'cap-e-audio.ts'));
+        expect(audioBytes[0]).toBe(0x47);
+        expect(((audioBytes[1] & 0x1f) << 8) | audioBytes[2]).toBe(0x0000);
+        srv.proc.kill();
+    }, 120_000);
+
     it('emits input_stalled / input_resumed around a silence window', async () => {
         const r = await rig(['--stall-ms', '300']);
         await r.attach(0x65);
