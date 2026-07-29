@@ -5,6 +5,8 @@ CXX      ?= c++
 CXXFLAGS ?= -O2
 CXXFLAGS += -std=c++17 -Wall -Wextra
 
+ifeq ($(shell uname -s),Linux)
+
 OBJS = control.o fanout_server.o ingest.o bus_client.o
 
 all: libmrbus.a
@@ -23,5 +25,10 @@ clean:
 
 install:
 	@# Library is linked statically into the binaries; nothing to install.
+
+else
+all test clean install:
+	@# Linux-only (memfd_create, SCM_RIGHTS) — skipped on this platform.
+endif
 
 .PHONY: all test clean install

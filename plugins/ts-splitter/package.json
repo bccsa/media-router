@@ -39,7 +39,9 @@
         "engine": "./engine/TsSplitterModule.ts"
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-unixfdbus-core": "workspace:*",
+        "@media-router/plugin-mpegts-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

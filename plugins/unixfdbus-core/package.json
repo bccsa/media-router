@@ -1,0 +1,6 @@
+{
+    "name": "@media-router/plugin-unixfdbus-core",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): GstUnixFd bus transport base code. C++ libmrbus + mr-bus-fanout sidecar, python fan-out reference sidecar and bus test infrastructure."
+}

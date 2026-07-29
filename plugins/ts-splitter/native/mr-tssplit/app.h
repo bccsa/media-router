@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "../libmrbus/bus_client.h"
-#include "../libmrbus/fanout_server.h"
-#include "../mrts/ts_split.h"
+#include "libmrbus/bus_client.h"
+#include "libmrbus/fanout_server.h"
+#include "mrts/ts_split.h"
 
 namespace mrtssplit {
 

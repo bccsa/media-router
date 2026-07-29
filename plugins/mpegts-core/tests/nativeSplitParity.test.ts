@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Golden parity: the native mrts core (native/mrts) must produce byte-identical
+ * Golden parity: the native mrts core (../native/mrts) must produce byte-identical
  * outputs to the Python reference (ts_split.py) over a deterministic synthetic
  * MPTS that exercises PSI carousel, PCR re-injection with jitter, descriptor
  * codec identity (Opus), desync recovery, SPS video-info probing, and a
@@ -14,10 +14,10 @@ import { join } from 'node:path';
  * (native_parity_ref.py ⟷ mrts_cli); any byte diff on any output PID fails.
  */
 
-const NATIVE_DIR = join(__dirname, '../../../../native');
+const NATIVE_DIR = join(__dirname, '../native');
 const CLI = join(NATIVE_DIR, 'mrts/mrts_cli');
-const FIXTURE_GEN = join(__dirname, 'native_parity_fixture.py');
-const REF_RUNNER = join(__dirname, 'native_parity_ref.py');
+const FIXTURE_GEN = join(__dirname, '../py/native_parity_fixture.py');
+const REF_RUNNER = join(__dirname, '../py/native_parity_ref.py');
 
 const OUTPUTS = '0x65,0xc9:0x06,0xca,0x1f0,0x999';
 const OUTPUT_PIDS = [0x65, 0xc9, 0xca, 0x1f0, 0x999];

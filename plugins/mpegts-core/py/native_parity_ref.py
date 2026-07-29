@@ -2,7 +2,7 @@
 """Reference runner for the native-core parity test.
 
 Drives ts_split.SplitterCore over a TS file with the exact CLI interface of
-the native harness (native/mrts/mrts_cli.cpp): identical chunking, identical
+the native harness (../native/mrts/mrts_cli.cpp): identical chunking, identical
 per-PID output files, identical JSON event lines. The parity vitest runs both
 and requires byte-identical outputs — this file is the executable spec side.
 

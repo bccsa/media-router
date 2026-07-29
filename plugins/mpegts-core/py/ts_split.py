@@ -2,12 +2,12 @@
 """Packet-level MPEG-TS splitter core.
 
 REFERENCE IMPLEMENTATION — NOT A RUNTIME CODE PATH. The shipping splitter is
-the native `mr-tssplit` child (native/mrts, a byte-for-byte C++ port of this
+the native `mr-tssplit` child (../native/mrts, a byte-for-byte C++ port of this
 module); this file is no longer imported by the engine and is deliberately NOT
 copied into `dist/` by the engine build.
 
 It is retained as the EXECUTABLE SPECIFICATION for the golden parity test
-(packages/engine/src/child-process/nativeSplitParity.test.ts), which drives
+(../tests/nativeSplitParity.test.ts), which drives
 this core and the C++ core over the same synthetic MPTS and requires
 sha256-identical per-PID output. An independent second implementation is what
 makes that test meaningful — deleting this file would delete the guarantee.

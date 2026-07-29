@@ -27,8 +27,8 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "../libmrbus/busproto.h"
-#include "../libmrbus/control.h"
+#include "libmrbus/busproto.h"
+#include "libmrbus/control.h"
 #include "app.h"
 
 using namespace mrtssplit;

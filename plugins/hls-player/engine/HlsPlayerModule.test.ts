@@ -97,7 +97,7 @@ const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
 // file's mock graph — vi.mock('node:fs') cannot reach it. Drive it through
 // its documented MR_NATIVE_BIN_DIR override instead, so the choice of fan-out
 // implementation is deterministic here (without it these tests would depend
-// on whether native/ happens to be built).
+// on whether the native tools happen to be built).
 let nativeBinDir: string;
 let emptyBinDir: string;
 beforeAll(() => {
@@ -107,6 +107,7 @@ beforeAll(() => {
 });
 afterAll(() => {
     delete process.env.MR_NATIVE_BIN_DIR;
+    delete process.env.MR_PLUGINS_DIR;
     rmSync(nativeBinDir, { recursive: true, force: true });
     rmSync(emptyBinDir, { recursive: true, force: true });
 });
@@ -115,6 +116,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
     process.env.MR_NATIVE_BIN_DIR = nativeBinDir;   // native available by default
+    delete process.env.MR_PLUGINS_DIR;              // python sidecar resolvable by default
 });
 
 describe('HlsPlayerModule.buildPipeline', () => {
@@ -206,6 +208,10 @@ describe('HlsPlayerModule.onStart', () => {
     it('reports an error when NEITHER fan-out implementation is available', async () => {
         const { module, spawn } = makeModule();
         process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        // resolvePythonScript scans MR_PLUGINS_DIR (like resolveNativeBinary it
+        // lives in the compiled engine, outside this file's fs mock) — point it
+        // at an empty dir so the python sidecar is unavailable too.
+        process.env.MR_PLUGINS_DIR = emptyBinDir;
         (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
         await module.onStart();
         expect(spawn).not.toHaveBeenCalled();

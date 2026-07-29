@@ -3,6 +3,7 @@ import { createLogger, formatError } from '@media-router/shared-types';
 
 import { PluginLoader } from './plugins/PluginLoader.js';
 import { probeGstElement } from './plugins/gstInspect.js';
+import { warnDuplicatePyModules } from './child-process/nativeBinaries.js';
 import { ModuleManager } from './modules/ModuleManager.js';
 import { MediaRouter } from './routing/MediaRouter.js';
 import { ManagerConnection } from './comms/ManagerConnection.js';
@@ -263,6 +264,7 @@ export class Engine {
             clockAuthority: this.clockAuthority,
         });
         log.info({ pluginCount }, 'Loaded plugins');
+        warnDuplicatePyModules();
 
         this.apiServer = await createApiServer(this, this.config.apiPort ?? 3001);
         log.info({ port: this.config.apiPort ?? 3001 }, 'Local API listening');

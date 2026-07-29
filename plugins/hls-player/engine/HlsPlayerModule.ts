@@ -5,6 +5,7 @@ import {
     busIngestSocketPath,
     formatBytes,
     resolveNativeBinary,
+    resolvePythonScript,
     type BusAttachTarget,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -29,27 +30,16 @@ function resolveRunnerPath(): string | null {
 
 /**
  * How to launch the GstUnixFd fan-out. Prefers the native `mr-bus-fanout`
- * binary (native/ tree) and falls back to the python sidecar, which speaks
- * the identical CLI, control verbs and events — the two are interchangeable
- * and the conformance suite runs both against the same protocol clients.
- * Returns null when neither is present.
+ * binary (unixfdbus-core library plugin) and falls back to its python sidecar,
+ * which speaks the identical CLI, control verbs and events — the two are
+ * interchangeable and the conformance suite runs both against the same
+ * protocol clients. Returns null when neither is present.
  */
 function resolveFanout(): { command: string; prefix: string[]; label: string } | null {
-    const native = resolveNativeBinary('mr-bus-fanout');
+    const native = resolveNativeBinary('mr-bus-fanout', 'hls-player');
     if (native) return { command: native, prefix: [], label: 'mr-bus-fanout' };
-    // The python sidecar is resolved off the engine's entry point rather than
-    // require.resolve on the .py itself — the engine's `exports` map doesn't
-    // cover it, and `existsSync` keeps the check honest when the engine dist
-    // is stale (built before the sidecar existed).
-    try {
-        const engineMain = require.resolve('@media-router/engine');
-        const script = join(engineMain, '..', 'child-process', 'unixfd-fanout.py');
-        if (existsSync(script)) {
-            return { command: 'python3', prefix: [script], label: 'unixfd-fanout' };
-        }
-    } catch {
-        /* engine not resolvable */
-    }
+    const script = resolvePythonScript('unixfd-fanout.py', 'hls-player');
+    if (script) return { command: 'python3', prefix: [script], label: 'unixfd-fanout' };
     return null;
 }
 
@@ -207,7 +197,7 @@ export class HlsPlayerModule extends GstPluginBase {
         if (!fanout) {
             this.setHealth(
                 'error',
-                'no bus fan-out available — build native/ (mr-bus-fanout) or the engine (pnpm build)',
+                'no bus fan-out available — run `make native` (mr-bus-fanout) or pnpm build (see plugins/README.md)',
             );
             return false;
         }

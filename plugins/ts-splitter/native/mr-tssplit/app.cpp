@@ -2,8 +2,8 @@
 
 #include <cstdio>
 
-#include "../libmrbus/busproto.h"
-#include "../libmrbus/control.h"
+#include "libmrbus/busproto.h"
+#include "libmrbus/control.h"
 
 namespace mrtssplit {
 

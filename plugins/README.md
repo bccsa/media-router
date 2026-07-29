@@ -2,6 +2,50 @@
 
 Plugins extend Media Router with new media processing capabilities. Each plugin is a self-contained directory in `plugins/` with a manifest, engine module, and optional UI components.
 
+## How Plugins Work — the Big Picture
+
+The architecture behind everything in this guide is locked by the ADRs in
+[`docs/adr/`](../docs/adr/README.md) — read those first when you plan to
+change *how* plugins work rather than add one.
+
+**Two kinds of plugin folder** (ADR-0001):
+
+- **Module plugins** — `package.json` has a `mediaRouter` manifest → they
+  appear in the Manager UI's Add Module panel and can be placed on the
+  routing canvas (`srt-input`, `ts-splitter`, …).
+- **Library plugins** — `package.json` has NO `mediaRouter` manifest → the
+  loader skips them, the GUI never shows them, but their code (C++, python,
+  shared assets) fully participates in build and runtime resolution. Named
+  `<domain>-core`: `unixfdbus-core` (GstUnixFd bus transport), `mpegts-core`
+  (MPEG-TS packet core + its python reference spec), `rist-core` (librist
+  bindings).
+
+**Discovery & lifecycle.** At engine startup `PluginLoader` scans every
+`plugins/*/package.json`: validates the manifest, filters by architecture,
+and dynamically imports the class named by `manifest.engine` (a
+`GstPluginBase` subclass). Loaded manifests are sent to the manager, which
+renders the Add Module panel from them. When a user adds a module, the
+engine's `ModuleManager` instantiates the class; `buildPipeline(config)`
+returns a GStreamer pipeline string executed by the python gst runner — or
+`null` for modules that instead spawn their own native child or CLI tool.
+Plugins depend on `@media-router/engine`; the engine never imports plugin
+code (ADR-0002).
+
+**What builds what:**
+
+| Code | Where | Built by |
+|---|---|---|
+| TypeScript engine module | `<plugin>/engine/` | `pnpm build` (per-plugin `tsc`) |
+| Vue UI components | `<plugin>/ui/` | manager-ui build |
+| C++ tools | `<plugin>/native/<tool>/` | root `make native` (auto-discovered, zero registration) |
+| Python sidecars/modules | `<plugin>/py/` | nothing — shipped as source |
+| Cross-language tests | `<plugin>/tests/` | `pnpm test` (vitest) |
+
+At runtime, native binaries and python scripts resolve scoped to the
+requesting plugin, and installed images keep the same per-plugin namespacing
+under `/usr/libexec/media-router/<plugin>/` (ADR-0003). Details in
+"Native & Python code in plugins" below.
+
 ## Directory Structure
 
 ```
@@ -9,8 +53,11 @@ plugins/
 └── my-plugin/
     ├── package.json          # Manifest + dependencies
     ├── tsconfig.json         # TypeScript config
-    └── engine/
-        └── MyPluginModule.ts # Engine-side GStreamer pipeline logic
+    ├── engine/
+    │   └── MyPluginModule.ts # Engine-side GStreamer pipeline logic
+    ├── native/               # optional: C++ tools (see "Native & Python code in plugins")
+    ├── py/                   # optional: python sidecars / runner-importable modules
+    └── tests/                # optional: cross-language test suites
 ```
 
 ## Quick Start
@@ -970,9 +1017,10 @@ named `unixfdsrc`). A NATIVE sink (no GStreamer pipeline) overrides
 `getLiveSwapTarget()` with a `NativeSinkController` — the engine then sends
 its child a `{"cmd":"reinput","socket":…}` stdin verb and awaits
 `reinput_done`. Real example: [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts),
-whose data path is the native `mr-tssplit` child (`native/` tree, resolved at
-runtime with `resolveNativeBinary()` — env `MR_NATIVE_BIN_DIR` override, then
-`/usr/bin`, then the repo's `native/` build output).
+whose data path is the native `mr-tssplit` child (the plugin's own
+`native/mr-tssplit/`, resolved at runtime with
+`resolveNativeBinary('mr-tssplit', 'ts-splitter')` — see "Native & Python
+code in plugins" for the resolution order).
 
 `NativeSinkController` also exposes `addOutput(pid, tee)` for a producer whose
 output set is fixed at spawn: a port discovered mid-run is declared on the
@@ -1375,7 +1423,7 @@ await sink.end(); // flush whole packets at media rate, then close
 
 Use the `port` from `assignBusChannel` / `getBusChannel` — never hardcode socket paths. Chunks are queued zero-copy: hand over ownership and don't mutate the buffer after `write`.
 
-**The unixfd fan-out** stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). Two interchangeable implementations exist — the native `mr-bus-fanout` (repo `native/` tree, preferred) and the pure-stdlib `unixfd-fanout.py` (engine `dist/child-process/`, used when the binary is absent). They share a CLI, control verbs and events, and the conformance suite runs both against the same protocol clients, so `resolveNativeBinary('mr-bus-fanout')` picking either is invisible to the module. The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
+**The unixfd fan-out** stands in for the gst producer's `tee ! queue leaky=2 ! unixfdsink` branches: it ingests the paced TS stream and serves each consumer edge socket with the GstUnixFd protocol (memfd + SCM_RIGHTS, CAPS-first, per-client 500 ms leaky queues). Two interchangeable implementations exist, both shipped by the `unixfdbus-core` library plugin — the native `mr-bus-fanout` (`unixfdbus-core/native/`, preferred) and the pure-stdlib `unixfd-fanout.py` (`unixfdbus-core/py/`, used when the binary is absent). They share a CLI, control verbs and events, and the conformance suite runs both against the same protocol clients, so `resolveNativeBinary('mr-bus-fanout', '<your-plugin-id>')` picking either is invisible to the module. The module wires it up with `UnixFdFanoutController` and hands the controller to the engine via `getBusAttachTarget()` — the `BusFanoutCoordinator` then drives `bus_attach`/`bus_detach` exactly as it does for gst producers:
 
 ```typescript
 getBusAttachTarget(): BusAttachTarget | null {
@@ -1416,6 +1464,154 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 ```
 
 ---
+
+## Native & Python code in plugins
+
+Plugins can ship compiled C++ tools and python sidecars/modules inside their
+own folder — no registration anywhere. Architecture decisions behind this:
+`docs/adr/0001` (plugin-owned code + library plugins), `docs/adr/0003`
+(scoped resolution + namespaced install).
+
+### Add C++ to your plugin
+
+1. Create a tool folder and drop your sources in:
+
+   ```bash
+   mkdir -p plugins/my-plugin/native/my-tool
+   # add my-tool.cpp (any number of .cpp files)
+   ```
+
+2. Copy this template `Makefile` into the tool folder — all `.cpp` files are
+   compiled into one binary named after the folder:
+
+   ```make
+   CXX        ?= c++
+   CXXFLAGS   ?= -O2
+   CXXFLAGS   += -std=c++17 -Wall -Wextra
+   PREFIX     ?= /usr/local
+   LIBEXECDIR ?= $(PREFIX)/libexec
+   MR_PLUGIN  ?= my-plugin
+
+   TOOL := $(notdir $(CURDIR))
+
+   all: $(TOOL)
+
+   $(TOOL): $(wildcard *.cpp) $(wildcard *.h)
+   	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(wildcard *.cpp) -o $@
+
+   test:
+   	@# add test commands, or leave as no-op
+
+   clean:
+   	rm -f $(TOOL)
+
+   install: $(TOOL)
+   	install -D -m 755 $(TOOL) $(DESTDIR)$(LIBEXECDIR)/media-router/$(MR_PLUGIN)/$(TOOL)
+
+   .PHONY: all test clean install
+   ```
+
+   Rules: C++17, **libc/libstdc++ only** — no third-party dependencies (the
+   Yocto build has no network access). Linux-only tools should self-guard
+   with `ifeq ($(shell uname -s),Linux)` (see `unixfdbus-core/native/*/Makefile`).
+   Add a `native/.gitignore` for the build outputs.
+
+3. Build. The repo-root Makefile auto-discovers every
+   `plugins/*/native/*/Makefile` at invocation time — it never needs editing:
+
+   ```bash
+   make native            # build everything, host arch
+   make native-test       # + run C++ test suites
+   make CXX=aarch64-linux-gnu-g++ native    # cross-compile (what Yocto does)
+   ./build-native-dev.sh arm64              # cross via Docker, no toolchain needed
+   ```
+
+   The Yocto recipe runs the same targets; `make native-install` places
+   binaries at `/usr/libexec/media-router/<plugin>/<tool>` on the image.
+
+4. Run it from your engine module:
+
+   ```typescript
+   import { resolveNativeBinary } from '@media-router/engine';
+
+   const binary = resolveNativeBinary('my-tool', 'my-plugin');
+   if (!binary) { this.setHealth('error', 'my-tool not found — run `make native`'); return; }
+   this.proc = this.spawnRunnerProcess({ label: 'my-tool', command: binary, args: [...] });
+   ```
+
+   Resolution order: `MR_NATIVE_BIN_DIR` (authoritative dev override) → your
+   plugin's own `native/<tool>/<tool>` / installed
+   `/usr/libexec/media-router/<plugin>/<tool>` → cross-plugin scan. Because
+   your own folder wins, another plugin shipping a tool with the same name
+   never conflicts; an ambiguous cross-plugin lookup fails loud (error log +
+   `null`). Worked examples: `ts-splitter` (spawns its own `mr-tssplit`),
+   `hls-player` (resolves `mr-bus-fanout` from the `unixfdbus-core` library plugin).
+
+### Link against a library plugin's C++
+
+Static archives from library plugins are linked via `MR_PLUGINS_DIR`
+(defaults to `../../..` from a tool folder) — declare them as prerequisites
+so `make` builds them first, and add their parent to the include path:
+
+```make
+MR_PLUGINS_DIR ?= ../../..
+MRBUS = $(MR_PLUGINS_DIR)/unixfdbus-core/native/libmrbus
+CPPFLAGS += -I$(MR_PLUGINS_DIR)/unixfdbus-core/native
+
+$(MRBUS)/libmrbus.a:
+	$(MAKE) -C $(MRBUS)
+
+my-tool: $(wildcard *.cpp) $(MRBUS)/libmrbus.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) $(wildcard *.cpp) $(MRBUS)/libmrbus.a -o $@
+```
+
+Sources then `#include "libmrbus/busproto.h"` (relative to the `-I` path).
+Full example: `ts-splitter/native/mr-tssplit/Makefile`.
+
+### Python in plugins
+
+Put python in `plugins/<plugin>/py/`. Two ways it gets used:
+
+- **Spawn a sidecar**: `resolvePythonScript('my-sidecar.py', 'my-plugin')`
+  (same scoping rules as binaries), then spawn `python3 <path>`. Example:
+  `hls-player`'s fan-out fallback.
+- **Import from pipeline code**: every `plugins/*/py` dir is automatically on
+  the gst pipeline runner's `PYTHONPATH`, so runner-loaded code can plainly
+  `import my_module`. Examples: `librist` (rist-core), `ts_timeline`
+  (mpegts-core). Module FILENAMES must be unique across all plugins (python
+  has one flat import namespace) — the engine logs an error at startup if two
+  plugins ship the same module name.
+
+The plugins tree ships verbatim to `/opt/media-router`, so the same paths
+work on dev checkouts and installed systems. Note: `.py` files and `tests/`
+dirs are outside the plugin `tsc` rootDir — they ship as source, nothing to
+build.
+
+### Library plugins (shared base code, no GUI)
+
+A folder under `plugins/` whose `package.json` has **no `mediaRouter` field**
+is a *library plugin*: `PluginLoader` skips it, so it never appears in the
+Add Module panel, but its `native/` and `py/` fully participate in build and
+resolution. Convention: name them `<domain>-core` (`unixfdbus-core`, `mpegts-core`,
+`rist-core`) — one folder per domain, not a generic "shared" junk drawer.
+Single-plugin code stays in that plugin's folder; promote to a library plugin
+when a domain's code serves several plugins.
+
+Dependents declare library plugins in `dependencies` for visibility and an
+existence guarantee (no runtime effect):
+
+```json
+"dependencies": {
+    "@media-router/engine": "workspace:*",
+    "@media-router/plugin-unixfdbus-core": "workspace:*"
+}
+```
+
+Cross-language test suites live in the owning plugin's `tests/` dir
+(vitest picks up `plugins/*/tests/**/*.test.ts`): the bus protocol
+conformance suite in `unixfdbus-core/tests/`, the mrts golden-parity suite in
+`mpegts-core/tests/`, the mr-tssplit end-to-end suite in
+`ts-splitter/tests/`.
 
 ## Available Services (`this.services`)
 

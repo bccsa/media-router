@@ -11,7 +11,11 @@ export default defineConfig({
     },
     test: {
         globals: true,
-        include: ['packages/*/src/**/*.test.ts', 'plugins/*/engine/**/*.test.ts'],
+        include: [
+            'packages/*/src/**/*.test.ts',
+            'plugins/*/engine/**/*.test.ts',
+            'plugins/*/tests/**/*.test.ts',
+        ],
         coverage: {
             include: ['packages/*/src/**/*.ts', 'plugins/*/engine/**/*.ts'],
             exclude: ['**/*.test.ts', '**/*.d.ts', '**/index.ts', 'packages/manager-ui/**', 'packages/local-panel/**', 'packages/profile-manager/**', 'v1/**', '**/dist/**', '**/node_modules/**'],

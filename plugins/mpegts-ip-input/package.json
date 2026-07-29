@@ -119,6 +119,9 @@
     "dependencies": {
         "@media-router/engine": "workspace:*"
     },
+    "devDependencies": {
+        "@types/node": "^25.5.0"
+    },
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit"

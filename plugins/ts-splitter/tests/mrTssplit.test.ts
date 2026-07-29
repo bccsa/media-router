@@ -17,12 +17,12 @@ import { join } from 'node:path';
  * make-before-break reinput continuity, and input stall events.
  */
 
-const NATIVE_DIR = join(__dirname, '../../../../native');
-const MR_TSSPLIT = join(NATIVE_DIR, 'mr-tssplit/mr-tssplit');
-const SERVER = join(__dirname, 'unixfd-test-server.py');
-const CLIENT = join(__dirname, 'unixfd-fanout.test-client.py');
-const FIXTURE_GEN = join(__dirname, 'native_parity_fixture.py');
-const REF_RUNNER = join(__dirname, 'native_parity_ref.py');
+const PLUGINS_DIR = join(__dirname, '../..');
+const MR_TSSPLIT = join(__dirname, '../native/mr-tssplit/mr-tssplit');
+const SERVER = join(PLUGINS_DIR, 'unixfdbus-core/py/unixfd-test-server.py');
+const CLIENT = join(PLUGINS_DIR, 'unixfdbus-core/py/unixfd-fanout.test-client.py');
+const FIXTURE_GEN = join(PLUGINS_DIR, 'mpegts-core/py/native_parity_fixture.py');
+const REF_RUNNER = join(PLUGINS_DIR, 'mpegts-core/py/native_parity_ref.py');
 const CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 const CHUNK = 1316;
 

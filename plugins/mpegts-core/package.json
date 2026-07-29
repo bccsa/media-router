@@ -1,0 +1,6 @@
+{
+    "name": "@media-router/plugin-mpegts-core",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): MPEG-TS domain base code. C++ mrts packet core (PSI parse/build, TS splitter, H.264/H.265 SPS probe) plus the python reference modules that are its executable specification, the parity-test fixtures, and the TS timeline shifter."
+}

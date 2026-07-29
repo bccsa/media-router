@@ -129,7 +129,7 @@ export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
 export { UnixFdFanoutController, NativeSinkController } from './child-process/UnixFdFanoutController.js';
 export { probeUnixSocket } from './child-process/busSocketGate.js';
 export type { BusAttachTarget, LiveSwapTarget } from './child-process/UnixFdFanoutController.js';
-export { resolveNativeBinary } from './child-process/nativeBinaries.js';
+export { resolveNativeBinary, resolvePythonScript } from './child-process/nativeBinaries.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
 export {
     probeMpegTsStream,

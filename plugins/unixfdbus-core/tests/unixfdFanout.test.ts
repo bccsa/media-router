@@ -5,10 +5,10 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const SIDECAR = join(__dirname, 'unixfd-fanout.py');
-/** Native drop-in (built by `make -C native` on Linux / build-dev.sh). */
-const NATIVE_SIDECAR = join(__dirname, '../../../../native/mr-bus-fanout/mr-bus-fanout');
-const CLIENT = join(__dirname, 'unixfd-fanout.test-client.py');
+const SIDECAR = join(__dirname, '../py/unixfd-fanout.py');
+/** Native drop-in (built by `make native` on Linux / build-native-dev.sh). */
+const NATIVE_SIDECAR = join(__dirname, '../native/mr-bus-fanout/mr-bus-fanout');
+const CLIENT = join(__dirname, '../py/unixfd-fanout.test-client.py');
 const CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 /** Must match the sidecar's BUFFER_BYTES (128 TS packets). */
 const BUFFER_BYTES = 128 * 188;

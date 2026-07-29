@@ -34,7 +34,8 @@ import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './st
  * wire; packet pass-through inherits the wire cadence and drops the
  * mini-mux's 1.2 s latency budget.
  *
- * The data path is the NATIVE child `mr-tssplit` (native/mr-tssplit — the
+ * The data path is the NATIVE child `mr-tssplit` (this plugin's
+ * native/mr-tssplit — the
  * C++ port of ts_split.py measured at ~1/60th the CPU of the python/gst
  * shell): a GstUnixFd client on the input edge, the packet router, and one
  * fan-out server per output PID. There is no GStreamer pipeline at all —
@@ -153,9 +154,9 @@ export class TsSplitterModule extends GstPluginBase {
         this.declaredPids.clear();
         for (const o of outputs) this.declaredPids.add(o.pid);
 
-        const binary = resolveNativeBinary('mr-tssplit');
+        const binary = resolveNativeBinary('mr-tssplit', 'ts-splitter');
         if (!binary) {
-            this.setHealth('error', 'mr-tssplit binary not found — build native/ (see native/README.md)');
+            this.setHealth('error', 'mr-tssplit binary not found — run `make native` (see plugins/README.md)');
             return;
         }
         this.controller = new NativeSinkController(
