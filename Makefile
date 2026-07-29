@@ -39,4 +39,9 @@ native-clean:
 	@set -e; for d in $(NATIVE_DIRS); do \
 	  $(MAKE) -C $$d clean MR_PLUGIN=$$(echo $$d | cut -d/ -f2); done
 
-.PHONY: preflight native native-test native-install native-clean
+# Plain `clean` alias: BitBake's stock do_configure runs `oe_runmake clean`
+# whenever ${S} has a Makefile — without this alias that step (and a plain
+# `make clean`) would fail with "No rule to make target 'clean'".
+clean: native-clean
+
+.PHONY: preflight native native-test native-install native-clean clean
