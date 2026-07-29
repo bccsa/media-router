@@ -6,6 +6,7 @@ import {
     busTeeName,
     busEdgeSocketPath,
     busIngestSocketPath,
+    BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
 } from './busHelpers.js';
 
@@ -113,8 +114,30 @@ describe('buildBusSink', () => {
         // pinned before the tee (unixfd consumers fail not-negotiated without
         // caps) and inherited by every branch.
         expect(buildBusSink(40001)).toBe(
-            'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+            `capssetter caps="${BUS_TS_CAPS}" replace=true ! ` +
+                `capsfilter caps="${BUS_TS_CAPS}" ! ` +
                 'tee name=busout_40001 allow-not-linked=true',
         );
+    });
+
+    it('strips upstream caps fields BEFORE the tee, so no branch inherits them', () => {
+        // mpegtsmux publishes its first-generated PAT/PMT as a `streamheader`
+        // caps field. unixfd carries caps verbatim and srtsink replays that
+        // field to every new caller, so a stale snapshot (taken before the
+        // dynamic media pads linked — wrong PCR PID, missing streams) becomes
+        // every receiver's first PMT, permanently. `replace=true` is what drops
+        // it; a capsfilter cannot, because caps intersection unions fields.
+        const sink = buildBusSink(40001);
+        expect(sink).toContain('capssetter');
+        expect(sink).toContain('replace=true');
+        expect(sink.indexOf('capssetter')).toBeLessThan(sink.indexOf('tee name='));
+    });
+
+    it('publishes the same caps as the unixfd-fanout sidecar', () => {
+        // Both producer paths (GStreamer tee here, unixfd-fanout.py --caps for
+        // non-GStreamer producers) must put IDENTICAL caps on the wire — a
+        // consumer cannot tell which produced its edge.
+        expect(BUS_TS_CAPS).toBe('video/mpegts, systemstream=(boolean)true, packetsize=(int)188');
+        expect(buildBusSink(40001)).toContain(BUS_TS_CAPS);
     });
 });

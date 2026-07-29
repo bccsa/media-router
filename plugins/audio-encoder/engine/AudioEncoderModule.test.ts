@@ -32,7 +32,7 @@ describe('AudioEncoderModule.buildPipeline', () => {
         expect(desc.pipeline).toContain('pulsesrc device=MR_PW_enc-1.monitor');
         expect(desc.pipeline).toContain('opusenc bitrate=128000');
         expect(desc.pipeline).toContain(
-            'mpegtsmux latency=0 alignment=7 ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_41000 allow-not-linked=true',
+            'mpegtsmux latency=0 alignment=7 ! capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc.pipeline).not.toContain('udpsink');
     });

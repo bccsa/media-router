@@ -313,11 +313,14 @@ describe('VideoEncoderModule', () => {
             expect(desc!.pipeline).toContain('v4l2src device=/dev/video-nonexistent-for-test');
             expect(desc!.pipeline).toContain('v4l2h264enc name=venc0');
             expect(desc!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
-            // Bus egress: pinned TS caps + per-consumer fan-out tee. The
-            // unixfdsink branches are attached at runtime by the coordinator;
-            // allow-not-linked lets the encoder run with zero consumers.
+            // Bus egress: stripped + pinned TS caps, then a per-consumer
+            // fan-out tee. The unixfdsink branches are attached at runtime by
+            // the coordinator; allow-not-linked lets the encoder run with zero
+            // consumers. The capssetter drops mpegtsmux's stale `streamheader`
+            // before any branch (and any srtsink) can inherit it.
             expect(desc!.pipeline).toContain(
-                'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
+                'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
+                    'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                     'tee name=busout_5000 allow-not-linked=true',
             );
             expect(desc!.pipeline).not.toContain('udpsink');
@@ -380,7 +383,10 @@ describe('VideoEncoderModule', () => {
                 bitrate: 4000,
                 keyframeInterval: 60,
             });
-            expect(desc!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! capsfilter/);
+            // capssetter opens the bus egress (caps-only, no buffering) — what
+            // must not appear between mux and tee is anything that can DROP.
+            expect(desc!.pipeline).toMatch(/mpegtsmux name=mux[^!]+! capssetter/);
+            expect(desc!.pipeline).not.toMatch(/mpegtsmux name=mux[^!]+! queue/);
         });
 
         it('returns null + sets health warning when no device is configured', () => {
