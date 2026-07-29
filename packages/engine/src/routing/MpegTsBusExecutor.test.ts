@@ -18,7 +18,7 @@ function conn(id: string, source = 'input-A'): Connection {
     } as Connection;
 }
 
-function sinkStub(opts: { swapCapable?: boolean } = {}) {
+function sinkStub(opts: { swapCapable?: boolean; native?: boolean } = {}) {
     const busReinput = vi.fn(async () => {});
     const sink = {
         running: true,
@@ -29,7 +29,10 @@ function sinkStub(opts: { swapCapable?: boolean } = {}) {
         getLiveInputSwap: vi.fn(() =>
             (opts.swapCapable ?? true) ? { element: 'netin' } : null,
         ),
-        getChildProcess: vi.fn(() => ({ busReinput })),
+        // native sink = no gst child; the swap RPC rides its own controller
+        // (ModuleInstance.getLiveSwapTarget falls back to the child for gst).
+        getChildProcess: vi.fn(() => (opts.native ? null : { busReinput })),
+        getLiveSwapTarget: vi.fn(() => ({ busReinput })),
         getDynamicPorts: vi.fn(() => []),
     } as unknown as ModuleInstance;
     return { sink, busReinput };
@@ -154,9 +157,31 @@ describe('MpegTsBusExecutor swap execution (real edge socket)', () => {
         expect((sink as any).setHealth).toHaveBeenCalledWith('ok');
     });
 
+    it('completes the swap for a NATIVE sink (no gst child, controller target)', async () => {
+        const { sink, busReinput } = sinkStub({ native: true });
+        const { executor, fanout } = makeExecutor(sink);
+        const newConn = conn('input-B:mpegts-out-splitter-1:mpegts-in', 'input-B');
+
+        const edgePath = busEdgeSocketPath(PORT, newConn.id);
+        server = createServer();
+        await new Promise<void>((res) => server!.listen(edgePath, res));
+
+        await executor.teardown(
+            { connectionId: 'old', type: 'bus', busChannel: PORT },
+            conn('old', 'input-A'),
+            false,
+        );
+        const handle = await executor.execute(newConn);
+
+        expect(handle).toMatchObject({ connectionId: newConn.id, busChannel: PORT });
+        expect(busReinput).toHaveBeenCalledWith('netin', edgePath);
+        expect((sink as any).stop).not.toHaveBeenCalled();
+        expect((sink as any).start).not.toHaveBeenCalled();
+    });
+
     it('falls back to the classic restart when bus_reinput fails', async () => {
         const { sink } = sinkStub();
-        (sink.getChildProcess as any) = vi.fn(() => ({
+        (sink.getLiveSwapTarget as any) = vi.fn(() => ({
             busReinput: vi.fn(async () => {
                 throw new Error('runner rejected');
             }),
@@ -180,5 +205,74 @@ describe('MpegTsBusExecutor swap execution (real edge socket)', () => {
         expect((sink as any).stop).toHaveBeenCalledTimes(1);
         expect((sink as any).start).toHaveBeenCalledTimes(1);
         expect(handle).toMatchObject({ connectionId: newConn.id, busChannel: PORT });
+    });
+});
+
+describe('MpegTsBusExecutor materializeProducerPort', () => {
+    function producerStub(opts: { native?: boolean; hasTarget?: boolean } = {}) {
+        return {
+            running: true,
+            stop: vi.fn(async () => {}),
+            start: vi.fn(async () => {}),
+            getChildProcess: vi.fn(() => (opts.native ? null : { busReinput: vi.fn() })),
+            getBusAttachTarget: vi.fn(() =>
+                (opts.hasTarget ?? true) ? { sendBusAttach: vi.fn(), sendBusDetach: vi.fn() } : null,
+            ),
+            getDynamicPorts: vi.fn(() => [{ id: 'pid-0x65', direction: 'output' }]),
+        } as unknown as ModuleInstance;
+    }
+
+    function lateWireConn(): Connection {
+        return {
+            id: 'late',
+            sourceModuleId: 'splitter-1',
+            sourcePortId: 'pid-0x65',
+            sinkModuleId: 'decoder-1',
+            sinkPortId: 'mpegts-in',
+            streamType: 'muxed/mpegts',
+        } as Connection;
+    }
+
+    function makeMaterializeExecutor(producer: ModuleInstance, sink: ModuleInstance) {
+        // Port resolves only AFTER the producer restarted (the bounce built it).
+        const getUdpPort = vi.fn((moduleId: string) =>
+            moduleId === 'splitter-1' && (producer.start as any).mock.calls.length > 0
+                ? PORT
+                : undefined,
+        );
+        const modules: Record<string, ModuleInstance> = {
+            'splitter-1': producer,
+            'decoder-1': sink,
+        };
+        const fanout = { attach: vi.fn(), detach: vi.fn() };
+        const executor = new MpegTsBusExecutor(
+            (id) => modules[id],
+            getUdpPort,
+            (c) => c.id,
+            undefined,
+            fanout as never,
+        );
+        return executor;
+    }
+
+    it('bounces a NATIVE producer (no gst child, live attach target) for a late-wired port', async () => {
+        const producer = producerStub({ native: true });
+        const { sink } = sinkStub({ swapCapable: false });
+        const executor = makeMaterializeExecutor(producer, sink);
+
+        const handle = await executor.execute(lateWireConn());
+
+        expect((producer as any).stop).toHaveBeenCalledTimes(1);
+        expect((producer as any).start).toHaveBeenCalledTimes(1);
+        expect(handle).toMatchObject({ busChannel: PORT });
+    });
+
+    it('never bounces a running-but-idle producer (no child, no attach target)', async () => {
+        const producer = producerStub({ native: true, hasTarget: false });
+        const { sink } = sinkStub({ swapCapable: false });
+        const executor = makeMaterializeExecutor(producer, sink);
+
+        await expect(executor.execute(lateWireConn())).rejects.toThrow(/not assigned/);
+        expect((producer as any).start).not.toHaveBeenCalled();
     });
 });

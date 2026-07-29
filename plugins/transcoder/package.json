@@ -294,7 +294,8 @@
         "engine": "./engine/TranscoderModule.ts"
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-mpegts-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

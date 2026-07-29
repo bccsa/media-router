@@ -181,7 +181,8 @@
         ]
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-rist-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

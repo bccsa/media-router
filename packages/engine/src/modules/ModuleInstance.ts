@@ -3,7 +3,7 @@ import type { ModuleRuntimeState } from '@media-router/shared-types';
 import { createLogger, formatError } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
-import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
+import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
 
 const log = createLogger('ModuleInstance');
 
@@ -303,6 +303,12 @@ export class ModuleInstance extends EventEmitter {
     /** Live-input-swap capability for a sink port (see PluginModule). */
     getLiveInputSwap(sinkPortId: string): { element: string } | null {
         return this.plugin.getLiveInputSwap?.(sinkPortId) ?? null;
+    }
+
+    /** Target of the tracked `bus_reinput` live-swap RPC (gst child process,
+     *  or a native sink's own controller — ts-splitter). */
+    getLiveSwapTarget(): LiveSwapTarget | null {
+        return this.plugin.getLiveSwapTarget?.() ?? this.getChildProcess();
     }
 
     /** Refresh the stored pipeline description after a live input swap. */

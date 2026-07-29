@@ -12,6 +12,15 @@ export interface BusAttachTarget {
 }
 
 /**
+ * Target of the tracked `bus_reinput` live-input-swap RPC (LiveInputSwap's
+ * make-before-break re-point). `GstChildProcess.busReinput` satisfies it for
+ * gst sinks; a native child process exposes it via `NativeSinkController`.
+ */
+export interface LiveSwapTarget {
+    busReinput(element: string, socket: string): Promise<void>;
+}
+
+/**
  * Bus fan-out control for a non-GStreamer producer (hls-player): bridges the
  * BusFanoutCoordinator's attach/detach calls to the module's
  * `unixfd-fanout.py` sidecar over its stdin (JSON lines, same verbs as the
@@ -71,7 +80,114 @@ export class UnixFdFanoutController implements BusAttachTarget {
         return msg;
     }
 
-    private write(obj: Record<string, unknown>): void {
+    protected write(obj: Record<string, unknown>): void {
         this.getProc()?.writeLine(JSON.stringify(obj));
+    }
+}
+
+/** How long a `reinput` verb may stay unanswered before the swap RPC rejects
+ *  (the caller then falls back to the classic module restart). */
+const REINPUT_TIMEOUT_MS = 6_000;
+
+/** Ceiling on an unanswered `add_output`; on timeout the caller restarts the
+ *  module instead (the respawn declares the output via argv). */
+const ADD_OUTPUT_TIMEOUT_MS = 6_000;
+
+/**
+ * Controller for a native bus SINK child (mr-tssplit): everything the fan-out
+ * controller does, plus the `reinput` verb — the native equivalent of the gst
+ * runner's tracked `bus_reinput` RPC. The child answers `reinput_done` /
+ * `reinput_failed`; no answer within the timeout rejects (a respawned child
+ * has a fresh input from its argv, so a lost in-flight reinput is moot).
+ */
+export class NativeSinkController extends UnixFdFanoutController implements LiveSwapTarget {
+    private pendingReinput: {
+        resolve: () => void;
+        reject: (err: Error) => void;
+        timer: ReturnType<typeof setTimeout>;
+    } | null = null;
+
+    /** In-flight `add_output` calls, keyed by pid (several can overlap when a
+     *  source reveals multiple new PIDs in one discovery). */
+    private readonly pendingOutputs = new Map<
+        number,
+        { resolve: () => void; reject: (err: Error) => void }
+    >();
+
+    /** `element` is part of the gst RPC shape; the native child has exactly
+     *  one input, so only the socket travels. */
+    busReinput(_element: string, socket: string): Promise<void> {
+        this.pendingReinput?.reject(new Error('superseded by a newer reinput'));
+        return new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingReinput = null;
+                reject(new Error('reinput timed out'));
+            }, REINPUT_TIMEOUT_MS);
+            this.pendingReinput = {
+                resolve: () => {
+                    clearTimeout(timer);
+                    this.pendingReinput = null;
+                    resolve();
+                },
+                reject: (err) => {
+                    clearTimeout(timer);
+                    this.pendingReinput = null;
+                    reject(err);
+                },
+                timer,
+            };
+            this.write({ cmd: 'reinput', socket });
+        });
+    }
+
+    /**
+     * Declare an output discovered after the child spawned (its `--out` set is
+     * fixed at spawn). Resolves on `output_added` — only then does the tee
+     * exist, so the caller must await this before the engine attaches an edge
+     * to it. Rejection is the caller's cue to fall back to a module restart,
+     * which respawns the child with the new output in argv.
+     */
+    addOutput(pid: number, tee: string): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingOutputs.delete(pid);
+                reject(new Error(`add_output ${pid} timed out`));
+            }, ADD_OUTPUT_TIMEOUT_MS);
+            this.pendingOutputs.get(pid)?.reject(new Error('superseded by a newer add_output'));
+            this.pendingOutputs.set(pid, {
+                resolve: () => {
+                    clearTimeout(timer);
+                    this.pendingOutputs.delete(pid);
+                    resolve();
+                },
+                reject: (err) => {
+                    clearTimeout(timer);
+                    this.pendingOutputs.delete(pid);
+                    reject(err);
+                },
+            });
+            this.write({ cmd: 'add_output', pid, tee });
+        });
+    }
+
+    override handleLine(line: string): Record<string, unknown> | null {
+        const msg = super.handleLine(line);
+        if (!msg) return null;
+        if (msg.event === 'reinput_done') {
+            this.pendingReinput?.resolve();
+        } else if (msg.event === 'reinput_failed') {
+            this.pendingReinput?.reject(
+                new Error(typeof msg.message === 'string' ? msg.message : 'reinput failed'),
+            );
+        } else if (msg.event === 'output_added') {
+            this.pendingOutputs.get(Number(msg.pid))?.resolve();
+        } else if (msg.event === 'output_add_failed') {
+            this.pendingOutputs
+                .get(Number(msg.pid))
+                ?.reject(
+                    new Error(typeof msg.message === 'string' ? msg.message : 'add_output failed'),
+                );
+        }
+        return msg;
     }
 }

@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import { EventEmitter } from 'events';
 import { isMasterPlaylist } from 'hls-pipe';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // hls-pipe is ESM and the probe loads it via dynamic import — mock it so tests
 // neither hit the network nor depend on the built library. The fetch mock is
@@ -91,9 +93,30 @@ const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
     },
 });
 
+// resolveNativeBinary lives in the compiled engine package, outside this
+// file's mock graph — vi.mock('node:fs') cannot reach it. Drive it through
+// its documented MR_NATIVE_BIN_DIR override instead, so the choice of fan-out
+// implementation is deterministic here (without it these tests would depend
+// on whether the native tools happen to be built).
+let nativeBinDir: string;
+let emptyBinDir: string;
+beforeAll(() => {
+    nativeBinDir = mkdtempSync(join(tmpdir(), 'hls-native-'));
+    emptyBinDir = mkdtempSync(join(tmpdir(), 'hls-nonative-'));
+    writeFileSync(join(nativeBinDir, 'mr-bus-fanout'), '#!/bin/sh\n');
+});
+afterAll(() => {
+    delete process.env.MR_NATIVE_BIN_DIR;
+    delete process.env.MR_PLUGINS_DIR;
+    rmSync(nativeBinDir, { recursive: true, force: true });
+    rmSync(emptyBinDir, { recursive: true, force: true });
+});
+
 beforeEach(() => {
     vi.clearAllMocks();
     (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    process.env.MR_NATIVE_BIN_DIR = nativeBinDir;   // native available by default
+    delete process.env.MR_PLUGINS_DIR;              // python sidecar resolvable by default
 });
 
 describe('HlsPlayerModule.buildPipeline', () => {
@@ -125,7 +148,8 @@ describe('HlsPlayerModule.onStart', () => {
         await module.onStart(); // no URL
         expect(spawn).toHaveBeenCalledOnce();
         const { opts } = sidecarOf(spawn);
-        expect(opts.command).toBe('python3');
+        // Native binary present (existsSync mocked true) -> preferred.
+        expect(opts.command.endsWith('mr-bus-fanout')).toBe(true);
         expect(opts.args.join(' ')).toContain('--ingest /tmp/mr-bus-41000-ingest.sock');
         expect(opts.args.join(' ')).toContain('video/mpegts');
         expect(opts.stdin).toBe(true);
@@ -169,8 +193,25 @@ describe('HlsPlayerModule.onStart', () => {
         expect(module.setHealth.mock.calls.at(-1)![0]).toBe('error');
     });
 
-    it('reports an error when the sidecar script is missing (stale engine dist)', async () => {
+    it('falls back to the python sidecar when the native binary is absent', async () => {
         const { module, spawn } = makeModule();
+        process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        await module.onStart();
+        const { opts } = sidecarOf(spawn);
+        expect(opts.command).toBe('python3');
+        expect(opts.args[0].endsWith('unixfd-fanout.py')).toBe(true);
+        // Identical CLI either way — the two implementations are interchangeable.
+        expect(opts.args.join(' ')).toContain('--ingest /tmp/mr-bus-41000-ingest.sock');
+        expect(opts.args.join(' ')).toContain('video/mpegts');
+    });
+
+    it('reports an error when NEITHER fan-out implementation is available', async () => {
+        const { module, spawn } = makeModule();
+        process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        // resolvePythonScript scans MR_PLUGINS_DIR (like resolveNativeBinary it
+        // lives in the compiled engine, outside this file's fs mock) — point it
+        // at an empty dir so the python sidecar is unavailable too.
+        process.env.MR_PLUGINS_DIR = emptyBinDir;
         (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
         await module.onStart();
         expect(spawn).not.toHaveBeenCalled();

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type { PadLinkRule, BusReport, RistRunnerConfig, TsSplitRunnerConfig, TsProbeRunnerConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
+import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
+import { pluginPythonPaths } from './nativeBinaries.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
 
@@ -22,7 +23,6 @@ export interface RunnerStartOptions {
     decoderThreadType?: 'auto' | 'frame';
     busReports?: BusReport[];
     rist?: RistRunnerConfig;
-    tsSplit?: TsSplitRunnerConfig;
     tsProbe?: TsProbeRunnerConfig;
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
 }
@@ -84,6 +84,16 @@ export class PythonProcess {
         }
 
         const spawnEnv = { ...process.env, ...env };
+        // Plugin-owned python (plugins/*/py) must be importable by the runner
+        // (e.g. `import librist`, `import ts_psi`) — prepend those dirs so
+        // repo-shipped modules win over anything system-wide. The runner's own
+        // dir stays first overall (python puts the script dir at sys.path[0]).
+        const pyPaths = pluginPythonPaths();
+        if (pyPaths.length > 0) {
+            spawnEnv.PYTHONPATH = [...pyPaths, spawnEnv.PYTHONPATH]
+                .filter(Boolean)
+                .join(':');
+        }
 
         if (this.options.useStdioForData) {
             this.proc = spawn('python3', [this.options.pythonRunnerPath], {

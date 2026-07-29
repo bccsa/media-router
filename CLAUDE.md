@@ -7,6 +7,7 @@ Media Router is a distributed broadcast media routing system for BCC South Afric
 - **Stack**: TypeScript, pnpm monorepo, Vue 3, Pinia, Vue Flow, Express v5, Fastify, Socket.IO, SQLite, GStreamer, PipeWire, Python GI bindings
 - **Target hardware**: Raspberry Pi 5 (arm64), Debian 12 Bookworm
 - **Docs**: `docs/URS-v2.0.md`, `docs/FDS-v2.0.md`, `docs/implementation-plan-v2.0.md`
+- **Architecture decisions**: `docs/adr/` — read before changing architecture; add an ADR when locking a new one
 - **Active issues**: `docs/TodoNotes.md`
 - **Plugin guide**: `plugins/README.md`
 
@@ -66,6 +67,7 @@ When I paste a review or ask you to review changes:
 ### Plugin Architecture
 
 - Plugins live in `plugins/<name>/` with a `package.json` manifest (`mediaRouter` field)
+- Native C++/python ships inside plugin folders (`native/`, `py/`); shared base code lives in `<domain>-core` library plugins (no `mediaRouter` manifest = invisible to GUI). Build via root `make native`. See `plugins/README.md` → "Native & Python code in plugins"
 - Engine modules extend `GstPluginBase` and implement `buildPipeline(config)`
 - Services available to plugins: `this.services.pipeWire`, `this.services.mediaRouter`, `this.services.processManager`
 - Cleanup is automatic via ownership tracking — plugins don't need manual cleanup in `onStop()`
@@ -82,6 +84,7 @@ When I paste a review or ask you to review changes:
 
 ### Process
 
+- **ALWAYS check `docs/adr/` before starting work that touches architecture** — package/plugin boundaries, build contracts, how components communicate, where code lives. Follow the ADRs or supersede them explicitly with a new numbered ADR; never silently diverge. When a task locks in a new architectural decision, record it in `docs/adr/` (format: `docs/adr/README.md`).
 - Use `TodoWrite` for multi-step tasks. Mark each task as completed as you finish it.
 - Use `EnterPlanMode` for non-trivial new features — plan before implementing.
 - Update `docs/TodoNotes.md` when completing items.

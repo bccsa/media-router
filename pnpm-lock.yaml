@@ -313,21 +313,33 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-mpegts-core':
+        specifier: workspace:*
+        version: link:../mpegts-core
 
   plugins/hls-player:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-unixfdbus-core':
+        specifier: workspace:*
+        version: link:../unixfdbus-core
       hls-pipe:
         specifier: workspace:*
         version: link:../../packages/hls-pipe
+
+  plugins/mpegts-core: {}
 
   plugins/mpegts-ip-input:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.5.0
 
   plugins/mpegts-ip-output:
     dependencies:
@@ -359,17 +371,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/engine
 
+  plugins/rist-core: {}
+
   plugins/rist-input:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-rist-core':
+        specifier: workspace:*
+        version: link:../rist-core
 
   plugins/rist-output:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-rist-core':
+        specifier: workspace:*
+        version: link:../rist-core
 
   plugins/srt-input:
     dependencies:
@@ -388,12 +408,23 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-mpegts-core':
+        specifier: workspace:*
+        version: link:../mpegts-core
 
   plugins/ts-splitter:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-mpegts-core':
+        specifier: workspace:*
+        version: link:../mpegts-core
+      '@media-router/plugin-unixfdbus-core':
+        specifier: workspace:*
+        version: link:../unixfdbus-core
+
+  plugins/unixfdbus-core: {}
 
   plugins/video-encoder:
     dependencies:

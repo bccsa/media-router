@@ -1,0 +1,4 @@
+# Build outputs — never committed; the fleet image builds from source and
+# dev binaries come from make / build-native-dev.sh.
+*.o
+mr-tssplit/mr-tssplit

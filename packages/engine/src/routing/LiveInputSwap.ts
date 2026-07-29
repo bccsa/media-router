@@ -116,8 +116,10 @@ export async function performLiveSwap(opts: {
 }): Promise<boolean> {
     const { sink, conn, oldConn, udpPort, busFanout } = opts;
     const swap = sink.getLiveInputSwap?.(conn.sinkPortId);
-    const child = sink.getChildProcess?.();
-    if (!swap || !child || !sink.running) {
+    // gst sinks re-point via the runner's bus_reinput; native sinks
+    // (mr-tssplit) via their controller's reinput verb — same tracked RPC.
+    const target = sink.getLiveSwapTarget?.();
+    if (!swap || !target || !sink.running) {
         busFanout?.detach(oldConn);
         return false;
     }
@@ -131,7 +133,7 @@ export async function performLiveSwap(opts: {
             await new Promise((r) => setTimeout(r, 100));
         }
         await sink.refreshPipelineDescription?.();
-        await child.busReinput(swap.element, edge);
+        await target.busReinput(swap.element, edge);
         busFanout?.detach(oldConn);
         // Clear the pending-window warning set at teardown-defer time.
         sink.setHealth?.('ok');

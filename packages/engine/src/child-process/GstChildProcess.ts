@@ -195,7 +195,6 @@ export class GstChildProcess extends EventEmitter {
             decoderThreadType: desc.decoderThreadType ?? 'auto',
             busReports: desc.busReports ?? [],
             rist: desc.rist,
-            tsSplit: desc.tsSplit,
             tsProbe: desc.tsProbe,
             preserveSourceTimeline: desc.preserveSourceTimeline,
         };

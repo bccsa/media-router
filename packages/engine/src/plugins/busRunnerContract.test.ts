@@ -70,7 +70,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
 
     it('the non-gst fan-out sidecar speaks the same wire commands', () => {
         const sidecarSource = readFileSync(
-            join(__dirname, '..', 'child-process', 'unixfd-fanout.py'),
+            join(__dirname, '../../../../plugins/unixfdbus-core/py/unixfd-fanout.py'),
             'utf8',
         );
         expect(sidecarSource).toContain("'bus_attach'");
