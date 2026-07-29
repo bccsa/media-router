@@ -5,6 +5,8 @@ import { useSocketStore } from '@/stores/socket';
 import { useThemeStore } from '@/stores/theme';
 import { useEngineStore } from '@/stores/engines';
 import { statColorClass } from '@/composables/useStatColor';
+import { getLucideIcon } from '@/composables/useLucideIcons';
+import MrTooltip from '@/components/common/MrTooltip.vue';
 
 const route = useRoute();
 const socket = useSocketStore();
@@ -58,6 +60,13 @@ const activeEngine = computed(() => {
                     :class="statColorClass(activeEngine.system.temp, 70, 80)"
                     >{{ activeEngine.system.temp }}°C</span
                 >
+                <MrTooltip
+                    v-if="activeEngine.system.undervoltage"
+                    text="Under-voltage detected — the 5 V supply can't hold under load and the CPU is being throttled. Check the power supply and USB-C cable."
+                    width="w-64"
+                >
+                    <component :is="getLucideIcon('zap')" :size="14" class="text-warning" />
+                </MrTooltip>
             </div>
 
             <!-- IP -->

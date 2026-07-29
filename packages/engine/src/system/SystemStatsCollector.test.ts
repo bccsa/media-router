@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { readCpuTemp, readCoretempAverage } from './SystemStatsCollector.js';
+import {
+    readCpuTemp,
+    readCoretempAverage,
+    readUndervoltage,
+    SystemStatsCollector,
+} from './SystemStatsCollector.js';
 
 describe('readCoretempAverage', () => {
     const root = path.join(__dirname, '__test-hwmon__');
@@ -133,5 +138,87 @@ describe('readCpuTemp', () => {
 
     it('returns null when neither coretemp nor thermal zones are available', () => {
         expect(readCpuTemp(path.join(root, 'does-not-exist'), noHwmon)).toBeNull();
+    });
+});
+
+describe('readUndervoltage', () => {
+    const root = path.join(__dirname, '__test-uvhwmon__');
+
+    /** Write a hwmon device with the given name, optionally an in0_lcrit_alarm. */
+    function voltDev(index: number, name: string, alarm?: 0 | 1): void {
+        const dir = path.join(root, `hwmon${index}`);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'name'), `${name}\n`);
+        if (alarm !== undefined) {
+            fs.writeFileSync(path.join(dir, 'in0_lcrit_alarm'), `${alarm}\n`);
+        }
+    }
+
+    beforeEach(() => fs.mkdirSync(root, { recursive: true }));
+    afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+    it('returns true when rpi_volt reports the critical alarm (under-voltage)', () => {
+        voltDev(0, 'cpu_thermal'); // unrelated device also present
+        voltDev(1, 'rpi_volt', 1);
+        expect(readUndervoltage(root)).toBe(true);
+    });
+
+    it('returns false when rpi_volt reports the rail is OK', () => {
+        voltDev(1, 'rpi_volt', 0);
+        expect(readUndervoltage(root)).toBe(false);
+    });
+
+    it('returns null when there is no rpi_volt device (non-Pi hardware)', () => {
+        voltDev(0, 'coretemp');
+        voltDev(1, 'acpitz');
+        expect(readUndervoltage(root)).toBeNull();
+    });
+
+    it('returns null when rpi_volt exists but the alarm attribute is missing', () => {
+        voltDev(1, 'rpi_volt'); // no in0_lcrit_alarm file
+        expect(readUndervoltage(root)).toBeNull();
+    });
+
+    it('returns null when the hwmon subsystem is absent', () => {
+        expect(readUndervoltage(path.join(root, 'nope'))).toBeNull();
+    });
+});
+
+describe('SystemStatsCollector under-voltage debounce + latch', () => {
+    // Drive the extracted streak/latch step directly (private, reached via index
+    // access) so the 2-consecutive boundary is tested without the interval.
+    function step(c: SystemStatsCollector, reading: boolean | null): boolean {
+        return (c as unknown as { updateUndervoltage(r: boolean | null): boolean })[
+            'updateUndervoltage'
+        ](reading);
+    }
+    const make = () => new SystemStatsCollector(() => {});
+
+    it('does not arm on a single under-voltage sample (debounce)', () => {
+        const c = make();
+        expect(step(c, true)).toBe(false); // one sample — not yet
+        expect(step(c, false)).toBe(false); // recovered before the 2nd
+    });
+
+    it('arms on 2 consecutive under-voltage samples', () => {
+        const c = make();
+        expect(step(c, true)).toBe(false);
+        expect(step(c, true)).toBe(true); // 2nd consecutive → latched
+    });
+
+    it('stays latched once armed, even after readings recover', () => {
+        const c = make();
+        step(c, true);
+        step(c, true); // armed
+        expect(step(c, false)).toBe(true);
+        expect(step(c, null)).toBe(true);
+        expect(step(c, false)).toBe(true);
+    });
+
+    it('a null reading resets the streak like an OK read (non-Pi never latches)', () => {
+        const c = make();
+        expect(step(c, true)).toBe(false);
+        expect(step(c, null)).toBe(false); // gap breaks the streak
+        expect(step(c, true)).toBe(false); // only 1 consecutive again
     });
 });
