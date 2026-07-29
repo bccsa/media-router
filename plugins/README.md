@@ -20,6 +20,11 @@ change *how* plugins work rather than add one.
   (MPEG-TS packet core + its python reference spec), `rist-core` (librist
   bindings).
 
+Not every plugin lives in this repo: product-specific plugins may be owned by
+the consuming product's repo (under its `media-router-plugin/` folder) and
+injected into `plugins/` by the Yocto image build (ADR-0004). If a deployed
+image shows a plugin you can't find here, check the owning product's repo.
+
 **Discovery & lifecycle.** At engine startup `PluginLoader` scans every
 `plugins/*/package.json`: validates the manifest, filters by architecture,
 and dynamically imports the class named by `manifest.engine` (a
