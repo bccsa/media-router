@@ -6,10 +6,17 @@ import * as path from 'path';
 // The module probes the producer's edge socket (no-tap resume mode) via the
 // engine's probeUnixSocket — mock just that export so tests control the
 // probe verdict without touching real unix sockets.
-vi.mock('@media-router/engine', async (importOriginal) => ({
-    ...(await importOriginal<Record<string, unknown>>()),
-    probeUnixSocket: vi.fn(async () => false),
-}));
+vi.mock('@media-router/engine', async (importOriginal) => {
+    const actual = await importOriginal<Record<string, unknown>>();
+    return {
+        ...actual,
+        probeUnixSocket: vi.fn(async () => false),
+        // Passthrough spies so headless-guard tests can inject connector
+        // states; on dev machines the real ones read /sys/class/drm → [].
+        listDrmConnectors: vi.fn(actual.listDrmConnectors as (...a: unknown[]) => unknown),
+        firstConnectedDisplay: vi.fn(actual.firstConnectedDisplay as (...a: unknown[]) => unknown),
+    };
+});
 
 // buildPipeline gates the fallback's resume tap on fs.existsSync(edge socket).
 // Wrap just that export in a pass-through spy so stall tests can force the
@@ -20,7 +27,7 @@ vi.mock('fs', async (importOriginal) => {
     return { ...actual, existsSync: vi.fn(actual.existsSync) };
 });
 
-import { probeUnixSocket } from '@media-router/engine';
+import { firstConnectedDisplay, listDrmConnectors, probeUnixSocket } from '@media-router/engine';
 import { VideoPlayerModule } from './VideoPlayerModule.js';
 import { currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
 import {
@@ -31,6 +38,7 @@ import {
     resolveDecoderThreadType,
     resolveFallbackImagePath,
     RESUME_SINK_NAME,
+    surfaceCaps,
 } from './helpers/pipelines.js';
 
 const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
@@ -40,6 +48,13 @@ describe('VideoPlayerModule helpers', () => {
     beforeEach(() => {
         // Reset any cached probe state so each test sets its own.
         VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+        // Deterministic DRM default: no connectors = dev-machine path, so the
+        // headless guard never fires from the box the tests happen to run on
+        // (a headless Pi has connectors that are all `disconnected`, which
+        // would return null from every buildPipeline call). Guard tests
+        // override with mockReturnValueOnce.
+        (listDrmConnectors as unknown as ReturnType<typeof vi.fn>).mockReturnValue([]);
+        (firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
     });
 
     describe('buildSink', () => {
@@ -329,26 +344,80 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('set-timestamps=true');
         });
 
-        it('passes native resolution through on the KMS/auto path (constrainSurface=false)', () => {
-            // Forcing 1280×720 here would downscale a native-res broadcast
-            // panel — only the wayland-fullscreen path needs the fixed size.
+        it('keeps videoscale (uncapped) on the KMS/auto path — no compositor scales for them', () => {
+            // kmssink/autovideosink negotiate the size they want and there is
+            // nothing downstream to resize for them, so the scaler stays.
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).toContain('videoconvert ! videoscale ! kmssink');
-            expect(s).not.toContain('width=1280,height=720');
+            // Still uncapped: a native-res broadcast panel must not be rescaled.
+            expect(s).not.toContain('width=');
         });
 
-        it('pins the surface to 1280×720 on the wayland-fullscreen path (constrainSurface=true)', () => {
-            // Must match the fallback surface dimensions, else kiosk-shell
-            // rejects the mismatched fullscreen surface and weston logs
-            // `libwayland: error in client communication`.
+        it('drops videoscale AND all size caps on the wayland-fullscreen path', () => {
+            // Weston (kiosk-shell fullscreen) fit-scales the surface on the GPU
+            // for free, so scaling in software here would pay for it twice: the
+            // frames reach waylandsink at SOURCE resolution.
             const s = buildLivePipeline(
                 'waylandsink name=sink sync=false fullscreen=true qos=true',
                 busSource,
                 true,
             );
-            expect(s).toContain('videoscale add-borders=true');
-            expect(s).toContain('width=1280,height=720');
-            expect(s).toContain('pixel-aspect-ratio=1/1');
+            expect(s).toContain(
+                'decodebin3 ! videoconvert ! waylandsink name=sink sync=false fullscreen=true qos=true',
+            );
+            expect(s).not.toContain('videoscale');
+            expect(s).not.toContain('width=');
+            expect(s).not.toContain('height=');
+            expect(s).not.toContain('pixel-aspect-ratio');
+        });
+
+        it('needs no DMABuf caps hole for a hw decoder — nothing constrains the sink caps', () => {
+            // `v4l2slh265dec` (rpivid) only ever emits
+            // video/x-raw(memory:DMABuf), format=DMA_DRM. The old two-structure
+            // filter needed an explicit no-constraint DMABuf structure to let
+            // those buffers past a size only the software path could satisfy;
+            // with no caps filter at all they negotiate straight through
+            // videoconvert (which passes DMA_DRM untouched) to waylandsink.
+            const s = buildLivePipeline(
+                'waylandsink name=sink sync=false fullscreen=true qos=true',
+                busSource,
+                true,
+            );
+            expect(s).not.toContain('memory:DMABuf');
+            expect(s).not.toContain('video/x-raw');
+        });
+
+        it('never uses the ISP (v4l2convert) on either path', () => {
+            // Measured on Pi 400: the bcm2835 ISP caps at ~46 fps for 1080p
+            // regardless of output size — it cannot sustain 1080p50, where the
+            // software elements run ~60 fps at near-zero CPU as long as they
+            // are not asked to resize (basetransform goes passthrough).
+            expect(
+                buildLivePipeline('waylandsink name=sink fullscreen=true', busSource, true),
+            ).not.toContain('v4l2convert');
+            expect(buildLivePipeline('kmssink name=sink', busSource, false)).not.toContain(
+                'v4l2convert',
+            );
+        });
+
+        it('leaves the live surface source-sized while the fallback card stays surface-sized', () => {
+            // ACCEPTED RISK, asserted so the divergence stays deliberate and
+            // visible: kiosk-shell can reject a fullscreen surface whose size
+            // differs from the one already committed to the output
+            // (`libwayland: error in client communication`), so a live↔fallback
+            // transition between differing dimensions can trip it. Revisit with
+            // the fallback-sizing strategy (handover Q5).
+            const surface = { width: 1920, height: 1080 };
+            const live = buildLivePipeline('waylandsink name=sink', busSource, true);
+            const fb = buildFallbackOnlyPipeline(
+                'No video',
+                'waylandsink name=sink',
+                undefined,
+                undefined,
+                surface,
+            );
+            expect(live).not.toContain('width=1920,height=1080');
+            expect(fb).toContain('width=1920,height=1080');
         });
 
         it('arms a 5s stall watchdog on the bus ingress so a silent producer trips bus_stall', () => {
@@ -368,6 +437,33 @@ describe('VideoPlayerModule helpers', () => {
             expect(idxSrc).toBeLessThan(idxWd);
             expect(idxWd).toBeLessThan(idxTsparse);
             expect(idxTsparse).toBeLessThan(idxTsdemux);
+        });
+    });
+
+    describe('surfaceCaps', () => {
+        it('pins the fallback card to the given size at square pixels', () => {
+            expect(surfaceCaps({ width: 1920, height: 1080 })).toBe(
+                'video/x-raw,width=1920,height=1080,pixel-aspect-ratio=1/1',
+            );
+        });
+
+        it('defaults to the 1280x720 fallback surface when none is given', () => {
+            expect(surfaceCaps()).toBe('video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1');
+        });
+
+        it('leaves the fallback pipeline system-memory only (no DMABuf structure)', () => {
+            // videotestsrc / imagefreeze never produce DMABuf, and the fallback
+            // card is sized here rather than inherited — so a DMABuf structure
+            // would be meaningless on this path.
+            const fb = buildFallbackOnlyPipeline(
+                'No video',
+                'waylandsink name=sink',
+                undefined,
+                undefined,
+                { width: 1920, height: 1080 },
+            );
+            expect(fb).not.toContain('memory:DMABuf');
+            expect(fb).toContain('video/x-raw,width=1920,height=1080,pixel-aspect-ratio=1/1');
         });
     });
 
@@ -428,7 +524,7 @@ describe('VideoPlayerModule helpers', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
             (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
-            const desc = module.buildPipeline({ fallbackText: 'Nothing here', display: '' });
+            const desc = module.buildPipeline({ fallbackText: 'Nothing here', display: '' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Nothing here');
             expect(desc.pipeline).not.toContain('input-selector');
@@ -438,6 +534,80 @@ describe('VideoPlayerModule helpers', () => {
                 'warning',
                 expect.stringContaining('No video'),
             );
+        });
+
+        describe('headless guard', () => {
+            const listDrmConnectorsMock = listDrmConnectors as unknown as ReturnType<typeof vi.fn>;
+            const firstConnectedDisplayMock =
+                firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>;
+
+            it('returns no pipeline and flags health=error when DRM exists but nothing is connected', () => {
+                // A sink would only error-loop here: kmssink has no connector
+                // to drive, and the compositor itself can't start without a
+                // display. The manager UI shows the health message instead.
+                VideoPlayerModule.setSinkAvailability({ wayland: true, kms: true });
+                const module = makeModule();
+                listDrmConnectorsMock.mockReturnValueOnce([
+                    { name: 'HDMI-A-1', label: '', meta: { status: 'disconnected' } },
+                    { name: 'Writeback-1', label: '', meta: { status: 'connected' } },
+                ]);
+                firstConnectedDisplayMock.mockReturnValueOnce(undefined);
+                const desc = module.buildPipeline({ fallbackText: 'No video', display: '' });
+                expect(desc).toBeNull();
+                expect((module as any).setHealth).toHaveBeenCalledWith(
+                    'error',
+                    expect.stringContaining('No display connected'),
+                );
+            });
+
+            it('honours an explicitly selected connector that is connected (e.g. Writeback capture)', () => {
+                VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+                const module = makeModule();
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+                listDrmConnectorsMock.mockReturnValueOnce([
+                    { name: 'Writeback-1', label: '', meta: { status: 'connected' } },
+                ]);
+                firstConnectedDisplayMock.mockReturnValueOnce(undefined);
+                const desc = module.buildPipeline({
+                    fallbackText: 'No video',
+                    display: 'Writeback-1',
+                });
+                expect(desc).not.toBeNull();
+                expect(desc!.pipeline).toContain('videotestsrc');
+            });
+
+            it('waits for the compositor instead of falling back to kmssink (display connected, no session)', () => {
+                // kmssink would take the DRM master and fight the starting
+                // compositor for it — the hotplug flash-then-vanish failure.
+                VideoPlayerModule.setSinkAvailability({ wayland: true, kms: true });
+                const prevRuntime = process.env.XDG_RUNTIME_DIR;
+                delete process.env.XDG_RUNTIME_DIR; // no session reachable
+                try {
+                    const module = makeModule();
+                    listDrmConnectorsMock.mockReturnValueOnce([
+                        { name: 'HDMI-A-1', label: '', meta: { status: 'connected' } },
+                    ]);
+                    firstConnectedDisplayMock.mockReturnValueOnce('HDMI-A-1');
+                    const desc = module.buildPipeline({ fallbackText: 'x', display: '' });
+                    expect(desc).toBeNull();
+                    expect((module as any).setHealth).toHaveBeenCalledWith(
+                        'warning',
+                        expect.stringContaining('waiting for compositor'),
+                    );
+                } finally {
+                    if (prevRuntime !== undefined) process.env.XDG_RUNTIME_DIR = prevRuntime;
+                }
+            });
+
+            it('skips the guard on hosts with no DRM subsystem at all (dev machines)', () => {
+                VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+                const module = makeModule();
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+                listDrmConnectorsMock.mockReturnValueOnce([]);
+                const desc = module.buildPipeline({ fallbackText: 'No video', display: '' });
+                expect(desc).not.toBeNull();
+                expect(desc!.pipeline).toContain('autovideosink');
+            });
         });
 
         it('returns the live pipeline when a bus source is assigned (KMS path)', () => {
@@ -453,7 +623,7 @@ describe('VideoPlayerModule helpers', () => {
             const desc = module.buildPipeline({
                 fallbackText: 'No video',
                 display: 'HDMI-A-1',
-            });
+            })!;
             expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500-abc.sock');
             expect(desc.pipeline).toContain('watchdog name=buswd_5500 timeout=5000');
             expect(desc.pipeline).toContain('tsdemux');
@@ -485,7 +655,7 @@ describe('VideoPlayerModule helpers', () => {
                 const desc = module.buildPipeline({
                     fallbackText: 'No video',
                     display: 'DSI-2',
-                });
+                })!;
                 expect(desc.pipeline).toContain('waylandsink name=sink');
                 expect(desc.env).toEqual({ MR_GLIB_PRGNAME: 'local.mr.DSI-2' });
             } finally {
@@ -760,7 +930,7 @@ describe('VideoPlayerModule helpers', () => {
         it('returns the live pipeline by default when a source is connected', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            const desc = module.buildPipeline({ display: '' });
+            const desc = module.buildPipeline({ display: '' })!;
             // Sanity: with no stall latched, live wins.
             expect(desc.pipeline).toContain('unixfdsrc');
             expect(desc.pipeline).not.toContain('videotestsrc');
@@ -801,7 +971,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).busStallDetected = true;
             existsSyncMock.mockReturnValue(true);
-            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
+            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Source down');
             expect(desc.pipeline).toContain(
@@ -823,7 +993,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).busStallDetected = true;
             existsSyncMock.mockReturnValue(false);
-            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
+            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).not.toContain('unixfdsrc');
             expect(desc.pipeline).not.toContain(RESUME_SINK_NAME);
@@ -835,7 +1005,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
             existsSyncMock.mockReturnValue(true);
-            const desc = module.buildPipeline({ display: '' });
+            const desc = module.buildPipeline({ display: '' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).not.toContain('unixfdsrc');
             expect((module as any).resumeTapActive).toBe(false);

@@ -21,7 +21,14 @@ export {
     NETWORK_INTERFACE_DEVICE_TYPE,
 } from './system/networkInterfaceProvider.js';
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
-export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './system/drmConnectors.js';
+export {
+    firstConnectedDisplay,
+    listDrmConnectors,
+    pickActiveDisplay,
+    resolveConnectorId,
+    resolveConnectorMode,
+} from './system/drmConnectors.js';
+export type { ConnectorMode } from './system/drmConnectors.js';
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
 export {
     probeGstElement,

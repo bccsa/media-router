@@ -7,7 +7,12 @@ import {
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { listDrmConnectors, pickActiveDisplay } from '@media-router/engine';
+import {
+    firstConnectedDisplay,
+    listDrmConnectors,
+    pickActiveDisplay,
+    resolveConnectorMode,
+} from '@media-router/engine';
 import {
     COG_POLL_INTERVAL_MS,
     currentWaylandSessionIdent,
@@ -21,11 +26,13 @@ import {
     buildLivePipeline,
     buildPipelineEnv,
     buildSink,
+    DEFAULT_SURFACE,
     resolveDecoderThreadType,
     resolveFallbackImagePath,
     RESUME_SINK_NAME,
     type SinkSelectionEnv,
 } from './helpers/pipelines.js';
+import { resolveWestonSurface } from './helpers/westonOutput.js';
 
 type SinkAvailability = { wayland: boolean; kms: boolean };
 
@@ -492,7 +499,7 @@ export class VideoPlayerModule extends GstPluginBase {
         this.updateStatusData();
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription {
+    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         const fallback = (config.fallbackText as string) ?? 'No video detected';
         const rawImagePath = (config.fallbackImagePath as string) ?? '';
         const fallbackImage = resolveFallbackImagePath(rawImagePath);
@@ -506,6 +513,44 @@ export class VideoPlayerModule extends GstPluginBase {
             );
         }
         const requestedDisplay = (config.display as string) ?? '';
+        // Headless guard: this host has DRM connectors but none is a connected
+        // physical output (`Writeback-*` is the compositor's virtual screencast
+        // sink, not a screen) — there is nowhere to render. Return no pipeline
+        // instead of letting a sink error-loop (kmssink has no connector to
+        // drive, and waylandsink has no compositor since Weston itself can't
+        // start without a display), and set health so the manager UI shows WHY
+        // there's no video. Recovery is automatic: when a display is plugged
+        // in the compositor comes up, the wayland-session watcher sees the
+        // fresh socket and restartPipeline() re-evaluates this guard. An
+        // explicitly selected connector that IS connected (even a virtual one
+        // — an operator may deliberately target Writeback capture) is
+        // honoured. Hosts with no DRM subsystem at all (dev machines) skip the
+        // guard and keep the autovideosink path.
+        const connectors = listDrmConnectors();
+        const requestedConnected = connectors.some(
+            (c) =>
+                c.name === requestedDisplay &&
+                (c.meta?.status as string | undefined) === 'connected',
+        );
+        if (connectors.length > 0 && !firstConnectedDisplay() && !requestedConnected) {
+            this.setHealth('error', 'No display connected — video output unavailable');
+            return null;
+        }
+        // Compositor gate: waylandsink installed means this host renders
+        // through the compositor (multi-display and rotation are compositor
+        // features — kmssink has neither). With a display CONNECTED but no
+        // session yet (boot or hotplug window, compositor restarting), do NOT
+        // fall back to kmssink: it takes the DRM master and then fights the
+        // compositor's startup for it — observed after display hotplug as
+        // video flashing over the console (kmssink letterboxing onto the raw
+        // mode) and then vanishing while both sides restart. Idle with a
+        // clear health state instead; the wayland-session watcher restarts
+        // this module the moment the compositor's socket appears. Hosts
+        // without waylandsink installed keep the KMS-direct path.
+        if (VideoPlayerModule.sinks.wayland && !hasWaylandSession()) {
+            this.setHealth('warning', 'Display connected — waiting for compositor');
+            return null;
+        }
         // If the user-picked connector isn't `connected`, fall through to the
         // first connector that is. Both kmssink (via connector-id) and
         // waylandsink (via the MR_GLIB_PRGNAME app_id that kiosk-shell pins
@@ -532,9 +577,10 @@ export class VideoPlayerModule extends GstPluginBase {
             tsOffsetNs: Math.round(Number(this.config.lipSyncMs ?? 0) * 1_000_000),
         });
         const env = buildPipelineEnv(active.name, sinkEnv);
-        // The wayland (kiosk-shell fullscreen) path needs the live surface
-        // pinned to a fixed size so it matches the fallback surface; KMS /
-        // autovideosink should keep native resolution. See buildLivePipeline.
+        // On the wayland (kiosk-shell fullscreen) path the compositor scales
+        // our surface onto the output itself, so the live pipeline must not
+        // scale in software. KMS / autovideosink have no compositor and keep
+        // their own scaler. See buildLivePipeline.
         const waylandFullscreen = sinkEnv.wayland && sinkEnv.waylandSession;
 
         const instanceId = this.services?.instanceId ?? '';
@@ -567,12 +613,36 @@ export class VideoPlayerModule extends GstPluginBase {
                     ? udpSource.socketPath
                     : undefined;
             this.resumeTapActive = !!resumeSocket;
+            // Size the fallback card to the output's own mode (the live path
+            // needs no size — it renders at source resolution). Falls back to
+            // DEFAULT_SURFACE when the mode can't be read (nothing plugged
+            // in), which is also all autovideosink/headless needs.
+            //
+            // `active.name` is empty when the user hasn't picked a display
+            // (sink selection then lets the compositor choose), so fall back to
+            // the first lit physical output — otherwise an unconfigured module
+            // always got the default surface and, on a 1080p panel, drew a 720p
+            // card that the compositor upscaled straight back.
+            //
+            // On the compositor path the size must be the output's LOGICAL
+            // geometry (weston.ini `mode=` / `transform=`), not the kernel's
+            // preferred mode: a rotated output swaps the canvas axes, and
+            // fit-scaling a portrait surface into a rotated landscape canvas
+            // renders the card as a small band. See resolveWestonSurface.
+            // KMS / autovideosink have no compositor, so weston.ini must not
+            // apply there — those keep the raw sysfs mode.
+            const surfaceConnector = active.name || firstConnectedDisplay() || '';
+            const surface =
+                (waylandFullscreen
+                    ? resolveWestonSurface(surfaceConnector)
+                    : resolveConnectorMode(surfaceConnector)) ?? DEFAULT_SURFACE;
             return {
                 pipeline: buildFallbackOnlyPipeline(
                     fallback,
                     sinkElement,
                     fallbackImage,
                     resumeSocket,
+                    surface,
                 ),
                 restartOnError: true,
                 env,

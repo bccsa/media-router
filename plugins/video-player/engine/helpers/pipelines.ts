@@ -2,22 +2,36 @@ import * as fs from 'fs';
 import { buildTsUdpInput } from '@media-router/engine';
 
 /**
- * Single source of truth for the rendered surface size. The wayland
- * fullscreen path (kiosk-shell) requires every surface committed to an
- * output to agree on dimensions — if the live path and the fallback path
- * disagree, kiosk-shell rejects the second one and weston logs
- * `libwayland: error in client communication`. Keeping the caps in one
- * constant is what enforces that invariant; do not inline the literals.
+ * Surface size used when the output's own mode can't be resolved (headless,
+ * autovideosink, nothing plugged in). Prefer the connector's preferred mode —
+ * see `surfaceCaps` and `resolveConnectorMode`.
  */
-const SURFACE_WIDTH = 1280;
-const SURFACE_HEIGHT = 720;
+export const DEFAULT_SURFACE: SurfaceSize = { width: 1280, height: 720 };
+
+export interface SurfaceSize {
+    width: number;
+    height: number;
+}
+
 /**
+ * Caps for the FALLBACK surface (SMPTE bars / still image). That card has no
+ * size of its own — neither `videotestsrc` nor a single `imagefreeze` frame
+ * implies one — so this is where its dimensions come from. The LIVE path is
+ * deliberately unconstrained: it renders at source resolution and lets the
+ * compositor scale (see `buildLivePipeline`).
+ *
+ * Size the card to the output's own mode rather than a constant: a fixed
+ * 1280×720 card on a 1080p panel is upscaled by the compositor, which lands
+ * the text overlay soft. See `resolveConnectorMode` / `resolveWestonSurface`.
+ *
  * `pixel-aspect-ratio=1/1` is load-bearing: it makes `videoscale
  * add-borders=true` emit real square-pixel black bars rather than
  * satisfying the display aspect ratio with non-square pixels (which would
  * stretch everything drawn downstream, e.g. the text overlay).
  */
-const SURFACE_CAPS = `video/x-raw,width=${SURFACE_WIDTH},height=${SURFACE_HEIGHT},pixel-aspect-ratio=1/1`;
+export function surfaceCaps(surface: SurfaceSize = DEFAULT_SURFACE): string {
+    return `video/x-raw,width=${surface.width},height=${surface.height},pixel-aspect-ratio=1/1`;
+}
 
 /**
  * Normalise the `cpuDecodeThreading` config value to the thread-type the runner
@@ -214,15 +228,20 @@ export function buildFallbackOnlyPipeline(
      * the colour bars) hostage waiting for a dead producer's socket.
      */
     resumeSocketPath?: string,
+    /** Size to render the card at — the output's mode; see `surfaceCaps`. */
+    surface: SurfaceSize = DEFAULT_SURFACE,
 ): string {
     // Fixed surface size (+ explicit framerate, since neither videotestsrc
-    // nor a single imagefreeze frame implies one). Always constrained: the
-    // fallback is a static card, so downscaling it to the surface size is
-    // free of quality concerns even on a native-res KMS panel, and the
-    // wayland path needs the fixed size to match the live path.
+    // nor a single imagefreeze frame implies one). Always constrained: this
+    // card has no intrinsic size to inherit, and it's static, so scaling it
+    // costs nothing per-frame even on a native-res KMS panel. The LIVE path
+    // takes the opposite decision — see `buildLivePipeline`, including the
+    // accepted risk that the two surfaces can now differ in size.
+    //
+    const caps = surfaceCaps(surface);
     const source = imagePath
-        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${SURFACE_CAPS},framerate=30/1`
-        : `videotestsrc is-live=true pattern=smpte ! ${SURFACE_CAPS},framerate=30/1`;
+        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${caps},framerate=30/1`
+        : `videotestsrc is-live=true pattern=smpte ! ${caps},framerate=30/1`;
     const resumeTap = resumeSocketPath
         ? ` unixfdsrc socket-path=${resumeSocketPath}` +
           ' ! queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
@@ -257,7 +276,13 @@ const STREAM_STALL_TIMEOUT_MS = 5_000;
 export function buildLivePipeline(
     sinkElement: string,
     udpSource: { port: number; socketPath?: string },
-    constrainSurface = false,
+    /**
+     * True on the wayland-fullscreen path (`waylandsink fullscreen=true` under
+     * a compositor). The compositor scales the surface for us, so the pipeline
+     * drops its own scaler — see the `convert` branch below. False for KMS /
+     * autovideosink, which have no compositor.
+     */
+    compositorScales = false,
     /**
      * Pre-decode buffer (ms). 200 ms is right for live SRT/RIST where latency
      * is the dominant constraint. Bump on HLS/VOD chains (e.g. 1500 ms) where
@@ -289,25 +314,54 @@ export function buildLivePipeline(
         // otherwise (the load-bearing default for standalone playout).
         setTimestamps: !preserveSourcePts,
     });
-    // `constrainSurface` pins the live output to the same surface dimensions
-    // the fallback uses (NOT full caps parity — fallback also sets a framerate;
-    // live deliberately omits it since there's no videorate element). This is
-    // only wanted on the wayland-fullscreen path: kiosk-shell rejects a
-    // fullscreen surface whose dimensions don't match the one the fallback
-    // committed, logging `libwayland: error in client communication`. On
-    // KMS-direct / autovideosink there's no such constraint and forcing 720p
-    // would needlessly downscale a native-res broadcast panel, so we pass the
-    // source resolution straight through.
     const q = `queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
-    const scale = constrainSurface
-        ? `videoscale add-borders=true ! ${SURFACE_CAPS}`
-        : 'videoscale';
+    // Scaling policy — who resizes the picture, per sink:
+    //
+    // COMPOSITOR PATH (waylandsink under kiosk-shell): nothing here does. The
+    // frames reach the sink at SOURCE resolution and Weston fit-scales the
+    // fullscreen surface onto the output on the GPU, letterboxing per the
+    // fullscreen protocol — free, and better filtering than videoscale. So no
+    // `videoscale` and no size caps at all; `videoconvert` stays only as the
+    // format fixup the software decode path may need. It also passes
+    // `video/x-raw(memory:DMABuf), format=DMA_DRM` through untouched (verified
+    // on GStreamer 1.28), which is what lets the stateless V4L2 decoders
+    // (`v4l2slh265dec` on the Pi's rpivid — they emit DMA_DRM and nothing else)
+    // negotiate straight to waylandsink and be imported zero-copy. Dropping
+    // the caps is what makes that unconditional: the previous two-structure
+    // filter needed an explicit no-constraint DMABuf structure to let hardware
+    // buffers past a size that only the software path could satisfy.
+    //
+    // KMS / autovideosink: `videoconvert ! videoscale`, no caps — there is no
+    // compositor to scale for them, so the sink negotiates the size it wants
+    // and videoscale is there to serve it (passthrough when that is the source
+    // size). Deliberately SOFTWARE, never `v4l2convert` (the bcm2835-codec-isp
+    // hardware converter): measured on a Pi 400 (GStreamer 1.28, hw-decoded
+    // 1080p50), the ISP in-path caps at ~46 fps at 1080p regardless of output
+    // size/format — it cannot sustain 1080p50 — where the sw elements run
+    // ~60 fps at near-zero CPU whenever input caps equal output caps
+    // (basetransform goes passthrough).
+    //
+    // The cost of scaling in software, from that same Pi 400 measurement:
+    // ~25 fps at 2.6× decode CPU once the elements were actively resizing
+    // (surface ≠ source). That is what a pinned surface charged on every
+    // mismatched source, and the reason the compositor path now scales nothing.
+    //
+    // ACCEPTED RISK: the live surface is now SOURCE-sized while the fallback
+    // card stays surface-sized (`surfaceCaps`). Weston's kiosk-shell wants
+    // every surface committed to an output to agree on dimensions and rejects
+    // a fullscreen surface whose size differs from the one already committed,
+    // logging `libwayland: error in client communication` — so a live↔fallback
+    // transition between differing dimensions can trip it. Taken deliberately:
+    // hardware decode plus zero software scaling is the bigger win. Revisit
+    // with the fallback-sizing strategy (handover Q5: the fallback should
+    // inherit the last live surface).
+    const convert = compositorScales ? 'videoconvert' : 'videoconvert ! videoscale';
     // `decodebin3` (not decodebin): on an ABR/HLS source the resolution changes
     // mid-stream at every variant switch. decodebin repluggs a fresh decoder on
     // each change — a hard stall the viewer sees as a hitch. decodebin3 reuses
-    // the existing decoder across format changes, so switches are smooth. Paired
-    // with the fixed `${SURFACE_CAPS}` on the wayland-fullscreen path the sink
-    // surface also stays constant, so neither the decoder nor the compositor
-    // hitches on a switch.
-    return `${tsInput} ! tsdemux latency=0 ! ${q} ! decodebin3 ! videoconvert ! ${scale} ! ${sinkElement}`;
+    // the existing decoder across format changes, so switches are smooth. With
+    // no caps filter downstream the new resolution simply renegotiates through
+    // to the sink and the compositor re-fits the surface, so a variant switch
+    // costs neither a decoder replug nor a failed negotiation.
+    return `${tsInput} ! tsdemux latency=0 ! ${q} ! decodebin3 ! ${convert} ! ${sinkElement}`;
 }
