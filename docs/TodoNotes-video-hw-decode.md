@@ -12,10 +12,18 @@ video-player runner CPU is **0.24 core** (decode+display dominate). Direction
 decided: stay on weston — kmssink is last-resort only (it complicates output
 routing and the LCP display, which is why weston is there).
 
-## Performance — frame rate (the 37 → 50 fps gap)
+## Performance — frame rate (the 37 → 50 fps gap) — SOLVED, awaiting image build
 
-- [ ] **waylandsink commit pacing — PATCH WRITTEN, awaiting build + field
-      verify.** `0007-waylandsink-commit-staged-buffers-without-waiting-fo.patch`
+- [x] **waylandsink commit pacing — FIELD-VERIFIED at 50 fps.** Live 1080p50:
+      arrivals == presented == ~50 fps, dropped == 0, RSS flat over a soak
+      (was ~35/15). Patch v3 is deadlock-hardened: v1 hit an AB-BA between
+      `window_lock` and the display thread's `sync_mutex` (held across
+      callback dispatch) — syncs are now created strictly outside
+      `window_lock` with a `commit_scheduled` flag closing the early-fire
+      race. Hand-built on the Pi 5 dev box against 1.28.2 and deployed on the
+      field device (`/data/gst-backup` holds stock; any OTA also reverts).
+      REMAINING: ships permanently via the image build (patch 0007 in the
+      gst-plugins-bad bbappend). Original item, for context: `0007-waylandsink-commit-staged-buffers-without-waiting-fo.patch`
       in media-router-yocto's gst-plugins-bad bbappend (applies after the SAND
       series): staged buffers get an immediate display-thread commit instead
       of parking behind the compositor's frame callback — the measured cause
