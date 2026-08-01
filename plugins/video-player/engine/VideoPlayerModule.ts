@@ -712,6 +712,9 @@ export class VideoPlayerModule extends GstPluginBase {
                 waylandFullscreen,
                 Number(this.config.bufferMs ?? 200),
                 clockSync,
+                // Clock-paced sink (sync config or clockSync) → tsparse
+                // returns to the chain for clock-anchored timestamps.
+                clockSync || ((this.config.sync as boolean | undefined) ?? false),
             ),
             restartOnError: true,
             env,

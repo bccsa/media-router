@@ -336,16 +336,29 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('tsparse');
         });
 
-        it('clock-locked mode (preserveSourcePts=true) uses the same tsparse-free input — the source timeline comes from tsdemux PES via preserveSourceTimeline', () => {
+        it('clock-paced sink (sync config) brings tsparse back with re-anchored timestamps', () => {
+            const s = buildLivePipeline(
+                'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                busSource,
+                false,
+                200,
+                false,
+                true,
+            );
+            expect(s).toContain('tsparse set-timestamps=true');
+        });
+
+        it('clockSync keeps tsparse but preserves the source timeline (set-timestamps=false)', () => {
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
                 busSource,
                 false,
                 200,
                 true,
+                true,
             );
-            expect(s).not.toContain('tsparse');
-            expect(s).toContain('tsdemux');
+            expect(s).toContain('tsparse set-timestamps=false');
+            expect(s).not.toContain('set-timestamps=true');
         });
 
         it('keeps videoscale (uncapped) on the KMS/auto path — no compositor scales for them', () => {
