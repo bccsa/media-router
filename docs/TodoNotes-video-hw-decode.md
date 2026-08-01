@@ -6,15 +6,39 @@ field test and the 2026-08-01 instrumented sessions on the field Pi 4
 of `media-router-yocto` branch `feat/video-player-dynamic-surface` (the former
 `docs/video-player-display-handover.md`).
 
-**Where we are:** 1080p50 H.264 plays hardware-decoded, zero-copy on a vc4
-overlay plane (no GL in the video path), at **~37 fps presented / 50 decoded**;
-video-player runner CPU is **0.24 core** (decode+display dominate). Direction
-decided: stay on weston — kmssink is last-resort only (it complicates output
-routing and the LCP display, which is why weston is there).
+**Where we are (2026-08-01, end of session):** 1080p50 H.264 plays
+hardware-decoded, zero-copy on a vc4 overlay plane, **smooth at a flat
+50 fps** (paced presentation, now the default), runner CPU **0.26 core**.
+Direction decided: stay on weston — kmssink is last-resort only (it
+complicates output routing and the LCP display, which is why weston is there).
+**Every fix was validated on ONE Pi 4 field device — see the cross-machine
+validation gate below before concluding any of it.**
 
 ## Performance — frame rate — SOLVED at the sink; smooth-mode designed
 
-- [x] **Smooth mode VALIDATED (2026-08-01).** With "Honour buffer PTS" on:
+- [ ] **GATE: Pi 5 + Intel validation before concluding the display fixes.**
+      Everything below was verified on a single Pi 4 (vc4, hw H.264 decode),
+      but ALL of it ships fleet-wide: the waylandsink 0007 patch via the
+      shared gst-plugins-bad bbappend (all machine images), and the app-side
+      changes (sync default ON, tsparse-conditional chain, batching, F13/F19
+      fixes) via rootfs OTA. Machine-specific risks to test explicitly:
+      1. **waylandsink 0007 on other display stacks** — Pi 5 (rp1 DSI +
+         vc4-class HDMI) and Intel (i915) have different buffer-release and
+         flip timing than the path the deadlock analysis was done on; soak
+         each (the v1 deadlock took <1 s to appear on dmabuf, so a short
+         soak is meaningful, but include an SHM/software-decode source).
+      2. **`sync=true` default with SOFTWARE decode** — Pi 5 has no H.264
+         hw decode; paced presentation with 30-80 ms software decode times
+         against PTS deadlines is the exact `max-lateness` scenario the
+         buildSink notes warn about, and it was previously default-OFF
+         there. Watch renderWatch and visual cadence; if it misbehaves the
+         per-machine answer may be different defaults.
+      3. Batching (busBatchMs 20) + tsparse-conditional chain on each
+         machine's relay/consumer topology.
+      Until this gate passes, the fixes are "validated on Pi 4", not
+      "concluded".
+
+- [x] **Smooth mode VALIDATED on Pi 4 (2026-08-01).** With "Honour buffer PTS" on:
       operator confirms smooth playback; weston timeline shows a flat 50
       flips/s with skipped vblanks 12.2/s → 2.2/s (the floor is the
       source-vs-display clock drift beat, ±1 vblank, imperceptible). Runner
@@ -167,6 +191,8 @@ routing and the LCP display, which is why weston is there).
       in `buildLivePipeline`): fallback should inherit the last live surface
       so kiosk-shell's same-size rule can't reject a live↔fallback
       transition across a resolution change. Add a test for that transition.
-- [ ] Pi 5 / Intel app-behaviour smoke test before the next release: the app
-      ships to all machines via rootfs OTA regardless of the Pi 4-scoped
-      platform work (headless guard, compositor gate, surface path).
+- [ ] Pi 5 / Intel app-behaviour smoke test before the next release —
+      SUPERSEDED in scope by the cross-machine validation GATE at the top of
+      this file (which now also covers the display fixes); the original
+      smoke-test list (headless guard, compositor gate, surface path) still
+      applies as part of that gate.
