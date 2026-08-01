@@ -111,22 +111,32 @@ validation gate below before concluding any of it.**
       crypto) before considering upstream work. Lowest priority of the CPU
       items.
 
-## Hardware HEVC (blocked on the SAND image build)
+## Hardware HEVC — WORKING via hand-deployed SAND stack (2026-08-01)
 
-- [ ] **Build & flash oswald's `feat/video-palyer-add-hevc-support` yocto
-      branch** (SAND patches for gst-plugins-bad/-base). Gate list on a
-      device, in order:
-      1. decode proof: `/data/test-media/hevc-720p50.ts` (on the field
-         device; regenerate with ffmpeg/libx265, 4 s testsrc2 720p50 TS) must
-         reach EOS via `v4l2slh265dec` with user CPU ≪ clip length — on stock
-         libs it fails `not-negotiated` in 0.22 s;
-      2. live HEVC through the video player;
-      3. **do SAND/NC12 dmabufs keep the overlay-plane path?** vc4 planes
-         support SAND natively, but weston must accept the Broadcom SAND
-         modifier for plane placement — else HEVC decodes but falls to a GL
-         path that cannot sample SAND;
-      4. re-probe GPU DVFS (`meta-custom/scripts/vcprobe.py`) — see platform
-         items below.
+The full SAND set (base 0001 + bad 0002–0007, incl. the pacing patch — all
+seven apply and build together cleanly) was built natively on the Pi 5 dev
+box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
+`/data/gst-backup`; libgstvideo swapped atomically). Gate results:
+1. [x] **Decode proof PASSES**: 4 s 720p50 HEVC → EOS in 1.0 s wall,
+       **0.73 core-seconds total** (software: 6.7) — hardware decode on the
+       hevc block, `Selected format NV12_128C8 DRM NV12:SAND128`.
+       **Test-recipe gotchas (bake into the CI gate):** a bare `fakesink`
+       CANNOT prove SAND decode — upstream v4l2codecs hides DRM formats
+       from ANY-caps peers (`static_src_caps_no_drm`), and post-0006 SAND
+       is DRM-only; a capsfilter alone still fails on the mandatory
+       VideoMeta in decide_allocation. Use `… ! v4l2slh265dec !
+       fakevideosink sync=false` (advertises all metas + any caps-features).
+2. [~] Live HEVC through the video player: pending an HEVC source on the
+       bus (current feed is H.264); file playback through waylandsink works.
+3. [x] **SAND keeps the overlay plane**: weston places the NC12/SAND128
+       dmabuf on overlay plane 125 (`FORMAT: NV12` in the atomic commits;
+       no GL fallback, which could not have sampled SAND). Visual
+       confirmation of no chroma corruption = the 0006 single-object fix
+       doing its job (operator eyeball still advised).
+4. [ ] DVFS re-probe after boot-coherence fix (unchanged; `force_turbo=1`
+       still masks it on the field device).
+- [ ] **Image build remains the delivery vehicle** — the hand-deploy proves
+      the exact artifact set oswald's branch + patch 0007 will produce.
 - [ ] **Until then: H.264-only routing to Pi 4 players** (policy, not code).
       Software HEVC is NOT a fallback: measured 6.7 core-s for a 4 s 720p50
       clip — not realtime even at 720p.
