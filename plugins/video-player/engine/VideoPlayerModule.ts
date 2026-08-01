@@ -175,9 +175,48 @@ export class VideoPlayerModule extends GstPluginBase {
         this.startCogPollWatch();
     }
 
+    /**
+     * Latched while the runner's renderWatch reports the pipeline lagging
+     * behind the stream's declared framerate. Owns the corresponding health
+     * warning: recovery only clears health that this latch set.
+     */
+    private renderLagActive = false;
+
+    /**
+     * Render keep-up events from the runner's `renderWatch` (see
+     * PipelineDescription.renderWatch). Lag means frames are being shed by
+     * the leaky queues — the decode/convert/render chain cannot sustain the
+     * source rate. Nothing here can fix that, so tell the operator what to
+     * change.
+     */
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel === 'renderwatch:lag') {
+            const p = (payload ?? {}) as { achievedFps?: number; expectedFps?: number };
+            this.renderLagActive = true;
+            const rate =
+                typeof p.achievedFps === 'number' && typeof p.expectedFps === 'number'
+                    ? ` (${p.achievedFps}/${p.expectedFps} fps)`
+                    : '';
+            this.setHealth(
+                'warning',
+                `Video output can't keep up${rate} — lower the stream or display resolution`,
+            );
+        } else if (channel === 'renderwatch:recovered') {
+            // Only clear health WE degraded — never stomp a bus-stall or
+            // substituted-display warning someone else owns.
+            if (this.renderLagActive && this.health === 'warning') {
+                this.setHealth('ok');
+            }
+            this.renderLagActive = false;
+        }
+    }
+
     async onStop(): Promise<void> {
         this.stopCogPollWatch();
         this.stopBusResumeWatchdog();
+        // A rebuilt pipeline gets a fresh runner-side monitor that re-measures
+        // from scratch — a stale lag latch must not suppress or fake events.
+        this.renderLagActive = false;
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
         // we deliberately keep the bus-stall latch alive so the rebuilt
         // pipeline picks the fallback path that triggered this very restart
@@ -333,7 +372,14 @@ export class VideoPlayerModule extends GstPluginBase {
 
     private currentActiveDisplayName(): string {
         const requested = (this.config?.display as string) ?? '';
-        return pickActiveDisplay(requested).name;
+        // Same fallback as the surface/app_id resolution in buildPipeline:
+        // with no display configured, `pickActiveDisplay('')` returns an
+        // empty name — which silently disabled the cog poll watch
+        // (`findCogPidForDisplay('')` matches nothing), so a cog respawn
+        // after a weston restart could land ON TOP of the video and starve
+        // its frame callbacks to ~1 fps while decode kept burning CPU,
+        // with no recovery. Observed on a Pi 4 field device, 2026-08-01.
+        return pickActiveDisplay(requested).name || firstConnectedDisplay() || '';
     }
 
 
@@ -576,7 +622,16 @@ export class VideoPlayerModule extends GstPluginBase {
             // more buffering latency). Live-updatable via the named `sink`.
             tsOffsetNs: Math.round(Number(this.config.lipSyncMs ?? 0) * 1_000_000),
         });
-        const env = buildPipelineEnv(active.name, sinkEnv);
+        // `active.name` is empty when the user hasn't picked a display
+        // (`pickActiveDisplay('')` returns an empty name by design), which left
+        // the surface with NO `MR_GLIB_PRGNAME` app_id. kiosk-shell only maps
+        // surfaces whose app_id is listed in that output's `app-ids=`, so an
+        // unpinned surface is never placed and the video is simply absent —
+        // exactly the "output that isn't lit" failure the comment above warns
+        // about. Fall back to the first lit physical output, the same fallback
+        // `surfaceConnector` already uses below, so an unconfigured module
+        // renders instead of silently going nowhere.
+        const env = buildPipelineEnv(active.name || firstConnectedDisplay() || '', sinkEnv);
         // On the wayland (kiosk-shell fullscreen) path the compositor scales
         // our surface onto the output itself, so the live pipeline must not
         // scale in software. KMS / autovideosink have no compositor and keep
@@ -661,6 +716,10 @@ export class VideoPlayerModule extends GstPluginBase {
             restartOnError: true,
             env,
             decoderThreadType: resolveDecoderThreadType(this.config.cpuDecodeThreading),
+            // Keep-up watch on the live render chain (see onPluginEvent).
+            // Only the wayland/kms sinks are named — autovideosink (dev) is a
+            // bin without `name=sink`, so the runner would fail the lookup.
+            ...(sinkElement.includes('name=sink') ? { renderWatch: { sink: 'sink' } } : {}),
             ...(clockSync ? { clockSync: true } : {}),
         };
     }
