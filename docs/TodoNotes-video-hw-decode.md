@@ -146,6 +146,20 @@ routing and the LCP display, which is why weston is there).
 
 ## Smaller app follow-ups
 
+- [ ] **`clockSync` freezes on the first frame — epoch mismatch (diagnosed
+      2026-08-01).** With clockSync the chain deliberately passes source PES
+      timestamps through (`tsparse set-timestamps=false`) to share the A/V
+      timeline — but nothing maps the source epoch onto the shared clock's
+      running time, so the sink schedules the first frame at the raw PES
+      epoch (measured: 19.2 HOURS in the future) and waits. Structural, not
+      a regression: the pre-branch chain had the same shape. Needs the
+      engine's epoch/timeline-latch machinery (see `preserveSourceTimeline`
+      / the epoch-consistent latch work) wired into the video player's live
+      description, and clarity on whether the feature assumes a paired
+      audio-decoder pipeline that establishes the shared epoch. Until then:
+      leave the toggle OFF; with `sync` now defaulting ON, plain paced
+      playback covers everything except cross-pipeline lipsync.
+
 - [ ] renderWatch expected-fps fallback: streams without VUI timing negotiate
       `framerate=0/1` and the watch stays silent; fall back to the ts-probe
       (`videoinfo`) framerate.
