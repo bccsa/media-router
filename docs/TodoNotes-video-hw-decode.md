@@ -12,7 +12,22 @@ video-player runner CPU is **0.24 core** (decode+display dominate). Direction
 decided: stay on weston — kmssink is last-resort only (it complicates output
 routing and the LCP display, which is why weston is there).
 
-## Performance — frame rate (the 37 → 50 fps gap) — SOLVED, awaiting image build
+## Performance — frame rate — SOLVED at the sink; smooth-mode designed
+
+- [ ] **Validate smooth mode (the residual ~2/s judder).** With `sync=false`
+      nothing paces frames — arrival jitter reaches the compositor and
+      latest-wins latching turns it into ~12 skipped vblanks/s (measured;
+      independent of bus batching at 0/10/20 ms). The designed fix is live on
+      the field device: enabling the module's existing **"Honour buffer PTS"
+      (`sync`) toggle** now rebuilds the chain with
+      `tsparse set-timestamps=true` (clock-anchored per-frame timestamps —
+      the long-shipped HLS pacing recipe) and the sink presents each frame on
+      time. Traced: unixfdsrc converts bus wire timestamps to running time,
+      tsparse re-anchors per-frame from PCR. Costs the 0.11-core tsparse only
+      while enabled; adds up to `bufferMs` of pacing latency. TO VALIDATE:
+      flip the toggle in the manager UI, eyeball smoothness, capture a weston
+      timeline histogram (expect skipped vblanks ≈ 0); consider making it the
+      recommended default for playout if latency permits.
 
 - [x] **waylandsink commit pacing — FIELD-VERIFIED at 50 fps.** Live 1080p50:
       arrivals == presented == ~50 fps, dropped == 0, RSS flat over a soak
