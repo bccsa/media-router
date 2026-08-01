@@ -23,6 +23,12 @@ struct Options {
     std::string caps;
     int ts_id = 1;
     int64_t stall_ns = 2'000'000'000;
+    // Output broadcast coalescing window (--flush-ms). Bounds the latency the
+    // fan-out adds; the BUFFER_BYTES size cap applies independently. 0 =
+    // broadcast every splitter batch immediately (ultra-low-latency mode; the
+    // per-buffer fd-pass/mmap cost returns — measured ~0.35 core across
+    // producer+consumers at 1080p50).
+    int64_t flush_ns = 20'000'000;
     // pid -> tee name (busout_<port>), from --out 0x100:busout_40001
     std::vector<std::pair<int, std::string>> outputs;
     std::vector<int> stream_types;   // parallel to outputs; -1 = unknown
@@ -60,7 +66,8 @@ class App {
         // per-INPUT-buffer runs (~7 pkts / ~1.3 KB at typical interleave), and
         // FanoutServer::broadcast pays a memfd + fd-pass per call — with the
         // consumer paying mmap/munmap/close per buffer. Accumulate here and
-        // flush at BUFFER_BYTES or FLUSH_INTERVAL_MS, whichever first.
+        // flush at BUFFER_BYTES or opts.flush_ns, whichever first
+        // (flush_ns 0 = no coalescing, see Options).
         std::vector<uint8_t> pending;
         int64_t pending_since_ns = 0;
     };

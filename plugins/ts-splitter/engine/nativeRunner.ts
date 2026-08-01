@@ -26,9 +26,14 @@ export function buildSpawnArgs(opts: {
     inputSocketPath: string;
     tsId?: number;
     outputs: NativeOutput[];
+    /** Output coalescing window in ms (`--flush-ms`). 0 = broadcast every
+     *  splitter batch immediately (ultra-low-latency; per-buffer fan-out
+     *  costs return). Omitted = the runner's built-in 20 ms default. */
+    busBatchMs?: number;
 }): string[] {
     const args = ['--input', opts.inputSocketPath, '--caps', BUS_TS_CAPS];
     if (opts.tsId !== undefined) args.push('--ts-id', String(opts.tsId));
+    if (opts.busBatchMs !== undefined) args.push('--flush-ms', String(opts.busBatchMs));
     for (const o of opts.outputs) {
         const stype = o.streamType !== undefined ? `:0x${o.streamType.toString(16)}` : '';
         args.push('--out', `0x${o.pid.toString(16)}:${busTeeName(o.port)}${stype}`);

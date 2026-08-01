@@ -102,6 +102,12 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     for (const auto& b : core_->feed(data, len)) {
         for (auto& o : outputs_) {
             if (o.pid == b.pid) {
+                if (opts_.flush_ns <= 0) {
+                    // Ultra-low-latency mode: no coalescing, no extra copy.
+                    o.server->broadcast(b.data->data(), b.data->size());
+                    o.batches++;
+                    break;
+                }
                 if (o.pending.empty()) o.pending_since_ns = now;
                 o.pending.insert(o.pending.end(), b.data->begin(), b.data->end());
                 if (o.pending.size() >= (size_t)mrbus::BUFFER_BYTES) flush_output(o);
@@ -121,8 +127,7 @@ void App::flush_output(Output& o) {
 
 void App::flush_due(int64_t now_ns) {
     for (auto& o : outputs_) {
-        if (!o.pending.empty() &&
-            now_ns - o.pending_since_ns >= (int64_t)mrbus::FLUSH_INTERVAL_MS * 1'000'000)
+        if (!o.pending.empty() && now_ns - o.pending_since_ns >= opts_.flush_ns)
             flush_output(o);
     }
 }
