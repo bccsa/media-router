@@ -56,9 +56,18 @@ class App {
         std::string tee;
         std::unique_ptr<mrbus::FanoutServer> server;
         long long batches = 0;
+        // Broadcast coalescing (see on_input_buffer): splitter batches are
+        // per-INPUT-buffer runs (~7 pkts / ~1.3 KB at typical interleave), and
+        // FanoutServer::broadcast pays a memfd + fd-pass per call — with the
+        // consumer paying mmap/munmap/close per buffer. Accumulate here and
+        // flush at BUFFER_BYTES or FLUSH_INTERVAL_MS, whichever first.
+        std::vector<uint8_t> pending;
+        int64_t pending_since_ns = 0;
     };
 
     void on_input_buffer(const uint8_t* data, size_t len);
+    void flush_output(Output& o);
+    void flush_due(int64_t now_ns);
     void refresh_gating();
     void emit_stats(int64_t now_ns);
 
