@@ -14,7 +14,15 @@ routing and the LCP display, which is why weston is there).
 
 ## Performance — frame rate — SOLVED at the sink; smooth-mode designed
 
-- [ ] **Validate smooth mode (the residual ~2/s judder).** With `sync=false`
+- [x] **Smooth mode VALIDATED (2026-08-01).** With "Honour buffer PTS" on:
+      operator confirms smooth playback; weston timeline shows a flat 50
+      flips/s with skipped vblanks 12.2/s → 2.2/s (the floor is the
+      source-vs-display clock drift beat, ±1 vblank, imperceptible). Runner
+      cost 0.26 core — tsparse on the BATCHED bus costs ~0.02 core (vs 0.11
+      unbatched: its price was per-buffer overhead), so pacing is nearly
+      free and the batching + pacing changes compose. Remaining decision:
+      whether `sync` should default ON for playout deployments (latency
+      budget permitting). Original item, for context: With `sync=false`
       nothing paces frames — arrival jitter reaches the compositor and
       latest-wins latching turns it into ~12 skipped vblanks/s (measured;
       independent of bus batching at 0/10/20 ms). The designed fix is live on
