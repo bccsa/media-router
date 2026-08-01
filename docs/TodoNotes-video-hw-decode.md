@@ -126,8 +126,35 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
        is DRM-only; a capsfilter alone still fails on the mandatory
        VideoMeta in decide_allocation. Use `… ! v4l2slh265dec !
        fakevideosink sync=false` (advertises all metas + any caps-features).
-2. [~] Live HEVC through the video player: pending an HEVC source on the
-       bus (current feed is H.264); file playback through waylandsink works.
+2. [ ] **Live HEVC through the player: FAILS — two distinct blockers found
+       when the OCC feed switched to H.265 (2026-08-01 evening):**
+       a. **1080p SAND hardware decode hangs** — the decisive bisect:
+          synthetic 720p50 decodes perfectly (1.0 s wall, 0.73 core-s);
+          synthetic 1080p50 AND a captured 10 s OCC sample
+          (`/data/test-media/occ-hevc-sample.ts`, Main@L4.1 1080p50
+          B-frames) hang the device with `Decoding frame 2 took too long
+          [v4l2slh265dec]`. Resolution-dependent, content-independent —
+          suspects are the resolution-scaled math in 0003 (absolute bit
+          size) / 0004 (slice-header offset) or SAND stride/column count at
+          1920 (15 cols vs 10). Repro assets on the device:
+          `hevc-720p50.ts` (passes) vs `hevc-1080p50.ts` (hangs) — for
+          oswald.
+       b. **decodebin3 never plugs the SAND decoder** (hangs inside
+          `db_output_stream_setup_decoder` with parsebin-fixated
+          `stream-format=hvc1` caps; direct `h265parse ! v4l2slh265dec`
+          works) — confirmed uncontended with file input, sink-independent.
+          Needs either a decodebin3-level fix or a codec-aware pipeline
+          builder in the video player (probe codec via tsProbe, build the
+          explicit parse+decoder chain, restart on codec change — decodebin3
+          reuse was for same-codec ABR switches, which the bus path doesn't
+          have).
+       INTERIM on the field device: the deployed video-player dist is
+       HAND-PATCHED to the direct HEVC chain (`decodebin3` →
+       `h265parse ! v4l2slh265dec` in dist/helpers/pipelines.js) — HEVC-only
+       and moot until (a) is fixed; the player shows the SMPTE fallback on
+       the current HEVC feed. **Recommend switching the OCC feed back to
+       H.264 for production until the 1080p SAND hang is fixed** (H.264 path
+       is fully validated at 50 fps smooth).
 3. [x] **SAND keeps the overlay plane**: weston places the NC12/SAND128
        dmabuf on overlay plane 125 (`FORMAT: NV12` in the atomic commits;
        no GL fallback, which could not have sampled SAND). Visual
