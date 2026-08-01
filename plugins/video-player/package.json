@@ -68,7 +68,7 @@
                 "clockSync": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Lock to the shared engine clock so video stays in sync with an audio-decoder fed from the same source — the fix for audio/video drift when one stream is split into separate video + audio playout. Turn ON here AND on the matching audio-decoder. Forces PTS-accurate playback. Leave OFF for standalone/low-latency video."
+                    "description": "EXPERIMENTAL — known issue: freezes on the first frame (source-epoch vs shared-clock mismatch, see docs/TodoNotes-video-hw-decode.md). Intended purpose: lock to the shared engine clock so video stays in lipsync with an audio-decoder fed from the same source, when one stream is split into separate video + audio playout (pairs with lipSyncMs; requires the matching audio-decoder). Leave OFF until the epoch latch is wired in — the default Honour-buffer-PTS pacing covers everything except cross-pipeline lipsync."
                 },
                 "lipSyncMs": {
                     "type": "number",
