@@ -932,6 +932,13 @@ export class AudioInputModule extends GstPluginBase {
 }
 ```
 
+A `direction: 'sink'` provider also drives **hardware sink volume normalisation**: on
+every poll the engine resets any non-`MR_PW_*` sink that isn't at unity gain back to
+100% on all channels. Gain staging is a software concern — attenuate on your own
+`MR_PW_*` node or in GStreamer, never by turning a hardware sink down, or your
+attenuation will stack on top of whatever WirePlumber restored (commonly 40%). See
+[ADR-0006](../docs/adr/0006-hardware-sinks-held-at-unity-gain.md).
+
 For non-PipeWire devices (V4L2, DRM, custom hardware), register a raw provider:
 
 ```typescript

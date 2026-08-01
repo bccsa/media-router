@@ -8,13 +8,15 @@ function makeServices(devices: Array<Record<string, unknown>>) {
     const register = vi.fn((p: DeviceProvider) => {
         registered = p;
     });
+    const normalizeSinkVolumes = vi.fn();
     const services = {
         pipeWire: {
             listDevices: vi.fn(() => devices),
+            normalizeSinkVolumes,
         },
         deviceProviders: { register },
     } as unknown as EngineServices;
-    return { services, register, getRegistered: () => registered };
+    return { services, register, normalizeSinkVolumes, getRegistered: () => registered };
 }
 
 describe('registerPipeWireDeviceProvider', () => {
@@ -69,6 +71,35 @@ describe('registerPipeWireDeviceProvider', () => {
         registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
         const list = getRegistered()!.list() as Array<{ label: string }>;
         expect(list[0].label).toBe('unnamed (1ch, 44100Hz)');
+    });
+
+    it('normalizes sink volumes on every poll, with the unfiltered device list', () => {
+        const devices = [
+            { name: 'spk', direction: 'sink', description: 'Speakers', volumes: [26214, 26214] },
+            { name: 'mic', direction: 'source', description: 'Mic', volumes: [65536] },
+        ];
+        const { services, normalizeSinkVolumes, getRegistered } = makeServices(devices);
+        registerPipeWireDeviceProvider(services, { type: 'audio-sink', direction: 'sink' });
+        getRegistered()!.list();
+        expect(normalizeSinkVolumes).toHaveBeenCalledWith(devices);
+    });
+
+    it('does not normalize from the source provider — sinks are corrected once, not twice', () => {
+        const { services, normalizeSinkVolumes, getRegistered } = makeServices([
+            { name: 'mic', direction: 'source', description: 'Mic' },
+        ]);
+        registerPipeWireDeviceProvider(services, { type: 'audio-source', direction: 'source' });
+        getRegistered()!.list();
+        expect(normalizeSinkVolumes).not.toHaveBeenCalled();
+    });
+
+    it('keeps volume out of `meta` so the registry diff does not spam deviceList', () => {
+        const { services, getRegistered } = makeServices([
+            { name: 'spk', direction: 'sink', description: 'Speakers', channels: 2, sampleRate: 48000, volumes: [26214, 26214] },
+        ]);
+        registerPipeWireDeviceProvider(services, { type: 'audio-sink', direction: 'sink' });
+        const list = getRegistered()!.list() as Array<{ meta: Record<string, unknown> }>;
+        expect(list[0].meta).toEqual({ direction: 'sink', channels: 2, sampleRate: 48000 });
     });
 
     it('renders `?` placeholders when channel/sampleRate are missing', () => {

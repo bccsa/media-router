@@ -9,6 +9,7 @@ import {
     getLinks as _getLinks,
 } from './PwLinkOps.js';
 import { AudioDeviceOps } from './AudioDeviceOps.js';
+import { SinkVolumeNormalizer } from './SinkVolumeNormalizer.js';
 
 const log = createLogger('PipeWireManager');
 
@@ -22,6 +23,9 @@ export interface AudioDevice {
     direction: 'source' | 'sink';
     channels?: number;
     sampleRate?: number;
+    /** Raw per-channel volumes (`PA_VOLUME_NORM` = 65536 = unity). Empty when
+     *  pactl reported no volume line for the device. */
+    volumes?: number[];
 }
 
 /**
@@ -36,12 +40,14 @@ export interface AudioDevice {
 export class PipeWireManager {
     private paQueue: PaCommandQueue;
     private deviceOps: AudioDeviceOps;
+    private sinkVolumes: SinkVolumeNormalizer;
     /** Ownership tracking: ownerId → Set of PA module IDs */
     private ownership = new Map<string, Set<number>>();
 
     constructor(paQueue?: PaCommandQueue) {
         this.paQueue = paQueue ?? new PaCommandQueue();
         this.deviceOps = new AudioDeviceOps(this.paQueue);
+        this.sinkVolumes = new SinkVolumeNormalizer(this.paQueue);
     }
 
     /** Track a PA module ID as owned by a specific owner. */
@@ -314,6 +320,14 @@ export class PipeWireManager {
 
     async setSinkVolume(device: string, percent: number): Promise<void> {
         return this.deviceOps.setSinkVolume(device, percent);
+    }
+
+    /**
+     * Hold hardware sinks at unity gain — call with a fresh `listDevices()`
+     * result (the device-provider poll does this). Fire-and-forget.
+     */
+    normalizeSinkVolumes(devices: AudioDevice[]): void {
+        this.sinkVolumes.normalize(devices);
     }
 
     // --- Device enumeration (delegated to AudioDeviceOps) ---

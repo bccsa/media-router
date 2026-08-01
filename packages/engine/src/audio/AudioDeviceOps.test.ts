@@ -3,6 +3,8 @@ import {
     parseDeviceBlock,
     parseDeviceChannels,
     parseDeviceSampleRate,
+    parseDeviceVolumes,
+    PA_VOLUME_NORM,
 } from './AudioDeviceOps.js';
 
 describe('parseDeviceChannels', () => {
@@ -46,6 +48,41 @@ describe('parseDeviceSampleRate', () => {
     });
 });
 
+describe('parseDeviceVolumes', () => {
+    // Verbatim from `pactl list sinks` on a Shure MVX2U sitting at the
+    // restored 40% that this fix exists to correct.
+    const shure = [
+        '\tMute: no',
+        '\tVolume: front-left: 26214 /  40% / -23.88 dB,   front-right: 26214 /  40% / -23.88 dB',
+        '\t        balance 0.00',
+        '\tBase Volume: 65536 / 100% / 0.00 dB',
+    ].join('\n');
+
+    it('reads one raw value per channel', () => {
+        expect(parseDeviceVolumes(shure)).toEqual([26214, 26214]);
+    });
+    it('does not mistake `Base Volume:` for the current volume', () => {
+        // Base Volume is always 65536; reading it would make an attenuated
+        // device look like it is already at unity and skip the reset.
+        expect(parseDeviceVolumes('\tBase Volume: 65536 / 100% / 0.00 dB')).toEqual([]);
+    });
+    it('reads a mono device as a single channel', () => {
+        expect(parseDeviceVolumes('\tVolume: mono: 65536 / 100% / 0.00 dB')).toEqual([
+            PA_VOLUME_NORM,
+        ]);
+    });
+    it('reads all six channels of a surround device', () => {
+        const line =
+            '\tVolume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB,   ' +
+            'front-center: 65536 / 100% / 0.00 dB,   lfe: 65536 / 100% / 0.00 dB,   ' +
+            'rear-left: 65536 / 100% / 0.00 dB,   rear-right: 65536 / 100% / 0.00 dB';
+        expect(parseDeviceVolumes(line)).toHaveLength(6);
+    });
+    it('returns an empty array when the block has no volume line', () => {
+        expect(parseDeviceVolumes('Name: alsa_output.foo\nChannel Map: mono')).toEqual([]);
+    });
+});
+
 describe('parseDeviceBlock', () => {
     it('returns null for blocks without a `Name:` field (e.g. blank trailing block)', () => {
         expect(parseDeviceBlock('', 'source')).toBeNull();
@@ -69,6 +106,14 @@ describe('parseDeviceBlock', () => {
         expect(dev!.channels).toBe(1);
         expect(dev!.sampleRate).toBeUndefined();
         expect(dev!.description).toBe('USB PnP Mono');
+    });
+    it('carries per-channel volumes through so the normalizer can act on them', () => {
+        const block = [
+            'Name: alsa_output.usb-shure',
+            'Channel Map: front-left,front-right',
+            '\tVolume: front-left: 26214 /  40% / -23.88 dB,   front-right: 26214 /  40% / -23.88 dB',
+        ].join('\n');
+        expect(parseDeviceBlock(block, 'sink')!.volumes).toEqual([26214, 26214]);
     });
     it('falls back to `name` for description when missing', () => {
         const block = `Name: alsa_input.foo\nChannel Map: mono`;

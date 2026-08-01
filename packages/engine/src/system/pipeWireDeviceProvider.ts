@@ -18,6 +18,11 @@ export interface PipeWireDeviceProviderOptions {
  *
  * Replaces the boilerplate that `audio-input` and `audio-output` previously
  * duplicated — call from a plugin's static `registerServices(services)` hook.
+ *
+ * The sink poll doubles as the detection point for volume normalisation: any
+ * hardware sink not at unity gain is reset, so a device is corrected as soon
+ * as it is enumerated and again if something (WirePlumber restore, alsamixer)
+ * pulls it back down. See `SinkVolumeNormalizer`.
  */
 export function registerPipeWireDeviceProvider(
     services: EngineServices,
@@ -27,20 +32,25 @@ export function registerPipeWireDeviceProvider(
     services.deviceProviders.register({
         type,
         pollMs,
-        list: () =>
-            services.pipeWire
-                .listDevices()
+        list: () => {
+            const devices = services.pipeWire.listDevices();
+            if (direction === 'sink') services.pipeWire.normalizeSinkVolumes(devices);
+            return devices
                 .filter((d) => d.direction === direction)
                 .map(
                     (d): Device => ({
                         name: d.name,
                         label: `${d.description || d.name} (${d.channels ?? '?'}ch, ${d.sampleRate ?? '?'}Hz)`,
+                        // Deliberately no volume here — the registry diffs this
+                        // JSON to decide when to emit `deviceList`, and a
+                        // fluctuating volume would spam the manager.
                         meta: {
                             direction: d.direction,
                             channels: d.channels,
                             sampleRate: d.sampleRate,
                         },
                     }),
-                ),
+                );
+        },
     });
 }
