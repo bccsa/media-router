@@ -327,12 +327,16 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('videotestsrc');
         });
 
-        it('re-anchors PTS by default (tsparse set-timestamps=true) — single-pipeline playout', () => {
+        it('has NO tsparse — the player never re-muxes, and the default sink presents on arrival', () => {
+            // tsparse's job (re-anchoring PCR so multi-stage remux chains don't
+            // drift) doesn't apply to a terminal display pipeline, and it was
+            // the chain's single most expensive element (0.11 core at 1080p50,
+            // measured 2026-08-01). tsdemux consumes the bus buffers directly.
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
-            expect(s).toContain('tsparse set-timestamps=true');
+            expect(s).not.toContain('tsparse');
         });
 
-        it('preserves source PTS when clock-locked (preserveSourcePts=true) so it shares the audio timeline', () => {
+        it('clock-locked mode (preserveSourcePts=true) uses the same tsparse-free input — the source timeline comes from tsdemux PES via preserveSourceTimeline', () => {
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
                 busSource,
@@ -340,8 +344,8 @@ describe('VideoPlayerModule helpers', () => {
                 200,
                 true,
             );
-            expect(s).toContain('tsparse set-timestamps=false');
-            expect(s).not.toContain('set-timestamps=true');
+            expect(s).not.toContain('tsparse');
+            expect(s).toContain('tsdemux');
         });
 
         it('keeps videoscale (uncapped) on the KMS/auto path — no compositor scales for them', () => {
@@ -428,15 +432,13 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
         });
 
-        it('orders unixfdsrc → watchdog → tsparse → tsdemux (watchdog sees raw socket delivery)', () => {
+        it('orders unixfdsrc → watchdog → tsdemux (watchdog sees raw socket delivery)', () => {
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             const idxSrc = s.indexOf('unixfdsrc');
             const idxWd = s.indexOf('watchdog');
-            const idxTsparse = s.indexOf('tsparse');
             const idxTsdemux = s.indexOf('tsdemux');
             expect(idxSrc).toBeLessThan(idxWd);
-            expect(idxWd).toBeLessThan(idxTsparse);
-            expect(idxTsparse).toBeLessThan(idxTsdemux);
+            expect(idxWd).toBeLessThan(idxTsdemux);
         });
     });
 

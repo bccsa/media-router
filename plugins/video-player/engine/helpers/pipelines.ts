@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { buildTsUdpInput } from '@media-router/engine';
+import { buildBusSrc, buildLeakyQueue } from '@media-router/engine';
 
 /**
  * Surface size used when the output's own mode can't be resolved (headless,
@@ -264,10 +264,9 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! queue ! tsparse ! tsdemux` (via
- * `buildTsUdpInput`) — `tsparse` re-anchors PCR to the local clock so
- * multi-stage encode/remux paths don't accumulate clock drift as session
- * latency. `decodebin` handles any codec inside the MPEG-TS; the post-tsdemux
+ * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! tsdemux` —
+ * deliberately WITHOUT `tsparse` (see the comment at the construction site
+ * below). `decodebin` handles any codec inside the MPEG-TS; the post-tsdemux
  * `queue leaky=2` drops oldest if the decoder falls behind so latency doesn't
  * accumulate on slow renderers.
  */
@@ -305,15 +304,25 @@ export function buildLivePipeline(
     // at every segment join. Tracking `bufferMs` (up to `buildLeakyQueue`'s 5 s
     // cap) gives HLS chains a multi-second jitter buffer that absorbs sender
     // bursts; SRT/RIST (`bufferMs=200`) keeps the original tight latency.
-    const tsInput = buildTsUdpInput({
+    // NO `tsparse` in the player's inbound chain (deliberate divergence from
+    // `buildTsUdpInput`, measured on a field Pi 4, 2026-08-01):
+    //  - tsparse's documented job — re-anchoring PCR so multi-stage RE-MUX
+    //    paths don't accumulate clock drift — doesn't apply here: this
+    //    pipeline terminates at a display sink and never re-muxes.
+    //  - The default sink runs `sync=false` (presents on arrival), so
+    //    pipeline timestamps are unused; with `clockSync`, timing comes from
+    //    the PES timeline via `preserveSourceTimeline` on tsdemux, which
+    //    tsparse also doesn't participate in.
+    //  - The leaky jitter queue sits UPSTREAM of where tsparse sat and
+    //    operates on the bus producer's timestamps either way.
+    //  - Cost: `tsparse set-timestamps=true` measured 0.11 core at 1080p50
+    //    (it re-frames per TS packet), the single most expensive element in
+    //    the chain; tsdemux consumes the raw bus buffers directly at +0.06.
+    const tsInput = `${buildBusSrc({
         port: udpSource.port,
         socketPath: udpSource.socketPath,
         stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-        jitterMs: bufferMs,
-        // Keep source PTS when clock-locked to the audio pipeline; re-anchor
-        // otherwise (the load-bearing default for standalone playout).
-        setTimestamps: !preserveSourcePts,
-    });
+    })} ! ${buildLeakyQueue(bufferMs)}`;
     const q = `queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
     // Scaling policy — who resizes the picture, per sink:
     //
