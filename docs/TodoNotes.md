@@ -2,6 +2,14 @@
 
 ## Open
 
+- [ ] **DEPLOY NOTE — video-player `sync` default flips ON (2026-08-01):**
+  instances whose stored config never set `sync` change from
+  present-on-arrival to clock-paced presentation on the next engine update
+  (smooth playback; ~zero median added latency, field-measured). Watch for
+  feeds with broken/discontinuous PCR — under pacing they can stall or drop
+  where they previously played jerkily; fix is flipping "Honour buffer PTS"
+  OFF on that instance. Explicitly-set configs keep their value.
+
 - [ ] **Injected plugins have no test home (2026-07-29, opened with ADR-0004):** `webrtc-client` moved to the `media-router-audio-app` repo under `media-router-plugin/`, taking its 138-line `WebRtcClientModule.test.ts` with it — but an injected plugin can't typecheck or run standalone there (its `tsconfig.json` extends `../tsconfig.plugin.json`, which only exists once the Yocto recipe copies it into this workspace), so those tests currently run **nowhere** and this repo's test baseline drops by that file's count. Fix direction: a harness in the owning repo that checks out media-router, injects `media-router-plugin/*`, and runs `pnpm test` — or, if that proves not worth it, move the tests back here as a plugin-contract test against the injected build. Until then, treat injected plugins as untested in CI.
 
 - [ ] **DEPLOY NOTE — transcoder single-input + strict 302M pins (2026-07-23, uncommitted):** on the first engine start after this lands, two classes of stored edges are dropped silently (visible only in engine logs): (a) edges into the audio-transcoder's removed `audio-in` mix port (its 302M mix moved to the new `audio-mixer` plugin — rewire through it), and (b) muxed-declared sources wired into now-strict 302M pins (`audio-mixer`/`audio-output-302m`/`n1-mixer-302m` inputs declare `acceptsStreamTypes: ["audio/302m"]`; previously legal via TS-family leniency, e.g. an SRT input carrying remote 302M — now needs an Audio Transcoder in front). Audit fleet profiles for both patterns before deploying. Follow-up worth building: when `ConnectionApplier` exhausts retries on a validation reject, surface a one-time health warning on the sink module so the operator sees why audio went dead instead of digging in logs.

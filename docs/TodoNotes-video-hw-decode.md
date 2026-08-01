@@ -20,9 +20,12 @@ routing and the LCP display, which is why weston is there).
       source-vs-display clock drift beat, ±1 vblank, imperceptible). Runner
       cost 0.26 core — tsparse on the BATCHED bus costs ~0.02 core (vs 0.11
       unbatched: its price was per-buffer overhead), so pacing is nearly
-      free and the batching + pacing changes compose. Remaining decision:
-      whether `sync` should default ON for playout deployments (latency
-      budget permitting). Original item, for context: With `sync=false`
+      free and the batching + pacing changes compose. DECIDED 2026-08-01:
+      `sync` defaults ON (knob kept as the ultra-low-latency / degraded-PCR
+      escape hatch — see the DEPLOY NOTE in TodoNotes.md). Latency measured:
+      frames arrive at median ~0-1 ms before their presentation deadline, so
+      pacing adds ~nothing at the median and up to a few tens of ms of
+      per-frame jitter smoothing. Original item, for context: With `sync=false`
       nothing paces frames — arrival jitter reaches the compositor and
       latest-wins latching turns it into ~12 skipped vblanks/s (measured;
       independent of bus batching at 0/10/20 ms). The designed fix is live on

@@ -617,7 +617,7 @@ export class VideoPlayerModule extends GstPluginBase {
         const clockSync = (this.config.clockSync as boolean | undefined) === true;
         const sinkElement = buildSink(active.name, sinkEnv, {
             qos: (this.config.qos as boolean | undefined) ?? true,
-            sync: clockSync || ((this.config.sync as boolean | undefined) ?? false),
+            sync: clockSync || ((this.config.sync as boolean | undefined) ?? true),
             // Positive lipSyncMs delays video to meet late audio (audio path has
             // more buffering latency). Live-updatable via the named `sink`.
             tsOffsetNs: Math.round(Number(this.config.lipSyncMs ?? 0) * 1_000_000),
@@ -714,7 +714,7 @@ export class VideoPlayerModule extends GstPluginBase {
                 clockSync,
                 // Clock-paced sink (sync config or clockSync) → tsparse
                 // returns to the chain for clock-anchored timestamps.
-                clockSync || ((this.config.sync as boolean | undefined) ?? false),
+                clockSync || ((this.config.sync as boolean | undefined) ?? true),
             ),
             restartOnError: true,
             env,
