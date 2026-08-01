@@ -128,7 +128,19 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
        fakevideosink sync=false` (advertises all metas + any caps-features).
 2. [ ] **Live HEVC through the player: FAILS — two distinct blockers found
        when the OCC feed switched to H.265 (2026-08-01 evening):**
-       a. **1080p SAND hardware decode hangs** — the decisive bisect:
+       a. **1080p SAND hardware decode hangs — SEVERITY: CAN FREEZE THE
+          ENTIRE DEVICE.** After the player retried 1080p HEVC decode for a
+          while, the field box hard-hung: frozen last frame on screen,
+          network down, power-cycle required (operator-confirmed,
+          2026-08-01 evening). A wedged rpivid/V4L2 decode job apparently
+          takes the kernel with it — treat as critical, not just a decode
+          failure. Boot-time evidence is lost (no persistent journal on the
+          image — see observability debt). INTERIM GUARD on the field box:
+          `media-router.service.d/hevc-mask.conf` sets
+          `GST_PLUGIN_FEATURE_RANK=v4l2slh265dec:0` so the patched decoder
+          is never auto-selected (explicit test pipelines can still use it
+          for repro work); the hand-patched dist was restored to the built
+          decodebin3 chain. The decisive bisect:
           synthetic 720p50 decodes perfectly (1.0 s wall, 0.73 core-s);
           synthetic 1080p50 AND a captured 10 s OCC sample
           (`/data/test-media/occ-hevc-sample.ts`, Main@L4.1 1080p50
