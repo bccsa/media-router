@@ -14,16 +14,20 @@ routing and the LCP display, which is why weston is there).
 
 ## Performance — frame rate (the 37 → 50 fps gap)
 
-- [ ] **waylandsink commit pacing (gst-level) — the main fps lever.** The sink
-      commits only on frame callbacks; weston dispatches callbacks at repaint
-      start, so any callback→commit slip past the cycle boundary drops a whole
-      vblank (measured: commits cluster at vblank+5.6 ms; repaint loop idles
-      40–120 ms in `exit_loop` during misses; sink discards the excess —
-      `rendered`/`dropped` ≈ 37/13 fps). Ruled out: runner priority,
-      repaint-window in both directions (5 worse / 15 best / 18 equal),
-      overdraw, GPU clocks. Fix directions: commit a staged buffer without
-      waiting for the callback when one is due, or pace commits to the
-      presentation clock.
+- [ ] **waylandsink commit pacing — PATCH WRITTEN, awaiting build + field
+      verify.** `0007-waylandsink-commit-staged-buffers-without-waiting-fo.patch`
+      in media-router-yocto's gst-plugins-bad bbappend (applies after the SAND
+      series): staged buffers get an immediate display-thread commit instead
+      of parking behind the compositor's frame callback — the measured cause
+      of the 35 fps ceiling (commits clustered at vblank+5.6 ms, repaint loop
+      idling 40–120 ms in `exit_loop`, sink discarding the excess; ruled out:
+      runner priority, repaint-window both ways, overdraw, GPU clocks). Also
+      fixes a latent teardown use-after-free (frame callback pointer
+      overwritten while armed). Rides the SAND image build together with the
+      unixfdsink ingest coalescing below; verify with renderWatch — expect
+      presented ≈ repaint rate (~50) and sink drops ≈ 0, and re-check the
+      `repaint-window=15` choice afterwards (with per-buffer commits the
+      15 ms window may no longer matter for the video path).
 - [ ] **weston patch (alternative/complement, upstreamable):** dispatch frame
       callbacks at flip-completion instead of repaint start — widens every
       client's turnaround budget to a full cycle and removes ~20 ms latency
