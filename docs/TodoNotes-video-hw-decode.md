@@ -106,6 +106,15 @@ validation gate below before concluding any of it.**
       memfd+send. Needs a gstreamer1.0-plugins-bad rebuild — ride along with
       the SAND image build. Expected: most of the relay's non-librist cost
       (~0.16 core) plus mr-tssplit receive overhead.
+- [ ] **RT scheduling for audio/streaming threads (image).** PipeWire's
+      processing threads and librist's data-output thread run without RT
+      priority on the yocto image (librist logs "Failed to set data output
+      thread to RR scheduler"; no rtkit / RLIMIT_RTPRIO for the mrstation
+      user). On a 50-60 %-loaded Pi 4 that scheduling jitter is why the
+      paced audio sink needs ~170 ms of pacing margin to avoid xruns
+      (field 2026-08-02: 100 ms ring + 250 ms offset still xruns ~1/3 min).
+      An RLIMIT_RTPRIO/rtkit fix shrinks jitter for every audio consumer at
+      once and would let syncOffsetMs come back down.
 - [ ] **librist `rist-reader` thread: 0.27 core.** Library-internal cost of
       RIST receive; investigate librist config (profile, reorder buffer,
       crypto) before considering upstream work. Lowest priority of the CPU
@@ -271,8 +280,15 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
         Fixed: read loop now retries through RistError instead of breaking.
         The video player resumed from its watchdog fallback with corrupted
         decoder state (green band + ~10 late-drops/window) that persisted
-        until an engine restart — resume-from-stall could force a decoder
-        drain/reset; not yet addressed.
+        until an engine restart. ADDRESSED (2026-08-02, three parts):
+        resume now waits for 3 consecutive flowing polls before rebuilding
+        live (no rebuild against a churning source); render_lag treats
+        sustained sink drops (>5 % of expected) as lag even when presented
+        fps sits inside the hysteresis band (the degraded state was 0.88 —
+        silent for 5 min); and a renderwatch lag within 120 s of a
+        stall-resume triggers ONE automatic rebuild. Field repro of the
+        original corruption is still outstanding (needs an upstream stall
+        >5 s — SIGSTOP repro was not possible in-session).
       * CAUTION (measurement hazard): per-buffer Python pad probes on
         packet-sized buffers (~750/s × 2 pads) overloaded the relay on a
         Pi 4 under storm load (relay 0.07 → 1.6 cores, presented collapsed

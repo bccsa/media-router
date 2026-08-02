@@ -24,16 +24,24 @@ Rules:
   `lag_ratio * expected`; recovery clears it after `trip_windows` consecutive
   windows at or above `recover_ratio * expected`. The gap between the two
   ratios is the hysteresis band that stops flapping around the threshold.
+- Sustained sink drops ALSO count as lag: a pipeline can present just above
+  the lag ratio while steadily shedding late frames (field case 2026-08-02:
+  presented 88 %, 5 fps dropped as late, visibly stuttering for minutes with
+  the monitor silent — 0.88 sits inside the hysteresis band). A window with
+  `dropped_fps > drop_ratio * expected` counts toward the lag streak, and
+  recovery additionally requires drops at or below half that rate.
 - A change in `expected_fps` (mid-stream format switch) resets the streaks —
   windows straddling a switch would judge the old rate against the new caps.
 """
 
 
 class RenderLagMonitor:
-    def __init__(self, lag_ratio=0.85, recover_ratio=0.95, trip_windows=3):
+    def __init__(self, lag_ratio=0.85, recover_ratio=0.95, trip_windows=3,
+                 drop_ratio=0.05):
         self.lag_ratio = lag_ratio
         self.recover_ratio = recover_ratio
         self.trip_windows = trip_windows
+        self.drop_ratio = drop_ratio
         self.lagging = False
         self._below = 0
         self._above = 0
@@ -48,7 +56,7 @@ class RenderLagMonitor:
         # mid-lag should not synthesize a "recovered" event (recovery must be
         # measured), and it doesn't un-happen that frames have flowed.
 
-    def tick(self, frames, window_s, expected_fps):
+    def tick(self, frames, window_s, expected_fps, dropped_fps=0.0):
         if window_s <= 0:
             return None
         if expected_fps is None or expected_fps <= 0:
@@ -70,13 +78,15 @@ class RenderLagMonitor:
         self._last_expected = expected_fps
 
         achieved = frames / window_s
-        if achieved < self.lag_ratio * expected_fps:
+        dropping = dropped_fps > self.drop_ratio * expected_fps
+        if achieved < self.lag_ratio * expected_fps or dropping:
             self._below += 1
             self._above = 0
             if not self.lagging and self._below >= self.trip_windows:
                 self.lagging = True
                 return ("lag", achieved, expected_fps)
-        elif achieved >= self.recover_ratio * expected_fps:
+        elif (achieved >= self.recover_ratio * expected_fps
+              and dropped_fps <= 0.5 * self.drop_ratio * expected_fps):
             self._above += 1
             self._below = 0
             if self.lagging and self._above >= self.trip_windows:

@@ -1048,12 +1048,44 @@ describe('VideoPlayerModule helpers', () => {
                 await (module as any).pollBusResume();
                 expect(restart).not.toHaveBeenCalled();
 
-                // Counter advanced: source resumed → back to live.
+                // Counter advancing — but resume waits for a STABLE streak
+                // (RESUME_STABLE_POLLS consecutive flowing polls) so the live
+                // pipeline doesn't rebuild against a still-churning source.
                 readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(4000);
                 await (module as any).pollBusResume();
                 expect((module as any).busStallDetected).toBe(false);
                 expect(restart).toHaveBeenCalledTimes(1);
                 expect((module as any).busResumeWatchdog).toBeNull();
+            });
+
+            it('a flat poll mid-streak resets the stability gate', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const readBytes = vi
+                    .spyOn(module as any, 'readBusSinkBytes')
+                    .mockResolvedValue(1000);
+                await (module as any).pollBusResume(); // baseline
+                readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume(); // streak 1
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume(); // streak 2
+                await (module as any).pollBusResume(); // flat → streak 0
+                readBytes.mockResolvedValue(4000);
+                await (module as any).pollBusResume(); // streak 1
+                readBytes.mockResolvedValue(5000);
+                await (module as any).pollBusResume(); // streak 2
+                expect(restart).not.toHaveBeenCalled();
+                expect((module as any).busStallDetected).toBe(true);
             });
 
             it('does nothing while a restart cycle is already in flight', async () => {
@@ -1082,8 +1114,12 @@ describe('VideoPlayerModule helpers', () => {
                 expect(restart).not.toHaveBeenCalled();
                 expect((module as any).busStallDetected).toBe(true);
 
-                // Producer respawned — socket answers → retry live directly.
+                // Producer respawned — socket answers on 3 consecutive
+                // polls (the stability gate) → retry live directly.
                 probeUnixSocketMock.mockResolvedValue(true);
+                await (module as any).pollBusResume();
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
                 await (module as any).pollBusResume();
                 expect((module as any).busStallDetected).toBe(false);
                 expect(restart).toHaveBeenCalledTimes(1);
@@ -1259,6 +1295,45 @@ describe('renderWatch health messages', () => {
             'warning',
             expect.stringContaining("can't keep up"),
         );
+    });
+
+    it('render lag shortly after a stall-resume triggers ONE self-heal rebuild', () => {
+        // Field case 2026-08-02: live pipeline rebuilt against a just-recovered,
+        // still-churning source ran degraded (green band + steady late-drops)
+        // until a manual restart. One free rebuild per resume fixes that; a
+        // second lag is a real render problem and stays visible.
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).log = { info: vi.fn() };
+        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        const lag = { achievedFps: 44, expectedFps: 50, arrivalsFps: 49 };
+        (module as any).onPluginEvent('renderwatch:lag', lag);
+        expect(restart).toHaveBeenCalledTimes(1);
+        (module as any).onPluginEvent('renderwatch:lag', lag);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('no self-heal outside the post-resume window or for source shortfall', () => {
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).log = { info: vi.fn() };
+        // Old resume: outside the heal window.
+        (module as any).lastStallResumeAt = Date.now() - 600_000;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 44,
+            expectedFps: 50,
+            arrivalsFps: 49,
+        });
+        expect(restart).not.toHaveBeenCalled();
+        // Recent resume but the SOURCE is under-delivering — a rebuild can't
+        // manufacture frames the stream never carried.
+        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 41,
+        });
+        expect(restart).not.toHaveBeenCalled();
     });
 
     it('recovered clears only a warning this module raised', () => {

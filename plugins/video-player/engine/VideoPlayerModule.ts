@@ -36,6 +36,11 @@ import { resolveWestonSurface } from './helpers/westonOutput.js';
 
 type SinkAvailability = { wayland: boolean; kms: boolean };
 
+/** Consecutive flowing 1 Hz polls required before a stall-resume rebuild. */
+const RESUME_STABLE_POLLS = 3;
+/** How long after a stall-resume a renderwatch lag earns a free rebuild. */
+const POST_RESUME_HEAL_WINDOW_MS = 120_000;
+
 /**
  * Video Player plugin.
  *
@@ -110,6 +115,20 @@ export class VideoPlayerModule extends GstPluginBase {
     private resumeTapActive = false;
     /** Last byte count read off the resume tap — advance = source resumed. */
     private lastResumeBytes: number | undefined;
+    /**
+     * Consecutive 1 Hz polls that saw the source flowing. Resuming on the
+     * FIRST sign of bytes rebuilt the live pipeline against a still-churning
+     * source (field case 2026-08-02: upstream restart chain — tsparse latched
+     * a skewed timing baseline and the pipeline ran degraded for minutes:
+     * green slice corruption, ~10 % late-drops). Requiring a short streak
+     * costs RESUME_STABLE_POLLS-1 extra seconds of fallback and rebuilds
+     * against a stream that has actually settled.
+     */
+    private resumeStreak = 0;
+    /** When the last stall-resume rebuilt the live pipeline (0 = never). */
+    private lastStallResumeAt = 0;
+    /** One free self-heal rebuild per resume — see onPluginEvent. */
+    private postResumeHealDone = false;
     /**
      * 1 Hz resume poller, alive while we're latched in fallback. With the
      * tap active it reads the tap's byte counter (bytes advancing = source
@@ -218,6 +237,24 @@ export class VideoPlayerModule extends GstPluginBase {
                     ? `Stream under-delivering${rate} — check the source/link (display is keeping up)`
                     : `Video output can't keep up${rate} — lower the stream or display resolution`,
             );
+            // Self-heal: lag right after a stall-resume means the live
+            // pipeline rebuilt against a source that had not fully settled
+            // (field case 2026-08-02: skewed timing baseline → green slice
+            // corruption + steady late-drops until a MANUAL restart). One
+            // free rebuild per resume; a rebuild that lags again is a real
+            // render problem and stays for the operator to see.
+            if (
+                !sourceShortfall &&
+                !this.postResumeHealDone &&
+                this.lastStallResumeAt > 0 &&
+                Date.now() - this.lastStallResumeAt < POST_RESUME_HEAL_WINDOW_MS
+            ) {
+                this.postResumeHealDone = true;
+                this.log.info('Render lag shortly after stall-resume — rebuilding pipeline once');
+                this.restartPipeline().catch(() => {
+                    /* logged inside */
+                });
+            }
         } else if (channel === 'renderwatch:recovered') {
             // Only clear health WE degraded — never stomp a bus-stall or
             // substituted-display warning someone else owns.
@@ -290,7 +327,7 @@ export class VideoPlayerModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!source) return;
-        let resumed = false;
+        let flowing = false;
         if (this.resumeTapActive) {
             const bytes = await this.readBusSinkBytes(RESUME_SINK_NAME);
             if (
@@ -298,15 +335,18 @@ export class VideoPlayerModule extends GstPluginBase {
                 this.lastResumeBytes !== undefined &&
                 bytes > this.lastResumeBytes
             ) {
-                resumed = true;
+                flowing = true;
             }
             if (bytes !== undefined) this.lastResumeBytes = bytes;
         } else if (source.socketPath && (await probeUnixSocket(source.socketPath))) {
-            resumed = true;
+            flowing = true;
         }
-        if (!resumed || !this.busStallDetected) return;
+        this.resumeStreak = flowing ? this.resumeStreak + 1 : 0;
+        if (this.resumeStreak < RESUME_STABLE_POLLS || !this.busStallDetected) return;
         this.log.info('Source resumed — restarting live pipeline');
         this.busStallDetected = false;
+        this.lastStallResumeAt = Date.now();
+        this.postResumeHealDone = false;
         this.stopBusResumeWatchdog();
         this.restartPipeline().catch(() => {
             /* logged inside */
@@ -316,6 +356,7 @@ export class VideoPlayerModule extends GstPluginBase {
     private startBusResumeWatchdog(): void {
         if (this.busResumeWatchdog) return;
         this.lastResumeBytes = undefined;
+        this.resumeStreak = 0;
         // 1 Hz is plenty — worst case is one extra second of fallback.
         // Lifetime is bounded to "we're latched in fallback": armed by the
         // bus_stall listener (and re-armed by installBusStallListener after
@@ -333,6 +374,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.busResumeWatchdog = null;
         }
         this.lastResumeBytes = undefined;
+        this.resumeStreak = 0;
     }
 
     /** Wipe stall state on an external stop — fresh start should never inherit a stale fallback decision. */
@@ -340,6 +382,8 @@ export class VideoPlayerModule extends GstPluginBase {
         this.stopBusResumeWatchdog();
         this.busStallDetected = false;
         this.resumeTapActive = false;
+        this.lastStallResumeAt = 0;
+        this.postResumeHealDone = false;
     }
 
     /**

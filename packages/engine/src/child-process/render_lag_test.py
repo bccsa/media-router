@@ -96,6 +96,42 @@ evs = ticks(m, [100, 100, 100], expected=50.0)
 check("recovery after reset is measured, not assumed",
       len(evs) == 1 and evs[0][0] == "recovered")
 
+# --- sustained sink drops trip lag even above the presented-fps ratio -------
+# Field case 2026-08-02: presented 44/50 fps (ratio 0.88, inside the
+# hysteresis band) with 5 fps steadily dropped as late — stuttered for
+# minutes with no event.
+m = RenderLagMonitor()
+ticks(m, [100])                                      # healthy start
+evs = []
+for _ in range(3):
+    ev = m.tick(88, 2.0, 50.0, dropped_fps=5.0)
+    if ev:
+        evs.append(ev)
+check("sustained drops trip lag", len(evs) == 1 and evs[0][0] == "lag")
+
+# --- recovery requires drops to clear, not just presented fps ---------------
+evs = []
+for _ in range(4):
+    ev = m.tick(100, 2.0, 50.0, dropped_fps=5.0)     # presents fine, still drops
+    if ev:
+        evs.append(ev)
+check("no recovery while still dropping", evs == [] and m.lagging)
+evs = []
+for _ in range(3):
+    ev = m.tick(100, 2.0, 50.0, dropped_fps=0.0)
+    if ev:
+        evs.append(ev)
+check("recovery once drops clear", len(evs) == 1 and evs[0][0] == "recovered")
+
+# --- transient drop blips do not trip ---------------------------------------
+m = RenderLagMonitor()
+ticks(m, [100])
+m.tick(95, 2.0, 50.0, dropped_fps=4.0)
+m.tick(100, 2.0, 50.0, dropped_fps=0.0)              # blip over — streak resets
+m.tick(95, 2.0, 50.0, dropped_fps=4.0)
+m.tick(95, 2.0, 50.0, dropped_fps=4.0)
+check("transient drop blips stay silent", not m.lagging)
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED")

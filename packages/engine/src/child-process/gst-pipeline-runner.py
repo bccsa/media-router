@@ -2500,7 +2500,8 @@ def _start_render_watch(pipe, cfg):
                 if d_rendered >= 0 and d_dropped >= 0:
                     achieved = d_rendered
                     dropped = d_dropped
-        ev = st["mon"].tick(achieved, RENDER_WATCH_WINDOW_MS / 1000.0, _expected_fps())
+        ev = st["mon"].tick(achieved, RENDER_WATCH_WINDOW_MS / 1000.0, _expected_fps(),
+                            dropped / (RENDER_WATCH_WINDOW_MS / 1000.0))
         if ev:
             kind, achieved_fps, expected = ev
             # arrivalsFps lets the module tell RENDER lag (sink presents fewer
