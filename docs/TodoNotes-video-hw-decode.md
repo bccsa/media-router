@@ -236,6 +236,36 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
 - [ ] renderWatch expected-fps fallback: streams without VUI timing negotiate
       `framerate=0/1` and the watch stays silent; fall back to the ts-probe
       (`videoinfo`) framerate.
+- [x] renderWatch source-shortfall attribution (2026-08-01/02): the
+      intermittent "can only do 41 fps" warning on the OCC H.264 feed was NOT
+      render lag — per-window counters showed arrivals == presented,
+      dropped == 0: the sink presents everything that arrives. Runner now
+      reports `arrivalsFps` in renderwatch events; when achieved ≈ arrivals
+      the module warns "Stream under-delivering — check the source/link"
+      instead of the (wrong for this case) lower-the-resolution advice.
+- [ ] OCC feed delivery dips — root cause still open (2026-08-02 field
+      forensics, ~9 h of 4-point instrumentation on .108: wire/librist →
+      relay → tssplit → sink):
+      * The RIST WAN link runs recovered-loss storms in production hours
+        (10–20 % missing, RTT ~210 ms, librist recovers ~100 %, `lost=0`) —
+        which is exactly why ad-hoc link checks always came back "innocent":
+        only UNRECOVERED loss is visible without stats. A 130 missing/s storm
+        was absorbed cleanly (presented 97–101) by the 5 s buffer, so
+        moderate storms alone don't explain the warnings; worse storms might.
+      * Overnight there are shallow dips (presented 85–92 %, below warning
+        threshold) on a wall-clock grid (~:10/:40 s, gaps of exactly
+        60/300/600/1500 s) with NO wire dip, no discontinuities, no catch-up
+        burst, fanout `drops={}`. Origin unidentified (not cron, not engine
+        event-loop stalls — both phase-checked). A genuine warning episode
+        has not yet been caught with full instrumentation; RWX (sink windows)
+        + RSX (librist stats) diagnostics left ACTIVE on .108's deployed
+        runner for the next occurrence (revert = redeploy engine dist).
+      * TODO: surface librist quality/missing/recovered in the rist-input
+        module's health/status so recovered-loss storms are operator-visible.
+      * CAUTION (measurement hazard): per-buffer Python pad probes on
+        packet-sized buffers (~750/s × 2 pads) overloaded the relay on a
+        Pi 4 under storm load (relay 0.07 → 1.6 cores, presented collapsed
+        to 30–80) — probe per-frame or per-batch points only.
 - [ ] Fallback-card sizing under the source-sized live path (the accepted risk
       in `buildLivePipeline`): fallback should inherit the last live surface
       so kiosk-shell's same-size rule can't reject a live↔fallback

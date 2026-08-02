@@ -2490,11 +2490,17 @@ def _start_render_watch(pipe, cfg):
         ev = st["mon"].tick(achieved, RENDER_WATCH_WINDOW_MS / 1000.0, _expected_fps())
         if ev:
             kind, achieved_fps, expected = ev
+            # arrivalsFps lets the module tell RENDER lag (sink presents fewer
+            # frames than arrive) from SOURCE shortfall (fewer frames arrive
+            # in the first place — a feed/link problem the render chain can't
+            # fix and must not be blamed for).
             emit_plugin_event(f"renderwatch:{kind}",
                               {"achievedFps": round(achieved_fps, 1),
                                "expectedFps": round(expected, 2),
                                "droppedFps": round(
-                                   dropped / (RENDER_WATCH_WINDOW_MS / 1000.0), 1)})
+                                   dropped / (RENDER_WATCH_WINDOW_MS / 1000.0), 1),
+                               "arrivalsFps": round(
+                                   arrivals / (RENDER_WATCH_WINDOW_MS / 1000.0), 1)})
         return True                          # keep the GLib timer alive
 
     st["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _on_buffer)

@@ -191,15 +191,32 @@ export class VideoPlayerModule extends GstPluginBase {
      */
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel === 'renderwatch:lag') {
-            const p = (payload ?? {}) as { achievedFps?: number; expectedFps?: number };
+            const p = (payload ?? {}) as {
+                achievedFps?: number;
+                expectedFps?: number;
+                arrivalsFps?: number;
+            };
             this.renderLagActive = true;
             const rate =
                 typeof p.achievedFps === 'number' && typeof p.expectedFps === 'number'
                     ? ` (${p.achievedFps}/${p.expectedFps} fps)`
                     : '';
+            // Attribute the shortfall correctly: when the sink presents
+            // essentially everything that ARRIVES, the render chain isn't the
+            // problem — the source is delivering fewer frames (link jitter,
+            // encoder hiccup). Telling the operator to lower the resolution
+            // for that would be wrong advice. Field case, 2026-08-01: OCC
+            // link dips to ~41 fps for a few seconds; arrivals == presented,
+            // drops == 0.
+            const sourceShortfall =
+                typeof p.achievedFps === 'number' &&
+                typeof p.arrivalsFps === 'number' &&
+                p.achievedFps >= p.arrivalsFps - 1;
             this.setHealth(
                 'warning',
-                `Video output can't keep up${rate} — lower the stream or display resolution`,
+                sourceShortfall
+                    ? `Stream under-delivering${rate} — check the source/link (display is keeping up)`
+                    : `Video output can't keep up${rate} — lower the stream or display resolution`,
             );
         } else if (channel === 'renderwatch:recovered') {
             // Only clear health WE degraded — never stomp a bus-stall or

@@ -1215,3 +1215,61 @@ describe('VideoPlayerModule helpers', () => {
         });
     });
 });
+
+describe('renderWatch health messages', () => {
+    function makeModule() {
+        const module = new VideoPlayerModule();
+        (module as any).setHealth = vi.fn();
+        return module;
+    }
+
+    it('render lag (presented below arrivals) → lower-resolution advice', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 50,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            "Video output can't keep up (41/50 fps) — lower the stream or display resolution",
+        );
+    });
+
+    it('source shortfall (presented ≈ arrivals) → check-the-link advice, not resolution advice', () => {
+        // Field case 2026-08-01: RIST link dips deliver only ~41 fps; the sink
+        // presents every frame that arrives (dropped=0). Blaming the render
+        // chain would send the operator to the wrong knob.
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 41.5,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            'Stream under-delivering (41/50 fps) — check the source/link (display is keeping up)',
+        );
+    });
+
+    it('missing arrivalsFps (older runner) falls back to the render-lag message', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', { achievedFps: 41, expectedFps: 50 });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining("can't keep up"),
+        );
+    });
+
+    it('recovered clears only a warning this module raised', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 50,
+        });
+        (module as any).health = 'warning';
+        (module as any).onPluginEvent('renderwatch:recovered', {});
+        expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+    });
+});
