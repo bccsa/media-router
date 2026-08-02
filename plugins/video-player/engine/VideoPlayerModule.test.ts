@@ -1348,3 +1348,100 @@ describe('renderWatch health messages', () => {
         expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
     });
 });
+
+describe('cog restack rule (start-time comparison)', () => {
+    function makeModule() {
+        const module = new VideoPlayerModule() as any;
+        module.log = { info: vi.fn() };
+        module.cogWatchStartedAt = 1000_000;
+        module.currentActiveDisplayName = () => 'HDMI-A-1';
+        module.restartPipeline = vi.fn().mockResolvedValue(undefined);
+        return module;
+    }
+
+    it('cog started after our pipeline → one restack restart, latched per PID', () => {
+        // Field case 2026-08-02 (monitor power-cycle): compositor restart
+        // respawned cog AFTER the video pipeline rebuilt; the old PID-baseline
+        // watch captured the new cog as baseline and never restacked — video
+        // stayed hidden behind the control panel indefinitely.
+        const module = makeModule();
+        const find = () => 500;
+        const start = () => 1000_500; // cog newer than pipeline
+        module.pollCogRestack(find, start);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.pollCogRestack(find, start); // same cog PID → latched
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it('cog well older than our pipeline → no restart (we are already on top)', () => {
+        const module = makeModule();
+        module.pollCogRestack(
+            () => 500,
+            () => 900_000, // 100 s before the watch — far outside the grace window
+        );
+        expect(module.restartPipeline).not.toHaveBeenCalled();
+    });
+
+    it('cog slightly older than our pipeline (surface-grace window) → restack once', () => {
+        // A cog process can predate the pipeline while its page (and thus its
+        // surface) renders after ours — field test 2026-08-02: weston restart
+        // spawned cog ~2 s before the pipeline rebuilt and the exact rule
+        // stayed quiet with the stacking unknown.
+        const module = makeModule();
+        module.pollCogRestack(
+            () => 500,
+            () => 995_000, // 5 s before the watch — inside the 15 s grace
+        );
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1); // latched
+    });
+
+    it('the restack latch survives a watch stop/start cycle (no grace-window loop)', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.stopCogPollWatch();
+        module.cogWatchStartedAt = 1_000_500; // watch re-armed after the rebuild
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1); // still latched
+    });
+
+    it('cog absent or start time unreadable → wait, no restart', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => undefined, () => 1000_500);
+        module.pollCogRestack(() => 500, () => undefined);
+        expect(module.restartPipeline).not.toHaveBeenCalled();
+    });
+
+    it('a NEW cog incarnation after a latched one restarts again', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => 500, () => 1000_500);
+        module.pollCogRestack(() => 501, () => 1000_900);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe('stale renderwatch warning cleared on rebuild', () => {
+    it('onStop clears a lag-owned warning so it cannot outlive the pipeline', async () => {
+        // Field case 2026-08-02: "(0/50 fps)" latched while the compositor
+        // was down; the rebuilt pipeline's fresh monitor starts un-lagged and
+        // only reports transitions, so the warning stuck forever.
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.renderLagActive = true;
+        module.health = 'warning';
+        await module.onStop();
+        expect(module.setHealth).toHaveBeenCalledWith('ok');
+        expect(module.renderLagActive).toBe(false);
+    });
+
+    it('onStop leaves health alone when the warning is not lag-owned', async () => {
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.renderLagActive = false;
+        module.health = 'warning'; // someone else's warning
+        await module.onStop();
+        expect(module.setHealth).not.toHaveBeenCalledWith('ok');
+    });
+});

@@ -190,6 +190,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         await this.childProcess.start(desc);
         this.running = true;
         this.health = 'ok';
+        // A successful start supersedes whatever error text the previous
+        // incarnation left behind — without this the stale text rides along
+        // with health='ok' forever ("healthy but shows an old error").
+        this.error = undefined;
         this.emit('stateChange', this.getState());
 
         // For data-mode pipelines with a null-sink, start a separate VU metering process
@@ -291,7 +295,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // is live) reach the UI.
             liveUpdatableParams: this.getLiveUpdatableParams(),
             vuData: this.vuData,
-            error: this.error,
+            // null (not undefined): a cleared error must survive JSON — the
+            // key vanishes for undefined and per-field mergers (manager-ui
+            // socket store) keep the stale text forever.
+            error: this.error ?? null,
             statusData: this.statusData,
             dynamicStatusSections: this.dynamicStatusSections,
             badges: Array.from(this.badges.values()),

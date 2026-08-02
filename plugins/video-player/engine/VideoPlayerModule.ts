@@ -19,6 +19,7 @@ import {
     ensureWaylandEnv,
     findCogPidForDisplay,
     hasWaylandSession,
+    processStartMs,
     waitForWaylandSocket,
 } from './helpers/wayland.js';
 import {
@@ -38,6 +39,15 @@ type SinkAvailability = { wayland: boolean; kms: boolean };
 
 /** Consecutive flowing 1 Hz polls required before a stall-resume rebuild. */
 const RESUME_STABLE_POLLS = 3;
+/**
+ * A cog PROCESS can predate our pipeline while its SURFACE (mapped when the
+ * page first renders, seconds after spawn) still lands on top of ours. Treat
+ * any cog started within this window before our watch began as potentially
+ * newer-surfaced and restack once. Cost when wrong: one extra ~2 s pipeline
+ * blip after a compositor restart; cost of the old exact rule when wrong:
+ * video invisible until a human intervenes.
+ */
+const COG_SURFACE_GRACE_MS = 15_000;
 /** How long after a stall-resume a renderwatch lag earns a free rebuild. */
 const POST_RESUME_HEAL_WINDOW_MS = 120_000;
 
@@ -97,7 +107,10 @@ export class VideoPlayerModule extends GstPluginBase {
     // pinned to our active display changes, kick a pipeline restart so
     // our surface becomes the newest one and lands back on top.
     private cogPollTimer: NodeJS.Timeout | null = null;
-    private lastCogPid: number | undefined = undefined;
+    /** When this pipeline's cog watch (≈ surface creation) began. */
+    private cogWatchStartedAt = 0;
+    /** Cog PID we already restacked for — one restart per cog incarnation. */
+    private lastRestackCogPid: number | undefined = undefined;
 
     // Source-silent fallback. When the live pipeline's stall watchdog fires
     // (no buffer off the bus socket for 5 s) the Python runner tags the
@@ -270,6 +283,14 @@ export class VideoPlayerModule extends GstPluginBase {
         this.stopBusResumeWatchdog();
         // A rebuilt pipeline gets a fresh runner-side monitor that re-measures
         // from scratch — a stale lag latch must not suppress or fake events.
+        // Clear the warning the latch owns too: the fresh monitor starts
+        // un-lagged and only reports TRANSITIONS, so it would never emit the
+        // "recovered" that clears it (field 2026-08-02: "can't keep up
+        // (0/50 fps)" stuck on a healthy pipeline after a compositor-restart
+        // rebuild).
+        if (this.renderLagActive && this.health === 'warning') {
+            this.setHealth('ok');
+        }
         this.renderLagActive = false;
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
         // we deliberately keep the bus-stall latch alive so the rebuilt
@@ -398,29 +419,42 @@ export class VideoPlayerModule extends GstPluginBase {
     private startCogPollWatch(): void {
         if (this.cogPollTimer) return;
         if (!VideoPlayerModule.sinks.wayland || !hasWaylandSession()) return;
-        const display = this.currentActiveDisplayName();
-        if (!display) return;
-        this.lastCogPid = findCogPidForDisplay(display);
-        this.cogPollTimer = setInterval(() => {
-            const activeDisplay = this.currentActiveDisplayName();
-            if (!activeDisplay) return;
-            const current = findCogPidForDisplay(activeDisplay);
-            if (current === undefined) return; // cog mid-restart, wait
-            if (this.lastCogPid === undefined) {
-                this.lastCogPid = current;
-                return;
-            }
-            if (current === this.lastCogPid) return;
-            const previous = this.lastCogPid;
-            this.lastCogPid = current;
-            this.log.info(
-                { display: activeDisplay, previousPid: previous, newPid: current },
-                'Kiosk browser respawned on our output — restarting video pipeline',
-            );
-            this.restartPipeline().catch(() => {
-                /* logged inside */
-            });
-        }, COG_POLL_INTERVAL_MS);
+        if (!this.currentActiveDisplayName()) return;
+        this.cogWatchStartedAt = Date.now();
+        this.cogPollTimer = setInterval(() => this.pollCogRestack(), COG_POLL_INTERVAL_MS);
+    }
+
+    /**
+     * Restack rule: kiosk-shell stacks newest surface on top, so a cog whose
+     * PROCESS started after this pipeline did will cover the video once its
+     * page renders. A PID-change baseline missed the compositor-restart case
+     * (field 2026-08-02, monitor power-cycle): the video pipeline and cog
+     * respawn together, the baseline was captured AFTER the new cog spawned,
+     * and the video stayed hidden behind the control panel with the pipeline
+     * happily presenting to an occluded surface. Comparing process start
+     * times has no baseline to race: cog newer than us → restart once (latched
+     * per PID; the rebuilt pipeline is then newest and the rule goes quiet).
+     */
+    private pollCogRestack(
+        findPid: typeof findCogPidForDisplay = findCogPidForDisplay,
+        startMs: typeof processStartMs = processStartMs,
+    ): void {
+        const activeDisplay = this.currentActiveDisplayName();
+        if (!activeDisplay) return;
+        const current = findPid(activeDisplay);
+        if (current === undefined) return; // cog mid-restart, wait
+        if (current === this.lastRestackCogPid) return;
+        const cogStart = startMs(current);
+        if (cogStart === undefined) return;
+        if (cogStart <= this.cogWatchStartedAt - COG_SURFACE_GRACE_MS) return;
+        this.lastRestackCogPid = current;
+        this.log.info(
+            { display: activeDisplay, cogPid: current },
+            'Kiosk browser surfaced after our pipeline — restarting video pipeline to restack',
+        );
+        this.restartPipeline().catch(() => {
+            /* logged inside */
+        });
     }
 
     private stopCogPollWatch(): void {
@@ -428,7 +462,10 @@ export class VideoPlayerModule extends GstPluginBase {
             clearInterval(this.cogPollTimer);
             this.cogPollTimer = null;
         }
-        this.lastCogPid = undefined;
+        // `lastRestackCogPid` deliberately survives: the grace window means a
+        // freshly-restacked pipeline would otherwise see the SAME cog inside
+        // the window again after its own restart and loop. One restack per
+        // cog incarnation, per module instance.
     }
 
     private currentActiveDisplayName(): string {
