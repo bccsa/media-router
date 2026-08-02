@@ -186,21 +186,24 @@ export class AudioDecoderModule extends GstPluginBase {
         const syncOffsetMs = Math.max(0, Number(config.syncOffsetMs ?? 0));
         const sinkSync = clockSync || lowLatencySync ? 'true' : 'false';
         const provideClock = clockSync ? ' provide-clock=false' : '';
-        // Small pa ring (50 ms vs the default 200 ms): with sync=true the ring
-        // fill is bounded playout delay, not a reservoir — the upstream
-        // non-leaky dejitter queue holds the bursts. syncOffsetMs defaults to
-        // 0: PES-cluster arrivals then render slightly "late" (immediately,
-        // thanks to max-lateness=-1), anchoring audio at arrival ≈ the
-        // smallest possible standing latency. Raise it only if underflow
-        // gaps appear (it trades latency for pacing headroom).
+        // syncOffsetMs defaults to 0: PES-cluster arrivals then render
+        // slightly "late" (immediately, thanks to max-lateness=-1), anchoring
+        // audio at arrival ≈ the smallest possible standing latency. Raise it
+        // toward the burst spacing for genuine pacing (field 2026-08-02:
+        // 250 ms plays steadily).
         const sinkTiming = lowLatencySync
             ? `${syncOffsetMs > 0 ? ` ts-offset=${syncOffsetMs * 1_000_000}` : ''} max-lateness=-1`
             : ' max-lateness=200000000';
 
-        // pa ring size (µs) for the default sync=false path — see the
-        // pulsesink comment below. Clamped 80–1000 ms.
+        // pa ring size (µs). Clamped 80–1000 ms; the paced (lowLatencySync)
+        // path floors it at 100 ms — an earlier hardcoded 50 ms ring xrunned
+        // audibly on the field Pi 4 (pw-top ERR incrementing, dropouts "here
+        // and there"): with sync=true the anchor is ts-offset, so ring depth
+        // is scheduling margin against pw-pulse quantum jitter, not
+        // proportional standing latency.
         const sinkBufferUs =
             Math.max(80, Math.min(1000, Number(config.sinkBufferMs ?? 200))) * 1000;
+        const pacedSinkBufferUs = Math.max(100_000, sinkBufferUs);
 
         const parts = [
             // Post-tsdemux dejitter buffer — NON-LEAKY (leaky=0), sized to at
@@ -239,7 +242,7 @@ export class AudioDecoderModule extends GstPluginBase {
             // drops a frame only when it arrives *already* >200 ms late
             // (post-stall recovery, not steady state);
             // `processing-deadline=100000000`.
-            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${lowLatencySync ? 50000 : sinkBufferUs}${sinkTiming}`,
+            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${lowLatencySync ? pacedSinkBufferUs : sinkBufferUs}${sinkTiming}`,
         ];
         const pipeline = parts.join(' ! ');
 
