@@ -262,6 +262,17 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
         runner for the next occurrence (revert = redeploy engine dist).
       * TODO: surface librist quality/missing/recovered in the rist-input
         module's health/status so recovered-loss storms are operator-visible.
+        → DONE 2026-08-02 (Loss % field + hysteresis health warning).
+      * Related incident (2026-08-02 09:10): an 832 ms WAN blackout made
+        librist delete+recreate the flow; the runner's rist-reader thread
+        exited on the transient read error (-3) and never drained the new
+        flow's fifo ("Rist data out fifo queue overflow") — relay wedged
+        until a module restart, downstream ts-splitter "no input data".
+        Fixed: read loop now retries through RistError instead of breaking.
+        The video player resumed from its watchdog fallback with corrupted
+        decoder state (green band + ~10 late-drops/window) that persisted
+        until an engine restart — resume-from-stall could force a decoder
+        drain/reset; not yet addressed.
       * CAUTION (measurement hazard): per-buffer Python pad probes on
         packet-sized buffers (~750/s × 2 pads) overloaded the relay on a
         Pi 4 under storm load (relay 0.07 → 1.6 cores, presented collapsed

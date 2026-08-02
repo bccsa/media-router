@@ -2200,13 +2200,26 @@ def _start_rist(pipe, cfg):
                 # thread-safe. A push before PLAYING / during teardown returns
                 # FLUSHING and the buffer drops — live-source semantics,
                 # exactly what udpsrc did under the CLI relay.
+                #
+                # A read error is TRANSIENT: librist deletes and recreates the
+                # flow around a link blackout (field case 2026-08-02: peer dead
+                # 832 ms → flow deleted → read returned -3), then keeps
+                # receiving into its fifo. Exiting the loop here left that fifo
+                # undrained ("Rist data out fifo queue overflow") and wedged
+                # the relay until a module restart — so warn once per error
+                # burst and keep reading.
+                err_streak = 0
                 while not _rist_stop.is_set():
                     try:
                         data = ctx.read(100)
                     except librist.RistError as e:
-                        emit_event({"event": "warning",
-                                    "message": f"librist read failed: {e}"})
-                        break
+                        err_streak += 1
+                        if err_streak == 1:
+                            emit_event({"event": "warning",
+                                        "message": f"librist read failed (retrying): {e}"})
+                        _rist_stop.wait(0.1)
+                        continue
+                    err_streak = 0
                     if not data:
                         continue
                     try:
