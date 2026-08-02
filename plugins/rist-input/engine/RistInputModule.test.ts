@@ -196,3 +196,81 @@ describe('RistInputModule rist:stats rendering', () => {
         expect(setStatusData).not.toHaveBeenCalled();
     });
 });
+
+describe('RistInputModule link health (recovered-loss storms)', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    function storm(quality: number, missing = 150, received = 850) {
+        return {
+            'receiver-stats': {
+                flowinstant: {
+                    stats: { received, missing, quality, lost: 0 },
+                    peers: [{ id: 1, stats: { avg_rtt: 210.4 } }],
+                },
+            },
+        };
+    }
+
+    function makeHealthModule() {
+        const { module, ...rest } = makeModule();
+        module.setHealth = vi.fn();
+        return { module, setHealth: module.setHealth as ReturnType<typeof vi.fn>, ...rest };
+    }
+
+    it('renders the recovered-loss rate in the flow stats', () => {
+        const { module, setStatusData } = makeHealthModule();
+        module.onPluginEvent('rist:stats', storm(85, 150, 850));
+        expect(setStatusData).toHaveBeenCalledWith(
+            'stats',
+            expect.objectContaining({ loss: '15.0', rtt: '210.40' }),
+        );
+    });
+
+    it('warns only after 3 consecutive low-quality windows', () => {
+        const { module, setHealth } = makeHealthModule();
+        module.onPluginEvent('rist:stats', storm(80));
+        module.onPluginEvent('rist:stats', storm(80));
+        expect(setHealth).not.toHaveBeenCalled();
+        module.onPluginEvent('rist:stats', storm(80));
+        expect(setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining('recovering 15% packet loss'),
+        );
+    });
+
+    it('a single good window resets the warn streak (no flapping into warning)', () => {
+        const { module, setHealth } = makeHealthModule();
+        module.onPluginEvent('rist:stats', storm(80));
+        module.onPluginEvent('rist:stats', storm(80));
+        module.onPluginEvent('rist:stats', storm(100, 0));
+        module.onPluginEvent('rist:stats', storm(80));
+        module.onPluginEvent('rist:stats', storm(80));
+        expect(setHealth).not.toHaveBeenCalled();
+    });
+
+    it('clears its own warning only after 5 consecutive clean windows', () => {
+        const { module, setHealth } = makeHealthModule();
+        for (let i = 0; i < 3; i++) module.onPluginEvent('rist:stats', storm(80));
+        module.health = 'warning';
+        for (let i = 0; i < 4; i++) module.onPluginEvent('rist:stats', storm(100, 0));
+        expect(setHealth).not.toHaveBeenCalledWith('ok');
+        module.onPluginEvent('rist:stats', storm(100, 0));
+        expect(setHealth).toHaveBeenLastCalledWith('ok');
+    });
+
+    it('never clears a warning it does not own', () => {
+        const { module, setHealth } = makeHealthModule();
+        module.health = 'warning'; // someone else's warning, linkWarnActive false
+        for (let i = 0; i < 6; i++) module.onPluginEvent('rist:stats', storm(100, 0));
+        expect(setHealth).not.toHaveBeenCalled();
+    });
+
+    it('mid-band quality (85–95) keeps an active warning latched', () => {
+        const { module, setHealth } = makeHealthModule();
+        for (let i = 0; i < 3; i++) module.onPluginEvent('rist:stats', storm(80));
+        module.health = 'warning';
+        setHealth.mockClear();
+        for (let i = 0; i < 10; i++) module.onPluginEvent('rist:stats', storm(90, 50, 950));
+        expect(setHealth).not.toHaveBeenCalledWith('ok');
+    });
+});
