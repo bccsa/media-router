@@ -5,6 +5,14 @@ import { MR_PW_PREFIX, type AudioDevice } from './PipeWireManager.js';
 const log = createLogger('AudioDeviceOps');
 
 /**
+ * PulseAudio's unity-gain reference (`PA_VOLUME_NORM`) — the raw value pactl
+ * renders as `100% / 0.00 dB`. Volumes are compared and set in raw units
+ * rather than percent because pactl rounds the percentage it prints (65530
+ * also renders as `100%`), and we want an exact, idempotent target.
+ */
+export const PA_VOLUME_NORM = 65536;
+
+/**
  * Parse the channel count from a `pactl list sources/sinks` block, preferring
  * `Channel Map:` over `Sample Specification:`.
  *
@@ -46,6 +54,25 @@ export function parseDeviceSampleRate(block: string): number | undefined {
 }
 
 /**
+ * Parse the per-channel raw volumes from a `pactl list` block.
+ *
+ * The line looks like:
+ *   `Volume: front-left: 26214 /  40% / -23.88 dB,   front-right: 26214 / ...`
+ * or, for a mono device, `Volume: mono: 65536 / 100% / 0.00 dB`.
+ *
+ * The `^[ \t]*` anchor matters: it keeps `Base Volume:` (a different line,
+ * always at 65536) from being mistaken for the current volume.
+ *
+ * Returns an empty array when the block has no volume line — pactl omits it
+ * for some virtual devices, and "unknown" must not be read as "attenuated".
+ */
+export function parseDeviceVolumes(block: string): number[] {
+    const match = block.match(/^[ \t]*Volume:[ \t]*(.+)$/m);
+    if (!match) return [];
+    return [...match[1].matchAll(/:\s*(\d+)\s*\//g)].map((m) => parseInt(m[1], 10));
+}
+
+/**
  * Parse one `pactl list sources/sinks` block into an `AudioDevice`. Returns
  * `null` only when the block has no `Name:` field (i.e. it's not a real
  * device entry — e.g. the trailing blank between blocks).
@@ -73,6 +100,7 @@ export function parseDeviceBlock(
         direction,
         channels: parseDeviceChannels(block),
         sampleRate: parseDeviceSampleRate(block),
+        volumes: parseDeviceVolumes(block),
     };
 }
 
