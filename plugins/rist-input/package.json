@@ -2,7 +2,7 @@
     "name": "@media-router/plugin-rist-input",
     "version": "2.0.0",
     "private": true,
-    "description": "RIST input \u2014 receives MPEG-TS stream over RIST protocol with bonding support",
+    "description": "RIST input — receives MPEG-TS stream over RIST protocol with bonding support",
     "mediaRouter": {
         "pluginId": "rist-input",
         "displayName": "RIST Input",
@@ -152,6 +152,11 @@
                     {
                         "key": "recovered",
                         "label": "Recovered"
+                    },
+                    {
+                        "key": "loss",
+                        "label": "Loss (recovered)",
+                        "unit": "%"
                     },
                     {
                         "key": "lost",
