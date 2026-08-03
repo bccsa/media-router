@@ -107,3 +107,18 @@ describe('GstPluginBase.spawnRunnerProcess health wiring', () => {
         expect(() => module.spawn({ label: 'r', command: 'x' })).toThrow(/processManager/);
     });
 });
+
+describe('getState error serialization', () => {
+    it('a cleared error is null, never undefined — JSON must carry the key', () => {
+        // Per-field mergers downstream (manager-ui socket store: `if ('error'
+        // in s)`) never clear a field whose key was dropped by JSON. Field
+        // case 2026-08-02: "can't keep up (0/50 fps)" displayed on a healthy
+        // module across engine restarts.
+        const { module } = makeModule();
+        module.setHealth('warning', 'Video output cannot keep up');
+        expect(module.getState().error).toBe('Video output cannot keep up');
+        module.setHealth('ok');
+        expect(module.getState().error).toBeNull();
+        expect('error' in JSON.parse(JSON.stringify(module.getState()))).toBe(true);
+    });
+});

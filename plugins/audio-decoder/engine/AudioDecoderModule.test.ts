@@ -113,12 +113,12 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(desc!.pipeline).not.toContain('ts-offset');
     });
 
-    it('lowLatencySync → sync=true + small ring + max-lateness=-1 (arrival-anchored, never-silent)', () => {
+    it('lowLatencySync → sync=true + floored ring + max-lateness=-1 (arrival-anchored, never-silent)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ lowLatencySync: true });
         expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=true');
         expect(desc!.pipeline).not.toContain('provide-clock=false');
-        expect(desc!.pipeline).toContain('buffer-time=50000');
+        expect(desc!.pipeline).toContain('buffer-time=200000');
         expect(desc!.pipeline).not.toContain('ts-offset');
         expect(desc!.pipeline).toContain('max-lateness=-1');
         expect(desc!.clockSync).toBeUndefined();
@@ -207,9 +207,12 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(module.buildPipeline({ sinkBufferMs: 10 })!.pipeline).toContain(
             'buffer-time=80000',
         );
-        // lowLatencySync keeps its own small fixed ring regardless of sinkBufferMs.
+        // lowLatencySync honours sinkBufferMs with a 100 ms floor — the old
+        // hardcoded 50 ms ring xrunned on the field Pi 4 (audible dropouts).
         const lls = module.buildPipeline({ lowLatencySync: true, sinkBufferMs: 500 });
-        expect(lls!.pipeline).toContain('buffer-time=50000');
+        expect(lls!.pipeline).toContain('buffer-time=500000');
+        const llsThin = module.buildPipeline({ lowLatencySync: true, sinkBufferMs: 80 });
+        expect(llsThin!.pipeline).toContain('buffer-time=100000');
     });
 });
 

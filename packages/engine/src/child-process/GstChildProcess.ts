@@ -196,6 +196,7 @@ export class GstChildProcess extends EventEmitter {
             busReports: desc.busReports ?? [],
             rist: desc.rist,
             tsProbe: desc.tsProbe,
+            renderWatch: desc.renderWatch,
             preserveSourceTimeline: desc.preserveSourceTimeline,
         };
     }

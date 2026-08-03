@@ -30,8 +30,32 @@ const RIST_APPSRC = 'ristsrc';
  * kept for full feature support: per-link weight, cname, main/advanced
  * profiles, encryption.
  */
+/**
+ * Link-health hysteresis on librist's quality metric (100 = no loss). RIST
+ * recovers lost packets via retransmission, so a badly degraded link can carry
+ * a perfect stream — invisible unless surfaced here. Field case, 2026-08-02:
+ * production-hours loss storms of 10–20 % (all recovered, `lost=0`) were the
+ * prime suspect behind intermittent video delivery dips, yet every ad-hoc
+ * link check came back clean because only unrecovered loss is observable.
+ * Warn after WARN_STREAK consecutive low-quality stats windows; clear only
+ * after CLEAR_STREAK clean ones so a flapping link doesn't flap the health.
+ */
+const QUALITY_WARN = 85;
+const QUALITY_CLEAR = 95;
+const WARN_STREAK = 3;
+const CLEAR_STREAK = 5;
+
 export class RistInputModule extends GstPluginBase {
+    private linkWarnActive = false;
+    private lowStreak = 0;
+    private okStreak = 0;
+
     async onStart(): Promise<void> {
+        // A rebuilt receiver re-measures from scratch — stale hysteresis must
+        // not suppress or fake a link warning.
+        this.linkWarnActive = false;
+        this.lowStreak = 0;
+        this.okStreak = 0;
         // Assign the bus output channel before buildPipeline reads it back.
         // The port is the channel identity (busout_<port> tee under unixfd).
         if (this.services?.mediaRouter) {
@@ -102,19 +126,34 @@ export class RistInputModule extends GstPluginBase {
 
         const s = flow.stats;
 
-        // Flow-level stats (aggregate across all peers)
-        this.setStatusData('stats', {
-            received: Number(s.received ?? 0),
-            dropped: Number(s.dropped_late ?? 0),
-            recovered: Number(s.recovered_total ?? 0),
-            lost: Number(s.lost ?? 0),
-            rtt: '—',
-        });
+        // Recovered-loss rate this stats window: what fraction of the wire
+        // went missing before retransmission repaired it. `lost` only counts
+        // UNrecovered packets, so this is the metric that exposes a degraded
+        // link that still delivers a perfect stream.
+        const missing = Number(s.missing ?? 0);
+        const received = Number(s.received ?? 0);
+        const lossPct = received + missing > 0 ? (100 * missing) / (received + missing) : 0;
 
-        // Per-peer stats and dynamic sections
         const peers = flow.peers as
             | Array<{ id?: number; cname?: string; stats?: Record<string, unknown> }>
             | undefined;
+        const firstPeer = peers?.[0]?.stats;
+        const rtt =
+            typeof firstPeer?.avg_rtt === 'number'
+                ? (firstPeer.avg_rtt as number).toFixed(2)
+                : String(firstPeer?.rtt ?? '—');
+
+        // Flow-level stats (aggregate across all peers)
+        this.setStatusData('stats', {
+            received,
+            dropped: Number(s.dropped_late ?? 0),
+            recovered: Number(s.recovered_total ?? 0),
+            loss: lossPct.toFixed(1),
+            lost: Number(s.lost ?? 0),
+            rtt,
+        });
+
+        // Per-peer stats and dynamic sections
         if (peers && peers.length > 0) {
             const peerFields = [
                 { key: 'quality', label: 'Quality', unit: '%' },
@@ -153,24 +192,10 @@ export class RistInputModule extends GstPluginBase {
                     ];
                 }
             }
-
-            // Use first peer's RTT for the flow-level display
-            const firstPeer = peers[0]?.stats;
-            if (firstPeer) {
-                this.setStatusData('stats', {
-                    received: Number(s.received ?? 0),
-                    dropped: Number(s.dropped_late ?? 0),
-                    recovered: Number(s.recovered_total ?? 0),
-                    lost: Number(s.lost ?? 0),
-                    rtt:
-                        typeof firstPeer.avg_rtt === 'number'
-                            ? `${(firstPeer.avg_rtt as number).toFixed(2)}`
-                            : String(firstPeer.rtt ?? '—'),
-                });
-            }
         }
 
         const quality = Number(s.quality ?? 0);
+        this.applyLinkHealth(quality, lossPct, rtt);
         this.setBadge('quality', {
             icon: 'signal',
             text: `${quality}%`,
@@ -184,6 +209,34 @@ export class RistInputModule extends GstPluginBase {
             text: `${peerCount}`,
             color: peerCount > 0 ? '#10b981' : '#6b7280',
         });
+    }
+
+    /** See the hysteresis constants above for why this exists. */
+    private applyLinkHealth(quality: number, lossPct: number, rtt: string): void {
+        if (quality < QUALITY_WARN) {
+            this.lowStreak++;
+            this.okStreak = 0;
+        } else if (quality >= QUALITY_CLEAR) {
+            this.okStreak++;
+            this.lowStreak = 0;
+        } else {
+            // In-between band: neither degrades further nor proves recovery.
+            this.lowStreak = 0;
+            this.okStreak = 0;
+        }
+        if (this.lowStreak >= WARN_STREAK) {
+            this.linkWarnActive = true;
+            this.setHealth(
+                'warning',
+                `RIST link degraded — recovering ${lossPct.toFixed(0)}% packet loss ` +
+                    `(RTT ${rtt} ms); stream still intact`,
+            );
+        } else if (this.okStreak >= CLEAR_STREAK && this.linkWarnActive) {
+            // Only clear health WE degraded — never stomp a warning another
+            // path owns.
+            if (this.health === 'warning') this.setHealth('ok');
+            this.linkWarnActive = false;
+        }
     }
 }
 

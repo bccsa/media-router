@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { buildTsUdpInput } from '@media-router/engine';
+import { buildBusSrc, buildLeakyQueue, buildTsUdpInput } from '@media-router/engine';
 
 /**
  * Surface size used when the output's own mode can't be resolved (headless,
@@ -264,12 +264,12 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! queue ! tsparse ! tsdemux` (via
- * `buildTsUdpInput`) — `tsparse` re-anchors PCR to the local clock so
- * multi-stage encode/remux paths don't accumulate clock drift as session
- * latency. `decodebin` handles any codec inside the MPEG-TS; the post-tsdemux
- * `queue leaky=2` drops oldest if the decoder falls behind so latency doesn't
- * accumulate on slow renderers.
+ * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! tsdemux` by
+ * default — WITHOUT `tsparse` — and gains `tsparse` back when the sink is
+ * clock-paced (see the comment at the construction site below). `decodebin`
+ * handles any codec inside the MPEG-TS; the post-tsdemux `queue leaky=2`
+ * drops oldest if the decoder falls behind so latency doesn't accumulate on
+ * slow renderers.
  */
 const STREAM_STALL_TIMEOUT_MS = 5_000;
 
@@ -297,6 +297,14 @@ export function buildLivePipeline(
      * behaviour. The caller pairs this with a `sync=true` sink + `clockSync`.
      */
     preserveSourcePts = false,
+    /**
+     * True when the sink honours buffer PTS (`sync=true` — the module's `sync`
+     * config or `clockSync`). A clock-paced sink needs clock-anchored
+     * timestamps, which is `tsparse`'s job — so pacing brings tsparse back
+     * into the chain (see the tsInput comment below). Default false = the
+     * tsparse-free present-on-arrival fast path.
+     */
+    sinkPaced = false,
 ): string {
     // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
@@ -305,15 +313,37 @@ export function buildLivePipeline(
     // at every segment join. Tracking `bufferMs` (up to `buildLeakyQueue`'s 5 s
     // cap) gives HLS chains a multi-second jitter buffer that absorbs sender
     // bursts; SRT/RIST (`bufferMs=200`) keeps the original tight latency.
-    const tsInput = buildTsUdpInput({
-        port: udpSource.port,
-        socketPath: udpSource.socketPath,
-        stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-        jitterMs: bufferMs,
-        // Keep source PTS when clock-locked to the audio pipeline; re-anchor
-        // otherwise (the load-bearing default for standalone playout).
-        setTimestamps: !preserveSourcePts,
-    });
+    // The inbound chain has two variants, chosen by how the SINK presents:
+    //
+    // DEFAULT (`sync=false`, presents on arrival): NO `tsparse` (field-
+    // measured on a Pi 4, 2026-08-01). Its documented job — re-anchoring PCR
+    // so multi-stage RE-MUX paths don't drift — doesn't apply to a terminal
+    // display pipeline, timestamps go unused by a non-syncing sink, the leaky
+    // jitter queue sits upstream of where tsparse sat anyway, and it was the
+    // chain's single most expensive element (0.11 core at 1080p50; tsdemux
+    // eats the raw bus buffers directly at +0.06).
+    //
+    // CLOCK-PACED (`sinkPaced` — the `sync` config or `clockSync`): tsparse
+    // RETURNS with `set-timestamps=<!preserveSourcePts>`. A sync=true sink
+    // presents each frame at its PTS against the pipeline clock, which is
+    // only meaningful with clock-anchored timestamps — exactly what
+    // `tsparse set-timestamps=true` produces (PCR-derived, smoothed, local-
+    // clock-anchored; the long-shipped pacing recipe — see buildSink's `sync`
+    // docs). In clockSync mode set-timestamps stays FALSE so the shared
+    // A/V timeline survives. The 0.11 core is paid only when pacing is on.
+    const tsInput = sinkPaced
+        ? buildTsUdpInput({
+              port: udpSource.port,
+              socketPath: udpSource.socketPath,
+              stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
+              jitterMs: bufferMs,
+              setTimestamps: !preserveSourcePts,
+          })
+        : `${buildBusSrc({
+              port: udpSource.port,
+              socketPath: udpSource.socketPath,
+              stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
+          })} ! ${buildLeakyQueue(bufferMs)}`;
     const q = `queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
     // Scaling policy — who resizes the picture, per sink:
     //

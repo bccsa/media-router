@@ -135,6 +135,13 @@ export class AudioOutputModule extends GstPluginBase {
             );
         }
         await this.bringUpRemapSinkAndPipeline(resolved.channels, resolved.rate);
+        // The remap-sink is a NEW PipeWire node — every routed pw-link into
+        // the old one died with it. Re-execute them or the module sits IDLE
+        // with zero inbound links, silent while reporting running (field
+        // 2026-08-02: HDMI monitor power-cycle).
+        if (this.services?.mediaRouter?.reexecuteIncomingPwLinks) {
+            await this.services.mediaRouter.reexecuteIncomingPwLinks(this.services.instanceId);
+        }
     }
 
     /**

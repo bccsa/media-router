@@ -327,17 +327,34 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('videotestsrc');
         });
 
-        it('re-anchors PTS by default (tsparse set-timestamps=true) — single-pipeline playout', () => {
+        it('has NO tsparse — the player never re-muxes, and the default sink presents on arrival', () => {
+            // tsparse's job (re-anchoring PCR so multi-stage remux chains don't
+            // drift) doesn't apply to a terminal display pipeline, and it was
+            // the chain's single most expensive element (0.11 core at 1080p50,
+            // measured 2026-08-01). tsdemux consumes the bus buffers directly.
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
-            expect(s).toContain('tsparse set-timestamps=true');
+            expect(s).not.toContain('tsparse');
         });
 
-        it('preserves source PTS when clock-locked (preserveSourcePts=true) so it shares the audio timeline', () => {
+        it('clock-paced sink (sync config) brings tsparse back with re-anchored timestamps', () => {
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
                 busSource,
                 false,
                 200,
+                false,
+                true,
+            );
+            expect(s).toContain('tsparse set-timestamps=true');
+        });
+
+        it('clockSync keeps tsparse but preserves the source timeline (set-timestamps=false)', () => {
+            const s = buildLivePipeline(
+                'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                busSource,
+                false,
+                200,
+                true,
                 true,
             );
             expect(s).toContain('tsparse set-timestamps=false');
@@ -428,15 +445,13 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
         });
 
-        it('orders unixfdsrc → watchdog → tsparse → tsdemux (watchdog sees raw socket delivery)', () => {
+        it('orders unixfdsrc → watchdog → tsdemux (watchdog sees raw socket delivery)', () => {
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             const idxSrc = s.indexOf('unixfdsrc');
             const idxWd = s.indexOf('watchdog');
-            const idxTsparse = s.indexOf('tsparse');
             const idxTsdemux = s.indexOf('tsdemux');
             expect(idxSrc).toBeLessThan(idxWd);
-            expect(idxWd).toBeLessThan(idxTsparse);
-            expect(idxTsparse).toBeLessThan(idxTsdemux);
+            expect(idxWd).toBeLessThan(idxTsdemux);
         });
     });
 
@@ -1033,12 +1048,44 @@ describe('VideoPlayerModule helpers', () => {
                 await (module as any).pollBusResume();
                 expect(restart).not.toHaveBeenCalled();
 
-                // Counter advanced: source resumed → back to live.
+                // Counter advancing — but resume waits for a STABLE streak
+                // (RESUME_STABLE_POLLS consecutive flowing polls) so the live
+                // pipeline doesn't rebuild against a still-churning source.
                 readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(4000);
                 await (module as any).pollBusResume();
                 expect((module as any).busStallDetected).toBe(false);
                 expect(restart).toHaveBeenCalledTimes(1);
                 expect((module as any).busResumeWatchdog).toBeNull();
+            });
+
+            it('a flat poll mid-streak resets the stability gate', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const readBytes = vi
+                    .spyOn(module as any, 'readBusSinkBytes')
+                    .mockResolvedValue(1000);
+                await (module as any).pollBusResume(); // baseline
+                readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume(); // streak 1
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume(); // streak 2
+                await (module as any).pollBusResume(); // flat → streak 0
+                readBytes.mockResolvedValue(4000);
+                await (module as any).pollBusResume(); // streak 1
+                readBytes.mockResolvedValue(5000);
+                await (module as any).pollBusResume(); // streak 2
+                expect(restart).not.toHaveBeenCalled();
+                expect((module as any).busStallDetected).toBe(true);
             });
 
             it('does nothing while a restart cycle is already in flight', async () => {
@@ -1067,8 +1114,12 @@ describe('VideoPlayerModule helpers', () => {
                 expect(restart).not.toHaveBeenCalled();
                 expect((module as any).busStallDetected).toBe(true);
 
-                // Producer respawned — socket answers → retry live directly.
+                // Producer respawned — socket answers on 3 consecutive
+                // polls (the stability gate) → retry live directly.
                 probeUnixSocketMock.mockResolvedValue(true);
+                await (module as any).pollBusResume();
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
                 await (module as any).pollBusResume();
                 expect((module as any).busStallDetected).toBe(false);
                 expect(restart).toHaveBeenCalledTimes(1);
@@ -1198,5 +1249,199 @@ describe('VideoPlayerModule helpers', () => {
             await module.onLiveConfigUpdate({ fallbackText: 'Whats sup' });
             expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
         });
+    });
+});
+
+describe('renderWatch health messages', () => {
+    function makeModule() {
+        const module = new VideoPlayerModule();
+        (module as any).setHealth = vi.fn();
+        return module;
+    }
+
+    it('render lag (presented below arrivals) → lower-resolution advice', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 50,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            "Video output can't keep up (41/50 fps) — lower the stream or display resolution",
+        );
+    });
+
+    it('source shortfall (presented ≈ arrivals) → check-the-link advice, not resolution advice', () => {
+        // Field case 2026-08-01: RIST link dips deliver only ~41 fps; the sink
+        // presents every frame that arrives (dropped=0). Blaming the render
+        // chain would send the operator to the wrong knob.
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 41.5,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            'Stream under-delivering (41/50 fps) — check the source/link (display is keeping up)',
+        );
+    });
+
+    it('missing arrivalsFps (older runner) falls back to the render-lag message', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', { achievedFps: 41, expectedFps: 50 });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining("can't keep up"),
+        );
+    });
+
+    it('render lag shortly after a stall-resume triggers ONE self-heal rebuild', () => {
+        // Field case 2026-08-02: live pipeline rebuilt against a just-recovered,
+        // still-churning source ran degraded (green band + steady late-drops)
+        // until a manual restart. One free rebuild per resume fixes that; a
+        // second lag is a real render problem and stays visible.
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).log = { info: vi.fn() };
+        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        const lag = { achievedFps: 44, expectedFps: 50, arrivalsFps: 49 };
+        (module as any).onPluginEvent('renderwatch:lag', lag);
+        expect(restart).toHaveBeenCalledTimes(1);
+        (module as any).onPluginEvent('renderwatch:lag', lag);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('no self-heal outside the post-resume window or for source shortfall', () => {
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).log = { info: vi.fn() };
+        // Old resume: outside the heal window.
+        (module as any).lastStallResumeAt = Date.now() - 600_000;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 44,
+            expectedFps: 50,
+            arrivalsFps: 49,
+        });
+        expect(restart).not.toHaveBeenCalled();
+        // Recent resume but the SOURCE is under-delivering — a rebuild can't
+        // manufacture frames the stream never carried.
+        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 41,
+        });
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('recovered clears only a warning this module raised', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 50,
+        });
+        (module as any).health = 'warning';
+        (module as any).onPluginEvent('renderwatch:recovered', {});
+        expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+    });
+});
+
+describe('cog restack rule (start-time comparison)', () => {
+    function makeModule() {
+        const module = new VideoPlayerModule() as any;
+        module.log = { info: vi.fn() };
+        module.cogWatchStartedAt = 1000_000;
+        module.currentActiveDisplayName = () => 'HDMI-A-1';
+        module.restartPipeline = vi.fn().mockResolvedValue(undefined);
+        return module;
+    }
+
+    it('cog started after our pipeline → one restack restart, latched per PID', () => {
+        // Field case 2026-08-02 (monitor power-cycle): compositor restart
+        // respawned cog AFTER the video pipeline rebuilt; the old PID-baseline
+        // watch captured the new cog as baseline and never restacked — video
+        // stayed hidden behind the control panel indefinitely.
+        const module = makeModule();
+        const find = () => 500;
+        const start = () => 1000_500; // cog newer than pipeline
+        module.pollCogRestack(find, start);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.pollCogRestack(find, start); // same cog PID → latched
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it('cog well older than our pipeline → no restart (we are already on top)', () => {
+        const module = makeModule();
+        module.pollCogRestack(
+            () => 500,
+            () => 900_000, // 100 s before the watch — far outside the grace window
+        );
+        expect(module.restartPipeline).not.toHaveBeenCalled();
+    });
+
+    it('cog slightly older than our pipeline (surface-grace window) → restack once', () => {
+        // A cog process can predate the pipeline while its page (and thus its
+        // surface) renders after ours — field test 2026-08-02: weston restart
+        // spawned cog ~2 s before the pipeline rebuilt and the exact rule
+        // stayed quiet with the stacking unknown.
+        const module = makeModule();
+        module.pollCogRestack(
+            () => 500,
+            () => 995_000, // 5 s before the watch — inside the 15 s grace
+        );
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1); // latched
+    });
+
+    it('the restack latch survives a watch stop/start cycle (no grace-window loop)', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.stopCogPollWatch();
+        module.cogWatchStartedAt = 1_000_500; // watch re-armed after the rebuild
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1); // still latched
+    });
+
+    it('cog absent or start time unreadable → wait, no restart', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => undefined, () => 1000_500);
+        module.pollCogRestack(() => 500, () => undefined);
+        expect(module.restartPipeline).not.toHaveBeenCalled();
+    });
+
+    it('a NEW cog incarnation after a latched one restarts again', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => 500, () => 1000_500);
+        module.pollCogRestack(() => 501, () => 1000_900);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe('stale renderwatch warning cleared on rebuild', () => {
+    it('onStop clears a lag-owned warning so it cannot outlive the pipeline', async () => {
+        // Field case 2026-08-02: "(0/50 fps)" latched while the compositor
+        // was down; the rebuilt pipeline's fresh monitor starts un-lagged and
+        // only reports transitions, so the warning stuck forever.
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.renderLagActive = true;
+        module.health = 'warning';
+        await module.onStop();
+        expect(module.setHealth).toHaveBeenCalledWith('ok');
+        expect(module.renderLagActive).toBe(false);
+    });
+
+    it('onStop leaves health alone when the warning is not lag-owned', async () => {
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.renderLagActive = false;
+        module.health = 'warning'; // someone else's warning
+        await module.onStop();
+        expect(module.setHealth).not.toHaveBeenCalledWith('ok');
     });
 });

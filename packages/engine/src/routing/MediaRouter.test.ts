@@ -632,6 +632,57 @@ describe('MediaRouter', () => {
         expect(router.getConnections()).toHaveLength(1);
     });
 
+    it('reexecuteIncomingPwLinks re-links edges into a rebuilt sink node in place', async () => {
+        // Field case 2026-08-02: an HDMI power-cycle recreated audio-output's
+        // remap-sink as a NEW PipeWire node; the decoder→output pw-link died
+        // with the old node and nothing re-created it — silent output, all
+        // modules "running". The reconnect hook re-executes the edge in place
+        // (record kept, handle replaced).
+        const pipeWire = {
+            pwUnlinkAllBetween: vi.fn().mockResolvedValue(undefined),
+            listPorts: vi.fn().mockResolvedValue(['node:port_FL']),
+            pwLink: vi.fn().mockResolvedValue(1),
+            pwUnlinkByName: vi.fn().mockResolvedValue(undefined),
+            pwUnlink: vi.fn().mockResolvedValue(undefined),
+        };
+        const moduleGetter = vi.fn().mockImplementation((id: string) => {
+            if (id === 'dec')
+                return {
+                    running: true,
+                    getPipeWireNodeForPort: () => undefined,
+                    getPipeWireNodes: () => ({ source: 'dec.monitor' }),
+                };
+            if (id === 'out')
+                return {
+                    running: true,
+                    getPipeWireNodeForPort: () => undefined,
+                    getPipeWireNodes: () => ({ sink: 'out' }),
+                };
+            return undefined;
+        });
+        router.setDependencies(pipeWire as any, moduleGetter as any);
+        router.registerPorts('dec', [
+            { id: 'audio-out', direction: 'output', streamType: 'audio/pcm', label: 'Out' },
+        ]);
+        router.registerPorts('out', [
+            { id: 'audio-in', direction: 'input', streamType: 'audio/pcm', label: 'In' },
+        ]);
+        await router.createConnection('dec', 'audio-out', 'out', 'audio-in');
+        expect(pipeWire.pwLink).toHaveBeenCalledTimes(1);
+
+        await router.reexecuteIncomingPwLinks('out');
+
+        // Old link torn down, edge re-executed, record still present.
+        expect(pipeWire.pwUnlinkByName).toHaveBeenCalled();
+        expect(pipeWire.pwLink).toHaveBeenCalledTimes(2);
+        expect(router.getConnections()).toHaveLength(1);
+
+        // No pw-link edges into 'dec' → no-op.
+        pipeWire.pwLink.mockClear();
+        await router.reexecuteIncomingPwLinks('dec');
+        expect(pipeWire.pwLink).not.toHaveBeenCalled();
+    });
+
     it('createConnection throws (not silently drops) when pw-link ports never appear — so the cascade re-link retries', async () => {
         // Regression guard paired with invalidateOutgoingPwLinks: after the
         // record is dropped, the re-apply must be retryable. A recreated
