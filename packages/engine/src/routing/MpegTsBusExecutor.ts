@@ -227,19 +227,35 @@ export class MpegTsBusExecutor implements StreamTypeExecutor {
                     'Input disconnect pending — still streaming previous source',
                 );
                 this.pendingSwaps.defer({ conn }, async (entry) => {
-                    this.busFanout?.detach(entry.conn);
+                    // Consumer first, then the branch — same ordering rule as
+                    // the classic path below.
                     await this.restartSinkIdle(entry.conn);
+                    this.busFanout?.detach(entry.conn);
                 });
                 return;
             }
         }
 
-        // Tear down the producer's fan-out branch for this edge.
+        // ORDER IS LOAD-BEARING: quiesce the consumer BEFORE detaching the
+        // producer's fan-out branch for this edge.
+        //
+        // Detaching first closes the edge socket under a still-running
+        // consumer, so every disconnect killed it by `unixfdsrc` "Internal
+        // data stream error" — an ERRORED pipeline, which is the one shape the
+        // runner cannot EOS-drain end to end (the failed source can no longer
+        // carry the event; see `_eos_drain`). NULL then landed mid-decode and
+        // left the Pi's stateless HEVC block dirty for the next session
+        // (`phase1_cb: Post wait: 0xffffffff`, field 2026-08).
+        //
+        // Stopping the consumer first is a deliberate teardown: its runner
+        // drains, and the restart's `buildPipeline` returns null because the
+        // connection record is already gone (`MediaRouter.removeConnection`
+        // deletes it before calling us), so nothing reconnects to the socket we
+        // are about to detach. Detach is idempotent, so the ordering costs
+        // nothing when the consumer was already stopped.
+        if (!skipModuleRestart && conn) await this.restartSinkIdle(conn);
+
         if (conn) this.busFanout?.detach(conn);
-
-        if (skipModuleRestart) return;
-
-        if (conn) await this.restartSinkIdle(conn);
     }
 
     /** Classic disconnect: stop then restart the sink so its buildPipeline

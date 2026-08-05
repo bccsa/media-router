@@ -1,9 +1,26 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, RenderWatchRunnerConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
+import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, RenderWatchRunnerConfig, KeyframeGateConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
 import { pluginPythonPaths } from './nativeBinaries.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
+
+/**
+ * How long a `stop`ped Python runner gets before SIGKILL.
+ *
+ * LOAD-BEARING: the runner EOS-drains the pipeline before taking it to NULL
+ * (`EOS_DRAIN_TIMEOUT_MS` in gst-pipeline-runner.py) so the Pi's stateless HEVC
+ * decoder is never stopped mid-decode — a mid-decode STREAMOFF wedges the
+ * kernel driver in an uninterruptible wait and takes the box down. SIGKILLing
+ * halfway through that drain re-arms exactly the bug the drain avoids, so this
+ * window must stay above the drain timeout plus the NULL transition. Pinned by
+ * eosDrainContract.test.ts.
+ *
+ * Head of the derived chain: 6000 ms drain → 8000 here → GstRunner's
+ * SHUTDOWN_KILL_MS/SHUTDOWN_EXIT_MS/STOP_PIPELINE_EXIT_MS → GstChildProcess's
+ * GST_RUNNER_KILL_TIMEOUT_MS. Widen from the top; the rest follow.
+ */
+export const FORCE_KILL_TIMEOUT_MS = 8000;
 
 /**
  * Everything the Python runner needs to start (and replay on restart) a
@@ -25,6 +42,7 @@ export interface RunnerStartOptions {
     rist?: RistRunnerConfig;
     tsProbe?: TsProbeRunnerConfig;
     renderWatch?: RenderWatchRunnerConfig;
+    keyframeGate?: KeyframeGateConfig;
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
 }
 
@@ -176,9 +194,11 @@ export class PythonProcess {
     }
 
     /**
-     * Send `stop`, unpipe binary streams, then SIGKILL after 2s if Python
-     * hasn't exited. Caller is responsible for not calling `start` again on
-     * this instance — construct a new `PythonProcess` for the next pipeline.
+     * Send `stop`, unpipe binary streams, then SIGKILL after
+     * `FORCE_KILL_TIMEOUT_MS` if Python hasn't exited (it EOS-drains the
+     * pipeline first, so the exit is not immediate). Caller is responsible for
+     * not calling `start` again on this instance — construct a new
+     * `PythonProcess` for the next pipeline.
      */
     stop(): void {
         if (!this.proc) return;
@@ -203,7 +223,7 @@ export class PythonProcess {
                 console.error('[gst-runner] Force killing Python runner...');
                 this.killProcess(proc, 'SIGKILL');
             }
-        }, 2000);
+        }, FORCE_KILL_TIMEOUT_MS);
 
         proc.once('exit', () => clearTimeout(killTimer));
     }

@@ -29,7 +29,7 @@ vi.mock('fs', async (importOriginal) => {
 
 import { firstConnectedDisplay, listDrmConnectors, probeUnixSocket } from '@media-router/engine';
 import { VideoPlayerModule } from './VideoPlayerModule.js';
-import { currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
+import { bootNowMs, currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
 import {
     buildFallbackOnlyPipeline,
     buildLivePipeline,
@@ -40,6 +40,8 @@ import {
     RESUME_SINK_NAME,
     surfaceCaps,
 } from './helpers/pipelines.js';
+import { DECODER_ELEMENTS, selectDecoder } from './helpers/decoderSelection.js';
+import { DEFAULT_DEMOTION_TTL_MS, DEMOTION_TTL_ENV_VAR } from './helpers/decoderDemotions.js';
 
 const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
@@ -48,6 +50,9 @@ describe('VideoPlayerModule helpers', () => {
     beforeEach(() => {
         // Reset any cached probe state so each test sets its own.
         VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+        // No decoder elements + no demotions by default: every build that
+        // doesn't opt in resolves to the decodebin3 rung, i.e. today's pipeline.
+        VideoPlayerModule._test_resetDecoderState();
         // Deterministic DRM default: no connectors = dev-machine path, so the
         // headless guard never fires from the box the tests happen to run on
         // (a headless Pi has connectors that are all `disconnected`, which
@@ -72,9 +77,9 @@ describe('VideoPlayerModule helpers', () => {
             );
         });
         it('targets kmssink by numeric connector-id (older kmssink builds reject connector-name)', () => {
-            expect(
-                buildSink('HDMI-A-1', { ...both, waylandSession: false, connectorId: 32 }),
-            ).toBe('kmssink name=sink connector-id=32 sync=false qos=true');
+            expect(buildSink('HDMI-A-1', { ...both, waylandSession: false, connectorId: 32 })).toBe(
+                'kmssink name=sink connector-id=32 sync=false qos=true',
+            );
         });
         it('falls back to auto-pick kmssink when the connector id can not be resolved', () => {
             // Picked a display but sysfs lookup returned undefined — better to
@@ -90,9 +95,9 @@ describe('VideoPlayerModule helpers', () => {
             );
         });
         it('falls back to autovideosink when neither sink is installed', () => {
-            expect(
-                buildSink('', { wayland: false, kms: false, waylandSession: false }),
-            ).toBe('autovideosink sync=false qos=true');
+            expect(buildSink('', { wayland: false, kms: false, waylandSession: false })).toBe(
+                'autovideosink sync=false qos=true',
+            );
         });
         it('uses kmssink even with a compositor present when waylandsink is missing', () => {
             expect(
@@ -139,9 +144,7 @@ describe('VideoPlayerModule helpers', () => {
 
         describe('with sync=true (HLS branch)', () => {
             it('emits sync=true max-lateness=1000000000 on waylandsink', () => {
-                expect(
-                    buildSink('', { ...both, waylandSession: true }, { sync: true }),
-                ).toBe(
+                expect(buildSink('', { ...both, waylandSession: true }, { sync: true })).toBe(
                     'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=true',
                 );
             });
@@ -152,12 +155,14 @@ describe('VideoPlayerModule helpers', () => {
                         { ...both, waylandSession: false, connectorId: 32 },
                         { sync: true },
                     ),
-                ).toBe('kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 qos=true');
+                ).toBe(
+                    'kmssink name=sink connector-id=32 sync=true max-lateness=1000000000 qos=true',
+                );
             });
             it('emits sync=true max-lateness=1000000000 on auto-pick kmssink', () => {
-                expect(
-                    buildSink('', { ...both, waylandSession: false }, { sync: true }),
-                ).toBe('kmssink name=sink sync=true max-lateness=1000000000 qos=true');
+                expect(buildSink('', { ...both, waylandSession: false }, { sync: true })).toBe(
+                    'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                );
             });
             it('emits sync=true max-lateness=1000000000 on autovideosink', () => {
                 expect(
@@ -173,11 +178,7 @@ describe('VideoPlayerModule helpers', () => {
                 // sink honours PTS (no fast/slow oscillation) AND doesn't ask
                 // the decoder to drop. max-lateness=1000000000 covers the third leg.
                 expect(
-                    buildSink(
-                        '',
-                        { ...both, waylandSession: true },
-                        { sync: true, qos: false },
-                    ),
+                    buildSink('', { ...both, waylandSession: true }, { sync: true, qos: false }),
                 ).toBe(
                     'waylandsink name=sink sync=true max-lateness=1000000000 fullscreen=true qos=false',
                 );
@@ -294,20 +295,26 @@ describe('VideoPlayerModule helpers', () => {
     });
 
     describe('resolveDecoderThreadType', () => {
-        it('opts into multi-core (frame) decode only for the explicit "frame" value', () => {
+        it('asks the runner to force frame threading for every value but "single"', () => {
+            // The runner's `'frame'` is what threads the decoder decodebin3
+            // auto-plugs on the bootstrap rung — the counterpart of the inline
+            // properties on the explicit rungs.
+            expect(resolveDecoderThreadType('auto')).toBe('frame');
             expect(resolveDecoderThreadType('frame')).toBe('frame');
         });
 
-        it('defaults to latency-safe "auto" when unset', () => {
-            expect(resolveDecoderThreadType(undefined)).toBe('auto');
+        it('defaults to the threaded mapping when unset or junk (the setting default is "auto")', () => {
+            expect(resolveDecoderThreadType(undefined)).toBe('frame');
+            expect(resolveDecoderThreadType('slice')).toBe('frame');
+            expect(resolveDecoderThreadType('')).toBe('frame');
+            expect(resolveDecoderThreadType(1)).toBe('frame');
+            expect(resolveDecoderThreadType(null)).toBe('frame');
         });
 
-        it('falls back to "auto" for "auto" and any unrecognised / junk value', () => {
-            expect(resolveDecoderThreadType('auto')).toBe('auto');
-            expect(resolveDecoderThreadType('slice')).toBe('auto');
-            expect(resolveDecoderThreadType('')).toBe('auto');
-            expect(resolveDecoderThreadType(1)).toBe('auto');
-            expect(resolveDecoderThreadType(null)).toBe('auto');
+        it('leaves ffmpeg\'s live default alone on "single" — the runner\'s "auto"', () => {
+            // The two vocabularies disagree about `'auto'` on purpose: this is
+            // the one setting value that maps onto the runner's do-not-force.
+            expect(resolveDecoderThreadType('single')).toBe('auto');
         });
     });
 
@@ -453,6 +460,205 @@ describe('VideoPlayerModule helpers', () => {
             expect(idxSrc).toBeLessThan(idxWd);
             expect(idxWd).toBeLessThan(idxTsdemux);
         });
+
+        describe('TS video-info tap', () => {
+            it('tees the ingress just before tsdemux into a leaky-queue appsink', () => {
+                // Tap point is the ingress (tsInput), for two reasons: the
+                // probe wants the MUXED TS (it does its own PSI discovery), and
+                // it puts the branch downstream of the stall watchdog so it
+                // cannot interfere with bus_stall detection.
+                const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+                expect(s).toContain('! tee name=vp_ts ! tsdemux');
+                expect(s).toContain(
+                    'vp_ts. ! queue leaky=downstream max-size-buffers=64 ! appsink name=tsprobe',
+                );
+                expect(s.indexOf('watchdog')).toBeLessThan(s.indexOf('tee name=vp_ts'));
+            });
+
+            it('taps the same spot on the clock-paced variant (after tsparse)', () => {
+                // The paced chain inserts tsparse ahead of the tee; the tap is
+                // still the last thing before tsdemux. It does NOT depend on
+                // tsparse for 188-byte alignment — the bus delivers whole-packet
+                // buffers on both variants (unixfd preserves producer buffer
+                // boundaries), which is what `ts_psi.iter_packets` needs since
+                // it strides a fixed 188 and never resyncs on 0x47.
+                const s = buildLivePipeline(
+                    'kmssink name=sink sync=true qos=true',
+                    busSource,
+                    false,
+                    200,
+                    false,
+                    true,
+                );
+                expect(s).toContain('tsparse set-timestamps=true ! tee name=vp_ts ! tsdemux');
+                expect(s).toContain('appsink name=tsprobe');
+            });
+
+            it('hangs the tap off the end as a side chain, never in the render path', () => {
+                const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+                expect(s.indexOf('kmssink name=sink')).toBeLessThan(s.indexOf('appsink'));
+                // Leaky + the runner's drop=true appsink: the tap can never
+                // back-pressure the render branch through the tee.
+                expect(s).toContain('leaky=downstream');
+            });
+        });
+
+        describe('explicit decoder chains', () => {
+            const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
+            const wayland = 'waylandsink name=sink sync=false fullscreen=true qos=true';
+            const kms = 'kmssink name=sink sync=false qos=true';
+
+            it('bootstraps on decodebin3 with NO capsfilter when no codec is known', () => {
+                // Byte-for-byte the pipeline the player has always built (plus
+                // the probe tap that discovers the codec in the first place).
+                const s = buildLivePipeline(wayland, busSource, true);
+                expect(s).toContain(
+                    'tsdemux latency=0 ! queue leaky=2 max-size-time=1000000000 ' +
+                        'max-size-buffers=0 max-size-bytes=0 ! decodebin3 ! videoconvert ! ' +
+                        wayland,
+                );
+                expect(s).not.toContain('capsfilter');
+                expect(s).not.toContain('h264parse');
+                expect(s).not.toContain('h265parse');
+            });
+
+            it('builds h264parse ! v4l2h264dec on the wayland path (no videoscale)', () => {
+                const s = buildLivePipeline(
+                    wayland,
+                    busSource,
+                    true,
+                    200,
+                    false,
+                    false,
+                    selectDecoder({ codec: 'h264', available: all }),
+                );
+                expect(s).toContain(
+                    'tsdemux latency=0 ! capsfilter caps="video/x-h264" ! ' +
+                        'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! ' +
+                        'h264parse ! v4l2h264dec name=vpdec ! videoconvert ! ' +
+                        wayland,
+                );
+                expect(s).not.toContain('decodebin');
+                expect(s).not.toContain('videoscale');
+            });
+
+            it('builds h265parse ! v4l2slh265dec on the KMS path (videoconvert ! videoscale)', () => {
+                const s = buildLivePipeline(
+                    kms,
+                    busSource,
+                    false,
+                    200,
+                    false,
+                    false,
+                    selectDecoder({ codec: 'h265', available: all }),
+                );
+                expect(s).toContain(
+                    'capsfilter caps="video/x-h265" ! ' +
+                        'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! ' +
+                        'h265parse ! v4l2slh265dec name=vpdec ! videoconvert ! videoscale ! ' +
+                        kms,
+                );
+            });
+
+            it('inlines avdec frame threading and honours bufferMs on the software rung', () => {
+                const s = buildLivePipeline(
+                    kms,
+                    busSource,
+                    false,
+                    1500,
+                    false,
+                    false,
+                    selectDecoder({
+                        codec: 'h265',
+                        available: { h265parse: true, avdec_h265: true },
+                        threading: 'frame',
+                    }),
+                );
+                expect(s).toContain(
+                    'h265parse ! avdec_h265 name=vpdec thread-type=frame max-threads=3 ! videoconvert',
+                );
+                // bufferMs still sizes both the jitter queue and the
+                // post-demux leaky queue — unchanged by the decoder swap.
+                expect(s).toContain('max-size-time=1500000000');
+            });
+
+            it('threads the software rung on the default (auto) threading', () => {
+                const s = buildLivePipeline(
+                    kms,
+                    busSource,
+                    false,
+                    200,
+                    false,
+                    false,
+                    selectDecoder({
+                        codec: 'h264',
+                        available: { h264parse: true, avdec_h264: true },
+                    }),
+                );
+                expect(s).toContain(
+                    'h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3 ! videoconvert',
+                );
+            });
+
+            it('leaves the software rung bare on "single"', () => {
+                const s = buildLivePipeline(
+                    kms,
+                    busSource,
+                    false,
+                    200,
+                    false,
+                    false,
+                    selectDecoder({
+                        codec: 'h264',
+                        available: { h264parse: true, avdec_h264: true },
+                        threading: 'single',
+                    }),
+                );
+                expect(s).toContain('h264parse ! avdec_h264 name=vpdec ! videoconvert');
+                expect(s).not.toContain('thread-type');
+            });
+
+            it('puts the capsfilter DIRECTLY on tsdemux, before the leaky queue', () => {
+                // The queue's sink pad is ANY, so it would accept an AUDIO pad
+                // from tsdemux just as happily as the video one — and the audio
+                // then reaches h26xparse/videoconvert and kills the pipeline
+                // with "Internal data stream error". Steering has to happen at
+                // the first pad the demuxer can link to.
+                const s = buildLivePipeline(
+                    kms,
+                    busSource,
+                    false,
+                    200,
+                    false,
+                    false,
+                    selectDecoder({ codec: 'h264', available: all }),
+                );
+                // Slice from tsdemux so the pre-tsparse jitter queue (same
+                // 200 ms bound) can't be mistaken for the post-demux one.
+                const afterDemux = s.slice(s.indexOf('tsdemux'));
+                expect(afterDemux.indexOf('capsfilter')).toBeLessThan(
+                    afterDemux.indexOf('queue leaky=2'),
+                );
+                expect(afterDemux.indexOf('queue leaky=2')).toBeLessThan(
+                    afterDemux.indexOf('h264parse'),
+                );
+            });
+
+            it('keeps the probe tap, watchdog and PTS handling on an explicit chain', () => {
+                const s = buildLivePipeline(
+                    wayland,
+                    busSource,
+                    true,
+                    200,
+                    true,
+                    true,
+                    selectDecoder({ codec: 'h265', available: all }),
+                );
+                expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
+                expect(s).toContain('tsparse set-timestamps=false');
+                expect(s).toContain('appsink name=tsprobe');
+            });
+        });
     });
 
     describe('surfaceCaps', () => {
@@ -553,8 +759,9 @@ describe('VideoPlayerModule helpers', () => {
 
         describe('headless guard', () => {
             const listDrmConnectorsMock = listDrmConnectors as unknown as ReturnType<typeof vi.fn>;
-            const firstConnectedDisplayMock =
-                firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>;
+            const firstConnectedDisplayMock = firstConnectedDisplay as unknown as ReturnType<
+                typeof vi.fn
+            >;
 
             it('returns no pipeline and flags health=error when DRM exists but nothing is connected', () => {
                 // A sink would only error-loop here: kmssink has no connector
@@ -650,7 +857,8 @@ describe('VideoPlayerModule helpers', () => {
             expect(desc.pipeline).not.toContain('videotestsrc');
             // KMS path → no wayland app-id env. The pinning mechanism doesn't
             // apply here (kmssink picks the connector directly), and leaking
-            // a prgname into process listings would just be confusing.
+            // a prgname into process listings would just be confusing. Nothing
+            // is demoted, so the decodebin3 rung carries no rank mask either.
             expect(desc.env).toEqual({});
         });
 
@@ -741,19 +949,31 @@ describe('VideoPlayerModule helpers', () => {
         }
 
         it('returns undefined for an empty display name', () => {
-            fakeProc(123, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            fakeProc(
+                123,
+                '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2',
+            );
             expect(findCogPidForDisplay('', tmp)).toBeUndefined();
         });
 
         it('returns the PID of the cog instance pinned to the given connector', () => {
-            fakeProc(101, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
-            fakeProc(202, '/usr/bin/cog http://localhost:8083/background --gapplication-app-id=local.cog.HDMI-A-1');
+            fakeProc(
+                101,
+                '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2',
+            );
+            fakeProc(
+                202,
+                '/usr/bin/cog http://localhost:8083/background --gapplication-app-id=local.cog.HDMI-A-1',
+            );
             expect(findCogPidForDisplay('HDMI-A-1', tmp)).toBe(202);
             expect(findCogPidForDisplay('DSI-2', tmp)).toBe(101);
         });
 
         it('returns undefined when no cog is running for the requested display', () => {
-            fakeProc(101, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            fakeProc(
+                101,
+                '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2',
+            );
             expect(findCogPidForDisplay('HDMI-A-2', tmp)).toBeUndefined();
         });
 
@@ -770,7 +990,10 @@ describe('VideoPlayerModule helpers', () => {
         it('skips non-numeric /proc entries (devices, self, etc.)', () => {
             fs.mkdirSync(path.join(tmp, 'self'));
             fs.writeFileSync(path.join(tmp, 'self', 'cmdline'), 'irrelevant');
-            fakeProc(404, '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2');
+            fakeProc(
+                404,
+                '/usr/bin/cog http://localhost:8081 --gapplication-app-id=local.cog.DSI-2',
+            );
             expect(findCogPidForDisplay('DSI-2', tmp)).toBe(404);
         });
 
@@ -957,9 +1180,7 @@ describe('VideoPlayerModule helpers', () => {
             // so the module must latch + trigger a full restart so
             // buildPipeline is re-called with the flag set.
             const module = makeModule();
-            const restart = vi
-                .spyOn(module as any, 'restartPipeline')
-                .mockResolvedValue(undefined);
+            const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
             const child = { on: vi.fn() };
             (module as any).childProcess = child;
             (module as any).installBusStallListener();
@@ -989,9 +1210,7 @@ describe('VideoPlayerModule helpers', () => {
             const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Source down');
-            expect(desc.pipeline).toContain(
-                `unixfdsrc socket-path=${busSource.socketPath}`,
-            );
+            expect(desc.pipeline).toContain(`unixfdsrc socket-path=${busSource.socketPath}`);
             expect(desc.pipeline).toContain(`fakesink name=${RESUME_SINK_NAME}`);
             expect((module as any).resumeTapActive).toBe(true);
             expect((module as any).setHealth).toHaveBeenCalledWith(
@@ -1158,6 +1377,776 @@ describe('VideoPlayerModule helpers', () => {
         });
     });
 
+    describe('codec-aware decoder selection', () => {
+        // sourceModuleId/sourcePortId identify the producer EDGE — the key the
+        // codec memory is filed under (see helpers/codecMemory.ts).
+        const busSource = {
+            port: 5500,
+            socketPath: '/tmp/mr-bus-5500-abc.sock',
+            sourceModuleId: 'ts-input-1',
+            sourcePortId: 'mpegts-out',
+        };
+        const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
+
+        function makeModule() {
+            const module = new VideoPlayerModule();
+            (module as any).services = {
+                instanceId: 'video-player-1',
+                mediaRouter: { getModuleBusSource: vi.fn(() => busSource) },
+            };
+            (module as any).setHealth = vi.fn();
+            (module as any).log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+            (module as any).config = {};
+            return module;
+        }
+
+        /** Drive one full build the way onStart would, and return the desc. */
+        function build(module: VideoPlayerModule, config: Record<string, unknown> = {}) {
+            (module as any).config = { display: '', ...config };
+            return module.buildPipeline((module as any).config)!;
+        }
+
+        beforeEach(() => {
+            VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+            VideoPlayerModule.setDecoderAvailability(all);
+        });
+
+        afterEach(() => {
+            VideoPlayerModule._test_resetDecoderState();
+            vi.restoreAllMocks();
+        });
+
+        describe('bootstrap → upgrade', () => {
+            it('builds decodebin3 and arms the TS probe before any videoinfo has arrived', () => {
+                const module = makeModule();
+                const desc = build(module);
+                expect(desc.pipeline).toContain('decodebin3');
+                expect(desc.pipeline).not.toContain('h264parse');
+                // The probe is what makes the upgrade possible at all.
+                expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
+                expect(desc.pipeline).toContain('appsink name=tsprobe');
+            });
+
+            it('rebuilds with the explicit chain when the probe reports a codec', () => {
+                const module = makeModule();
+                build(module); // bootstrap: decodebin3
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+
+                (module as any).onPluginEvent('tsprobe:videoinfo', {
+                    pid: 256,
+                    codec: 'h264',
+                    display: null,
+                });
+                expect(restart).toHaveBeenCalledTimes(1);
+
+                // The rebuild (restartPipeline → onStart → buildPipeline) now
+                // sees the remembered codec and plugs the hardware decoder.
+                const desc = build(module);
+                expect(desc.pipeline).toContain('capsfilter caps="video/x-h264"');
+                expect(desc.pipeline).toContain('h264parse ! v4l2h264dec');
+                expect(desc.pipeline).not.toContain('decodebin3');
+            });
+
+            it('does not rebuild when the same codec is reported again (debounce)', () => {
+                const module = makeModule();
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                build(module); // the rebuild
+                expect(restart).toHaveBeenCalledTimes(1);
+
+                // Steady state: the probe re-emits on every SPS change.
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                (module as any).onPluginEvent('tsprobe:videoinfo', {
+                    codec: 'h265',
+                    width: 1920,
+                    height: 1080,
+                });
+                expect(restart).toHaveBeenCalledTimes(1);
+            });
+
+            it('does not rebuild for a codec that resolves to the rung already running', () => {
+                // mpeg2 has no ladder → decodebin3, which is what bootstrap
+                // already built. Tearing the picture down for that is pure loss.
+                const module = makeModule();
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'mpeg2' });
+                expect(restart).not.toHaveBeenCalled();
+            });
+
+            it('ignores other channels and payloads without a codec', () => {
+                const module = makeModule();
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (module as any).onPluginEvent('level:sclevel', { codec: 'h264' });
+                (module as any).onPluginEvent('tsprobe:videoinfo', {});
+                (module as any).onPluginEvent('tsprobe:videoinfo', null);
+                expect(restart).not.toHaveBeenCalled();
+            });
+
+            it('threads the software rung it picks by default (cpuDecodeThreading unset)', () => {
+                const module = makeModule();
+                VideoPlayerModule.setDecoderAvailability({ h264parse: true, avdec_h264: true });
+                (module as any).detectedCodec = 'h264';
+                const desc = build(module);
+                expect(desc.pipeline).toContain(
+                    'h264parse ! avdec_h264 name=vpdec thread-type=frame max-threads=3',
+                );
+                // Still handed to the runner: it stays load-bearing on the
+                // decodebin3 rung, where GStreamer auto-plugs the decoder.
+                expect(desc.decoderThreadType).toBe('frame');
+            });
+
+            it('honours cpuDecodeThreading="single" on the software rung it picks', () => {
+                const module = makeModule();
+                VideoPlayerModule.setDecoderAvailability({ h264parse: true, avdec_h264: true });
+                (module as any).detectedCodec = 'h264';
+                const desc = build(module, { cpuDecodeThreading: 'single' });
+                expect(desc.pipeline).toContain('h264parse ! avdec_h264 name=vpdec ! videoconvert');
+                expect(desc.pipeline).not.toContain('thread-type');
+                // And the runner is told not to force one either, so the bare
+                // element keeps ffmpeg's single-core live default.
+                expect(desc.decoderThreadType).toBe('auto');
+            });
+
+            it('gates the explicit rung on the first keyframe, never the bootstrap rung', () => {
+                // End to end through the real module: mid-GOP stream entry on a
+                // stateless V4L2 decoder leaves the kernel driver holding a
+                // decode request that never completes, and the next teardown
+                // hangs V4L2 box-wide (Pi 4 rpivid / Pi 5 hevc_dec, 6.12.87).
+                const module = makeModule();
+                // Bootstrap (no codec yet) = decodebin3: parsebin gates stream
+                // entry there, and there is no decoder element to name.
+                expect(build(module).keyframeGate).toBeUndefined();
+
+                (module as any).detectedCodec = 'h265';
+                const desc = build(module);
+                expect(desc.keyframeGate).toEqual({ decoder: 'vpdec' });
+                // The gated element has to exist in the string the runner parses.
+                expect(desc.pipeline).toContain('v4l2slh265dec name=vpdec');
+            });
+        });
+
+        describe('codec change', () => {
+            it('rebuilds with the new codec’s chain on h265 → h264', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h265';
+                const first = build(module);
+                expect(first.pipeline).toContain('h265parse ! v4l2slh265dec');
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h264' });
+                expect(restart).toHaveBeenCalledTimes(1);
+
+                const second = build(module);
+                expect(second.pipeline).toContain('h264parse ! v4l2h264dec');
+                expect(second.pipeline).toContain('capsfilter caps="video/x-h264"');
+                expect(second.pipeline).not.toContain('h265');
+            });
+
+            it('rebuilds down to decodebin3 when the new codec has no ladder', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h264';
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'mpeg2' });
+                expect(restart).toHaveBeenCalledTimes(1);
+                const desc = build(module);
+                expect(desc.pipeline).toContain('decodebin3');
+                expect(desc.pipeline).not.toContain('capsfilter');
+            });
+
+            it('remembers the codec across an internal restart, and clears the instance state on an external stop', async () => {
+                // Internal restart (compositor flap, cog respawn, stall/resume)
+                // must not pay the bootstrap hop again.
+                const module = makeModule();
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                (module as any).pipelineRestartInProgress = true;
+                await module.onStop();
+                expect((module as any).detectedCodec).toBe('h265');
+                expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+
+                // External stop wipes the INSTANCE state — the shared codec
+                // memory is what puts it back, and only per producer edge.
+                (module as any).pipelineRestartInProgress = false;
+                await module.onStop();
+                expect((module as any).detectedCodec).toBeUndefined();
+            });
+
+            it('starts on the explicit chain after an EXTERNAL restart against the same source', async () => {
+                // The churn cost this removes: every moduleRestart used to
+                // bootstrap on decodebin3, which auto-plugs (and a second later
+                // kills) a hardware decoder for a codec the engine already knew.
+                const module = makeModule();
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                (module as any).pipelineRestartInProgress = false;
+                await module.onStop();
+
+                const restarted = makeModule(); // external restart = fresh instance
+                const desc = build(restarted);
+                expect(desc.pipeline).toContain('h265parse ! v4l2slh265dec');
+                expect(desc.pipeline).not.toContain('decodebin3');
+                // The probe is still armed, so a codec CHANGE is caught as ever.
+                expect(desc.tsProbe).toEqual({ appsink: 'tsprobe' });
+                const restart = vi
+                    .spyOn(restarted as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (restarted as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h264' });
+                expect(restart).toHaveBeenCalledTimes(1);
+                expect(build(restarted).pipeline).toContain('h264parse ! v4l2h264dec');
+            });
+
+            it('bootstraps on decodebin3 when the module is rewired to a different source', () => {
+                // A rewire is exactly the case the external-stop wipe existed
+                // for: the new feed may be anything, so it must not inherit a
+                // chain built for the old one.
+                const module = makeModule();
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                const rewired = makeModule();
+                (rewired as any).services.mediaRouter.getModuleBusSource.mockReturnValue({
+                    ...busSource,
+                    sourceModuleId: 'ts-input-2',
+                });
+                expect(build(rewired).pipeline).toContain('decodebin3');
+            });
+
+            it('keeps the fallback card free of any decoder record', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h264';
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+                const desc = build(module);
+                expect(desc.pipeline).toContain('videotestsrc');
+                expect(desc.tsProbe).toBeUndefined();
+                expect((module as any).liveDecoder).toBeUndefined();
+            });
+        });
+
+        describe('runtime demotion', () => {
+            /** Attach the module's own error listener to a fake child process. */
+            function errorHandlerFor(module: VideoPlayerModule) {
+                const child = { on: vi.fn() };
+                (module as any).childProcess = child;
+                (module as any).installBusStallListener();
+                return child.on.mock.calls.find((c: unknown[]) => c[0] === 'error')![1] as (
+                    d: unknown,
+                ) => void;
+            }
+
+            it('demotes a failed hardware decoder and rebuilds on software', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h265';
+                expect(build(module).pipeline).toContain('v4l2slh265dec');
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const onError = errorHandlerFor(module);
+
+                // Observed for real on this hardware: rpivid rejects a stream
+                // it cannot decode, mid-playback. `element` is the gst bus
+                // message's source, which is what attributes the failure.
+                onError({
+                    message: 'Driver does not support the selected stream.',
+                    element: 'v4l2slh265dec0',
+                });
+
+                expect([...VideoPlayerModule.getDemotedDecoders()]).toEqual(['v4l2slh265dec']);
+                expect(restart).toHaveBeenCalledTimes(1);
+                // Warning, not error — the picture keeps playing one rung down.
+                expect((module as any).setHealth).toHaveBeenCalledWith(
+                    'warning',
+                    'Hardware decoder v4l2slh265dec failed — using software decode (avdec_h265)',
+                );
+                expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+            });
+
+            it('keeps the demotion note up across the rebuild (not a one-frame flash)', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h265';
+                build(module);
+                vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+                errorHandlerFor(module)({
+                    message: 'Driver does not support…',
+                    element: 'v4l2slh265dec0',
+                });
+
+                // The rebuild sets health ok for a healthy live source; the
+                // note has to be re-applied after it or the operator never
+                // sees that the box dropped to software decode.
+                build(module);
+                expect((module as any).setHealth).toHaveBeenLastCalledWith(
+                    'warning',
+                    'Hardware decoder v4l2slh265dec failed — using software decode (avdec_h265)',
+                );
+            });
+
+            it('leaves health ok for a codec whose ladder has no demotions', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h265';
+                build(module);
+                vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+                errorHandlerFor(module)({
+                    message: 'Driver does not support…',
+                    element: 'v4l2slh265dec0',
+                });
+
+                // Same engine session, but this stream is h264 — its hardware
+                // decoder was never demoted, so no degraded-path warning.
+                (module as any).detectedCodec = 'h264';
+                build(module);
+                expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+            });
+
+            it('walks the whole ladder down to decodebin3 across repeated failures', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h264';
+                build(module);
+                vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+                const onError = errorHandlerFor(module);
+
+                onError({ message: 'decode failed', element: 'v4l2h264dec0' });
+                const software = build(module);
+                expect(software.pipeline).toContain('h264parse ! avdec_h264');
+                // Explicit rung: the decoder is named outright, so no rank
+                // override — masking it would strike out our own choice.
+                expect(software.env?.GST_PLUGIN_FEATURE_RANK).toBeUndefined();
+
+                onError({ message: 'decode failed', element: 'avdec_h2640' });
+                const desc = build(module);
+                expect(desc.pipeline).toContain('decodebin3');
+                // Last-rung escape. decodebin3 auto-plugs BY RANK and would
+                // re-plug a struck-off decoder; its error is `ignore`d on this
+                // rung, so nothing would break the fail→replug loop. Exactly
+                // the demoted decoders, in failure order — the h265 ladder's
+                // hardware rung never failed, so it is not masked.
+                expect(desc.env?.GST_PLUGIN_FEATURE_RANK).toBe('v4l2h264dec:NONE,avdec_h264:NONE');
+                // The note names the BEST rung lost (hardware decode is gone)
+                // and is re-applied by the rebuild, so it persists.
+                expect((module as any).setHealth).toHaveBeenLastCalledWith(
+                    'warning',
+                    'Hardware decoder v4l2h264dec failed — using automatic decoder selection',
+                );
+                expect([...VideoPlayerModule.getDemotedDecoders()].sort()).toEqual([
+                    'avdec_h264',
+                    'v4l2h264dec',
+                ]);
+            });
+
+            it('masks nothing on a bootstrap build — decodebin3 picks by rank', () => {
+                // With nothing demoted the bin auto-plugs the best decoder the
+                // box has, hardware included. Only a decoder that actually
+                // failed gets struck out of the auto-plug.
+                const module = makeModule();
+                expect(build(module).env?.GST_PLUGIN_FEATURE_RANK).toBeUndefined();
+            });
+
+            it('leaves the decodebin3 rung alone — today’s error behaviour', () => {
+                const module = makeModule();
+                build(module); // no codec → decodebin3
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                errorHandlerFor(module)({ message: 'something broke', element: 'decodebin30' });
+                expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                expect(restart).not.toHaveBeenCalled();
+            });
+
+            it('never demotes from the fallback card or on a source-side timeout', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h264';
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const onError = errorHandlerFor(module);
+
+                // Source went away, not the decoder.
+                onError({ kind: 'udp_timeout', message: 'UDP source timeout' });
+                expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+
+                // Colour bars up: no decoder is running to blame.
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+                build(module);
+                onError({ message: 'surface lost', element: 'waylandsink0' });
+                expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                expect(restart).not.toHaveBeenCalled();
+            });
+
+            it('never demotes while an internal restart owns the pipeline', () => {
+                // A renderwatch self-heal / cog restack / stall-resume rebuild
+                // holds pipelineRestartInProgress for the whole onStop+onStart
+                // window, and a pipeline being torn down errors. That is not the
+                // decoder's verdict — and the rebuild is already in flight, so
+                // there is nothing to trigger either.
+                const module = makeModule();
+                (module as any).detectedCodec = 'h265';
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (module as any).pipelineRestartInProgress = true;
+                errorHandlerFor(module)({ message: 'flushing', element: 'v4l2slh265dec0' });
+                expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                expect(restart).not.toHaveBeenCalled();
+            });
+
+            it('a renderwatch lag mid-rebuild coalesces instead of double-restarting', () => {
+                // Both onPluginEvent branches funnel through restartPipeline,
+                // whose in-progress latch queues ONE follow-up cycle — a codec
+                // rebuild and a self-heal can never tear the pipeline down twice.
+                const module = makeModule();
+                build(module);
+                const cycles = vi.fn().mockResolvedValue(undefined);
+                (module as any).onStop = cycles;
+                (module as any).onStart = cycles;
+                // Boot-relative, like the module itself records it.
+                (module as any).lastStallResumeAt = bootNowMs();
+
+                const inFlight = (module as any).restartPipeline();
+                (module as any).onPluginEvent('renderwatch:lag', {
+                    achievedFps: 5,
+                    expectedFps: 50,
+                    arrivalsFps: 50,
+                });
+                // The self-heal really did fire (not a vacuous pass).
+                expect((module as any).postResumeHealDone).toBe(true);
+                return inFlight.then(() => {
+                    // 2 cycles = the original + exactly one queued follow-up,
+                    // both owned by the ONE in-flight restartPipeline call.
+                    expect(cycles).toHaveBeenCalledTimes(4); // 2 cycles × (onStop + onStart)
+                    expect((module as any).pipelineRestartInProgress).toBe(false);
+                });
+            });
+
+            it('rebuilds without demoting when the codec changed after the build', () => {
+                // The chain failed because it was steering the WRONG codec's
+                // caps, not because the decoder is broken.
+                const module = makeModule();
+                (module as any).detectedCodec = 'h265';
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h264' });
+                expect(restart).toHaveBeenCalledTimes(1);
+
+                errorHandlerFor(module)({
+                    message: 'Internal data stream error.',
+                    element: 'tsdemux0',
+                });
+                expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                expect(restart).toHaveBeenCalledTimes(2);
+            });
+
+            it('a demotion is engine-session wide — a second instance skips the bad decoder', () => {
+                const first = makeModule();
+                (first as any).detectedCodec = 'h265';
+                build(first);
+                vi.spyOn(first as any, 'restartPipeline').mockResolvedValue(undefined);
+                errorHandlerFor(first)({
+                    message: 'Driver does not support…',
+                    element: 'v4l2slh265dec0',
+                });
+
+                const second = makeModule();
+                (second as any).detectedCodec = 'h265';
+                expect(build(second).pipeline).toContain('h265parse ! avdec_h265');
+            });
+
+            it('still latches the colour-bars fallback on a bus_stall (unchanged path)', () => {
+                const module = makeModule();
+                (module as any).detectedCodec = 'h264';
+                build(module);
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                errorHandlerFor(module)({
+                    kind: 'bus_stall',
+                    message: 'no data',
+                    element: 'buswd_5500',
+                });
+                expect((module as any).busStallDetected).toBe(true);
+                expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                expect(restart).toHaveBeenCalledTimes(1);
+                (module as any).clearBusStallState();
+            });
+
+            describe('demotion is attributable — the 10.9.1.165 regression', () => {
+                /** Set up a live h265 pipeline on the hardware rung. */
+                function liveOnHardware() {
+                    const module = makeModule();
+                    (module as any).detectedCodec = 'h265';
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                    const restart = vi
+                        .spyOn(module as any, 'restartPipeline')
+                        .mockResolvedValue(undefined);
+                    return { module, restart, onError: errorHandlerFor(module) };
+                }
+
+                it('keeps the hardware decoder when a NON-decoder element errors', () => {
+                    // The bug: a compositor/cog flap or a bus rewire during an
+                    // engine restart errored the pipeline from the sink, and the
+                    // healthy hardware decoder was struck off for the session.
+                    const { module, restart, onError } = liveOnHardware();
+                    for (const element of [
+                        'waylandsink0',
+                        'h265parse0',
+                        'tsdemux0',
+                        'unixfdsrc0',
+                        'queue1',
+                    ]) {
+                        onError({ message: 'transient failure', element });
+                    }
+                    expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                    // The runner's restartOnError replays the same pipeline —
+                    // the module must not tear it down a second time.
+                    expect(restart).not.toHaveBeenCalled();
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                });
+
+                it('never demotes on errors that name NO element, however many', () => {
+                    // A bus error with no src name proves nothing about the
+                    // decoder, and repeating it doesn't make it proof. The
+                    // two-strike rule this replaces stranded a healthy hardware
+                    // decoder on software decode for a whole session.
+                    const { module, restart, onError } = liveOnHardware();
+                    for (let i = 0; i < 5; i++) {
+                        onError({ message: 'Internal data stream error' });
+                    }
+                    expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                    expect(restart).not.toHaveBeenCalled();
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                });
+
+                it('never demotes on the runner’s SYNTHESISED errors, however many', () => {
+                    // A wedged compositor never lets the pipeline reach PLAYING:
+                    // the runner's watchdog fires every 10 s and names no
+                    // element. It must never cost the decoder its rung.
+                    const { module, onError } = liveOnHardware();
+                    for (const kind of [
+                        'playing_timeout',
+                        'playing_timeout',
+                        'spawn_failed',
+                        'runner_exit',
+                        'max_restarts',
+                        'playing_timeout',
+                    ]) {
+                        onError({ kind, message: 'synthesised failure' });
+                    }
+                    expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                });
+
+                it('demotes as soon as the DECODER itself errors, first time', () => {
+                    // The one rule. No warm-up, no window: the bus named the
+                    // decoder, so the decoder loses its rung and the rebuild
+                    // drops to software.
+                    const { module, restart, onError } = liveOnHardware();
+                    onError({
+                        message: 'Driver does not support the selected stream',
+                        element: 'vpdec',
+                    });
+                    expect([...VideoPlayerModule.getDemotedDecoders()]).toEqual(['v4l2slh265dec']);
+                    expect(restart).toHaveBeenCalledTimes(1);
+                    expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+                });
+
+                it('demotes on the decoder even after a run of unattributable errors', () => {
+                    const { module, onError } = liveOnHardware();
+                    onError({ message: 'no element here' });
+                    onError({ message: 'surface lost', element: 'waylandsink0' });
+                    onError({ kind: 'playing_timeout', message: 'no PLAYING' });
+                    expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                    // Still on hardware — then the decoder actually speaks up.
+                    onError({ message: 'decode failed', element: 'v4l2slh265dec0' });
+                    expect([...VideoPlayerModule.getDemotedDecoders()]).toEqual(['v4l2slh265dec']);
+                    expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+                });
+            });
+
+            describe('demotion age-out', () => {
+                /**
+                 * A live h265 pipeline that has just lost hardware decode:
+                 * demoted, rebuilt on software, retry armed. The field case —
+                 * one corrupt slice used to cost 80% CPU until someone
+                 * restarted the engine.
+                 */
+                function demotedToSoftware() {
+                    const module = makeModule();
+                    (module as any).detectedCodec = 'h265';
+                    build(module);
+                    const restart = vi
+                        .spyOn(module as any, 'restartPipeline')
+                        .mockResolvedValue(undefined);
+                    errorHandlerFor(module)({
+                        message: 'Driver does not support the selected stream.',
+                        element: 'v4l2slh265dec0',
+                    });
+                    // The rebuild the demotion triggered: lands on software and
+                    // arms the retry.
+                    expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+                    return { module, restart };
+                }
+
+                beforeEach(() => {
+                    // Installed BEFORE any demotion: the timestamps and the
+                    // timer must both be on the faked clock or they disagree.
+                    vi.useFakeTimers();
+                });
+
+                afterEach(() => {
+                    vi.useRealTimers();
+                    delete process.env[DEMOTION_TTL_ENV_VAR];
+                });
+
+                it('stops steering the plan once the demotion is older than the TTL', () => {
+                    const { module } = demotedToSoftware();
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS - 1);
+                    expect([...VideoPlayerModule.getDemotedDecoders()]).toEqual(['v4l2slh265dec']);
+                    expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+
+                    vi.advanceTimersByTime(1);
+                    expect(VideoPlayerModule.getDemotedDecoders().size).toBe(0);
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                });
+
+                it('says when the retry will happen in the demotion log line', () => {
+                    const { module } = demotedToSoftware();
+                    expect((module as any).log.warn).toHaveBeenCalledWith(
+                        expect.objectContaining({
+                            decoder: 'v4l2slh265dec',
+                            next: 'avdec_h265',
+                            retryInMs: DEFAULT_DEMOTION_TTL_MS,
+                        }),
+                        'Decoder v4l2slh265dec failed — demoted, retrying in 300s, rebuilding on avdec_h265',
+                    );
+                });
+
+                it('rebuilds to retry the decoder the moment its demotion expires', () => {
+                    // Eligibility alone is not enough: a pipeline playing fine
+                    // on software has no other reason to rebuild, which is how
+                    // the box stayed on the slow path for hours.
+                    const { module, restart } = demotedToSoftware();
+                    expect(restart).toHaveBeenCalledTimes(1); // the demotion rebuild
+
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS - 1);
+                    expect(restart).toHaveBeenCalledTimes(1);
+
+                    vi.advanceTimersByTime(1);
+                    expect(restart).toHaveBeenCalledTimes(2);
+                    expect((module as any).log.info).toHaveBeenCalledWith(
+                        {
+                            expired: ['v4l2slh265dec'],
+                            from: 'avdec_h265',
+                            decoder: 'v4l2slh265dec',
+                        },
+                        'Decoder demotion expired, retrying v4l2slh265dec',
+                    );
+                    // And the rebuild really does climb back to hardware.
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                });
+
+                it('re-demotes with a fresh timestamp — the retry cadence is one TTL', () => {
+                    const { module, restart } = demotedToSoftware();
+                    const onError = errorHandlerFor(module);
+
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS);
+                    expect(restart).toHaveBeenCalledTimes(2);
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+
+                    // The retry fails again immediately: back to software, and
+                    // the next attempt is a full TTL out rather than instant.
+                    onError({ message: 'Driver does not support…', element: 'v4l2slh265dec0' });
+                    expect(restart).toHaveBeenCalledTimes(3);
+                    expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS - 1);
+                    expect(restart).toHaveBeenCalledTimes(3);
+                    vi.advanceTimersByTime(1);
+                    expect(restart).toHaveBeenCalledTimes(4);
+                });
+
+                it('re-arms instead of rebuilding when the retry lands early', () => {
+                    // A timer that fires a tick before its own deadline must
+                    // not rebuild for nothing — and must not spin either.
+                    const { module, restart } = demotedToSoftware();
+                    const armed = (module as any).demotionRetryTimer;
+                    expect(armed).not.toBeNull();
+
+                    (module as any).retryExpiredDemotion();
+                    expect(restart).toHaveBeenCalledTimes(1);
+                    expect((module as any).demotionRetryTimer).not.toBe(armed);
+
+                    // The real deadline still lands.
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS);
+                    expect(restart).toHaveBeenCalledTimes(2);
+                });
+
+                it('drops the retry on stop — it can never fire into a torn-down pipeline', async () => {
+                    const { module, restart } = demotedToSoftware();
+                    expect((module as any).demotionRetryTimer).not.toBeNull();
+
+                    // The fake child from errorHandlerFor has no stop().
+                    (module as any).childProcess = null;
+                    await module.onStop();
+                    expect((module as any).demotionRetryTimer).toBeNull();
+
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS * 3);
+                    expect(restart).toHaveBeenCalledTimes(1);
+                });
+
+                it('holds the retry while the fallback card is up', () => {
+                    // No decoder is running, so there is no degraded rung to
+                    // climb off; the next live build arms it again.
+                    const { module, restart } = demotedToSoftware();
+                    (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(
+                        undefined,
+                    );
+                    expect(build(module).pipeline).toContain('videotestsrc');
+                    expect((module as any).demotionRetryTimer).toBeNull();
+
+                    vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS * 3);
+                    expect(restart).toHaveBeenCalledTimes(1);
+                });
+
+                it('honours VP_DECODER_DEMOTION_TTL_MS', () => {
+                    process.env[DEMOTION_TTL_ENV_VAR] = '60000';
+                    const { module, restart } = demotedToSoftware();
+                    vi.advanceTimersByTime(59_999);
+                    expect(restart).toHaveBeenCalledTimes(1);
+                    vi.advanceTimersByTime(1);
+                    expect(restart).toHaveBeenCalledTimes(2);
+                    expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                });
+
+                it('keeps the demotion for the session when the age-out is disabled', () => {
+                    // The opt-out for a box whose hardware decoder is known
+                    // broken: no timer at all, and the plan never changes back.
+                    process.env[DEMOTION_TTL_ENV_VAR] = '0';
+                    const { module, restart } = demotedToSoftware();
+                    expect((module as any).demotionRetryTimer).toBeNull();
+
+                    vi.advanceTimersByTime(86_400_000);
+                    expect(restart).toHaveBeenCalledTimes(1);
+                    expect([...VideoPlayerModule.getDemotedDecoders()]).toEqual(['v4l2slh265dec']);
+                    expect(build(module).pipeline).toContain('h265parse ! avdec_h265');
+                });
+            });
+        });
+    });
+
     describe('updateStatusData', () => {
         it('reports the input source as the bus channel port', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
@@ -1305,7 +2294,8 @@ describe('renderWatch health messages', () => {
         const module = makeModule();
         const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
         (module as any).log = { info: vi.fn() };
-        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        // Boot-relative clock on both sides — see SelfHealInput.now.
+        (module as any).lastStallResumeAt = bootNowMs() - 10_000;
         const lag = { achievedFps: 44, expectedFps: 50, arrivalsFps: 49 };
         (module as any).onPluginEvent('renderwatch:lag', lag);
         expect(restart).toHaveBeenCalledTimes(1);
@@ -1318,7 +2308,7 @@ describe('renderWatch health messages', () => {
         const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
         (module as any).log = { info: vi.fn() };
         // Old resume: outside the heal window.
-        (module as any).lastStallResumeAt = Date.now() - 600_000;
+        (module as any).lastStallResumeAt = bootNowMs() - 600_000;
         (module as any).onPluginEvent('renderwatch:lag', {
             achievedFps: 44,
             expectedFps: 50,
@@ -1327,7 +2317,7 @@ describe('renderWatch health messages', () => {
         expect(restart).not.toHaveBeenCalled();
         // Recent resume but the SOURCE is under-delivering — a rebuild can't
         // manufacture frames the stream never carried.
-        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        (module as any).lastStallResumeAt = bootNowMs() - 10_000;
         (module as any).onPluginEvent('renderwatch:lag', {
             achievedFps: 41,
             expectedFps: 50,
@@ -1393,31 +2383,52 @@ describe('cog restack rule (start-time comparison)', () => {
             () => 995_000, // 5 s before the watch — inside the 15 s grace
         );
         expect(module.restartPipeline).toHaveBeenCalledTimes(1);
-        module.pollCogRestack(() => 500, () => 995_000);
+        module.pollCogRestack(
+            () => 500,
+            () => 995_000,
+        );
         expect(module.restartPipeline).toHaveBeenCalledTimes(1); // latched
     });
 
     it('the restack latch survives a watch stop/start cycle (no grace-window loop)', () => {
         const module = makeModule();
-        module.pollCogRestack(() => 500, () => 995_000);
+        module.pollCogRestack(
+            () => 500,
+            () => 995_000,
+        );
         expect(module.restartPipeline).toHaveBeenCalledTimes(1);
         module.stopCogPollWatch();
         module.cogWatchStartedAt = 1_000_500; // watch re-armed after the rebuild
-        module.pollCogRestack(() => 500, () => 995_000);
+        module.pollCogRestack(
+            () => 500,
+            () => 995_000,
+        );
         expect(module.restartPipeline).toHaveBeenCalledTimes(1); // still latched
     });
 
     it('cog absent or start time unreadable → wait, no restart', () => {
         const module = makeModule();
-        module.pollCogRestack(() => undefined, () => 1000_500);
-        module.pollCogRestack(() => 500, () => undefined);
+        module.pollCogRestack(
+            () => undefined,
+            () => 1000_500,
+        );
+        module.pollCogRestack(
+            () => 500,
+            () => undefined,
+        );
         expect(module.restartPipeline).not.toHaveBeenCalled();
     });
 
     it('a NEW cog incarnation after a latched one restarts again', () => {
         const module = makeModule();
-        module.pollCogRestack(() => 500, () => 1000_500);
-        module.pollCogRestack(() => 501, () => 1000_900);
+        module.pollCogRestack(
+            () => 500,
+            () => 1000_500,
+        );
+        module.pollCogRestack(
+            () => 501,
+            () => 1000_900,
+        );
         expect(module.restartPipeline).toHaveBeenCalledTimes(2);
     });
 });

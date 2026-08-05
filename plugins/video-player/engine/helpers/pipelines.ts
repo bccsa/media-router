@@ -1,5 +1,10 @@
 import * as fs from 'fs';
 import { buildBusSrc, buildLeakyQueue, buildTsUdpInput } from '@media-router/engine';
+import {
+    DECODEBIN_SELECTION,
+    resolveCpuDecodeThreading,
+    type DecoderSelection,
+} from './decoderSelection.js';
 
 /**
  * Surface size used when the output's own mode can't be resolved (headless,
@@ -34,14 +39,21 @@ export function surfaceCaps(surface: SurfaceSize = DEFAULT_SURFACE): string {
 }
 
 /**
- * Normalise the `cpuDecodeThreading` config value to the thread-type the runner
- * understands. Only `'frame'` opts into multi-core (frame-parallel) software
- * decode — which adds latency; anything else — unset or junk — resolves to the
- * latency-safe `'auto'` default. Validating here keeps a bad config value from
- * reaching GStreamer.
+ * Map the `cpuDecodeThreading` config value onto the runner's own vocabulary
+ * (`PipelineDescription.decoderThreadType`), which governs the decoders the
+ * runner hooks rather than the ones we name: the `decodebin3` bootstrap rung,
+ * and any explicit `avdec_*` we left bare.
+ *
+ * The two vocabularies do NOT share the meaning of `'auto'`, which is why this
+ * mapping exists rather than passing the value straight through: to the runner
+ * `'auto'` means "don't force a thread-type" (ffmpeg picks, and picks
+ * single-core on a live path), while the setting's `'auto'` means multi-core.
+ * So every setting except `'single'` asks the runner for `'frame'` — that is
+ * what keeps the bootstrap rung and the explicit software rungs decoding the
+ * same way. `'single'` is the one that leaves ffmpeg's live default alone.
  */
 export function resolveDecoderThreadType(value: unknown): 'auto' | 'frame' {
-    return value === 'frame' ? 'frame' : 'auto';
+    return resolveCpuDecodeThreading(value) === 'single' ? 'auto' : 'frame';
 }
 
 export interface SinkSelectionEnv {
@@ -266,12 +278,24 @@ export function buildFallbackOnlyPipeline(
  *
  * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! tsdemux` by
  * default — WITHOUT `tsparse` — and gains `tsparse` back when the sink is
- * clock-paced (see the comment at the construction site below). `decodebin`
- * handles any codec inside the MPEG-TS; the post-tsdemux `queue leaky=2`
- * drops oldest if the decoder falls behind so latency doesn't accumulate on
- * slow renderers.
+ * clock-paced (see the comment at the construction site below). The decoder is
+ * `decodebin3` until the TS probe reports a codec and an explicit
+ * `<parser> ! <decoder>` chain takes its place (see `decoder` below); the
+ * post-tsdemux `queue leaky=2` drops oldest if the decoder falls behind so
+ * latency doesn't accumulate on slow renderers.
  */
 const STREAM_STALL_TIMEOUT_MS = 5_000;
+
+/**
+ * Element name of the live pipeline's TS video-info tap. The engine runner
+ * attaches its report-only probe here (`PipelineDescription.tsProbe`) and
+ * emits `tsprobe:videoinfo` plugin events; the module keys decoder selection
+ * off the reported codec. See `VideoPlayerModule.onPluginEvent`.
+ */
+export const TS_PROBE_SINK_NAME = 'tsprobe';
+
+/** Name of the tee that feeds the demux branch and the video-info tap. */
+const PROBE_TEE_NAME = 'vp_ts';
 
 export function buildLivePipeline(
     sinkElement: string,
@@ -305,6 +329,12 @@ export function buildLivePipeline(
      * tsparse-free present-on-arrival fast path.
      */
     sinkPaced = false,
+    /**
+     * Decoder chain to put in the `decodebin3` element position, from
+     * `selectDecoder`. Defaults to `decodebin3` — the bootstrap build, before
+     * the TS probe has reported a codec.
+     */
+    decoder: DecoderSelection = DECODEBIN_SELECTION,
 ): string {
     // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
@@ -344,7 +374,14 @@ export function buildLivePipeline(
               socketPath: udpSource.socketPath,
               stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
           })} ! ${buildLeakyQueue(bufferMs)}`;
-    const q = `queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
+    // Post-demux ES queue: floored at 1 s regardless of `bufferMs`. This queue
+    // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
+    // 8 Mbps span >200 ms on a Pi 4); at 200 ms it sheds the tail of nearly
+    // every GOP, which the IRAP resync gate then drops until the next keyframe
+    // (~10 fps playback). Latency is unaffected in steady state — a leaky
+    // queue only holds data while downstream is stalled.
+    const esQueueMs = Math.max(bufferMs, 1_000);
+    const q = `queue leaky=2 max-size-time=${esQueueMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
     // Scaling policy — who resizes the picture, per sink:
     //
     // COMPOSITOR PATH (waylandsink under kiosk-shell): nothing here does. The
@@ -386,12 +423,60 @@ export function buildLivePipeline(
     // with the fallback-sizing strategy (handover Q5: the fallback should
     // inherit the last live surface).
     const convert = compositorScales ? 'videoconvert' : 'videoconvert ! videoscale';
-    // `decodebin3` (not decodebin): on an ABR/HLS source the resolution changes
-    // mid-stream at every variant switch. decodebin repluggs a fresh decoder on
-    // each change — a hard stall the viewer sees as a hitch. decodebin3 reuses
-    // the existing decoder across format changes, so switches are smooth. With
-    // no caps filter downstream the new resolution simply renegotiates through
-    // to the sink and the compositor re-fits the surface, so a variant switch
-    // costs neither a decoder replug nor a failed negotiation.
-    return `${tsInput} ! tsdemux latency=0 ! ${q} ! decodebin3 ! ${convert} ! ${sinkElement}`;
+    // DECODER POSITION. `decoder.chain` is either the bootstrap `decodebin3` or
+    // an explicit `<parser> ! <decoder>` picked from the codec the TS probe
+    // reported (see decoderSelection.ts). Nothing else about the chain moves.
+    //
+    // On the `decodebin3` rung: still decodebin3, never decodebin. On an
+    // ABR/HLS source the resolution changes mid-stream at every variant switch;
+    // decodebin replugs a fresh decoder on each change — a hard stall the
+    // viewer sees as a hitch — while decodebin3 reuses the existing decoder.
+    // With no caps filter downstream the new resolution renegotiates straight
+    // through to the sink and the compositor re-fits the surface, so a variant
+    // switch costs neither a replug nor a failed negotiation. (A CODEC change
+    // is a different animal: decodebin3's in-place decoder switch is what
+    // wedged an h265→h264 feed on hardware, so the module rebuilds the whole
+    // pipeline for that — it never relies on the replug.)
+    //
+    // CAPSFILTER, and why it sits DIRECTLY on tsdemux rather than after the
+    // queue. `tsdemux` has sometimes-pads, so gst_parse_launch resolves this
+    // link when the pad appears. The leaky queue's sink pad is ANY: it will
+    // accept an AUDIO pad just as happily as the video one, and the audio then
+    // reaches h26xparse/videoconvert and kills the pipeline with "Internal data
+    // stream error" (the transcoder documents the same trap). Steering has to
+    // happen at the first pad the demuxer can link to, so the filter goes
+    // before the queue — the queue keeps its exact position and settings
+    // otherwise. Verified locally against a real A/V TS: with the filter only
+    // the video ES links; without it the outcome depends on pad-add order.
+    // The decodebin3 rung carries no filter (we don't know the codec there, and
+    // decodebin3 is what has always absorbed whatever pad it got).
+    const caps = decoder.caps ? `${decoder.caps} ! ` : '';
+    // Video-info tap. The runner's report-only TS probe needs an appsink fed
+    // with the muxed TS (it does its own PSI discovery + SPS parse), so the
+    // ingress is tee'd off just before `tsdemux` — after `tsparse` on the
+    // clock-paced variant, straight off the leaky jitter queue on the default
+    // tsparse-free one.
+    //
+    // ALIGNMENT is a BUS property, not a tsparse one — which is what makes the
+    // one tap correct for both variants. `ts_psi.iter_packets` strides a fixed
+    // 188 from offset 0 and skips any offset not on a 0x47 sync byte; it does
+    // NOT resync, so a buffer that doesn't START on a packet boundary yields
+    // nothing (the runner calls that out and swallows it — report-only). It
+    // never comes to that here: unixfd carries producer buffer boundaries
+    // across the socket untouched, every bus producer emits whole-packet
+    // buffers (mpegtsmux `alignment=7` = 1316 B; libmrbus ingest chunks at
+    // BUFFER_BYTES = 128×188 and drops a dead producer's sub-packet remainder;
+    // mr-tssplit coalesces whole-packet batches), and neither `watchdog` nor
+    // `queue` re-slices a buffer. Tapping off tsInput also puts the branch
+    // downstream of the stall watchdog in both variants, so it cannot interfere
+    // with bus_stall detection. The branch is leaky and the appsink drops
+    // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
+    // the render path through the tee.
+    const probeTap =
+        ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
+        ` ! appsink name=${TS_PROBE_SINK_NAME}`;
+    return (
+        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! tsdemux latency=0 ! ${caps}${q} ! ` +
+        `${decoder.chain} ! ${convert} ! ${sinkElement}${probeTap}`
+    );
 }

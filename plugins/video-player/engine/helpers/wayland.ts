@@ -19,17 +19,63 @@ import * as path from 'path';
 export const COG_POLL_INTERVAL_MS = 1000;
 
 /**
- * Wall-clock start time of a process, from its /proc entry's mtime (set at
- * process creation). Used to order surface creation: a cog whose process
- * started after our pipeline did will map its surface above ours under
- * kiosk-shell's newest-on-top stacking. Returns undefined when the process
- * is gone (raced an exit).
+ * Kernel clock ticks per second (`sysconf(_SC_CLK_TCK)`), the unit of
+ * `/proc/<pid>/stat` field 22. 100 on every Linux Node can run on — the value
+ * has been fixed in the userspace ABI since 2.6, independent of CONFIG_HZ, and
+ * Node exposes no `sysconf` to read it.
+ */
+const USER_HZ = 100;
+
+/**
+ * BOOT-RELATIVE start time of a process (ms since boot), from
+ * `/proc/<pid>/stat` field 22 (`starttime`). Used to order surface creation: a
+ * cog whose process started after our pipeline did will map its surface above
+ * ours under kiosk-shell's newest-on-top stacking. Returns undefined when the
+ * process is gone (raced an exit) or the stat line doesn't parse.
+ *
+ * Boot-relative, NOT wall-clock (the /proc entry's mtime, which this used to
+ * read): the Pi has no RTC, so it boots at the epoch the last shutdown left
+ * behind and NTP steps the clock — by hours — some seconds into the session.
+ * A step landing between the cog spawn and the start of our watch made a cog
+ * that spawned *before* us look like it spawned after (or vice versa), and the
+ * comparison is only ever consulted at boot, which is exactly when the step
+ * happens. `starttime` is counted from boot by a monotonic tick counter, so no
+ * clock adjustment can move either side of the comparison. Pair it with
+ * `bootNowMs()` — never with `Date.now()`.
+ *
+ * Field 22 is read by slicing after the LAST `)`: field 2 is `comm`, the
+ * executable name in parentheses, and it can itself contain spaces and
+ * parentheses. Everything after that closing paren is whitespace-separated, so
+ * field 22 is index 19 of the remainder (which starts at field 3).
  */
 export function processStartMs(pid: number, procRoot: string = '/proc'): number | undefined {
     try {
-        return fs.statSync(path.join(procRoot, String(pid))).mtimeMs;
+        const stat = fs.readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf-8');
+        const tail = stat
+            .slice(stat.lastIndexOf(')') + 1)
+            .trim()
+            .split(/\s+/);
+        const ticks = Number(tail[19]);
+        if (!Number.isFinite(ticks)) return undefined;
+        return (ticks / USER_HZ) * 1000;
     } catch {
         return undefined;
+    }
+}
+
+/**
+ * "Now" on the same boot-relative timeline as `processStartMs`, from
+ * `/proc/uptime` (seconds since boot, first field). The counterpart that makes
+ * the cog-restack comparison immune to an NTP step — see `processStartMs`.
+ * Falls back to 0 where /proc/uptime isn't readable (dev machines, non-Linux):
+ * a zero "now" makes every cog look newer than the watch, which costs at most
+ * one extra restack and never hides the video.
+ */
+export function bootNowMs(): number {
+    try {
+        return Number(fs.readFileSync('/proc/uptime', 'utf-8').split(' ')[0]) * 1000 || 0;
+    } catch {
+        return 0;
     }
 }
 

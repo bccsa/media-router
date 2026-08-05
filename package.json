@@ -7,7 +7,7 @@
         "build": "pnpm -r --filter './packages/*' --filter './plugins/*' run build",
         "dev": "pnpm -r --parallel --filter @media-router/manager --filter @media-router/engine --filter @media-router/manager-ui --filter @media-router/local-panel --filter @media-router/profile-manager run dev",
         "dev:all": "pnpm -r --parallel --filter './packages/*' run dev",
-        "test": "vitest run",
+        "test": "vitest run && pnpm --filter @media-router/engine run test:py",
         "test:watch": "vitest",
         "typecheck": "pnpm -r --filter './packages/*' --filter './plugins/*' run typecheck",
         "lint": "prettier --check 'packages/*/src/**/*.{ts,vue}' 'plugins/*/engine/**/*.ts'",

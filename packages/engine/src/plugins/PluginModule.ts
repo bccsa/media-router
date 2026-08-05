@@ -289,6 +289,41 @@ export interface PipelineDescription {
      */
     renderWatch?: RenderWatchRunnerConfig;
     /**
+     * Hold the named decoder shut until the first KEYFRAME of the stream.
+     *
+     * WHY. A live TS join lands mid-GOP: the first access units to reach the
+     * decoder are delta units referencing frames it never saw. A stateless
+     * V4L2 decoder (`v4l2slh265dec`/rpivid on Pi 4, `hevc_dec` on Pi 5, kernel
+     * 6.12.87) does not merely produce garbage from that — it ends up holding a
+     * decode request that never completes, and the next teardown blocks
+     * forever in the kernel (`hevc_d_h265_stop` in D state with the videodev
+     * mutex held). That freezes V4L2 box-wide and only a reboot clears it. The
+     * EOS drain cannot help: it is the decoder, not the ordering, that is
+     * already stuck.
+     *
+     * WHAT IT DOES. The runner puts a buffer probe on the named element's SINK
+     * pad and DROPS every buffer flagged `GST_BUFFER_FLAG_DELTA_UNIT` until the
+     * first buffer without it (`h264parse`/`h265parse` flag this per access
+     * unit). That keyframe passes and the gate opens. Events (caps, segment)
+     * are never touched.
+     *
+     * IT ALSO RE-ARMS. The probe stays on the pad and shuts again on a delta
+     * unit flagged `GST_BUFFER_FLAG_DISCONT` — the mark a `leaky=2` queue
+     * leaves when it has shed buffers, carried through the parser. Loss inside
+     * the pipeline (the live chain's jitter queues shed under a decoder stall)
+     * leaves the following delta units referencing frames the decoder never
+     * saw, which is the SAME missing-reference hazard as a mid-GOP join and
+     * wedges the same hardware. Steady-state cost is one flag test per access
+     * unit.
+     *
+     * SCOPE: once per pipeline START, and armed for that pipeline's life. A
+     * `restartOnError` replay is a fresh `start` and therefore a fresh gate.
+     *
+     * Only for chains that NAME their decoder — a `decodebin3` pipeline plugs
+     * its decoder itself, so there is no element name to give here.
+     */
+    keyframeGate?: KeyframeGateConfig;
+    /**
      * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
      * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
      * rebased ~0 per incarnation), so a transcoding pipeline's output mux
@@ -319,6 +354,12 @@ export interface TsProbeRunnerConfig {
 export interface RenderWatchRunnerConfig {
     /** `name=` of the video sink element in `pipeline` to watch. */
     sink: string;
+}
+
+/** Keyframe gate config — see PipelineDescription.keyframeGate. */
+export interface KeyframeGateConfig {
+    /** `name=` of the decoder in `pipeline` whose sink pad is gated. */
+    decoder: string;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

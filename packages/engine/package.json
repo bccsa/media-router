@@ -22,6 +22,8 @@
     "scripts": {
         "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst-net-clock.py src/child-process/render_lag.py dist/child-process/",
         "typecheck": "tsc --noEmit",
+        "test": "pnpm run test:py",
+        "test:py": "python3 src/child-process/render_lag_test.py && python3 src/child-process/gst_drain_test.py && python3 src/child-process/gst_keyframe_gate_test.py",
         "dev": "bash -c '[ -f .env.local ] && . ./.env.local; exec tsx watch --inspect=9230 examples/test-engine.ts'"
     },
     "dependencies": {

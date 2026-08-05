@@ -52,6 +52,27 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('"event": "bus_reinput_done"');
     });
 
+    it('the runner names the source element on every bus error', () => {
+        // `element` is the gst bus message's own src name. The video-player's
+        // decoder ladder demotes ONLY on errors attributable to the active
+        // decoder element, so dropping this field would make every real decoder
+        // failure look unattributable and the whole demotion ladder would go
+        // dark (see helpers/decoderRuntime.ts → classifyDecoderFailure).
+        expect(runnerSource).toContain(
+            'element = (src.get_name() or "") if src is not None else ""',
+        );
+        expect(runnerSource).toContain('"element": element');
+    });
+
+    it('the PLAYING watchdog keeps tagging its error `playing_timeout`', () => {
+        // Synthesised, not posted by the bus — it names no element. The
+        // video-player lists this exact string in SYNTHESISED_ERROR_KINDS so a
+        // wedged compositor (never reaches PLAYING → watchdog every 10 s) can't
+        // demote a healthy hardware decoder even if the runner ever started
+        // forwarding a last-seen element name on it.
+        expect(runnerSource).toContain('"kind": "playing_timeout"');
+    });
+
     it('the runner detects source timeline discontinuities post-latch', () => {
         // The watch emits a `timeline_discont`-tagged pipeline error so the
         // normal restartOnError path re-latches; modular delta math keeps the
@@ -66,6 +87,29 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // lost (the decoderThreadType trap).
         expect(runnerSource).toContain('data.get("preserveSourceTimeline")');
         expect(runnerSource).toContain('def _install_preserve_timeline');
+    });
+
+    it('the runner implements the keyframeGate start option', () => {
+        // video-player sends `keyframeGate: { decoder }` on every EXPLICIT
+        // decoder rung (PipelineDescription contract → GstChildProcess
+        // startPayload → runner). The runner must read that exact key and
+        // define the installer: silently losing it (the decoderThreadType
+        // trap) puts the stateless V4L2 decoders straight back on mid-GOP
+        // stream entry, whose failure mode is a kernel D-state hang that
+        // takes V4L2 down box-wide until reboot.
+        expect(runnerSource).toContain('data.get("keyframeGate")');
+        expect(runnerSource).toContain('def _start_keyframe_gate');
+        // The gate IS the DELTA_UNIT test — it drops until the first buffer
+        // without the flag, then removes itself.
+        expect(runnerSource).toContain('Gst.BufferFlags.DELTA_UNIT');
+        expect(runnerSource).toContain('Gst.PadProbeReturn.DROP');
+    });
+
+    it('a keyframeGate naming an element the pipeline lacks is a HARD error', () => {
+        // Same rule as tsProbe/renderWatch: a module that explicitly asked for
+        // the gate must not silently run ungated because the element name
+        // drifted. The runner tears the pipeline down instead.
+        expect(runnerSource).toContain('"keyframeGate: decoder not found:');
     });
 
     it('the non-gst fan-out sidecar speaks the same wire commands', () => {
