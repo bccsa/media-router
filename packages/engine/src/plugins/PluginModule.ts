@@ -274,6 +274,21 @@ export interface PipelineDescription {
      */
     tsProbe?: TsProbeRunnerConfig;
     /**
+     * Report-only render keep-up watch. The runner reads the named sink's
+     * GstBaseSink `stats` (rendered/dropped) per 2 s window and compares the
+     * PRESENTED rate against the framerate the negotiated caps declare —
+     * counting pad arrivals instead was a proven blind spot (a sink can
+     * receive 50 fps and silently discard a third of it; observed on Pi 4
+     * waylandsink, 2026-08-01). Pad arrivals still gate the judgement: a
+     * window with no arrivals is the stall watchdog's condition, not lag,
+     * and sinks without `stats` fall back to arrival counting. On lag it
+     * emits `renderwatch:lag` `{achievedFps, expectedFps, droppedFps}`;
+     * when the rate is back it emits `renderwatch:recovered`. Hysteresis
+     * (0.85 trip / 0.95 recover, 3 consecutive windows) lives runner-side
+     * in render_lag.py. Never affects routing.
+     */
+    renderWatch?: RenderWatchRunnerConfig;
+    /**
      * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
      * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
      * rebased ~0 per incarnation), so a transcoding pipeline's output mux
@@ -298,6 +313,12 @@ export interface PreserveSourceTimelineConfig {
 export interface TsProbeRunnerConfig {
     /** `name=` of the tap appsink in `pipeline` receiving the muxed TS. */
     appsink: string;
+}
+
+/** Render keep-up watch config — see PipelineDescription.renderWatch. */
+export interface RenderWatchRunnerConfig {
+    /** `name=` of the video sink element in `pipeline` to watch. */
+    sink: string;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

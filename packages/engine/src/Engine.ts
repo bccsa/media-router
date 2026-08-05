@@ -248,7 +248,11 @@ export class Engine {
         // instead of every consumer hanging on a socket that will never bind
         // (stock Debian 12 gst 1.22 lacks unixfdsrc; dev boxes install a
         // 1.28 build to /usr/local, fleet images ship gst 1.28).
-        if (!(await probeGstElement('unixfdsrc'))) {
+        // 120s timeout: this is the first gst-inspect of the process, so on a
+        // cold cache it also rebuilds the plugin registry — warming it for
+        // every later probe. The default 2s would kill the rebuild mid-write
+        // and crash-loop the engine forever on any box with a cold cache.
+        if (!(await probeGstElement('unixfdsrc', 120_000))) {
             throw new Error(
                 'GStreamer unixfdsrc not available — the inter-module bus requires ' +
                     'GStreamer ≥ 1.24 with plugins-bad (see DEPENDENCIES.md, "unixfd Bus Transport").',

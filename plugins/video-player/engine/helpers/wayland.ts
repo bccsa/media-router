@@ -19,6 +19,21 @@ import * as path from 'path';
 export const COG_POLL_INTERVAL_MS = 1000;
 
 /**
+ * Wall-clock start time of a process, from its /proc entry's mtime (set at
+ * process creation). Used to order surface creation: a cog whose process
+ * started after our pipeline did will map its surface above ours under
+ * kiosk-shell's newest-on-top stacking. Returns undefined when the process
+ * is gone (raced an exit).
+ */
+export function processStartMs(pid: number, procRoot: string = '/proc'): number | undefined {
+    try {
+        return fs.statSync(path.join(procRoot, String(pid))).mtimeMs;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
  * Scan /proc for a `cog` process pinned to the given DRM connector via
  * `--gapplication-app-id=local.cog.<display>`. Returns the PID of the
  * matching top-level cog process, or `undefined` if none is currently

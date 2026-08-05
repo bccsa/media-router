@@ -1243,6 +1243,12 @@ def handle_start(data):
         pipeline = None
         return
 
+    # Report-only render keep-up watch (`renderWatch` config) — same window.
+    if not _start_render_watch(pipeline, data.get("renderWatch")):
+        pipeline.set_state(Gst.State.NULL)
+        pipeline = None
+        return
+
     # Set up bus watch
     bus = pipeline.get_bus()
     bus.add_signal_watch()
@@ -1276,6 +1282,7 @@ def handle_stop(data=None):
     _clear_preserve_timeline()
     _stop_rist()
     _stop_ts_probe()
+    _stop_render_watch()
     if pipeline:
         pipeline.set_state(Gst.State.NULL)
         running = False
@@ -2397,6 +2404,135 @@ def _stop_ts_probe():
     # State rides the appsink streaming thread; NULL transition stops it.
     global _ts_probe
     _ts_probe = None
+
+
+# ---------------------------------------------------------------------------
+# Render keep-up watch (`renderWatch` config)
+# ---------------------------------------------------------------------------
+_render_watch = None      # state dict while a renderWatch pad probe is armed
+
+RENDER_WATCH_WINDOW_MS = 2000
+
+
+def _start_render_watch(pipe, cfg):
+    """Report-only render keep-up watch (`renderWatch: {sink}` config).
+
+    Judges the rate of frames the sink actually PRESENTS — GstBaseSink's
+    `stats` property (`rendered`/`dropped` counters) — against the framerate
+    the pad's negotiated caps declare. Counting pad arrivals instead is a
+    proven blind spot: on the 2026-08-01 Pi 4 investigation the pad saw a
+    clean 50 fps while waylandsink discarded 18 fps internally (compositor
+    frame-callback pacing), so an arrival-based watch reported everything
+    fine during exactly the stutter it exists to catch.
+
+    A pad probe still counts arrivals, but only as a gate: a window with NO
+    arrivals is the stall watchdog's condition (dead source), not render
+    lag, so those windows are fed as zero and the monitor's stall/preroll
+    logic applies. Sinks without a `stats` property fall back to arrival
+    counting (better than nothing on autovideosink-style bins).
+
+    The hysteresis lives in render_lag.RenderLagMonitor; state transitions
+    emit `renderwatch:lag` / `renderwatch:recovered` plugin events with
+    `{achievedFps, expectedFps, droppedFps}` so the owning module can warn
+    the operator. Never touches routing; a missing sink the module
+    explicitly asked to watch is a hard error (matches tsProbe).
+    """
+    global _render_watch
+    if not cfg:
+        return True
+    try:
+        from render_lag import RenderLagMonitor
+    except Exception as e:  # noqa: BLE001
+        emit_event({"event": "error", "message": f"render_lag unavailable: {e}"})
+        return False
+    sink = pipe.get_by_name(cfg.get("sink", ""))
+    if sink is None:
+        emit_event({"event": "error",
+                    "message": f"renderWatch: sink not found: {cfg.get('sink')!r}"})
+        return False
+    pad = sink.get_static_pad("sink")
+    if pad is None:
+        emit_event({"event": "error",
+                    "message": f"renderWatch: no sink pad on: {cfg.get('sink')!r}"})
+        return False
+
+    st = {"pad": pad, "sink": sink, "frames": 0, "mon": RenderLagMonitor(),
+          "probe_id": None, "timer_id": None, "prev_stats": None}
+
+    def _on_buffer(_pad, _info):
+        st["frames"] += 1
+        return Gst.PadProbeReturn.OK
+
+    def _expected_fps():
+        # Re-read every tick: a mid-stream format switch renegotiates caps and
+        # the monitor resets its streaks on an expected-fps change.
+        caps = pad.get_current_caps()
+        if not caps or caps.get_size() == 0:
+            return None
+        ok, num, den = caps.get_structure(0).get_fraction("framerate")
+        if not ok or num <= 0 or den <= 0:
+            return None                      # no VUI timing → nothing to judge
+        return num / den
+
+    def _sink_stats():
+        # (rendered, dropped) totals from GstBaseSink, or None when the sink
+        # doesn't expose them (not a basesink, e.g. an autovideosink bin).
+        try:
+            s = st["sink"].get_property("stats")
+            return s.get_value("rendered"), s.get_value("dropped")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _tick():
+        arrivals = st["frames"]
+        st["frames"] = 0
+        achieved = arrivals
+        dropped = 0
+        stats = _sink_stats()
+        if stats is not None:
+            prev = st["prev_stats"]
+            st["prev_stats"] = stats
+            # First window has no delta yet; a negative delta means the sink
+            # restarted its counters — both fall back to arrivals.
+            if prev is not None and arrivals > 0:
+                d_rendered = stats[0] - prev[0]
+                d_dropped = stats[1] - prev[1]
+                if d_rendered >= 0 and d_dropped >= 0:
+                    achieved = d_rendered
+                    dropped = d_dropped
+        ev = st["mon"].tick(achieved, RENDER_WATCH_WINDOW_MS / 1000.0, _expected_fps(),
+                            dropped / (RENDER_WATCH_WINDOW_MS / 1000.0))
+        if ev:
+            kind, achieved_fps, expected = ev
+            # arrivalsFps lets the module tell RENDER lag (sink presents fewer
+            # frames than arrive) from SOURCE shortfall (fewer frames arrive
+            # in the first place — a feed/link problem the render chain can't
+            # fix and must not be blamed for).
+            emit_plugin_event(f"renderwatch:{kind}",
+                              {"achievedFps": round(achieved_fps, 1),
+                               "expectedFps": round(expected, 2),
+                               "droppedFps": round(
+                                   dropped / (RENDER_WATCH_WINDOW_MS / 1000.0), 1),
+                               "arrivalsFps": round(
+                                   arrivals / (RENDER_WATCH_WINDOW_MS / 1000.0), 1)})
+        return True                          # keep the GLib timer alive
+
+    st["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _on_buffer)
+    st["timer_id"] = GLib.timeout_add(RENDER_WATCH_WINDOW_MS, _tick)
+    _render_watch = st
+    return True
+
+
+def _stop_render_watch():
+    global _render_watch
+    st = _render_watch
+    _render_watch = None
+    if not st:
+        return
+    if st["timer_id"] is not None:
+        GLib.source_remove(st["timer_id"])
+    if st["probe_id"] is not None:
+        st["pad"].remove_probe(st["probe_id"])
 
 
 # Command dispatch

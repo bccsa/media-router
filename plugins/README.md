@@ -674,6 +674,24 @@ interface PipelineDescription {
      */
     tsProbe?: TsProbeRunnerConfig;
     /**
+     * Report-only render keep-up watch (render_lag.py): the runner reads the
+     * named sink's GstBaseSink `stats` (rendered/dropped counters) per 2 s
+     * window and compares the PRESENTED rate against the framerate the
+     * negotiated caps declare. Judging pad arrivals instead is a proven blind
+     * spot — a sink can receive the full source rate and still discard a
+     * third of it internally (waylandsink under a compositor that misses
+     * vblanks; observed on Pi 4, 2026-08-01). Pad arrivals gate the
+     * judgement (no arrivals = stall watchdog's condition, not lag), and
+     * sinks without `stats` fall back to arrival counting. When the chain
+     * demonstrably can't sustain the source rate it emits `renderwatch:lag`
+     * `{achievedFps, expectedFps, droppedFps}`; on sustained recovery,
+     * `renderwatch:recovered`. Hysteresis runner-side (0.85 trip / 0.95
+     * recover, 3 consecutive windows). The sink must be NAMED in the
+     * pipeline string — see `video-player` (warns the operator to lower the
+     * stream or display resolution).
+     */
+    renderWatch?: RenderWatchRunnerConfig;
+    /**
      * Carry the SOURCE PES timeline through the named tsdemux. tsdemux erases
      * the source timeline (buffer PTS rebased ~0 per incarnation), so a
      * transcoding pipeline's output mux stamps a fresh timeline every

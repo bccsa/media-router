@@ -387,8 +387,14 @@ export interface ModuleRuntimeState {
      * subtitle languages). The settings panel renders these as multi-selects.
      */
     fieldOptions?: Record<string, Array<{ value: string; label: string }>>;
-    /** Error message if health is "error". */
-    error?: string;
+    /**
+     * Error/warning message backing the health state. `null` means
+     * explicitly cleared — it must survive JSON serialization (undefined
+     * keys are dropped, and per-field mergers downstream would keep stale
+     * text forever; field case 2026-08-02: "can't keep up (0/50 fps)"
+     * displayed on a healthy module across engine restarts).
+     */
+    error?: string | null;
     /** Non-fatal warnings (e.g. stream layout mismatches). */
     warnings?: string[];
 }

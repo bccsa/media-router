@@ -7,13 +7,19 @@ import {
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { listDrmConnectors, pickActiveDisplay } from '@media-router/engine';
+import {
+    firstConnectedDisplay,
+    listDrmConnectors,
+    pickActiveDisplay,
+    resolveConnectorMode,
+} from '@media-router/engine';
 import {
     COG_POLL_INTERVAL_MS,
     currentWaylandSessionIdent,
     ensureWaylandEnv,
     findCogPidForDisplay,
     hasWaylandSession,
+    processStartMs,
     waitForWaylandSocket,
 } from './helpers/wayland.js';
 import {
@@ -21,13 +27,29 @@ import {
     buildLivePipeline,
     buildPipelineEnv,
     buildSink,
+    DEFAULT_SURFACE,
     resolveDecoderThreadType,
     resolveFallbackImagePath,
     RESUME_SINK_NAME,
     type SinkSelectionEnv,
 } from './helpers/pipelines.js';
+import { resolveWestonSurface } from './helpers/westonOutput.js';
 
 type SinkAvailability = { wayland: boolean; kms: boolean };
+
+/** Consecutive flowing 1 Hz polls required before a stall-resume rebuild. */
+const RESUME_STABLE_POLLS = 3;
+/**
+ * A cog PROCESS can predate our pipeline while its SURFACE (mapped when the
+ * page first renders, seconds after spawn) still lands on top of ours. Treat
+ * any cog started within this window before our watch began as potentially
+ * newer-surfaced and restack once. Cost when wrong: one extra ~2 s pipeline
+ * blip after a compositor restart; cost of the old exact rule when wrong:
+ * video invisible until a human intervenes.
+ */
+const COG_SURFACE_GRACE_MS = 15_000;
+/** How long after a stall-resume a renderwatch lag earns a free rebuild. */
+const POST_RESUME_HEAL_WINDOW_MS = 120_000;
 
 /**
  * Video Player plugin.
@@ -85,7 +107,10 @@ export class VideoPlayerModule extends GstPluginBase {
     // pinned to our active display changes, kick a pipeline restart so
     // our surface becomes the newest one and lands back on top.
     private cogPollTimer: NodeJS.Timeout | null = null;
-    private lastCogPid: number | undefined = undefined;
+    /** When this pipeline's cog watch (≈ surface creation) began. */
+    private cogWatchStartedAt = 0;
+    /** Cog PID we already restacked for — one restart per cog incarnation. */
+    private lastRestackCogPid: number | undefined = undefined;
 
     // Source-silent fallback. When the live pipeline's stall watchdog fires
     // (no buffer off the bus socket for 5 s) the Python runner tags the
@@ -103,6 +128,20 @@ export class VideoPlayerModule extends GstPluginBase {
     private resumeTapActive = false;
     /** Last byte count read off the resume tap — advance = source resumed. */
     private lastResumeBytes: number | undefined;
+    /**
+     * Consecutive 1 Hz polls that saw the source flowing. Resuming on the
+     * FIRST sign of bytes rebuilt the live pipeline against a still-churning
+     * source (field case 2026-08-02: upstream restart chain — tsparse latched
+     * a skewed timing baseline and the pipeline ran degraded for minutes:
+     * green slice corruption, ~10 % late-drops). Requiring a short streak
+     * costs RESUME_STABLE_POLLS-1 extra seconds of fallback and rebuilds
+     * against a stream that has actually settled.
+     */
+    private resumeStreak = 0;
+    /** When the last stall-resume rebuilt the live pipeline (0 = never). */
+    private lastStallResumeAt = 0;
+    /** One free self-heal rebuild per resume — see onPluginEvent. */
+    private postResumeHealDone = false;
     /**
      * 1 Hz resume poller, alive while we're latched in fallback. With the
      * tap active it reads the tap's byte counter (bytes advancing = source
@@ -168,9 +207,91 @@ export class VideoPlayerModule extends GstPluginBase {
         this.startCogPollWatch();
     }
 
+    /**
+     * Latched while the runner's renderWatch reports the pipeline lagging
+     * behind the stream's declared framerate. Owns the corresponding health
+     * warning: recovery only clears health that this latch set.
+     */
+    private renderLagActive = false;
+
+    /**
+     * Render keep-up events from the runner's `renderWatch` (see
+     * PipelineDescription.renderWatch). Lag means frames are being shed by
+     * the leaky queues — the decode/convert/render chain cannot sustain the
+     * source rate. Nothing here can fix that, so tell the operator what to
+     * change.
+     */
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel === 'renderwatch:lag') {
+            const p = (payload ?? {}) as {
+                achievedFps?: number;
+                expectedFps?: number;
+                arrivalsFps?: number;
+            };
+            this.renderLagActive = true;
+            const rate =
+                typeof p.achievedFps === 'number' && typeof p.expectedFps === 'number'
+                    ? ` (${p.achievedFps}/${p.expectedFps} fps)`
+                    : '';
+            // Attribute the shortfall correctly: when the sink presents
+            // essentially everything that ARRIVES, the render chain isn't the
+            // problem — the source is delivering fewer frames (link jitter,
+            // encoder hiccup). Telling the operator to lower the resolution
+            // for that would be wrong advice. Field case, 2026-08-01: OCC
+            // link dips to ~41 fps for a few seconds; arrivals == presented,
+            // drops == 0.
+            const sourceShortfall =
+                typeof p.achievedFps === 'number' &&
+                typeof p.arrivalsFps === 'number' &&
+                p.achievedFps >= p.arrivalsFps - 1;
+            this.setHealth(
+                'warning',
+                sourceShortfall
+                    ? `Stream under-delivering${rate} — check the source/link (display is keeping up)`
+                    : `Video output can't keep up${rate} — lower the stream or display resolution`,
+            );
+            // Self-heal: lag right after a stall-resume means the live
+            // pipeline rebuilt against a source that had not fully settled
+            // (field case 2026-08-02: skewed timing baseline → green slice
+            // corruption + steady late-drops until a MANUAL restart). One
+            // free rebuild per resume; a rebuild that lags again is a real
+            // render problem and stays for the operator to see.
+            if (
+                !sourceShortfall &&
+                !this.postResumeHealDone &&
+                this.lastStallResumeAt > 0 &&
+                Date.now() - this.lastStallResumeAt < POST_RESUME_HEAL_WINDOW_MS
+            ) {
+                this.postResumeHealDone = true;
+                this.log.info('Render lag shortly after stall-resume — rebuilding pipeline once');
+                this.restartPipeline().catch(() => {
+                    /* logged inside */
+                });
+            }
+        } else if (channel === 'renderwatch:recovered') {
+            // Only clear health WE degraded — never stomp a bus-stall or
+            // substituted-display warning someone else owns.
+            if (this.renderLagActive && this.health === 'warning') {
+                this.setHealth('ok');
+            }
+            this.renderLagActive = false;
+        }
+    }
+
     async onStop(): Promise<void> {
         this.stopCogPollWatch();
         this.stopBusResumeWatchdog();
+        // A rebuilt pipeline gets a fresh runner-side monitor that re-measures
+        // from scratch — a stale lag latch must not suppress or fake events.
+        // Clear the warning the latch owns too: the fresh monitor starts
+        // un-lagged and only reports TRANSITIONS, so it would never emit the
+        // "recovered" that clears it (field 2026-08-02: "can't keep up
+        // (0/50 fps)" stuck on a healthy pipeline after a compositor-restart
+        // rebuild).
+        if (this.renderLagActive && this.health === 'warning') {
+            this.setHealth('ok');
+        }
+        this.renderLagActive = false;
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
         // we deliberately keep the bus-stall latch alive so the rebuilt
         // pipeline picks the fallback path that triggered this very restart
@@ -227,7 +348,7 @@ export class VideoPlayerModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!source) return;
-        let resumed = false;
+        let flowing = false;
         if (this.resumeTapActive) {
             const bytes = await this.readBusSinkBytes(RESUME_SINK_NAME);
             if (
@@ -235,15 +356,18 @@ export class VideoPlayerModule extends GstPluginBase {
                 this.lastResumeBytes !== undefined &&
                 bytes > this.lastResumeBytes
             ) {
-                resumed = true;
+                flowing = true;
             }
             if (bytes !== undefined) this.lastResumeBytes = bytes;
         } else if (source.socketPath && (await probeUnixSocket(source.socketPath))) {
-            resumed = true;
+            flowing = true;
         }
-        if (!resumed || !this.busStallDetected) return;
+        this.resumeStreak = flowing ? this.resumeStreak + 1 : 0;
+        if (this.resumeStreak < RESUME_STABLE_POLLS || !this.busStallDetected) return;
         this.log.info('Source resumed — restarting live pipeline');
         this.busStallDetected = false;
+        this.lastStallResumeAt = Date.now();
+        this.postResumeHealDone = false;
         this.stopBusResumeWatchdog();
         this.restartPipeline().catch(() => {
             /* logged inside */
@@ -253,6 +377,7 @@ export class VideoPlayerModule extends GstPluginBase {
     private startBusResumeWatchdog(): void {
         if (this.busResumeWatchdog) return;
         this.lastResumeBytes = undefined;
+        this.resumeStreak = 0;
         // 1 Hz is plenty — worst case is one extra second of fallback.
         // Lifetime is bounded to "we're latched in fallback": armed by the
         // bus_stall listener (and re-armed by installBusStallListener after
@@ -270,6 +395,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.busResumeWatchdog = null;
         }
         this.lastResumeBytes = undefined;
+        this.resumeStreak = 0;
     }
 
     /** Wipe stall state on an external stop — fresh start should never inherit a stale fallback decision. */
@@ -277,6 +403,8 @@ export class VideoPlayerModule extends GstPluginBase {
         this.stopBusResumeWatchdog();
         this.busStallDetected = false;
         this.resumeTapActive = false;
+        this.lastStallResumeAt = 0;
+        this.postResumeHealDone = false;
     }
 
     /**
@@ -291,29 +419,42 @@ export class VideoPlayerModule extends GstPluginBase {
     private startCogPollWatch(): void {
         if (this.cogPollTimer) return;
         if (!VideoPlayerModule.sinks.wayland || !hasWaylandSession()) return;
-        const display = this.currentActiveDisplayName();
-        if (!display) return;
-        this.lastCogPid = findCogPidForDisplay(display);
-        this.cogPollTimer = setInterval(() => {
-            const activeDisplay = this.currentActiveDisplayName();
-            if (!activeDisplay) return;
-            const current = findCogPidForDisplay(activeDisplay);
-            if (current === undefined) return; // cog mid-restart, wait
-            if (this.lastCogPid === undefined) {
-                this.lastCogPid = current;
-                return;
-            }
-            if (current === this.lastCogPid) return;
-            const previous = this.lastCogPid;
-            this.lastCogPid = current;
-            this.log.info(
-                { display: activeDisplay, previousPid: previous, newPid: current },
-                'Kiosk browser respawned on our output — restarting video pipeline',
-            );
-            this.restartPipeline().catch(() => {
-                /* logged inside */
-            });
-        }, COG_POLL_INTERVAL_MS);
+        if (!this.currentActiveDisplayName()) return;
+        this.cogWatchStartedAt = Date.now();
+        this.cogPollTimer = setInterval(() => this.pollCogRestack(), COG_POLL_INTERVAL_MS);
+    }
+
+    /**
+     * Restack rule: kiosk-shell stacks newest surface on top, so a cog whose
+     * PROCESS started after this pipeline did will cover the video once its
+     * page renders. A PID-change baseline missed the compositor-restart case
+     * (field 2026-08-02, monitor power-cycle): the video pipeline and cog
+     * respawn together, the baseline was captured AFTER the new cog spawned,
+     * and the video stayed hidden behind the control panel with the pipeline
+     * happily presenting to an occluded surface. Comparing process start
+     * times has no baseline to race: cog newer than us → restart once (latched
+     * per PID; the rebuilt pipeline is then newest and the rule goes quiet).
+     */
+    private pollCogRestack(
+        findPid: typeof findCogPidForDisplay = findCogPidForDisplay,
+        startMs: typeof processStartMs = processStartMs,
+    ): void {
+        const activeDisplay = this.currentActiveDisplayName();
+        if (!activeDisplay) return;
+        const current = findPid(activeDisplay);
+        if (current === undefined) return; // cog mid-restart, wait
+        if (current === this.lastRestackCogPid) return;
+        const cogStart = startMs(current);
+        if (cogStart === undefined) return;
+        if (cogStart <= this.cogWatchStartedAt - COG_SURFACE_GRACE_MS) return;
+        this.lastRestackCogPid = current;
+        this.log.info(
+            { display: activeDisplay, cogPid: current },
+            'Kiosk browser surfaced after our pipeline — restarting video pipeline to restack',
+        );
+        this.restartPipeline().catch(() => {
+            /* logged inside */
+        });
     }
 
     private stopCogPollWatch(): void {
@@ -321,12 +462,22 @@ export class VideoPlayerModule extends GstPluginBase {
             clearInterval(this.cogPollTimer);
             this.cogPollTimer = null;
         }
-        this.lastCogPid = undefined;
+        // `lastRestackCogPid` deliberately survives: the grace window means a
+        // freshly-restacked pipeline would otherwise see the SAME cog inside
+        // the window again after its own restart and loop. One restack per
+        // cog incarnation, per module instance.
     }
 
     private currentActiveDisplayName(): string {
         const requested = (this.config?.display as string) ?? '';
-        return pickActiveDisplay(requested).name;
+        // Same fallback as the surface/app_id resolution in buildPipeline:
+        // with no display configured, `pickActiveDisplay('')` returns an
+        // empty name — which silently disabled the cog poll watch
+        // (`findCogPidForDisplay('')` matches nothing), so a cog respawn
+        // after a weston restart could land ON TOP of the video and starve
+        // its frame callbacks to ~1 fps while decode kept burning CPU,
+        // with no recovery. Observed on a Pi 4 field device, 2026-08-01.
+        return pickActiveDisplay(requested).name || firstConnectedDisplay() || '';
     }
 
 
@@ -492,7 +643,7 @@ export class VideoPlayerModule extends GstPluginBase {
         this.updateStatusData();
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription {
+    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
         const fallback = (config.fallbackText as string) ?? 'No video detected';
         const rawImagePath = (config.fallbackImagePath as string) ?? '';
         const fallbackImage = resolveFallbackImagePath(rawImagePath);
@@ -506,6 +657,44 @@ export class VideoPlayerModule extends GstPluginBase {
             );
         }
         const requestedDisplay = (config.display as string) ?? '';
+        // Headless guard: this host has DRM connectors but none is a connected
+        // physical output (`Writeback-*` is the compositor's virtual screencast
+        // sink, not a screen) — there is nowhere to render. Return no pipeline
+        // instead of letting a sink error-loop (kmssink has no connector to
+        // drive, and waylandsink has no compositor since Weston itself can't
+        // start without a display), and set health so the manager UI shows WHY
+        // there's no video. Recovery is automatic: when a display is plugged
+        // in the compositor comes up, the wayland-session watcher sees the
+        // fresh socket and restartPipeline() re-evaluates this guard. An
+        // explicitly selected connector that IS connected (even a virtual one
+        // — an operator may deliberately target Writeback capture) is
+        // honoured. Hosts with no DRM subsystem at all (dev machines) skip the
+        // guard and keep the autovideosink path.
+        const connectors = listDrmConnectors();
+        const requestedConnected = connectors.some(
+            (c) =>
+                c.name === requestedDisplay &&
+                (c.meta?.status as string | undefined) === 'connected',
+        );
+        if (connectors.length > 0 && !firstConnectedDisplay() && !requestedConnected) {
+            this.setHealth('error', 'No display connected — video output unavailable');
+            return null;
+        }
+        // Compositor gate: waylandsink installed means this host renders
+        // through the compositor (multi-display and rotation are compositor
+        // features — kmssink has neither). With a display CONNECTED but no
+        // session yet (boot or hotplug window, compositor restarting), do NOT
+        // fall back to kmssink: it takes the DRM master and then fights the
+        // compositor's startup for it — observed after display hotplug as
+        // video flashing over the console (kmssink letterboxing onto the raw
+        // mode) and then vanishing while both sides restart. Idle with a
+        // clear health state instead; the wayland-session watcher restarts
+        // this module the moment the compositor's socket appears. Hosts
+        // without waylandsink installed keep the KMS-direct path.
+        if (VideoPlayerModule.sinks.wayland && !hasWaylandSession()) {
+            this.setHealth('warning', 'Display connected — waiting for compositor');
+            return null;
+        }
         // If the user-picked connector isn't `connected`, fall through to the
         // first connector that is. Both kmssink (via connector-id) and
         // waylandsink (via the MR_GLIB_PRGNAME app_id that kiosk-shell pins
@@ -526,15 +715,25 @@ export class VideoPlayerModule extends GstPluginBase {
         const clockSync = (this.config.clockSync as boolean | undefined) === true;
         const sinkElement = buildSink(active.name, sinkEnv, {
             qos: (this.config.qos as boolean | undefined) ?? true,
-            sync: clockSync || ((this.config.sync as boolean | undefined) ?? false),
+            sync: clockSync || ((this.config.sync as boolean | undefined) ?? true),
             // Positive lipSyncMs delays video to meet late audio (audio path has
             // more buffering latency). Live-updatable via the named `sink`.
             tsOffsetNs: Math.round(Number(this.config.lipSyncMs ?? 0) * 1_000_000),
         });
-        const env = buildPipelineEnv(active.name, sinkEnv);
-        // The wayland (kiosk-shell fullscreen) path needs the live surface
-        // pinned to a fixed size so it matches the fallback surface; KMS /
-        // autovideosink should keep native resolution. See buildLivePipeline.
+        // `active.name` is empty when the user hasn't picked a display
+        // (`pickActiveDisplay('')` returns an empty name by design), which left
+        // the surface with NO `MR_GLIB_PRGNAME` app_id. kiosk-shell only maps
+        // surfaces whose app_id is listed in that output's `app-ids=`, so an
+        // unpinned surface is never placed and the video is simply absent —
+        // exactly the "output that isn't lit" failure the comment above warns
+        // about. Fall back to the first lit physical output, the same fallback
+        // `surfaceConnector` already uses below, so an unconfigured module
+        // renders instead of silently going nowhere.
+        const env = buildPipelineEnv(active.name || firstConnectedDisplay() || '', sinkEnv);
+        // On the wayland (kiosk-shell fullscreen) path the compositor scales
+        // our surface onto the output itself, so the live pipeline must not
+        // scale in software. KMS / autovideosink have no compositor and keep
+        // their own scaler. See buildLivePipeline.
         const waylandFullscreen = sinkEnv.wayland && sinkEnv.waylandSession;
 
         const instanceId = this.services?.instanceId ?? '';
@@ -567,12 +766,36 @@ export class VideoPlayerModule extends GstPluginBase {
                     ? udpSource.socketPath
                     : undefined;
             this.resumeTapActive = !!resumeSocket;
+            // Size the fallback card to the output's own mode (the live path
+            // needs no size — it renders at source resolution). Falls back to
+            // DEFAULT_SURFACE when the mode can't be read (nothing plugged
+            // in), which is also all autovideosink/headless needs.
+            //
+            // `active.name` is empty when the user hasn't picked a display
+            // (sink selection then lets the compositor choose), so fall back to
+            // the first lit physical output — otherwise an unconfigured module
+            // always got the default surface and, on a 1080p panel, drew a 720p
+            // card that the compositor upscaled straight back.
+            //
+            // On the compositor path the size must be the output's LOGICAL
+            // geometry (weston.ini `mode=` / `transform=`), not the kernel's
+            // preferred mode: a rotated output swaps the canvas axes, and
+            // fit-scaling a portrait surface into a rotated landscape canvas
+            // renders the card as a small band. See resolveWestonSurface.
+            // KMS / autovideosink have no compositor, so weston.ini must not
+            // apply there — those keep the raw sysfs mode.
+            const surfaceConnector = active.name || firstConnectedDisplay() || '';
+            const surface =
+                (waylandFullscreen
+                    ? resolveWestonSurface(surfaceConnector)
+                    : resolveConnectorMode(surfaceConnector)) ?? DEFAULT_SURFACE;
             return {
                 pipeline: buildFallbackOnlyPipeline(
                     fallback,
                     sinkElement,
                     fallbackImage,
                     resumeSocket,
+                    surface,
                 ),
                 restartOnError: true,
                 env,
@@ -587,10 +810,17 @@ export class VideoPlayerModule extends GstPluginBase {
                 waylandFullscreen,
                 Number(this.config.bufferMs ?? 200),
                 clockSync,
+                // Clock-paced sink (sync config or clockSync) → tsparse
+                // returns to the chain for clock-anchored timestamps.
+                clockSync || ((this.config.sync as boolean | undefined) ?? true),
             ),
             restartOnError: true,
             env,
             decoderThreadType: resolveDecoderThreadType(this.config.cpuDecodeThreading),
+            // Keep-up watch on the live render chain (see onPluginEvent).
+            // Only the wayland/kms sinks are named — autovideosink (dev) is a
+            // bin without `name=sink`, so the runner would fail the lookup.
+            ...(sinkElement.includes('name=sink') ? { renderWatch: { sink: 'sink' } } : {}),
             ...(clockSync ? { clockSync: true } : {}),
         };
     }

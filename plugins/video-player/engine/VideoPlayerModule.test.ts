@@ -6,10 +6,17 @@ import * as path from 'path';
 // The module probes the producer's edge socket (no-tap resume mode) via the
 // engine's probeUnixSocket — mock just that export so tests control the
 // probe verdict without touching real unix sockets.
-vi.mock('@media-router/engine', async (importOriginal) => ({
-    ...(await importOriginal<Record<string, unknown>>()),
-    probeUnixSocket: vi.fn(async () => false),
-}));
+vi.mock('@media-router/engine', async (importOriginal) => {
+    const actual = await importOriginal<Record<string, unknown>>();
+    return {
+        ...actual,
+        probeUnixSocket: vi.fn(async () => false),
+        // Passthrough spies so headless-guard tests can inject connector
+        // states; on dev machines the real ones read /sys/class/drm → [].
+        listDrmConnectors: vi.fn(actual.listDrmConnectors as (...a: unknown[]) => unknown),
+        firstConnectedDisplay: vi.fn(actual.firstConnectedDisplay as (...a: unknown[]) => unknown),
+    };
+});
 
 // buildPipeline gates the fallback's resume tap on fs.existsSync(edge socket).
 // Wrap just that export in a pass-through spy so stall tests can force the
@@ -20,7 +27,7 @@ vi.mock('fs', async (importOriginal) => {
     return { ...actual, existsSync: vi.fn(actual.existsSync) };
 });
 
-import { probeUnixSocket } from '@media-router/engine';
+import { firstConnectedDisplay, listDrmConnectors, probeUnixSocket } from '@media-router/engine';
 import { VideoPlayerModule } from './VideoPlayerModule.js';
 import { currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
 import {
@@ -31,6 +38,7 @@ import {
     resolveDecoderThreadType,
     resolveFallbackImagePath,
     RESUME_SINK_NAME,
+    surfaceCaps,
 } from './helpers/pipelines.js';
 
 const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
@@ -40,6 +48,13 @@ describe('VideoPlayerModule helpers', () => {
     beforeEach(() => {
         // Reset any cached probe state so each test sets its own.
         VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+        // Deterministic DRM default: no connectors = dev-machine path, so the
+        // headless guard never fires from the box the tests happen to run on
+        // (a headless Pi has connectors that are all `disconnected`, which
+        // would return null from every buildPipeline call). Guard tests
+        // override with mockReturnValueOnce.
+        (listDrmConnectors as unknown as ReturnType<typeof vi.fn>).mockReturnValue([]);
+        (firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
     });
 
     describe('buildSink', () => {
@@ -312,43 +327,114 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('videotestsrc');
         });
 
-        it('re-anchors PTS by default (tsparse set-timestamps=true) — single-pipeline playout', () => {
+        it('has NO tsparse — the player never re-muxes, and the default sink presents on arrival', () => {
+            // tsparse's job (re-anchoring PCR so multi-stage remux chains don't
+            // drift) doesn't apply to a terminal display pipeline, and it was
+            // the chain's single most expensive element (0.11 core at 1080p50,
+            // measured 2026-08-01). tsdemux consumes the bus buffers directly.
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
+            expect(s).not.toContain('tsparse');
+        });
+
+        it('clock-paced sink (sync config) brings tsparse back with re-anchored timestamps', () => {
+            const s = buildLivePipeline(
+                'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
+                busSource,
+                false,
+                200,
+                false,
+                true,
+            );
             expect(s).toContain('tsparse set-timestamps=true');
         });
 
-        it('preserves source PTS when clock-locked (preserveSourcePts=true) so it shares the audio timeline', () => {
+        it('clockSync keeps tsparse but preserves the source timeline (set-timestamps=false)', () => {
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
                 busSource,
                 false,
                 200,
                 true,
+                true,
             );
             expect(s).toContain('tsparse set-timestamps=false');
             expect(s).not.toContain('set-timestamps=true');
         });
 
-        it('passes native resolution through on the KMS/auto path (constrainSurface=false)', () => {
-            // Forcing 1280×720 here would downscale a native-res broadcast
-            // panel — only the wayland-fullscreen path needs the fixed size.
+        it('keeps videoscale (uncapped) on the KMS/auto path — no compositor scales for them', () => {
+            // kmssink/autovideosink negotiate the size they want and there is
+            // nothing downstream to resize for them, so the scaler stays.
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             expect(s).toContain('videoconvert ! videoscale ! kmssink');
-            expect(s).not.toContain('width=1280,height=720');
+            // Still uncapped: a native-res broadcast panel must not be rescaled.
+            expect(s).not.toContain('width=');
         });
 
-        it('pins the surface to 1280×720 on the wayland-fullscreen path (constrainSurface=true)', () => {
-            // Must match the fallback surface dimensions, else kiosk-shell
-            // rejects the mismatched fullscreen surface and weston logs
-            // `libwayland: error in client communication`.
+        it('drops videoscale AND all size caps on the wayland-fullscreen path', () => {
+            // Weston (kiosk-shell fullscreen) fit-scales the surface on the GPU
+            // for free, so scaling in software here would pay for it twice: the
+            // frames reach waylandsink at SOURCE resolution.
             const s = buildLivePipeline(
                 'waylandsink name=sink sync=false fullscreen=true qos=true',
                 busSource,
                 true,
             );
-            expect(s).toContain('videoscale add-borders=true');
-            expect(s).toContain('width=1280,height=720');
-            expect(s).toContain('pixel-aspect-ratio=1/1');
+            expect(s).toContain(
+                'decodebin3 ! videoconvert ! waylandsink name=sink sync=false fullscreen=true qos=true',
+            );
+            expect(s).not.toContain('videoscale');
+            expect(s).not.toContain('width=');
+            expect(s).not.toContain('height=');
+            expect(s).not.toContain('pixel-aspect-ratio');
+        });
+
+        it('needs no DMABuf caps hole for a hw decoder — nothing constrains the sink caps', () => {
+            // `v4l2slh265dec` (rpivid) only ever emits
+            // video/x-raw(memory:DMABuf), format=DMA_DRM. The old two-structure
+            // filter needed an explicit no-constraint DMABuf structure to let
+            // those buffers past a size only the software path could satisfy;
+            // with no caps filter at all they negotiate straight through
+            // videoconvert (which passes DMA_DRM untouched) to waylandsink.
+            const s = buildLivePipeline(
+                'waylandsink name=sink sync=false fullscreen=true qos=true',
+                busSource,
+                true,
+            );
+            expect(s).not.toContain('memory:DMABuf');
+            expect(s).not.toContain('video/x-raw');
+        });
+
+        it('never uses the ISP (v4l2convert) on either path', () => {
+            // Measured on Pi 400: the bcm2835 ISP caps at ~46 fps for 1080p
+            // regardless of output size — it cannot sustain 1080p50, where the
+            // software elements run ~60 fps at near-zero CPU as long as they
+            // are not asked to resize (basetransform goes passthrough).
+            expect(
+                buildLivePipeline('waylandsink name=sink fullscreen=true', busSource, true),
+            ).not.toContain('v4l2convert');
+            expect(buildLivePipeline('kmssink name=sink', busSource, false)).not.toContain(
+                'v4l2convert',
+            );
+        });
+
+        it('leaves the live surface source-sized while the fallback card stays surface-sized', () => {
+            // ACCEPTED RISK, asserted so the divergence stays deliberate and
+            // visible: kiosk-shell can reject a fullscreen surface whose size
+            // differs from the one already committed to the output
+            // (`libwayland: error in client communication`), so a live↔fallback
+            // transition between differing dimensions can trip it. Revisit with
+            // the fallback-sizing strategy (handover Q5).
+            const surface = { width: 1920, height: 1080 };
+            const live = buildLivePipeline('waylandsink name=sink', busSource, true);
+            const fb = buildFallbackOnlyPipeline(
+                'No video',
+                'waylandsink name=sink',
+                undefined,
+                undefined,
+                surface,
+            );
+            expect(live).not.toContain('width=1920,height=1080');
+            expect(fb).toContain('width=1920,height=1080');
         });
 
         it('arms a 5s stall watchdog on the bus ingress so a silent producer trips bus_stall', () => {
@@ -359,15 +445,40 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).toContain('watchdog name=buswd_5000 timeout=5000');
         });
 
-        it('orders unixfdsrc → watchdog → tsparse → tsdemux (watchdog sees raw socket delivery)', () => {
+        it('orders unixfdsrc → watchdog → tsdemux (watchdog sees raw socket delivery)', () => {
             const s = buildLivePipeline('kmssink name=sink sync=false qos=true', busSource);
             const idxSrc = s.indexOf('unixfdsrc');
             const idxWd = s.indexOf('watchdog');
-            const idxTsparse = s.indexOf('tsparse');
             const idxTsdemux = s.indexOf('tsdemux');
             expect(idxSrc).toBeLessThan(idxWd);
-            expect(idxWd).toBeLessThan(idxTsparse);
-            expect(idxTsparse).toBeLessThan(idxTsdemux);
+            expect(idxWd).toBeLessThan(idxTsdemux);
+        });
+    });
+
+    describe('surfaceCaps', () => {
+        it('pins the fallback card to the given size at square pixels', () => {
+            expect(surfaceCaps({ width: 1920, height: 1080 })).toBe(
+                'video/x-raw,width=1920,height=1080,pixel-aspect-ratio=1/1',
+            );
+        });
+
+        it('defaults to the 1280x720 fallback surface when none is given', () => {
+            expect(surfaceCaps()).toBe('video/x-raw,width=1280,height=720,pixel-aspect-ratio=1/1');
+        });
+
+        it('leaves the fallback pipeline system-memory only (no DMABuf structure)', () => {
+            // videotestsrc / imagefreeze never produce DMABuf, and the fallback
+            // card is sized here rather than inherited — so a DMABuf structure
+            // would be meaningless on this path.
+            const fb = buildFallbackOnlyPipeline(
+                'No video',
+                'waylandsink name=sink',
+                undefined,
+                undefined,
+                { width: 1920, height: 1080 },
+            );
+            expect(fb).not.toContain('memory:DMABuf');
+            expect(fb).toContain('video/x-raw,width=1920,height=1080,pixel-aspect-ratio=1/1');
         });
     });
 
@@ -428,7 +539,7 @@ describe('VideoPlayerModule helpers', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
             (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
-            const desc = module.buildPipeline({ fallbackText: 'Nothing here', display: '' });
+            const desc = module.buildPipeline({ fallbackText: 'Nothing here', display: '' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Nothing here');
             expect(desc.pipeline).not.toContain('input-selector');
@@ -438,6 +549,80 @@ describe('VideoPlayerModule helpers', () => {
                 'warning',
                 expect.stringContaining('No video'),
             );
+        });
+
+        describe('headless guard', () => {
+            const listDrmConnectorsMock = listDrmConnectors as unknown as ReturnType<typeof vi.fn>;
+            const firstConnectedDisplayMock =
+                firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>;
+
+            it('returns no pipeline and flags health=error when DRM exists but nothing is connected', () => {
+                // A sink would only error-loop here: kmssink has no connector
+                // to drive, and the compositor itself can't start without a
+                // display. The manager UI shows the health message instead.
+                VideoPlayerModule.setSinkAvailability({ wayland: true, kms: true });
+                const module = makeModule();
+                listDrmConnectorsMock.mockReturnValueOnce([
+                    { name: 'HDMI-A-1', label: '', meta: { status: 'disconnected' } },
+                    { name: 'Writeback-1', label: '', meta: { status: 'connected' } },
+                ]);
+                firstConnectedDisplayMock.mockReturnValueOnce(undefined);
+                const desc = module.buildPipeline({ fallbackText: 'No video', display: '' });
+                expect(desc).toBeNull();
+                expect((module as any).setHealth).toHaveBeenCalledWith(
+                    'error',
+                    expect.stringContaining('No display connected'),
+                );
+            });
+
+            it('honours an explicitly selected connector that is connected (e.g. Writeback capture)', () => {
+                VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+                const module = makeModule();
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+                listDrmConnectorsMock.mockReturnValueOnce([
+                    { name: 'Writeback-1', label: '', meta: { status: 'connected' } },
+                ]);
+                firstConnectedDisplayMock.mockReturnValueOnce(undefined);
+                const desc = module.buildPipeline({
+                    fallbackText: 'No video',
+                    display: 'Writeback-1',
+                });
+                expect(desc).not.toBeNull();
+                expect(desc!.pipeline).toContain('videotestsrc');
+            });
+
+            it('waits for the compositor instead of falling back to kmssink (display connected, no session)', () => {
+                // kmssink would take the DRM master and fight the starting
+                // compositor for it — the hotplug flash-then-vanish failure.
+                VideoPlayerModule.setSinkAvailability({ wayland: true, kms: true });
+                const prevRuntime = process.env.XDG_RUNTIME_DIR;
+                delete process.env.XDG_RUNTIME_DIR; // no session reachable
+                try {
+                    const module = makeModule();
+                    listDrmConnectorsMock.mockReturnValueOnce([
+                        { name: 'HDMI-A-1', label: '', meta: { status: 'connected' } },
+                    ]);
+                    firstConnectedDisplayMock.mockReturnValueOnce('HDMI-A-1');
+                    const desc = module.buildPipeline({ fallbackText: 'x', display: '' });
+                    expect(desc).toBeNull();
+                    expect((module as any).setHealth).toHaveBeenCalledWith(
+                        'warning',
+                        expect.stringContaining('waiting for compositor'),
+                    );
+                } finally {
+                    if (prevRuntime !== undefined) process.env.XDG_RUNTIME_DIR = prevRuntime;
+                }
+            });
+
+            it('skips the guard on hosts with no DRM subsystem at all (dev machines)', () => {
+                VideoPlayerModule.setSinkAvailability({ wayland: false, kms: false });
+                const module = makeModule();
+                (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
+                listDrmConnectorsMock.mockReturnValueOnce([]);
+                const desc = module.buildPipeline({ fallbackText: 'No video', display: '' });
+                expect(desc).not.toBeNull();
+                expect(desc!.pipeline).toContain('autovideosink');
+            });
         });
 
         it('returns the live pipeline when a bus source is assigned (KMS path)', () => {
@@ -453,7 +638,7 @@ describe('VideoPlayerModule helpers', () => {
             const desc = module.buildPipeline({
                 fallbackText: 'No video',
                 display: 'HDMI-A-1',
-            });
+            })!;
             expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500-abc.sock');
             expect(desc.pipeline).toContain('watchdog name=buswd_5500 timeout=5000');
             expect(desc.pipeline).toContain('tsdemux');
@@ -485,7 +670,7 @@ describe('VideoPlayerModule helpers', () => {
                 const desc = module.buildPipeline({
                     fallbackText: 'No video',
                     display: 'DSI-2',
-                });
+                })!;
                 expect(desc.pipeline).toContain('waylandsink name=sink');
                 expect(desc.env).toEqual({ MR_GLIB_PRGNAME: 'local.mr.DSI-2' });
             } finally {
@@ -760,7 +945,7 @@ describe('VideoPlayerModule helpers', () => {
         it('returns the live pipeline by default when a source is connected', () => {
             VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
             const module = makeModule();
-            const desc = module.buildPipeline({ display: '' });
+            const desc = module.buildPipeline({ display: '' })!;
             // Sanity: with no stall latched, live wins.
             expect(desc.pipeline).toContain('unixfdsrc');
             expect(desc.pipeline).not.toContain('videotestsrc');
@@ -801,7 +986,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).busStallDetected = true;
             existsSyncMock.mockReturnValue(true);
-            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
+            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).toContain('Source down');
             expect(desc.pipeline).toContain(
@@ -823,7 +1008,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).busStallDetected = true;
             existsSyncMock.mockReturnValue(false);
-            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' });
+            const desc = module.buildPipeline({ display: '', fallbackText: 'Source down' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).not.toContain('unixfdsrc');
             expect(desc.pipeline).not.toContain(RESUME_SINK_NAME);
@@ -835,7 +1020,7 @@ describe('VideoPlayerModule helpers', () => {
             const module = makeModule();
             (module as any).services.mediaRouter.getModuleBusSource.mockReturnValue(undefined);
             existsSyncMock.mockReturnValue(true);
-            const desc = module.buildPipeline({ display: '' });
+            const desc = module.buildPipeline({ display: '' })!;
             expect(desc.pipeline).toContain('videotestsrc');
             expect(desc.pipeline).not.toContain('unixfdsrc');
             expect((module as any).resumeTapActive).toBe(false);
@@ -863,12 +1048,44 @@ describe('VideoPlayerModule helpers', () => {
                 await (module as any).pollBusResume();
                 expect(restart).not.toHaveBeenCalled();
 
-                // Counter advanced: source resumed → back to live.
+                // Counter advancing — but resume waits for a STABLE streak
+                // (RESUME_STABLE_POLLS consecutive flowing polls) so the live
+                // pipeline doesn't rebuild against a still-churning source.
                 readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(4000);
                 await (module as any).pollBusResume();
                 expect((module as any).busStallDetected).toBe(false);
                 expect(restart).toHaveBeenCalledTimes(1);
                 expect((module as any).busResumeWatchdog).toBeNull();
+            });
+
+            it('a flat poll mid-streak resets the stability gate', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const readBytes = vi
+                    .spyOn(module as any, 'readBusSinkBytes')
+                    .mockResolvedValue(1000);
+                await (module as any).pollBusResume(); // baseline
+                readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume(); // streak 1
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume(); // streak 2
+                await (module as any).pollBusResume(); // flat → streak 0
+                readBytes.mockResolvedValue(4000);
+                await (module as any).pollBusResume(); // streak 1
+                readBytes.mockResolvedValue(5000);
+                await (module as any).pollBusResume(); // streak 2
+                expect(restart).not.toHaveBeenCalled();
+                expect((module as any).busStallDetected).toBe(true);
             });
 
             it('does nothing while a restart cycle is already in flight', async () => {
@@ -897,8 +1114,12 @@ describe('VideoPlayerModule helpers', () => {
                 expect(restart).not.toHaveBeenCalled();
                 expect((module as any).busStallDetected).toBe(true);
 
-                // Producer respawned — socket answers → retry live directly.
+                // Producer respawned — socket answers on 3 consecutive
+                // polls (the stability gate) → retry live directly.
                 probeUnixSocketMock.mockResolvedValue(true);
+                await (module as any).pollBusResume();
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
                 await (module as any).pollBusResume();
                 expect((module as any).busStallDetected).toBe(false);
                 expect(restart).toHaveBeenCalledTimes(1);
@@ -1028,5 +1249,199 @@ describe('VideoPlayerModule helpers', () => {
             await module.onLiveConfigUpdate({ fallbackText: 'Whats sup' });
             expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
         });
+    });
+});
+
+describe('renderWatch health messages', () => {
+    function makeModule() {
+        const module = new VideoPlayerModule();
+        (module as any).setHealth = vi.fn();
+        return module;
+    }
+
+    it('render lag (presented below arrivals) → lower-resolution advice', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 50,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            "Video output can't keep up (41/50 fps) — lower the stream or display resolution",
+        );
+    });
+
+    it('source shortfall (presented ≈ arrivals) → check-the-link advice, not resolution advice', () => {
+        // Field case 2026-08-01: RIST link dips deliver only ~41 fps; the sink
+        // presents every frame that arrives (dropped=0). Blaming the render
+        // chain would send the operator to the wrong knob.
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 41.5,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            'Stream under-delivering (41/50 fps) — check the source/link (display is keeping up)',
+        );
+    });
+
+    it('missing arrivalsFps (older runner) falls back to the render-lag message', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', { achievedFps: 41, expectedFps: 50 });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining("can't keep up"),
+        );
+    });
+
+    it('render lag shortly after a stall-resume triggers ONE self-heal rebuild', () => {
+        // Field case 2026-08-02: live pipeline rebuilt against a just-recovered,
+        // still-churning source ran degraded (green band + steady late-drops)
+        // until a manual restart. One free rebuild per resume fixes that; a
+        // second lag is a real render problem and stays visible.
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).log = { info: vi.fn() };
+        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        const lag = { achievedFps: 44, expectedFps: 50, arrivalsFps: 49 };
+        (module as any).onPluginEvent('renderwatch:lag', lag);
+        expect(restart).toHaveBeenCalledTimes(1);
+        (module as any).onPluginEvent('renderwatch:lag', lag);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('no self-heal outside the post-resume window or for source shortfall', () => {
+        const module = makeModule();
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        (module as any).log = { info: vi.fn() };
+        // Old resume: outside the heal window.
+        (module as any).lastStallResumeAt = Date.now() - 600_000;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 44,
+            expectedFps: 50,
+            arrivalsFps: 49,
+        });
+        expect(restart).not.toHaveBeenCalled();
+        // Recent resume but the SOURCE is under-delivering — a rebuild can't
+        // manufacture frames the stream never carried.
+        (module as any).lastStallResumeAt = Date.now() - 10_000;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 41,
+        });
+        expect(restart).not.toHaveBeenCalled();
+    });
+
+    it('recovered clears only a warning this module raised', () => {
+        const module = makeModule();
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 41,
+            expectedFps: 50,
+            arrivalsFps: 50,
+        });
+        (module as any).health = 'warning';
+        (module as any).onPluginEvent('renderwatch:recovered', {});
+        expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+    });
+});
+
+describe('cog restack rule (start-time comparison)', () => {
+    function makeModule() {
+        const module = new VideoPlayerModule() as any;
+        module.log = { info: vi.fn() };
+        module.cogWatchStartedAt = 1000_000;
+        module.currentActiveDisplayName = () => 'HDMI-A-1';
+        module.restartPipeline = vi.fn().mockResolvedValue(undefined);
+        return module;
+    }
+
+    it('cog started after our pipeline → one restack restart, latched per PID', () => {
+        // Field case 2026-08-02 (monitor power-cycle): compositor restart
+        // respawned cog AFTER the video pipeline rebuilt; the old PID-baseline
+        // watch captured the new cog as baseline and never restacked — video
+        // stayed hidden behind the control panel indefinitely.
+        const module = makeModule();
+        const find = () => 500;
+        const start = () => 1000_500; // cog newer than pipeline
+        module.pollCogRestack(find, start);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.pollCogRestack(find, start); // same cog PID → latched
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it('cog well older than our pipeline → no restart (we are already on top)', () => {
+        const module = makeModule();
+        module.pollCogRestack(
+            () => 500,
+            () => 900_000, // 100 s before the watch — far outside the grace window
+        );
+        expect(module.restartPipeline).not.toHaveBeenCalled();
+    });
+
+    it('cog slightly older than our pipeline (surface-grace window) → restack once', () => {
+        // A cog process can predate the pipeline while its page (and thus its
+        // surface) renders after ours — field test 2026-08-02: weston restart
+        // spawned cog ~2 s before the pipeline rebuilt and the exact rule
+        // stayed quiet with the stacking unknown.
+        const module = makeModule();
+        module.pollCogRestack(
+            () => 500,
+            () => 995_000, // 5 s before the watch — inside the 15 s grace
+        );
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1); // latched
+    });
+
+    it('the restack latch survives a watch stop/start cycle (no grace-window loop)', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1);
+        module.stopCogPollWatch();
+        module.cogWatchStartedAt = 1_000_500; // watch re-armed after the rebuild
+        module.pollCogRestack(() => 500, () => 995_000);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(1); // still latched
+    });
+
+    it('cog absent or start time unreadable → wait, no restart', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => undefined, () => 1000_500);
+        module.pollCogRestack(() => 500, () => undefined);
+        expect(module.restartPipeline).not.toHaveBeenCalled();
+    });
+
+    it('a NEW cog incarnation after a latched one restarts again', () => {
+        const module = makeModule();
+        module.pollCogRestack(() => 500, () => 1000_500);
+        module.pollCogRestack(() => 501, () => 1000_900);
+        expect(module.restartPipeline).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe('stale renderwatch warning cleared on rebuild', () => {
+    it('onStop clears a lag-owned warning so it cannot outlive the pipeline', async () => {
+        // Field case 2026-08-02: "(0/50 fps)" latched while the compositor
+        // was down; the rebuilt pipeline's fresh monitor starts un-lagged and
+        // only reports transitions, so the warning stuck forever.
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.renderLagActive = true;
+        module.health = 'warning';
+        await module.onStop();
+        expect(module.setHealth).toHaveBeenCalledWith('ok');
+        expect(module.renderLagActive).toBe(false);
+    });
+
+    it('onStop leaves health alone when the warning is not lag-owned', async () => {
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.renderLagActive = false;
+        module.health = 'warning'; // someone else's warning
+        await module.onStop();
+        expect(module.setHealth).not.toHaveBeenCalledWith('ok');
     });
 });

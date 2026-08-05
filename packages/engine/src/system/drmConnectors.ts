@@ -127,6 +127,80 @@ export function pickActiveDisplay(
     };
 }
 
+export interface ConnectorMode {
+    width: number;
+    height: number;
+}
+
+/**
+ * Name of the first `connected` connector that is a real physical output, or
+ * `undefined` when nothing is lit.
+ *
+ * For callers that need *an* output when the user hasn't picked one —
+ * `pickActiveDisplay('')` deliberately returns an empty name so sink selection
+ * keeps its "let the compositor decide" behaviour, which leaves surface sizing
+ * with nothing to measure.
+ *
+ * Skips `Writeback-*` via the same filter `pickActiveDisplay` uses: the kernel
+ * reports it `connected` whenever the writeback subsystem is wired up, and it
+ * advertises a huge preferred mode (4096x2160 on a Pi 4), so picking it would
+ * size the surface to a 4K buffer nobody can see.
+ */
+export function firstConnectedDisplay(dir: string = DRM_DIR): string | undefined {
+    return listDrmConnectors(dir).find(
+        (c) =>
+            (c.meta?.status as string | undefined) === 'connected' &&
+            !NON_DISPLAY_CONNECTOR_RE.test(c.name),
+    )?.name;
+}
+
+/**
+ * Look up a connector's preferred mode (e.g. `1920x1080`) from
+ * `/sys/class/drm/card<N>-<name>/modes`. The kernel lists modes best-first,
+ * so line 1 is the preferred one — the same mode weston reports as
+ * `preferred, current`.
+ *
+ * Callers use this to size the rendered surface to the actual panel instead
+ * of a hard-coded constant: rendering 720p to a 1080p output made the
+ * compositor upscale it straight back, costing a software downscale and half
+ * the vertical resolution for nothing.
+ *
+ * Returns `undefined` when the connector is absent, has no modes (nothing
+ * plugged in), or the first line isn't parseable — callers fall back to their
+ * own default. Interlaced modes are reported as e.g. `1920x1080i`; the
+ * trailing flag is ignored since only the pixel dimensions matter here.
+ */
+export function resolveConnectorMode(
+    connectorName: string,
+    dir: string = DRM_DIR,
+): ConnectorMode | undefined {
+    if (!connectorName) return undefined;
+    let entries: string[];
+    try {
+        entries = fs.readdirSync(dir);
+    } catch {
+        return undefined;
+    }
+    for (const entry of entries) {
+        if (!/^card\d+-/.test(entry)) continue;
+        if (entry.replace(/^card\d+-/, '') !== connectorName) continue;
+        try {
+            const raw = fs.readFileSync(path.join(dir, entry, 'modes'), 'utf-8');
+            const first = raw.split('\n')[0]?.trim() ?? '';
+            const m = /^(\d+)x(\d+)/.exec(first);
+            if (!m) return undefined;
+            const width = parseInt(m[1], 10);
+            const height = parseInt(m[2], 10);
+            if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+            if (width <= 0 || height <= 0) return undefined;
+            return { width, height };
+        } catch {
+            return undefined;
+        }
+    }
+    return undefined;
+}
+
 /**
  * Look up the numeric DRM connector id for a given connector name
  * (e.g. `"HDMI-A-1"`). Returns `undefined` when the name isn't found or

@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './drmConnectors.js';
+import {
+    firstConnectedDisplay,
+    listDrmConnectors,
+    pickActiveDisplay,
+    resolveConnectorId,
+    resolveConnectorMode,
+} from './drmConnectors.js';
 
 describe('listDrmConnectors', () => {
     let tmp: string;
@@ -103,6 +109,113 @@ describe('resolveConnectorId', () => {
 
     it('returns undefined for a missing dir', () => {
         expect(resolveConnectorId('HDMI-A-1', '/nonexistent-path-xyz')).toBeUndefined();
+    });
+});
+
+describe('firstConnectedDisplay', () => {
+    let tmp: string;
+
+    beforeEach(() => {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'drm-first-'));
+    });
+
+    afterEach(() => {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    });
+
+    function fixture(name: string, status: string) {
+        const dir = path.join(tmp, name);
+        fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(dir, 'status'), `${status}\n`);
+    }
+
+    it('returns the first connected physical output', () => {
+        fixture('card0-HDMI-A-1', 'disconnected');
+        fixture('card0-HDMI-A-2', 'connected');
+        expect(firstConnectedDisplay(tmp)).toBe('HDMI-A-2');
+    });
+
+    it('never picks Writeback, which reports connected and advertises 4K', () => {
+        // Regression: on a Pi 4 card0-Writeback-1 is `connected` with a
+        // preferred mode of 4096x2160 — sizing a surface to it would allocate a
+        // 4K buffer for an output nobody can see.
+        fixture('card0-Writeback-1', 'connected');
+        expect(firstConnectedDisplay(tmp)).toBeUndefined();
+        fixture('card0-HDMI-A-2', 'connected');
+        expect(firstConnectedDisplay(tmp)).toBe('HDMI-A-2');
+    });
+
+    it('returns undefined when nothing is connected', () => {
+        fixture('card0-HDMI-A-1', 'disconnected');
+        expect(firstConnectedDisplay(tmp)).toBeUndefined();
+    });
+
+    it('returns undefined for a missing dir', () => {
+        expect(firstConnectedDisplay('/nonexistent-path-xyz')).toBeUndefined();
+    });
+});
+
+describe('resolveConnectorMode', () => {
+    let tmp: string;
+
+    beforeEach(() => {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'drm-mode-'));
+    });
+
+    afterEach(() => {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    });
+
+    function fixture(name: string, modes?: string) {
+        const dir = path.join(tmp, name);
+        fs.mkdirSync(dir);
+        if (modes !== undefined) {
+            fs.writeFileSync(path.join(dir, 'modes'), modes);
+        }
+    }
+
+    it('returns the preferred (first) mode', () => {
+        // The kernel lists modes best-first, so line 1 is what weston reports
+        // as `preferred, current`.
+        fixture('card0-HDMI-A-2', '1920x1080\n1680x1050\n1280x720\n');
+        expect(resolveConnectorMode('HDMI-A-2', tmp)).toEqual({ width: 1920, height: 1080 });
+    });
+
+    it('reads the small DSI panel size', () => {
+        fixture('card1-DSI-1', '800x480\n');
+        expect(resolveConnectorMode('DSI-1', tmp)).toEqual({ width: 800, height: 480 });
+    });
+
+    it('ignores an interlaced-mode suffix', () => {
+        fixture('card0-HDMI-A-1', '1920x1080i\n');
+        expect(resolveConnectorMode('HDMI-A-1', tmp)).toEqual({ width: 1920, height: 1080 });
+    });
+
+    it('returns undefined when modes is empty (nothing plugged in)', () => {
+        fixture('card0-HDMI-A-1', '');
+        expect(resolveConnectorMode('HDMI-A-1', tmp)).toBeUndefined();
+    });
+
+    it('returns undefined when the modes file is missing', () => {
+        fixture('card0-HDMI-A-1');
+        expect(resolveConnectorMode('HDMI-A-1', tmp)).toBeUndefined();
+    });
+
+    it('returns undefined on an unparseable first line', () => {
+        fixture('card0-HDMI-A-1', 'garbage\n1920x1080\n');
+        expect(resolveConnectorMode('HDMI-A-1', tmp)).toBeUndefined();
+    });
+
+    it('returns undefined for a zero dimension', () => {
+        fixture('card0-HDMI-A-1', '0x0\n');
+        expect(resolveConnectorMode('HDMI-A-1', tmp)).toBeUndefined();
+    });
+
+    it('returns undefined for a missing connector, empty name, or missing dir', () => {
+        fixture('card0-HDMI-A-1', '1920x1080\n');
+        expect(resolveConnectorMode('DP-99', tmp)).toBeUndefined();
+        expect(resolveConnectorMode('', tmp)).toBeUndefined();
+        expect(resolveConnectorMode('HDMI-A-1', '/nonexistent-path-xyz')).toBeUndefined();
     });
 });
 
