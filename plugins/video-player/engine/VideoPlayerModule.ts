@@ -1,33 +1,72 @@
-import * as fs from 'fs';
 import {
     GstPluginBase,
+    listDrmConnectors,
+    onKernelLogSignal,
     probeGstElement,
     probeUnixSocket,
     type EngineServices,
+    type KernelLogSignalEvent,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { listDrmConnectors, pickActiveDisplay } from '@media-router/engine';
 import {
+    bootNowMs,
     COG_POLL_INTERVAL_MS,
-    currentWaylandSessionIdent,
     ensureWaylandEnv,
     findCogPidForDisplay,
     hasWaylandSession,
+    processStartMs,
     waitForWaylandSocket,
 } from './helpers/wayland.js';
+import { resolveFallbackImagePath, RESUME_SINK_NAME } from './helpers/pipelines.js';
 import {
-    buildFallbackOnlyPipeline,
-    buildLivePipeline,
-    buildPipelineEnv,
-    buildSink,
-    resolveDecoderThreadType,
-    resolveFallbackImagePath,
-    RESUME_SINK_NAME,
-    type SinkSelectionEnv,
-} from './helpers/pipelines.js';
+    decoderDemotionNote,
+    probeDecoderAvailability,
+    resolveCpuDecodeThreading,
+    selectDecoder,
+    HARDWARE_DECODER_IDS,
+    KERNEL_HW_DECODE_DISABLED_NOTE,
+    type DecoderAvailability,
+    type DecoderSelection,
+} from './helpers/decoderSelection.js';
+import { DecoderDemotions, resolveDemotionTtlMs } from './helpers/decoderDemotions.js';
+import { CodecMemory, codecMemoryKey } from './helpers/codecMemory.js';
+import {
+    activeDisplayName,
+    describeRenderPath,
+    resolveFallbackSurface,
+    resolveRenderTarget,
+    type SinkAvailability,
+} from './helpers/renderTarget.js';
+import {
+    planFallbackPipeline,
+    planLivePipeline,
+    planSink,
+    resolveBuildHealth,
+    resolveResumeSocket,
+} from './helpers/pipelinePlan.js';
+import {
+    registerWaylandRestartTarget,
+    resetWaylandRestartWatch,
+    scheduleWaylandRestartCheck,
+    unregisterWaylandRestartTarget,
+    waylandRestartTargets,
+} from './helpers/waylandRestartWatch.js';
+import { cogNeedingRestack } from './helpers/cogRestack.js';
+import { pollResumeSignal } from './helpers/busResume.js';
+import { classifyDecoderFailure, planCodecReport } from './helpers/decoderRuntime.js';
+import { describeRenderLag, shouldSelfHealAfterResume } from './helpers/renderLag.js';
 
-type SinkAvailability = { wayland: boolean; kms: boolean };
+export type { SinkAvailability };
+
+/**
+ * A pipeline error as it reaches the module. `element` is the gst bus
+ * message's own source element INSTANCE (`v4l2slh265dec0`, `h265parse0`,
+ * `waylandsink0`), forwarded verbatim by gst-pipeline-runner.py → GstRunner →
+ * GstChildProcess; it is what makes decoder demotion attributable. Absent on
+ * synthesised errors (spawn failure, max restarts, PLAYING watchdog).
+ */
+type RunnerErrorEvent = { kind?: string; message?: string; element?: string };
 
 /**
  * Video Player plugin.
@@ -39,6 +78,13 @@ type SinkAvailability = { wayland: boolean; kms: boolean };
  * display never goes blank.
  *
  * Owns the `drm-connector` device type.
+ *
+ * The class is the coordinator: lifecycle, health, event dispatch and the
+ * restart latch. Every decision it makes lives in `helpers/` —
+ * `renderTarget` (where do we render), `pipelinePlan` (what do we build),
+ * `decoderRuntime` + `decoderSelection` (which decoder), `busResume` (has the
+ * source come back), `cogRestack` / `waylandRestartWatch` (compositor
+ * surprises), `renderLag` (is the render chain keeping up).
  */
 export class VideoPlayerModule extends GstPluginBase {
     // `fallbackText` is "live" only in the *fallback* pipeline — the `nov`
@@ -50,20 +96,48 @@ export class VideoPlayerModule extends GstPluginBase {
 
     /** Probed once at plugin load — set by `initManifest`. */
     private static sinks: SinkAvailability = { wayland: false, kms: false };
+    /**
+     * Decoder-element availability, probed once at plugin load alongside the
+     * sinks (`probeGstElement` caches per engine process). Empty until
+     * `initManifest` runs, which selects `decodebin3` — the same pipeline the
+     * player has always built.
+     */
+    private static decoders: DecoderAvailability = {};
+    /**
+     * Decoders that FAILED at runtime, skipped while the demotion is in force.
+     * Static on purpose: a Pi whose rpivid driver rejects a stream rejects it
+     * for every player instance, so one failure should not cost each instance
+     * its own error cycle.
+     *
+     * Demotions AGE OUT (`decoderDemotions.ts`) rather than lasting the session:
+     * one corrupt slice used to leave the box on software decode for hours. The
+     * timestamps live in the registry; every read goes through
+     * `activeDemotions`, which drops the aged-out ones.
+     */
+    private static demotions = new DecoderDemotions();
 
-    // Wayland-restart tracking. When Weston/labwc restarts the wayland socket
-    // is replaced (new inode, possibly new name). gst-runner children built
-    // against the old socket keep "playing" against a dead connection — the
-    // pipeline doesn't report an error because waylandsink doesn't observe
-    // the broken socket until it tries to draw the next buffer, by which
-    // time the compositor restart has reattached our surface to nothing.
-    // Watching the runtime dir for socket replacement lets us proactively
-    // restart the pipeline against the fresh session.
-    private static runningInstances = new Set<VideoPlayerModule>();
-    private static waylandWatcher: fs.FSWatcher | null = null;
-    private static waylandDebounceTimer: NodeJS.Timeout | null = null;
-    /** `<filename>:<inode>` of the currently-known compositor socket. Empty when none. */
-    private static waylandSessionIdent: string = '';
+    /**
+     * Started instances, for the one signal that has to reach ALL of them at
+     * once (the kernel's hardware-decode latch). Maintained by onStart/onStop.
+     *
+     * Its own set rather than the wayland-restart registry, which happens to
+     * hold the same members today: that registry exists to answer a compositor
+     * question and may one day only take the instances that render through
+     * wayland, at which point a KMS player would silently stop hearing about a
+     * dead decoder.
+     */
+    private static readonly started = new Set<VideoPlayerModule>();
+
+    /**
+     * What each producer edge was last seen carrying. Static on purpose: it has
+     * to outlive the module instance's own state, which an EXTERNAL stop wipes
+     * (see clearDecoderState). That is what stops an external `moduleRestart`
+     * paying for a throwaway `decodebin3` bootstrap — one hardware-decoder
+     * open/kill cycle per churn — for a codec the engine already knew. Keyed by
+     * source edge, so a rewire still bootstraps; see helpers/codecMemory.ts.
+     */
+    private static codecMemory = new CodecMemory();
+
     /**
      * Per-instance latch so concurrent restart triggers (wayland session
      * change, cog respawn, bus stall) collapse to one onStop+onStart cycle.
@@ -75,43 +149,76 @@ export class VideoPlayerModule extends GstPluginBase {
     /** A restart trigger arrived mid-cycle — run one follow-up cycle so the
      *  pipeline converges on the latest state (see restartPipeline). */
     private pipelineRestartPending = false;
-    // Kiosk-browser (cog) PID tracking. Kiosk-shell stacks toplevels by
-    // surface-creation time — when the cog browser on our output respawns
-    // (URL change, crash, etc.) its new surface ends up above the video's,
-    // making the player look frozen even though the pipeline is still
-    // happily decoding. We can't observe wayland surface stacking from
-    // outside the compositor, but we can observe cog process restarts via
-    // /proc and use that as a proxy: when the PID of the cog instance
-    // pinned to our active display changes, kick a pipeline restart so
-    // our surface becomes the newest one and lands back on top.
+
+    // Kiosk-browser (cog) surface tracking — see helpers/cogRestack.ts for the
+    // restack rule and why process start times, not PID changes, drive it.
     private cogPollTimer: NodeJS.Timeout | null = null;
-    private lastCogPid: number | undefined = undefined;
+    /** When this pipeline's cog watch (≈ surface creation) began, in
+     *  BOOT-relative ms (`bootNowMs`) so an NTP step can't skew the comparison
+     *  against `processStartMs` — see those helpers. */
+    private cogWatchStartedAt = 0;
+    /** Cog PID we already restacked for — one restart per cog incarnation. */
+    private lastRestackCogPid: number | undefined = undefined;
 
     // Source-silent fallback. When the live pipeline's stall watchdog fires
     // (no buffer off the bus socket for 5 s) the Python runner tags the
     // error with `kind: 'bus_stall'`. We latch a flag so the next pipeline
     // build returns the colour-bars fallback instead of looping on a live
     // pipeline that's just going to stall again. The latch is cleared by
-    // the resume poller below the moment bytes flow again.
+    // the resume poller the moment bytes flow again — see helpers/busResume.ts.
     private busStallDetected = false;
     /**
      * Whether the current fallback pipeline carries the bus-resume tap
      * (`unixfdsrc ! fakesink resume_sink` draining this module's own
      * fan-out edge). Built in only when the edge socket existed at build
-     * time — see buildPipeline.
+     * time — see `resolveResumeSocket`.
      */
     private resumeTapActive = false;
     /** Last byte count read off the resume tap — advance = source resumed. */
     private lastResumeBytes: number | undefined;
-    /**
-     * 1 Hz resume poller, alive while we're latched in fallback. With the
-     * tap active it reads the tap's byte counter (bytes advancing = source
-     * resumed → switch back to live, colour bars visible the whole wait —
-     * same no-black-gap property the old passive dgram probe had). Without
-     * the tap (producer socket was missing) it probes for the edge socket
-     * reappearing and then retries live directly.
-     */
+    /** Consecutive 1 Hz polls that saw the source flowing (stability gate). */
+    private resumeStreak = 0;
+    /** When the last stall-resume rebuilt the live pipeline (0 = never), in
+     *  BOOT-relative ms (`bootNowMs`) — the same clock the cog ordering uses,
+     *  so an NTP step mid-window can't skew the heal decision. */
+    private lastStallResumeAt = 0;
+    /** One free self-heal rebuild per resume — see onPluginEvent. */
+    private postResumeHealDone = false;
+    /** 1 Hz resume poller, alive only while we're latched in fallback. */
     private busResumeWatchdog: NodeJS.Timeout | null = null;
+
+    // Codec-aware decode. The live pipeline carries a report-only TS probe
+    // (`tsProbe` → `tsprobe:videoinfo`); the codec it reports drives which
+    // decoder the NEXT build uses. Three pieces of state, because "what the
+    // stream is" and "what the running pipeline was built for" have to be
+    // compared to know whether a rebuild is worth it — see
+    // helpers/decoderRuntime.ts:
+    /**
+     * Codec last reported by the probe. Survives an internal restart (wayland
+     * session change, cog respawn, stall/resume) so those rebuilds go straight
+     * to the right decoder instead of bootstrapping on decodebin3 again. An
+     * EXTERNAL stop clears it — see clearDecoderState.
+     */
+    private detectedCodec?: string;
+    /** Decoder rung the CURRENT live pipeline was built with; undefined while
+     *  the fallback card is up (an error there must never demote a decoder). */
+    private liveDecoder?: DecoderSelection;
+    /** Codec `liveDecoder` was chosen for — the debounce key for rebuilds. */
+    private liveDecoderCodec?: string;
+    /**
+     * Fires when a demotion that outranks the running rung ages out. Armed by
+     * every live build that lands BELOW a demoted decoder and cleared on stop,
+     * so it can only ever fire against the pipeline it was armed for — see
+     * `armDemotionRetry`.
+     */
+    private demotionRetryTimer: NodeJS.Timeout | null = null;
+
+    /**
+     * Latched while the runner's renderWatch reports the pipeline lagging
+     * behind the stream's declared framerate. Owns the corresponding health
+     * warning: recovery only clears health that this latch set.
+     */
+    private renderLagActive = false;
 
     static registerServices(services: EngineServices): void {
         services.deviceProviders.register({
@@ -124,14 +231,62 @@ export class VideoPlayerModule extends GstPluginBase {
         // gst-runner children) at it so `waylandsink` can connect. Idempotent
         // for desktop sessions where these are already set.
         ensureWaylandEnv();
+        // The kernel is the only thing that reports a dead hardware decoder —
+        // see onHardwareDecodeDisabled. Subscribing here rather than per
+        // instance keeps it to one watcher per engine process, and the signal
+        // is replayed if it already latched (including from before this engine
+        // started), so load order does not matter.
+        onKernelLogSignal('hevc-decode-disabled', (event) =>
+            VideoPlayerModule.onHardwareDecodeDisabled(event),
+        );
+    }
+
+    /**
+     * The kernel has switched hardware video decode off until reboot.
+     *
+     * WHY THE APP HAS TO ACT. Post-latch the driver fails every decode job with
+     * `VB2_BUF_STATE_ERROR`, but GStreamer's `v4l2codecs` ignores
+     * `V4L2_BUF_FLAG_ERROR` and pushes the buffer downstream regardless — so
+     * the pipeline never errors, never stalls the bus watchdog, and simply
+     * renders garbage or a frozen frame for the rest of the boot. Nothing in
+     * the normal failure path (`handleDecoderFailure`) can fire, because
+     * nothing fails.
+     *
+     * The demotions are PERMANENT (`demotePermanently`): the retry the TTL
+     * exists for cannot succeed before a reboot, and each attempt would cost a
+     * rebuild and a few seconds of broken picture. Every hardware rung goes, not
+     * just the HEVC one — see `HARDWARE_DECODER_IDS`.
+     *
+     * Then every started instance rebuilds, so the picture is back on software
+     * decode within one pipeline cycle instead of at the next restart.
+     */
+    private static onHardwareDecodeDisabled(event: KernelLogSignalEvent): void {
+        const now = Date.now();
+        for (const id of HARDWARE_DECODER_IDS) {
+            VideoPlayerModule.demotions.demotePermanently(id, now);
+        }
+        for (const instance of [...VideoPlayerModule.started]) {
+            instance.log.error(
+                { kernelLine: event.line, source: event.source, demoted: HARDWARE_DECODER_IDS },
+                'Kernel disabled hardware video decode until reboot — rebuilding on software decode',
+            );
+            instance.setHealth('warning', KERNEL_HW_DECODE_DISABLED_NOTE);
+            // The rebuild is what actually gets the picture back: the running
+            // pipeline is wedged silently and will never rebuild itself.
+            instance.restartPipeline().catch(() => {
+                /* logged inside */
+            });
+        }
     }
 
     static async initManifest(_manifest: Record<string, unknown>): Promise<void> {
-        const [wayland, kms] = await Promise.all([
+        const [wayland, kms, decoders] = await Promise.all([
             probeGstElement('waylandsink'),
             probeGstElement('kmssink'),
+            probeDecoderAvailability(probeGstElement),
         ]);
         VideoPlayerModule.sinks = { wayland, kms };
+        VideoPlayerModule.decoders = decoders;
     }
 
     static getSinkAvailability(): SinkAvailability {
@@ -140,6 +295,34 @@ export class VideoPlayerModule extends GstPluginBase {
 
     static setSinkAvailability(value: SinkAvailability): void {
         VideoPlayerModule.sinks = value;
+    }
+
+    static getDecoderAvailability(): DecoderAvailability {
+        return VideoPlayerModule.decoders;
+    }
+
+    static setDecoderAvailability(value: DecoderAvailability): void {
+        VideoPlayerModule.decoders = value;
+    }
+
+    /** Demotions still in force — exposed for status/logging and tests. */
+    static getDemotedDecoders(): ReadonlySet<string> {
+        return VideoPlayerModule.activeDemotions();
+    }
+
+    /**
+     * The demotion set every decision is made against: struck-off decoders
+     * MINUS the ones whose demotion has aged out. One accessor so the plan, the
+     * rank mask and the operator note can never disagree about what is demoted.
+     */
+    private static activeDemotions(): ReadonlySet<string> {
+        return VideoPlayerModule.demotions.active(Date.now());
+    }
+
+    static _test_resetDecoderState(): void {
+        VideoPlayerModule.decoders = {};
+        VideoPlayerModule.demotions.clear();
+        VideoPlayerModule.codecMemory.clear();
     }
 
     async onInit(config: Record<string, unknown>, services?: ModuleServices): Promise<void> {
@@ -164,13 +347,111 @@ export class VideoPlayerModule extends GstPluginBase {
         await super.onStart();
         this.updateStatusData();
         this.installBusStallListener();
+        VideoPlayerModule.started.add(this);
         VideoPlayerModule.registerForWaylandRestartWatch(this);
         this.startCogPollWatch();
+    }
+
+    /**
+     * Runner plugin events. Two independent watches report here:
+     *
+     * `renderwatch:lag` / `renderwatch:recovered` — render keep-up (see
+     * PipelineDescription.renderWatch and helpers/renderLag.ts).
+     *
+     * `tsprobe:videoinfo` — the live pipeline's TS tap, the only way the
+     * module learns what codec it is actually being fed; it drives decoder
+     * selection. See the branch below.
+     */
+    protected onPluginEvent(channel: string, payload: unknown): void {
+        if (channel === 'renderwatch:lag') {
+            const lag = describeRenderLag(payload);
+            this.renderLagActive = true;
+            this.setHealth('warning', lag.message);
+            if (
+                shouldSelfHealAfterResume({
+                    sourceShortfall: lag.sourceShortfall,
+                    healDone: this.postResumeHealDone,
+                    lastStallResumeAt: this.lastStallResumeAt,
+                    // Boot-relative on BOTH sides — see SelfHealInput.now.
+                    now: bootNowMs(),
+                })
+            ) {
+                this.postResumeHealDone = true;
+                this.log.info('Render lag shortly after stall-resume — rebuilding pipeline once');
+                this.restartPipeline().catch(() => {
+                    /* logged inside */
+                });
+            }
+        } else if (channel === 'renderwatch:recovered') {
+            // Only clear health WE degraded — never stomp a bus-stall or
+            // substituted-display warning someone else owns.
+            if (this.renderLagActive && this.health === 'warning') {
+                this.setHealth('ok');
+            }
+            this.renderLagActive = false;
+        } else if (channel === 'tsprobe:videoinfo') {
+            // The probe emits an early codec-only line as soon as the PMT
+            // parses (well before the SPS), so the upgrade off decodebin3
+            // happens within a second of the pipeline playing, and re-emits on
+            // a mid-stream PMT change (the h265→h264 feed switch case) which is
+            // what drives the codec-change rebuild.
+            const codec = (payload as { codec?: string } | null)?.codec;
+            if (!codec) return;
+            const previous = this.detectedCodec;
+            this.detectedCodec = codec;
+            // Remembered against the producer edge, so the NEXT start on this
+            // source skips the decodebin3 bootstrap. Recorded here rather than
+            // at stop: an external stop usually follows the connection being
+            // deleted, and by then the edge can no longer be identified.
+            VideoPlayerModule.codecMemory.remember(this.codecMemoryKey(), codec);
+            const action = planCodecReport({
+                codec,
+                liveDecoder: this.liveDecoder,
+                liveDecoderCodec: this.liveDecoderCodec,
+                selectRung: (c) => this.selectDecoderRung(c),
+            });
+            if (action.kind === 'ignore') return;
+            if (action.kind === 'record-codec') {
+                this.liveDecoderCodec = codec;
+                return;
+            }
+            this.log.info(
+                {
+                    codec,
+                    previousCodec: previous,
+                    decoder: action.next.id,
+                    from: this.liveDecoder?.id,
+                },
+                'Video codec detected — rebuilding pipeline with the matching decoder',
+            );
+            // restartPipeline coalesces: a renderwatch self-heal (or any other
+            // trigger) already in flight queues one follow-up cycle rather than
+            // tearing the pipeline down twice.
+            this.restartPipeline().catch(() => {
+                /* logged inside */
+            });
+        }
     }
 
     async onStop(): Promise<void> {
         this.stopCogPollWatch();
         this.stopBusResumeWatchdog();
+        // Unconditional, internal restart or not: a retry that fired into the
+        // gap between onStop and onStart would rebuild a pipeline that is
+        // already being rebuilt. The next live build re-arms it from the
+        // demotion's own timestamp, so nothing is lost by dropping it here.
+        this.clearDemotionRetry();
+        // A rebuilt pipeline gets a fresh runner-side monitor that re-measures
+        // from scratch — a stale lag latch must not suppress or fake events.
+        // Clear the warning the latch owns too: the fresh monitor starts
+        // un-lagged and only reports TRANSITIONS, so it would never emit the
+        // "recovered" that clears it (field 2026-08-02: "can't keep up
+        // (0/50 fps)" stuck on a healthy pipeline after a compositor-restart
+        // rebuild).
+        if (this.renderLagActive && this.health === 'warning') {
+            this.setHealth('ok');
+        }
+        this.renderLagActive = false;
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
         // we deliberately keep the bus-stall latch alive so the rebuilt
         // pipeline picks the fallback path that triggered this very restart
@@ -179,7 +460,9 @@ export class VideoPlayerModule extends GstPluginBase {
         // start should never inherit a stale fallback decision.
         if (!this.pipelineRestartInProgress) {
             this.clearBusStallState();
+            this.clearDecoderState();
         }
+        VideoPlayerModule.started.delete(this);
         VideoPlayerModule.unregisterForWaylandRestartWatch(this);
         await super.onStop();
     }
@@ -193,11 +476,18 @@ export class VideoPlayerModule extends GstPluginBase {
     private installBusStallListener(): void {
         if (this.busStallDetected) this.startBusResumeWatchdog();
         if (!this.childProcess) return;
-        this.childProcess.on('error', (data: { kind?: string; message?: string }) => {
-            if (data?.kind !== 'bus_stall') return;
+        this.childProcess.on('error', (data: RunnerErrorEvent) => {
+            if (data?.kind !== 'bus_stall') {
+                // Any other error on a pipeline built with an EXPLICIT decoder
+                // is a CANDIDATE for demotion — but only if the error is
+                // attributable to that decoder. See handleDecoderFailure.
+                this.handleDecoderFailure(data);
+                return;
+            }
             if (this.busStallDetected) return;
             this.log.info('Bus source went silent — switching to fallback pattern');
             this.busStallDetected = true;
+            this.forgetCodecForStall();
             this.startBusResumeWatchdog();
             // gst-runner's restartOnError will replay the *same* live pipeline
             // desc — it doesn't ask the plugin for a new one. Trigger a full
@@ -211,39 +501,212 @@ export class VideoPlayerModule extends GstPluginBase {
     }
 
     /**
-     * One resume-poller tick. TAP MODE (fallback built with the resume tap):
-     * read the tap's sink-pad byte counter via the runner's throughput
-     * tracker; bytes advancing = the producer is emitting again → clear the
-     * latch and rebuild live. The colour-bars fallback stays continuously
-     * visible while we wait (no black gap), resume latency ≤ ~2 ticks.
-     * NO-TAP MODE (edge socket was missing at build time — producer down):
-     * probe for the socket reappearing (same connect-probe the consumer
-     * start gate uses) and then retry live directly — a freshly respawned
-     * producer is most likely flowing, and if it is dark the live
-     * pipeline's stall watchdog just sends us back here within 5 s.
+     * Resolve the best decoder for a codec against the current availability +
+     * demotion state. One place so buildPipeline, the codec-change check and
+     * the demotion note can't disagree about which rung comes next.
      */
+    private selectDecoderRung(codec: string | undefined): DecoderSelection {
+        return selectDecoder({
+            codec,
+            available: VideoPlayerModule.decoders,
+            demoted: VideoPlayerModule.activeDemotions(),
+            threading: resolveCpuDecodeThreading(this.config?.cpuDecodeThreading),
+        });
+    }
+
+    /** Apply the verdict `classifyDecoderFailure` reached on a pipeline error. */
+    private handleDecoderFailure(data: RunnerErrorEvent | undefined): void {
+        const action = classifyDecoderFailure({
+            errorKind: data?.kind,
+            element: data?.element,
+            liveDecoder: this.liveDecoder,
+            restartInProgress: this.pipelineRestartInProgress,
+            detectedCodec: this.detectedCodec,
+            liveDecoderCodec: this.liveDecoderCodec,
+        });
+        if (action.kind === 'ignore') return;
+        if (action.kind === 'codec-changed') {
+            this.log.info(
+                { built: this.liveDecoderCodec, detected: this.detectedCodec },
+                'Pipeline error after a codec change — rebuilding without demoting the decoder',
+            );
+            this.restartPipeline().catch(() => {
+                /* logged inside */
+            });
+            return;
+        }
+        if (action.kind === 'rebuild-same') {
+            // Nothing to do: the runner's restartOnError replays the very same
+            // pipeline string, so the same decoder rung comes straight back up.
+            // Triggering our own restart here would only tear down a pipeline
+            // that is already being rebuilt.
+            this.log.info(
+                {
+                    element: action.element,
+                    decoder: this.liveDecoder?.id,
+                    err: data?.message,
+                },
+                action.element
+                    ? `Pipeline error from ${action.element} — not the decoder, keeping ${this.liveDecoder?.id}`
+                    : `Pipeline error with no source element — keeping ${this.liveDecoder?.id}`,
+            );
+            return;
+        }
+        VideoPlayerModule.demotions.demote(action.failed.id, Date.now());
+        const next = this.selectDecoderRung(this.liveDecoderCodec);
+        const note = decoderDemotionNote(
+            this.liveDecoderCodec,
+            next,
+            VideoPlayerModule.activeDemotions(),
+            VideoPlayerModule.demotions.permanentIds(),
+        );
+        // A re-demotion resets the clock, so the retry cadence for a decoder
+        // that keeps failing is exactly one attempt per TTL.
+        const ttlMs = resolveDemotionTtlMs();
+        this.log.warn(
+            {
+                decoder: action.failed.id,
+                next: next.id,
+                element: data?.element,
+                err: data?.message,
+                retryInMs: ttlMs || undefined,
+            },
+            ttlMs > 0
+                ? `Decoder ${action.failed.id} failed — demoted, retrying in ${Math.round(ttlMs / 1000)}s, rebuilding on ${next.id}`
+                : `Decoder ${action.failed.id} failed — demoted for this session, rebuilding on ${next.id}`,
+        );
+        // Warning, not error: the picture keeps playing on the next rung, so
+        // the operator should see a degraded-path note rather than a red
+        // module. buildPipeline re-applies the same note on every subsequent
+        // build (it derives it from the demotion set), so it survives the
+        // rebuild's setHealth('ok') instead of flashing once.
+        if (note) this.setHealth('warning', note);
+        // RACES the runner's own restartOnError replay, deliberately. The runner
+        // is already scheduling a replay of the SAME (demoted) pipeline string
+        // on its backoff; this restart tears the child down and hands it a
+        // freshly built description, so whichever lands first, the module's
+        // rebuild is the one that survives — a replay that beat us is torn down
+        // by our onStop, and one that starts after gets the new pipeline. Worst
+        // case the picture takes one extra backoff cycle to appear on the next
+        // rung; it can never settle on the demoted decoder.
+        this.restartPipeline().catch(() => {
+            /* logged inside */
+        });
+    }
+
+    /**
+     * Arm the retry for a live build that landed BELOW a demoted rung.
+     *
+     * Expiry has to do more than make the rung eligible again: a live pipeline
+     * that is playing fine on software decode has no reason to rebuild, so
+     * without a timer the box would stay on the slow path until something else
+     * happened to rebuild it — which, in the field, was "until someone restarted
+     * the engine". The whole point of the age-out.
+     *
+     * Armed from the BUILD rather than from the failure, so it is derived from
+     * state: every rebuild re-arms it against the demotion's original timestamp
+     * (no drift, and a restart loop can't starve the retry), and an instance
+     * that never saw the failure itself still arms one for a demotion another
+     * instance recorded. Cleared by `onStop`, so it cannot fire into a
+     * torn-down pipeline.
+     */
+    private armDemotionRetry(current: DecoderSelection): void {
+        this.clearDemotionRetry();
+        const retryAt = VideoPlayerModule.demotions.retryAt(this.liveDecoderCodec, current);
+        if (retryAt === undefined) return;
+        this.demotionRetryTimer = setTimeout(
+            () => {
+                this.demotionRetryTimer = null;
+                this.retryExpiredDemotion();
+            },
+            Math.max(0, retryAt - Date.now()),
+        );
+    }
+
+    private clearDemotionRetry(): void {
+        if (this.demotionRetryTimer) {
+            clearTimeout(this.demotionRetryTimer);
+            this.demotionRetryTimer = null;
+        }
+    }
+
+    /**
+     * A demotion aged out while we were running below it — put the decoder back
+     * on trial. If it fails again it is simply re-demoted with a fresh
+     * timestamp, which is what makes the TTL the retry cadence.
+     */
+    private retryExpiredDemotion(): void {
+        // No live decoder = the fallback card is up (or the build was vetoed):
+        // there is no degraded pipeline to improve, and the next live build
+        // re-arms this anyway.
+        const current = this.liveDecoder;
+        if (!current) return;
+        const expired = VideoPlayerModule.demotions.prune(Date.now());
+        const next = this.selectDecoderRung(this.liveDecoderCodec);
+        if (next.id === current.id) {
+            // Nothing to gain — the timer beat its own deadline by a tick, or
+            // another rung's demotion is what expired. `prune` leaves only
+            // demotions with a future deadline, so the re-arm always moves
+            // forward.
+            this.armDemotionRetry(current);
+            return;
+        }
+        this.log.info(
+            { expired, from: current.id, decoder: next.id },
+            `Decoder demotion expired, retrying ${next.id}`,
+        );
+        // Same rebuild machinery as a codec change: coalesced by the in-progress
+        // latch, and the rebuild's buildPipeline is what re-arms this timer if
+        // the retry does not in fact climb the ladder.
+        this.restartPipeline().catch(() => {
+            /* logged inside */
+        });
+    }
+
+    /**
+     * The card (or the live chain) just reached PLAYING.
+     *
+     * Take the resume tap's byte baseline NOW, the moment the tap element
+     * exists. The poller's first tick would otherwise be spent installing the
+     * throughput probe and recording a count it has nothing to compare against
+     * (`total_bytes` counts from probe install, so there is no "0" to seed) —
+     * a whole second of the interlude spent learning something the tap already
+     * knows. The settle gate is untouched: `RESUME_STABLE_POLLS` advancing
+     * observations are still required, they just start one tick earlier.
+     */
+    protected onPipelinePlaying(): void {
+        if (!this.busStallDetected || !this.resumeTapActive) return;
+        void this.readBusSinkBytes(RESUME_SINK_NAME)
+            .then((bytes) => {
+                // Never overwrite a baseline the poller already took, and never
+                // resurrect one after a resume/stop cleared the latch.
+                if (this.busStallDetected && this.lastResumeBytes === undefined) {
+                    this.lastResumeBytes = bytes;
+                }
+            })
+            .catch((err) => this.log.debug({ err }, 'resume baseline seed failed'));
+    }
+
+    /** One resume-poller tick — see helpers/busResume.ts for the two modes. */
     private async pollBusResume(): Promise<void> {
         if (!this.busStallDetected || this.pipelineRestartInProgress) return;
         const instanceId = this.services?.instanceId ?? '';
         const source = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         if (!source) return;
-        let resumed = false;
-        if (this.resumeTapActive) {
-            const bytes = await this.readBusSinkBytes(RESUME_SINK_NAME);
-            if (
-                bytes !== undefined &&
-                this.lastResumeBytes !== undefined &&
-                bytes > this.lastResumeBytes
-            ) {
-                resumed = true;
-            }
-            if (bytes !== undefined) this.lastResumeBytes = bytes;
-        } else if (source.socketPath && (await probeUnixSocket(source.socketPath))) {
-            resumed = true;
-        }
-        if (!resumed || !this.busStallDetected) return;
+        const signal = await pollResumeSignal({
+            tapActive: this.resumeTapActive,
+            state: { lastBytes: this.lastResumeBytes, streak: this.resumeStreak },
+            readTapBytes: () => this.readBusSinkBytes(RESUME_SINK_NAME),
+            socketPath: source.socketPath,
+            probeSocket: probeUnixSocket,
+        });
+        this.lastResumeBytes = signal.lastBytes;
+        this.resumeStreak = signal.streak;
+        if (!signal.resumed || !this.busStallDetected) return;
         this.log.info('Source resumed — restarting live pipeline');
         this.busStallDetected = false;
+        this.lastStallResumeAt = bootNowMs();
+        this.postResumeHealDone = false;
         this.stopBusResumeWatchdog();
         this.restartPipeline().catch(() => {
             /* logged inside */
@@ -253,6 +716,7 @@ export class VideoPlayerModule extends GstPluginBase {
     private startBusResumeWatchdog(): void {
         if (this.busResumeWatchdog) return;
         this.lastResumeBytes = undefined;
+        this.resumeStreak = 0;
         // 1 Hz is plenty — worst case is one extra second of fallback.
         // Lifetime is bounded to "we're latched in fallback": armed by the
         // bus_stall listener (and re-armed by installBusStallListener after
@@ -270,6 +734,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.busResumeWatchdog = null;
         }
         this.lastResumeBytes = undefined;
+        this.resumeStreak = 0;
     }
 
     /** Wipe stall state on an external stop — fresh start should never inherit a stale fallback decision. */
@@ -277,43 +742,108 @@ export class VideoPlayerModule extends GstPluginBase {
         this.stopBusResumeWatchdog();
         this.busStallDetected = false;
         this.resumeTapActive = false;
+        this.lastStallResumeAt = 0;
+        this.postResumeHealDone = false;
+    }
+
+    /**
+     * Forget the detected codec on an EXTERNAL stop. An external stop is where
+     * a rewire happens (the operator points this player at a different source),
+     * and starting from a remembered codec would build an explicit chain for a
+     * stream that may now be something else — a guaranteed error cycle before
+     * the probe can correct it. Internal restarts skip this, so a compositor
+     * restart or stall/resume keeps the fast path.
+     *
+     * The next build can still get the codec back from `codecMemory` — but only
+     * if it comes up against the SAME producer edge, which is exactly the case
+     * this instance state cannot distinguish. Demotions and the codec memory are
+     * process-wide and deliberately survive both kinds of stop; demotions age
+     * out on their own clock.
+     */
+    private clearDecoderState(): void {
+        this.detectedCodec = undefined;
+        this.liveDecoder = undefined;
+        this.liveDecoderCodec = undefined;
+    }
+
+    /**
+     * A 5-second stall means the codec is no longer known. Drop it — instance
+     * state AND the edge's entry in the shared memory — so the post-resume live
+     * build bootstraps on `decodebin3` instead of committing to a guess.
+     *
+     * WHY, given that the memory exists precisely to skip that bootstrap. A
+     * silent source correlates with upstream RECONFIGURATION: an encoder
+     * flipping h265→h264 stops emitting while it restarts, which is how the
+     * stall got here in the first place (field, Pi 400, 2026-08-05). Both routes
+     * cost exactly ONE extra rebuild — the TS probe reports the real codec
+     * within a second either way, and `planCodecReport` / `classifyDecoderFailure`
+     * turn that into the same single teardown — so the guess buys no time. What
+     * it does buy is an explicit `h265parse ! v4l2slh265dec` chain opened
+     * against an h264 feed: a stateless HEVC decoder opened, fed data it cannot
+     * decode, and killed again. That open/kill cycle is what leaves the Pi's
+     * HEVC block dirty and lengthens the NEXT device open — the stall's own
+     * root cause (see codecMemory.ts and the keyframe-gate comment in
+     * pipelinePlan.ts). `decodebin3` auto-plugs off the caps it actually sees,
+     * so it can never open the wrong codec's hardware.
+     *
+     * NON-STALL rebuilds keep the memory: a compositor restart, a cog restack or
+     * an operator's profile patch says nothing about the feed, which is the case
+     * the memory was added for.
+     */
+    private forgetCodecForStall(): void {
+        VideoPlayerModule.codecMemory.forget(this.codecMemoryKey());
+        // Cleared together, always: `classifyDecoderFailure` reads a mismatch
+        // between these two as "the feed changed under this pipeline", and a
+        // half-cleared pair would fabricate that verdict on the fallback card.
+        this.detectedCodec = undefined;
+        this.liveDecoderCodec = undefined;
+    }
+
+    /** This instance's key into the shared codec memory — see codecMemory.ts. */
+    private codecMemoryKey(): string | undefined {
+        const instanceId = this.services?.instanceId ?? '';
+        return codecMemoryKey(
+            instanceId,
+            this.services?.mediaRouter?.getModuleBusSource(instanceId),
+        );
     }
 
     /**
      * Begin polling /proc for the cog process pinned to our active display.
      * Only meaningful on the wayland path — on KMS we own the connector
-     * directly and kiosk-shell isn't involved. Initial PID is captured
-     * silently so the first poll doesn't trigger a spurious restart on
-     * startup. Subsequent PID changes (cog respawning, e.g. after a URL
-     * change) trigger a pipeline restart so the video surface gets
-     * recreated on top of the new browser surface.
+     * directly and kiosk-shell isn't involved. The watch start time is the
+     * baseline the restack rule compares cog start times against.
      */
-    private startCogPollWatch(): void {
+    private startCogPollWatch(nowMs: typeof bootNowMs = bootNowMs): void {
         if (this.cogPollTimer) return;
         if (!VideoPlayerModule.sinks.wayland || !hasWaylandSession()) return;
-        const display = this.currentActiveDisplayName();
-        if (!display) return;
-        this.lastCogPid = findCogPidForDisplay(display);
-        this.cogPollTimer = setInterval(() => {
-            const activeDisplay = this.currentActiveDisplayName();
-            if (!activeDisplay) return;
-            const current = findCogPidForDisplay(activeDisplay);
-            if (current === undefined) return; // cog mid-restart, wait
-            if (this.lastCogPid === undefined) {
-                this.lastCogPid = current;
-                return;
-            }
-            if (current === this.lastCogPid) return;
-            const previous = this.lastCogPid;
-            this.lastCogPid = current;
-            this.log.info(
-                { display: activeDisplay, previousPid: previous, newPid: current },
-                'Kiosk browser respawned on our output — restarting video pipeline',
-            );
-            this.restartPipeline().catch(() => {
-                /* logged inside */
-            });
-        }, COG_POLL_INTERVAL_MS);
+        if (!this.currentActiveDisplayName()) return;
+        this.cogWatchStartedAt = nowMs();
+        this.cogPollTimer = setInterval(() => this.pollCogRestack(), COG_POLL_INTERVAL_MS);
+    }
+
+    /** One cog-watch tick: restart once for a cog that will surface above us. */
+    private pollCogRestack(
+        findPid: typeof findCogPidForDisplay = findCogPidForDisplay,
+        startMs: typeof processStartMs = processStartMs,
+    ): void {
+        const activeDisplay = this.currentActiveDisplayName();
+        const cogPid = cogNeedingRestack({
+            display: activeDisplay,
+            watchStartedAt: this.cogWatchStartedAt,
+            lastRestackPid: this.lastRestackCogPid,
+            findPid,
+            startMs,
+        });
+        if (cogPid === undefined) return;
+        this.lastRestackCogPid = cogPid;
+        this.log.info(
+            { display: activeDisplay, cogPid },
+            'Kiosk browser surfaced after our pipeline — restarting video pipeline to restack',
+        );
+        this.restartPipeline().catch(() => {
+            /* logged inside */
+        });
     }
 
     private stopCogPollWatch(): void {
@@ -321,14 +851,15 @@ export class VideoPlayerModule extends GstPluginBase {
             clearInterval(this.cogPollTimer);
             this.cogPollTimer = null;
         }
-        this.lastCogPid = undefined;
+        // `lastRestackCogPid` deliberately survives: the grace window means a
+        // freshly-restacked pipeline would otherwise see the SAME cog inside
+        // the window again after its own restart and loop. One restack per
+        // cog incarnation, per module instance.
     }
 
     private currentActiveDisplayName(): string {
-        const requested = (this.config?.display as string) ?? '';
-        return pickActiveDisplay(requested).name;
+        return activeDisplayName((this.config?.display as string) ?? '');
     }
-
 
     /**
      * Trigger a clean pipeline restart against the *current* wayland session.
@@ -368,96 +899,36 @@ export class VideoPlayerModule extends GstPluginBase {
     }
 
     private static registerForWaylandRestartWatch(instance: VideoPlayerModule): void {
-        VideoPlayerModule.runningInstances.add(instance);
-        VideoPlayerModule.installWaylandWatcher();
+        registerWaylandRestartTarget(instance, (ident) => {
+            instance.log.info({ ident }, 'Wayland session changed — restarting video pipeline');
+            instance.restartPipeline().catch(() => {
+                /* logged in the per-instance handler */
+            });
+        });
     }
 
     private static unregisterForWaylandRestartWatch(instance: VideoPlayerModule): void {
-        VideoPlayerModule.runningInstances.delete(instance);
-        if (VideoPlayerModule.runningInstances.size === 0) {
-            VideoPlayerModule.teardownWaylandWatcher();
-        }
-    }
-
-    /**
-     * Watch the user runtime dir for wayland socket replacement. We can't use
-     * the *socket file itself* as the watch target — when Weston restarts the
-     * old inode is unlinked and fs.watch silently goes mute. Watching the
-     * containing directory survives that.
-     *
-     * Exposed for tests via the public `_test_*` helpers below.
-     */
-    private static installWaylandWatcher(): void {
-        if (VideoPlayerModule.waylandWatcher) return;
-        const runtime = process.env.XDG_RUNTIME_DIR;
-        if (!runtime) return;
-        VideoPlayerModule.waylandSessionIdent = currentWaylandSessionIdent(runtime);
-        try {
-            VideoPlayerModule.waylandWatcher = fs.watch(runtime, (_event, filename) => {
-                if (!filename || !/^wayland-\d+/.test(String(filename))) return;
-                VideoPlayerModule.scheduleWaylandRestartCheck();
-            });
-            VideoPlayerModule.waylandWatcher.on('error', () => {
-                /* runtime dir disappeared — watcher will be reinstalled on next start */
-                VideoPlayerModule.teardownWaylandWatcher();
-            });
-        } catch {
-            /* runtime dir not watchable — silently skip; pipeline still works,
-               it just won't self-heal across a compositor restart */
-        }
-    }
-
-    private static teardownWaylandWatcher(): void {
-        if (VideoPlayerModule.waylandDebounceTimer) {
-            clearTimeout(VideoPlayerModule.waylandDebounceTimer);
-            VideoPlayerModule.waylandDebounceTimer = null;
-        }
-        if (VideoPlayerModule.waylandWatcher) {
-            try { VideoPlayerModule.waylandWatcher.close(); } catch { /* already closed */ }
-            VideoPlayerModule.waylandWatcher = null;
-        }
-        VideoPlayerModule.waylandSessionIdent = '';
-    }
-
-    /**
-     * Debounce socket events: Weston's restart sequence usually fires
-     * delete + create within a few hundred ms, sometimes with an intermediate
-     * `.lock` rename. Coalescing to a single restart-decision avoids
-     * tearing the pipeline down twice.
-     */
-    private static scheduleWaylandRestartCheck(): void {
-        if (VideoPlayerModule.waylandDebounceTimer) {
-            clearTimeout(VideoPlayerModule.waylandDebounceTimer);
-        }
-        VideoPlayerModule.waylandDebounceTimer = setTimeout(() => {
-            VideoPlayerModule.waylandDebounceTimer = null;
-            const runtime = process.env.XDG_RUNTIME_DIR;
-            if (!runtime) return;
-            const ident = currentWaylandSessionIdent(runtime);
-            // No socket present (mid-restart) → wait for the next event.
-            if (!ident) return;
-            // Same session we already know about → spurious event, ignore.
-            if (ident === VideoPlayerModule.waylandSessionIdent) return;
-            VideoPlayerModule.waylandSessionIdent = ident;
-            for (const inst of [...VideoPlayerModule.runningInstances]) {
-                inst.log.info({ ident }, 'Wayland session changed — restarting video pipeline');
-                inst.restartPipeline().catch(() => {
-                    /* logged in the per-instance handler */
-                });
-            }
-        }, 500);
+        unregisterWaylandRestartTarget(instance);
     }
 
     // --- test-only hooks ---
     static _test_getRunningInstances(): ReadonlySet<VideoPlayerModule> {
-        return VideoPlayerModule.runningInstances;
+        return waylandRestartTargets() as ReadonlySet<VideoPlayerModule>;
+    }
+    /** The started-instance set the kernel-latch broadcast reaches. Live, so a
+     *  test can seed it without driving a real onStart (which spawns a child). */
+    static _test_startedInstances(): Set<VideoPlayerModule> {
+        return VideoPlayerModule.started;
+    }
+    /** Demotions that will not age out — see `DecoderDemotions.permanentIds`. */
+    static _test_permanentDemotions(): ReadonlySet<string> {
+        return VideoPlayerModule.demotions.permanentIds();
     }
     static _test_resetWaylandWatcher(): void {
-        VideoPlayerModule.teardownWaylandWatcher();
-        VideoPlayerModule.runningInstances.clear();
+        resetWaylandRestartWatch();
     }
     static _test_triggerWaylandCheck(): void {
-        VideoPlayerModule.scheduleWaylandRestartCheck();
+        scheduleWaylandRestartCheck();
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
@@ -492,8 +963,8 @@ export class VideoPlayerModule extends GstPluginBase {
         this.updateStatusData();
     }
 
-    buildPipeline(config: Record<string, unknown>): PipelineDescription {
-        const fallback = (config.fallbackText as string) ?? 'No video detected';
+    buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
+        const fallbackText = (config.fallbackText as string) ?? 'No video detected';
         const rawImagePath = (config.fallbackImagePath as string) ?? '';
         const fallbackImage = resolveFallbackImagePath(rawImagePath);
         if (rawImagePath && !fallbackImage) {
@@ -506,93 +977,96 @@ export class VideoPlayerModule extends GstPluginBase {
             );
         }
         const requestedDisplay = (config.display as string) ?? '';
-        // If the user-picked connector isn't `connected`, fall through to the
-        // first connector that is. Both kmssink (via connector-id) and
-        // waylandsink (via the MR_GLIB_PRGNAME app_id that kiosk-shell pins
-        // to per-output `app-ids=` in weston.ini) need the *active* display
-        // name, otherwise the surface lands on an output that isn't lit and
-        // looks the same to the user as "video player won't start".
-        const active = pickActiveDisplay(requestedDisplay);
-        const sinkEnv: SinkSelectionEnv = {
-            ...VideoPlayerModule.sinks,
-            waylandSession: hasWaylandSession(),
-            connectorId: active.connectorId,
-        };
-        // Cross-pipeline A/V sync (opt-in): lock to the engine's shared clock so
-        // video stays with an audio-decoder fed from the same source. Forces the
-        // sink to sync=true and preserves source PTS (see buildLivePipeline);
-        // `clockSync` in the returned description makes GstPluginBase resolve and
-        // attach the shared clock. Off → today's behaviour.
-        const clockSync = (this.config.clockSync as boolean | undefined) === true;
-        const sinkElement = buildSink(active.name, sinkEnv, {
-            qos: (this.config.qos as boolean | undefined) ?? true,
-            sync: clockSync || ((this.config.sync as boolean | undefined) ?? false),
-            // Positive lipSyncMs delays video to meet late audio (audio path has
-            // more buffering latency). Live-updatable via the named `sink`.
-            tsOffsetNs: Math.round(Number(this.config.lipSyncMs ?? 0) * 1_000_000),
-        });
-        const env = buildPipelineEnv(active.name, sinkEnv);
-        // The wayland (kiosk-shell fullscreen) path needs the live surface
-        // pinned to a fixed size so it matches the fallback surface; KMS /
-        // autovideosink should keep native resolution. See buildLivePipeline.
-        const waylandFullscreen = sinkEnv.wayland && sinkEnv.waylandSession;
+        // Headless / no-compositor guards can veto the build outright; when
+        // they don't, this is the connector, sink env and surface geometry
+        // everything below builds against. See helpers/renderTarget.ts.
+        const target = resolveRenderTarget(requestedDisplay, VideoPlayerModule.sinks);
+        if (target.kind === 'blocked') {
+            this.setHealth(target.health, target.message);
+            return null;
+        }
+        const sink = planSink(target, config);
 
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);
         const sourceSilent = !!udpSource && this.busStallDetected;
         const useFallback = !udpSource || sourceSilent;
 
-        if (active.substituted) {
-            this.setHealth(
-                'warning',
-                `Display "${requestedDisplay}" not connected — using "${active.name}"`,
-            );
-        } else if (sourceSilent) {
-            this.setHealth('warning', 'Source silent — showing fallback pattern');
-        } else if (!udpSource) {
-            this.setHealth('warning', 'No video connected');
-        } else {
-            this.setHealth('ok');
-        }
+        this.setHealth(
+            ...resolveBuildHealth({
+                requestedDisplay,
+                active: target.active,
+                sourceSilent,
+                hasSource: !!udpSource,
+            }),
+        );
 
         if (useFallback) {
-            // Resume tap: only when we latched on a SILENT source and its edge
-            // socket is currently being served — a missing socket (producer
-            // down, or no source at all) must not enter the pipeline, or the
-            // runner's bus-socket gate would hold the colour bars hostage
-            // waiting for it. existsSync is the best sync check available
-            // here; a stale socket file only costs one restartOnError cycle.
-            const resumeSocket =
-                sourceSilent && udpSource.socketPath && fs.existsSync(udpSource.socketPath)
-                    ? udpSource.socketPath
-                    : undefined;
-            this.resumeTapActive = !!resumeSocket;
-            return {
-                pipeline: buildFallbackOnlyPipeline(
-                    fallback,
-                    sinkElement,
-                    fallbackImage,
-                    resumeSocket,
-                ),
-                restartOnError: true,
-                env,
-            };
+            const resumeSocket = resolveResumeSocket(sourceSilent, udpSource?.socketPath);
+            const plan = planFallbackPipeline({
+                fallbackText,
+                fallbackImage,
+                sinkElement: sink.sinkElement,
+                env: target.env,
+                surface: resolveFallbackSurface(target.renderConnector, target.waylandFullscreen),
+                resumeSocket,
+            });
+            this.resumeTapActive = plan.resumeTapActive;
+            // No decoder in the fallback card — clear the record so an error
+            // on the colour bars can never demote a decoder that isn't running,
+            // and drop the retry: there is no degraded rung to climb off.
+            this.liveDecoder = undefined;
+            this.clearDemotionRetry();
+            return plan.description;
         }
         this.resumeTapActive = false;
 
-        return {
-            pipeline: buildLivePipeline(
-                sinkElement,
-                udpSource,
-                waylandFullscreen,
-                Number(this.config.bufferMs ?? 200),
-                clockSync,
-            ),
-            restartOnError: true,
-            env,
-            decoderThreadType: resolveDecoderThreadType(this.config.cpuDecodeThreading),
-            ...(clockSync ? { clockSync: true } : {}),
-        };
+        // Codec-aware decoder. For a codec nobody has ever reported on this
+        // edge this resolves to `decodebin3` — the bootstrap build, identical
+        // to the pipeline the player has always produced. Once
+        // `tsprobe:videoinfo` names the codec, onPluginEvent triggers a rebuild
+        // and this picks the explicit chain (see decoderSelection.ts).
+        //
+        // A start that has no codec of its own takes the one this producer edge
+        // was last seen carrying, so an external moduleRestart goes straight to
+        // the right decoder instead of opening (and killing) a hardware decoder
+        // inside a throwaway decodebin3 (see codecMemory.ts). The probe is armed
+        // on this build either way, so a codec CHANGE still rebuilds as today.
+        this.detectedCodec ??= VideoPlayerModule.codecMemory.recall(
+            codecMemoryKey(instanceId, udpSource),
+        );
+        const decoder = this.selectDecoderRung(this.detectedCodec);
+        this.liveDecoder = decoder;
+        this.liveDecoderCodec = this.detectedCodec;
+        // Retry the decoder we're running below, once its demotion ages out.
+        this.armDemotionRetry(decoder);
+        // Re-apply the demotion note on every build so "running on the slow
+        // path" stays visible while the demotion lasts rather than flashing
+        // once at the failure. A display substitution is the more urgent
+        // warning, so it keeps precedence.
+        const demotionNote = decoderDemotionNote(
+            this.detectedCodec,
+            decoder,
+            VideoPlayerModule.activeDemotions(),
+            VideoPlayerModule.demotions.permanentIds(),
+        );
+        if (demotionNote && !target.active.substituted) this.setHealth('warning', demotionNote);
+
+        return planLivePipeline({
+            sinkElement: sink.sinkElement,
+            udpSource,
+            env: target.env,
+            waylandFullscreen: target.waylandFullscreen,
+            decoder,
+            // Only bites on the decodebin3 rung, where it stops the bin
+            // auto-plugging a decoder we struck off. Nothing else is masked —
+            // the bin still picks hardware by rank. See decoderRankEnv.
+            demoted: VideoPlayerModule.activeDemotions(),
+            bufferMs: config.bufferMs,
+            cpuDecodeThreading: config.cpuDecodeThreading,
+            clockSync: sink.clockSync,
+            sinkPaced: sink.sinkPaced,
+        });
     }
 
     private updateStatusData(): void {
@@ -602,46 +1076,9 @@ export class VideoPlayerModule extends GstPluginBase {
             source: udpSource ? `bus ${udpSource.port}` : '—',
             state: udpSource ? 'connected' : 'no source',
         });
-
-        // Mirror the selection logic in `buildSink` so the user sees the
-        // render path that's actually being used, not a stale DRM assumption.
-        // `status` carries only the renderer-reachability state (compositor /
-        // connected / no display / unavailable). Target-mismatch is conveyed
-        // by the optional `requested` field, only set when the user picked a
-        // display and we substituted a different one — the substitution is
-        // implicit in the presence of `requested`, so there's no separate
-        // boolean to render as a noisy "substituted: —" row.
-        const requestedDisplay = (this.config.display as string) ?? '';
-        const active = pickActiveDisplay(requestedDisplay);
-        const env = {
-            ...VideoPlayerModule.sinks,
-            waylandSession: hasWaylandSession(),
-        };
-        let renderPath = 'autovideosink';
-        let target = '—';
-        let status = 'unavailable';
-        if (env.wayland && env.waylandSession) {
-            renderPath = 'waylandsink';
-            target = active.name || process.env.WAYLAND_DISPLAY || 'wayland';
-            status = 'compositor';
-        } else if (active.name && env.kms) {
-            renderPath = 'kmssink';
-            target = active.name;
-            status = 'connected';
-        } else if (env.kms) {
-            const firstConnected = listDrmConnectors().find(
-                (c) => (c.meta?.status as string) === 'connected',
-            );
-            renderPath = 'kmssink';
-            target = firstConnected?.name ?? '(auto)';
-            status = firstConnected ? 'connected' : 'no display';
-        }
-        const displayStatus: Record<string, string> = {
-            renderer: renderPath,
-            target,
-            status,
-        };
-        if (active.substituted) displayStatus.requested = requestedDisplay;
-        this.setStatusData('display', displayStatus);
+        this.setStatusData(
+            'display',
+            describeRenderPath((this.config.display as string) ?? '', VideoPlayerModule.sinks),
+        );
     }
 }

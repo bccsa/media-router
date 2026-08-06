@@ -292,6 +292,40 @@ export class MediaRouter {
         }
     }
 
+    /**
+     * Re-execute live pw-link edges INTO `moduleId` after it rebuilt its
+     * PipeWire node. A device hot-plug recreates a remap-sink as a NEW node,
+     * and the pw-links from upstream monitors died with the old one — the
+     * connection records are still live, so re-run the executor in place
+     * (same teardown/execute pattern as updateChannelMap). Field case
+     * 2026-08-02: HDMI monitor power-cycle → audio-output remap-sink
+     * recreated → decoder→output link never re-created → silent output with
+     * every module reporting running.
+     */
+    async reexecuteIncomingPwLinks(moduleId: string): Promise<void> {
+        const conns = this.getConnections().filter(
+            (c) => c.sinkModuleId === moduleId && this.handles.get(c.id)?.type === 'pw-link',
+        );
+        for (const conn of conns) {
+            const handle = this.handles.get(conn.id);
+            log.info({ connectionId: conn.id }, 'Re-executing pw-link into rebuilt node');
+            if (handle && this.executor) {
+                // Best-effort: the old node is gone, so the unlink usually fails.
+                await this.executor.teardown(handle, conn, true);
+                this.handles.delete(conn.id);
+            }
+            try {
+                const newHandle = await this.executor?.execute(conn);
+                if (newHandle) this.handles.set(conn.id, newHandle);
+            } catch (err) {
+                log.error(
+                    { err, connectionId: conn.id },
+                    'Failed to re-execute pw-link after node rebuild',
+                );
+            }
+        }
+    }
+
     async updateChannelMap(connId: string, channelMap?: ChannelMapEntry[]): Promise<void> {
         const conn = this.connections.get(connId);
         if (!conn) {

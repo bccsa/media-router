@@ -103,3 +103,40 @@ describe('sticky property replay', () => {
         expect(sendRequest).not.toHaveBeenCalled();
     });
 });
+
+describe('start payload', () => {
+    // The payload enumerates description fields EXPLICITLY, so a field dropped
+    // here is lost silently (the decoderThreadType trap). `env` is load-bearing
+    // twice over: the wayland surface app_id that pins the picture to an output,
+    // and the video player's GST_PLUGIN_FEATURE_RANK mask that stops decodebin3
+    // auto-plugging a decoder demoted at runtime.
+    const payloadFor = (desc: Record<string, unknown>) =>
+        (new GstChildProcess('/nonexistent/gst-runner.js') as any).startPayload(desc);
+
+    it('carries the pipeline env verbatim', () => {
+        const env = {
+            MR_GLIB_PRGNAME: 'local.mr.HDMI-A-1',
+            GST_PLUGIN_FEATURE_RANK: 'v4l2slh265dec:NONE',
+        };
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink', env }).env).toEqual(env);
+    });
+
+    it('defaults env to an empty object rather than dropping the key', () => {
+        // PythonProcess destructures `env` off the start opts and merges it over
+        // process.env at spawn — undefined would be fine, absent must stay safe.
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).env).toEqual({});
+    });
+
+    it('forwards keyframeGate — dropping it re-arms a kernel-level V4L2 hang', () => {
+        // The gate is what stops a stateless V4L2 decoder being handed delta
+        // units on a mid-GOP live join; losing it here would leave the pipeline
+        // string looking correct while the decoder runs ungated.
+        const keyframeGate = { decoder: 'vpdec' };
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink', keyframeGate }).keyframeGate).toEqual(
+            keyframeGate,
+        );
+        // Absent on the decodebin3 rung / fallback card — must stay absent, not
+        // become a gate on an element that doesn't exist (a hard start error).
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).keyframeGate).toBeUndefined();
+    });
+});

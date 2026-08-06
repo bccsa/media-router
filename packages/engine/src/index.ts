@@ -21,7 +21,35 @@ export {
     NETWORK_INTERFACE_DEVICE_TYPE,
 } from './system/networkInterfaceProvider.js';
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
-export { listDrmConnectors, pickActiveDisplay, resolveConnectorId } from './system/drmConnectors.js';
+export {
+    kernelLogSignalEvent,
+    kernelLogWatchMode,
+    kmsgMessageText,
+    matchKernelLogSignal,
+    offKernelLogSignal,
+    onKernelLogSignal,
+    resetKernelLogWatch,
+    startKernelLogWatch,
+    stopKernelLogWatch,
+    DMESG_POLL_INTERVAL_MS,
+    KERNEL_LOG_SIGNALS,
+    KMSG_POLL_INTERVAL_MS,
+} from './system/kernelLogWatch.js';
+export type {
+    KernelLogSignalId,
+    KernelLogSignalEvent,
+    KernelLogSignalHandler,
+    KernelLogSource,
+    KernelLogWatchOptions,
+} from './system/kernelLogWatch.js';
+export {
+    firstConnectedDisplay,
+    listDrmConnectors,
+    pickActiveDisplay,
+    resolveConnectorId,
+    resolveConnectorMode,
+} from './system/drmConnectors.js';
+export type { ConnectorMode } from './system/drmConnectors.js';
 export type { ActiveDisplayChoice } from './system/drmConnectors.js';
 export {
     probeGstElement,

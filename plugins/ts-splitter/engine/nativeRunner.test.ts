@@ -20,6 +20,20 @@ describe('buildSpawnArgs', () => {
             '--out', '0x1f0:busout_41001',
         ]);
     });
+
+    it('omits --flush-ms when busBatchMs is unset (runner default = 20 ms)', () => {
+        const args = buildSpawnArgs({ inputSocketPath: '/s', outputs: [] });
+        expect(args).not.toContain('--flush-ms');
+    });
+
+    it('passes busBatchMs through as --flush-ms, including 0 (batching off)', () => {
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], busBatchMs: 5 }),
+        ).toEqual(expect.arrayContaining(['--flush-ms', '5']));
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], busBatchMs: 0 }),
+        ).toEqual(expect.arrayContaining(['--flush-ms', '0']));
+    });
 });
 
 describe('dispatchRunnerEvent', () => {

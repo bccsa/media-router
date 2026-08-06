@@ -11,6 +11,16 @@ const log = createLogger('GstChildProcess');
 const MAX_RESTARTS = 10;
 
 /**
+ * How long the forked gst-runner gets to shut down after SIGTERM before we
+ * SIGKILL it. Must outlast the runner's own shutdown budget, which in turn
+ * outlasts the Python EOS drain (`EOS_DRAIN_TIMEOUT_MS`) — see `stop()`.
+ *
+ * Tail of the chain: 6000 ms drain → 8000 FORCE_KILL_TIMEOUT_MS → 8500
+ * SHUTDOWN_EXIT_MS in GstRunner → 9000 here.
+ */
+const GST_RUNNER_KILL_TIMEOUT_MS = 9000;
+
+/**
  * Reject when a Python-side RPC handler emitted `command_error` (surfaced by
  * the gst-runner as `{ error: "..." }` on the response). Without this the
  * caller silently gets `undefined` / `{}` and never knows the call failed.
@@ -172,7 +182,13 @@ export class GstChildProcess extends EventEmitter {
         try {
             await this.ipc.sendRequest('startPipeline', this.startPayload(this.pipelineDesc));
         } catch (err) {
-            this.emit('error', { message: `Failed to start pipeline: ${err}` });
+            // Synthesised by this layer, not posted by the gst bus: it names no
+            // element, so plugins doing per-element attribution (video-player's
+            // decoder demotion) must be able to tell it apart — hence `kind`.
+            this.emit('error', {
+                kind: 'spawn_failed',
+                message: `Failed to start pipeline: ${err}`,
+            });
         }
     }
 
@@ -196,6 +212,8 @@ export class GstChildProcess extends EventEmitter {
             busReports: desc.busReports ?? [],
             rist: desc.rist,
             tsProbe: desc.tsProbe,
+            renderWatch: desc.renderWatch,
+            keyframeGate: desc.keyframeGate,
             preserveSourceTimeline: desc.preserveSourceTimeline,
         };
     }
@@ -233,7 +251,12 @@ export class GstChildProcess extends EventEmitter {
         if (child && child.exitCode === null) {
             child.kill('SIGTERM');
 
-            // Wait up to 2s for clean exit, then SIGKILL
+            // Wait for a clean exit, then SIGKILL. The window covers the whole
+            // shutdown chain below us: the runner tells Python to stop, Python
+            // EOS-drains its pipeline before NULL (so a stateless HEVC decoder
+            // is never stopped mid-decode — that wedges the kernel driver), and
+            // the runner exits after its own SIGKILL deadline. Killing the fork
+            // sooner orphans a draining Python. Pinned by eosDrainContract.test.ts.
             await new Promise<void>((resolve) => {
                 const killTimer = setTimeout(() => {
                     try {
@@ -242,7 +265,7 @@ export class GstChildProcess extends EventEmitter {
                         /* already dead */
                     }
                     resolve();
-                }, 2000);
+                }, GST_RUNNER_KILL_TIMEOUT_MS);
 
                 child.once('exit', () => {
                     clearTimeout(killTimer);
@@ -418,7 +441,9 @@ export class GstChildProcess extends EventEmitter {
         const delay = this.backoff.nextDelay();
         if (delay === null) {
             log.error({ maxRestarts: MAX_RESTARTS }, 'Max restarts reached, giving up');
-            this.emit('error', { message: `Max restarts reached` });
+            // Synthesised (see `spawn_failed` above) — the restart policy gave
+            // up; no element posted this.
+            this.emit('error', { kind: 'max_restarts', message: `Max restarts reached` });
             return;
         }
 

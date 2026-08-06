@@ -204,6 +204,42 @@ def first_section(packets, pid: int):
     return None
 
 
+def section_signature(pkt: bytes):
+    """A section's own change signals, read from the packet that starts it — the
+    cheap "did this table change?" test that avoids a full reassembly + parse.
+
+    Returns (table_id, table_id_ext, version_number, crc), crc None when the
+    section spans further packets (its CRC tail is not in this one, so the
+    signature rests on version_number alone). None = nothing usable here: no
+    PUSI/payload, pointer_field past the packet, a short or non-syntax section,
+    current_next_indicator=0 (that section describes the *next* table, not the
+    one in force), or section_number != 0 (first_section, hence every parser
+    here, only ever sees section 0).
+    """
+    if not ts_pusi(pkt) or not ts_has_payload(pkt):
+        return None
+    off = payload_offset(pkt)
+    if off >= PKT:
+        return None
+    start = off + 1 + pkt[off]               # pointer_field -> section start
+    if start + 8 > PKT:                      # need table_id .. last_section_number
+        return None
+    s = pkt[start:]
+    if not s[1] & 0x80:                      # no section_syntax: no version/CRC
+        return None
+    if not s[5] & 0x01:                      # current_next_indicator = 0
+        return None
+    if s[6] != 0:                            # only section 0 is ever parsed
+        return None
+    section_length = ((s[1] & 0x0F) << 8) | s[2]
+    if section_length < 9:                   # 5 header bytes + 4 CRC minimum
+        return None
+    total = 3 + section_length               # whole section, CRC included
+    crc = (int.from_bytes(s[total - 4:total], "big")
+           if start + total <= PKT else None)
+    return (s[0], (s[3] << 8) | s[4], (s[5] >> 1) & 0x1F, crc)
+
+
 def parse_pat(packets) -> dict:
     """Return {program_number: pmt_pid} (program 0 = NIT, excluded)."""
     sec = first_section(packets, PID_PAT)
@@ -300,6 +336,10 @@ class PsiDiscovery:
     small window rarely holds a PAT and its PMT at the same time. Instead we keep
     small persistent buffers of *only* the PSI packets (PID 0, then the PMT PID),
     which span a long time even when sparse, and parse PAT then PMT independently.
+
+    A table that changes is acted on as soon as its section signature changes
+    (see section_signature); the periodic re-parse is only the backstop. Waiting
+    for it cost ~11 s to notice an upstream codec change at 1080p50 bus cadence.
     """
 
     def __init__(self, max_psi_pkts: int = 128):
@@ -308,8 +348,17 @@ class PsiDiscovery:
         self._pmt_pkts = []
         self._n = 0
         self.pmt_pid = None
+        self.program = None     # program the PAT mapped to pmt_pid
         self.programs = {}      # {program_number: pmt_pid}
         self.pmt = None         # parsed PMT dict (parse_pmt result) once found
+        # Signature of the last section handed to the parser; a differing one
+        # re-parses at once. `_*_new_sig` is the pending candidate, promoted
+        # only once the parse of that section actually completed (a section
+        # spanning packets stays pending until its tail arrives).
+        self._pat_sig = self._pat_new_sig = None
+        self._pmt_sig = self._pmt_new_sig = None
+        self._pat_resync = False
+        self._pmt_resync = False
 
     def feed(self, packets) -> bool:
         """Absorb a batch of TS packets. Returns True when the PMT (its stream
@@ -317,22 +366,54 @@ class PsiDiscovery:
         for p in packets:
             pid = ts_pid(p)
             if pid == PID_PAT:
+                sig = section_signature(p)
+                if sig and sig[0] == TABLE_PAT and sig != self._pat_sig:
+                    # Reassembly returns the OLDEST retained section, so a
+                    # superseded table stays visible until the buffer evicts
+                    # it; drop it and let this section be the one parsed.
+                    self._pat_pkts.clear()
+                    self._pat_new_sig = sig
+                    self._pat_resync = True
                 self._pat_pkts.append(p)
                 if len(self._pat_pkts) > self._max:
                     self._pat_pkts.pop(0)
             elif self.pmt_pid is not None and pid == self.pmt_pid:
+                # Only our own program's sections count: a PMT PID shared by two
+                # programs would otherwise flap the discovered table on every
+                # carousel repeat.
+                sig = section_signature(p)
+                if (sig and sig[0] == TABLE_PMT and sig != self._pmt_sig
+                        and (self.program is None or sig[1] == self.program)):
+                    self._pmt_pkts.clear()
+                    self._pmt_new_sig = sig
+                    self._pmt_resync = True
                 self._pmt_pkts.append(p)
                 if len(self._pmt_pkts) > self._max:
                     self._pmt_pkts.pop(0)
         self._n += 1
-        if self.pmt_pid is None:
+        if self.pmt_pid is None or self._pat_resync:
             pat = parse_pat(self._pat_pkts)
             if pat:
+                if self._pat_resync:
+                    self._pat_sig = self._pat_new_sig
+                    self._pat_resync = False
                 self.programs = pat
-                self.pmt_pid = next(iter(pat.values()))
+                program, pmt_pid = next(iter(pat.items()))
+                if pmt_pid != self.pmt_pid:
+                    # A new PAT may also move the program to a different PMT
+                    # PID; the buffered packets belong to the old one.
+                    self.pmt_pid = pmt_pid
+                    self._pmt_pkts.clear()
+                    self._pmt_sig = None
+                    self._pmt_resync = False
+                self.program = program
         changed = False
-        if self.pmt_pid is not None and (self.pmt is None or self._n % 500 == 0):
+        if self.pmt_pid is not None and (self.pmt is None or self._pmt_resync
+                                         or self._n % 500 == 0):
             pmt = parse_pmt(self._pmt_pkts, self.pmt_pid)
+            if pmt and self._pmt_resync:
+                self._pmt_sig = self._pmt_new_sig   # decided on it; no re-trigger
+                self._pmt_resync = False
             if pmt and pmt != self.pmt:
                 self.pmt = pmt
                 changed = True

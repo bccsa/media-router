@@ -116,6 +116,27 @@ describe('AudioOutputModule hot-plug recovery', () => {
         await module.onStop();
     });
 
+    it('re-executes incoming pw-links after the remap-sink is rebuilt', async () => {
+        // Field case 2026-08-02: HDMI power-cycle → new remap-sink node; the
+        // decoder→output pw-link died with the old node and playback stayed
+        // silent. The reconnect hook must ask the router to re-link.
+        const { module, pw, services, config } = createModule(true);
+        const reexec = vi.fn(async () => {});
+        services.mediaRouter = { reexecuteIncomingPwLinks: reexec } as any;
+        await module.onInit(config, services);
+        await module.onStart();
+        expect(reexec).not.toHaveBeenCalled();
+
+        pw.setPresent(false);
+        await tickWatchdog(module);
+        pw.setPresent(true);
+        await tickWatchdog(module);
+
+        expect(reexec).toHaveBeenCalledTimes(1);
+        expect(reexec).toHaveBeenCalledWith('spk-test-001');
+        await module.onStop();
+    });
+
     it('loads a fresh remap-sink after disconnect/reconnect cycle', async () => {
         const { module, pw, services, config } = createModule(true);
         await module.onInit(config, services);

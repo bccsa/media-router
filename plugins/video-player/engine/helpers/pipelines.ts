@@ -1,33 +1,59 @@
 import * as fs from 'fs';
-import { buildTsUdpInput } from '@media-router/engine';
+import { buildBusSrc, buildLeakyQueue, buildTsUdpInput } from '@media-router/engine';
+import {
+    DECODEBIN_SELECTION,
+    resolveCpuDecodeThreading,
+    type DecoderSelection,
+} from './decoderSelection.js';
 
 /**
- * Single source of truth for the rendered surface size. The wayland
- * fullscreen path (kiosk-shell) requires every surface committed to an
- * output to agree on dimensions — if the live path and the fallback path
- * disagree, kiosk-shell rejects the second one and weston logs
- * `libwayland: error in client communication`. Keeping the caps in one
- * constant is what enforces that invariant; do not inline the literals.
+ * Surface size used when the output's own mode can't be resolved (headless,
+ * autovideosink, nothing plugged in). Prefer the connector's preferred mode —
+ * see `surfaceCaps` and `resolveConnectorMode`.
  */
-const SURFACE_WIDTH = 1280;
-const SURFACE_HEIGHT = 720;
+export const DEFAULT_SURFACE: SurfaceSize = { width: 1280, height: 720 };
+
+export interface SurfaceSize {
+    width: number;
+    height: number;
+}
+
 /**
+ * Caps for the FALLBACK surface (SMPTE bars / still image). That card has no
+ * size of its own — neither `videotestsrc` nor a single `imagefreeze` frame
+ * implies one — so this is where its dimensions come from. The LIVE path is
+ * deliberately unconstrained: it renders at source resolution and lets the
+ * compositor scale (see `buildLivePipeline`).
+ *
+ * Size the card to the output's own mode rather than a constant: a fixed
+ * 1280×720 card on a 1080p panel is upscaled by the compositor, which lands
+ * the text overlay soft. See `resolveConnectorMode` / `resolveWestonSurface`.
+ *
  * `pixel-aspect-ratio=1/1` is load-bearing: it makes `videoscale
  * add-borders=true` emit real square-pixel black bars rather than
  * satisfying the display aspect ratio with non-square pixels (which would
  * stretch everything drawn downstream, e.g. the text overlay).
  */
-const SURFACE_CAPS = `video/x-raw,width=${SURFACE_WIDTH},height=${SURFACE_HEIGHT},pixel-aspect-ratio=1/1`;
+export function surfaceCaps(surface: SurfaceSize = DEFAULT_SURFACE): string {
+    return `video/x-raw,width=${surface.width},height=${surface.height},pixel-aspect-ratio=1/1`;
+}
 
 /**
- * Normalise the `cpuDecodeThreading` config value to the thread-type the runner
- * understands. Only `'frame'` opts into multi-core (frame-parallel) software
- * decode — which adds latency; anything else — unset or junk — resolves to the
- * latency-safe `'auto'` default. Validating here keeps a bad config value from
- * reaching GStreamer.
+ * Map the `cpuDecodeThreading` config value onto the runner's own vocabulary
+ * (`PipelineDescription.decoderThreadType`), which governs the decoders the
+ * runner hooks rather than the ones we name: the `decodebin3` bootstrap rung,
+ * and any explicit `avdec_*` we left bare.
+ *
+ * The two vocabularies do NOT share the meaning of `'auto'`, which is why this
+ * mapping exists rather than passing the value straight through: to the runner
+ * `'auto'` means "don't force a thread-type" (ffmpeg picks, and picks
+ * single-core on a live path), while the setting's `'auto'` means multi-core.
+ * So every setting except `'single'` asks the runner for `'frame'` — that is
+ * what keeps the bootstrap rung and the explicit software rungs decoding the
+ * same way. `'single'` is the one that leaves ffmpeg's live default alone.
  */
 export function resolveDecoderThreadType(value: unknown): 'auto' | 'frame' {
-    return value === 'frame' ? 'frame' : 'auto';
+    return resolveCpuDecodeThreading(value) === 'single' ? 'auto' : 'frame';
 }
 
 export interface SinkSelectionEnv {
@@ -214,15 +240,20 @@ export function buildFallbackOnlyPipeline(
      * the colour bars) hostage waiting for a dead producer's socket.
      */
     resumeSocketPath?: string,
+    /** Size to render the card at — the output's mode; see `surfaceCaps`. */
+    surface: SurfaceSize = DEFAULT_SURFACE,
 ): string {
     // Fixed surface size (+ explicit framerate, since neither videotestsrc
-    // nor a single imagefreeze frame implies one). Always constrained: the
-    // fallback is a static card, so downscaling it to the surface size is
-    // free of quality concerns even on a native-res KMS panel, and the
-    // wayland path needs the fixed size to match the live path.
+    // nor a single imagefreeze frame implies one). Always constrained: this
+    // card has no intrinsic size to inherit, and it's static, so scaling it
+    // costs nothing per-frame even on a native-res KMS panel. The LIVE path
+    // takes the opposite decision — see `buildLivePipeline`, including the
+    // accepted risk that the two surfaces can now differ in size.
+    //
+    const caps = surfaceCaps(surface);
     const source = imagePath
-        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${SURFACE_CAPS},framerate=30/1`
-        : `videotestsrc is-live=true pattern=smpte ! ${SURFACE_CAPS},framerate=30/1`;
+        ? `filesrc location="${imagePath}" ! decodebin ! imagefreeze ! videoconvert ! videoscale add-borders=true ! ${caps},framerate=30/1`
+        : `videotestsrc is-live=true pattern=smpte ! ${caps},framerate=30/1`;
     const resumeTap = resumeSocketPath
         ? ` unixfdsrc socket-path=${resumeSocketPath}` +
           ' ! queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0' +
@@ -245,19 +276,37 @@ export function buildFallbackOnlyPipeline(
  * A DEAD producer needs no watchdog — its edge socket closes and unixfdsrc
  * errors out into the normal restart path.
  *
- * Inbound chain is `unixfdsrc ! queue ! tsparse ! tsdemux` (via
- * `buildTsUdpInput`) — `tsparse` re-anchors PCR to the local clock so
- * multi-stage encode/remux paths don't accumulate clock drift as session
- * latency. `decodebin` handles any codec inside the MPEG-TS; the post-tsdemux
- * `queue leaky=2` drops oldest if the decoder falls behind so latency doesn't
- * accumulate on slow renderers.
+ * Inbound chain is `unixfdsrc ! watchdog ! queue ! queue ! tsdemux` by
+ * default — WITHOUT `tsparse` — and gains `tsparse` back when the sink is
+ * clock-paced (see the comment at the construction site below). The decoder is
+ * `decodebin3` until the TS probe reports a codec and an explicit
+ * `<parser> ! <decoder>` chain takes its place (see `decoder` below); the
+ * post-tsdemux `queue leaky=2` drops oldest if the decoder falls behind so
+ * latency doesn't accumulate on slow renderers.
  */
 const STREAM_STALL_TIMEOUT_MS = 5_000;
+
+/**
+ * Element name of the live pipeline's TS video-info tap. The engine runner
+ * attaches its report-only probe here (`PipelineDescription.tsProbe`) and
+ * emits `tsprobe:videoinfo` plugin events; the module keys decoder selection
+ * off the reported codec. See `VideoPlayerModule.onPluginEvent`.
+ */
+export const TS_PROBE_SINK_NAME = 'tsprobe';
+
+/** Name of the tee that feeds the demux branch and the video-info tap. */
+const PROBE_TEE_NAME = 'vp_ts';
 
 export function buildLivePipeline(
     sinkElement: string,
     udpSource: { port: number; socketPath?: string },
-    constrainSurface = false,
+    /**
+     * True on the wayland-fullscreen path (`waylandsink fullscreen=true` under
+     * a compositor). The compositor scales the surface for us, so the pipeline
+     * drops its own scaler — see the `convert` branch below. False for KMS /
+     * autovideosink, which have no compositor.
+     */
+    compositorScales = false,
     /**
      * Pre-decode buffer (ms). 200 ms is right for live SRT/RIST where latency
      * is the dominant constraint. Bump on HLS/VOD chains (e.g. 1500 ms) where
@@ -272,6 +321,20 @@ export function buildLivePipeline(
      * behaviour. The caller pairs this with a `sync=true` sink + `clockSync`.
      */
     preserveSourcePts = false,
+    /**
+     * True when the sink honours buffer PTS (`sync=true` — the module's `sync`
+     * config or `clockSync`). A clock-paced sink needs clock-anchored
+     * timestamps, which is `tsparse`'s job — so pacing brings tsparse back
+     * into the chain (see the tsInput comment below). Default false = the
+     * tsparse-free present-on-arrival fast path.
+     */
+    sinkPaced = false,
+    /**
+     * Decoder chain to put in the `decodebin3` element position, from
+     * `selectDecoder`. Defaults to `decodebin3` — the bootstrap build, before
+     * the TS probe has reported a codec.
+     */
+    decoder: DecoderSelection = DECODEBIN_SELECTION,
 ): string {
     // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
@@ -280,34 +343,140 @@ export function buildLivePipeline(
     // at every segment join. Tracking `bufferMs` (up to `buildLeakyQueue`'s 5 s
     // cap) gives HLS chains a multi-second jitter buffer that absorbs sender
     // bursts; SRT/RIST (`bufferMs=200`) keeps the original tight latency.
-    const tsInput = buildTsUdpInput({
-        port: udpSource.port,
-        socketPath: udpSource.socketPath,
-        stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-        jitterMs: bufferMs,
-        // Keep source PTS when clock-locked to the audio pipeline; re-anchor
-        // otherwise (the load-bearing default for standalone playout).
-        setTimestamps: !preserveSourcePts,
-    });
-    // `constrainSurface` pins the live output to the same surface dimensions
-    // the fallback uses (NOT full caps parity — fallback also sets a framerate;
-    // live deliberately omits it since there's no videorate element). This is
-    // only wanted on the wayland-fullscreen path: kiosk-shell rejects a
-    // fullscreen surface whose dimensions don't match the one the fallback
-    // committed, logging `libwayland: error in client communication`. On
-    // KMS-direct / autovideosink there's no such constraint and forcing 720p
-    // would needlessly downscale a native-res broadcast panel, so we pass the
-    // source resolution straight through.
-    const q = `queue leaky=2 max-size-time=${bufferMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
-    const scale = constrainSurface
-        ? `videoscale add-borders=true ! ${SURFACE_CAPS}`
-        : 'videoscale';
-    // `decodebin3` (not decodebin): on an ABR/HLS source the resolution changes
-    // mid-stream at every variant switch. decodebin repluggs a fresh decoder on
-    // each change — a hard stall the viewer sees as a hitch. decodebin3 reuses
-    // the existing decoder across format changes, so switches are smooth. Paired
-    // with the fixed `${SURFACE_CAPS}` on the wayland-fullscreen path the sink
-    // surface also stays constant, so neither the decoder nor the compositor
-    // hitches on a switch.
-    return `${tsInput} ! tsdemux latency=0 ! ${q} ! decodebin3 ! videoconvert ! ${scale} ! ${sinkElement}`;
+    // The inbound chain has two variants, chosen by how the SINK presents:
+    //
+    // DEFAULT (`sync=false`, presents on arrival): NO `tsparse` (field-
+    // measured on a Pi 4, 2026-08-01). Its documented job — re-anchoring PCR
+    // so multi-stage RE-MUX paths don't drift — doesn't apply to a terminal
+    // display pipeline, timestamps go unused by a non-syncing sink, the leaky
+    // jitter queue sits upstream of where tsparse sat anyway, and it was the
+    // chain's single most expensive element (0.11 core at 1080p50; tsdemux
+    // eats the raw bus buffers directly at +0.06).
+    //
+    // CLOCK-PACED (`sinkPaced` — the `sync` config or `clockSync`): tsparse
+    // RETURNS with `set-timestamps=<!preserveSourcePts>`. A sync=true sink
+    // presents each frame at its PTS against the pipeline clock, which is
+    // only meaningful with clock-anchored timestamps — exactly what
+    // `tsparse set-timestamps=true` produces (PCR-derived, smoothed, local-
+    // clock-anchored; the long-shipped pacing recipe — see buildSink's `sync`
+    // docs). In clockSync mode set-timestamps stays FALSE so the shared
+    // A/V timeline survives. The 0.11 core is paid only when pacing is on.
+    const tsInput = sinkPaced
+        ? buildTsUdpInput({
+              port: udpSource.port,
+              socketPath: udpSource.socketPath,
+              stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
+              jitterMs: bufferMs,
+              setTimestamps: !preserveSourcePts,
+          })
+        : `${buildBusSrc({
+              port: udpSource.port,
+              socketPath: udpSource.socketPath,
+              stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
+          })} ! ${buildLeakyQueue(bufferMs)}`;
+    // Post-demux ES queue: floored at 1 s regardless of `bufferMs`. This queue
+    // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
+    // 8 Mbps span >200 ms on a Pi 4); at 200 ms it sheds the tail of nearly
+    // every GOP, which the IRAP resync gate then drops until the next keyframe
+    // (~10 fps playback). Latency is unaffected in steady state — a leaky
+    // queue only holds data while downstream is stalled.
+    const esQueueMs = Math.max(bufferMs, 1_000);
+    const q = `queue leaky=2 max-size-time=${esQueueMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
+    // Scaling policy — who resizes the picture, per sink:
+    //
+    // COMPOSITOR PATH (waylandsink under kiosk-shell): nothing here does. The
+    // frames reach the sink at SOURCE resolution and Weston fit-scales the
+    // fullscreen surface onto the output on the GPU, letterboxing per the
+    // fullscreen protocol — free, and better filtering than videoscale. So no
+    // `videoscale` and no size caps at all; `videoconvert` stays only as the
+    // format fixup the software decode path may need. It also passes
+    // `video/x-raw(memory:DMABuf), format=DMA_DRM` through untouched (verified
+    // on GStreamer 1.28), which is what lets the stateless V4L2 decoders
+    // (`v4l2slh265dec` on the Pi's rpivid — they emit DMA_DRM and nothing else)
+    // negotiate straight to waylandsink and be imported zero-copy. Dropping
+    // the caps is what makes that unconditional: the previous two-structure
+    // filter needed an explicit no-constraint DMABuf structure to let hardware
+    // buffers past a size that only the software path could satisfy.
+    //
+    // KMS / autovideosink: `videoconvert ! videoscale`, no caps — there is no
+    // compositor to scale for them, so the sink negotiates the size it wants
+    // and videoscale is there to serve it (passthrough when that is the source
+    // size). Deliberately SOFTWARE, never `v4l2convert` (the bcm2835-codec-isp
+    // hardware converter): measured on a Pi 400 (GStreamer 1.28, hw-decoded
+    // 1080p50), the ISP in-path caps at ~46 fps at 1080p regardless of output
+    // size/format — it cannot sustain 1080p50 — where the sw elements run
+    // ~60 fps at near-zero CPU whenever input caps equal output caps
+    // (basetransform goes passthrough).
+    //
+    // The cost of scaling in software, from that same Pi 400 measurement:
+    // ~25 fps at 2.6× decode CPU once the elements were actively resizing
+    // (surface ≠ source). That is what a pinned surface charged on every
+    // mismatched source, and the reason the compositor path now scales nothing.
+    //
+    // ACCEPTED RISK: the live surface is now SOURCE-sized while the fallback
+    // card stays surface-sized (`surfaceCaps`). Weston's kiosk-shell wants
+    // every surface committed to an output to agree on dimensions and rejects
+    // a fullscreen surface whose size differs from the one already committed,
+    // logging `libwayland: error in client communication` — so a live↔fallback
+    // transition between differing dimensions can trip it. Taken deliberately:
+    // hardware decode plus zero software scaling is the bigger win. Revisit
+    // with the fallback-sizing strategy (handover Q5: the fallback should
+    // inherit the last live surface).
+    const convert = compositorScales ? 'videoconvert' : 'videoconvert ! videoscale';
+    // DECODER POSITION. `decoder.chain` is either the bootstrap `decodebin3` or
+    // an explicit `<parser> ! <decoder>` picked from the codec the TS probe
+    // reported (see decoderSelection.ts). Nothing else about the chain moves.
+    //
+    // On the `decodebin3` rung: still decodebin3, never decodebin. On an
+    // ABR/HLS source the resolution changes mid-stream at every variant switch;
+    // decodebin replugs a fresh decoder on each change — a hard stall the
+    // viewer sees as a hitch — while decodebin3 reuses the existing decoder.
+    // With no caps filter downstream the new resolution renegotiates straight
+    // through to the sink and the compositor re-fits the surface, so a variant
+    // switch costs neither a replug nor a failed negotiation. (A CODEC change
+    // is a different animal: decodebin3's in-place decoder switch is what
+    // wedged an h265→h264 feed on hardware, so the module rebuilds the whole
+    // pipeline for that — it never relies on the replug.)
+    //
+    // CAPSFILTER, and why it sits DIRECTLY on tsdemux rather than after the
+    // queue. `tsdemux` has sometimes-pads, so gst_parse_launch resolves this
+    // link when the pad appears. The leaky queue's sink pad is ANY: it will
+    // accept an AUDIO pad just as happily as the video one, and the audio then
+    // reaches h26xparse/videoconvert and kills the pipeline with "Internal data
+    // stream error" (the transcoder documents the same trap). Steering has to
+    // happen at the first pad the demuxer can link to, so the filter goes
+    // before the queue — the queue keeps its exact position and settings
+    // otherwise. Verified locally against a real A/V TS: with the filter only
+    // the video ES links; without it the outcome depends on pad-add order.
+    // The decodebin3 rung carries no filter (we don't know the codec there, and
+    // decodebin3 is what has always absorbed whatever pad it got).
+    const caps = decoder.caps ? `${decoder.caps} ! ` : '';
+    // Video-info tap. The runner's report-only TS probe needs an appsink fed
+    // with the muxed TS (it does its own PSI discovery + SPS parse), so the
+    // ingress is tee'd off just before `tsdemux` — after `tsparse` on the
+    // clock-paced variant, straight off the leaky jitter queue on the default
+    // tsparse-free one.
+    //
+    // ALIGNMENT is a BUS property, not a tsparse one — which is what makes the
+    // one tap correct for both variants. `ts_psi.iter_packets` strides a fixed
+    // 188 from offset 0 and skips any offset not on a 0x47 sync byte; it does
+    // NOT resync, so a buffer that doesn't START on a packet boundary yields
+    // nothing (the runner calls that out and swallows it — report-only). It
+    // never comes to that here: unixfd carries producer buffer boundaries
+    // across the socket untouched, every bus producer emits whole-packet
+    // buffers (mpegtsmux `alignment=7` = 1316 B; libmrbus ingest chunks at
+    // BUFFER_BYTES = 128×188 and drops a dead producer's sub-packet remainder;
+    // mr-tssplit coalesces whole-packet batches), and neither `watchdog` nor
+    // `queue` re-slices a buffer. Tapping off tsInput also puts the branch
+    // downstream of the stall watchdog in both variants, so it cannot interfere
+    // with bus_stall detection. The branch is leaky and the appsink drops
+    // (runner sets max-buffers/drop), so a stalled tap can never back-pressure
+    // the render path through the tee.
+    const probeTap =
+        ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
+        ` ! appsink name=${TS_PROBE_SINK_NAME}`;
+    return (
+        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! tsdemux latency=0 ! ${caps}${q} ! ` +
+        `${decoder.chain} ! ${convert} ! ${sinkElement}${probeTap}`
+    );
 }

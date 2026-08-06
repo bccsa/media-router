@@ -62,13 +62,13 @@
                 },
                 "sync": {
                     "type": "boolean",
-                    "default": false,
-                    "description": "Honour buffer PTS. OFF (default): the sink presents frames as fast as they arrive — right for live SRT/RIST where latency dominates. ON: the sink waits to present each frame at its PTS — turn on for HLS so playback flows at the media's intended rate instead of speeding up on segment bursts and stalling between segments."
+                    "default": true,
+                    "description": "Smooth playback vs lowest latency. ON (default): each frame is presented at its timestamp, giving smooth, evenly-paced playback — network and decode jitter is absorbed by letting early frames wait a few tens of ms (median added latency is ~zero). OFF: every frame is shown the instant it is ready — the lowest possible latency, at the cost of visible judder under jitter. Turn OFF for ultra-low-latency chains, or as the robust fallback for degraded sources with broken PCR timing, which can stall under paced playback."
                 },
                 "clockSync": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Lock to the shared engine clock so video stays in sync with an audio-decoder fed from the same source — the fix for audio/video drift when one stream is split into separate video + audio playout. Turn ON here AND on the matching audio-decoder. Forces PTS-accurate playback. Leave OFF for standalone/low-latency video."
+                    "description": "EXPERIMENTAL — known issue: freezes on the first frame (source-epoch vs shared-clock mismatch, see docs/TodoNotes-video-hw-decode.md). Intended purpose: lock to the shared engine clock so video stays in lipsync with an audio-decoder fed from the same source, when one stream is split into separate video + audio playout (pairs with lipSyncMs; requires the matching audio-decoder). Leave OFF until the epoch latch is wired in — the default Honour-buffer-PTS pacing covers everything except cross-pipeline lipsync."
                 },
                 "lipSyncMs": {
                     "type": "number",
@@ -83,13 +83,13 @@
                 },
                 "cpuDecodeThreading": {
                     "type": "string",
-                    "enum": ["auto", "frame"],
+                    "enum": ["auto", "single"],
                     "default": "auto",
                     "x-enumLabels": {
-                        "auto": "Auto (low latency)",
-                        "frame": "Multi-core (adds ~150ms latency)"
+                        "auto": "Auto (multi-core)",
+                        "single": "Single core (lowest latency)"
                     },
-                    "description": "Software (CPU) decode threading — only matters when there's no GPU/VAAPI hardware decoder. AUTO (default): one core, zero added latency — right for live. But a heavy 4K stream can max that core and drop frames. MULTI-CORE: spreads the decode across all CPU cores so 4K keeps up, at the cost of ~130–160 ms added latency (it decodes several frames ahead). Turn this ON only when the CPU genuinely can't keep up AND you can spend the latency — otherwise leave it on AUTO for low-latency live."
+                    "description": "Software (CPU) decode threading — only matters when the stream falls back to software decode (no hardware decoder for this codec). AUTO (default): spreads the decode across three cores, so a stream the CPU can't decode on one core keeps up — a Pi 5 has no H.264 hardware decoder, and single-threaded it lagged a 1080p50 feed while sitting 62% idle. Costs ~3 frames of latency (~60 ms at 50 fps). SINGLE CORE: one core, no added latency — use only when that 60 ms matters more than keeping up, and the CPU is comfortably ahead."
                 }
             }
         },

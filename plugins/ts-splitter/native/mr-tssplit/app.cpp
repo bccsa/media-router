@@ -89,14 +89,46 @@ App::App(Options opts) : opts_(std::move(opts)) {
 }
 
 void App::on_input_buffer(const uint8_t* data, size_t len) {
+    // Coalesce before broadcast: splitter batches arrive per input buffer
+    // (~7-packet same-PID runs at typical A/V interleave — measured 692
+    // buffers/s of ~1.3 KB on a 1080p50 feed), and every broadcast costs a
+    // memfd + per-client fd-pass here plus mmap/munmap/close per buffer in
+    // every consumer. Accumulating to BUFFER_BYTES (~24 KB ≈ 22 ms of a
+    // typical video PID) cuts that to ~45/s for at most FLUSH_INTERVAL_MS of
+    // added latency (time flush in flush_due, essential for low-rate PIDs —
+    // audio would take seconds to fill a size batch). Packet order within an
+    // output is preserved; PSI stays ahead of the ES packets it precedes.
+    const int64_t now = mrbus::mono_ns();
     for (const auto& b : core_->feed(data, len)) {
         for (auto& o : outputs_) {
             if (o.pid == b.pid) {
-                o.server->broadcast(b.data->data(), b.data->size());
-                o.batches++;
+                if (opts_.flush_ns <= 0) {
+                    // Ultra-low-latency mode: no coalescing, no extra copy.
+                    o.server->broadcast(b.data->data(), b.data->size());
+                    o.batches++;
+                    break;
+                }
+                if (o.pending.empty()) o.pending_since_ns = now;
+                o.pending.insert(o.pending.end(), b.data->begin(), b.data->end());
+                if (o.pending.size() >= (size_t)mrbus::BUFFER_BYTES) flush_output(o);
                 break;
             }
         }
+    }
+}
+
+void App::flush_output(Output& o) {
+    if (o.pending.empty()) return;
+    o.server->broadcast(o.pending.data(), o.pending.size());
+    o.batches++;
+    o.pending.clear();
+    o.pending_since_ns = 0;
+}
+
+void App::flush_due(int64_t now_ns) {
+    for (auto& o : outputs_) {
+        if (!o.pending.empty() && now_ns - o.pending_since_ns >= opts_.flush_ns)
+            flush_output(o);
     }
 }
 
@@ -196,6 +228,11 @@ void App::emit_stats(int64_t now_ns) {
 }
 
 void App::tick(int64_t now_ns) {
+    // Time-based flush for coalesced output (see on_input_buffer). The poll
+    // loop wakes at least every 100 ms idle and per input buffer when
+    // streaming, so flush latency is bounded by FLUSH_INTERVAL_MS in steady
+    // state and by the poll timeout when the source pauses.
+    flush_due(now_ns);
     if (input_) input_->maybe_reconnect(now_ns);
     if (pending_input_) {
         pending_input_->maybe_reconnect(now_ns);

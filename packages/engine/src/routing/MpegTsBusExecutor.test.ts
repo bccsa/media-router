@@ -103,6 +103,46 @@ describe('MpegTsBusExecutor live input swap', () => {
         expect((sink as any).start).toHaveBeenCalledTimes(1);
     });
 
+    it('stops the consumer BEFORE detaching the producer branch', async () => {
+        // Detaching first closed the edge socket under a running consumer, so
+        // every disconnect killed it by `unixfdsrc` "Internal data stream
+        // error" — the one teardown shape the runner cannot EOS-drain, which
+        // left the Pi's HEVC decoder wedged mid-decode for the next session.
+        const { sink } = sinkStub({ swapCapable: false });
+        const { executor, fanout } = makeExecutor(sink);
+
+        await executor.teardown(
+            { connectionId: 'old', type: 'bus', busChannel: PORT },
+            conn('old'),
+            false,
+        );
+
+        const stoppedAt = (sink as any).stop.mock.invocationCallOrder[0];
+        const startedAt = (sink as any).start.mock.invocationCallOrder[0];
+        const detachedAt = fanout.detach.mock.invocationCallOrder[0];
+        expect(stoppedAt).toBeLessThan(detachedAt);
+        // The idle restart completes first too: its buildPipeline returns null
+        // (the connection record is already gone), so nothing re-attaches to
+        // the socket we then detach.
+        expect(startedAt).toBeLessThan(detachedAt);
+    });
+
+    it('keeps that order on the deferred swap-window expiry', async () => {
+        const { sink } = sinkStub();
+        const { executor, fanout } = makeExecutor(sink);
+
+        await executor.teardown(
+            { connectionId: 'old', type: 'bus', busChannel: PORT },
+            conn('old'),
+            false,
+        );
+        await vi.advanceTimersByTimeAsync(16_000);
+
+        expect((sink as any).stop.mock.invocationCallOrder[0]).toBeLessThan(
+            fanout.detach.mock.invocationCallOrder[0],
+        );
+    });
+
     it('skipModuleRestart still detaches immediately and never defers', async () => {
         const { sink } = sinkStub();
         const { executor, fanout } = makeExecutor(sink);

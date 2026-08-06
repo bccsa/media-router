@@ -29,6 +29,7 @@ import signal
 import socket as pysocket
 import sys
 import threading
+import time
 
 # Generic pre-`Gst.init` prgname hook. If a plugin's `PipelineDescription.env`
 # carried `MR_GLIB_PRGNAME`, apply it now — the env is locked in at fork time
@@ -113,6 +114,155 @@ PLAYING_WATCHDOG_MS = 10000
 playing_watchdog_id = None  # GLib source id of the running PLAYING watchdog
 
 
+# EOS drain before teardown. Taking a PLAYING pipeline straight to NULL issues
+# STREAMOFF on whatever the decoder is doing right now — and the Pi's stateless
+# HEVC decoder (rpi-hevc-dec, kernel 6.12) cannot survive that: stopping it
+# MID-DECODE wedges hevc_d_stop_streaming → __vb2_queue_cancel in an
+# uninterruptible wait for a hardware completion that never arrives, while it
+# holds the videodev mutex. Every later V4L2 open/close then piles up in D
+# state and the box needs a power cycle (field incident, Pi 400, 2026-08 — the
+# codec-aware player rebuilds its pipeline on a codec switch, so every switch
+# stopped an actively-decoding pipeline). The driver has no timeout in its stop
+# path, so userspace can only avoid arming the bug: send EOS first and let the
+# decoder finish and flush its in-flight frame, so STREAMOFF lands on an idle
+# decoder.
+#
+# The wait is BOUNDED but not short: a pipeline that has not reached EOS by then
+# is set to NULL anyway. Waiting forever would leak runner processes, and a
+# driver that is already hung cannot be helped from userspace.
+#
+# WHY 6 s and not the original 1.5 s: EOS has to travel the whole pipeline and
+# be posted on the bus, and the bootstrap decodebin3 chain buffers seconds of
+# data (multiqueue plus the ~1 s jitter/leaky queues), so the message routinely
+# needs several seconds to arrive. At 1.5 s the cap fired first, NULL landed
+# mid-decode and STREAMOFF hung forever in the Pi 4's hevc_d_h265_stop — exactly
+# the bug this drain exists to avoid (syscall-level capture, Pi 400, 2026-08; a
+# manual `gst-launch -e` stop, which waits for EOS unbounded, tears the same
+# stream down cleanly on the same box).
+#
+# LOAD-BEARING BUDGET: this must stay comfortably below every parent-side
+# force-kill window, or the drain gets SIGKILLed halfway and we are back to a
+# mid-decode teardown. Those windows are PythonProcess.stop's kill timer,
+# GstRunner.shutdown's SIGKILL/exit timers and GstChildProcess.stop's SIGKILL
+# timer — all >= 8000 ms, pinned by eosDrainContract.test.ts.
+EOS_DRAIN_TIMEOUT_MS = 6000
+
+
+def _drain_decoder_branch(deadline):
+    """Push EOS straight into the decoder when the whole-pipeline drain can't.
+
+    THE CASE THIS COVERS. An ERRORED pipeline cannot be drained end to end: the
+    source element's task is already stopped, so a pipeline-level EOS is queued
+    behind a task that will never run again (`GstBaseSrc` pushes a pending EOS
+    from its streaming thread) and the bus wait just burns its whole budget
+    before NULL lands MID-DECODE — the STREAMOFF hang this drain exists to avoid
+    (field: `phase1_cb: Post wait: 0xffffffff`, Pi 400, 2026-08). Every bus
+    disconnect used to take exactly that path, because the consumer always dies
+    by `unixfdsrc` ERROR first.
+
+    THE DRAIN. The decoder is reachable without the source: `keyframeGate`
+    already resolved its SINK pad by name, and sending EOS to that pad hands the
+    event to the decoder directly. `GstVideoDecoder` finishes its pending frames
+    inside that call, so by the time it returns the decoder is idle and NULL is
+    safe. Nothing downstream needs waiting for — the hazard is the decoder, not
+    the sink.
+
+    The send runs on a worker thread with a bounded join, because the one case
+    where the decoder cannot finish (already-wedged hardware) is exactly the one
+    that would block the main loop past the parent's force-kill window. A
+    blocked send is left to its daemon thread and reported; the caller sets NULL
+    anyway, which is no worse than today's behaviour on that pipeline.
+
+    Returns True when the decoder accepted (and therefore drained) the EOS.
+    """
+    st = _keyframe_gate
+    if not st:
+        # No gated decoder = nothing addressable to drain (the `decodebin3`
+        # bootstrap rung plugs its own decoder, so there is no element name).
+        return False
+    pad, name = st["pad"], st["decoder"]
+    done = threading.Event()
+
+    def _send():
+        try:
+            pad.send_event(Gst.Event.new_eos())
+        finally:
+            done.set()
+
+    threading.Thread(target=_send, name="eos-branch-drain", daemon=True).start()
+    if not done.wait(max(0.0, deadline - time.monotonic())):
+        emit_event({"event": "warning",
+                    "message": f"EOS drain: {name} did not accept EOS within "
+                               f"{EOS_DRAIN_TIMEOUT_MS} ms — forcing NULL "
+                               f"(decoder may be mid-frame)"})
+        return False
+    return True
+
+
+def _eos_drain(pipe, errored=False):
+    """EOS-drain `pipe` so its decoder is idle before we stop it.
+
+    Only pipelines that are actually running are drained: a NULL/READY (or
+    stalled-in-PAUSED) pipeline has nothing in flight, and a preroll-only
+    pipeline still counts (a stateless decoder decodes its preroll frame), so
+    the pending state is checked too.
+
+    `errored=True` (the bus ERROR handler) skips the pipeline-level EOS: it
+    cannot travel a pipeline whose source has already failed, so we go straight
+    to the decoder branch — see `_drain_decoder_branch`.
+
+    Returns True when the pipeline drained (or had nothing to drain), False on
+    timeout — the caller sets NULL either way.
+    """
+    _ret, state, pending = pipe.get_state(0)
+    if state != Gst.State.PLAYING and pending != Gst.State.PLAYING:
+        return True
+
+    # One budget for the whole drain, however many attempts it takes: the
+    # branch drain runs on what the pipeline-level attempt left behind, so a
+    # teardown can never cost more than EOS_DRAIN_TIMEOUT_MS in total (the
+    # invariant that keeps it under the parent's force-kill window).
+    deadline = time.monotonic() + EOS_DRAIN_TIMEOUT_MS / 1000.0
+
+    if errored or not pipe.send_event(Gst.Event.new_eos()):
+        return _drain_decoder_branch(deadline)
+
+    # `timed_pop_filtered` pops straight off the bus queue. Every caller runs on
+    # the main-loop thread (command handlers and signal handlers go through
+    # GLib.idle_add), so the signal watch installed at start cannot race us for
+    # the message. ERROR ends the wait too — a pipeline that just failed will
+    # never reach EOS, so that message hands us over to the branch drain
+    # instead of being reported as "drained".
+    msg = pipe.get_bus().timed_pop_filtered(
+        int(max(0.0, deadline - time.monotonic()) * Gst.SECOND),
+        Gst.MessageType.EOS | Gst.MessageType.ERROR,
+    )
+    if msg is None:
+        emit_event({"event": "warning",
+                    "message": f"EOS drain timed out after {EOS_DRAIN_TIMEOUT_MS} ms — "
+                               f"forcing NULL (decoder may be mid-frame)"})
+        return False
+    if msg.type == Gst.MessageType.ERROR:
+        return _drain_decoder_branch(deadline)
+    return True
+
+
+def _teardown_pipeline(pipe, drain=True, errored=False):
+    """Take `pipe` to NULL, EOS-draining it first (see EOS_DRAIN_TIMEOUT_MS).
+
+    Every path that stops the pipeline goes through here. `drain=False` is for
+    callers that already know the stream ended (the bus EOS handler): sending a
+    second EOS would just burn the whole timeout waiting for a message that
+    cannot come again. `errored=True` is the bus ERROR handler telling the drain
+    that the pipeline-level EOS is already dead in the water.
+    """
+    if pipe is None:
+        return
+    if drain:
+        _eos_drain(pipe, errored=errored)
+    pipe.set_state(Gst.State.NULL)
+
+
 def _cancel_playing_watchdog():
     """Disarm the PLAYING watchdog (reached PLAYING, or pipeline torn down)."""
     global playing_watchdog_id
@@ -137,8 +287,7 @@ def _on_playing_timeout():
         "kind": "playing_timeout",
         "message": f"pipeline did not reach PLAYING within {PLAYING_WATCHDOG_MS} ms",
     })
-    if pipeline is not None:
-        pipeline.set_state(Gst.State.NULL)
+    _teardown_pipeline(pipeline)
     if loop and loop.is_running():
         loop.quit()
     return False  # one-shot
@@ -290,16 +439,18 @@ def on_bus_message(bus, message):
         else:
             emit_event({"event": "error", "message": str(err.message),
                         "debug": debug or "", "element": element})
-        # Stop the pipeline on error
-        if pipeline:
-            pipeline.set_state(Gst.State.NULL)
+        # Stop the pipeline on error. `errored`: the source that just failed
+        # can no longer carry a pipeline-level EOS, so the drain goes straight
+        # at the decoder instead of burning its budget (see _eos_drain).
+        _teardown_pipeline(pipeline, errored=True)
         if loop and loop.is_running():
             loop.quit()
 
     elif t == Gst.MessageType.EOS:
         emit_event({"event": "eos"})
-        if pipeline:
-            pipeline.set_state(Gst.State.NULL)
+        # Already drained by definition — EOS reached the sinks, so the decoder
+        # is idle and a second EOS would only stall the teardown.
+        _teardown_pipeline(pipeline, drain=False)
         if loop and loop.is_running():
             loop.quit()
 
@@ -336,8 +487,7 @@ def on_bus_message(bus, message):
                     "message": "UDP source timeout (no data received)",
                 }
             )
-            if pipeline:
-                pipeline.set_state(Gst.State.NULL)
+            _teardown_pipeline(pipeline)
             if loop and loop.is_running():
                 loop.quit()
 
@@ -1233,13 +1383,27 @@ def handle_start(data):
     # just FLUSH-drop (live-source semantics, satisfies the NO_PREROLL
     # invariant of the playing watchdog above).
     if not _start_rist(pipeline, data.get("rist")):
-        pipeline.set_state(Gst.State.NULL)
+        _teardown_pipeline(pipeline)
         pipeline = None
         return
 
     # Report-only TS video-info probe (`tsProbe` config) — same wiring window.
     if not _start_ts_probe(pipeline, data.get("tsProbe")):
-        pipeline.set_state(Gst.State.NULL)
+        _teardown_pipeline(pipeline)
+        pipeline = None
+        return
+
+    # Report-only render keep-up watch (`renderWatch` config) — same window.
+    if not _start_render_watch(pipeline, data.get("renderWatch")):
+        _teardown_pipeline(pipeline)
+        pipeline = None
+        return
+
+    # Keyframe gate (`keyframeGate` config). NOT report-only — it drops
+    # buffers — and it MUST be armed before PLAYING: the very first access
+    # unit off a mid-GOP join is the one that wedges a stateless V4L2 decoder.
+    if not _start_keyframe_gate(pipeline, data.get("keyframeGate")):
+        _teardown_pipeline(pipeline)
         pipeline = None
         return
 
@@ -1252,7 +1416,9 @@ def handle_start(data):
     ret = pipeline.set_state(Gst.State.PLAYING)
     if ret == Gst.StateChangeReturn.FAILURE:
         emit_event({"event": "error", "message": "Failed to set pipeline to PLAYING"})
-        pipeline.set_state(Gst.State.NULL)
+        # The state change was REJECTED, so nothing ever ran — no drain (it
+        # would only burn the EOS timeout on a pipeline that never decoded).
+        _teardown_pipeline(pipeline, drain=False)
         return
 
     # Arm the "reached PLAYING" watchdog (cancelled by the PLAYING state-change
@@ -1269,17 +1435,29 @@ def handle_start(data):
     emit_event({"event": "started"})
 
 def handle_stop(data=None):
-    """Stop the pipeline."""
+    """Stop the pipeline.
+
+    The deliberate-teardown path: the parent's `stop` command, a SIGTERM/SIGINT
+    and a closed command pipe all land here. It EOS-drains before NULL — this
+    is the path a codec-switch pipeline rebuild takes, i.e. the one that used
+    to stop an actively-decoding pipeline (see EOS_DRAIN_TIMEOUT_MS).
+    """
     global pipeline, running
     _cancel_playing_watchdog()
     _clear_pending_bus_attaches()
     _clear_preserve_timeline()
     _stop_rist()
     _stop_ts_probe()
+    _stop_render_watch()
     if pipeline:
-        pipeline.set_state(Gst.State.NULL)
+        _teardown_pipeline(pipeline)
         running = False
         emit_event({"event": "state_change", "state": "null"})
+    # AFTER the teardown, not before: the drain reaches the decoder through the
+    # gate's pad when the pipeline-level EOS can't travel (see
+    # _drain_decoder_branch), and the gate is harmless during a drain — it only
+    # ever touches buffers, never events.
+    _stop_keyframe_gate()
     if loop and loop.is_running():
         loop.quit()
 
@@ -2399,6 +2577,334 @@ def _stop_ts_probe():
     _ts_probe = None
 
 
+# ---------------------------------------------------------------------------
+# Render keep-up watch (`renderWatch` config)
+# ---------------------------------------------------------------------------
+_render_watch = None      # state dict while a renderWatch pad probe is armed
+
+RENDER_WATCH_WINDOW_MS = 2000
+
+
+def _start_render_watch(pipe, cfg):
+    """Report-only render keep-up watch (`renderWatch: {sink}` config).
+
+    Judges the rate of frames the sink actually PRESENTS — GstBaseSink's
+    `stats` property (`rendered`/`dropped` counters) — against the framerate
+    the pad's negotiated caps declare. Counting pad arrivals instead is a
+    proven blind spot: on the 2026-08-01 Pi 4 investigation the pad saw a
+    clean 50 fps while waylandsink discarded 18 fps internally (compositor
+    frame-callback pacing), so an arrival-based watch reported everything
+    fine during exactly the stutter it exists to catch.
+
+    A pad probe still counts arrivals, but only as a gate: a window with NO
+    arrivals is the stall watchdog's condition (dead source), not render
+    lag, so those windows are fed as zero and the monitor's stall/preroll
+    logic applies. Sinks without a `stats` property fall back to arrival
+    counting (better than nothing on autovideosink-style bins).
+
+    The hysteresis lives in render_lag.RenderLagMonitor; state transitions
+    emit `renderwatch:lag` / `renderwatch:recovered` plugin events with
+    `{achievedFps, expectedFps, droppedFps}` so the owning module can warn
+    the operator. Never touches routing; a missing sink the module
+    explicitly asked to watch is a hard error (matches tsProbe).
+    """
+    global _render_watch
+    if not cfg:
+        return True
+    try:
+        from render_lag import RenderLagMonitor
+    except Exception as e:  # noqa: BLE001
+        emit_event({"event": "error", "message": f"render_lag unavailable: {e}"})
+        return False
+    sink = pipe.get_by_name(cfg.get("sink", ""))
+    if sink is None:
+        emit_event({"event": "error",
+                    "message": f"renderWatch: sink not found: {cfg.get('sink')!r}"})
+        return False
+    pad = sink.get_static_pad("sink")
+    if pad is None:
+        emit_event({"event": "error",
+                    "message": f"renderWatch: no sink pad on: {cfg.get('sink')!r}"})
+        return False
+
+    st = {"pad": pad, "sink": sink, "frames": 0, "mon": RenderLagMonitor(),
+          "probe_id": None, "timer_id": None, "prev_stats": None}
+
+    def _on_buffer(_pad, _info):
+        st["frames"] += 1
+        return Gst.PadProbeReturn.OK
+
+    def _expected_fps():
+        # Re-read every tick: a mid-stream format switch renegotiates caps and
+        # the monitor resets its streaks on an expected-fps change.
+        caps = pad.get_current_caps()
+        if not caps or caps.get_size() == 0:
+            return None
+        ok, num, den = caps.get_structure(0).get_fraction("framerate")
+        if not ok or num <= 0 or den <= 0:
+            return None                      # no VUI timing → nothing to judge
+        return num / den
+
+    def _sink_stats():
+        # (rendered, dropped) totals from GstBaseSink, or None when the sink
+        # doesn't expose them (not a basesink, e.g. an autovideosink bin).
+        try:
+            s = st["sink"].get_property("stats")
+            return s.get_value("rendered"), s.get_value("dropped")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _tick():
+        arrivals = st["frames"]
+        st["frames"] = 0
+        achieved = arrivals
+        dropped = 0
+        stats = _sink_stats()
+        if stats is not None:
+            prev = st["prev_stats"]
+            st["prev_stats"] = stats
+            # First window has no delta yet; a negative delta means the sink
+            # restarted its counters — both fall back to arrivals.
+            if prev is not None and arrivals > 0:
+                d_rendered = stats[0] - prev[0]
+                d_dropped = stats[1] - prev[1]
+                if d_rendered >= 0 and d_dropped >= 0:
+                    achieved = d_rendered
+                    dropped = d_dropped
+        ev = st["mon"].tick(achieved, RENDER_WATCH_WINDOW_MS / 1000.0, _expected_fps(),
+                            dropped / (RENDER_WATCH_WINDOW_MS / 1000.0))
+        if ev:
+            kind, achieved_fps, expected = ev
+            # arrivalsFps lets the module tell RENDER lag (sink presents fewer
+            # frames than arrive) from SOURCE shortfall (fewer frames arrive
+            # in the first place — a feed/link problem the render chain can't
+            # fix and must not be blamed for).
+            emit_plugin_event(f"renderwatch:{kind}",
+                              {"achievedFps": round(achieved_fps, 1),
+                               "expectedFps": round(expected, 2),
+                               "droppedFps": round(
+                                   dropped / (RENDER_WATCH_WINDOW_MS / 1000.0), 1),
+                               "arrivalsFps": round(
+                                   arrivals / (RENDER_WATCH_WINDOW_MS / 1000.0), 1)})
+        return True                          # keep the GLib timer alive
+
+    st["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _on_buffer)
+    st["timer_id"] = GLib.timeout_add(RENDER_WATCH_WINDOW_MS, _tick)
+    _render_watch = st
+    return True
+
+
+def _stop_render_watch():
+    global _render_watch
+    st = _render_watch
+    _render_watch = None
+    if not st:
+        return
+    if st["timer_id"] is not None:
+        GLib.source_remove(st["timer_id"])
+    if st["probe_id"] is not None:
+        st["pad"].remove_probe(st["probe_id"])
+
+
+# ---------------------------------------------------------------------------
+# Keyframe gate (`keyframeGate` config)
+# ---------------------------------------------------------------------------
+_keyframe_gate = None     # state dict while the gate probe is armed
+
+# Fault injector env var — see _fault_drop_budget(). Absent = feature off.
+FAULT_DROP_DELTAS_ENV = "VP_FAULT_DROP_DELTAS"
+
+
+def _fault_drop_budget():
+    """How many post-keyframe delta AUs the fault injector must swallow.
+
+    DIAGNOSTIC HOOK, SHIPPED DISABLED. Unset (the normal case), non-numeric or
+    <= 0 all mean 0 — completely inert: no burst, no logging, and nothing in
+    the steady-state probe path beyond one int test per delta AU.
+
+    WHAT IT IS FOR. The gate below protects the decoder from every gap it can
+    SEE: a mid-GOP join (no keyframe yet) and a leak that upstream MARKED, i.e.
+    a DELTA_UNIT carrying DISCONT. It cannot protect against a gap nothing
+    marks — AUs lost on the wire inside a still-continuous byte stream, or
+    dropped below us. Set `VP_FAULT_DROP_DELTAS=N` and the gate probe itself
+    swallows the next N delta AUs after it opens, WITHOUT touching the flags of
+    anything that follows: no DISCONT appears, so the gate's own re-arm rule
+    cannot fire, and the decoder is handed post-gap AUs referencing pictures it
+    never received. That is the condition that makes rpivid log
+    `Col ref index 255 >= N`, program COLBASE=0 and wedge phase1 — this hook
+    reproduces it on demand, in the REAL pipeline, past all app-level
+    protection, which is the only honest way to test decoder-side handling of
+    it.
+
+    Read per gate build, so a `restartOnError` respawn re-arms the injector —
+    intentional: with the var still set, every pipeline start gets one burst.
+    Unset the var (and restart) to disarm.
+    """
+    try:
+        n = int(os.environ.get(FAULT_DROP_DELTAS_ENV, ""))
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
+def _start_keyframe_gate(pipe, cfg):
+    """Hold a decoder shut until an IRAP, on stream entry AND after any loss
+    (`keyframeGate: {decoder}` config).
+
+    THE FAILURE THIS PREVENTS. Every live RIST/TS join lands MID-GOP, so the
+    first access units handed to the decoder are delta units whose reference
+    frames it never saw. On the stateless V4L2 decoders (rpivid
+    `v4l2slh265dec` on Pi 4, `hevc_dec` on Pi 5, kernel 6.12.87) that is not
+    just corrupt output: the driver is left holding a decode request that
+    never completes, and the NEXT teardown blocks forever in the kernel
+    (`hevc_d_h265_stop` in D state, videodev mutex held) — V4L2 is then dead
+    box-wide and only a reboot clears it. Reproduced deterministically with a
+    mid-GOP-cut TS through `tsdemux ! capsfilter ! queue ! h265parse !
+    v4l2slh265dec`; `decodebin3` pipelines never wedged on the same feed
+    because parsebin gates stream entry for us. The EOS drain
+    (`_eos_drain`) fixes teardown ORDERING and cannot help here — by then the
+    decoder is already stuck.
+
+    THE GATE. A buffer probe on the decoder's SINK pad DROPS every buffer
+    carrying `GST_BUFFER_FLAG_DELTA_UNIT` and passes the first one without it
+    — `h264parse`/`h265parse` set that flag correctly per access unit, which
+    is why the gate is placed after the parser rather than trying to read
+    NAL types here. Events are never touched: caps/segment/EOS all flow
+    normally.
+
+    IT RE-ARMS, and that is the second half of the same bug. The gate used to
+    pass the first keyframe and REMOVE itself, which left the decoder
+    unprotected against loss LATER in the stream — and the live chain loses
+    data by design: every jitter queue on the way here is `leaky=2`, most
+    sharply the 200 ms ES queue feeding the parser, which sheds its oldest
+    buffers whenever the decoder stalls (device open, CMA allocation and
+    DMABuf negotiation at startup are ~1 s of stream time). The AUs it sheds
+    are the ones right after the keyframe the gate just let through, so the
+    next delta AUs reference frames the decoder never saw. GStreamer submits
+    them anyway with the missing references marked 0xff, and rpivid logs
+    `Col ref index 255 >= N` and programs COLBASE=0 — the hardware then reads
+    collocated MVs from address 0 and phase1 wedges (field: Pi 400, 3/3
+    hardware sessions, 2026-08). So a leak downstream of the gate is exactly
+    as fatal as a mid-GOP join, and it needs the same answer.
+
+    A leak is visible: `GstQueue` flags the buffer after a leak DISCONT, and
+    `GstBaseParse` carries that flag onto the corresponding output AU, so a
+    DISCONT on a DELTA_UNIT at this pad means "data was lost upstream". The
+    gate closes again on it and drops until the next IRAP, at which point the
+    picture resumes from a self-contained frame. A DISCONT on a keyframe is
+    harmless (nothing references what was lost) and passes.
+
+    COST: one flag test per AU for the pipeline's life, against a hardware
+    wedge that needs a reboot to clear.
+
+    SCOPE: armed once per pipeline START and stays armed. `restartOnError`
+    replays the whole start command, so a restarted pipeline gets a fresh
+    gate.
+
+    A missing decoder element the module explicitly asked to gate is a hard
+    error (matches tsProbe/renderWatch).
+
+    FAULT INJECTION (`VP_FAULT_DROP_DELTAS`, off unless set) rides on this same
+    probe so its drops are ordered against the gate's — see
+    _fault_drop_budget().
+    """
+    global _keyframe_gate
+    # Never inherit a previous pipeline's gate: its pad belongs to an element
+    # that is gone, and the teardown drain now reaches the decoder through this
+    # state (see _drain_decoder_branch).
+    _stop_keyframe_gate()
+    if not cfg:
+        return True
+    name = cfg.get("decoder", "")
+    dec = pipe.get_by_name(name)
+    if dec is None:
+        emit_event({"event": "error",
+                    "message": f"keyframeGate: decoder not found: {name!r}"})
+        return False
+    pad = dec.get_static_pad("sink")
+    if pad is None:
+        emit_event({"event": "error",
+                    "message": f"keyframeGate: no sink pad on: {name!r}"})
+        return False
+
+    # `opened`, `dropped`, `rearms` and `since_close` are written ONLY by the
+    # probe callback (one streaming thread) and read by _stop_keyframe_gate and
+    # the tests. Same single-writer discipline as the bus progress probes: the
+    # callback never writes `probe_id`.
+    #   dropped     — cumulative delta AUs dropped, every closed window
+    #   since_close — delta AUs dropped since the gate last closed
+    #   rearms      — how many times upstream loss re-closed an open gate
+    #   fault_budget  — delta AUs the fault injector still owes (0 = inert/done)
+    #   fault_dropped — delta AUs the fault injector has swallowed
+    st = {"pad": pad, "decoder": name, "probe_id": None, "dropped": 0,
+          "opened": False, "since_close": 0, "rearms": 0,
+          "fault_budget": _fault_drop_budget(), "fault_dropped": 0}
+
+    def _log(line):
+        sys.stderr.write(f"[gst-runner.py] keyframe gate: {name} {line}\n")
+        sys.stderr.flush()
+
+    # Loud on purpose, at both ends of the burst: an injected gap is
+    # indistinguishable from wire loss in the decoder's behaviour, so a journal
+    # must never leave anyone guessing whether it was organic.
+    if st["fault_budget"]:
+        _log(f"FAULT INJECTOR: dropping next {st['fault_budget']} delta AUs "
+             f"after keyframe ({FAULT_DROP_DELTAS_ENV})")
+
+    def _on_buffer(_pad, info):
+        buf = info.get_buffer()
+        if buf is None:
+            return Gst.PadProbeReturn.OK
+        delta = buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
+        if st["opened"]:
+            # Open: only upstream LOSS shuts the gate again. A DISCONT keyframe
+            # is self-contained, so it passes and the gate stays open.
+            if not (delta and buf.has_flags(Gst.BufferFlags.DISCONT)):
+                # Fault injection: swallow the next N delta AUs this open gate
+                # would have PASSED, one-shot per gate. Keyframes are never
+                # touched (the picture must be able to recover), and the
+                # buffers after the burst keep their original flags — no
+                # DISCONT — so the re-arm rule above cannot see this gap. That
+                # is the whole point: the decoder gets the unprotected gap.
+                if delta and st["fault_budget"] > 0:
+                    st["fault_budget"] -= 1
+                    st["fault_dropped"] += 1
+                    if st["fault_budget"] == 0:
+                        _log("FAULT INJECTOR: burst complete "
+                             f"({st['fault_dropped']} dropped)")
+                    return Gst.PadProbeReturn.DROP
+                return Gst.PadProbeReturn.OK
+            st["opened"] = False
+            st["since_close"] = 0
+            st["rearms"] += 1
+            _log(f"re-armed on a DISCONT delta unit — data lost upstream, "
+                 f"dropping until the next keyframe (re-arm #{st['rearms']})")
+        if delta:
+            st["dropped"] += 1
+            st["since_close"] += 1
+            return Gst.PadProbeReturn.DROP
+        st["opened"] = True
+        _log(f"opened on {'a' if st['rearms'] else 'first'} keyframe "
+             f"({st['since_close']} delta unit(s) dropped"
+             + (f", re-arm #{st['rearms']}" if st["rearms"] else "") + ")")
+        return Gst.PadProbeReturn.OK
+
+    st["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _on_buffer)
+    _keyframe_gate = st
+    return True
+
+
+def _stop_keyframe_gate():
+    """Take the gate probe off the pad. The probe never self-removes (it has to
+    survive to re-arm), so this is the only thing that ever detaches it."""
+    global _keyframe_gate
+    st = _keyframe_gate
+    _keyframe_gate = None
+    if not st or st["probe_id"] is None:
+        return
+    st["pad"].remove_probe(st["probe_id"])
+
+
 # Command dispatch
 CMD_HANDLERS = {
     "start": handle_start,
@@ -2493,8 +2999,11 @@ def main():
         # Print why we're exiting so the parent log isn't a silent "code=0".
         sys.stderr.write(f"[gst-runner.py] Main loop exited (pipeline={'set' if pipeline else 'unset'})\n")
         sys.stderr.flush()
-        if pipeline:
-            pipeline.set_state(Gst.State.NULL)
+        # Last teardown before the hard exit below. Normally a no-op (handle_stop
+        # already took the pipeline to NULL, so the drain gate skips), but a loop
+        # that exited any other way must not leave a PLAYING pipeline to be
+        # stopped mid-decode by process teardown.
+        _teardown_pipeline(pipeline)
 
 if __name__ == "__main__":
     try:

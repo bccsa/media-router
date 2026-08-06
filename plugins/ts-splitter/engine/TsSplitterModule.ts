@@ -177,6 +177,9 @@ export class TsSplitterModule extends GstPluginBase {
                 inputSocketPath: upstream.socketPath,
                 tsId: (this.config.tsId as number) ?? 1,
                 outputs,
+                // Fan-out coalescing window; 0 disables batching for
+                // ultra-low-latency chains (see the schema description).
+                busBatchMs: this.config.busBatchMs as number | undefined,
             }),
             autoRestart: true,
             stdin: true,

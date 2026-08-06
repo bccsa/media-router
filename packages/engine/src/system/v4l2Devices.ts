@@ -1,8 +1,17 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import type { Device } from '@media-router/shared-types';
+import { runV4l2Ctl, v4l2CtlBlocked } from './v4l2Ctl.js';
 
-const execFileAsync = promisify(execFile);
+export interface V4l2Format {
+    pixelFormat: string;
+    width: number;
+    height: number;
+    framerates: number[];
+}
+
+/** Result of the last completed enumeration — served while one is skipped. */
+let cachedDevices: Device[] = [];
+/** True while an enumeration is running, so the 2 s poll can't stack runs. */
+let enumerationPending = false;
 
 /**
  * Enumerate V4L2 capture devices using `v4l2-ctl`.
@@ -12,22 +21,42 @@ const execFileAsync = promisify(execFile);
  * running `v4l2-ctl --device=<path> --all` and checking for the `Video
  * Capture` capability in its output. Anything missing that flag is filtered
  * out so the UI dropdown only lists real cameras / capture cards.
+ *
+ * Single-flight: this is polled every 2 s by the device-provider registry, and
+ * every `v4l2-ctl` it runs can wedge in the kernel (see `v4l2Ctl.ts`). While a
+ * run is in progress — or a child from an earlier run has not exited — nothing
+ * is spawned and the last known list is returned unchanged.
  */
 export async function listV4l2Devices(): Promise<Device[]> {
-    let rawListing: string;
+    if (enumerationPending || v4l2CtlBlocked()) return cachedDevices;
+    enumerationPending = true;
     try {
-        const res = await execFileAsync('v4l2-ctl', ['--list-devices'], { timeout: 5000 });
-        rawListing = res.stdout;
-    } catch {
-        return [];
+        const devices = await enumerate();
+        if (devices) cachedDevices = devices;
+        return cachedDevices;
+    } finally {
+        enumerationPending = false;
     }
+}
+
+/**
+ * One full enumeration pass. Returns `null` when the guard cut the run short,
+ * so the caller keeps its cache rather than publishing a truncated list.
+ */
+async function enumerate(): Promise<Device[] | null> {
+    const listing = await runV4l2Ctl(['--list-devices'], 5000);
+    if (listing.kind === 'blocked') return null;
+    if (listing.kind === 'failed') return [];
 
     const candidates: Array<{ path: string; name: string }> = [];
     let currentName = '';
-    for (const line of rawListing.split('\n')) {
+    for (const line of listing.stdout.split('\n')) {
         if (!line) continue;
         if (!line.startsWith('\t') && !line.startsWith(' ')) {
-            currentName = line.replace(/\s*\(.*\):\s*$/, '').replace(/:$/, '').trim();
+            currentName = line
+                .replace(/\s*\(.*\):\s*$/, '')
+                .replace(/:$/, '')
+                .trim();
             continue;
         }
         const path = line.trim();
@@ -39,8 +68,10 @@ export async function listV4l2Devices(): Promise<Device[]> {
     const results: Device[] = [];
     for (const cand of candidates) {
         const hasCapture = await deviceSupportsCapture(cand.path);
+        if (hasCapture === null) return null;
         if (!hasCapture) continue;
         const formats = await listFormats(cand.path);
+        if (formats === null) return null;
         results.push({
             name: cand.path,
             label: `${cand.name} (${cand.path})`,
@@ -59,50 +90,31 @@ const PLATFORM_DRIVER_BLACKLIST = new Set([
     'rpivid',
 ]);
 
-async function deviceSupportsCapture(path: string): Promise<boolean> {
-    try {
-        const { stdout } = await execFileAsync('v4l2-ctl', ['--device', path, '--all'], {
-            timeout: 3000,
-        });
-        const driverMatch = stdout.match(/Driver name\s*:\s*(\S+)/);
-        if (driverMatch && PLATFORM_DRIVER_BLACKLIST.has(driverMatch[1])) return false;
-        // `Device Caps      : 0x...` is followed by capability names on
-        // indented next lines. Grab the block up to the next top-level
-        // section and check for `Video Capture`.
-        const block = stdout.match(/Device Caps\s*:[\s\S]*?(?=\n\S)/);
-        return !!block && /\bVideo Capture\b/.test(block[0]);
-    } catch {
-        return false;
-    }
+/** `null` when the probe was skipped by the guard. */
+async function deviceSupportsCapture(path: string): Promise<boolean | null> {
+    const res = await runV4l2Ctl(['--device', path, '--all'], 3000);
+    if (res.kind === 'blocked') return null;
+    if (res.kind === 'failed') return false;
+    const driverMatch = res.stdout.match(/Driver name\s*:\s*(\S+)/);
+    if (driverMatch && PLATFORM_DRIVER_BLACKLIST.has(driverMatch[1])) return false;
+    // `Device Caps      : 0x...` is followed by capability names on
+    // indented next lines. Grab the block up to the next top-level
+    // section and check for `Video Capture`.
+    const block = res.stdout.match(/Device Caps\s*:[\s\S]*?(?=\n\S)/);
+    return !!block && /\bVideo Capture\b/.test(block[0]);
 }
 
-async function listFormats(
-    path: string,
-): Promise<
-    Array<{ pixelFormat: string; width: number; height: number; framerates: number[] }>
-> {
-    try {
-        const { stdout } = await execFileAsync(
-            'v4l2-ctl',
-            ['--device', path, '--list-formats-ext'],
-            { timeout: 3000 },
-        );
-        return parseFormats(stdout);
-    } catch {
-        return [];
-    }
+/** `null` when the probe was skipped by the guard. */
+async function listFormats(path: string): Promise<V4l2Format[] | null> {
+    const res = await runV4l2Ctl(['--device', path, '--list-formats-ext'], 3000);
+    if (res.kind === 'blocked') return null;
+    if (res.kind === 'failed') return [];
+    return parseFormats(res.stdout);
 }
 
 /** Exported for tests. */
-export function parseFormats(
-    output: string,
-): Array<{ pixelFormat: string; width: number; height: number; framerates: number[] }> {
-    const result: Array<{
-        pixelFormat: string;
-        width: number;
-        height: number;
-        framerates: number[];
-    }> = [];
+export function parseFormats(output: string): V4l2Format[] {
+    const result: V4l2Format[] = [];
     let currentFormat = '';
     let currentSize: { width: number; height: number } | null = null;
     let currentFramerates: number[] = [];
@@ -145,4 +157,10 @@ export function parseFormats(
     }
     flushSize();
     return result;
+}
+
+/** Test-only: drop the cached device list and the in-flight flag. */
+export function _resetV4l2DeviceCacheForTests(): void {
+    cachedDevices = [];
+    enumerationPending = false;
 }

@@ -1,5 +1,5 @@
 import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared-types';
-import { PythonProcess, type RunnerStartOptions } from './PythonProcess.js';
+import { PythonProcess, FORCE_KILL_TIMEOUT_MS, type RunnerStartOptions } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
 import { unixFdSrcSocketPaths, waitForBusSockets } from './busSocketGate.js';
 
@@ -17,6 +17,27 @@ import { unixFdSrcSocketPaths, waitForBusSockets } from './busSocketGate.js';
 const DEFAULT_RESTART_BASE_MS = 1000;
 const DEFAULT_RESTART_MAX_MS = 5000;
 const RESTART_STABILITY_MS = 30_000;
+
+// Shutdown budget. Both windows exist for one reason: the Python runner
+// EOS-drains its pipeline before NULL (`EOS_DRAIN_TIMEOUT_MS` in
+// gst-pipeline-runner.py) so a stateless HEVC decoder is never stopped
+// mid-decode — killing it mid-drain wedges the kernel driver and takes the box
+// down. So we SIGKILL only after the drain can have finished, and we outlive
+// that kill long enough to reap the child. Derived from FORCE_KILL_TIMEOUT_MS
+// (8000 today, itself sized off the 6000 ms drain) so widening the drain widens
+// these too — never re-type the numbers. Pinned by eosDrainContract.test.ts.
+const SHUTDOWN_KILL_MS = FORCE_KILL_TIMEOUT_MS;
+const SHUTDOWN_EXIT_MS = SHUTDOWN_KILL_MS + 500;
+// Same budget for the explicit `stopPipeline` action: `python.stop()` runs its
+// own FORCE_KILL_TIMEOUT_MS timer, and exiting before that fires would trip the
+// process-exit emergency SIGKILL on a still-draining runner.
+const STOP_PIPELINE_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 1000;
+// Those two windows are a DEADLINE for the drain, not a wait we owe anybody —
+// see `exitWhenDrained`. Once Python has actually exited we linger only long
+// enough for the last IPC events (`stateChange { state: 'stopped' }`) to reach
+// the parent: `process.send` is asynchronous, so exiting in the same tick drops
+// them and the parent's `stop()` sees a channel close instead of a clean exit.
+export const SHUTDOWN_FLUSH_MS = 250;
 
 // The `startPipeline` wire message: the runner start options plus the two
 // restart-policy knobs GstRunner consumes itself (not forwarded to Python).
@@ -50,6 +71,10 @@ export class GstRunner {
         0,
         RESTART_STABILITY_MS,
     );
+    /** A terminal path (`stopPipeline` / `shutdown`) has begun — see `exitWhenDrained`. */
+    private exiting = false;
+    /** The armed post-drain exit, so re-entry can't stack timers. */
+    private exitTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(private readonly pythonRunnerPath: string) {}
 
@@ -79,9 +104,12 @@ export class GstRunner {
                     clearTimeout(this.restartTimer);
                     this.restartTimer = null;
                 }
+                this.exiting = true;
                 this.python?.stop();
                 this.ipc.sendResponse(msg.id, { ok: true });
-                setTimeout(() => process.exit(0), 3000);
+                setTimeout(() => process.exit(0), STOP_PIPELINE_EXIT_MS);
+                // …unless the drain is already over, in which case go now.
+                this.exitWhenDrained();
                 break;
 
             case 'getState':
@@ -209,7 +237,7 @@ export class GstRunner {
     shutdown(reason: string): void {
         console.error(`[gst-runner] Shutting down: ${reason}`);
         // Disarm the auto-restart loop before we kill the child, otherwise the
-        // child's exit handler will spawn a fresh Python within our 1.5s exit
+        // child's exit handler will spawn a fresh Python within our exit
         // window — which then gets killed by the process.on('exit') SIGKILL
         // fallback, leaking a Python child every shutdown.
         this.restartOnError = false;
@@ -217,9 +245,13 @@ export class GstRunner {
             clearTimeout(this.restartTimer);
             this.restartTimer = null;
         }
+        this.exiting = true;
         if (this.python) {
             const py = this.python;
             py.sendCommand({ cmd: 'stop' });
+            // SIGTERM is a second nudge, not a kill: the runner's handler runs
+            // the same EOS drain as the `stop` command. The SIGKILL below is
+            // the deadline for that drain (see SHUTDOWN_KILL_MS).
             py.kill('SIGTERM');
             setTimeout(() => {
                 try {
@@ -227,9 +259,35 @@ export class GstRunner {
                 } catch (err) {
                     console.error('[gst-runner] SIGKILL fallback failed:', err);
                 }
-            }, 1000);
+            }, SHUTDOWN_KILL_MS);
         }
-        setTimeout(() => process.exit(0), 1500);
+        setTimeout(() => process.exit(0), SHUTDOWN_EXIT_MS);
+        // …unless there is nothing left to drain.
+        this.exitWhenDrained();
+    }
+
+    /**
+     * Exit as soon as Python is verifiably gone.
+     *
+     * `SHUTDOWN_EXIT_MS` / `STOP_PIPELINE_EXIT_MS` are the DEADLINE for the
+     * Python EOS drain — the point past which a still-running drain must be
+     * abandoned — not a period we have to sit out. Once `handlePythonExit` has
+     * nulled `python`, the drain is over (or there was never a pipeline), and
+     * every further millisecond is pure recovery latency handed to the parent:
+     * `GstChildProcess.stop()` waits for this process to exit, so a module
+     * rebuild cost a flat ~8.5 s no matter how fast the pipeline came down. The
+     * video player pays that per rebuild, and an upstream codec flip needs
+     * three of them — measured 8516 ms per stop on a `videotestsrc ! fakesink`
+     * pipeline whose Python exited in ~100 ms, which is where the ~30 s field
+     * recovery came from (Pi 400, 2026-08-05).
+     *
+     * Called from both terminal paths and again from `handlePythonExit`, so
+     * whichever comes last arms it. Never from anywhere else: `exiting` is the
+     * proof that a teardown — not a restart — asked for this.
+     */
+    private exitWhenDrained(): void {
+        if (!this.exiting || this.python || this.exitTimer) return;
+        this.exitTimer = setTimeout(() => process.exit(0), SHUTDOWN_FLUSH_MS);
     }
 
     /** Last-ditch sync cleanup from `process.on('exit')`. */
@@ -444,6 +502,14 @@ export class GstRunner {
         this.currentState = 'stopped';
         this.ipc.sendEvent('stateChange', { state: 'stopped', exitCode: code, signal });
         this.python = null;
+        // A teardown is already under way and its whole reason for waiting was
+        // this exit — stop waiting (see exitWhenDrained). Returning here rather
+        // than falling through is belt-and-braces: both terminal paths clear
+        // `restartOnError` first, so the restart below could not fire anyway.
+        if (this.exiting) {
+            this.exitWhenDrained();
+            return;
+        }
         // An unexpected exit (non-zero code or fatal signal) means the
         // pipeline died without going through the bus — e.g. decoder
         // segfault, OOM, GStreamer assertion. Treat the same as a bus error:
@@ -452,6 +518,11 @@ export class GstRunner {
         // can't see it because *this* process is still healthy.
         if (this.restartOnError && (code !== 0 || signal)) {
             this.ipc.sendEvent('error', {
+                // SYNTHESISED, not a bus error: it names no element because
+                // the pipeline never got to post one. Plugins that attribute
+                // failures to elements (video-player's decoder demotion) key
+                // off this `kind` to leave their attribution state alone.
+                kind: 'runner_exit',
                 message: `Python runner exited unexpectedly (code=${code} signal=${signal ?? 'none'})`,
             });
             this.scheduleRestart();
@@ -461,7 +532,9 @@ export class GstRunner {
     private handlePythonSpawnError(py: PythonProcess, err: Error): void {
         if (this.python !== py) return;
         this.currentState = 'error';
-        this.ipc.sendEvent('error', { message: err.message });
+        // Synthesised — the python child never started, so nothing in the
+        // pipeline can be blamed for it (see the `runner_exit` note above).
+        this.ipc.sendEvent('error', { kind: 'spawn_failed', message: err.message });
         this.ipc.sendEvent('stateChange', { state: 'error' });
     }
 
