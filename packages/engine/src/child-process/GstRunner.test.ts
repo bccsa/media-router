@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ControlIpcMessage } from '@media-router/shared-types';
-import { GstRunner } from './GstRunner.js';
+import { GstRunner, SHUTDOWN_FLUSH_MS } from './GstRunner.js';
+import { FORCE_KILL_TIMEOUT_MS } from './PythonProcess.js';
 
 /**
  * Tests focus on the bus-error vs command-error split — see TodoNotes:
@@ -14,8 +15,9 @@ describe('GstRunner — Python event routing', () => {
     let originalConnected: PropertyDescriptor | undefined;
 
     const emit = (event: Record<string, unknown>): void => {
-        (runner as unknown as { handlePythonEvent: (e: Record<string, unknown>) => void })
-            .handlePythonEvent(event);
+        (
+            runner as unknown as { handlePythonEvent: (e: Record<string, unknown>) => void }
+        ).handlePythonEvent(event);
     };
 
     const lastByType = (
@@ -62,9 +64,11 @@ describe('GstRunner — Python event routing', () => {
         // an id we need to echo back as command_error.
         // Since python is null, no command goes out — but trackPending was
         // called. Pull the registered req id off the pending map.
-        const pending = (runner as unknown as {
-            ipc: { pending: Map<string, { requestId: string }> };
-        }).ipc.pending;
+        const pending = (
+            runner as unknown as {
+                ipc: { pending: Map<string, { requestId: string }> };
+            }
+        ).ipc.pending;
         expect(pending.size).toBe(1);
         const [reqId] = [...pending.keys()];
 
@@ -152,9 +156,11 @@ describe('GstRunner — Python event routing', () => {
             action: 'getProperty',
             data: { element: 'src', property: 'uri' },
         });
-        const pending = (runner as unknown as {
-            ipc: { pending: Map<string, unknown> };
-        }).ipc.pending;
+        const pending = (
+            runner as unknown as {
+                ipc: { pending: Map<string, unknown> };
+            }
+        ).ipc.pending;
         const [reqId] = [...pending.keys()];
 
         emit({ event: 'property', id: reqId, element: 'src', property: 'uri', value: 'udp://...' });
@@ -171,9 +177,11 @@ describe('GstRunner — Python event routing', () => {
             action: 'setProperty',
             data: { element: 'vol', property: 'volume', value: 0.5 },
         });
-        const pending = (runner as unknown as {
-            ipc: { pending: Map<string, unknown> };
-        }).ipc.pending;
+        const pending = (
+            runner as unknown as {
+                ipc: { pending: Map<string, unknown> };
+            }
+        ).ipc.pending;
         const [reqId] = [...pending.keys()];
 
         emit({
@@ -196,9 +204,11 @@ describe('GstRunner — Python event routing', () => {
             action: 'busReinput',
             data: { element: 'netin', socket: '/tmp/mr-bus-40000-new.sock' },
         });
-        const pending = (runner as unknown as {
-            ipc: { pending: Map<string, unknown> };
-        }).ipc.pending;
+        const pending = (
+            runner as unknown as {
+                ipc: { pending: Map<string, unknown> };
+            }
+        ).ipc.pending;
         expect(pending.size).toBe(1);
         const [reqId] = [...pending.keys()];
 
@@ -215,9 +225,11 @@ describe('GstRunner — Python event routing', () => {
             action: 'busReinput',
             data: { element: 'netin', socket: '/tmp/x.sock' },
         });
-        const pending = (runner as unknown as {
-            ipc: { pending: Map<string, unknown> };
-        }).ipc.pending;
+        const pending = (
+            runner as unknown as {
+                ipc: { pending: Map<string, unknown> };
+            }
+        ).ipc.pending;
         const [reqId] = [...pending.keys()];
 
         emit({ event: 'command_error', id: reqId, message: "element 'netin' not found" });
@@ -235,9 +247,9 @@ describe('GstRunner — Python event routing', () => {
             data: { pipeline: 'fakesrc ! fakesink', restartOnError: false },
         });
         expect(lastByType('response')?.id).toBe('rpc-up');
-        expect(
-            (runner as unknown as { lastStart: { pipeline: string } }).lastStart.pipeline,
-        ).toBe('fakesrc ! fakesink');
+        expect((runner as unknown as { lastStart: { pipeline: string } }).lastStart.pipeline).toBe(
+            'fakesrc ! fakesink',
+        );
     });
 
     it('forwards the error source `element` on pipeline error events', () => {
@@ -337,5 +349,147 @@ describe('GstRunner — Python event routing', () => {
                 /* gone */
             }
         });
+    });
+});
+
+/**
+ * Teardown LATENCY contract.
+ *
+ * The kill windows (`SHUTDOWN_EXIT_MS`, `STOP_PIPELINE_EXIT_MS`) are a DEADLINE
+ * for the Python EOS drain — the point past which a drain that cannot finish is
+ * abandoned — not a period the runner owes anybody. It used to sit out the whole
+ * window regardless, so `GstChildProcess.stop()` (which waits for this process
+ * to exit) took a flat ~8.5 s per teardown even when Python had already quit.
+ * Measured 8516 ms to stop a `videotestsrc ! fakesink` pipeline whose Python
+ * exited in ~100 ms; the video player pays that per rebuild, and an upstream
+ * h265→h264 flip needs three rebuilds — which is the ~30 s field recovery on
+ * the Pi 400, 2026-08-05.
+ *
+ * Both halves are pinned here: exit promptly once the drain is provably over,
+ * and DON'T when it isn't (the mid-decode teardown that wedges the Pi's
+ * stateless HEVC block — see eosDrainContract.test.ts).
+ */
+describe('GstRunner — teardown exits as soon as Python is gone', () => {
+    // Derived, never re-typed: SHUTDOWN_EXIT_MS / STOP_PIPELINE_EXIT_MS are
+    // themselves derived from the Python force-kill window.
+    const SHUTDOWN_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 500;
+    const STOP_PIPELINE_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 1000;
+
+    let runner: GstRunner;
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+    let originalSend: typeof process.send;
+    let originalConnected: PropertyDescriptor | undefined;
+
+    /** Stand-in for the Python child — shutdown/stop only reach these. */
+    const fakePython = () => ({
+        sendCommand: vi.fn(),
+        kill: vi.fn(),
+        stop: vi.fn(),
+        emergencyKill: vi.fn(),
+    });
+    type FakePython = ReturnType<typeof fakePython>;
+    const setPython = (py: FakePython): void => {
+        (runner as unknown as { python: unknown }).python = py;
+    };
+    /** The real exit path: `PythonProcess`'s onExit → `handlePythonExit`. */
+    const exitPython = (py: FakePython, code: number | null, signal: string | null = null): void =>
+        (
+            runner as unknown as {
+                handlePythonExit: (p: unknown, c: number | null, s: unknown) => void;
+            }
+        ).handlePythonExit(py, code, signal);
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        originalSend = process.send;
+        originalConnected = Object.getOwnPropertyDescriptor(process, 'connected');
+        Object.defineProperty(process, 'connected', { value: true, configurable: true });
+        process.send = (() => true) as unknown as typeof process.send;
+        exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+        runner = new GstRunner('/nonexistent/python-runner.py');
+    });
+
+    afterEach(() => {
+        exitSpy.mockRestore();
+        vi.useRealTimers();
+        if (originalConnected) Object.defineProperty(process, 'connected', originalConnected);
+        process.send = originalSend;
+    });
+
+    it('exits on the flush window when there is no Python left to drain', () => {
+        // The field shape: the bus-error handler already tore the pipeline down
+        // and quit, so by the time the module asks us to stop there is nothing
+        // in flight — every millisecond after that is recovery latency.
+        runner.shutdown('SIGTERM');
+        vi.advanceTimersByTime(SHUTDOWN_FLUSH_MS - 1);
+        expect(exitSpy).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(1);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for a LIVE Python child to finish its drain, then goes', () => {
+        const py = fakePython();
+        setPython(py);
+        runner.shutdown('SIGTERM');
+        // Mid-drain: exiting here would trip the process-exit emergency SIGKILL
+        // on a decoder that is still finishing frames.
+        vi.advanceTimersByTime(4000);
+        expect(exitSpy).not.toHaveBeenCalled();
+        expect(py.sendCommand).toHaveBeenCalledWith({ cmd: 'stop' });
+        expect(py.kill).toHaveBeenCalledWith('SIGTERM');
+        // Drain done — Python exited of its own accord.
+        exitPython(py, 0);
+        vi.advanceTimersByTime(SHUTDOWN_FLUSH_MS);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the deadline as the cap when Python never exits', () => {
+        const py = fakePython();
+        setPython(py);
+        runner.shutdown('SIGTERM');
+        vi.advanceTimersByTime(SHUTDOWN_EXIT_MS - 1);
+        expect(exitSpy).not.toHaveBeenCalled();
+        // The drain got its full window and then the SIGKILL, in that order.
+        expect(py.kill).toHaveBeenCalledWith('SIGKILL');
+        vi.advanceTimersByTime(1);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    const stopPipeline = (): void =>
+        runner.handleControlMessage({ id: 'rpc-s1', type: 'request', action: 'stopPipeline' });
+
+    it('stopPipeline takes the same short exit when nothing is draining', () => {
+        stopPipeline();
+        vi.advanceTimersByTime(SHUTDOWN_FLUSH_MS - 1);
+        expect(exitSpy).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(1);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('stopPipeline keeps its own cap for a Python that will not exit', () => {
+        const py = fakePython();
+        setPython(py);
+        stopPipeline();
+        expect(py.stop).toHaveBeenCalled();
+        vi.advanceTimersByTime(STOP_PIPELINE_EXIT_MS - 1);
+        expect(exitSpy).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(1);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('a Python exit OUTSIDE a teardown never exits the runner', () => {
+        // A crashed decoder must still be recovered by the restart loop — the
+        // early exit is for deliberate teardowns only, which is what `exiting`
+        // proves. Exiting here would kill the pipeline's only recovery path.
+        const py = fakePython();
+        setPython(py);
+        (runner as unknown as { restartOnError: boolean }).restartOnError = true;
+        exitPython(py, 139, 'SIGSEGV');
+        expect((runner as unknown as { exitTimer: unknown }).exitTimer).toBeNull();
+        expect((runner as unknown as { restartTimer: unknown }).restartTimer).not.toBeNull();
+        // Short of the minimum restart delay (1000 ms base, 0.75 jitter floor)
+        // so no respawn is attempted inside the test.
+        vi.advanceTimersByTime(700);
+        expect(exitSpy).not.toHaveBeenCalled();
     });
 });

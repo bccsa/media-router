@@ -22,6 +22,27 @@ export {
 } from './system/networkInterfaceProvider.js';
 export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
 export {
+    kernelLogSignalEvent,
+    kernelLogWatchMode,
+    kmsgMessageText,
+    matchKernelLogSignal,
+    offKernelLogSignal,
+    onKernelLogSignal,
+    resetKernelLogWatch,
+    startKernelLogWatch,
+    stopKernelLogWatch,
+    DMESG_POLL_INTERVAL_MS,
+    KERNEL_LOG_SIGNALS,
+    KMSG_POLL_INTERVAL_MS,
+} from './system/kernelLogWatch.js';
+export type {
+    KernelLogSignalId,
+    KernelLogSignalEvent,
+    KernelLogSignalHandler,
+    KernelLogSource,
+    KernelLogWatchOptions,
+} from './system/kernelLogWatch.js';
+export {
     firstConnectedDisplay,
     listDrmConnectors,
     pickActiveDisplay,

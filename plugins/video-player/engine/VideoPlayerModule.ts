@@ -1,9 +1,11 @@
 import {
     GstPluginBase,
     listDrmConnectors,
+    onKernelLogSignal,
     probeGstElement,
     probeUnixSocket,
     type EngineServices,
+    type KernelLogSignalEvent,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
@@ -22,6 +24,8 @@ import {
     probeDecoderAvailability,
     resolveCpuDecodeThreading,
     selectDecoder,
+    HARDWARE_DECODER_IDS,
+    KERNEL_HW_DECODE_DISABLED_NOTE,
     type DecoderAvailability,
     type DecoderSelection,
 } from './helpers/decoderSelection.js';
@@ -111,6 +115,18 @@ export class VideoPlayerModule extends GstPluginBase {
      * `activeDemotions`, which drops the aged-out ones.
      */
     private static demotions = new DecoderDemotions();
+
+    /**
+     * Started instances, for the one signal that has to reach ALL of them at
+     * once (the kernel's hardware-decode latch). Maintained by onStart/onStop.
+     *
+     * Its own set rather than the wayland-restart registry, which happens to
+     * hold the same members today: that registry exists to answer a compositor
+     * question and may one day only take the instances that render through
+     * wayland, at which point a KMS player would silently stop hearing about a
+     * dead decoder.
+     */
+    private static readonly started = new Set<VideoPlayerModule>();
 
     /**
      * What each producer edge was last seen carrying. Static on purpose: it has
@@ -215,6 +231,52 @@ export class VideoPlayerModule extends GstPluginBase {
         // gst-runner children) at it so `waylandsink` can connect. Idempotent
         // for desktop sessions where these are already set.
         ensureWaylandEnv();
+        // The kernel is the only thing that reports a dead hardware decoder —
+        // see onHardwareDecodeDisabled. Subscribing here rather than per
+        // instance keeps it to one watcher per engine process, and the signal
+        // is replayed if it already latched (including from before this engine
+        // started), so load order does not matter.
+        onKernelLogSignal('hevc-decode-disabled', (event) =>
+            VideoPlayerModule.onHardwareDecodeDisabled(event),
+        );
+    }
+
+    /**
+     * The kernel has switched hardware video decode off until reboot.
+     *
+     * WHY THE APP HAS TO ACT. Post-latch the driver fails every decode job with
+     * `VB2_BUF_STATE_ERROR`, but GStreamer's `v4l2codecs` ignores
+     * `V4L2_BUF_FLAG_ERROR` and pushes the buffer downstream regardless — so
+     * the pipeline never errors, never stalls the bus watchdog, and simply
+     * renders garbage or a frozen frame for the rest of the boot. Nothing in
+     * the normal failure path (`handleDecoderFailure`) can fire, because
+     * nothing fails.
+     *
+     * The demotions are PERMANENT (`demotePermanently`): the retry the TTL
+     * exists for cannot succeed before a reboot, and each attempt would cost a
+     * rebuild and a few seconds of broken picture. Every hardware rung goes, not
+     * just the HEVC one — see `HARDWARE_DECODER_IDS`.
+     *
+     * Then every started instance rebuilds, so the picture is back on software
+     * decode within one pipeline cycle instead of at the next restart.
+     */
+    private static onHardwareDecodeDisabled(event: KernelLogSignalEvent): void {
+        const now = Date.now();
+        for (const id of HARDWARE_DECODER_IDS) {
+            VideoPlayerModule.demotions.demotePermanently(id, now);
+        }
+        for (const instance of [...VideoPlayerModule.started]) {
+            instance.log.error(
+                { kernelLine: event.line, source: event.source, demoted: HARDWARE_DECODER_IDS },
+                'Kernel disabled hardware video decode until reboot — rebuilding on software decode',
+            );
+            instance.setHealth('warning', KERNEL_HW_DECODE_DISABLED_NOTE);
+            // The rebuild is what actually gets the picture back: the running
+            // pipeline is wedged silently and will never rebuild itself.
+            instance.restartPipeline().catch(() => {
+                /* logged inside */
+            });
+        }
     }
 
     static async initManifest(_manifest: Record<string, unknown>): Promise<void> {
@@ -285,6 +347,7 @@ export class VideoPlayerModule extends GstPluginBase {
         await super.onStart();
         this.updateStatusData();
         this.installBusStallListener();
+        VideoPlayerModule.started.add(this);
         VideoPlayerModule.registerForWaylandRestartWatch(this);
         this.startCogPollWatch();
     }
@@ -399,6 +462,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.clearBusStallState();
             this.clearDecoderState();
         }
+        VideoPlayerModule.started.delete(this);
         VideoPlayerModule.unregisterForWaylandRestartWatch(this);
         await super.onStop();
     }
@@ -423,6 +487,7 @@ export class VideoPlayerModule extends GstPluginBase {
             if (this.busStallDetected) return;
             this.log.info('Bus source went silent — switching to fallback pattern');
             this.busStallDetected = true;
+            this.forgetCodecForStall();
             this.startBusResumeWatchdog();
             // gst-runner's restartOnError will replay the *same* live pipeline
             // desc — it doesn't ask the plugin for a new one. Trigger a full
@@ -493,6 +558,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.liveDecoderCodec,
             next,
             VideoPlayerModule.activeDemotions(),
+            VideoPlayerModule.demotions.permanentIds(),
         );
         // A re-demotion resets the clock, so the retry cadence for a decoder
         // that keeps failing is exactly one attempt per TTL.
@@ -597,6 +663,30 @@ export class VideoPlayerModule extends GstPluginBase {
         });
     }
 
+    /**
+     * The card (or the live chain) just reached PLAYING.
+     *
+     * Take the resume tap's byte baseline NOW, the moment the tap element
+     * exists. The poller's first tick would otherwise be spent installing the
+     * throughput probe and recording a count it has nothing to compare against
+     * (`total_bytes` counts from probe install, so there is no "0" to seed) —
+     * a whole second of the interlude spent learning something the tap already
+     * knows. The settle gate is untouched: `RESUME_STABLE_POLLS` advancing
+     * observations are still required, they just start one tick earlier.
+     */
+    protected onPipelinePlaying(): void {
+        if (!this.busStallDetected || !this.resumeTapActive) return;
+        void this.readBusSinkBytes(RESUME_SINK_NAME)
+            .then((bytes) => {
+                // Never overwrite a baseline the poller already took, and never
+                // resurrect one after a resume/stop cleared the latch.
+                if (this.busStallDetected && this.lastResumeBytes === undefined) {
+                    this.lastResumeBytes = bytes;
+                }
+            })
+            .catch((err) => this.log.debug({ err }, 'resume baseline seed failed'));
+    }
+
     /** One resume-poller tick — see helpers/busResume.ts for the two modes. */
     private async pollBusResume(): Promise<void> {
         if (!this.busStallDetected || this.pipelineRestartInProgress) return;
@@ -673,6 +763,39 @@ export class VideoPlayerModule extends GstPluginBase {
     private clearDecoderState(): void {
         this.detectedCodec = undefined;
         this.liveDecoder = undefined;
+        this.liveDecoderCodec = undefined;
+    }
+
+    /**
+     * A 5-second stall means the codec is no longer known. Drop it — instance
+     * state AND the edge's entry in the shared memory — so the post-resume live
+     * build bootstraps on `decodebin3` instead of committing to a guess.
+     *
+     * WHY, given that the memory exists precisely to skip that bootstrap. A
+     * silent source correlates with upstream RECONFIGURATION: an encoder
+     * flipping h265→h264 stops emitting while it restarts, which is how the
+     * stall got here in the first place (field, Pi 400, 2026-08-05). Both routes
+     * cost exactly ONE extra rebuild — the TS probe reports the real codec
+     * within a second either way, and `planCodecReport` / `classifyDecoderFailure`
+     * turn that into the same single teardown — so the guess buys no time. What
+     * it does buy is an explicit `h265parse ! v4l2slh265dec` chain opened
+     * against an h264 feed: a stateless HEVC decoder opened, fed data it cannot
+     * decode, and killed again. That open/kill cycle is what leaves the Pi's
+     * HEVC block dirty and lengthens the NEXT device open — the stall's own
+     * root cause (see codecMemory.ts and the keyframe-gate comment in
+     * pipelinePlan.ts). `decodebin3` auto-plugs off the caps it actually sees,
+     * so it can never open the wrong codec's hardware.
+     *
+     * NON-STALL rebuilds keep the memory: a compositor restart, a cog restack or
+     * an operator's profile patch says nothing about the feed, which is the case
+     * the memory was added for.
+     */
+    private forgetCodecForStall(): void {
+        VideoPlayerModule.codecMemory.forget(this.codecMemoryKey());
+        // Cleared together, always: `classifyDecoderFailure` reads a mismatch
+        // between these two as "the feed changed under this pipeline", and a
+        // half-cleared pair would fabricate that verdict on the fallback card.
+        this.detectedCodec = undefined;
         this.liveDecoderCodec = undefined;
     }
 
@@ -791,6 +914,15 @@ export class VideoPlayerModule extends GstPluginBase {
     // --- test-only hooks ---
     static _test_getRunningInstances(): ReadonlySet<VideoPlayerModule> {
         return waylandRestartTargets() as ReadonlySet<VideoPlayerModule>;
+    }
+    /** The started-instance set the kernel-latch broadcast reaches. Live, so a
+     *  test can seed it without driving a real onStart (which spawns a child). */
+    static _test_startedInstances(): Set<VideoPlayerModule> {
+        return VideoPlayerModule.started;
+    }
+    /** Demotions that will not age out — see `DecoderDemotions.permanentIds`. */
+    static _test_permanentDemotions(): ReadonlySet<string> {
+        return VideoPlayerModule.demotions.permanentIds();
     }
     static _test_resetWaylandWatcher(): void {
         resetWaylandRestartWatch();
@@ -916,6 +1048,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.detectedCodec,
             decoder,
             VideoPlayerModule.activeDemotions(),
+            VideoPlayerModule.demotions.permanentIds(),
         );
         if (demotionNote && !target.active.substituted) this.setHealth('warning', demotionNote);
 

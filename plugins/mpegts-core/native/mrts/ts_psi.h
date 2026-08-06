@@ -80,6 +80,29 @@ bool first_section(const std::deque<TsPacket>& packets, int pid,
 // {program_number, pmt_pid} in section order (program 0 = NIT, excluded).
 std::vector<std::pair<int, int>> parse_pat(const std::deque<TsPacket>& packets);
 
+// A section's own change signals, read from the packet that starts it — the
+// cheap "did this table change?" test that avoids a full reassembly + parse.
+struct SectionSig {
+    int table_id = -1;
+    int table_id_ext = -1;      // program_number for a PMT, ts_id for a PAT
+    int version = -1;           // version_number (5 bits)
+    uint32_t crc = 0;           // section CRC32; only valid when has_crc
+    bool has_crc = false;       // false = the section's tail is in a later packet
+    bool operator==(const SectionSig& o) const {
+        return table_id == o.table_id && table_id_ext == o.table_id_ext &&
+               version == o.version && has_crc == o.has_crc &&
+               (!has_crc || crc == o.crc);
+    }
+};
+
+// Signature of the section starting in `pkt`. false = nothing usable here: no
+// PUSI/payload, pointer_field past the packet, a short or non-syntax section,
+// current_next_indicator=0 (that section describes the *next* table, not the
+// one in force), or section_number != 0 (first_section, hence every parser
+// here, only ever sees section 0). A section spanning several packets
+// signatures on version alone — its CRC tail is not in this packet.
+bool section_signature(const uint8_t* pkt, SectionSig* out);
+
 struct Pmt {
     int program_number = 0;
     int pcr_pid = -1;
@@ -92,7 +115,8 @@ struct Pmt {
 std::optional<Pmt> parse_pmt(const std::deque<TsPacket>& packets, int pmt_pid);
 
 // Incremental PAT -> PMT discovery over sparse PSI (see PsiDiscovery in
-// ts_psi.py: persistent per-PID buffers, periodic PMT re-parse).
+// ts_psi.py: persistent per-PID buffers, section-signature change detection,
+// periodic PMT re-parse as the backstop).
 class PsiDiscovery {
   public:
     explicit PsiDiscovery(int max_psi_pkts = 128) : max_(max_psi_pkts) {}
@@ -107,7 +131,14 @@ class PsiDiscovery {
     std::deque<TsPacket> pat_pkts_, pmt_pkts_;
     long long n_ = 0;
     int pmt_pid_ = -1;
+    int program_ = -1;                  // program the PAT mapped to pmt_pid_
     std::optional<Pmt> pmt_;
+    // Signature of the last section handed to the parser; a differing one
+    // re-parses at once. `*_new_sig_` is the pending candidate, promoted only
+    // once the parse of that section actually completed (a section spanning
+    // packets stays pending until its tail arrives).
+    SectionSig pat_sig_, pat_new_sig_, pmt_sig_, pmt_new_sig_;
+    bool pat_resync_ = false, pmt_resync_ = false;
 };
 
 }  // namespace mrts

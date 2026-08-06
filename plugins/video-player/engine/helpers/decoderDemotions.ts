@@ -19,6 +19,15 @@ import { DECODER_LADDERS, type DecoderSelection } from './decoderSelection.js';
  * The retry cadence IS the TTL — a decoder that fails again is simply re-demoted
  * with a fresh timestamp, so a permanently broken decoder costs one failed
  * rebuild every TTL and nothing else.
+ *
+ * PERMANENT DEMOTIONS are the one exception, and they are not a stronger guess:
+ * they exist only for a decoder the KERNEL has said is gone until reboot (the
+ * Pi HEVC block's one-strike latch — see `kernelLogWatch.ts` in the engine).
+ * Putting such a decoder back on trial every TTL cannot succeed; every attempt
+ * would just be a rebuild that lands on a driver returning errors for every
+ * buffer. So a permanent demotion ignores the TTL entirely — it never expires,
+ * never prunes, and never arms a retry — and the ONLY way back is the reboot
+ * the kernel asked for.
  */
 
 /** Override for `DEFAULT_DEMOTION_TTL_MS`, read per call (see `resolveDemotionTtlMs`). */
@@ -60,6 +69,13 @@ export function resolveDemotionTtlMs(
  */
 export class DecoderDemotions {
     private readonly demotedAt = new Map<string, number>();
+    /**
+     * Ids whose demotion outlives the TTL. A separate set rather than a
+     * sentinel timestamp: an "expires at infinity" entry still has to be kept
+     * out of `retryAt`, and `Infinity` arithmetic there would arm a timer for a
+     * deadline `setTimeout` cannot express.
+     */
+    private readonly permanent = new Set<string>();
 
     /** Strike a decoder off, or re-strike one that failed its retry. */
     demote(id: string, now: number): void {
@@ -69,11 +85,31 @@ export class DecoderDemotions {
         this.demotedAt.set(id, now);
     }
 
+    /**
+     * Strike a decoder off for the rest of this BOOT — no age-out, no retry.
+     *
+     * Recorded with a timestamp as well, so failure order (and therefore the
+     * rank mask's reading order) is unchanged. Idempotent: the kernel line is
+     * ratelimited, not unique, and a runtime failure arriving afterwards must
+     * not quietly downgrade this back to a TTL demotion — `demote` only touches
+     * the timestamp, so permanence survives it.
+     */
+    demotePermanently(id: string, now: number): void {
+        this.demote(id, now);
+        this.permanent.add(id);
+    }
+
+    /** Ids struck off permanently — what turns the operator note into the
+     *  "kernel disabled it" wording rather than "it failed". */
+    permanentIds(): ReadonlySet<string> {
+        return new Set(this.permanent);
+    }
+
     /** Demotions still in force at `now` — the set every plan is computed against. */
     active(now: number, ttlMs: number = resolveDemotionTtlMs()): ReadonlySet<string> {
         const live = new Set<string>();
         for (const [id, at] of this.demotedAt) {
-            if (!isExpired(at, now, ttlMs)) live.add(id);
+            if (this.permanent.has(id) || !isExpired(at, now, ttlMs)) live.add(id);
         }
         return live;
     }
@@ -87,6 +123,7 @@ export class DecoderDemotions {
     prune(now: number, ttlMs: number = resolveDemotionTtlMs()): string[] {
         const expired: string[] = [];
         for (const [id, at] of this.demotedAt) {
+            if (this.permanent.has(id)) continue;
             if (isExpired(at, now, ttlMs)) expired.push(id);
         }
         expired.forEach((id) => this.demotedAt.delete(id));
@@ -115,6 +152,10 @@ export class DecoderDemotions {
         const better = running === -1 ? ladder : ladder.slice(0, running);
         let earliest: number | undefined;
         for (const rung of better) {
+            // A permanent demotion has no deadline to wait for. Skipping it here
+            // is what stops the module arming a retry that can only rebuild onto
+            // a decoder the kernel has already switched off.
+            if (this.permanent.has(rung.id)) continue;
             const at = this.demotedAt.get(rung.id);
             if (at === undefined) continue;
             const expiry = at + ttlMs;
@@ -125,6 +166,7 @@ export class DecoderDemotions {
 
     clear(): void {
         this.demotedAt.clear();
+        this.permanent.clear();
     }
 }
 

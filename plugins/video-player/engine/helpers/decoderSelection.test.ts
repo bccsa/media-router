@@ -8,6 +8,8 @@ import {
     DECODEBIN_SELECTION,
     DECODER_ELEMENTS,
     DECODER_LADDERS,
+    HARDWARE_DECODER_IDS,
+    KERNEL_HW_DECODE_DISABLED_NOTE,
     RANK_ENV_VAR,
     VIDEO_DECODER_NAME,
     decoderDemotionNote,
@@ -428,6 +430,50 @@ describe('decoderDemotionNote', () => {
         const s = selectDecoder({ codec: 'h264', available, demoted });
         expect(decoderDemotionNote('h264', s, demoted)).toBe(
             'Software decoder avdec_h264 failed — using automatic decoder selection',
+        );
+    });
+
+    it('says the kernel disabled it when the demotion is permanent', () => {
+        // "failed" invites waiting for the retry that the TTL normally brings;
+        // this one is not coming back before a reboot, and the note has to say so.
+        const demoted = new Set(['v4l2slh265dec']);
+        const s = selectDecoder({ codec: 'h265', available: ALL, demoted });
+        expect(decoderDemotionNote('h265', s, demoted, demoted)).toBe(
+            `${KERNEL_HW_DECODE_DISABLED_NOTE} (avdec_h265)`,
+        );
+    });
+
+    it('keeps the ordinary wording for a TTL demotion alongside a permanent one', () => {
+        // A permanent demotion on the OTHER ladder must not reword this note.
+        const demoted = new Set(['v4l2h264dec']);
+        const s = selectDecoder({ codec: 'h264', available: ALL, demoted });
+        expect(decoderDemotionNote('h264', s, demoted, new Set(['v4l2slh265dec']))).toBe(
+            'Hardware decoder v4l2h264dec failed — using software decode (avdec_h264)',
+        );
+    });
+});
+
+describe('HARDWARE_DECODER_IDS', () => {
+    it('is every hardware rung on every ladder, deduplicated', () => {
+        const fromLadders = new Set(
+            Object.values(DECODER_LADDERS)
+                .flat()
+                .filter((rung) => rung.hardware)
+                .map((rung) => rung.id),
+        );
+        expect(new Set(HARDWARE_DECODER_IDS)).toEqual(fromLadders);
+        expect(HARDWARE_DECODER_IDS).toHaveLength(fromLadders.size);
+        expect([...HARDWARE_DECODER_IDS].sort()).toEqual(['v4l2h264dec', 'v4l2slh265dec']);
+    });
+
+    it('leaves nothing but software rungs selectable once all of it is demoted', () => {
+        // What the kernel latch does to every ladder at once.
+        const demoted = new Set(HARDWARE_DECODER_IDS);
+        expect(selectDecoder({ codec: 'h265', available: ALL, demoted }).id).toBe('avdec_h265');
+        expect(selectDecoder({ codec: 'h264', available: ALL, demoted }).id).toBe('avdec_h264');
+        // And the decodebin3 rung is masked, so the bin can't re-plug them by rank.
+        expect(decoderRankEnv(DECODEBIN_SELECTION, demoted)[RANK_ENV_VAR]).toBe(
+            'v4l2h264dec:NONE,v4l2slh265dec:NONE',
         );
     });
 });

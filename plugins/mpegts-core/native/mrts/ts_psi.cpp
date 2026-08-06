@@ -199,6 +199,33 @@ std::vector<std::pair<int, int>> parse_pat(const std::deque<TsPacket>& packets) 
     return out;
 }
 
+bool section_signature(const uint8_t* pkt, SectionSig* out) {
+    if (!ts_pusi(pkt) || !ts_has_payload(pkt)) return false;
+    int off = payload_offset(pkt);
+    if (off >= PKT) return false;
+    int start = off + 1 + pkt[off];              // pointer_field -> section start
+    if (start + 8 > PKT) return false;           // need table_id .. last_section
+    const uint8_t* s = pkt + start;
+    if (!(s[1] & 0x80)) return false;            // no section_syntax: no version/CRC
+    if (!(s[5] & 0x01)) return false;            // current_next_indicator = 0
+    if (s[6] != 0) return false;                 // only section 0 is ever parsed
+    int section_length = ((s[1] & 0x0F) << 8) | s[2];
+    if (section_length < 9) return false;        // 5 header bytes + 4 CRC minimum
+    SectionSig sig;
+    sig.table_id = s[0];
+    sig.table_id_ext = (s[3] << 8) | s[4];
+    sig.version = (s[5] >> 1) & 0x1F;
+    int total = 3 + section_length;               // whole section, CRC included
+    if (start + total <= PKT) {
+        const uint8_t* c = s + total - 4;
+        sig.crc = ((uint32_t)c[0] << 24) | ((uint32_t)c[1] << 16) |
+                  ((uint32_t)c[2] << 8) | c[3];
+        sig.has_crc = true;
+    }
+    *out = sig;
+    return true;
+}
+
 std::optional<Pmt> parse_pmt(const std::deque<TsPacket>& packets, int pmt_pid) {
     std::vector<uint8_t> sec;
     if (!first_section(packets, pmt_pid, sec) || sec[0] != TABLE_PMT) return std::nullopt;
@@ -226,22 +253,59 @@ std::optional<Pmt> parse_pmt(const std::deque<TsPacket>& packets, int pmt_pid) {
 bool PsiDiscovery::feed(const std::vector<TsPacket>& packets) {
     for (const auto& p : packets) {
         int pid = ts_pid(p.b);
+        SectionSig sig;
         if (pid == PID_PAT) {
+            if (section_signature(p.b, &sig) && sig.table_id == TABLE_PAT &&
+                !(sig == pat_sig_)) {
+                // Reassembly returns the OLDEST retained section, so a
+                // superseded table stays visible until the buffer evicts it —
+                // drop it and let this section be the one that is parsed.
+                pat_pkts_.clear();
+                pat_new_sig_ = sig;
+                pat_resync_ = true;
+            }
             pat_pkts_.push_back(p);
             if ((int)pat_pkts_.size() > max_) pat_pkts_.pop_front();
         } else if (pmt_pid_ >= 0 && pid == pmt_pid_) {
+            // Only our own program's sections count: a PMT PID shared by two
+            // programs would otherwise flap the discovered table on every
+            // carousel repeat.
+            if (section_signature(p.b, &sig) && sig.table_id == TABLE_PMT &&
+                !(sig == pmt_sig_) && (program_ < 0 || sig.table_id_ext == program_)) {
+                pmt_pkts_.clear();
+                pmt_new_sig_ = sig;
+                pmt_resync_ = true;
+            }
             pmt_pkts_.push_back(p);
             if ((int)pmt_pkts_.size() > max_) pmt_pkts_.pop_front();
         }
     }
     n_++;
-    if (pmt_pid_ < 0) {
+    if (pmt_pid_ < 0 || pat_resync_) {
         auto pat = parse_pat(pat_pkts_);
-        if (!pat.empty()) pmt_pid_ = pat.front().second;
+        if (!pat.empty()) {
+            if (pat_resync_) {
+                pat_sig_ = pat_new_sig_;
+                pat_resync_ = false;
+            }
+            if (pat.front().second != pmt_pid_) {
+                // A new PAT may also move the program to a different PMT PID;
+                // the buffered packets belong to the old one.
+                pmt_pid_ = pat.front().second;
+                pmt_pkts_.clear();
+                pmt_sig_ = SectionSig();
+                pmt_resync_ = false;
+            }
+            program_ = pat.front().first;
+        }
     }
     bool changed = false;
-    if (pmt_pid_ >= 0 && (!pmt_ || n_ % 500 == 0)) {
+    if (pmt_pid_ >= 0 && (!pmt_ || pmt_resync_ || n_ % 500 == 0)) {
         auto pmt = parse_pmt(pmt_pkts_, pmt_pid_);
+        if (pmt && pmt_resync_) {
+            pmt_sig_ = pmt_new_sig_;   // decided on it; do not re-trigger on it
+            pmt_resync_ = false;
+        }
         if (pmt && (!pmt_ || !(*pmt == *pmt_))) {
             pmt_ = std::move(pmt);
             changed = true;

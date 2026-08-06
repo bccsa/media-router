@@ -11,6 +11,9 @@ vi.mock('@media-router/engine', async (importOriginal) => {
     return {
         ...actual,
         probeUnixSocket: vi.fn(async () => false),
+        // The kernel-log watch is the engine's; the plugin only subscribes.
+        // Stubbing it keeps the tests off /dev/kmsg and hands us the handler.
+        onKernelLogSignal: vi.fn(),
         // Passthrough spies so headless-guard tests can inject connector
         // states; on dev machines the real ones read /sys/class/drm → [].
         listDrmConnectors: vi.fn(actual.listDrmConnectors as (...a: unknown[]) => unknown),
@@ -27,7 +30,13 @@ vi.mock('fs', async (importOriginal) => {
     return { ...actual, existsSync: vi.fn(actual.existsSync) };
 });
 
-import { firstConnectedDisplay, listDrmConnectors, probeUnixSocket } from '@media-router/engine';
+import {
+    firstConnectedDisplay,
+    listDrmConnectors,
+    onKernelLogSignal,
+    probeUnixSocket,
+    type KernelLogSignalEvent,
+} from '@media-router/engine';
 import { VideoPlayerModule } from './VideoPlayerModule.js';
 import { bootNowMs, currentWaylandSessionIdent, findCogPidForDisplay } from './helpers/wayland.js';
 import {
@@ -40,7 +49,12 @@ import {
     RESUME_SINK_NAME,
     surfaceCaps,
 } from './helpers/pipelines.js';
-import { DECODER_ELEMENTS, selectDecoder } from './helpers/decoderSelection.js';
+import {
+    DECODER_ELEMENTS,
+    HARDWARE_DECODER_IDS,
+    KERNEL_HW_DECODE_DISABLED_NOTE,
+    selectDecoder,
+} from './helpers/decoderSelection.js';
 import { DEFAULT_DEMOTION_TTL_MS, DEMOTION_TTL_ENV_VAR } from './helpers/decoderDemotions.js';
 
 const probeUnixSocketMock = probeUnixSocket as unknown as ReturnType<typeof vi.fn>;
@@ -1318,6 +1332,70 @@ describe('VideoPlayerModule helpers', () => {
             });
         });
 
+        describe('resume baseline seeded at PLAYING', () => {
+            /** Let the fire-and-forget seed settle (real timers here). */
+            const flush = () => new Promise((r) => setTimeout(r, 0));
+
+            it('the card reaching PLAYING takes the baseline, so the first poll already counts', async () => {
+                // `total_bytes` counts from probe install, so there is no "0" to
+                // assume — the baseline has to be READ. Reading it when the tap
+                // element appears rather than on the poller's first tick is a
+                // whole second off the interlude, with the settle gate intact.
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const readBytes = vi
+                    .spyOn(module as any, 'readBusSinkBytes')
+                    .mockResolvedValue(1000);
+
+                (module as any).onPipelinePlaying();
+                await flush();
+                expect(readBytes).toHaveBeenCalledWith(RESUME_SINK_NAME);
+                expect((module as any).lastResumeBytes).toBe(1000);
+
+                // RESUME_STABLE_POLLS ADVANCING observations, exactly as before
+                // — no tick spent on a baseline.
+                readBytes.mockResolvedValue(2000);
+                await (module as any).pollBusResume();
+                readBytes.mockResolvedValue(3000);
+                await (module as any).pollBusResume();
+                expect(restart).not.toHaveBeenCalled();
+                readBytes.mockResolvedValue(4000);
+                await (module as any).pollBusResume();
+                expect((module as any).busStallDetected).toBe(false);
+                expect(restart).toHaveBeenCalledTimes(1);
+            });
+
+            it('never overwrites a baseline the poller already took', async () => {
+                const module = makeModule();
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = true;
+                (module as any).lastResumeBytes = 5000;
+                vi.spyOn(module as any, 'readBusSinkBytes').mockResolvedValue(10);
+                (module as any).onPipelinePlaying();
+                await flush();
+                expect((module as any).lastResumeBytes).toBe(5000);
+            });
+
+            it('does not read anything on the live chain, or once the latch is clear', async () => {
+                const module = makeModule();
+                const readBytes = vi.spyOn(module as any, 'readBusSinkBytes');
+                // Live chain: there is no tap element to read.
+                (module as any).busStallDetected = true;
+                (module as any).resumeTapActive = false;
+                (module as any).onPipelinePlaying();
+                // Source already back: nothing to carry into the next stall.
+                (module as any).busStallDetected = false;
+                (module as any).resumeTapActive = true;
+                (module as any).onPipelinePlaying();
+                await flush();
+                expect(readBytes).not.toHaveBeenCalled();
+            });
+        });
+
         describe('pollBusResume (no-tap mode)', () => {
             it('probes the edge socket and retries live once it answers', async () => {
                 const module = makeModule();
@@ -1621,6 +1699,61 @@ describe('VideoPlayerModule helpers', () => {
                     sourceModuleId: 'ts-input-2',
                 });
                 expect(build(rewired).pipeline).toContain('decodebin3');
+            });
+
+            it('a bus_stall forgets the codec, so the post-resume build bootstraps', async () => {
+                // An upstream encoder flipping h265→h264 goes quiet while it
+                // restarts, which is what trips the 5 s stall watchdog. Starting
+                // the resumed feed on the REMEMBERED codec would open the HEVC
+                // hardware decoder against an h264 stream and kill it a second
+                // later — the open/kill cycle that leaves the Pi's HEVC block
+                // dirty — and buys nothing: the probe corrects it either way.
+                const module = makeModule();
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+
+                const restart = vi
+                    .spyOn(module as any, 'restartPipeline')
+                    .mockResolvedValue(undefined);
+                const child = { on: vi.fn() };
+                (module as any).childProcess = child;
+                (module as any).installBusStallListener();
+                const onError = child.on.mock.calls.find((c: unknown[]) => c[0] === 'error')![1];
+                onError({ kind: 'bus_stall', message: 'buswd_5500: no data' });
+
+                // Instance state gone…
+                expect((module as any).detectedCodec).toBeUndefined();
+                expect((module as any).liveDecoderCodec).toBeUndefined();
+                // …and the shared memory for THIS edge too, so a fresh instance
+                // on the same edge doesn't hand the guess straight back.
+                expect(build(makeModule()).pipeline).toContain('decodebin3');
+
+                // The resumed live build bootstraps, and the probe's first
+                // report puts it on the right explicit chain (one rebuild).
+                (module as any).busStallDetected = false;
+                const resumed = build(module);
+                expect(resumed.pipeline).toContain('decodebin3');
+                expect(resumed.tsProbe).toEqual({ appsink: 'tsprobe' });
+                restart.mockClear();
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h264' });
+                expect(restart).toHaveBeenCalledTimes(1);
+                expect(build(module).pipeline).toContain('h264parse ! v4l2h264dec');
+                (module as any).clearBusStallState();
+            });
+
+            it('a NON-stall internal restart keeps the codec — that is what the memory is for', async () => {
+                // Compositor flap / cog restack / renderwatch self-heal say
+                // nothing about the feed, so they must still skip the bootstrap.
+                const module = makeModule();
+                (module as any).onPluginEvent('tsprobe:videoinfo', { codec: 'h265' });
+                (module as any).pipelineRestartInProgress = true;
+                await module.onStop();
+                expect((module as any).detectedCodec).toBe('h265');
+                expect(build(module).pipeline).toContain('h265parse ! v4l2slh265dec');
+                // And an external stop still leaves the SHARED memory usable.
+                (module as any).pipelineRestartInProgress = false;
+                await module.onStop();
+                expect(build(makeModule()).pipeline).toContain('h265parse ! v4l2slh265dec');
             });
 
             it('keeps the fallback card free of any decoder record', () => {
@@ -2454,5 +2587,164 @@ describe('stale renderwatch warning cleared on rebuild', () => {
         module.health = 'warning'; // someone else's warning
         await module.onStop();
         expect(module.setHealth).not.toHaveBeenCalledWith('ok');
+    });
+});
+
+describe('kernel hardware-decode latch', () => {
+    // The driver disables the HEVC block on its first wedge and then fails
+    // every job with VB2_BUF_STATE_ERROR — which v4l2codecs ignores, so the
+    // pipeline renders a frozen picture and nothing errors. The kernel line is
+    // the only notification there is; these tests cover what the plugin does
+    // with it. See helpers/decoderDemotions.ts for the permanence itself.
+    const onKernelLogSignalMock = onKernelLogSignal as unknown as ReturnType<typeof vi.fn>;
+    const busSource = {
+        port: 5500,
+        socketPath: '/tmp/mr-bus-5500-abc.sock',
+        sourceModuleId: 'ts-input-1',
+        sourcePortId: 'mpegts-out',
+    };
+    const all = Object.fromEntries(DECODER_ELEMENTS.map((e) => [e, true]));
+    const LATCH_EVENT: KernelLogSignalEvent = {
+        signal: 'hevc-decode-disabled',
+        source: 'kmsg',
+        line: 'rpi-hevc-dec: phase1 stuck - hardware decode disabled until reboot',
+    };
+    let prevWaylandDisplay: string | undefined;
+
+    beforeEach(() => {
+        prevWaylandDisplay = process.env.WAYLAND_DISPLAY;
+        VideoPlayerModule.setSinkAvailability({ wayland: false, kms: true });
+        VideoPlayerModule.setDecoderAvailability(all);
+        VideoPlayerModule._test_startedInstances().clear();
+        onKernelLogSignalMock.mockClear();
+        (listDrmConnectors as unknown as ReturnType<typeof vi.fn>).mockReturnValue([]);
+        (firstConnectedDisplay as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+    });
+
+    afterEach(() => {
+        VideoPlayerModule._test_startedInstances().clear();
+        VideoPlayerModule._test_resetDecoderState();
+        vi.useRealTimers();
+        // registerServices runs ensureWaylandEnv, which may adopt a compositor
+        // socket belonging to the machine the tests run on.
+        if (prevWaylandDisplay !== undefined) process.env.WAYLAND_DISPLAY = prevWaylandDisplay;
+        else delete process.env.WAYLAND_DISPLAY;
+    });
+
+    /** Run the real registration and hand back the handler it subscribed. */
+    function subscribeHandler(): (event: KernelLogSignalEvent) => void {
+        VideoPlayerModule.registerServices({
+            deviceProviders: { register: vi.fn() },
+        } as never);
+        const call = onKernelLogSignalMock.mock.calls.at(-1)!;
+        expect(call[0]).toBe('hevc-decode-disabled');
+        return call[1] as (event: KernelLogSignalEvent) => void;
+    }
+
+    function makeStartedModule() {
+        const module = new VideoPlayerModule();
+        (module as any).services = {
+            instanceId: 'video-player-1',
+            mediaRouter: { getModuleBusSource: vi.fn(() => busSource) },
+        };
+        (module as any).setHealth = vi.fn();
+        (module as any).log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+        (module as any).config = { display: '' };
+        VideoPlayerModule._test_startedInstances().add(module);
+        const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
+        return { module, restart };
+    }
+
+    it('subscribes to the kernel signal once at plugin load', () => {
+        subscribeHandler();
+        expect(onKernelLogSignalMock).toHaveBeenCalledTimes(1);
+        expect(onKernelLogSignalMock.mock.calls[0][0]).toBe('hevc-decode-disabled');
+    });
+
+    it('demotes every hardware decoder permanently and rebuilds each started player', () => {
+        const handler = subscribeHandler();
+        const a = makeStartedModule();
+        const b = makeStartedModule();
+
+        handler(LATCH_EVENT);
+
+        expect([...VideoPlayerModule._test_permanentDemotions()].sort()).toEqual(
+            [...HARDWARE_DECODER_IDS].sort(),
+        );
+        expect([...VideoPlayerModule.getDemotedDecoders()].sort()).toEqual(
+            [...HARDWARE_DECODER_IDS].sort(),
+        );
+        for (const inst of [a, b]) {
+            expect((inst.module as any).setHealth).toHaveBeenCalledWith(
+                'warning',
+                KERNEL_HW_DECODE_DISABLED_NOTE,
+            );
+            // The wedged pipeline will never rebuild itself — nothing errors.
+            expect(inst.restart).toHaveBeenCalledTimes(1);
+            expect((inst.module as any).log.error).toHaveBeenCalled();
+        }
+    });
+
+    it('leaves a stopped player alone', () => {
+        const handler = subscribeHandler();
+        const { module, restart } = makeStartedModule();
+        VideoPlayerModule._test_startedInstances().delete(module);
+
+        handler(LATCH_EVENT);
+
+        expect(restart).not.toHaveBeenCalled();
+        // The demotion is process-wide even so: the instance's next start must
+        // not open a decoder the kernel has switched off.
+        expect(VideoPlayerModule.getDemotedDecoders().has('v4l2slh265dec')).toBe(true);
+    });
+
+    it('is idempotent — the kernel line may be repeated or replayed', () => {
+        const handler = subscribeHandler();
+        const { module, restart } = makeStartedModule();
+
+        handler(LATCH_EVENT);
+        handler(LATCH_EVENT);
+
+        expect(restart).toHaveBeenCalledTimes(2); // one rebuild per delivery
+        expect([...VideoPlayerModule._test_permanentDemotions()].sort()).toEqual(
+            [...HARDWARE_DECODER_IDS].sort(),
+        );
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            KERNEL_HW_DECODE_DISABLED_NOTE,
+        );
+    });
+
+    it('builds the h265 pipeline on software and says why', () => {
+        const handler = subscribeHandler();
+        const { module } = makeStartedModule();
+        (module as any).detectedCodec = 'h265';
+
+        handler(LATCH_EVENT);
+        const desc = module.buildPipeline((module as any).config)!;
+
+        expect(desc.pipeline).toContain('h265parse ! avdec_h265');
+        expect(desc.pipeline).not.toContain('v4l2slh265dec');
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            `${KERNEL_HW_DECODE_DISABLED_NOTE} (avdec_h265)`,
+        );
+    });
+
+    it('arms no demotion retry — the TTL cannot bring the decoder back', () => {
+        vi.useFakeTimers();
+        const handler = subscribeHandler();
+        const { module, restart } = makeStartedModule();
+        (module as any).detectedCodec = 'h265';
+
+        handler(LATCH_EVENT);
+        restart.mockClear();
+        module.buildPipeline((module as any).config);
+
+        // A TTL demotion here would have re-armed a rebuild every 5 minutes,
+        // each one landing straight back on the dead decoder.
+        vi.advanceTimersByTime(DEFAULT_DEMOTION_TTL_MS * 3);
+        expect(restart).not.toHaveBeenCalled();
+        expect((module as any).demotionRetryTimer).toBeNull();
     });
 });

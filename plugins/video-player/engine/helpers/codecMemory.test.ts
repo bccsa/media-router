@@ -56,4 +56,27 @@ describe('CodecMemory', () => {
         memory.clear();
         expect(memory.recall(key)).toBeUndefined();
     });
+
+    it('forgets ONE edge, leaving the rest of the map intact', () => {
+        // The stall path forgets the edge that went silent (its feed may have
+        // been reconfigured); every other player/edge pair keeps its fast start.
+        const other = codecMemoryKey('player-2', {
+            sourceModuleId: 'ts-input-1',
+            sourcePortId: 'mpegts-out',
+        });
+        const memory = new CodecMemory();
+        memory.remember(key, 'h265');
+        memory.remember(other, 'h265');
+        memory.forget(key);
+        expect(memory.recall(key)).toBeUndefined();
+        expect(memory.recall(other)).toBe('h265');
+    });
+
+    it('forgetting an absent or unknown key is a no-op', () => {
+        const memory = new CodecMemory();
+        memory.remember(key, 'h265');
+        memory.forget(undefined);
+        memory.forget('never-seen');
+        expect(memory.recall(key)).toBe('h265');
+    });
 });

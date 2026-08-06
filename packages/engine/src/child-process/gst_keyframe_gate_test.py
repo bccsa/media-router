@@ -212,6 +212,99 @@ src.emit("end-of-stream")
 run_to_eos(pipe)
 check("an unopened gate is removed by _stop_keyframe_gate", arrivals == [True])
 
+# --- fault injector (VP_FAULT_DROP_DELTAS) ---------------------------------
+# The gate stops every gap it can SEE. The injector manufactures one it cannot:
+# N delta AUs vanish at the decoder's sink pad and NOTHING that follows is
+# flagged DISCONT, so the re-arm rule never fires and the decoder is handed AUs
+# referencing pictures it never got — the unprotected loss that wedges rpivid,
+# reproduced on demand. It ships disabled; these tests pin both that it is inert
+# by default and that it lies exactly as advertised when armed.
+
+
+def build_gate_with_fault(pipe, value):
+    """Build a gate with the env var set to `value` (None = unset), then put the
+    environment back — the budget is read once, at gate build."""
+    prev = os.environ.get("VP_FAULT_DROP_DELTAS")
+    if value is None:
+        os.environ.pop("VP_FAULT_DROP_DELTAS", None)
+    else:
+        os.environ["VP_FAULT_DROP_DELTAS"] = value
+    try:
+        runner._start_keyframe_gate(pipe, {"decoder": "vpdec"})
+    finally:
+        if prev is None:
+            os.environ.pop("VP_FAULT_DROP_DELTAS", None)
+        else:
+            os.environ["VP_FAULT_DROP_DELTAS"] = prev
+    return runner._keyframe_gate
+
+
+check("unset env leaves the injector inert", runner._fault_drop_budget() == 0)
+for bad in ("", "0", "-1", "abc", "3.5"):
+    check(f"{bad!r} is not an arming value",
+          build_gate_with_fault(build_appsrc()[0], bad)["fault_budget"] == 0)
+runner._stop_keyframe_gate()
+
+# Armed: the first keyframe opens the gate, the next N delta AUs disappear.
+pipe, src = build_appsrc()
+arrivals = watch_sink(pipe)
+state = build_gate_with_fault(pipe, "3")
+check("the env var arms exactly the budget it names", state["fault_budget"] == 3)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(5 * Gst.SECOND)
+
+#       key,  d,    d,    d,    d,    d,   key,   d
+plan = [False, True, True, True, True, True, False, True]
+for i, delta in enumerate(plan):
+    push(src, delta, i)
+src.emit("end-of-stream")
+check("fault-injector fixture runs to EOS", run_to_eos(pipe))
+
+check("exactly N delta units were swallowed", state["fault_dropped"] == 3)
+check("the budget is spent, so the burst is one-shot", state["fault_budget"] == 0)
+check("the deltas after the burst reach the decoder",
+      arrivals == [False, True, True, False, True])
+check("the injector's drops are not counted as gate drops", state["dropped"] == 0)
+# The point of the whole exercise: the gap carries no DISCONT, so the gate's
+# own protection cannot see it and the decoder eats the missing references.
+check("the injected gap never re-arms the gate", state["rearms"] == 0)
+check("the gate stays open across the injected gap", state["opened"] is True)
+runner._stop_keyframe_gate()
+
+# Keyframes are never the injector's target — the picture has to be able to
+# recover, and an IRAP references nothing that was dropped.
+pipe, src = build_appsrc()
+arrivals = watch_sink(pipe)
+state = build_gate_with_fault(pipe, "5")
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(5 * Gst.SECOND)
+#       key,  d,   key,   d,   key,   d,    d,    d,    d,    d
+plan = [False, True, False, True, False, True, True, True, True, True]
+for i, delta in enumerate(plan):
+    push(src, delta, i)
+src.emit("end-of-stream")
+check("keyframe-immunity fixture runs to EOS", run_to_eos(pipe))
+check("every keyframe survived the burst", arrivals.count(False) == 3)
+# 7 delta units offered, 5 swallowed: the 3 keyframes and the last 2 deltas
+# are what the decoder sees.
+check("only delta units were swallowed, and only N of them",
+      state["fault_dropped"] == 5 and arrivals == [False, False, False, True, True])
+runner._stop_keyframe_gate()
+
+# Rebuilt without the var: nothing carries over from the armed run.
+pipe, src = build_appsrc()
+arrivals = watch_sink(pipe)
+state = build_gate_with_fault(pipe, None)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(5 * Gst.SECOND)
+for i, delta in enumerate([False, True, True, True]):
+    push(src, delta, i)
+src.emit("end-of-stream")
+check("unarmed fixture runs to EOS", run_to_eos(pipe))
+check("with the var unset the gate passes every post-keyframe delta",
+      arrivals == [False, True, True, True] and state["fault_dropped"] == 0)
+runner._stop_keyframe_gate()
+
 # --- config handling -------------------------------------------------------
 pipe, _src = build_appsrc()
 # Seed a stale gate: an ungated pipeline must not inherit the previous one's

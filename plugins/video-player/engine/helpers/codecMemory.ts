@@ -23,6 +23,12 @@
  * unchanged edge is detected and rebuilt exactly as it is today; the memory only
  * ever decides where to START.
  *
+ * THE ONE CASE THE KEY CANNOT COVER: the edge stays the same but the FEED
+ * changes. An upstream encoder flipping h265→h264 stalls the TS first, so the
+ * stall path (`forget`) is where that memory is dropped — a rewire changes the
+ * key, but a reconfiguration does not. See VideoPlayerModule's `bus_stall`
+ * handler.
+ *
  * Key space is profile-bounded (module instance × producer edge), so the map
  * does not grow with time.
  */
@@ -57,6 +63,19 @@ export class CodecMemory {
     /** What this edge last carried, or `undefined` — i.e. "bootstrap". */
     recall(key: string | undefined): string | undefined {
         return key ? this.byKey.get(key) : undefined;
+    }
+
+    /**
+     * Drop what we think we know about one edge, so the next build bootstraps.
+     *
+     * The caller is the stall path: a source that went silent for 5 s has most
+     * likely been RECONFIGURED upstream (an encoder restarting on a different
+     * codec is exactly how a feed goes quiet), so the remembered codec is the
+     * one thing that is now suspect — see VideoPlayerModule's `bus_stall`
+     * handler for why guessing costs more than bootstrapping here.
+     */
+    forget(key: string | undefined): void {
+        if (key) this.byKey.delete(key);
     }
 
     clear(): void {

@@ -158,11 +158,84 @@ describe('DecoderDemotions', () => {
         });
     });
 
+    describe('demotePermanently (kernel latch)', () => {
+        it('never ages out, however long the box runs', () => {
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2slh265dec', T0);
+            expect([...d.active(T0 + TTL, TTL)]).toEqual(['v4l2slh265dec']);
+            expect([...d.active(T0 + 30 * 86_400_000, TTL)]).toEqual(['v4l2slh265dec']);
+        });
+
+        it('is never pruned', () => {
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2slh265dec', T0);
+            d.demote('avdec_h265', T0);
+            expect(d.prune(T0 + TTL, TTL)).toEqual(['avdec_h265']);
+            expect([...d.active(T0 + TTL, TTL)]).toEqual(['v4l2slh265dec']);
+        });
+
+        it('arms no retry — there is nothing to retry before a reboot', () => {
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2slh265dec', T0);
+            const software = rung('h265', new Set(['v4l2slh265dec']));
+            expect(software.id).toBe('avdec_h265');
+            expect(d.retryAt('h265', software, TTL)).toBeUndefined();
+        });
+
+        it('still lets a TTL demotion above us arm its own retry', () => {
+            // Mixed state: hardware killed by the kernel, software struck off by
+            // a runtime failure. Only the software rung has a deadline, and the
+            // retry must still be armed for it.
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2h264dec', T0);
+            d.demote('avdec_h264', T0);
+            expect(d.retryAt('h264', DECODEBIN_SELECTION, TTL)).toBe(T0 + TTL);
+        });
+
+        it('is not downgraded by a later runtime failure on the same decoder', () => {
+            // The latched decoder can still be the source element of a stray
+            // error; re-demoting it must not hand it back a deadline.
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2slh265dec', T0);
+            d.demote('v4l2slh265dec', T0 + 1000);
+            expect([...d.active(T0 + TTL * 10, TTL)]).toEqual(['v4l2slh265dec']);
+            expect([...d.permanentIds()]).toEqual(['v4l2slh265dec']);
+        });
+
+        it('outlives the TTL opt-out either way', () => {
+            // ttl=0 already meant "for the session"; permanence has to be at
+            // least as strong, not silently weaker.
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2slh265dec', T0);
+            expect([...d.active(T0 + 86_400_000, 0)]).toEqual(['v4l2slh265dec']);
+        });
+
+        it('keeps failure order with the TTL demotions', () => {
+            const d = new DecoderDemotions();
+            d.demote('avdec_h264', T0);
+            d.demotePermanently('v4l2slh265dec', T0 + 1000);
+            expect([...d.active(T0 + 2000, TTL)]).toEqual(['avdec_h264', 'v4l2slh265dec']);
+        });
+
+        it('steers selection onto software for good', () => {
+            const d = new DecoderDemotions();
+            d.demotePermanently('v4l2slh265dec', T0);
+            const later = selectDecoder({
+                codec: 'h265',
+                available: ALL,
+                demoted: d.active(T0 + TTL * 100, TTL),
+            });
+            expect(later.id).toBe('avdec_h265');
+        });
+    });
+
     it('clear drops everything (engine-session reset)', () => {
         const d = new DecoderDemotions();
         d.demote('v4l2slh265dec', T0);
+        d.demotePermanently('v4l2h264dec', T0);
         d.clear();
         expect([...d.active(T0, TTL)]).toEqual([]);
+        expect([...d.permanentIds()]).toEqual([]);
         expect(d.retryAt('h265', DECODEBIN_SELECTION, TTL)).toBeUndefined();
     });
 });

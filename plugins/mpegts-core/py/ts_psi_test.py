@@ -59,6 +59,85 @@ check("discovery fires when PMT arrives", changed is True)
 check("discovered streams correct",
       disc.pmt["streams"] == [(0x0065, 0x1b), (0x00c9, 0x0f)] and disc.pmt["pcr_pid"] == 0x0065)
 
+# section_signature: the cheap change signal (see the C++ mirror in
+# native/mrts/tests/ts_psi_test.cpp).
+sigpmt = p.build_pmt(0x0030, 0x0101, 0x0065, [(0x0065, p.STREAM_TYPE_HEVC)], version=3)
+s0 = p.section_signature(sigpmt)
+check("signature: table_id / program / version / crc",
+      s0 is not None and s0[:3] == (p.TABLE_PMT, 0x0101, 3) and s0[3] is not None)
+
+
+def reshape_psi(src, af_len, ptr):
+    """Re-wrap a single-packet PSI packet behind an adaptation field and
+    pointer_field filler — both shift where the section starts."""
+    off = p.payload_offset(src)
+    sec = src[off + 1 + src[off]:]
+    seclen = 3 + (((sec[1] & 0x0F) << 8) | sec[2])
+    pkt = bytearray(src[:4])
+    if af_len >= 0:
+        pkt[3] |= 0x20
+        pkt += bytes([af_len]) + bytes([0x00]) + b"\xff" * (af_len - 1)
+    pkt += bytes([ptr]) + b"\xff" * ptr + sec[:seclen]
+    return bytes(pkt[:p.PKT]) + b"\xff" * (p.PKT - len(pkt))
+
+
+check("signature behind an adaptation field + pointer_field filler",
+      p.section_signature(reshape_psi(sigpmt, 10, 7)) == s0)
+soff = p.payload_offset(sigpmt) + 1                # pointer_field is 0 here
+span = bytearray(sigpmt)
+span[soff + 1] = 0xB0 | ((300 >> 8) & 0x0F)        # section longer than the packet
+span[soff + 2] = 300 & 0xFF
+s2 = p.section_signature(bytes(span))
+check("signature: spanning section falls back to version only",
+      s2 is not None and s2[2] == 3 and s2[3] is None and s2 != s0)
+nxt = bytearray(sigpmt)
+nxt[soff + 5] &= 0xFE                              # current_next_indicator = 0
+check("signature ignores a next-table section", p.section_signature(bytes(nxt)) is None)
+sec1 = bytearray(sigpmt)
+sec1[soff + 6] = 1                                 # section_number = 1
+check("signature ignores sections past the first",
+      p.section_signature(bytes(sec1)) is None)
+
+# Upstream codec change is seen at once, not at the 500-feed backstop: the
+# carousel has filled the PMT buffer with superseded sections by then, and
+# reassembly returns the OLDEST retained one.
+sw = p.PsiDiscovery()
+patS = p.build_pat(3, {1: 0x0030})
+pmt265 = p.build_pmt(0x0030, 1, 0x0065, [(0x0065, p.STREAM_TYPE_HEVC)], version=0)
+pmt264 = p.build_pmt(0x0030, 1, 0x0065, [(0x0065, p.STREAM_TYPE_AVC)], version=1)
+sw.feed([patS])
+check("switch: h265 first discovered",
+      sw.feed([pmt265]) and sw.pmt["streams"] == [(0x0065, p.STREAM_TYPE_HEVC)])
+check("switch: identical carousel repeats report no change",
+      not any(sw.feed([pmt265]) for _ in range(300)))
+check("switch: h265 -> h264 detected on the very next feed", sw.feed([pmt264]) is True)
+check("switch: new codec latched", sw.pmt["streams"] == [(0x0065, p.STREAM_TYPE_AVC)])
+
+# Same version_number, different content (a mux that forgets to bump it): the
+# section CRC still separates them.
+cr = p.PsiDiscovery()
+pmt_a = p.build_pmt(0x0030, 1, 0x0065, [(0x0065, p.STREAM_TYPE_HEVC)], version=7)
+pmt_b = p.build_pmt(0x0030, 1, 0x0065, [(0x0065, p.STREAM_TYPE_HEVC),
+                                        (0x00c9, p.STREAM_TYPE_AAC)], version=7)
+cr.feed([patS])
+for _ in range(200):
+    cr.feed([pmt_a])
+check("crc-only: version unchanged but content differs",
+      cr.feed([pmt_b]) and len(cr.pmt["streams"]) == 2)
+
+# A new PAT can also move the program to a different PMT PID.
+mv = p.PsiDiscovery()
+mv.feed([p.build_pat(3, {1: 0x0030})])
+for _ in range(50):
+    mv.feed([p.build_pat(3, {1: 0x0030}), pmt265])
+check("pmt pid move: starts on the old pid",
+      mv.pmt_pid == 0x0030 and mv.pmt["streams"] == [(0x0065, p.STREAM_TYPE_HEVC)])
+mv.feed([p.build_pat(3, {1: 0x0040}, version=1)])
+check("pmt pid move: new PAT re-learns the pid", mv.pmt_pid == 0x0040)
+check("pmt pid move: PMT on the new pid is discovered at once",
+      mv.feed([p.build_pmt(0x0040, 1, 0x0065, [(0x0065, p.STREAM_TYPE_AVC)])]) and
+      mv.pmt["streams"] == [(0x0065, p.STREAM_TYPE_AVC)])
+
 # Realistic combined PMT at max fan-in (24 ES, bare) fits one TS packet and round-trips.
 # (The runner only builds small PMTs; big descriptor-laden PMTs are only *parsed*,
 # which first_section reassembles across packets — exercised on the live feed.)

@@ -111,6 +111,31 @@ export const DECODER_LADDERS: Readonly<Record<string, readonly DecoderRung[]>> =
 };
 
 /**
+ * Every V4L2/stateless hardware rung on every ladder, deduplicated.
+ *
+ * The blast radius of the kernel's HEVC one-strike latch, in one place. The
+ * latch is announced per-SoC, not per-codec — the driver disables the block and
+ * the patch series that added it records a box that died outright when the
+ * wedged hardware was poked again — so the video-player strikes off EVERY
+ * hardware decoder on the box rather than only the one whose ladder the failing
+ * stream happened to be on. Derived from the ladders so a rung added later is
+ * covered without anyone remembering this list exists.
+ *
+ * NOTE the cost of that width: on a Pi 4 the H.264 hardware decoder is a
+ * separate block (`bcm2835-codec`) from the HEVC one, so this gives up H.264
+ * hardware decode on a fault it did not have. Narrowing the set is a one-line
+ * change here if that trade ever stops being worth it.
+ */
+export const HARDWARE_DECODER_IDS: readonly string[] = [
+    ...new Set(
+        Object.values(DECODER_LADDERS)
+            .flat()
+            .filter((rung) => rung.hardware)
+            .map((rung) => rung.id),
+    ),
+];
+
+/**
  * `tsdemux` caps per codec, used for the pad-steering capsfilter — see
  * `DecoderSelection.caps`. Spelled out rather than derived from the codec name
  * so a future ladder entry can't silently produce a bogus media type.
@@ -303,6 +328,17 @@ export function decoderRankEnv(
 }
 
 /**
+ * Health text for a decoder the kernel switched off for the rest of the boot.
+ *
+ * Names HEVC rather than the demoted rung because HEVC is the block that
+ * actually died — the `rpi-hevc-dec` latch is the only thing that ever sets a
+ * permanent demotion (see `decoderDemotions.demotePermanently`). The rung the
+ * pipeline landed on is appended by `decoderDemotionNote`.
+ */
+export const KERNEL_HW_DECODE_DISABLED_NOTE =
+    'HEVC hardware decoder disabled by kernel until reboot — decoding in software';
+
+/**
  * Operator-facing note for a codec whose better decoder(s) got demoted, or
  * `undefined` when nothing was demoted for this codec.
  *
@@ -317,10 +353,15 @@ export function decoderDemotionNote(
     codec: string | undefined,
     selection: DecoderSelection,
     demoted: ReadonlySet<string>,
+    permanent?: ReadonlySet<string>,
 ): string | undefined {
     const ladder = codec ? DECODER_LADDERS[codec] : undefined;
     const lost = ladder?.find((rung) => demoted.has(rung.id));
     if (!lost) return undefined;
+    // A permanent demotion is only ever set by the kernel latch, and the
+    // operator needs a different thing from this line then: not "it failed"
+    // (which invites waiting for the retry) but "it is gone until you reboot".
+    if (permanent?.has(lost.id)) return `${KERNEL_HW_DECODE_DISABLED_NOTE} (${selection.id})`;
     const using = selection.explicit
         ? selection.hardware
             ? `hardware decoder ${selection.id}`

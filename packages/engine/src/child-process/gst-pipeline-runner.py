@@ -2711,6 +2711,41 @@ def _stop_render_watch():
 # ---------------------------------------------------------------------------
 _keyframe_gate = None     # state dict while the gate probe is armed
 
+# Fault injector env var — see _fault_drop_budget(). Absent = feature off.
+FAULT_DROP_DELTAS_ENV = "VP_FAULT_DROP_DELTAS"
+
+
+def _fault_drop_budget():
+    """How many post-keyframe delta AUs the fault injector must swallow.
+
+    DIAGNOSTIC HOOK, SHIPPED DISABLED. Unset (the normal case), non-numeric or
+    <= 0 all mean 0 — completely inert: no burst, no logging, and nothing in
+    the steady-state probe path beyond one int test per delta AU.
+
+    WHAT IT IS FOR. The gate below protects the decoder from every gap it can
+    SEE: a mid-GOP join (no keyframe yet) and a leak that upstream MARKED, i.e.
+    a DELTA_UNIT carrying DISCONT. It cannot protect against a gap nothing
+    marks — AUs lost on the wire inside a still-continuous byte stream, or
+    dropped below us. Set `VP_FAULT_DROP_DELTAS=N` and the gate probe itself
+    swallows the next N delta AUs after it opens, WITHOUT touching the flags of
+    anything that follows: no DISCONT appears, so the gate's own re-arm rule
+    cannot fire, and the decoder is handed post-gap AUs referencing pictures it
+    never received. That is the condition that makes rpivid log
+    `Col ref index 255 >= N`, program COLBASE=0 and wedge phase1 — this hook
+    reproduces it on demand, in the REAL pipeline, past all app-level
+    protection, which is the only honest way to test decoder-side handling of
+    it.
+
+    Read per gate build, so a `restartOnError` respawn re-arms the injector —
+    intentional: with the var still set, every pipeline start gets one burst.
+    Unset the var (and restart) to disarm.
+    """
+    try:
+        n = int(os.environ.get(FAULT_DROP_DELTAS_ENV, ""))
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
 
 def _start_keyframe_gate(pipe, cfg):
     """Hold a decoder shut until an IRAP, on stream entry AND after any loss
@@ -2768,6 +2803,10 @@ def _start_keyframe_gate(pipe, cfg):
 
     A missing decoder element the module explicitly asked to gate is a hard
     error (matches tsProbe/renderWatch).
+
+    FAULT INJECTION (`VP_FAULT_DROP_DELTAS`, off unless set) rides on this same
+    probe so its drops are ordered against the gate's — see
+    _fault_drop_budget().
     """
     global _keyframe_gate
     # Never inherit a previous pipeline's gate: its pad belongs to an element
@@ -2795,12 +2834,22 @@ def _start_keyframe_gate(pipe, cfg):
     #   dropped     — cumulative delta AUs dropped, every closed window
     #   since_close — delta AUs dropped since the gate last closed
     #   rearms      — how many times upstream loss re-closed an open gate
+    #   fault_budget  — delta AUs the fault injector still owes (0 = inert/done)
+    #   fault_dropped — delta AUs the fault injector has swallowed
     st = {"pad": pad, "decoder": name, "probe_id": None, "dropped": 0,
-          "opened": False, "since_close": 0, "rearms": 0}
+          "opened": False, "since_close": 0, "rearms": 0,
+          "fault_budget": _fault_drop_budget(), "fault_dropped": 0}
 
     def _log(line):
         sys.stderr.write(f"[gst-runner.py] keyframe gate: {name} {line}\n")
         sys.stderr.flush()
+
+    # Loud on purpose, at both ends of the burst: an injected gap is
+    # indistinguishable from wire loss in the decoder's behaviour, so a journal
+    # must never leave anyone guessing whether it was organic.
+    if st["fault_budget"]:
+        _log(f"FAULT INJECTOR: dropping next {st['fault_budget']} delta AUs "
+             f"after keyframe ({FAULT_DROP_DELTAS_ENV})")
 
     def _on_buffer(_pad, info):
         buf = info.get_buffer()
@@ -2811,6 +2860,19 @@ def _start_keyframe_gate(pipe, cfg):
             # Open: only upstream LOSS shuts the gate again. A DISCONT keyframe
             # is self-contained, so it passes and the gate stays open.
             if not (delta and buf.has_flags(Gst.BufferFlags.DISCONT)):
+                # Fault injection: swallow the next N delta AUs this open gate
+                # would have PASSED, one-shot per gate. Keyframes are never
+                # touched (the picture must be able to recover), and the
+                # buffers after the burst keep their original flags — no
+                # DISCONT — so the re-arm rule above cannot see this gap. That
+                # is the whole point: the decoder gets the unprotected gap.
+                if delta and st["fault_budget"] > 0:
+                    st["fault_budget"] -= 1
+                    st["fault_dropped"] += 1
+                    if st["fault_budget"] == 0:
+                        _log("FAULT INJECTOR: burst complete "
+                             f"({st['fault_dropped']} dropped)")
+                    return Gst.PadProbeReturn.DROP
                 return Gst.PadProbeReturn.OK
             st["opened"] = False
             st["since_close"] = 0
