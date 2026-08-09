@@ -315,18 +315,23 @@ export function buildLivePipeline(
      */
     bufferMs = 200,
     /**
-     * Cross-pipeline A/V sync: preserve the source PTS (no `tsparse
-     * set-timestamps` re-anchoring) so this pipeline shares the timeline of the
-     * audio-decoder it's clock-locked to. Default false = today's re-anchored
-     * behaviour. The caller pairs this with a `sync=true` sink + `clockSync`.
+     * Retained from when this flag gated `tsparse` re-anchoring: it was set
+     * (true) in `clockSync` mode to share the audio-decoder's timeline and
+     * cleared otherwise. Both paced modes now ride the source PTS
+     * unconditionally (see the tsInput comment below — re-anchoring bursts GOPs
+     * on this fleet's muxes), so it no longer changes the tsparse recipe. Kept
+     * as the 5th positional arg for the `clockSync` caller; `clockSync` itself
+     * (see the description's `clockSync` flag in `planLivePipeline`) is what
+     * still attaches the shared clock.
      */
     preserveSourcePts = false,
     /**
      * True when the sink honours buffer PTS (`sync=true` — the module's `sync`
-     * config or `clockSync`). A clock-paced sink needs clock-anchored
-     * timestamps, which is `tsparse`'s job — so pacing brings tsparse back
-     * into the chain (see the tsInput comment below). Default false = the
-     * tsparse-free present-on-arrival fast path.
+     * config or `clockSync`). A clock-paced sink presents each frame at its
+     * buffer PTS; pacing brings `tsparse` back into the chain for TS packet
+     * alignment and the vp_ts probe tee — but NOT to re-anchor timestamps
+     * (`set-timestamps=false`; it rides the source PTS, see the tsInput comment
+     * below). Default false = the tsparse-free present-on-arrival fast path.
      */
     sinkPaced = false,
     /**
@@ -354,20 +359,31 @@ export function buildLivePipeline(
     // eats the raw bus buffers directly at +0.06).
     //
     // CLOCK-PACED (`sinkPaced` — the `sync` config or `clockSync`): tsparse
-    // RETURNS with `set-timestamps=<!preserveSourcePts>`. A sync=true sink
-    // presents each frame at its PTS against the pipeline clock, which is
-    // only meaningful with clock-anchored timestamps — exactly what
-    // `tsparse set-timestamps=true` produces (PCR-derived, smoothed, local-
-    // clock-anchored; the long-shipped pacing recipe — see buildSink's `sync`
-    // docs). In clockSync mode set-timestamps stays FALSE so the shared
-    // A/V timeline survives. The 0.11 core is paid only when pacing is on.
+    // RETURNS, but only for TS packet alignment and the vp_ts probe tee —
+    // NEVER to re-anchor (`set-timestamps=false`). The sink rides the SOURCE
+    // PTS (PES PTS via tsdemux), which is what clockSync mode has always done.
+    //
+    // WHY NOT set-timestamps=true (field-measured on the Pi 4 fleet,
+    // 10.9.16.107/.108, 2026-08-09): tsparse's set-timestamps mode interpolates
+    // buffer timestamps from the TS PCR, so it must hold a full PCR-to-PCR
+    // window before it can emit. This fleet's broadcast muxes carry PCR at up
+    // to 2 s intervals (spec is ≤100 ms), so tsparse stalls ~2 s and then
+    // bursts an ENTIRE GOP at once. That defeats pacing downstream: the 1 s
+    // leaky ES queue sheds ~half of each burst and flags DISCONT, the keyframe
+    // gate re-arms on the DISCONT and drops delta units until the next IDR, and
+    // the picture crawls at ~1 fps. Riding the source PTS instead measured 49
+    // fps with a single startup DISCONT on the same live feed — the re-anchor
+    // was the whole fault. The 0.11 core for tsparse is still paid only when
+    // pacing is on; it just no longer touches timestamps.
     const tsInput = sinkPaced
         ? buildTsUdpInput({
               port: udpSource.port,
               socketPath: udpSource.socketPath,
               stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
               jitterMs: bufferMs,
-              setTimestamps: !preserveSourcePts,
+              // Never re-anchor on the paced path — see the comment above.
+              // `preserveSourcePts` (the clockSync flag) no longer varies this.
+              setTimestamps: false,
           })
         : `${buildBusSrc({
               port: udpSource.port,

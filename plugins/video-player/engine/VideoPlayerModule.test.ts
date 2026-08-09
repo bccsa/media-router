@@ -357,7 +357,11 @@ describe('VideoPlayerModule helpers', () => {
             expect(s).not.toContain('tsparse');
         });
 
-        it('clock-paced sink (sync config) brings tsparse back with re-anchored timestamps', () => {
+        it('clock-paced sink (sync config) brings tsparse back but rides the source PTS (set-timestamps=false)', () => {
+            // tsparse returns for TS packet alignment and the vp_ts probe tee,
+            // but NEVER re-anchors: this fleet's muxes carry PCR at up to 2 s
+            // intervals, so set-timestamps=true bursts whole GOPs and paces at
+            // ~1 fps (field-measured 2026-08-09). The sink rides the source PTS.
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
                 busSource,
@@ -366,10 +370,11 @@ describe('VideoPlayerModule helpers', () => {
                 false,
                 true,
             );
-            expect(s).toContain('tsparse set-timestamps=true');
+            expect(s).toContain('tsparse set-timestamps=false');
+            expect(s).not.toContain('set-timestamps=true');
         });
 
-        it('clockSync keeps tsparse but preserves the source timeline (set-timestamps=false)', () => {
+        it('clockSync keeps tsparse and preserves the source timeline (set-timestamps=false)', () => {
             const s = buildLivePipeline(
                 'kmssink name=sink sync=true max-lateness=1000000000 qos=true',
                 busSource,
@@ -504,7 +509,7 @@ describe('VideoPlayerModule helpers', () => {
                     false,
                     true,
                 );
-                expect(s).toContain('tsparse set-timestamps=true ! tee name=vp_ts ! tsdemux');
+                expect(s).toContain('tsparse set-timestamps=false ! tee name=vp_ts ! tsdemux');
                 expect(s).toContain('appsink name=tsprobe');
             });
 
