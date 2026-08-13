@@ -79,7 +79,7 @@
                     "x-step": 50,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "Lip-sync trim. Positive DELAYS video to meet audio that's playing late (the audio path usually carries more buffering latency); negative advances it. Adjust live while watching until lips match. Only applies with Clock sync (or Sync) on."
+                    "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this player and the audio-decoder beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this player's own display chain adds (panel processing, HDMI receiver). Positive DELAYS video to meet audio that's playing late; negative advances it. Adjust live while watching until lips match. Only applies with Sync (or Clock sync) on."
                 },
                 "cpuDecodeThreading": {
                     "type": "string",

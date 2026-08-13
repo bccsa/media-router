@@ -221,6 +221,10 @@ export class HlsPlayerModule extends GstPluginBase {
                 ...fanout.prefix,
                 '--ingest', busIngestSocketPath(port),
                 '--caps', BUS_TS_CAPS,
+                // Producer half of the time-sync contract: the sidecar stamps
+                // the payload's mapped media time instead of send time. Both
+                // implementations take the same flag; off ⇒ argv unchanged.
+                ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : []),
             ],
             autoRestart: true,
             stdin: true,

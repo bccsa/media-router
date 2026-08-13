@@ -30,10 +30,15 @@ export function buildSpawnArgs(opts: {
      *  splitter batch immediately (ultra-low-latency; per-buffer fan-out
      *  costs return). Omitted = the runner's built-in 20 ms default. */
     busBatchMs?: number;
+    /** Engine-wide time-sync contract (`services.timeSyncContract`): stamp
+     *  each output with its payload's mapped media time instead of send time,
+     *  all outputs sharing one anchor. Off ⇒ argv identical to before. */
+    stampTimeline?: boolean;
 }): string[] {
     const args = ['--input', opts.inputSocketPath, '--caps', BUS_TS_CAPS];
     if (opts.tsId !== undefined) args.push('--ts-id', String(opts.tsId));
     if (opts.busBatchMs !== undefined) args.push('--flush-ms', String(opts.busBatchMs));
+    if (opts.stampTimeline) args.push('--stamp-timeline');
     for (const o of opts.outputs) {
         const stype = o.streamType !== undefined ? `:0x${o.streamType.toString(16)}` : '';
         args.push('--out', `0x${o.pid.toString(16)}:${busTeeName(o.port)}${stype}`);

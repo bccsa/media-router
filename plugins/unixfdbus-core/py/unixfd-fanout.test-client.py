@@ -25,6 +25,16 @@ import socket
 import struct
 import sys
 
+# Sibling plugin's TS parser (same path plumbing unixfd-fanout.py uses), so a
+# verdict can report the buffer's first PES PTS — what the time-sync contract's
+# stamp is derived from. Absent = the field reports null; nothing else changes.
+sys.path.append(os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', '..', 'mpegts-core', 'py')))
+try:
+    import ts_psi
+except ImportError:
+    ts_psi = None
+
 HEADER = struct.Struct('<II')
 NEW_BUFFER = struct.Struct('<QQQQQQIBBH')
 MEMORY = struct.Struct('<QQ')
@@ -42,6 +52,19 @@ def recv_exact(sock, n):
             raise EOFError('peer closed')
         data += chunk
     return data
+
+
+def first_pes_pts(data):
+    """The buffer's FIRST PES PTS (90 kHz), or None — exactly the value the
+    producer's contract stamp is mapped from, so a conformance test can check
+    the wire pts against the payload it claims to describe."""
+    if ts_psi is None:
+        return None
+    for pkt in ts_psi.iter_packets(data):
+        pts = ts_psi.read_pes_pts(pkt)
+        if pts is not None:
+            return pts
+    return None
 
 
 def ts_aligned(data):
@@ -172,6 +195,10 @@ def main():
                         'n': i,
                         'id': buf_id,
                         'ptsValid': 0 < pts < 2**63,
+                        # Decimal STRING: a monotonic-ns pts outgrows 2**53, so
+                        # a JSON number would silently round in JS readers.
+                        'pts': str(pts),
+                        'firstPes': first_pes_pts(data),
                         'noneFields': all(
                             v == 0xFFFFFFFFFFFFFFFF for v in (dts, duration, offset, offset_end)
                         ),

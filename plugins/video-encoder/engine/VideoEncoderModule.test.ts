@@ -6,11 +6,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // `applyEncoderAvailabilityToManifest`, `buildEncoderBranch` and `resolveImpl`
 // come through from `...actual`. The element-probing logic itself is covered by
 // packages/engine/src/plugins/encoderManifest.test.ts.
+// The v4l2 demand gate itself is covered by
+// packages/engine/src/system/v4l2DeviceProvider.test.ts; mocked here so this
+// file can pin the LIFECYCLE wiring — which hook claims and releases it.
 vi.mock('@media-router/engine', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@media-router/engine');
     return {
         ...actual,
         probeEncoderAvailability: vi.fn(),
+        registerV4l2DeviceProvider: vi.fn(),
+        acquireV4l2Demand: vi.fn(),
+        releaseV4l2Demand: vi.fn(),
     };
 });
 
@@ -475,6 +481,50 @@ describe('VideoEncoderModule', () => {
                 text: '5.9 Mbps',
                 color: '#10b981',
             });
+        });
+    });
+
+    describe('v4l2 device-provider demand', () => {
+        // Field finding (Pi 400): the `video` provider ran `v4l2-ctl` over every
+        // /dev/video* node every 2 s — 12.4 % of a core — on a host with no
+        // video encoder at all. The provider now enumerates only while an
+        // instance holds a demand token.
+        const acquire = engine.acquireV4l2Demand as unknown as ReturnType<typeof vi.fn>;
+        const release = engine.releaseV4l2Demand as unknown as ReturnType<typeof vi.fn>;
+        const register = engine.registerV4l2DeviceProvider as unknown as ReturnType<typeof vi.fn>;
+
+        beforeEach(() => {
+            acquire.mockClear();
+            release.mockClear();
+            register.mockClear();
+        });
+
+        it('registers the demand-gated provider instead of a bare 2 s poll', () => {
+            const services = { deviceProviders: { register: vi.fn() } } as any;
+            VideoEncoderModule.registerServices(services);
+            expect(register).toHaveBeenCalledWith(services);
+            // The plugin no longer registers a provider of its own — the
+            // ungated `list: () => listV4l2Devices()` was the burn.
+            expect(services.deviceProviders.register).not.toHaveBeenCalled();
+        });
+
+        it('claims the cadence at CONSTRUCTION, not at start — a stopped module still shows a picker', () => {
+            new VideoEncoderModule();
+            expect(acquire).toHaveBeenCalledTimes(1);
+            expect(release).not.toHaveBeenCalled();
+        });
+
+        it('releases the claim when the instance is destroyed', async () => {
+            const module = new VideoEncoderModule();
+            await module.onDestroy();
+            expect(release).toHaveBeenCalledTimes(1);
+        });
+
+        it('a second destroy cannot release another instance’s claim', async () => {
+            const module = new VideoEncoderModule();
+            await module.onDestroy();
+            await module.onDestroy();
+            expect(release).toHaveBeenCalledTimes(1);
         });
     });
 });

@@ -21,12 +21,22 @@ import type { PluginRegistry } from './plugins/PluginRegistry.js';
  */
 
 /**
- * Read-only view of config state passed to each rule. Snapshotted once by the
- * dispatcher before the loop begins — every rule sees the SAME pre-patch
- * state, not an intermediate state that would evolve as ops apply. This
- * matches how `applyJsonPatch` runs once on the full processed list after
- * dispatch completes; a rule computing cascades from state (interlock mute,
- * channel-map cleanup) reads the state as it was when the patch arrived.
+ * Read-only view of config state passed to each rule.
+ *
+ * `modules` is snapshotted once by the dispatcher before the loop begins, so
+ * every rule computing a cascade from state (interlock mute, dynamic ports)
+ * reads the state as it was when the patch arrived — not an intermediate
+ * state that evolves as ops apply.
+ *
+ * `connections` and `interlocks` carry live *membership*: the dispatcher folds
+ * each emitted op back in, so an id→index lookup lands where the element will
+ * actually be at the point that op applies. Without this, a batch of two
+ * id-based removes has the second index delete whatever slid into the freed
+ * slot. Element *contents* are still pre-patch, so cascade decisions read the
+ * arriving state; only order and membership move.
+ *
+ * Rules must therefore be pure reads over the context — the dispatcher calls
+ * them more than once per op (see `dispatchRule`'s disjointness guard).
  */
 export interface RuleContext {
     modules: Record<string, Record<string, unknown>>;
@@ -80,7 +90,12 @@ function muteExceptFirstHot(
 
 // --- Rules ------------------------------------------------------------------
 
-/** `/connections/<id>` → `/connections/<index>` so applyJsonPatch can walk the array. */
+/**
+ * `/connections/<id>` → `/connections/<index>` so applyJsonPatch can walk the
+ * array. The index comes from `ctx.connections`, which tracks removals/adds
+ * already emitted by earlier ops in this batch — an id removed earlier in the
+ * same batch is simply gone, and drops here rather than hitting its old slot.
+ */
 const rewriteConnectionIdPath: Rule = (op, ctx) => {
     const m = op.path.match(/^\/connections\/([^/]+)(\/.+)?$/);
     if (!m) return null;
@@ -125,7 +140,9 @@ const cascadeModuleDelete: Rule = (op, ctx) => {
 
     const cascades: PatchOp[] = [];
 
-    // Remove connections in reverse index order so earlier removals don't shift indices.
+    // Remove connections in reverse index order so earlier removals don't
+    // shift indices. `ctx.connections` is the live membership view, so a
+    // connection another op in this batch already removed isn't here at all.
     const touching = ctx.connections
         .map((c, i) => ({ idx: i, conn: c }))
         .filter((c) => c.conn.sourceModuleId === moduleId || c.conn.sinkModuleId === moduleId)

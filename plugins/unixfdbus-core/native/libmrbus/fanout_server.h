@@ -44,7 +44,13 @@ class FanoutServer {
 
     // Send one buffer to every connected client (one memfd, dup'd per
     // client). No clients = drop and keep flowing (tee with no branches).
-    void broadcast(const uint8_t* data, size_t len);
+    //
+    // `pts_ns` is the wire timestamp (absolute CLOCK_MONOTONIC — busproto.h).
+    // Negative = stamp send-time `mono_ns()`, which is what a live source does
+    // and stays the default, so a caller that passes nothing is byte-identical
+    // to before the time-sync contract. Producers running the contract pass a
+    // mapped media time instead (mrts::TimelineStamper).
+    void broadcast(const uint8_t* data, size_t len, int64_t pts_ns = -1);
 
     size_t client_count() const { return clients_.size(); }
     size_t edge_count() const { return edges_.size(); }

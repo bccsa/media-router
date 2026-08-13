@@ -51,6 +51,21 @@ export interface EngineServices {
      *  Optional: absent in test harnesses and on engines built before this; a
      *  `clockSync` pipeline then simply runs unsynced. */
     clockAuthority?: ClockAuthority;
+    /** Engine-wide time-sync contract (see `EngineConfig.timeSyncContract` and
+     *  `PipelineDescription.timeSyncContract`). When on it SUPERSEDES the
+     *  per-module `clockSync` opt-in: `GstPluginBase` marks the description for
+     *  the contract instead of resolving a net clock, so `clockAuthority` is
+     *  never contacted. Off → the legacy `clockSync` path, unchanged. The
+     *  engine resolves it on by default; absent here (test harnesses, engines
+     *  built before this) reads as off. */
+    timeSyncContract?: boolean;
+    /** Engine-wide default playout offset D in ms (ADR-0005 decision 4, see
+     *  `EngineConfig.playoutOffsetMs`). Presentation modules resolve their sink
+     *  `ts-offset` from it via `effectivePlayoutOffsetMs`, which also consults
+     *  the route head's override. Only read when `timeSyncContract` is on;
+     *  absent (test harnesses, older engines) falls back to the 300 ms
+     *  default. */
+    playoutOffsetMs?: number;
 }
 
 /**
@@ -103,6 +118,14 @@ export interface PluginModule {
     isLiveChange?(key: string, newValue: unknown, oldValue: unknown): boolean;
     /** Apply live config changes (only for params in getLiveUpdatableParams). */
     onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void>;
+    /**
+     * The playout offset D of the route this module consumes changed — the
+     * ROUTE HEAD's `playoutOffsetMs` was edited (ADR-0005 decision 4). Fanned
+     * out by `MediaRouter.notifyPlayoutOffsetChanged` to every consumer of that
+     * producer, so both legs of a route re-anchor together. Presentation
+     * modules re-push their sink `ts-offset`; everyone else omits it.
+     */
+    onRoutePlayoutOffsetChanged?(): Promise<void>;
     /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
@@ -226,6 +249,18 @@ export interface PipelineDescription {
      * per-consumer re-anchoring) for the lock to hold.
      */
     clockSync?: boolean;
+    /**
+     * Run this pipeline under the time-sync contract (engine-wide, on by
+     * default — see `EngineConfig.timeSyncContract`). The runner puts the
+     * pipeline on a plain monotonic `GstSystemClock` and PINS the timeline —
+     * `set_start_time(CLOCK_TIME_NONE)` + `set_base_time(0)` — so running-time
+     * ≡ clock time and every pipeline on the box shares one time base without
+     * any clock daemon to reach. Plugins don't set this themselves:
+     * `GstPluginBase` stamps it on a `clockSync` description when the engine
+     * runs the contract, INSTEAD of resolving a net clock. Never blocks
+     * playback (there is nothing external to wait for).
+     */
+    timeSyncContract?: boolean;
     /**
      * Software (`avdec_*`) decoder threading mode for this pipeline.
      * `max-threads` is always the core count; this only controls ffmpeg's

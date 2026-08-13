@@ -119,7 +119,8 @@
                     "x-widget": "slider",
                     "x-step": 50,
                     "x-unit": "ms",
-                    "description": "Optional pacing margin for Low-latency sync (0 = arrival-anchored, minimal latency). Raise toward the source's burst spacing (~150-200 ms) only if underflow gaps appear; whatever is set becomes standing audio latency."
+                    "x-live": true,
+                    "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this decoder and the video-player beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this output's own chain adds (DAC, amplifier, speaker distance). On the legacy path (engine time-sync contract off) it keeps its old meaning: the pacing margin for Low-latency sync, 0 = arrival-anchored."
                 },
                 "lcpVisible": {
                     "type": "boolean",

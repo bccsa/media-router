@@ -196,7 +196,9 @@ export class AudioTranscoderModule extends GstPluginBase {
             // Restart-proof lipsync (default on): shifts the demux branches onto
             // the SOURCE timeline, which also anchors the perfect-timestamp
             // encoders at source values — output PES PTS then match the source
-            // and downstream muxers align by real PTS across restarts.
+            // and downstream muxers align by real PTS across restarts. LEGACY
+            // PATH ONLY — the engine drops it under the time-sync contract
+            // (GstPluginBase.applyTimeSync), which stamps the egress instead.
             ...(config.preserveSourceTimeline === false
                 ? {}
                 : { preserveSourceTimeline: { demux: DEMUX_NAME } }),

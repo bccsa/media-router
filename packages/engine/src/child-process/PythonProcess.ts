@@ -37,6 +37,7 @@ export interface RunnerStartOptions {
     /** Applied at fork (spawn env), not sent in the start command. */
     env?: Record<string, string>;
     clock?: ClockConfig;
+    timeSyncContract?: boolean;
     decoderThreadType?: 'auto' | 'frame';
     busReports?: BusReport[];
     rist?: RistRunnerConfig;

@@ -11,6 +11,12 @@ LIBEXECDIR ?= $(PREFIX)/libexec
 # the default keeps a standalone `make install` here working.
 MR_PLUGIN  ?= unixfdbus-core
 
+# The egress timeline stamper lives with the shared TS code (mpegts-core
+# library plugin); MR_PLUGINS_DIR points at the plugins root.
+MR_PLUGINS_DIR ?= ../../..
+MRTS = $(MR_PLUGINS_DIR)/mpegts-core/native/mrts
+CPPFLAGS += -I$(MR_PLUGINS_DIR)/mpegts-core/native
+
 ifeq ($(shell uname -s),Linux)
 
 all: mr-bus-fanout
@@ -18,8 +24,11 @@ all: mr-bus-fanout
 ../libmrbus/libmrbus.a:
 	$(MAKE) -C ../libmrbus
 
-mr-bus-fanout: main.cpp ../libmrbus/libmrbus.a
-	$(CXX) $(CXXFLAGS) main.cpp ../libmrbus/libmrbus.a -o $@
+$(MRTS)/libmrts.a:
+	$(MAKE) -C $(MRTS) libmrts.a
+
+mr-bus-fanout: main.cpp ../libmrbus/libmrbus.a $(MRTS)/libmrts.a
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) main.cpp ../libmrbus/libmrbus.a $(MRTS)/libmrts.a -o $@
 
 test:
 	@# Protocol conformance runs from vitest (unixfdFanout.test.ts).

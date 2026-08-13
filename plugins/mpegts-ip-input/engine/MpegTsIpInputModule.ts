@@ -34,6 +34,9 @@ import {
 const DETECT_TIMEOUT_MS = 2000;
 
 export class MpegTsIpInputModule extends GstPluginBase {
+    /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
+     *  never by this pipeline, so it is live and never pends a restart. */
+    protected liveUpdatableParams = ['playoutOffsetMs'];
     private statsTimer: ReturnType<typeof setInterval> | null = null;
     /** Encapsulation detected this run when the operator left it on `auto`. */
     private detectedEncap: Encapsulation | null = null;

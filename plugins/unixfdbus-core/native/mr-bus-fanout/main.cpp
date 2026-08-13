@@ -1,9 +1,9 @@
 // mr-bus-fanout — native GstUnixFd fan-out sidecar for non-GStreamer bus
 // producers. Drop-in replacement for unixfd-fanout.py: identical CLI
-// (--ingest, --caps), identical stdin verbs (bus_attach / bus_detach),
-// identical stdout events (ready / attached / detached / warning / error /
-// stats every 2 s). The conformance suite (unixfdFanout.test.ts) runs both
-// implementations against the same protocol clients.
+// (--ingest, --caps, --stamp-timeline), identical stdin verbs (bus_attach /
+// bus_detach), identical stdout events (ready / attached / detached / warning
+// / error / stats every 2 s). The conformance suite (unixfdFanout.test.ts)
+// runs both implementations against the same protocol clients.
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "../libmrbus/control.h"
 #include "../libmrbus/fanout_server.h"
 #include "../libmrbus/ingest.h"
+#include "mrts/ts_timeline.h"
 
 using namespace mrbus;
 
@@ -25,13 +27,17 @@ static volatile sig_atomic_t g_stop = 0;
 
 int main(int argc, char** argv) {
     std::string ingest_path, caps;
+    bool stamp_timeline = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--ingest" && i + 1 < argc) ingest_path = argv[++i];
         else if (a == "--caps" && i + 1 < argc) caps = argv[++i];
+        else if (a == "--stamp-timeline") stamp_timeline = true;
     }
     if (ingest_path.empty() || caps.empty()) {
-        std::fprintf(stderr, "usage: mr-bus-fanout --ingest <socket> --caps <caps>\n");
+        std::fprintf(stderr,
+                     "usage: mr-bus-fanout --ingest <socket> --caps <caps> "
+                     "[--stamp-timeline]\n");
         return 2;
     }
 
@@ -49,8 +55,27 @@ int main(int argc, char** argv) {
     };
 
     FanoutServer server(caps, emit);
+    // Time-sync contract (ADR-0005 decision 2), off by default: map the
+    // ingested TS onto the house clock and stamp that instead of send time, so
+    // consumers inherit the producer's media time rather than our arrival
+    // jitter. One latch — the ingest is one muxed stream.
+    std::unique_ptr<mrts::TimelineStamper> stamper;
+    if (stamp_timeline) {
+        // One event builder for every native producer (mrts::*_event_json), so
+        // these events are field for field what unixfd-fanout.py emits.
+        stamper = std::make_unique<mrts::TimelineStamper>(
+            [&emit](const mrts::TimelineStamper::Anchored& a) {
+                emit(mrts::anchor_event_json(a));
+            },
+            [&emit](const mrts::TimelineStamper::Reanchor& r) {
+                emit(mrts::reanchor_event_json(r));
+            });
+    }
     Ingest ingest(ingest_path,
-                  [&server](const uint8_t* d, size_t n) { server.broadcast(d, n); },
+                  [&server, &stamper](const uint8_t* d, size_t n) {
+                      server.broadcast(d, n,
+                                       stamper ? stamper->stamp(d, n, mono_ns()) : -1);
+                  },
                   emit);
     if (!ingest.start()) return 1;
 
@@ -108,8 +133,14 @@ int main(int argc, char** argv) {
                 if (!drops.empty()) drops += ",";
                 drops += "\"" + json_escape(edge) + "\":" + std::to_string(n);
             }
+            // `timeline` only while the contract is on — with it off there is
+            // no stamper and the line stays byte-identical to what it was
+            // before the contract existed. Its shape is `drift_stats_json`,
+            // which is python's `drift_stats()` key for key.
+            std::string timeline =
+                stamper ? ",\"timeline\":" + mrts::drift_stats_json(stamper->drift()) : "";
             emit("{\"stats\":{\"clients\":" + std::to_string(server.client_count()) +
-                 ",\"drops\":{" + drops + "}}}");
+                 ",\"drops\":{" + drops + "}" + timeline + "}}");
         }
     }
     server.detach_all();

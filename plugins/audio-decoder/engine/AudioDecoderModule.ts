@@ -1,20 +1,56 @@
 import {
     GstPluginBase,
     buildBusSrc,
+    effectivePlayoutOffsetNs,
     type PipelineDescription,
     type ModuleServices,
+    type PlayoutOffsetServices,
     probeMpegTsStream,
     type ProbeResult,
 } from '@media-router/engine';
+
+/**
+ * The audio leg's sink `ts-offset`, in nanoseconds: the route's playout offset D
+ * plus the deprecated `syncOffsetMs` trim (ADR-0005 decision 4). The video leg
+ * computes its own through `videoTsOffsetNs`, which calls the same
+ * `effectivePlayoutOffsetNs` against the same route — so one route resolves to
+ * one D on both legs, by construction rather than by two implementations
+ * agreeing. Only used when the contract is on; see `buildPipeline`.
+ */
+export function audioTsOffsetNs(
+    services: PlayoutOffsetServices | null | undefined,
+    config: Record<string, unknown>,
+): number {
+    return effectivePlayoutOffsetNs(services, {
+        trimMs: Math.max(0, Number(config.syncOffsetMs ?? 0) || 0),
+    });
+}
+
+/**
+ * `pulsesink slave-method` (GstAudioBaseSink): 1 = skew — the sink corrects the
+ * DAC's drift against the pipeline clock by nudging its own timestamps, leaving
+ * the samples alone. ADR-0005 decision 5 makes this the contract's slaving mode
+ * (see `buildPipeline`); 0 = resample, the legacy default, is what it replaces.
+ */
+const SLAVE_METHOD_SKEW = 1;
+
 /**
  * Audio Decoder plugin.
  *
  * Receives MPEG-TS via UDP multicast (from an encoder or SRT source),
  * probes the stream to detect the codec, then builds the appropriate
  * decode pipeline. Outputs PCM to a named null-sink.
+ *
+ * Under the time-sync contract (ADR-0005) this module's sink presents against
+ * the house clock: `sync=true`, `ts-offset` = the route's playout offset D, and
+ * `slave-method=skew` — the sink slaves to that clock rather than resampling
+ * against the DAC's own. OPEN ITEM (decision 5's own validation item, still
+ * open at 2026-08-13): the audibility of skew-slaving has not been A/B'd on
+ * 302M outputs, so if skew turns out to be audible the answer is a measured
+ * change here and in the ADR, not a per-config escape.
  */
 export class AudioDecoderModule extends GstPluginBase {
-    protected liveUpdatableParams = ['volume', 'audioEnabled'];
+    protected liveUpdatableParams = ['volume', 'audioEnabled', 'syncOffsetMs'];
     /** Probed stream info — plugin decides what to do with it. */
     private probeResult: ProbeResult | null = null;
 
@@ -84,6 +120,34 @@ export class AudioDecoderModule extends GstPluginBase {
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {
         await this.applyVolumeLiveUpdate(changes);
+        // `syncOffsetMs` is a deprecated alias for the playout offset and, under
+        // the contract, a per-sink trim on top of it — live for the same reason
+        // `lipSyncMs` is on the video leg: an operator trims it while listening.
+        if ('syncOffsetMs' in changes) await this.pushSinkTsOffset();
+    }
+
+    /**
+     * The route head's playout offset D moved (ADR-0005 decision 4) — re-push
+     * this leg's `ts-offset`. Called by `MediaRouter.notifyPlayoutOffsetChanged`
+     * in the same pass as the video leg of the route, so the two never diverge.
+     */
+    async onRoutePlayoutOffsetChanged(): Promise<void> {
+        await this.pushSinkTsOffset();
+    }
+
+    /**
+     * Push the resolved ts-offset to the running `pulsesink`. No-op on the
+     * legacy path: without the contract the sink carries no `name=sink` (the
+     * pipeline string is unchanged there), so there is nothing to address —
+     * `setElementProperty` swallows the miss.
+     */
+    private async pushSinkTsOffset(): Promise<void> {
+        if (this.services?.timeSyncContract !== true) return;
+        await this.setElementProperty(
+            'sink',
+            'ts-offset',
+            audioTsOffsetNs(this.services, this.config),
+        );
     }
 
     getPipeWireNodes(): { source?: string; sink?: string } {
@@ -143,9 +207,27 @@ export class AudioDecoderModule extends GstPluginBase {
                 break; // fallback for unknown
         }
 
+        const contract = this.services?.timeSyncContract === true;
+
         // pulsesink slave-method: 0=resample (absorbs clock drift), 1=skew (adjusts timestamps)
         // Resample prevents latency buildup over hours — proven stable in v1 over 12+ hour sessions.
-        const slaveMethod = (config.slaveMethod as number) ?? 0;
+        //
+        // Under the contract this is NOT a per-module setting: ADR-0005 decision
+        // 5 makes the house clock the master and has DACs slave to it via
+        // `slave-method=skew`. Resample would fight it — it absorbs the DAC/house
+        // rate difference by rewriting the SAMPLES, so the sink stops presenting
+        // at the time it was told to and D quietly stops meaning what the route
+        // configured, on this leg only. Skew answers the same drift by moving the
+        // sink's own timestamps, which is a correction the contract can see.
+        //
+        // The pin is contract-path ONLY, and deliberately ignores the stored
+        // value rather than defaulting off it: `add /modules/<id>` materialises
+        // schema defaults, so fleet configs carry explicit `slaveMethod: 0`s that
+        // were never a choice. Reading them here would silently put every one of
+        // those routes back on resample. On the legacy path they stay exactly
+        // what they are — the kill-switch (`MR_TIME_SYNC_CONTRACT=0`) has to
+        // reproduce the old pipeline string byte for byte.
+        const slaveMethod = contract ? SLAVE_METHOD_SKEW : ((config.slaveMethod as number) ?? 0);
 
         // `sync=false` is LOAD-BEARING on this path — do NOT switch to
         // sync=true for jitter/drift reasons. Measured on gate01 (2026-07-16):
@@ -182,18 +264,40 @@ export class AudioDecoderModule extends GstPluginBase {
         // `syncOffsetMs` (default 250) must cover the ~150-200 ms PES-burst
         // arrival lateness of bus audio; too small ⇒ constant late-mode (no
         // harm, just arrival-anchored), too big ⇒ that much standing latency.
+        //
+        // Under the engine-wide time-sync contract (ADR-0005) NONE of the three
+        // per-module modes above decide the anchor any more: the producer stamps
+        // house-clock media time into the bus PTS and this sink presents at
+        // `stamped-time + D`, where D is the route's playout offset (decision 4).
+        // That means sync=true unconditionally — a sync=false sink ignores
+        // timing outright, which would make D a no-op and leave audio back on
+        // arrival-anchoring while the video leg of the same route paced off the
+        // house clock. The mid-stream-join silence trap the sync=false comment
+        // above documents is disarmed the same way the paced path disarms it,
+        // with `max-lateness=-1`: a late timeline renders immediately and drains
+        // rather than going silent. `provide-clock=false` keeps pulsesink from
+        // offering the DAC clock (the runner pins a monotonic system clock via
+        // `use_clock`, so it would be ignored anyway — explicit is clearer).
         const lowLatencySync = (config.lowLatencySync as boolean) === true && !clockSync;
         const syncOffsetMs = Math.max(0, Number(config.syncOffsetMs ?? 0));
-        const sinkSync = clockSync || lowLatencySync ? 'true' : 'false';
-        const provideClock = clockSync ? ' provide-clock=false' : '';
+        const sinkSync = contract || clockSync || lowLatencySync ? 'true' : 'false';
+        const provideClock = contract || clockSync ? ' provide-clock=false' : '';
         // syncOffsetMs defaults to 0: PES-cluster arrivals then render
         // slightly "late" (immediately, thanks to max-lateness=-1), anchoring
         // audio at arrival ≈ the smallest possible standing latency. Raise it
         // toward the burst spacing for genuine pacing (field 2026-08-02:
         // 250 ms plays steadily).
-        const sinkTiming = lowLatencySync
-            ? `${syncOffsetMs > 0 ? ` ts-offset=${syncOffsetMs * 1_000_000}` : ''} max-lateness=-1`
-            : ' max-lateness=200000000';
+        //
+        // Contract on, `syncOffsetMs` is DEPRECATED as an anchor and demoted to
+        // what `lipSyncMs` is on the video leg: a per-sink trim stacked on top
+        // of D, for residual DAC-chain skew this side can't know about. The
+        // route's D itself comes from `effectivePlayoutOffsetMs` — the same
+        // call, against the same route, that the video-player makes.
+        const sinkTiming = contract
+            ? ` ts-offset=${audioTsOffsetNs(this.services, config)} max-lateness=-1`
+            : lowLatencySync
+              ? `${syncOffsetMs > 0 ? ` ts-offset=${syncOffsetMs * 1_000_000}` : ''} max-lateness=-1`
+              : ' max-lateness=200000000';
 
         // pa ring size (µs). Clamped 80–1000 ms; the paced (lowLatencySync)
         // path floors it at 100 ms — an earlier hardcoded 50 ms ring xrunned
@@ -242,7 +346,11 @@ export class AudioDecoderModule extends GstPluginBase {
             // drops a frame only when it arrives *already* >200 ms late
             // (post-stall recovery, not steady state);
             // `processing-deadline=100000000`.
-            `pulsesink device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${lowLatencySync ? pacedSinkBufferUs : sinkBufferUs}${sinkTiming}`,
+            // `name=sink` only under the contract: it is what the live
+            // playout-offset push targets (`setElementProperty('sink', …)`),
+            // and adding it unconditionally would change the legacy pipeline
+            // string that MR_TIME_SYNC_CONTRACT=0 must reproduce byte for byte.
+            `pulsesink${contract ? ' name=sink' : ''} device=${this.pwNodeName} sync=${sinkSync}${provideClock} slave-method=${slaveMethod} processing-deadline=100000000 buffer-time=${contract || lowLatencySync ? pacedSinkBufferUs : sinkBufferUs}${sinkTiming}`,
         ];
         const pipeline = parts.join(' ! ');
 

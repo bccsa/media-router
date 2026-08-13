@@ -1,10 +1,12 @@
 import {
     GstPluginBase,
     ThroughputPoller,
+    acquireV4l2Demand,
     bitrateBadge,
     buildBusSink,
     busTeeName,
-    listV4l2Devices,
+    registerV4l2DeviceProvider,
+    releaseV4l2Demand,
     ENCODER_ELEMENTS,
     buildEncoderBranch,
     resolveImpl,
@@ -49,11 +51,21 @@ export class VideoEncoderModule extends GstPluginBase {
     private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
 
     static registerServices(services: EngineServices): void {
-        services.deviceProviders.register({
-            type: 'video',
-            list: () => listV4l2Devices(),
-            pollMs: 2000,
-        });
+        registerV4l2DeviceProvider(services);
+    }
+
+    /**
+     * This instance's claim on the V4L2 enumeration cadence. Taken at
+     * construction (an instance that is merely on the canvas still shows a
+     * device picker) and dropped in `onDestroy`; while no instance exists the
+     * provider stops paying for `v4l2-ctl` — see `v4l2DeviceProvider.ts`.
+     */
+    private v4l2DemandHeld = false;
+
+    constructor() {
+        super();
+        acquireV4l2Demand();
+        this.v4l2DemandHeld = true;
     }
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
@@ -99,6 +111,15 @@ export class VideoEncoderModule extends GstPluginBase {
     async onStop(): Promise<void> {
         this.throughput.stop();
         await super.onStop();
+    }
+
+    async onDestroy(): Promise<void> {
+        // Guarded, so a double destroy can't drop another instance's claim.
+        if (this.v4l2DemandHeld) {
+            this.v4l2DemandHeld = false;
+            releaseV4l2Demand();
+        }
+        await super.onDestroy();
     }
 
     async onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void> {

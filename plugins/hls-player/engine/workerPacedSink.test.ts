@@ -8,6 +8,8 @@ import { WorkerPacedTsSink } from './workerPacedSink.js';
 /** One paced datagram on the unix-stream transport: 128 TS packets. */
 const CHUNK = 128 * 188;
 
+const sleep = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms));
+
 interface Rig {
     server: Server;
     socketPath: string;
@@ -145,5 +147,60 @@ describe('WorkerPacedTsSink', () => {
         // write would let the extractor race unpaced through the playlist.
         await expect(() => sink!.write(new Uint8Array(CHUNK), 0.05)).rejects.toThrow(/dead/);
         sink = null; // end() would hang on the terminated worker's ack
+    });
+
+    // -- abandon(): the SIGTERM path ---------------------------------------
+    // The runner has 3 s of ManagedProcess grace before SIGKILL, and the
+    // extractor is normally parked inside write() waiting for the 60 s
+    // read-ahead budget to clear. Both must give way instantly.
+
+    // A segment-sized chunk: 40 datagrams spread over 30 s of media. Single-
+    // datagram writes can't model back-pressure — the drain queue runs dry
+    // between them and re-anchors, so every datagram ships immediately.
+    const SEGMENT = CHUNK * 40;
+    const SEGMENT_SEC = 30;
+
+    /** Feed segment-sized writes until one wedges on the 60 s budget. The
+     *  wedged promise comes back BOXED — returning it bare would be adopted by
+     *  the caller's `await` and this helper would block on it forever. */
+    async function writeUntilParked(s: WorkerPacedTsSink): Promise<{ parked: Promise<void> }> {
+        for (let i = 0; i < 10; i++) {
+            const p = s.write(new Uint8Array(SEGMENT), SEGMENT_SEC);
+            let settled = false;
+            void p.then(
+                () => (settled = true),
+                () => (settled = true),
+            );
+            await sleep(250);
+            if (!settled) return { parked: p };
+            await p;
+        }
+        throw new Error('sink never applied back-pressure');
+    }
+
+    it('abandon() unparks a write wedged on back-pressure', { timeout: 20_000 }, async () => {
+        sink = new WorkerPacedTsSink({ kind: 'unixfd', ingestPath: r.socketPath });
+        const { parked } = await writeUntilParked(sink);
+
+        const t0 = performance.now();
+        sink.abandon();
+        // Resolves, does not reject: a deliberate stop must not look like a
+        // fault to the runner (which would exit non-zero and be restarted).
+        await parked;
+        expect(performance.now() - t0, 'parked write must unpark on abandon()').toBeLessThan(500);
+        // And it stays a quiet no-op for anything still in flight above us.
+        await expect(sink.write(new Uint8Array(SEGMENT), SEGMENT_SEC)).resolves.toBeUndefined();
+    });
+
+    it('abandon() makes end() skip the media-rate tail drain', async () => {
+        sink = new WorkerPacedTsSink({ kind: 'unixfd', ingestPath: r.socketPath });
+        // ~60 s of buffered media: end() would pace this out over a minute.
+        for (let i = 0; i < 2; i++) await sink.write(new Uint8Array(SEGMENT), SEGMENT_SEC);
+
+        sink.abandon();
+        const t0 = performance.now();
+        await sink.end();
+        expect(performance.now() - t0, 'end() must not drain after abandon()').toBeLessThan(200);
+        sink = null; // already torn down
     });
 });

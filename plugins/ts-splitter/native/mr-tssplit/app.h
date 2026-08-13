@@ -12,6 +12,7 @@
 #include "libmrbus/bus_client.h"
 #include "libmrbus/fanout_server.h"
 #include "mrts/ts_split.h"
+#include "mrts/ts_timeline.h"
 
 namespace mrtssplit {
 
@@ -29,6 +30,9 @@ struct Options {
     // per-buffer fd-pass/mmap cost returns — measured ~0.35 core across
     // producer+consumers at 1080p50).
     int64_t flush_ns = 20'000'000;
+    // Time-sync contract (--stamp-timeline): stamp each output buffer with its
+    // payload's mapped media time instead of send time. Off = byte-identical.
+    bool stamp_timeline = false;
     // pid -> tee name (busout_<port>), from --out 0x100:busout_40001
     std::vector<std::pair<int, std::string>> outputs;
     std::vector<int> stream_types;   // parallel to outputs; -1 = unknown
@@ -73,6 +77,9 @@ class App {
     };
 
     void on_input_buffer(const uint8_t* data, size_t len);
+    // Wire pts for one output buffer: -1 (send time) with the contract off,
+    // else the payload's mapped media time.
+    int64_t stamp_for(const Output& o, const uint8_t* data, size_t len);
     void flush_output(Output& o);
     void flush_due(int64_t now_ns);
     void refresh_gating();
@@ -80,6 +87,17 @@ class App {
 
     Options opts_;
     std::unique_ptr<mrts::SplitterCore> core_;
+    // ONE stamper for every output (opts_.stamp_timeline only): the outputs
+    // are separate wire streams but must share one anchor + epoch reference,
+    // or each branch anchors on its own first buffer and the split re-rolls
+    // lipsync — the 2026-07-19 incident this splitter exists to prevent. Each
+    // output PID is its own `stream` key, so only the monotone floor is
+    // per-branch. Re-latched here rather than forwarded from the input's wire
+    // pts: an input buffer's pts is one number for a MUXED stream, so every
+    // output would inherit the interleave's leading PID's time (and, with a
+    // legacy upstream, its arrival jitter) instead of its own PES.
+    std::unique_ptr<mrts::TimelineStamper> stamper_;
+
     std::vector<Output> outputs_;
     std::map<std::string, size_t> edge_owner_;   // edge socket -> outputs_ index
     std::unique_ptr<mrbus::BusClient> input_;

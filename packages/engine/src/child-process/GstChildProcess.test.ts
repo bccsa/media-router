@@ -92,6 +92,21 @@ describe('sticky property replay', () => {
         );
     });
 
+    it('keys on element + NUL + property, so no element/property pair can collide', async () => {
+        // The separator must be a character neither half can contain. Pinned
+        // because the source used to carry a LITERAL NUL (invisible in editors
+        // and diffs); the escape rewrite has to keep the exact same runtime key
+        // or a live pipeline's recorded properties silently split in two.
+        const { child } = harness();
+        await child.setProperty('vol', 'volume', 0.5);
+        expect([...child.stickyProps.keys()]).toEqual(['vol\u0000volume']);
+
+        // `a\0b` vs `ab\0`: same concatenation, different pair — two entries.
+        await child.setProperty('a', 'b', 1);
+        await child.setProperty('ab', '', 2);
+        expect(child.stickyProps.size).toBe(3);
+    });
+
     it('stop() clears the recorded properties', async () => {
         const { child, sendRequest } = harness();
         await child.setProperty('vol', 'volume', 0.5);
@@ -138,5 +153,17 @@ describe('start payload', () => {
         // Absent on the decodebin3 rung / fallback card — must stay absent, not
         // become a gate on an element that doesn't exist (a hard start error).
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).keyframeGate).toBeUndefined();
+    });
+
+    it('forwards timeSyncContract — dropping it silently reverts to the net clock', () => {
+        // The flag is the ONLY thing telling the runner to pin the timeline
+        // (monotonic clock, base_time 0). Lost here, the pipeline would run on
+        // its auto-selected clock with a per-start base-time, which is exactly
+        // the drift the contract exists to remove — and nothing would report it.
+        expect(
+            payloadFor({ pipeline: 'fakesrc ! fakesink', timeSyncContract: true })
+                .timeSyncContract,
+        ).toBe(true);
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).timeSyncContract).toBe(false);
     });
 });

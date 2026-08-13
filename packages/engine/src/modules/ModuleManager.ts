@@ -31,6 +31,9 @@ export class ModuleManager extends EventEmitter {
     private processManager: ProcessManager | null = null;
     private deviceProviders: DeviceProviderRegistry | null = null;
     private clockAuthority: ClockAuthority | null = null;
+    private timeSyncContract = false;
+    /** Engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
+    private playoutOffsetMs: number | undefined;
 
     constructor(
         pluginLoader: PluginLoader,
@@ -39,6 +42,8 @@ export class ModuleManager extends EventEmitter {
         processManager?: ProcessManager,
         deviceProviders?: DeviceProviderRegistry,
         clockAuthority?: ClockAuthority,
+        timeSyncContract?: boolean,
+        playoutOffsetMs?: number,
     ) {
         super();
         this.pluginLoader = pluginLoader;
@@ -47,6 +52,8 @@ export class ModuleManager extends EventEmitter {
         this.processManager = processManager ?? null;
         this.deviceProviders = deviceProviders ?? null;
         this.clockAuthority = clockAuthority ?? null;
+        this.timeSyncContract = timeSyncContract === true;
+        this.playoutOffsetMs = playoutOffsetMs;
     }
 
     /** Create a new module instance. Does NOT start it. */
@@ -108,6 +115,10 @@ export class ModuleManager extends EventEmitter {
                       processManager: this.processManager,
                       deviceProviders: this.deviceProviders,
                       ...(this.clockAuthority ? { clockAuthority: this.clockAuthority } : {}),
+                      ...(this.timeSyncContract ? { timeSyncContract: true } : {}),
+                      ...(this.playoutOffsetMs !== undefined
+                          ? { playoutOffsetMs: this.playoutOffsetMs }
+                          : {}),
                       instanceId,
                   }
                 : undefined;

@@ -2,7 +2,9 @@
 # dev binaries come from make / build-native-dev.sh.
 *.o
 *.a
+*.so
 mrts/mrts_cli
 mrts/tests/ts_psi_test
 mrts/tests/ts_split_test
 mrts/tests/ts_video_info_test
+mrts/tests/ts_timeline_test

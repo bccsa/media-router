@@ -205,6 +205,26 @@ describe('HlsPlayerModule.onStart', () => {
         expect(opts.args.join(' ')).toContain('video/mpegts');
     });
 
+    it('passes --stamp-timeline only under the engine time-sync contract', async () => {
+        // Off (today's default): argv is byte-identical to before the contract.
+        const plain = makeModule();
+        await plain.module.onStart();
+        expect(sidecarOf(plain.spawn).opts.args).not.toContain('--stamp-timeline');
+
+        const contract = makeModule();
+        contract.module.services.timeSyncContract = true;
+        await contract.module.onStart();
+        const { opts } = sidecarOf(contract.spawn);
+        expect(opts.args).toContain('--stamp-timeline');
+        // Same flag on the python leg — the two fan-outs stay interchangeable.
+        const py = makeModule();
+        py.module.services.timeSyncContract = true;
+        process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        await py.module.onStart();
+        expect(sidecarOf(py.spawn).opts.command).toBe('python3');
+        expect(sidecarOf(py.spawn).opts.args).toContain('--stamp-timeline');
+    });
+
     it('reports an error when NEITHER fan-out implementation is available', async () => {
         const { module, spawn } = makeModule();
         process.env.MR_NATIVE_BIN_DIR = emptyBinDir;

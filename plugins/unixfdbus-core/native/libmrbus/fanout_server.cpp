@@ -223,12 +223,14 @@ void FanoutServer::drop_client(int sock) {
     clients_.erase(it);
 }
 
-void FanoutServer::broadcast(const uint8_t* data, size_t len) {
+void FanoutServer::broadcast(const uint8_t* data, size_t len, int64_t pts_ns) {
     if (clients_.empty()) return;   // tee with no branches: drop, keep flowing
     buffer_id_++;
     NewBufferPayload p{};
     p.id = buffer_id_;
-    p.pts = (uint64_t)mono_ns();    // like unixfdsink: absolute monotonic ns
+    // Like unixfdsink: absolute monotonic ns — send-time unless the caller
+    // mapped the payload onto the house timeline (see the header).
+    p.pts = (uint64_t)(pts_ns < 0 ? mono_ns() : pts_ns);
     p.dts = p.duration = p.offset = p.offset_end = CLOCK_TIME_NONE;
     p.flags = 0;
     p.memory_type = MEMORY_TYPE_DEFAULT;

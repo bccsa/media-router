@@ -20,10 +20,10 @@
         }
     },
     "scripts": {
-        "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst-net-clock.py src/child-process/render_lag.py dist/child-process/",
+        "build": "tsc && cp src/child-process/gst-pipeline-runner.py src/child-process/gst_bus_stamper.py src/child-process/gst_stamp_probe.py src/child-process/gst_stamp_native.py src/child-process/gst_stamp_events.py src/child-process/gst-net-clock.py src/child-process/render_lag.py dist/child-process/",
         "typecheck": "tsc --noEmit",
         "test": "pnpm run test:py",
-        "test:py": "python3 src/child-process/render_lag_test.py && python3 src/child-process/gst_drain_test.py && python3 src/child-process/gst_keyframe_gate_test.py",
+        "test:py": "python3 src/child-process/render_lag_test.py && python3 src/child-process/gst_drain_test.py && python3 src/child-process/gst_keyframe_gate_test.py && python3 src/child-process/gst_time_sync_contract_test.py && python3 src/child-process/gst_bus_stamper_test.py && python3 src/child-process/gst_mrtsstamp_element_test.py && python3 src/child-process/gst_preserve_timeline_test.py",
         "dev": "bash -c '[ -f .env.local ] && . ./.env.local; exec tsx watch --inspect=9230 examples/test-engine.ts'"
     },
     "dependencies": {

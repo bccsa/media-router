@@ -44,6 +44,7 @@ import {
     planSink,
     resolveBuildHealth,
     resolveResumeSocket,
+    videoTsOffsetNs,
 } from './helpers/pipelinePlan.js';
 import {
     registerWaylandRestartTarget,
@@ -364,7 +365,21 @@ export class VideoPlayerModule extends GstPluginBase {
      */
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel === 'renderwatch:lag') {
-            const lag = describeRenderLag(payload);
+            // `busStallDetected` is the only signal that separates "the source
+            // went quiet" from "nothing gets through the decode/display chain"
+            // when the sink pad sees zero arrivals — see RenderLagContext.
+            const lag = describeRenderLag(payload, { sourceSilent: this.busStallDetected });
+            // TRANSITION only (the latch is the edge — the runner reports
+            // transitions too, but re-arms its streaks on a caps switch and can
+            // repeat). Without this the fps figures lived only in module state:
+            // a total render stall — 0/50 fps for minutes — left ZERO trace in
+            // the journal, so log-based fleet monitoring could not see it at all.
+            if (!this.renderLagActive) {
+                this.log.warn(
+                    { renderWatch: payload, kind: lag.kind, sourceSilent: this.busStallDetected },
+                    `Render keep-up degraded — ${lag.message}`,
+                );
+            }
             this.renderLagActive = true;
             this.setHealth('warning', lag.message);
             if (
@@ -383,6 +398,11 @@ export class VideoPlayerModule extends GstPluginBase {
                 });
             }
         } else if (channel === 'renderwatch:recovered') {
+            // The matching edge, so the journal carries both ends of every
+            // episode and its duration is readable from the timestamps.
+            if (this.renderLagActive) {
+                this.log.info({ renderWatch: payload }, 'Render keep-up recovered');
+            }
             // Only clear health WE degraded — never stomp a bus-stall or
             // substituted-display warning someone else owns.
             if (this.renderLagActive && this.health === 'warning') {
@@ -954,13 +974,32 @@ export class VideoPlayerModule extends GstPluginBase {
         }
         if ('lipSyncMs' in changes) {
             // Live lip-sync trim — push the new ts-offset to the running video
-            // `sink` (no rebuild). Only bites when the sink is sync=true.
-            const ns = Math.round(Number(changes.lipSyncMs ?? 0) * 1_000_000);
-            await this.setElementProperty('sink', 'ts-offset', ns).catch((err) =>
-                this.log.debug({ err }, 'Failed to update lip-sync ts-offset'),
-            );
+            // `sink` (no rebuild). Only bites when the sink is sync=true. Under
+            // the time-sync contract the trim rides ON TOP of the route's
+            // playout offset D, so the pushed value has to be re-resolved
+            // whole rather than sent as the raw trim.
+            await this.pushSinkTsOffset();
         }
         this.updateStatusData();
+    }
+
+    /**
+     * The route head's playout offset D moved (ADR-0005 decision 4) — re-push
+     * the sink's `ts-offset` without a rebuild, the same live path `lipSyncMs`
+     * has always used. The audio leg of the route gets the identical call at the
+     * same moment (MediaRouter.notifyPlayoutOffsetChanged), so the two legs
+     * never sit on different values.
+     */
+    async onRoutePlayoutOffsetChanged(): Promise<void> {
+        await this.pushSinkTsOffset();
+    }
+
+    /** Resolve this leg's ts-offset from current config + route and push it live. */
+    private async pushSinkTsOffset(): Promise<void> {
+        const ns = videoTsOffsetNs(this.services, this.config);
+        await this.setElementProperty('sink', 'ts-offset', ns).catch((err) =>
+            this.log.debug({ err }, 'Failed to update sink ts-offset'),
+        );
     }
 
     buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
@@ -985,7 +1024,7 @@ export class VideoPlayerModule extends GstPluginBase {
             this.setHealth(target.health, target.message);
             return null;
         }
-        const sink = planSink(target, config);
+        const sink = planSink(target, config, videoTsOffsetNs(this.services, config));
 
         const instanceId = this.services?.instanceId ?? '';
         const udpSource = this.services?.mediaRouter?.getModuleBusSource(instanceId);

@@ -20,7 +20,15 @@ export {
     listNetworkInterfaces,
     NETWORK_INTERFACE_DEVICE_TYPE,
 } from './system/networkInterfaceProvider.js';
-export { listV4l2Devices, parseFormats } from './system/v4l2Devices.js';
+export { listV4l2Devices, cachedV4l2Devices, parseFormats } from './system/v4l2Devices.js';
+export {
+    registerV4l2DeviceProvider,
+    acquireV4l2Demand,
+    releaseV4l2Demand,
+    listV4l2DevicesOnDemand,
+    V4L2_DEVICE_TYPE,
+    V4L2_IDLE_ENUMERATE_MS,
+} from './system/v4l2DeviceProvider.js';
 export {
     kernelLogSignalEvent,
     kernelLogWatchMode,
@@ -131,6 +139,20 @@ export { PacedTsSink, packetizeTs, TS_PACKET_BYTES } from './plugins/PacedTsSink
 export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';
 // Re-export `Device` so plugins only need to depend on `@media-router/engine`.
 export type { Device } from '@media-router/shared-types';
+export {
+    effectivePlayoutOffsetMs,
+    effectivePlayoutOffsetNs,
+    parsePlayoutOffsetMs,
+    resolveEnginePlayoutOffsetMs,
+    DEFAULT_PLAYOUT_OFFSET_MS,
+    MAX_PLAYOUT_OFFSET_MS,
+    PLAYOUT_OFFSET_KEY,
+} from './plugins/playoutOffset.js';
+export type {
+    PlayoutOffsetOptions,
+    PlayoutOffsetServices,
+    PlayoutOffsetRouteSource,
+} from './plugins/playoutOffset.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
 export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';
 export type { DeviceWatchdogOptions, DeviceWatchdogPipeWire } from './plugins/DeviceWatchdog.js';

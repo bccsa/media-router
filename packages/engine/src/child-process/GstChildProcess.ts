@@ -208,6 +208,7 @@ export class GstChildProcess extends EventEmitter {
             readKlvNames: desc.readKlvNames ?? false,
             env: desc.env ?? {},
             clock: desc.clock,
+            timeSyncContract: desc.timeSyncContract ?? false,
             decoderThreadType: desc.decoderThreadType ?? 'auto',
             busReports: desc.busReports ?? [],
             rist: desc.rist,
@@ -367,7 +368,11 @@ export class GstChildProcess extends EventEmitter {
     async setProperty(element: string, property: string, value: unknown): Promise<void> {
         // Record the intent first: a change made while the pipeline is down or
         // mid-restart is applied by the next PLAYING replay instead of lost.
-        this.stickyProps.set(`${element} ${property}`, { element, property, value });
+        // The key separator is an escaped NUL — a character that cannot occur in a
+        // gst element or property name, so `a\0b` and `ab\0` can never collide.
+        // Escaped, not literal: a raw NUL in the source is invisible in editors,
+        // diffs and reviews (it read as `${element}${property}` for months).
+        this.stickyProps.set(`${element}\u0000${property}`, { element, property, value });
         if (!this.ipc || !this.running) return;
         const result = await this.ipc.sendRequest(
             'setProperty',

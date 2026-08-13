@@ -381,9 +381,8 @@ export function buildLivePipeline(
               socketPath: udpSource.socketPath,
               stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
               jitterMs: bufferMs,
-              // Never re-anchor on the paced path — see the comment above.
-              // `preserveSourcePts` (the clockSync flag) no longer varies this.
-              setTimestamps: false,
+              // The helper never re-anchors (tsparse set-timestamps=false) —
+              // see the comment above; there is no longer a knob to get wrong.
           })
         : `${buildBusSrc({
               port: udpSource.port,

@@ -215,6 +215,21 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
       `gpu_mem_1024=396` steals ~320 MB unused under KMS). Pi 4 conf has
       `disable_fw_kms_setup=1` already; mirror CMA decisions on Pi 5 after
       measuring there.
+      **PARTIALLY DONE 2026-08-13 — the CMA half shipped, via a different
+      mechanism and values:** media-router-yocto's `rpi-cmdline.bbappend` now
+      sets `cma=320M@0-1G` (Pi 5) / `cma=256M@0-1G` (Pi 4) on the kernel
+      cmdline instead of the `cma-128` overlay, plus an `rpi-cma-migrate`
+      recipe that patches `cmdline.txt` in place on already-deployed devices
+      (OTA never touches the boot FAT). Placement lesson (rationale lives in
+      the bbappend comment): a cmdline `cma=` DISCARDS the DT node's
+      `alloc-ranges <0 0x40000000>` along with its size — a bare `cma=320M`
+      on a field Pi 5 landed the pool at 3.79 GB, out of the VideoCore's
+      reach (firmware mailbox silent, v3d/vc4/codec/pisp failed to probe,
+      weston on softpipe at ~1 fps) with a healthy-looking CmaFree
+      throughout — so the `@0-1G` range is the whole fix, not decoration.
+      NOT adopted: the `gpu_mem_1024=76` half (no `gpu_mem` setting anywhere
+      in the image config — gpu_mem stays at platform default); that part of
+      this item remains open.
 - [ ] **CI decode-proof gate** in the image build: a generated HEVC/H.264 TS
       must decode to EOS with bounded CPU — device-node presence proves
       nothing (every failure in this saga was silent at the file-exists
@@ -228,7 +243,7 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
 
 ## Smaller app follow-ups
 
-- [ ] **`clockSync` freezes on the first frame — epoch mismatch (diagnosed
+- [x] **`clockSync` freezes on the first frame — epoch mismatch (diagnosed
       2026-08-01).** With clockSync the chain deliberately passes source PES
       timestamps through (`tsparse set-timestamps=false`) to share the A/V
       timeline — but nothing maps the source epoch onto the shared clock's
@@ -241,6 +256,17 @@ box against 1.28.2 and hand-deployed on the field Pi 4 (stock in
       audio-decoder pipeline that establishes the shared epoch. Until then:
       leave the toggle OFF; with `sync` now defaulting ON, plain paced
       playback covers everything except cross-pipeline lipsync.
+      **FIXED 2026-08-13 by the engine-wide time-sync contract
+      (`feat/time-sync-backend`, ADR-0005) — exactly the missing mapping
+      named above:** every pipeline pins `base_time=0` (running-time ≡ house
+      clock) and the PRODUCER stamps bus buffer PTS with house-clock media
+      time, so the sink never sees the raw PES epoch and the first frame
+      schedules now, not 19.2 h out. The per-module `clockSync` toggle is
+      superseded by the engine-level contract flag (on by default;
+      `MR_TIME_SYNC_CONTRACT=0` reverts to the legacy path — where this
+      freeze still exists, so keep the toggle OFF there). Fleet release
+      gated on the burn-in soak (see the feature-freeze note in
+      `TodoNotes.md`).
 
 - [ ] renderWatch expected-fps fallback: streams without VUI timing negotiate
       `framerate=0/1` and the watch stays silent; fall back to the ts-probe

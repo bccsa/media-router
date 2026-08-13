@@ -82,6 +82,19 @@ App::App(Options opts) : opts_(std::move(opts)) {
         outputs_.push_back(std::move(o));
     }
     core_ = std::make_unique<mrts::SplitterCore>(opts_.ts_id, specs, cb);
+    if (opts_.stamp_timeline) {
+        // One event builder for every native producer (mrts::*_event_json), so
+        // what a re-anchor reports here is field for field what the python
+        // sidecar reports — the copies that used to live in each sidecar had
+        // already lost `lastPts90k` and `deltaTicks`.
+        stamper_ = std::make_unique<mrts::TimelineStamper>(
+            [](const mrts::TimelineStamper::Anchored& a) {
+                emit(mrts::anchor_event_json(a));
+            },
+            [](const mrts::TimelineStamper::Reanchor& r) {
+                emit(mrts::reanchor_event_json(r));
+            });
+    }
     refresh_gating();   // nothing wired yet -> all outputs disabled
     input_ = std::make_unique<mrbus::BusClient>(
         opts_.input_socket, [this](const uint8_t* d, size_t n) { on_input_buffer(d, n); },
@@ -104,7 +117,8 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
             if (o.pid == b.pid) {
                 if (opts_.flush_ns <= 0) {
                     // Ultra-low-latency mode: no coalescing, no extra copy.
-                    o.server->broadcast(b.data->data(), b.data->size());
+                    o.server->broadcast(b.data->data(), b.data->size(),
+                                        stamp_for(o, b.data->data(), b.data->size()));
                     o.batches++;
                     break;
                 }
@@ -117,9 +131,15 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     }
 }
 
+int64_t App::stamp_for(const Output& o, const uint8_t* data, size_t len) {
+    if (!stamper_) return -1;   // send time, exactly as before the contract
+    return stamper_->stamp(data, len, mrbus::mono_ns(), o.pid);
+}
+
 void App::flush_output(Output& o) {
     if (o.pending.empty()) return;
-    o.server->broadcast(o.pending.data(), o.pending.size());
+    o.server->broadcast(o.pending.data(), o.pending.size(),
+                        stamp_for(o, o.pending.data(), o.pending.size()));
     o.batches++;
     o.pending.clear();
     o.pending_since_ns = 0;
@@ -223,8 +243,14 @@ void App::emit_stats(int64_t now_ns) {
     double dt = (now_ns - last_stats_ns_) / 1e9;
     long long kbps = dt > 0 ? (long long)((bytes - last_stats_bytes_) * 8 / 1000.0 / dt) : 0;
     last_stats_bytes_ = bytes;
+    // `timeline` only while the contract is on: with it off there is no stamper
+    // and the line stays byte-identical to the pre-contract one. The drift loop
+    // is per-EGRESS (one stamper, one anchor for every output PID), so this is
+    // one object for the whole splitter and not one per branch.
+    std::string timeline =
+        stamper_ ? ",\"timeline\":" + mrts::drift_stats_json(stamper_->drift()) : "";
     emit("{\"stats\":{\"clients\":" + std::to_string(clients) + ",\"drops\":{" + drops +
-         "},\"in_kbps\":" + std::to_string(kbps) + "}}");
+         "}" + timeline + ",\"in_kbps\":" + std::to_string(kbps) + "}}");
 }
 
 void App::tick(int64_t now_ns) {

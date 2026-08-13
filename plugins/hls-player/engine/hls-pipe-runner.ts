@@ -44,9 +44,31 @@ async function main(): Promise<void> {
     const sink = new WorkerPacedTsSink({ kind: 'unixfd', ingestPath: cfg.sink.ingestPath });
 
     const abort = new AbortController();
-    const stop = (): void => abort.abort();
-    process.on('SIGINT', stop);
-    process.on('SIGTERM', stop);
+    let statsTimer: NodeJS.Timeout | undefined;
+    let shuttingDown = false;
+
+    // Every module stop and every URL change arrives here as SIGTERM, with 3 s
+    // of ManagedProcess grace before SIGKILL. Aborting the controller alone
+    // never made that deadline: the extractor spends most of its life parked
+    // inside sink.write()'s back-pressure loop (up to 60 s of read-ahead
+    // media), which does not watch the signal, and the clean-exit path then
+    // drains that same tail at media rate. So: abort the fetches, ABANDON the
+    // sink (unparks the wedged write, closes the ingest socket, drops the
+    // undelivered tail), and hold a short deadline over the whole thing —
+    // nothing in hls-pipe promises to observe the signal at every await, and
+    // the per-segment demux/mux between two awaits cannot be interrupted at
+    // all. Exit 0: a deliberate stop must not read as a crash to the parent's
+    // restart policy.
+    const shutdown = (): void => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        abort.abort();
+        clearInterval(statsTimer);
+        sink.abandon();
+        setTimeout(() => process.exit(0), 300);
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
 
     const options: ExtractorOptions = {
         url: cfg.url,
@@ -62,7 +84,7 @@ async function main(): Promise<void> {
 
     let lastBytes = 0;
     let lastAt = Date.now();
-    const statsTimer = setInterval(() => {
+    statsTimer = setInterval(() => {
         const now = Date.now();
         const bytes = sink.bytesSent;
         const dt = (now - lastAt) / 1000;
@@ -75,12 +97,20 @@ async function main(): Promise<void> {
 
     try {
         await new Extractor(options).run();
+        // Shutting down: the sink is already abandoned, so end() would be a
+        // no-op — but skip it explicitly, it is the tail-drain that used to
+        // outlive the grace period.
+        if (shuttingDown) process.exit(0);
         await sink.end();
         clearInterval(statsTimer);
         process.exit(0);
     } catch (err) {
         clearInterval(statsTimer);
         // SIGTERM / user-stop aborts cleanly — don't trip the restart policy.
+        // The shuttingDown check comes first: unwinding after abandon can
+        // surface as any error (an aborted fetch, a dead-worker write), and
+        // none of them are faults.
+        if (shuttingDown) process.exit(0);
         if (err instanceof Error && err.name === 'AbortError') process.exit(0);
         process.stderr.write(
             `hls-pipe error: ${err instanceof Error ? err.message : String(err)}\n`,

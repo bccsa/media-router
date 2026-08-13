@@ -926,6 +926,235 @@ describe('PatchRouter', () => {
         });
     });
 
+    describe('batched id-path resolution', () => {
+        /**
+         * Point `modifyProfileConfig` at a real config object and hand it back
+         * so assertions can read the POST-patch state. `PatchRouter` runs
+         * `applyJsonPatch` inside the callback, so this exercises the whole
+         * rewrite → apply path, which is where the field bug actually bit.
+         */
+        function withConfig(config: Record<string, unknown>) {
+            const mocks = createMocks();
+            mocks.configStore.modifyProfileConfig.mockImplementation(
+                (_eid: string, _pid: string, fn: any) => fn(config),
+            );
+            const connIds = () => (config.connections as Array<{ id: string }>).map((c) => c.id);
+            const engineOps = () => mocks.engineManager.sendToEngine.mock.calls[0]?.[2].ops;
+            return { ...mocks, config, connIds, engineOps };
+        }
+
+        function fieldConfig() {
+            return {
+                modules: {
+                    'video-dec': { pluginId: 'video-decoder' },
+                    'audio-dec-1': { pluginId: 'audio-decoder' },
+                    'audio-dec-2': { pluginId: 'audio-decoder' },
+                    'audio-dec-3': { pluginId: 'audio-decoder' },
+                },
+                connections: [
+                    { id: 'conn-vid', sourceModuleId: 'video-dec', sinkModuleId: 'video-out' },
+                    { id: 'conn-a', sourceModuleId: 'audio-dec-1', sinkModuleId: 'audio-out-1' },
+                    { id: 'conn-b', sourceModuleId: 'audio-dec-2', sinkModuleId: 'audio-out-2' },
+                    { id: 'conn-keep', sourceModuleId: 'audio-dec-3', sinkModuleId: 'audio-out-3' },
+                ],
+                interlocks: [],
+            };
+        }
+
+        it('two id-based removes in one batch delete exactly those two', () => {
+            // Field bug (live device): both ids resolved against the pre-patch
+            // array, so the second remove (index 2) landed on whatever the
+            // first removal shifted into that slot — killing an unrelated
+            // audio-decoder→audio-output connection and leaving a
+            // maxConnections:1 port double-connected.
+            const t = withConfig(fieldConfig());
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/connections/conn-a' },
+                { op: 'remove', path: '/connections/conn-b' },
+            ]);
+
+            // The right rows died; the unrelated one survived.
+            expect(t.connIds()).toEqual(['conn-vid', 'conn-keep']);
+            // Second index is re-resolved against the already-shifted array.
+            expect(t.engineOps()).toEqual([
+                { op: 'remove', path: '/connections/1' },
+                { op: 'remove', path: '/connections/1' },
+            ]);
+        });
+
+        it('removing three of four in one batch leaves only the untouched one', () => {
+            const t = withConfig(fieldConfig());
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/connections/conn-vid' },
+                { op: 'remove', path: '/connections/conn-b' },
+                { op: 'remove', path: '/connections/conn-a' },
+            ]);
+
+            expect(t.connIds()).toEqual(['conn-keep']);
+        });
+
+        it('mixed add + remove + replace batch targets the right rows', () => {
+            const t = withConfig({
+                modules: {},
+                connections: [
+                    { id: 'c1', sourceModuleId: 'm1', sinkModuleId: 'm2' },
+                    { id: 'c2', sourceModuleId: 'm3', sinkModuleId: 'm4' },
+                    { id: 'c3', sourceModuleId: 'm5', sinkModuleId: 'm6', channelMap: [] },
+                ],
+                interlocks: [],
+            });
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/connections/c1' },
+                { op: 'add', path: '/connections/-', value: { id: 'c4', sourceModuleId: 'm7' } },
+                {
+                    op: 'replace',
+                    path: '/connections/c3/channelMap',
+                    value: [{ srcChannel: 0, dstChannel: 1 }],
+                },
+                { op: 'remove', path: '/connections/c4' },
+            ]);
+
+            expect(t.connIds()).toEqual(['c2', 'c3']);
+            const c3 = (t.config.connections as Array<Record<string, unknown>>).find(
+                (c) => c.id === 'c3',
+            );
+            expect(c3!.channelMap).toEqual([{ srcChannel: 0, dstChannel: 1 }]);
+            // c3 sat at index 2 pre-patch; after the remove+append it is index 1.
+            expect(t.engineOps()).toEqual([
+                { op: 'remove', path: '/connections/0' },
+                {
+                    op: 'add',
+                    path: '/connections/-',
+                    value: { id: 'c4', sourceModuleId: 'm7' },
+                },
+                {
+                    op: 'replace',
+                    path: '/connections/1/channelMap',
+                    value: [{ srcChannel: 0, dstChannel: 1 }],
+                },
+                { op: 'remove', path: '/connections/2' },
+            ]);
+        });
+
+        it('connection remove followed by a module delete cascade does not double-remove', () => {
+            const t = withConfig({
+                modules: { 'mod-1': { pluginId: 'audio-input' } },
+                connections: [
+                    { id: 'conn-a', sourceModuleId: 'mod-1', sinkModuleId: 'mod-2' },
+                    { id: 'conn-other', sourceModuleId: 'mod-8', sinkModuleId: 'mod-9' },
+                    { id: 'conn-c', sourceModuleId: 'mod-5', sinkModuleId: 'mod-1' },
+                ],
+                interlocks: [],
+            });
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/connections/conn-a' },
+                { op: 'remove', path: '/modules/mod-1' },
+            ]);
+
+            // conn-a already gone → the cascade must only take conn-c, and at
+            // its shifted index. conn-other is a bystander.
+            expect(t.connIds()).toEqual(['conn-other']);
+            expect(t.config.modules).toEqual({});
+            expect(t.engineOps()).toEqual([
+                { op: 'remove', path: '/connections/0' },
+                { op: 'remove', path: '/connections/1' },
+                { op: 'remove', path: '/modules/mod-1' },
+            ]);
+        });
+
+        it('module delete cascade prunes interlocks at their live index', () => {
+            const t = withConfig({
+                modules: { b: { settings: { audioEnabled: false } } },
+                connections: [],
+                interlocks: [
+                    { id: 'ilk-doomed', name: 'D', members: [] },
+                    { id: 'ilk-1', name: 'G', members: ['a', 'b', 'c'] },
+                ],
+            });
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/interlocks/ilk-doomed' },
+                { op: 'remove', path: '/modules/b' },
+            ]);
+
+            // ilk-1 moved from index 1 to 0 when ilk-doomed went.
+            expect(t.engineOps()).toEqual([
+                { op: 'remove', path: '/interlocks/0' },
+                { op: 'replace', path: '/interlocks/0/members', value: ['a', 'c'] },
+                { op: 'remove', path: '/modules/b' },
+            ]);
+            expect(t.config.interlocks).toEqual([{ id: 'ilk-1', name: 'G', members: ['a', 'c'] }]);
+        });
+
+        it('nonexistent id in a batch is dropped without shifting the others', () => {
+            const t = withConfig(fieldConfig());
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/connections/ghost' },
+                { op: 'remove', path: '/connections/conn-b' },
+            ]);
+
+            expect(t.connIds()).toEqual(['conn-vid', 'conn-a', 'conn-keep']);
+            expect(t.engineOps()).toEqual([{ op: 'remove', path: '/connections/2' }]);
+        });
+
+        it('removing the same id twice in one batch removes it once', () => {
+            // The second op refers to an id that no longer exists — same
+            // "unknown id → drop" path as a typo'd id, not a mis-target.
+            const t = withConfig(fieldConfig());
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/connections/conn-a' },
+                { op: 'remove', path: '/connections/conn-a' },
+            ]);
+
+            expect(t.connIds()).toEqual(['conn-vid', 'conn-b', 'conn-keep']);
+            expect(t.engineOps()).toEqual([{ op: 'remove', path: '/connections/1' }]);
+        });
+
+        it('single-op remove is unchanged (pre-patch index, one op out)', () => {
+            const t = withConfig(fieldConfig());
+
+            t.router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/connections/conn-b' }]);
+
+            expect(t.connIds()).toEqual(['conn-vid', 'conn-a', 'conn-keep']);
+            expect(t.engineOps()).toEqual([{ op: 'remove', path: '/connections/2' }]);
+        });
+
+        it('module-settings batch still cascades off pre-patch module state', () => {
+            // Cascade semantics guard: both unmutes decide against the state as
+            // it was when the patch arrived, so 'b' is muted by the first op
+            // and 'a' (hot pre-patch) by the second — not silently skipped
+            // because an earlier op in the same batch already changed things.
+            const t = withConfig({
+                modules: {
+                    a: { settings: { audioEnabled: true } },
+                    b: { settings: { audioEnabled: true } },
+                    c: { settings: { audioEnabled: false } },
+                },
+                connections: [],
+                interlocks: [{ id: 'ilk-1', name: 'G', members: ['a', 'b', 'c'] }],
+            });
+
+            t.router.onPatch('browser-1', 'eng-1', [
+                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
+                { op: 'replace', path: '/modules/c/settings/audioEnabled', value: true },
+            ]);
+
+            expect(t.engineOps()).toEqual([
+                { op: 'replace', path: '/modules/b/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: true },
+                { op: 'replace', path: '/modules/a/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/b/settings/audioEnabled', value: false },
+                { op: 'replace', path: '/modules/c/settings/audioEnabled', value: true },
+            ]);
+        });
+    });
+
     describe('enrichOpsForBroadcast', () => {
         it('enriches module add with manifest data for broadcast', () => {
             const { router, configStore, io, pluginRegistry } = createMocks();

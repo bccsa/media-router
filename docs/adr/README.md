@@ -22,7 +22,8 @@ the old one `superseded by ADR-NNNN`). Number = highest existing + 1.
 | ADR | Decision |
 |---|---|
 | [0001](0001-plugin-owned-native-and-python-code.md) | Plugins own their C++/python; shared base code lives in `<domain>-core` library plugins; plain-make contract, zero-registration discovery |
-| [0002](0002-engine-core-stays-in-packages-engine.md) | Engine orchestration core stays in `packages/engine`; plugins depend on the engine, never the reverse (one recorded name/path-only exception) |
+| [0002](0002-engine-core-stays-in-packages-engine.md) | Engine orchestration core stays in `packages/engine`; plugins depend on the engine, never the reverse (two recorded exceptions: name/path-only plugin lookups, and the runner's per-buffer-adjacent stamper python) |
 | [0003](0003-scoped-native-resolution-and-namespaced-install.md) | Native/python resolution is scoped to the requesting plugin; installs are namespaced under `/usr/libexec/media-router/<plugin>/`; ambiguity fails loud |
 | [0004](0004-out-of-repo-plugins-injected-at-image-build.md) | Product-specific plugins may live in the consuming product's repo (under `media-router-plugin/`) and be injected into `plugins/` at image build |
+| [0005](0005-time-sync-backend.md) | Monotonic house clock in every process; producers stamp bus PTS as contractual media time; `base_time=0`, playout offset D; linuxptp discipline for AES67/ST 2110 |
 | [0006](0006-hardware-sinks-held-at-unity-gain.md) | Hardware PipeWire sinks are forced to unity gain on detection; all attenuation happens in software (`MR_PW_*` nodes / GStreamer) |

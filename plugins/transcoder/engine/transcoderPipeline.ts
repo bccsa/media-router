@@ -131,7 +131,8 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const bufferMs = Math.max(100, input.bufferMs ?? 200);
     const deinterlaceMode = input.deinterlace ?? 'auto';
 
-    // setTimestamps=false: `tsparse set-timestamps=true` re-stamps from PCR and
+    // `buildTsUdpInput` never re-anchors — tsparse `set-timestamps=false`, and
+    // no longer optional. `set-timestamps=true` re-stamps from PCR and it
     // must BUFFER until the next PCR arrives to interpolate. A spec-compliant
     // mux sends PCR every ≤100 ms, but real-world feeds (measured: MediaMTX SRT
     // relay, PCR every 2 s) turn that into 2-second batch-release — the whole
@@ -149,7 +150,6 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         port: input.input.port,
         socketPath: input.input.socketPath,
         jitterMs: bufferMs,
-        setTimestamps: false,
     });
 
     // Per-rendition leaf: a short leaky queue (so a slow encoder sheds whole

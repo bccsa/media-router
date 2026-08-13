@@ -15,6 +15,7 @@ import {
     planSink,
     resolveBuildHealth,
     resolveResumeSocket,
+    videoTsOffsetNs,
 } from './pipelinePlan.js';
 import { DEFAULT_SURFACE, RESUME_SINK_NAME } from './pipelines.js';
 import {
@@ -38,35 +39,90 @@ function readyTarget(over: Partial<RenderTargetReady> = {}): RenderTargetReady {
     };
 }
 
+/** `planSink` with the ts-offset resolved the way the module resolves it. */
+function plan(
+    config: Record<string, unknown>,
+    services?: Parameters<typeof videoTsOffsetNs>[0],
+    target: RenderTargetReady = readyTarget(),
+) {
+    return planSink(target, config, videoTsOffsetNs(services ?? null, config));
+}
+
 describe('planSink', () => {
     it('defaults to a QoS-on, clock-paced KMS sink pinned to the connector id', () => {
-        const plan = planSink(readyTarget(), {});
-        expect(plan.sinkElement).toContain('kmssink name=sink connector-id=32');
-        expect(plan.sinkElement).toContain('sync=true max-lateness=1000000000');
-        expect(plan.sinkElement).toContain('qos=true');
-        expect(plan).toMatchObject({ clockSync: false, sinkPaced: true });
+        const sink = plan({});
+        expect(sink.sinkElement).toContain('kmssink name=sink connector-id=32');
+        expect(sink.sinkElement).toContain('sync=true max-lateness=1000000000');
+        expect(sink.sinkElement).toContain('qos=true');
+        expect(sink).toMatchObject({ clockSync: false, sinkPaced: true });
     });
 
     it('sync=false drops the pacing (and with it the tsparse chain)', () => {
-        const plan = planSink(readyTarget(), { sync: false });
-        expect(plan.sinkElement).toContain('sync=false');
-        expect(plan.sinkPaced).toBe(false);
+        const sink = plan({ sync: false });
+        expect(sink.sinkElement).toContain('sync=false');
+        expect(sink.sinkPaced).toBe(false);
     });
 
     it('clockSync forces pacing on even when sync is off', () => {
-        const plan = planSink(readyTarget(), { sync: false, clockSync: true });
-        expect(plan).toMatchObject({ clockSync: true, sinkPaced: true });
-        expect(plan.sinkElement).toContain('sync=true');
+        const sink = plan({ sync: false, clockSync: true });
+        expect(sink).toMatchObject({ clockSync: true, sinkPaced: true });
+        expect(sink.sinkElement).toContain('sync=true');
     });
 
     it('converts lipSyncMs to a nanosecond ts-offset on the named sink', () => {
-        expect(planSink(readyTarget(), { lipSyncMs: 40 }).sinkElement).toContain(
-            'ts-offset=40000000',
-        );
+        // Contract off (no services): the trim is the whole offset, unchanged.
+        expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=40000000');
     });
 
     it('passes qos=false through for paced HLS chains', () => {
-        expect(planSink(readyTarget(), { qos: false }).sinkElement).toContain('qos=false');
+        expect(plan({ qos: false }).sinkElement).toContain('qos=false');
+    });
+});
+
+/**
+ * Playout offset D on the video leg (ADR-0005 decision 4). `lipSyncMs` stops
+ * being the anchor and becomes a trim stacked on top of the ROUTE's D; with the
+ * contract off nothing about the legacy numbers moves.
+ */
+describe('videoTsOffsetNs', () => {
+    const route = (overrideMs?: number) => ({
+        instanceId: 'video-player-1',
+        timeSyncContract: true,
+        mediaRouter: { getRoutePlayoutOffsetMs: () => overrideMs },
+    });
+
+    it('is the bare lipSyncMs trim when the contract is off', () => {
+        expect(videoTsOffsetNs(null, { lipSyncMs: 40 })).toBe(40_000_000);
+        expect(videoTsOffsetNs({ instanceId: 'v1' }, {})).toBe(0);
+    });
+
+    it('uses the engine-wide default when the route declares no override', () => {
+        expect(videoTsOffsetNs({ ...route(undefined), playoutOffsetMs: 300 }, {})).toBe(
+            300_000_000,
+        );
+    });
+
+    it('falls back to 300 ms when the engine reports no default', () => {
+        expect(videoTsOffsetNs(route(undefined), {})).toBe(300_000_000);
+    });
+
+    it('lets the route head override win over the engine default', () => {
+        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, {})).toBe(500_000_000);
+    });
+
+    it('adds lipSyncMs on top of D as a per-sink trim, both signs', () => {
+        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, { lipSyncMs: 40 })).toBe(
+            540_000_000,
+        );
+        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, { lipSyncMs: -40 })).toBe(
+            460_000_000,
+        );
+    });
+
+    it('reaches the sink element as one ts-offset', () => {
+        expect(
+            plan({ lipSyncMs: 40 }, { ...route(500), playoutOffsetMs: 300 }).sinkElement,
+        ).toContain('ts-offset=540000000');
     });
 });
 

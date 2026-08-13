@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { ModuleManager } from './ModuleManager.js';
 import { PluginLoader } from '../plugins/PluginLoader.js';
 import type { ModuleRuntimeState } from '@media-router/shared-types';
+import type { ModuleServices, PluginModule } from '../plugins/PluginModule.js';
+import type { PipeWireManager } from '../audio/PipeWireManager.js';
+import type { MediaRouter } from '../routing/MediaRouter.js';
+import type { ProcessManager } from '../child-process/ProcessManager.js';
+import type { DeviceProviderRegistry } from '../system/DeviceProviderRegistry.js';
 
 describe('ModuleManager', () => {
     let manager: ModuleManager;
@@ -75,5 +80,63 @@ describe('ModuleManager', () => {
     it('throws on duplicate instanceId', () => {
         manager.createModule('dup', 'example', {});
         expect(() => manager.createModule('dup', 'example', {})).toThrow('already exists');
+    });
+});
+
+/**
+ * The engine-wide time-sync contract reaches a module the same way the clock
+ * authority does — through the services bag built here. A module resolves the
+ * mode from `services.timeSyncContract`, so losing it in this wiring would
+ * silently put every pipeline back on the legacy net-clock path.
+ */
+describe('ModuleManager — time-sync contract in the services bag', () => {
+    /** The four services `createModule` requires before it builds a bag at all. */
+    const deps = () =>
+        [{}, {}, {}, {}] as unknown as [
+            PipeWireManager,
+            MediaRouter,
+            ProcessManager,
+            DeviceProviderRegistry,
+        ];
+
+    /** A plugin that records the services it was initialised with. */
+    const capturingPlugin = (): PluginModule & { seen: ModuleServices | undefined } => ({
+        seen: undefined as ModuleServices | undefined,
+        async onInit(_config: Record<string, unknown>, services?: ModuleServices) {
+            (this as unknown as { seen: ModuleServices | undefined }).seen = services;
+        },
+        async onStart() {},
+        async onStop() {},
+        async onDestroy() {},
+        getState: () => ({
+            running: false,
+            ready: false,
+            health: 'stopped' as const,
+            pendingRestart: false,
+        }),
+        getLiveUpdatableParams: () => [],
+        async onLiveConfigUpdate() {},
+    });
+
+    const servicesSeen = async (timeSyncContract?: boolean): Promise<ModuleServices | undefined> => {
+        const manager = new ModuleManager(
+            new PluginLoader('/nonexistent'),
+            ...deps(),
+            undefined,
+            timeSyncContract,
+        );
+        const plugin = capturingPlugin();
+        manager.createModule('m1', 'example', {}, plugin);
+        await manager.startModule('m1');
+        return plugin.seen;
+    };
+
+    it('passes the flag through when the engine runs the contract', async () => {
+        expect((await servicesSeen(true))!.timeSyncContract).toBe(true);
+    });
+
+    it('leaves it absent when the engine does not', async () => {
+        expect((await servicesSeen(false))!.timeSyncContract).toBeUndefined();
+        expect((await servicesSeen())!.timeSyncContract).toBeUndefined();
     });
 });

@@ -1,5 +1,9 @@
 import * as fs from 'fs';
-import type { PipelineDescription } from '@media-router/engine';
+import {
+    effectivePlayoutOffsetNs,
+    type PipelineDescription,
+    type PlayoutOffsetServices,
+} from '@media-router/engine';
 import {
     buildFallbackOnlyPipeline,
     buildLivePipeline,
@@ -38,20 +42,52 @@ export interface SinkPlan {
     sinkPaced: boolean;
 }
 
-export function planSink(target: RenderTargetReady, config: Record<string, unknown>): SinkPlan {
+export function planSink(
+    target: RenderTargetReady,
+    config: Record<string, unknown>,
+    /**
+     * Sink `ts-offset` in ns, already resolved by `videoTsOffsetNs` — the
+     * playout offset D plus the deprecated `lipSyncMs` trim under the time-sync
+     * contract, or the bare `lipSyncMs` trim on the legacy path. Passed in
+     * rather than derived here because the SAME resolution has to serve the live
+     * update path and the audio leg of the route.
+     */
+    tsOffsetNs: number,
+): SinkPlan {
     const clockSync = (config.clockSync as boolean | undefined) === true;
     const sinkPaced = clockSync || ((config.sync as boolean | undefined) ?? true);
     return {
         sinkElement: buildSink(target.active.name, target.sinkEnv, {
             qos: (config.qos as boolean | undefined) ?? true,
             sync: sinkPaced,
-            // Positive lipSyncMs delays video to meet late audio (audio path has
+            // Positive offset delays video to meet late audio (audio path has
             // more buffering latency). Live-updatable via the named `sink`.
-            tsOffsetNs: Math.round(Number(config.lipSyncMs ?? 0) * 1_000_000),
+            tsOffsetNs,
         }),
         clockSync,
         sinkPaced,
     };
+}
+
+/**
+ * The video leg's sink `ts-offset`, in nanoseconds.
+ *
+ * Contract ON: playout offset D for this module's ROUTE (engine default, or the
+ * route head's override) plus `lipSyncMs` as a per-sink trim. The audio leg
+ * resolves D through the same `effectivePlayoutOffsetMs` against the same route,
+ * so both legs of one route schedule off one number — which is the whole point
+ * of ADR-0005 decision 4 and what an independently-set `lipSyncMs` could never
+ * guarantee.
+ *
+ * Contract OFF: `lipSyncMs` alone — bit-for-bit the legacy value.
+ */
+export function videoTsOffsetNs(
+    services: PlayoutOffsetServices | null | undefined,
+    config: Record<string, unknown>,
+): number {
+    return effectivePlayoutOffsetNs(services, {
+        trimMs: Number(config.lipSyncMs ?? 0) || 0,
+    });
 }
 
 export interface BuildHealthInput {

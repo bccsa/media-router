@@ -24,6 +24,7 @@ import { wireEngineEvents } from './EngineEventWiring.js';
 import { getAllIps, findBuildNumber, getHostname } from './system/deviceInfo.js';
 import { ModuleLifecycle, mapPorts } from './modules/ModuleLifecycle.js';
 import { ModuleRunController } from './modules/ModuleRunController.js';
+import { resolveEnginePlayoutOffsetMs } from './plugins/playoutOffset.js';
 
 const log = createLogger('Engine');
 
@@ -32,6 +33,31 @@ export interface EngineConfig {
     lcpPort?: number;
     pluginsDir?: string;
     profilesPath?: string;
+    /**
+     * Engine-wide time-sync contract (on by default). Every pipeline that would
+     * have asked for `clockSync` instead runs on a plain monotonic system clock
+     * with a pinned timeline (running-time ≡ clock time) — one time base for the
+     * whole box, no clock daemon to reach. Supersedes the per-module `clockSync`
+     * path, which stays as the legacy escape hatch when this is off.
+     *
+     * Omitted → `MR_TIME_SYNC_CONTRACT` decides — `'0'` forces it off, `'1'`
+     * forces it on — so the fleet can kill (or pin) it from the unit file
+     * without a code change (same pattern as MR_PLUGINS_DIR etc.); an explicit
+     * value always wins.
+     */
+    timeSyncContract?: boolean;
+    /**
+     * Engine-wide default playout offset D, in ms (ADR-0005 decision 4).
+     * Presentation sinks under the time-sync contract schedule at
+     * `stamped-time + D`; a route can override it on its route head (see
+     * `plugins/playoutOffset.ts`). Ignored entirely when the contract is off.
+     *
+     * Omitted → `MR_PLAYOUT_OFFSET_MS` decides, else 300 ms — same precedence
+     * shape as `timeSyncContract` above, so the fleet can retune the budget from
+     * the unit file without a code change. An unparseable value (or one outside
+     * 0–10000 ms) is ignored and falls through to the default.
+     */
+    playoutOffsetMs?: number;
 }
 
 /**
@@ -56,6 +82,10 @@ export class Engine {
     readonly paQueue: PaCommandQueue;
     readonly deviceProviders: DeviceProviderRegistry;
     readonly clockAuthority: ClockAuthority;
+    /** Resolved engine-wide time-sync contract — see `EngineConfig.timeSyncContract`. */
+    readonly timeSyncContract: boolean;
+    /** Resolved engine-wide default playout offset D in ms — see `EngineConfig.playoutOffsetMs`. */
+    readonly playoutOffsetMs: number;
 
     private apiServer: FastifyInstance | null = null;
     private config: EngineConfig;
@@ -91,6 +121,16 @@ export class Engine {
         this.processManager = new ProcessManager();
         this.deviceProviders = new DeviceProviderRegistry();
         this.clockAuthority = new ClockAuthority(this.processManager);
+        // Precedence, highest first: an explicit config value (either way) →
+        // the MR_TIME_SYNC_CONTRACT kill-switch ('0' off, '1' on) → on. Any
+        // other env value is ignored and falls through to the default.
+        this.timeSyncContract =
+            config.timeSyncContract ?? process.env.MR_TIME_SYNC_CONTRACT !== '0';
+        // Playout offset D (ADR-0005 decision 4) — same precedence shape.
+        this.playoutOffsetMs = resolveEnginePlayoutOffsetMs(
+            config.playoutOffsetMs,
+            process.env.MR_PLAYOUT_OFFSET_MS,
+        );
 
         this.pluginLoader = new PluginLoader(config.pluginsDir);
         this.mediaRouter = new MediaRouter();
@@ -101,6 +141,8 @@ export class Engine {
             this.processManager,
             this.deviceProviders,
             this.clockAuthority,
+            this.timeSyncContract,
+            this.playoutOffsetMs,
         );
         this.managerConnection = new ManagerConnection();
         this.lcpServer = new LcpServer(config.lcpPort ?? 8081);
@@ -262,6 +304,8 @@ export class Engine {
             processManager: this.processManager,
             deviceProviders: this.deviceProviders,
             clockAuthority: this.clockAuthority,
+            timeSyncContract: this.timeSyncContract,
+            playoutOffsetMs: this.playoutOffsetMs,
         });
         log.info({ pluginCount }, 'Loaded plugins');
         warnDuplicatePyModules();

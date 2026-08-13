@@ -26,6 +26,19 @@ describe('buildSpawnArgs', () => {
         expect(args).not.toContain('--flush-ms');
     });
 
+    it('adds --stamp-timeline only under the time-sync contract', () => {
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true }),
+        ).toEqual(expect.arrayContaining(['--stamp-timeline']));
+        // Flag off ⇒ argv byte-identical to before the contract existed, for
+        // both the explicit false and the absent case.
+        const off = ['--input', '/s', '--caps', BUS_TS_CAPS];
+        expect(buildSpawnArgs({ inputSocketPath: '/s', outputs: [] })).toEqual(off);
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: false }),
+        ).toEqual(off);
+    });
+
     it('passes busBatchMs through as --flush-ms, including 0 (batching off)', () => {
         expect(
             buildSpawnArgs({ inputSocketPath: '/s', outputs: [], busBatchMs: 5 }),

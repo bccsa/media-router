@@ -77,12 +77,76 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         if (!this.childProcess) return false;
         const desc = this.buildPipeline(this.config);
         if (!desc) return false;
-        if (desc.clockSync && this.services?.clockAuthority) {
+        await this.applyTimeSync(desc);
+        await this.childProcess.updatePipelineDesc(desc);
+        return true;
+    }
+
+    /**
+     * Resolve how a pipeline gets its timeline, in precedence order.
+     *
+     * 1. Engine-wide time-sync contract (`services.timeSyncContract`): mark the
+     *    description and stop. The runner then puts the pipeline on a plain
+     *    monotonic system clock with a pinned timeline — nothing to resolve, no
+     *    clock authority to spawn or reach, so this can never delay a start.
+     *
+     *    This applies to EVERY pipeline, not just `clockSync` ones. The contract
+     *    is producer-stamped (ADR-0005 decisions 2+3): a producer's bus buffer
+     *    PTS only means house-clock media time if that producer's running-time
+     *    IS house-clock time, i.e. `base_time=0`. Gating on `clockSync` pinned
+     *    the consumers (audio-decoder, video-player) and left every producer on
+     *    a per-start base-time, so the wire carried `stamp + base_time` and the
+     *    contract was silently a no-op end to end. `clockSync` stays a
+     *    per-module opt-in for the LEGACY net clock below, which really is
+     *    opt-in (it costs a daemon and a sync wait).
+     *    It also DROPS `preserveSourceTimeline` — see below.
+     * 2. Legacy (contract off): cross-pipeline A/V sync via the shared net
+     *    clock. Resolve it from the engine's clock authority and stamp it onto
+     *    the description. Best-effort — if the authority can't be brought up the
+     *    pipeline runs unsynced (today's behaviour) rather than failing to start.
+     */
+    private async applyTimeSync(desc: PipelineDescription): Promise<void> {
+        if (this.services?.timeSyncContract) {
+            desc.timeSyncContract = true;
+            // `preserveSourceTimeline` is the mechanism the contract REPLACED
+            // (ADR-0005 decision 2 rejects consumer-side pad offsets), and the
+            // two do not compose:
+            //
+            //  * It cannot change what a consumer sees. Every module that asks
+            //    for it (transcoder, audio-transcoder) emits through
+            //    `buildBusSink`, i.e. a `busout_*` tee, and the egress stamper
+            //    rewrites those buffers' PTS/DTS to `anchor + (PES − firstPES)`.
+            //    A constant pad offset shifts every PES value by the same
+            //    amount, so it cancels in that delta: the wire ladder is
+            //    identical with the latch on or off.
+            //  * It answers a source discontinuity by ERRORING OUT so the
+            //    pipeline restarts and re-latches (its offsets are baked into
+            //    pad offsets and go stale). The contract answers the same event
+            //    with an in-place re-anchor — one PTS step, no restart. Leaving
+            //    both armed means the destructive one wins: the pipeline is
+            //    already tearing down before the re-anchor can matter, and a
+            //    transcoder restart rebuilds its encoders and interrupts every
+            //    consumer over an event the contract handles for free.
+            //
+            // What is lost with it off is the ABSOLUTE PES/PCR values in the
+            // transcoded TS (they rebase per incarnation again). No consumer
+            // under the contract reads those as a timeline — tsdemux takes its
+            // basis from the stamped DTS/PTS (ADR-0005's named regression) and
+            // its frame spacing from PES deltas, both preserved. Modules keep
+            // declaring it: with the contract off (MR_TIME_SYNC_CONTRACT=0) the
+            // legacy behaviour is exactly what it was.
+            delete desc.preserveSourceTimeline;
+            this.log.info(
+                { clockSync: desc.clockSync === true },
+                'Time-sync contract: monotonic house clock, base_time=0, producer-stamped bus PTS',
+            );
+            return;
+        }
+        if (!desc.clockSync) return;
+        if (this.services?.clockAuthority) {
             const clock = await this.services.clockAuthority.getClockConfig();
             if (clock) desc.clock = clock;
         }
-        await this.childProcess.updatePipelineDesc(desc);
-        return true;
     }
 
     /** PipeWire node name for this module instance. */
@@ -112,14 +176,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             return;
         }
 
-        // Cross-pipeline A/V sync (opt-in): resolve the shared clock from the
-        // engine's clock authority and stamp it onto the description. Best-
-        // effort — if the authority can't be brought up the pipeline runs
-        // unsynced (today's behaviour) rather than failing to start.
-        if (desc.clockSync && this.services?.clockAuthority) {
-            const clock = await this.services.clockAuthority.getClockConfig();
-            if (clock) desc.clock = clock;
-        }
+        // Time sync (opt-in): either mark the description for the engine-wide
+        // contract or resolve the legacy shared net clock — see applyTimeSync.
+        await this.applyTimeSync(desc);
 
         // Spawn child process
         this.childProcess = new GstChildProcess();
