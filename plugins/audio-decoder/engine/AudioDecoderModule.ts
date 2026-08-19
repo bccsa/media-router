@@ -1,5 +1,6 @@
 import {
     GstPluginBase,
+    backlogShedConfig,
     buildBusSrc,
     effectivePlayoutOffsetNs,
     type PipelineDescription,
@@ -358,6 +359,32 @@ export class AudioDecoderModule extends GstPluginBase {
             pipeline,
             restartOnError: true,
             ...(clockSync ? { clockSync: true } : {}),
+            // Backlog shedder — the contract's latency ratchet guard, on the
+            // leg the contract turned `sync=true` (see backlogShed.ts). Shed
+            // point is the pulsesink's OWN pad: raw PCM references nothing, so
+            // whole decoded buffers can be dropped anywhere, and its pad is the
+            // last place that still sees every one of them. `max-lateness=-1`
+            // makes this leg's ratchet quieter than the video leg's, never
+            // absent — the sink refuses to drop late buffers, so retained
+            // latency shows up as lipsync drift against the video leg of the
+            // same route rather than as dropped frames.
+            //
+            // NOT keyframe-aligned, and the shed is whole-buffer: no sample is
+            // ever cut and nothing is resampled. What the sink sees is a
+            // timestamp gap, which GstAudioBaseSink answers by resyncing its
+            // ring once the gap passes `alignment-threshold` (40 ms) — the ring
+            // plays out, then the sink re-anchors on the new timeline. One
+            // click, rate-limited to at most one a minute, in exchange for the
+            // route's configured D.
+            ...(contract
+                ? {
+                      backlogShed: backlogShedConfig(this.services, {
+                          element: 'sink',
+                          sink: 'sink',
+                          keyframeAligned: false,
+                      }),
+                  }
+                : {}),
         };
     }
 }

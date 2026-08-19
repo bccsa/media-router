@@ -393,8 +393,24 @@ export function buildLivePipeline(
     // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
     // 8 Mbps span >200 ms on a Pi 4); at 200 ms it sheds the tail of nearly
     // every GOP, which the IRAP resync gate then drops until the next keyframe
-    // (~10 fps playback). Latency is unaffected in steady state — a leaky
-    // queue only holds data while downstream is stalled.
+    // (~10 fps playback).
+    //
+    // THIS QUEUE'S DEPTH IS RETAINED LATENCY, and the sentence that used to sit
+    // here — "latency is unaffected in steady state; a leaky queue only holds
+    // data while downstream is stalled" — was FALSIFIED by the time-sync
+    // contract (.42, 2026-08-13/14). It was true for the sink it was written
+    // for: `sync=false` presents on arrival, so it gulps any backlog at max
+    // speed and drains itself. A `sync=true` sink drains at exactly MEDIA rate,
+    // so whatever this queue absorbs during a hiccup it keeps — for ever, one
+    // hiccup at a time, until frames start being dropped for lateness (field:
+    // 50 fps decoded, 2.5 fps on the glass after ~16 h).
+    //
+    // The answer is NOT a smaller queue — this depth is field-measured IDR-burst
+    // absorption and shrinking it puts the picture back at ~10 fps. It is the
+    // backlog shedder (`PipelineDescription.backlogShed`, armed by the contract
+    // in pipelinePlan.ts): retention past the route's playout budget D is
+    // detected at the decoder's sink pad and the oldest data is dropped, up to
+    // the next keyframe, until the leg is back at D.
     const esQueueMs = Math.max(bufferMs, 1_000);
     const q = `queue leaky=2 max-size-time=${esQueueMs * 1_000_000} max-size-buffers=0 max-size-bytes=0`;
     // Scaling policy — who resizes the picture, per sink:

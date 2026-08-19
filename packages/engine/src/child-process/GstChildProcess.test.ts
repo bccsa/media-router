@@ -155,6 +155,28 @@ describe('start payload', () => {
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).keyframeGate).toBeUndefined();
     });
 
+    it('forwards backlogShed — dropping it leaves every paced leg on the ratchet', () => {
+        // The guard against the contract's latency ratchet. Lost here, the
+        // pipeline string still looks correct and the leg still plays — it just
+        // decays over HOURS while reporting itself healthy, which is exactly the
+        // failure it was written for (.42, 2026-08-13/14).
+        const backlogShed = {
+            element: 'vpdec',
+            sink: 'sink',
+            keyframeAligned: true,
+            toleranceMs: 250,
+            holdMs: 5_000,
+            cooldownMs: 60_000,
+            sanityMs: 10_000,
+        };
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink', backlogShed }).backlogShed).toEqual(
+            backlogShed,
+        );
+        // Absent on the legacy path — must stay absent, not become a shedder on
+        // elements that may not exist (a hard start error).
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).backlogShed).toBeUndefined();
+    });
+
     it('forwards timeSyncContract — dropping it silently reverts to the net clock', () => {
         // The flag is the ONLY thing telling the runner to pin the timeline
         // (monotonic clock, base_time 0). Lost here, the pipeline would run on
@@ -165,5 +187,22 @@ describe('start payload', () => {
                 .timeSyncContract,
         ).toBe(true);
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).timeSyncContract).toBe(false);
+    });
+
+    it('forwards alignBranchesToStamps — dropping it puts the mux back on luck', () => {
+        // Caught HERE the hard way (.202, 2026-08-14): the mux built the config,
+        // the runner knew what to do with it, and the field skew was untouched
+        // because the payload never carried it — the decoderThreadType trap
+        // again, and invisible from either end. Without it each mux input branch
+        // keeps the private zero point it took off the one bus buffer its
+        // tsdemux locked on, i.e. the 100–121 ms A/V skew, re-drawn per restart.
+        const alignBranchesToStamps = { demuxes: ['demux_0', 'demux_1'] };
+        expect(
+            payloadFor({ pipeline: 'fakesrc ! fakesink', alignBranchesToStamps })
+                .alignBranchesToStamps,
+        ).toEqual(alignBranchesToStamps);
+        // Absent on the legacy path (applyTimeSync drops it there) — must stay
+        // absent rather than arming probes on elements that may not exist.
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).alignBranchesToStamps).toBeUndefined();
     });
 });

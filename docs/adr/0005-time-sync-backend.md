@@ -97,6 +97,64 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    when it is unblocked: linuxptp over `GstPtpClock`, GM-capable with
    conservative `priority1`, AES67 Media Profile by default.
 
+   Note 2026-08-13 (later, operator decision): the freeze was lifted for the
+   PTP and AES67 *build* tracks and both were implemented (linuxptp via
+   meta-oe + `media-router-ptp` recipe, config-gated OFF by default; AES67
+   RX/TX/SAP plugins). Live two-box validation passed the glass-level fps gate
+   (v3d 50.00→49.98→50.00 IRQ/s, monotonic never stepped; `.42` SLAVE at
+   6.5 µs rms on software timestamping). Caveats recorded: Pi 5 `macb`
+   hardware timestamping advertises support but attaches no RX timestamp to
+   DELAY_REQ — unusable as GM until investigated (`PTP_TIMESTAMPING` override
+   added); PTP left OFF pending the burn-in soak, which remains the
+   merge/release gate for the branch.
+
+   Note 2026-08-14 (scope bookkeeping against this decision):
+   - HW-timestamp validation is HALF DONE — the Pi 5 half is answered (macb
+     unusable as GM, see above); the **Intel NIC half is still open**, no
+     `ethtool -T` validation has been run on x86 hardware.
+   - Shipped BEYOND what this decision asked for, as operator tooling: a live
+     PTP status surface in the Device Manager (port state, offset/rms, path
+     delay, grandmaster identity + MAC, timestamping mode) and a per-device
+     `slaveOnly` knob. The knob is a per-device escape hatch, not a policy
+     change — its default stays GM-capable, so the slave-only FLEET policy this
+     decision rejected remains rejected.
+
+   Note 2026-08-18 (scope bookkeeping, continued). Four more things sit beyond
+   the letter of this decision. All four are DELIBERATE; they are recorded here
+   so a review does not read them as scope creep and re-open them:
+   - **`ptp_minor_version 0` is pinned in both profile presets**, so we emit
+     classic v2.0 frames (version byte 0x02) instead of linuxptp 4.4's default
+     v2.1 (0x12). The minor nibble is reserved-zero in 1588-2008, the edition
+     both AES67 and ST 2059-2 build on, so v2.0 stays interoperable with every
+     v2 peer — and it is what makes hardware timestamping work at all on a Pi 5,
+     whose RP1 GEM RX classifier recognises only v2.0 as a PTP event frame.
+     Bench-proven on the soak pair 2026-08-14 ~09:50Z: `.202` as GM ran on
+     HARDWARE timestamps with zero "received DELAY_REQ without timestamp" after
+     09:49:54 (152 in the operator's immediately preceding auto-mode window — a
+     clean on-demand A/B), `.42` went UNCALIBRATED -> SLAVE at ~5–7.5 µs rms and
+     path delay fell 43 µs -> 10.8 µs, glass verified after. That result NARROWS
+     the 2026-08-13 "macb unusable as GM" caveat above: the fault was the
+     version byte, not the driver, and a Pi 5 GM runs on hardware stamps with
+     the pin in place. The `PTP_TIMESTAMPING` override stays, because a
+     third-party v2.1 talker can still reproduce the original symptom.
+   - **Turning PTP on displaces the running time source and turning it off
+     restores exactly that set** (htpdate / systemd-timesyncd, whichever was
+     actually stopped, recorded on the device). Not asked for here, but the two
+     alternatives are worse: a device left with NO time source after PTP is
+     switched off, or two daemons slew-fighting one clock after it is switched
+     on.
+   - **`PTP_HWTS_FILTER` is an unexposed escape hatch.** It is the second half
+     of the Pi 5 hardware-timestamping workaround (`hwts_filter full` takes the
+     version-sensitive classifier out of the path entirely, covering the case
+     `ptp_minor_version` cannot: a third-party node sending US v2.1 DELAY_REQs).
+     It stays out of the UI and empty by default because it is reported working
+     upstream but is NOT yet A/B-tested on our bench — exposing an unproven
+     hardware knob is how a working device gets broken by a settings page.
+   - **The interface override and the full settings page are operator tooling**,
+     alongside the status surface and `slaveOnly` noted above: profile, domain,
+     priority, timestamping and interface are per-device escape hatches with
+     GM-capable defaults, not a change to the fleet policy this decision fixed.
+
 7. **AES67 scope.** First deliverable: RX plugin (`udpsrc` →
    `rtpjitterbuffer` RFC 7273 sync → L24 depay → bus), TX plugin (PTP-epoch
    RTP stamping, conformant packet pacing), SAP announce/discovery. Rejected
@@ -466,3 +524,304 @@ same fixture asserting the same integers.
   mutation is instructive: restoring the old rule both MISSES a single-PID
   rewind and FALSE-FIRES on a single corrupt PTS (the advanced reference makes
   an outlier two consecutive anomalies).
+
+## Implementation notes (Stage AES67 — RX/TX plugins and SAP)
+
+Decision 7's first deliverable: `aes67-input`, `aes67-output` and the SAP
+announce/discovery sidecar, plus the `aes67-core` library plugin that owns the
+domain's python ([[0001]]). Repo-side and locally verified only — the two-box
+live test needs PTP on the devices and is a later phase.
+
+- **Ordering, stated honestly.** Decision 11 sequences AES67 *after* PTP mode,
+  and PTP does not exist in the tree (decision 6's 2026-08-13 note). What lands
+  here is the whole non-PTP half — receive, transmit, discovery, packet
+  pacing — plus the plumbing for the PTP half behind a `ptpSync` config that is
+  OFF by default and REFUSES to engage when the box cannot back it. Nothing
+  here anticipates PTP by faking it; the sections below say exactly which lines
+  change state the day `ptp4l`/`phc2sys` land.
+
+- **The sender's epoch is one integer, and no TAI pipeline clock is needed.**
+  This is the note's main finding, and it is the opposite of what was expected
+  when the stage was scoped (a `GST_CLOCK_TYPE_TAI` clock on the egress
+  pipeline, i.e. a documented exception to decision 5). Measured on gst 1.28:
+  `rtpbasepayload` computes `rtptime = timestamp-offset + running_time x
+  clock_rate / 1e9` from the buffer's ABSOLUTE running time, not from a
+  first-buffer anchor — shifting running time by 5 s shifts the RTP timestamp
+  by exactly 240000 samples. Under decision 3 running-time IS CLOCK_MONOTONIC,
+  so `timestamp-offset = ((CLOCK_TAI − CLOCK_MONOTONIC) x rate / 1e9) mod 2^32`
+  makes the wire timestamps PTP-epoch media time with the pipeline still on the
+  house clock. **The exception was not taken**: no second clock domain, no
+  runner change, no `PipelineDescription` field — the whole thing is a number
+  the plugin computes at start. (A TAI clock would also have needed the bus's
+  house-time PTS translated into it on every buffer, which is the same
+  measurement done per-buffer instead of once.)
+
+- **Measuring once is correct, and here is why it is not a shortcut.**
+  CLOCK_MONOTONIC on Linux "is affected by the incremental adjustments
+  performed by adjtime(3) and NTP" (`man 2 clock_gettime`; CLOCK_MONOTONIC_RAW
+  is the variant that is not), so it carries the same frequency discipline
+  `phc2sys` applies to CLOCK_REALTIME. TAI−MONOTONIC is therefore constant
+  under discipline and moves only on a STEP — a discrete event to re-measure
+  for, not a drift to track. This is also why decision 5's rejection of
+  CLOCK_REALTIME as the house clock costs nothing here: we read the realtime
+  family exactly once, for an offset, never for scheduling.
+
+- **The refusal is the feature.** The kernel's TAI offset is 0 until an NTP/PTP
+  daemon sets it (37 s today), so `aes67_clock.py` reports `disciplined: false`
+  and `rtpTimestampOffset: null` — not 0, which is a legal offset and would be
+  silently wrong. The sender then keeps the payloader's random RFC 3550 offset,
+  drops `a=ts-refclk`/`a=mediaclk` from its SDP, and says so on the module face.
+  A receiver cannot detect a sender that announces a PTP media clock it does not
+  have; that failure mode is the one thing a first cut must not ship.
+
+- **RX RFC 7273 works today and does NOT contradict decision 6.**
+  `rtpjitterbuffer rfc7273-sync=true` reads `a-ts-refclk`/`a-mediaclk` from the
+  receive caps (GStreamer's `a-` prefixed spelling of the SDP attributes) and
+  instantiates a `GstPtpClock` for the announced domain — the slave-only,
+  in-process clock decision 6 rejected. No conflict: it is rejected as the
+  mechanism that DISCIPLINES the house clock, and used here only to interpret a
+  sender's RTP timestamps. It is gated on an operator-supplied grandmaster id
+  because a jitterbuffer told to sync to a clock that is not there stops
+  producing audio — silence being the worst available failure.
+
+- **What RX sync does NOT buy, yet.** An `aes67-input` is a bus producer, so its
+  output is re-anchored onto local house time by the egress stamper
+  (`anchor + (PES − ref)`). Epoch-exactness therefore survives *inside* the RX
+  pipeline but not *through the bus*: two devices receiving one AES67 stream
+  still align to their own anchors, not to the sender's epoch. Closing that
+  needs the stamper to accept an externally supplied anchor (a
+  reference-timestamp meta is already available on the buffers —
+  `add-reference-timestamp-meta=true`), which is a contract change and belongs
+  in its own stage, not smuggled into a plugin.
+
+- **The AES67 egress does not take playout offset D.** Decision 4's budget is
+  for PRESENTATION; an RTP egress carries its alignment in the timestamps, so
+  delaying transmission by D would only spend the receiver's link-offset budget
+  (typ. 1-20 ms against a 300 ms D) while changing nothing about alignment.
+  What the sink does need is a *pacing* margin — the payloader emits one buffer
+  per 1 ms packet and without a syncing sink they leave in decode-sized bursts —
+  so it presents `sync=true max-lateness=-1 ts-offset=senderLatencyMs` (20 ms
+  default) under the contract, and `sync=false` with the contract off, where
+  there is no house timeline to pace against. The RX side, being a route head,
+  carries `playoutOffsetMs` normally.
+
+- **SAP is python, and both ends share it.** `aes67-core/py/aes67_sap.py` builds
+  and parses the SDP and the RFC 2974 packet; `mr-sap.py` is I/O and lifecycle
+  only. TypeScript has no copy of the format — the TX module passes session
+  parameters as argv, the RX module consumes parsed snapshots as JSON. Two
+  deliberate omissions: SAP authentication (its PGP/CMS signatures are unused in
+  AES67 practice, and an unverified auth block is worse than none — the header
+  is skipped, not trusted) and compressed/IPv6 announcements, which are rejected
+  rather than mis-read. Announcements are re-sent every 30 s (RFC 2974's own
+  300 s floor is unusable in an operator workflow, and 30 s is what
+  Ravenna/Dante do), aged out at 10x that, and DELETED on shutdown so a stopped
+  stream leaves other devices' pickers immediately.
+
+- **Discovery is owned by the running modules, not by the engine.** Each
+  `aes67-input` spawns its own listener and publishes whole snapshots into a
+  shared table that the `aes67-stream` device provider lists. A box with no
+  AES67 input therefore joins no multicast group and runs no daemon; the cost is
+  that the picker only fills once at least one input module exists, which is
+  when anyone needs it. Snapshots rather than deltas mean a sidecar restart
+  re-syncs the GUI instead of leaving a phantom stream in every picker.
+
+- **The 302M bus is the stereo ceiling.** `avenc_s302m` advertises `channels:
+  [1, 2]` on gst 1.28 (re-verified for this stage), so a >2-channel AES67 stream
+  is downmixed on the way to the bus and the module says so in its health text.
+  The RTP side still receives and describes all 8 channels — the limit is the
+  bus encoding, not the receiver, and it moves the day 302M multichannel does.
+
+- **Escaped quotes in the receive caps are load-bearing.** `a-ts-refclk`'s value
+  contains `=`, so it must be quoted inside the structure, and the structure
+  lives inside a `caps="…"` launch clause — the inner quotes must therefore
+  reach `gst_parse_launch` escaped. Both alternatives fail the property set
+  outright (`\=` escaping and single quotes, both measured), and the failure
+  mode is a pipeline that never starts, so the caps string is parsed back by a
+  real `gst_parse_launch` in the suite rather than only string-matched.
+
+- **Local verification, and its limits.** The suite runs real elements on the
+  dev box: RTP timestamp mapping (the epoch claim above), the caps round-trip,
+  and a 400-packet L24 hop over 127.0.0.1 whose PCM is compared byte-for-byte
+  against the same source rendered locally — at 997 Hz, not 1 kHz, because a
+  1 kHz sine at 48 kHz repeats every 48 samples and would match anywhere. The
+  SAP sidecar is tested end-to-end as two processes over 127.0.0.1 (`lo` has no
+  MULTICAST flag, so the group itself cannot be exercised locally). What remains
+  unverified until the two-box phase: the multicast join and IGMP behaviour on
+  real NICs, DSCP marking surviving the switch, interop with a third-party AES67
+  device, and every `ptpSync` path — none of which any amount of local testing
+  can stand in for.
+
+## Implementation notes (Stage 3c — the latency ratchet and the backlog shedder)
+
+A fault the contract CREATED, found in the field on a Pi 400 (10.9.1.42) ~16 h
+after Stage 3a shipped: 50 fps decoded (codec IRQ ~100/s), 2.5 fps on the glass
+(`vc4 crtc` IRQ 2.2/s). The picture had decayed over hours with every module
+reporting healthy.
+
+- **Decision 1 (`sync=true` everywhere) made backlog ONE-WAY.** A clock-paced
+  sink drains at exactly media rate, so whatever the leg's leaky queues absorb
+  during a downstream hiccup — a decode stall, a compositor hitch, a CMA
+  allocation — is never handed back. The legacy `sync=false` sink presented on
+  arrival and therefore gulped any backlog at max speed, which is exactly the
+  assumption the video leg's queue sizing was written against
+  (`pipelines.ts`: *"latency is unaffected in steady state — a leaky queue only
+  holds data while downstream is stalled"*). That sentence is now marked
+  falsified where it lives. Nothing in Stage 3a's own instrumentation could see
+  it: producer margins were flat, the servo was correctly cancelling a real
+  −18 ppm source drift, and `tsdemux` was verified to RE-SLAVE to the house
+  stamps rather than free-run on the PES clock (that probe is now
+  `gst_tsdemux_slave_test.py`), so the error was neither producer-side nor
+  timeline drift. It was retained SCHEDULE on the consumer.
+
+- **The diagnostic that settled it was a live `ts-offset` bump.** +1 s restored
+  60 fps instantly and reverting put the box straight back to 2.5 fps, which no
+  throughput fault can do. It is also why a bigger D is NOT the fix: it is
+  unbounded (the ratchet keeps climbing), and it desyncs the other leg of the
+  same route unless both move — decision 4's whole point.
+
+- **The guard belongs at the CONTRACT layer, not in a plugin.** Every
+  `sync=true` bus consumer the contract creates has this exposure, so
+  `plugins/backlogShed.ts` owns the policy numbers and the
+  `services.timeSyncContract` gate for all of them, exactly as
+  `playoutOffset.ts` owns D for both legs of a route. A leg supplies only the
+  two element names that are genuinely its own.
+
+- **It is an ACTIVE shedder, not a resize.** Retention past `D + 250 ms`, held
+  for 5 s (a FLOOR rule — one sample back inside tolerance resets the streak, so
+  an absorbed IDR burst can never trip it), makes the runner drop the OLDEST
+  queued data until the leg is back inside D, once per 60 s per leg at most. The
+  queues are untouched: their depth is field-measured IDR-burst absorption and
+  shrinking them puts the picture back at ~10 fps.
+
+- **Where it measures is where it sheds, and that is NOT the sink.** Lateness is
+  computed on the shed point's own pad (`now_running_time − (buffer_running_time
+  + ts-offset)`, so the number is the excess over D directly), because once a
+  shed starts nothing reaches the sink and a sink-pad measurement would freeze
+  mid-episode. The video leg sheds at its DECODER: the backlog is upstream of it,
+  compressed AUs drop at I/O speed where decoded frames would drain no faster
+  than the decoder runs, and `h26xparse` has already flagged every access unit.
+
+- **A video shed can only END on an IRAP.** Resuming mid-GOP would hand a
+  stateless V4L2 decoder references that were dropped — the wedge the keyframe
+  gate exists for, and the one `VP_FAULT_DROP_DELTAS` reproduces on purpose. So
+  the runner keeps dropping until the stream offers a keyframe and says so
+  (`outcome: awaiting_keyframe`) if that wait runs long. The audio leg is
+  whole-buffer and gap-tolerant instead: no sample is ever cut, and the timestamp
+  gap is what `GstAudioBaseSink` resyncs its ring on (`alignment-threshold`,
+  40 ms).
+
+- **The sanity ceiling is load-bearing.** A reading past 10 s
+  (`MAX_PLAYOUT_OFFSET_MS`) is reported and never acted on: a real backlog is
+  bounded by the leg's queues, so tens of seconds means the buffer timeline and
+  the pipeline clock are not the same timeline — and shedding toward a target on
+  a timeline the leg is not on would drop the entire stream for ever.
+
+- **renderWatch could not name this failure, and now can.** With the leg a
+  second behind, the `sync=true` sink's own back-pressure throttles ARRIVALS at
+  its pad down to the rate it presents, and the frames that never make it are
+  QoS-dropped in `videoconvert` — upstream of the sink, so its `dropped` counter
+  stays 0. The payload is then `achieved ≈ arrivals ≈ 1 fps, dropped 0`, which
+  the attribution read as "the source is under-delivering" while the source
+  delivered a clean 50 fps (logged verbatim for hours on .42). Retained latency
+  against the route's budget now rides on the same event and outranks every
+  other rule, so the ratchet names itself (`presentation-backlog`).
+
+- **Verification.** `gst_latency_ratchet_test.py` runs four arms of one chain in
+  compressed time: legacy keeps its whole budget; a paced sink hands the budget
+  over and never takes it back; on a chain with no spare rate (which is what a
+  compositor-paced sink is) the floor climbs past the shed threshold and stays;
+  with the shedder armed it returns to D within seconds, bounded to one episode
+  per cooldown. Falsified by pointing the suite at a runner copy whose policy
+  never arms (`MR_SHED_RUNNER`): 4 ratchet assertions and 9 shedder assertions
+  fail.
+
+## Implementation notes (Stage 3d — per-branch zero points at a multi-input mux)
+
+The contract's stamps are the shared truth, and a multi-input mux was quietly
+throwing them away one branch at a time. Measured on the .202 X-Chain rig
+(2026-08-14): two legs of ONE producer, 0.001 ms apart at the mux INPUT, left
+the mux 100–121 ms apart — a fresh value on every mux incarnation (120.4 /
+104.0 / 100.1 ms over three), so not a calibratable path offset.
+
+- **Each branch zeroes its own timeline.** `buildInputBranch` gives every input
+  its own `tsdemux`, and a `tsdemux` slaves the PES timeline it emits to the
+  timestamp of the ONE bus buffer it locked on (that it re-slaves rather than
+  free-running is Stage 3c's finding, `gst_tsdemux_slave_test.py`). Under the
+  contract that timestamp is a house-clock stamp, so the branch is exactly right
+  whenever that one stamp was — and wrong by however much it was not, for the
+  whole incarnation.
+
+- **The stamp is not exact on a REORDERED stream, and that is the field
+  mechanism.** `TimelineStamper` stamps `anchor + (firstPES − ref)` under a
+  monotone floor, and a B-frame stream's per-buffer FIRST PES walks BACKWARDS
+  (live video leg, consecutive buffers: 310127573 then 310116773), so those
+  buffers' stamps are clamped UP to the previous one. Measured on the same
+  producer's two legs: **120.009 ms of K spread on the video leg against
+  0.316 ms on the audio leg**, where `K = stamp − ns(firstPES)` is the mapping
+  itself and must be a constant. The skew the mux showed is inside that spread,
+  which is what a per-restart re-draw looks like: whichever buffer the branch
+  locked on, it inherited that buffer's clamp.
+
+- **The fix anchors each branch EXPLICITLY, and to house time rather than to its
+  sibling.** `alignBranchesToStamps` (runner: `_install_branch_stamp_align`)
+  measures, per branch, the producer's mapping `K` — as the MINIMUM of
+  `stamp − ns(firstPES)` over the buffers seen, because the floor can only push
+  a stamp UP so the lower end of that distribution is the unclamped truth — and
+  then the branch's own error, `K + ns(thisAU) − thisBuffer.pts`, on its demuxer's
+  output. One `GstPad.set_offset()` of the median of those readings puts the
+  branch's running time ON that media's house time. Absolute, not relative:
+  branches align across producers as well as across each other, and a restart
+  re-derives the SAME timeline instead of re-rolling the skew. A reading past
+  500 ms is rejected and logged — that is no longer the zero-point error this
+  removes.
+
+- **Two things the rig had to teach, both by refuting a cheaper design.**
+  *WHICH access unit* a branch emitted cannot be predicted from stream
+  structure: "the first usable PES after the PAT+PMT lock" sat five frames early
+  on the live video branch (applied −200 ms, residual skew −80 ms), and "the
+  first PES of the bus buffer whose STAMP came back on the first output buffer"
+  — which the stamp arithmetic matches to the nanosecond — computed 0 ms on a
+  branch measured 107.5 ms late the same round. The access unit is identified by
+  CONTENT instead, joined on the TAIL of its payload (a head join landed whole
+  frames out: H.264 access units open with identical AUD/SEI bytes). And *WHEN*
+  matters as much: a tsdemux re-slaves for the first seconds of a stream, so the
+  reading is taken after a 3 s settle, not on the first buffer — three
+  first-buffer corrections measured residuals of −25.9 / −186.6 / +46.7 ms
+  because each read a transient. The correction therefore lands as one timeline
+  step a few seconds in, while the mux is still filling its latency budget.
+
+- **Two knobs, two pads, no interaction.** The operator's per-input `offsetMs`
+  rides on the mux's REQUEST pad and stays exactly the manual lipsync trim it
+  always was; this correction rides on the demuxer's SRC pad, upstream of it.
+
+- **Contract-only, decided in one place.** `GstPluginBase.applyTimeSync` drops
+  the config when the contract is off (the mirror of it dropping
+  `preserveSourceTimeline` when the contract is on): legacy bus buffers carry
+  arrival times, so there is no house mapping to anchor to and `K` would be
+  noise. That also corrects a claim in that method's own comment — a constant
+  pad offset cancels in the egress stamper's delta only for a SINGLE-branch
+  consumer; across branches it is precisely what does not cancel, which is why
+  this stage exists.
+
+- **Verification.** `gst_branch_align_test.py` drives two stamped single-PID
+  legs with different branch zero points through the real chain
+  (`tsdemux ! aacparse ! queue ! mpegtsmux`) and reads the skew off the OUTPUT
+  PES: 106.667 ms without the alignment, 0.000 ms with it, and the same pair
+  again on a different draw (42.667 → 0.000) — the re-roll, dead. The
+  measurement half is pinned separately against a clamped-stamp ladder, and the
+  fixture's access units carry their identity in the TAIL only (heads identical,
+  as a real frame's are) so a head join cannot pass it. Falsified two ways with
+  `MR_STAMPER_RUNNER`: dropping the `set_offset` fails the four alignment
+  assertions with the injected skews, and taking `K` as the latest reading
+  instead of the minimum fails the clamp assertion.
+
+- **NOT yet verified in the field.** The settled-window design is proven in the
+  suite and on the bench, not on the rig: the .202 X-Chain source (an HLS VOD on
+  a signed URL) expired at 13:17:05Z mid-exercise — CloudFront policy
+  `AWS:EpochTime 1786713425`, first 403 four seconds later — and the chain has
+  had no media since. The three refuted designs above each have a measured
+  before/after on the rig; this one does not. `.202` is back on the pre-fix build
+  (md5-verified restore from `/data/consolidated-deploy-bak-branchalign*`), and
+  the build to re-deploy is staged there as `/data/ba6.tgz` + `/data/ba6.md5`.
+  Re-run once the source is re-signed: deploy, restart the mux module, read the
+  `branchAlign:` lines, then `/data/xchain-test-20260814/xchain-round2.sh`.

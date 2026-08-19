@@ -1,5 +1,4 @@
 import * as dgram from 'node:dgram';
-import * as os from 'node:os';
 
 export type Encapsulation = 'raw' | 'rtp';
 
@@ -25,18 +24,15 @@ export function classifyDatagram(buf: Buffer): Encapsulation | null {
     return null;
 }
 
-/** Resolve a NIC name (e.g. `eth0`) to its first IPv4 address, or undefined. */
-export function ifaceAddress(name: string): string | undefined {
-    if (!name) return undefined;
-    const entries = os.networkInterfaces()[name];
-    return entries?.find((e) => e.family === 'IPv4')?.address;
-}
-
 export interface SniffOpts {
     port: number;
     /** Multicast group to join while sniffing (undefined = unicast listen). */
     multicastGroup?: string;
-    /** Interface IPv4 address for the multicast join (from `ifaceAddress`). */
+    /**
+     * Interface IPv4 address for the multicast join — resolve the configured
+     * NIC name with the engine's `interfaceAddress`. Undefined (never an empty
+     * string, which `addMembership` would read as an address) = let the OS pick.
+     */
     ifaceAddr?: string;
     /** Give up after this long and return null. */
     timeoutMs: number;

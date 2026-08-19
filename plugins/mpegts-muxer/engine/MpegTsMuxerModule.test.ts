@@ -521,6 +521,30 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect('padOffsetNs' in audioRules[2]).toBe(false);
         });
 
+        it('reports every input branch demux for the stamp-anchored alignment', () => {
+            // The branches each zero their own timeline off the ONE bus buffer
+            // their tsdemux locked on, which is what put 100–121 ms of A/V skew
+            // on the .202 mux output (inputs 0.001 ms apart) and re-drew it on
+            // every restart. The runner anchors each branch to the producer's
+            // stamps instead — it needs the branch element names to do it, and
+            // ALL of them: a branch left out keeps its private zero point and
+            // takes the pair back out of alignment.
+            const result = buildPipeline({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                    { sinkPortId: 'audio-1', port: 40003 },
+                ],
+                output: { port: 40010 },
+                alignment: 7,
+            });
+            expect(result!.demuxes).toEqual(['demux_0', 'demux_1', 'demux_2']);
+            // The names are the ones the pipeline actually carries.
+            for (const name of result!.demuxes) {
+                expect(result!.pipeline).toContain(`name=${name}`);
+            }
+        });
+
         it('clamps out-of-range offsetMs at the rule level too (±2000)', () => {
             const result = buildPipeline({
                 sources: [
@@ -631,6 +655,22 @@ describe('MpegTsMuxerModule', () => {
             // 1 video rule (for video-0) + 1 audio rule (for audio-0)
             expect(desc!.linkOnPadAdded).toHaveLength(2);
             expect(assignBusChannel).toHaveBeenCalledWith('mux-1');
+        });
+
+        it('asks the runner to anchor every branch to the producers stamps', () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                ],
+            });
+            (module as any).config = { alignment: 7 };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const desc = module.buildPipeline((module as any).config);
+            // Declared unconditionally; `GstPluginBase.applyTimeSync` is the one
+            // place that decides, and drops it when the contract is off.
+            expect(desc!.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
         });
 
         it('declares the stream arrays as live-updatable', () => {

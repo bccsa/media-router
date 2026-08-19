@@ -1260,6 +1260,326 @@ def _install_preserve_timeline(pipe, cfg):
 
 
 # ---------------------------------------------------------------------------
+# alignBranchesToStamps — anchor a mux's input branches to the PRODUCER'S STAMPS
+# ---------------------------------------------------------------------------
+# THE DEFECT (measured on the .202 X-Chain rig, 2026-08-14). A multi-input mux
+# gives each input its own `tsdemux`, and every branch works out its own zero
+# point: tsdemux slaves the PES timeline it emits to the timestamp of the bus
+# buffer it locked on. Under the time-sync contract that timestamp is the
+# producer's house-clock STAMP, so the branch is right whenever that one stamp
+# was exact — and wrong by however much it was NOT, for the whole incarnation.
+#
+# It is not exact on a REORDERED stream. The stamp is `anchor + (firstPES −
+# ref)` under a monotone floor (ts_timeline.TimelineStamper), and a B-frame
+# stream's per-buffer FIRST PES walks backwards, so those buffers' stamps are
+# clamped UP to the previous one — measured on the live video leg: K spread
+# 120.009 ms (= the reorder depth), against 0.316 ms on the audio leg of the
+# same producer. A branch that locks on a clamped buffer therefore runs its
+# whole timeline that far LATE, and the sibling audio branch does not: the pair
+# leaves the mux 100–121 ms apart (t0/t1/t2 rounds) from inputs measured
+# 0.001 ms apart, re-drawn on every mux restart because the clamp of whichever
+# buffer the branch locked on is a fresh draw.
+#
+# THE FIX. The stamps are the shared truth, so anchor every branch to them
+# EXPLICITLY instead of to the one stamp it happened to lock on:
+#
+#     offset = K + ns(anchorPES) − firstBufferPts
+#
+#   * `K` = `stamp − ns(firstPES)` = `anchor − ns(ref)`, one constant per
+#     producer egress, taken as the MINIMUM over the buffers seen — the floor
+#     can only push a stamp UP, so the lower end of that distribution is the
+#     unclamped truth (the same reading the rig's analysis tool takes).
+#   * `anchorPES` is the PES of the access unit the demuxer's FIRST OUTPUT
+#     BUFFER actually carries, identified BY CONTENT: that buffer IS a PES
+#     payload this branch's sink pad has already reassembled (tsdemux strips the
+#     PES header and passes the payload through, and this probe sits ahead of
+#     any parser), so its LAST 64 bytes are an exact join back to that PES's PTS.
+#
+#     THE TAIL, not the head, and not a prediction. Three cuts were refuted on
+#     the rig (.202, 2026-08-14), each measurably: "the first usable PES of the
+#     stream" sat 5 frames early (applied −200 ms, residual skew −80 ms); "the
+#     first PES of the bus buffer whose STAMP came back on the first output
+#     buffer" — which the stamp arithmetic matches to the nanosecond — computed
+#     0 ms on a branch measured 107.5 ms late the same round, because the stamp
+#     says which BUFFER the branch slaved to and not which access unit was in
+#     flight; and a join on the payload HEAD landed on the wrong frame outright
+#     (corrections came out as exact multiples of the 40 ms frame — H.264 access
+#     units open with the same AUD/SEI bytes, so the head is not an identity).
+#     The tail of the last slice is unique per frame and survives this hop
+#     byte-for-byte, which is why the rig's own analysis tool joins on it too.
+#   * so the pad's running time becomes `K + ns(PES)` = that media's HOUSE
+#     time, for every branch, whatever each demuxer made of it.
+#
+# Branches are then aligned BY CONSTRUCTION rather than by luck, and against an
+# absolute (house) reference rather than each other — so a restart re-derives
+# the same timeline instead of re-rolling the skew, and two branches fed by
+# DIFFERENT producers align too (each carries its own K). The per-input
+# `offsetMs` lipsync knob is untouched: it rides on the mux's request pad, this
+# on the demuxer's src pad, so it stays exactly the manual trim it always was.
+#
+# NOTHING IS APPLIED ON A GUESS. No join, or a payload head that two PES of this
+# branch share (so the join would be a coin toss), leaves the branch exactly as
+# it is today — logged, no offset.
+#
+# CONTRACT-ONLY, and gated one layer up (`GstPluginBase.applyTimeSync` drops the
+# config when the contract is off): with arrival-timed bus buffers there is no
+# house mapping to anchor to, `K` would be noise, and the legacy path must stay
+# byte-identical.
+_branch_align = {}      # demux element name -> per-branch state
+
+
+def _clear_branch_align():
+    _branch_align.clear()
+
+
+# A zero point can only be off by the reorder depth / one buffer's span of
+# media. Anything past this is not the error this feature exists to remove —
+# a misidentified anchor, a stream whose stamps aren't house-mapped — and the
+# safe answer is to leave the branch exactly as it is today and say so.
+_BRANCH_ALIGN_MAX_NS = 500_000_000
+# How long a branch is left alone before its error is even sampled. A tsdemux
+# RE-SLAVES to the upstream stamps for the first seconds of a stream (the
+# settling `gst_tsdemux_slave_test.py` measures), so anything read before this
+# is a transient, not the mapping the branch will hold — 3 s is past the
+# settling on the live rig and inside the mux's own 1.2 s latency fill.
+_BRANCH_ALIGN_SETTLE_MS = 3000.0
+# Access units joined before the correction is taken, and the ceiling on waiting
+# for them. The median of the window is the branch's error; a handful is plenty
+# once settled (the spread is logged so a noisy branch is visible).
+_BRANCH_ALIGN_SAMPLES = 9
+_BRANCH_ALIGN_GIVEUP_MS = 15000.0
+# Below this the branch is already where the stamps say it should be, and a
+# timeline step costs more than it buys.
+_BRANCH_ALIGN_MIN_NS = 2_000_000
+# How many access units of payload→PTS history a branch keeps while it waits for
+# its demuxer's first output. The join is normally in the first few; the live
+# video branch had discarded five buffers' worth before it emitted. This is the
+# memory bound, not an expectation.
+_BRANCH_ALIGN_HISTORY = 4096
+# Bytes of PES payload TAIL used as the join key — the end of the last slice,
+# which no two frames share (an access unit's HEAD is codec boilerplate every
+# frame repeats: measured on the live H.264 leg, a head join landed whole frames
+# out). Same key the rig's analysis tool joins access units on.
+_BRANCH_ALIGN_KEY_BYTES = 64
+
+
+def _install_branch_stamp_align(pipe, cfg):
+    """cfg = {"demuxes": ["demux_0", ...]} from the pipeline description."""
+    _clear_branch_align()
+    if not cfg:
+        return
+    names = [n for n in (cfg.get("demuxes") or []) if n]
+    if not names:
+        return
+    import ts_psi          # lazy, pure stdlib (embedded-core pattern)
+    import ts_timeline
+
+    for name in names:
+        demux = pipe.get_by_name(name)
+        if not demux:
+            sys.stderr.write(
+                f"[gst-runner.py] branchAlign: element '{name}' not found — "
+                f"branch left un-anchored\n")
+            continue
+        sink_pad = demux.get_static_pad("sink")
+        if sink_pad is None:
+            continue
+        state = {
+            "name": name,
+            "k": None,          # min(stamp − ns(firstPES)) — the house mapping
+            "ksamples": 0,
+            # PES payload TAIL -> that PES's PTS, or None once two access units
+            # of this branch have shared a tail (an unusable key, not a licence
+            # to pick one).
+            "byTail": {},
+            "tailOrder": [],    # insertion order, for the history bound
+            "open": {},         # pid -> [pts, bytearray] of the AU being received
+            "sink_pad": sink_pad,
+            "sink_probe_id": None,
+            "pending": 0,       # armed src pads still awaiting their offset
+            "samples": {},      # pid -> joined error samples, settled window
+            "t0": None,         # running time of this branch's first output
+            "settled": False,
+            "done": False,
+        }
+        _branch_align[name] = state
+
+        def close_au(st, pid):
+            """An access unit ends where the next one starts (a video PES has no
+            length field), so a PUSI closes the one before it — the same trigger
+            the demuxer emits on, which is why the join is always ready in time.
+            """
+            rec = st["open"].pop(pid, None)
+            if rec is None or rec[0] is None or len(rec[1]) < _BRANCH_ALIGN_KEY_BYTES:
+                return
+            tail = bytes(rec[1][-_BRANCH_ALIGN_KEY_BYTES:])
+            prev = st["byTail"].get(tail, False)
+            if prev is False:
+                st["tailOrder"].append(tail)
+                if len(st["tailOrder"]) > _BRANCH_ALIGN_HISTORY:
+                    st["byTail"].pop(st["tailOrder"].pop(0), None)
+                st["byTail"][tail] = rec[0]
+            elif prev != rec[0]:
+                # Two access units with the same tail: the key cannot decide
+                # between them, so it decides nothing (None disqualifies it).
+                st["byTail"][tail] = None
+
+        def on_sink_buffer(_pad, info, st=state):
+            """One pass over the branch's TS: the producer's mapping (K), and a
+            payload-tail → PTS index of the access units in flight."""
+            buf = info.get_buffer()
+            if buf is None or st["done"]:
+                return Gst.PadProbeReturn.OK
+            stamp = buf.pts
+            ok, mi = buf.map(Gst.MapFlags.READ)
+            if not ok:
+                return Gst.PadProbeReturn.OK
+            try:
+                data = bytes(mi.data)
+            finally:
+                buf.unmap(mi)
+            first_pts = None
+            for pkt in ts_psi.iter_packets(data):
+                if not ts_psi.ts_has_payload(pkt):
+                    continue
+                off = ts_psi.payload_offset(pkt)
+                if off >= ts_psi.PKT:
+                    continue
+                pid = ts_psi.ts_pid(pkt)
+                if pkt[1] & 0x40:                   # PUSI: a PES may start here
+                    p = pkt[off:]
+                    if len(p) < 14 or p[0] != 0x00 or p[1] != 0x00 or p[2] != 0x01:
+                        continue                    # PSI section, not a PES
+                    pts = ts_psi.read_pes_pts(pkt)
+                    close_au(st, pid)
+                    # K is measured from the buffer's FIRST PES: that is the PES
+                    # the producer's stamp maps, whatever the demuxer later
+                    # makes of the buffer.
+                    if pts is not None and first_pts is None:
+                        first_pts = pts
+                    st["open"][pid] = [pts, bytearray(pkt[off + 9 + p[8]:])]
+                elif pid in st["open"]:
+                    st["open"][pid][1] += pkt[off:]
+            if first_pts is None or stamp == Gst.CLOCK_TIME_NONE:
+                return Gst.PadProbeReturn.OK
+            k = stamp - ts_timeline.pts90k_to_ns(first_pts)
+            st["ksamples"] += 1
+            # MINIMUM, not latest: the monotone floor only ever pushes a stamp
+            # up, so the smallest reading is the unclamped mapping.
+            if st["k"] is None or k < st["k"]:
+                st["k"] = k
+            return Gst.PadProbeReturn.OK
+
+        def release_sink_probe(st=state):
+            if st["pending"] or st["done"]:
+                return
+            st["done"] = True
+            if st["sink_probe_id"] is not None:
+                st["sink_pad"].remove_probe(st["sink_probe_id"])
+                st["sink_probe_id"] = None
+            # Nothing left to measure: the offsets are latched for this
+            # incarnation, so the branch pays no per-buffer cost from here.
+
+        def on_out_buffer(pad, info, arg):
+            """Sample this branch's error, and once it has SETTLED, correct it.
+
+            The error is `K + ns(thisAU) − thisBuffer.pts`: where the producer's
+            stamps put this access unit in house time, minus where the branch
+            put it. Sampled rather than latched on the first buffer, because the
+            first buffer is exactly when the branch is NOT yet on its final
+            mapping — tsdemux re-slaves for a few seconds after it starts (the
+            settling `gst_tsdemux_slave_test.py` pins), and the rig showed
+            first-buffer corrections landing tens of ms off the value the branch
+            then held for the rest of its life (.202, 2026-08-14: residuals
+            −25.9 / −186.6 / +46.7 ms across three incarnations, each computed
+            from a first buffer). The MEDIAN of the settled window is what the
+            branch actually runs at.
+            """
+            pid, st = arg
+            buf = info.get_buffer()
+            if buf is None or st.get("settled"):
+                return Gst.PadProbeReturn.OK
+            pts = buf.pts
+            if pts == Gst.CLOCK_TIME_NONE or st["k"] is None:
+                return Gst.PadProbeReturn.OK
+            samples = st["samples"].setdefault(pid, [])
+            # Elapsed on the BRANCH's own timeline (its buffer PTS), not a clock
+            # reading: it needs no pipeline-global to be in scope, it is exactly
+            # "this much media has passed since the branch started", and it is
+            # what a test can drive deterministically.
+            if st["t0"] is None:
+                st["t0"] = pts
+            elapsed = (pts - st["t0"]) / 1e6
+            if elapsed < _BRANCH_ALIGN_SETTLE_MS:
+                return Gst.PadProbeReturn.OK          # still settling
+            if len(samples) < _BRANCH_ALIGN_SAMPLES:
+                # Which access unit is this? Join it back to the TS by its
+                # payload TAIL — the demuxer strips the PES header and passes
+                # the payload through untouched, and this probe is ahead of any
+                # parser.
+                size = buf.get_size()
+                if size >= _BRANCH_ALIGN_KEY_BYTES:
+                    tail = buf.extract_dup(size - _BRANCH_ALIGN_KEY_BYTES,
+                                           _BRANCH_ALIGN_KEY_BYTES)
+                    anchor = st["byTail"].get(tail)
+                    if anchor is not None:
+                        samples.append(
+                            st["k"] + ts_timeline.pts90k_to_ns(anchor) - pts)
+                if len(samples) < _BRANCH_ALIGN_SAMPLES:
+                    if elapsed > _BRANCH_ALIGN_GIVEUP_MS:
+                        st["settled"] = True
+                        sys.stderr.write(
+                            f"[gst-runner.py] branchAlign: {st['name']} pid=0x{pid:x} "
+                            f"joined only {len(samples)} access units in "
+                            f"{elapsed:.0f} ms — branch left un-anchored\n")
+                        sys.stderr.flush()
+                        finish(st)
+                    return Gst.PadProbeReturn.OK
+            off = sorted(samples)[len(samples) // 2]      # median of the window
+            spread = max(samples) - min(samples)
+            st["settled"] = True
+            note = ""
+            if abs(off) > _BRANCH_ALIGN_MAX_NS:
+                note = " — REJECTED (past the plausible zero-point error), branch left as-is"
+            elif abs(off) < _BRANCH_ALIGN_MIN_NS:
+                note = " — already aligned, left untouched"
+            else:
+                pad.set_offset(pad.get_offset() + off)
+            sys.stderr.write(
+                f"[gst-runner.py] branchAlign: {st['name']} {pad.get_name()} "
+                f"pid=0x{pid:x} offsetNs={off} ({off / 1e6:+.3f} ms){note} "
+                f"(median of {len(samples)} joined AUs, spread {spread / 1e6:.3f} ms, "
+                f"K={st['k']} from {st['ksamples']} buffers, ausIndexed={len(st['byTail'])})\n")
+            sys.stderr.flush()
+            finish(st)
+            return Gst.PadProbeReturn.OK
+
+        def finish(st):
+            """One branch is done measuring: drop its probes so the steady state
+            costs nothing (the sink index is the expensive half)."""
+            st["pending"] -= 1
+            release_sink_probe(st)
+
+        def on_pad_added(_element, pad, st=state):
+            pad_name = pad.get_name() or ""
+            if not (pad_name.startswith("audio_") or pad_name.startswith("video_")):
+                return
+            pid = _pid_from_tsdemux_pad_name(pad_name)
+            if pid is None:
+                return
+            st["pending"] += 1
+            # A plain BUFFER probe, NOT a blocking one: the correction lands a
+            # few seconds in (see on_out_buffer), and nothing may be held up
+            # waiting for it. The offset then arrives as one timeline step on
+            # this pad while the mux is still filling its latency budget.
+            pad.add_probe(Gst.PadProbeType.BUFFER, on_out_buffer, (pid, st))
+
+        state["sink_probe_id"] = sink_pad.add_probe(
+            Gst.PadProbeType.BUFFER, on_sink_buffer)
+        demux.connect("pad-added", on_pad_added)
+
+
+# ---------------------------------------------------------------------------
 # Bus egress stamper (time-sync contract) — the PRODUCER stamps the timeline
 # ---------------------------------------------------------------------------
 # The subsystem lives in `gst_bus_stamper.py` next to this file (probe install,
@@ -1398,6 +1718,23 @@ def _apply_contract_clock(pipe):
     pipe.set_base_time(0)
 
 
+def _now_running_ms():
+    """The pipeline's RUNNING TIME in ms, or 0.0 when there is no pipeline/clock.
+
+    The one time base the backlog shedder's samples, its policy's hold/cooldown
+    windows and renderWatch's staleness test all share — deliberately not
+    `time.monotonic()`, which is a different epoch from the pipeline clock and
+    would make a comparison between the two silently wrong.
+    """
+    pipe = pipeline
+    if pipe is None:
+        return 0.0
+    clock = pipe.get_pipeline_clock()
+    if clock is None:
+        return 0.0
+    return (clock.get_time() - pipe.get_base_time()) / 1e6
+
+
 def handle_start(data):
     """Start a GStreamer pipeline from a pipeline string."""
     global pipeline, loop, running, use_stdio_for_data, _pad_link_counts
@@ -1446,6 +1783,11 @@ def handle_start(data):
     # Source-timeline preservation (opt-in; must be armed BEFORE PLAYING so
     # the sink-pad latch sees the very first TS bytes).
     _install_preserve_timeline(pipeline, data.get("preserveSourceTimeline"))
+
+    # Multi-branch stamp alignment (contract-only; same window and the same
+    # reason — the first TS bytes carry the mapping every branch is anchored to,
+    # and a branch that has already emitted cannot be re-zeroed without a jolt).
+    _install_branch_stamp_align(pipeline, data.get("alignBranchesToStamps"))
 
     # The producer half of the time-sync contract: stamp every bus egress with
     # house-clock media time. The FLAG is recorded here, before PLAYING, for the
@@ -1512,6 +1854,16 @@ def handle_start(data):
         pipeline = None
         return
 
+    # Backlog shedder (`backlogShed` config) — the time-sync contract's latency
+    # ratchet guard. Also NOT report-only, and armed AFTER the gate on purpose:
+    # both probes sit on the decoder's sink pad, a probe that DROPS stops the
+    # rest of the chain being called, and a shut gate must win — it is already
+    # dropping everything, which drains the same backlog.
+    if not _start_backlog_shedder(pipeline, data.get("backlogShed")):
+        _teardown_pipeline(pipeline)
+        pipeline = None
+        return
+
     # Set up bus watch
     bus = pipeline.get_bus()
     bus.add_signal_watch()
@@ -1551,6 +1903,7 @@ def handle_stop(data=None):
     _cancel_playing_watchdog()
     _clear_pending_bus_attaches()
     _clear_preserve_timeline()
+    _clear_branch_align()
     gst_bus_stamper.clear()
     _stop_rist()
     _stop_ts_probe()
@@ -1564,6 +1917,9 @@ def handle_stop(data=None):
     # _drain_decoder_branch), and the gate is harmless during a drain — it only
     # ever touches buffers, never events.
     _stop_keyframe_gate()
+    # Same window, same reason: the shedder sits on that pad too, and it can
+    # only ever drop a buffer the drain does not need.
+    _stop_backlog_shedder()
     if loop and loop.is_running():
         loop.quit()
 
@@ -2799,13 +3155,27 @@ def _start_render_watch(pipe, cfg):
             # frames than arrive) from SOURCE shortfall (fewer frames arrive
             # in the first place — a feed/link problem the render chain can't
             # fix and must not be blamed for).
-            emit_plugin_event(f"renderwatch:{kind}",
-                              {"achievedFps": round(achieved_fps, 1),
-                               "expectedFps": round(expected, 2),
-                               "droppedFps": round(
-                                   dropped / (RENDER_WATCH_WINDOW_MS / 1000.0), 1),
-                               "arrivalsFps": round(
-                                   arrivals / (RENDER_WATCH_WINDOW_MS / 1000.0), 1)})
+            payload = {"achievedFps": round(achieved_fps, 1),
+                       "expectedFps": round(expected, 2),
+                       "droppedFps": round(
+                           dropped / (RENDER_WATCH_WINDOW_MS / 1000.0), 1),
+                       "arrivalsFps": round(
+                           arrivals / (RENDER_WATCH_WINDOW_MS / 1000.0), 1)}
+            # RETAINED LATENCY, when a shedder is armed to measure it. Without
+            # it this event could not name the contract's ratchet at all: with
+            # the leg an hour behind, the sink's own back-pressure throttles
+            # ARRIVALS to the presented rate and the sink's `dropped` counter
+            # stays 0 (the frames are QoS-dropped in `videoconvert`, upstream of
+            # it), so achieved ≈ arrivals ≈ 1 fps and the attribution reads
+            # "source under-delivering" about a source delivering 50 fps —
+            # observed verbatim on .42, 2026-08-14 07:19. `retainedMs` against
+            # `budgetMs` is the one number that separates the two, so it rides
+            # along whenever it exists and the payload is unchanged when it
+            # does not (legacy/unpaced legs).
+            reading = _backlog_shed_window(_now_running_ms())
+            if reading:
+                payload.update(reading)
+            emit_plugin_event(f"renderwatch:{kind}", payload)
         return True                          # keep the GLib timer alive
 
     st["probe_id"] = pad.add_probe(Gst.PadProbeType.BUFFER, _on_buffer)
@@ -3020,6 +3390,282 @@ def _stop_keyframe_gate():
     global _keyframe_gate
     st = _keyframe_gate
     _keyframe_gate = None
+    if not st or st["probe_id"] is None:
+        return
+    st["pad"].remove_probe(st["probe_id"])
+
+
+# ---------------------------------------------------------------------------
+# Backlog shedder (`backlogShed` config) — the time-sync contract's ratchet guard
+# ---------------------------------------------------------------------------
+_backlog_shed = None      # state dict while the shedder probe is armed
+
+# A lateness reading older than this is not reported to renderWatch: with the
+# leg gated shut (keyframe gate closed, source silent) the last sample says
+# nothing about NOW, and a stale number in an attribution is worse than none.
+BACKLOG_SHED_STALE_MS = 4_000
+
+# A keyframe-aligned shed can only END on an IRAP (see below). Past this the
+# wait itself is worth an event — the picture is blank while it lasts.
+BACKLOG_SHED_KEYFRAME_WARN_MS = 3_000
+
+
+def _start_backlog_shedder(pipe, cfg):
+    """Give a clock-paced leg its retained backlog back (`backlogShed` config).
+
+    THE FAILURE. `backlog_shed.py` documents the ratchet in full; the short of
+    it is that a `sync=true` sink drains at exactly media rate, so backlog the
+    leaky queues absorb during a downstream hiccup is never handed back. It is
+    retained latency, it only ever grows, and past `max-lateness` (plus the QoS
+    the sink asks its upstream for) it costs nearly every frame — .42 measured
+    50 fps decoded and 2.5 fps on the glass after ~16 h.
+
+    NOT report-only: it DROPS buffers. It is armed on the same pipelines the
+    contract paces and nowhere else — with the contract off no module sends this
+    config and nothing here runs (the legacy `sync=false` sink drains its own
+    backlog, which is the behaviour the queues were sized against).
+
+    WHERE IT MEASURES. On the sink pad of `element`, per buffer:
+
+        lateness = now_running_time - (buffer_running_time + ts_offset)
+
+    `ts_offset` is read live off the `sink` element, so it is the ROUTE's
+    playout offset D including any operator trim, and lateness is therefore the
+    excess over budget directly (`retained latency = lateness + D`). Running
+    time comes from the pad's own SEGMENT, which is why the probe watches
+    downstream events too — buffer PTS alone is not a timeline.
+
+    WHERE IT SHEDS, and why that is the same pad. The backlog lives UPSTREAM of
+    the decoder: the ES queue (1 s) and the jitter queue ahead of it are what
+    absorbed the stall. Dropping there is nearly free and drains at I/O speed,
+    where dropping decoded frames at the sink would be limited by decode rate
+    (~1.2× real time on a Pi 4) and might never converge. So the video leg
+    names its DECODER, and the drops happen on its sink pad — the same pad the
+    keyframe gate uses, for the same reason: `h26xparse` has already marked
+    every access unit `DELTA_UNIT` or not.
+
+    KEYFRAME ALIGNMENT is not optional on that pad. Handing a stateless V4L2
+    decoder a delta unit whose references were dropped is the documented
+    hardware wedge (see `_start_keyframe_gate`, and `VP_FAULT_DROP_DELTAS`,
+    which manufactures exactly this gap on purpose). So a video shed ends only
+    on an IRAP: the runner keeps dropping until the stream offers one. It can
+    therefore cost up to a GOP of picture — the same price the keyframe gate
+    already pays on every re-arm, and bounded by the cooldown to at most once a
+    minute. `keyframeAligned: false` (the audio leg) ends on the first buffer
+    that is inside budget, because raw PCM references nothing.
+
+    THE AUDIO LEG's shed is whole-buffer and gap-tolerant by construction: it
+    drops only complete decoded buffers at `pulsesink`'s own pad, so no sample
+    is ever cut and nothing is resampled. What the sink then sees is a TIMESTAMP
+    GAP, which `GstAudioBaseSink` answers with a ring resync once it exceeds
+    `alignment-threshold` (40 ms default) — samples already in the ring play
+    out, then the sink re-anchors on the new timeline. Audible as one click at
+    the shed, which is the price of returning lipsync to the configured D.
+
+    RATE LIMITING AND SAFETY live in `backlog_shed.BacklogShedPolicy`: a
+    sustained-excess floor rule, a cooldown, and the sanity ceiling that refuses
+    to treat an implausible reading as a backlog (it would otherwise drop a
+    whole stream chasing a target on a timeline it isn't on).
+
+    A missing element the module explicitly named is a hard error (matches
+    tsProbe / renderWatch / keyframeGate).
+    """
+    global _backlog_shed
+    # Never inherit a previous pipeline's shedder — its pad belongs to elements
+    # that are gone (same rule as the keyframe gate).
+    _stop_backlog_shedder()
+    if not cfg:
+        return True
+    try:
+        from backlog_shed import BacklogShedPolicy
+    except Exception as e:  # noqa: BLE001
+        emit_event({"event": "error", "message": f"backlog_shed unavailable: {e}"})
+        return False
+    name = cfg.get("element", "")
+    el = pipe.get_by_name(name)
+    if el is None:
+        emit_event({"event": "error",
+                    "message": f"backlogShed: element not found: {name!r}"})
+        return False
+    pad = el.get_static_pad("sink")
+    if pad is None:
+        emit_event({"event": "error",
+                    "message": f"backlogShed: no sink pad on: {name!r}"})
+        return False
+    sink_name = cfg.get("sink", "")
+    sink = pipe.get_by_name(sink_name)
+    if sink is None:
+        emit_event({"event": "error",
+                    "message": f"backlogShed: sink not found: {sink_name!r}"})
+        return False
+
+    policy = BacklogShedPolicy(
+        tolerance_ms=cfg.get("toleranceMs", 250),
+        hold_ms=cfg.get("holdMs", 5_000),
+        cooldown_ms=cfg.get("cooldownMs", 60_000),
+        sanity_ms=cfg.get("sanityMs", 10_000),
+    )
+    # Every field below except `probe_id` is written ONLY by the probe callback
+    # (one streaming thread) — the same single-writer discipline as the keyframe
+    # gate. `win_min`/`last_*` are read by renderWatch on the main loop, which is
+    # a benign race: it reads a float that is only ever replaced, never mutated.
+    st = {"pad": pad, "element": name, "sink": sink, "policy": policy,
+          "probe_id": None, "segment": None,
+          "keyframe_aligned": cfg.get("keyframeAligned", True) is not False,
+          "shedding": False, "dropped": 0, "sheds": 0,
+          "shed_at": None, "before_ms": None, "caught_up_at": None,
+          "keyframe_warned": False,
+          "last_ms": None, "last_at": None, "win_min": None, "budget_ms": 0.0}
+    _backlog_shed = st
+
+    def _log(line):
+        sys.stderr.write(f"[gst-runner.py] backlog shed: {name} {line}\n")
+        sys.stderr.flush()
+
+    def _ts_offset_ms():
+        try:
+            return float(sink.get_property("ts-offset")) / 1e6
+        except (TypeError, AttributeError, GLib.Error):
+            return 0.0
+
+    def _finish(late_ms, now_ms, outcome):
+        st["shedding"] = False
+        st["sheds"] += 1
+        policy.shed_finished(now_ms)
+        budget = st["budget_ms"]
+        payload = {"element": name,
+                   "outcome": outcome,
+                   "budgetMs": round(budget, 1),
+                   # RETAINED pipeline latency, the number an operator can hold
+                   # against D — the raw lateness is the excess over it.
+                   "retainedBeforeMs": round(st["before_ms"] + budget, 1),
+                   "retainedAfterMs": round(late_ms + budget, 1),
+                   "excessBeforeMs": round(st["before_ms"], 1),
+                   "excessAfterMs": round(late_ms, 1),
+                   "droppedBuffers": st["dropped"],
+                   "durationMs": round(now_ms - st["shed_at"], 1),
+                   "shedCount": st["sheds"]}
+        st["dropped"] = 0
+        st["shed_at"] = None
+        st["caught_up_at"] = None
+        st["keyframe_warned"] = False
+        _log(f"shed #{payload['shedCount']}: retained "
+             f"{payload['retainedBeforeMs']:.0f} → {payload['retainedAfterMs']:.0f} ms "
+             f"(budget {budget:.0f} ms), {payload['droppedBuffers']} buffers dropped "
+             f"in {payload['durationMs']:.0f} ms")
+        emit_plugin_event("backlog_shed", payload)
+
+    def _on_probe(_pad, info):
+        if info.type & Gst.PadProbeType.EVENT_DOWNSTREAM:
+            ev = info.get_event()
+            if ev is not None and ev.type == Gst.EventType.SEGMENT:
+                st["segment"] = ev.parse_segment()
+                # Either side of a new segment the running times are not
+                # comparable — start the streak over rather than carry it.
+                policy.reset()
+            return Gst.PadProbeReturn.OK
+        buf = info.get_buffer()
+        seg = st["segment"]
+        if buf is None or seg is None or buf.pts == Gst.CLOCK_TIME_NONE:
+            return Gst.PadProbeReturn.OK
+        clock = pipe.get_pipeline_clock()
+        if clock is None:
+            return Gst.PadProbeReturn.OK
+        rt = seg.to_running_time(Gst.Format.TIME, buf.pts)
+        if rt == Gst.CLOCK_TIME_NONE:
+            return Gst.PadProbeReturn.OK          # outside the segment
+        now_rt = clock.get_time() - pipe.get_base_time()
+        budget_ms = _ts_offset_ms()
+        st["budget_ms"] = budget_ms
+        late_ms = (now_rt - rt) / 1e6 - budget_ms
+        now_ms = now_rt / 1e6
+        st["last_ms"] = late_ms
+        st["last_at"] = now_ms
+        # The FLOOR over the window is the retained part (a spike relaxes; a
+        # floor does not) — that is what renderWatch reports and judges on.
+        st["win_min"] = late_ms if st["win_min"] is None else min(st["win_min"], late_ms)
+
+        if st["shedding"]:
+            at_budget = late_ms <= 0.0
+            keyframe_ok = (not st["keyframe_aligned"]
+                           or not buf.has_flags(Gst.BufferFlags.DELTA_UNIT))
+            if at_budget and keyframe_ok:
+                _finish(late_ms, now_ms, "recovered")
+                return Gst.PadProbeReturn.OK      # the IRAP itself PASSES
+            if at_budget:
+                # Caught up; only the IRAP is missing now. Loud once, because
+                # from here the picture is blank for reasons the stream owns.
+                if st["caught_up_at"] is None:
+                    st["caught_up_at"] = now_ms
+                elif (not st["keyframe_warned"]
+                        and now_ms - st["caught_up_at"] > BACKLOG_SHED_KEYFRAME_WARN_MS):
+                    st["keyframe_warned"] = True
+                    _log(f"at budget for {BACKLOG_SHED_KEYFRAME_WARN_MS} ms, still "
+                         "waiting for a keyframe — resuming mid-GOP would hand the "
+                         "decoder missing references, so the wait stands")
+                    emit_plugin_event("backlog_shed",
+                                      {"element": name, "outcome": "awaiting_keyframe",
+                                       "budgetMs": round(budget_ms, 1),
+                                       "retainedBeforeMs": round(st["before_ms"] + budget_ms, 1),
+                                       "excessBeforeMs": round(st["before_ms"], 1),
+                                       "droppedBuffers": st["dropped"],
+                                       "durationMs": round(now_ms - st["shed_at"], 1),
+                                       "shedCount": st["sheds"] + 1})
+            st["dropped"] += 1
+            return Gst.PadProbeReturn.DROP
+
+        verdict = policy.observe(late_ms, now_ms)
+        if verdict == "implausible":
+            _log(f"lateness {late_ms:.0f} ms is past the sanity ceiling — treating "
+                 "it as a timeline mismatch, NOT a backlog (nothing shed)")
+            emit_plugin_event("backlog_shed",
+                              {"element": name, "outcome": "implausible",
+                               "budgetMs": round(budget_ms, 1),
+                               "excessBeforeMs": round(late_ms, 1)})
+            return Gst.PadProbeReturn.OK
+        if verdict != "shed":
+            return Gst.PadProbeReturn.OK
+        st["shedding"] = True
+        st["shed_at"] = now_ms
+        st["before_ms"] = late_ms
+        st["dropped"] = 1
+        _log(f"retained {late_ms + budget_ms:.0f} ms against a {budget_ms:.0f} ms "
+             f"budget for {policy.hold_ms:.0f} ms — dropping the oldest data"
+             + (" up to the next keyframe" if st["keyframe_aligned"] else ""))
+        return Gst.PadProbeReturn.DROP
+
+    st["probe_id"] = pad.add_probe(
+        Gst.PadProbeType.BUFFER | Gst.PadProbeType.EVENT_DOWNSTREAM, _on_probe)
+    return True
+
+
+def _backlog_shed_window(now_ms):
+    """The window's retained-latency reading for renderWatch, or None.
+
+    Consumes the window minimum (the FLOOR — see the probe), so each renderWatch
+    tick judges its own window. None when no shedder is armed or the last sample
+    is stale, which is what keeps the legacy/unpaced payload byte-identical.
+    """
+    st = _backlog_shed
+    if not st or st["last_at"] is None or st["win_min"] is None:
+        return None
+    if now_ms - st["last_at"] > BACKLOG_SHED_STALE_MS:
+        return None
+    floor = st["win_min"]
+    st["win_min"] = None
+    return {"latenessMs": round(floor, 1),
+            "retainedMs": round(floor + st["budget_ms"], 1),
+            "budgetMs": round(st["budget_ms"], 1),
+            "shedding": st["shedding"],
+            "shedCount": st["sheds"]}
+
+
+def _stop_backlog_shedder():
+    """Take the shedder probe off the pad. Like the gate's, it never
+    self-removes — a shed is an episode, not the probe's lifetime."""
+    global _backlog_shed
+    st = _backlog_shed
+    _backlog_shed = None
     if not st or st["probe_id"] is None:
         return
     st["pad"].remove_probe(st["probe_id"])

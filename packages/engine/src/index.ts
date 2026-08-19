@@ -7,6 +7,7 @@ export type {
     PadLinkRule,
     RistRunnerConfig,
     TsProbeRunnerConfig,
+    BacklogShedConfig,
     EngineServices,
     ModuleServices,
     DynamicPort,
@@ -18,6 +19,7 @@ export type { PipeWireDeviceProviderOptions } from './system/pipeWireDeviceProvi
 export {
     registerNetworkInterfaceDeviceProvider,
     listNetworkInterfaces,
+    interfaceAddress,
     NETWORK_INTERFACE_DEVICE_TYPE,
 } from './system/networkInterfaceProvider.js';
 export { listV4l2Devices, cachedV4l2Devices, parseFormats } from './system/v4l2Devices.js';
@@ -115,6 +117,25 @@ export type {
     AudioMixInputOpts,
     Audio302mEncodeOpts,
 } from './plugins/audio302mHelpers.js';
+export {
+    aes67DepayloaderElement,
+    aes67PayloaderElement,
+    aes67PayloadBytes,
+    aes67PtimeClauses,
+    aes67RawCaps,
+    aes67RawFormat,
+    aes67RtpCaps,
+    aes67SamplesPerPacket,
+    clampChannels,
+    clampPayloadType,
+    clampPtime,
+    AES67_DEFAULT_DSCP,
+    AES67_DEFAULT_PTIME_MS,
+    AES67_SAMPLE_RATE,
+    AES67_SAP_GROUP,
+    AES67_SAP_PORT,
+} from './plugins/aes67Helpers.js';
+export type { Aes67Encoding, Aes67RtpCapsOpts } from './plugins/aes67Helpers.js';
 // Re-exported for plugins (per-connection channel maps on mix inputs) —
 // plugin packages depend on @media-router/engine only, not shared-types.
 export type { ChannelMapEntry } from '@media-router/shared-types';
@@ -153,6 +174,15 @@ export type {
     PlayoutOffsetServices,
     PlayoutOffsetRouteSource,
 } from './plugins/playoutOffset.js';
+export {
+    backlogShedConfig,
+    BACKLOG_SHED_EVENT,
+    BACKLOG_SHED_TOLERANCE_MS,
+    BACKLOG_SHED_HOLD_MS,
+    BACKLOG_SHED_COOLDOWN_MS,
+    BACKLOG_SHED_SANITY_MS,
+} from './plugins/backlogShed.js';
+export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
 export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';
 export type { DeviceWatchdogOptions, DeviceWatchdogPipeWire } from './plugins/DeviceWatchdog.js';

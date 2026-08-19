@@ -1105,6 +1105,8 @@ export class VideoPlayerModule extends GstPluginBase {
             cpuDecodeThreading: config.cpuDecodeThreading,
             clockSync: sink.clockSync,
             sinkPaced: sink.sinkPaced,
+            // Read only for the time-sync contract gate on the backlog shedder.
+            services: this.services,
         });
     }
 

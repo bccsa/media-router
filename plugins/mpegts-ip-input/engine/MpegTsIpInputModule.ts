@@ -8,15 +8,12 @@ import {
     formatBytes,
     bitrateBadge,
     NET_UDP_RCV_BUF,
+    interfaceAddress,
     registerNetworkInterfaceDeviceProvider,
     type PipelineDescription,
     type EngineServices,
 } from '@media-router/engine';
-import {
-    sniffEncapsulation,
-    ifaceAddress,
-    type Encapsulation,
-} from './detectEncapsulation.js';
+import { sniffEncapsulation, type Encapsulation } from './detectEncapsulation.js';
 
 /**
  * MPEG-TS over IP input plugin.
@@ -114,7 +111,10 @@ export class MpegTsIpInputModule extends GstPluginBase {
         const result = await sniffEncapsulation({
             port,
             multicastGroup: multicast ? address : undefined,
-            ifaceAddr: multicast && iface ? ifaceAddress(iface) : undefined,
+            // `interfaceAddress` yields '' for no/unknown NIC; `addMembership`
+            // needs undefined there (it reads '' as an address), which is also
+            // its "let the OS pick the interface" default.
+            ifaceAddr: multicast ? interfaceAddress(iface) || undefined : undefined,
             timeoutMs: DETECT_TIMEOUT_MS,
         });
         this.detectedEncap = result;

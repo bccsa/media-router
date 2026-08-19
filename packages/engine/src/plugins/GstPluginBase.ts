@@ -5,6 +5,7 @@ import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
+import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -104,6 +105,10 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      *    clock. Resolve it from the engine's clock authority and stamp it onto
      *    the description. Best-effort — if the authority can't be brought up the
      *    pipeline runs unsynced (today's behaviour) rather than failing to start.
+     *
+     * The two `delete`s below are what makes the arm you are NOT in
+     * byte-identical to what it was: contract on drops the legacy latch, contract
+     * off drops the contract-only branch alignment.
      */
     private async applyTimeSync(desc: PipelineDescription): Promise<void> {
         if (this.services?.timeSyncContract) {
@@ -112,13 +117,23 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // (ADR-0005 decision 2 rejects consumer-side pad offsets), and the
             // two do not compose:
             //
-            //  * It cannot change what a consumer sees. Every module that asks
-            //    for it (transcoder, audio-transcoder) emits through
-            //    `buildBusSink`, i.e. a `busout_*` tee, and the egress stamper
-            //    rewrites those buffers' PTS/DTS to `anchor + (PES − firstPES)`.
-            //    A constant pad offset shifts every PES value by the same
-            //    amount, so it cancels in that delta: the wire ladder is
+            //  * It cannot change what a SINGLE-BRANCH consumer's own consumers
+            //    see. Every module that asks for it (transcoder,
+            //    audio-transcoder) emits through `buildBusSink`, i.e. a
+            //    `busout_*` tee, and the egress stamper rewrites those buffers'
+            //    PTS/DTS to `anchor + (PES − firstPES)`. One branch means one
+            //    pad offset, which shifts every PES value in that egress by the
+            //    same amount, so it cancels in that delta: the wire ladder is
             //    identical with the latch on or off.
+            //
+            //    That cancellation is a property of the SINGLE branch, not of
+            //    pad offsets, and it does not extend to a multi-input mux: there
+            //    each input branch has its own zero point, so a per-branch offset
+            //    changes the PES values of one stream RELATIVE to another and
+            //    cannot cancel. Cross-branch alignment is therefore a real,
+            //    separate job — `alignBranchesToStamps` below, which anchors
+            //    every branch to the producers' stamps (the 100–121 ms A/V skew
+            //    measured across the .202 X-Chain mux, 2026-08-14).
             //  * It answers a source discontinuity by ERRORING OUT so the
             //    pipeline restarts and re-latches (its offsets are baked into
             //    pad offsets and go stale). The contract answers the same event
@@ -142,6 +157,11 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             );
             return;
         }
+        // Contract off: the bus buffers carry arrival times, not a house
+        // mapping, so there is nothing for a branch to be anchored TO — the
+        // measurement the runner would take is noise. Drop it here (rather than
+        // gating in each plugin) so the legacy dataflow is byte-identical.
+        delete desc.alignBranchesToStamps;
         if (!desc.clockSync) return;
         if (this.services?.clockAuthority) {
             const clock = await this.services.clockAuthority.getClockConfig();
@@ -221,7 +241,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
         // so it can react to any channel it subscribed to (e.g. the
         // audio-dynamics ducker's gain envelope off `level:sclevel`).
         this.childProcess.on('pluginEvent', (data: { channel: string; payload: unknown }) => {
-            this.onPluginEvent(data.channel, data.payload);
+            this.dispatchPluginEvent(data.channel, data.payload);
         });
 
         this.childProcess.on('error', (data: { message: string }) => {
@@ -470,6 +490,51 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      */
     protected onPluginEvent(_channel: string, _payload: unknown): void {
         /* subclass hook */
+    }
+
+    /**
+     * Every runner plugin event lands here first.
+     *
+     * `backlog_shed` is logged HERE, not per plugin: the backlog shedder is a
+     * contract-layer guard armed on every clock-paced leg (video-player,
+     * audio-decoder, any future presentation leg — see backlogShed.ts), so its
+     * one line per episode has to exist for all of them without each one
+     * remembering to write it. The subclass hook still gets the event and may
+     * do more with it.
+     */
+    protected dispatchPluginEvent(channel: string, payload: unknown): void {
+        if (channel === BACKLOG_SHED_EVENT) this.logBacklogShed(payload);
+        this.onPluginEvent(channel, payload);
+    }
+
+    /**
+     * One journal line per backlog-shed episode (see `backlogShed.ts`).
+     *
+     * Deliberately at WARN for a real shed: frames (or samples) were dropped on
+     * purpose, and the retained/budget pair beside it is the evidence for WHY —
+     * without it a shed is indistinguishable in the journal from the glitch it
+     * repaired. `implausible` and `awaiting_keyframe` are the two outcomes that
+     * shed nothing yet: the first says the reading was not a backlog at all,
+     * the second that the leg is caught up and waiting for an IRAP it must not
+     * skip.
+     */
+    private logBacklogShed(payload: unknown): void {
+        const p = (payload ?? {}) as { outcome?: string };
+        if (p.outcome === 'implausible') {
+            this.log.warn(
+                { backlogShed: payload },
+                'Backlog shed: lateness past the sanity ceiling — treated as a timeline mismatch, nothing shed',
+            );
+            return;
+        }
+        if (p.outcome === 'awaiting_keyframe') {
+            this.log.warn(
+                { backlogShed: payload },
+                'Backlog shed: back inside the playout budget, holding for the next keyframe',
+            );
+            return;
+        }
+        this.log.warn({ backlogShed: payload }, 'Backlog shed — retained latency returned to the playout budget');
     }
 
     /**

@@ -342,6 +342,31 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 540_000_000);
     });
 
+    it('arms the backlog shedder on its own sink, without keyframe alignment', () => {
+        // The contract's latency ratchet guard (backlogShed.ts). This leg's
+        // `max-lateness=-1` makes the ratchet quieter than the video leg's, not
+        // absent: the sink refuses to drop late buffers, so retained latency
+        // shows up as lipsync drift against the video leg of the SAME route.
+        // The shed point is the sink's own pad — raw PCM references nothing, so
+        // whole decoded buffers can be dropped and no sample is ever cut.
+        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        expect(module.buildPipeline({})!.backlogShed).toMatchObject({
+            element: 'sink',
+            sink: 'sink',
+            keyframeAligned: false,
+        });
+    });
+
+    it('never arms the shedder on the legacy path', () => {
+        // Nothing to guard: a `sync=false` sink presents on arrival and drains
+        // its own backlog. `MR_TIME_SYNC_CONTRACT=0` must reproduce the legacy
+        // description exactly.
+        const { module } = makeModule();
+        expect(module.buildPipeline({})!.backlogShed).toBeUndefined();
+        expect(module.buildPipeline({ lowLatencySync: true })!.backlogShed).toBeUndefined();
+        expect(module.buildPipeline({ clockSync: true })!.backlogShed).toBeUndefined();
+    });
+
     it('never pushes on the legacy path — that sink has no name to address', async () => {
         const { module } = makeModule();
         const setElementProperty = vi.fn();

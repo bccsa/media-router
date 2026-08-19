@@ -25,6 +25,21 @@ export interface RenderLagPayload {
      * typed rather than `unknown`; do not delete it as unused.
      */
     droppedFps?: number;
+    /**
+     * RETAINED pipeline latency in ms, measured by the runner's backlog shedder
+     * on the shed point's pad. Present only on a leg the time-sync contract
+     * paces (the shedder is what measures it); absent on legacy/unpaced legs and
+     * on older runners, which is why every branch below has to work without it.
+     */
+    retainedMs?: number;
+    /** The route's playout budget D in ms, as the sink's live `ts-offset`. */
+    budgetMs?: number;
+    /** Retained latency OVER budget (`retainedMs − budgetMs`). Positive = ratchet. */
+    latenessMs?: number;
+    /** The shedder is mid-episode — frames are being dropped deliberately. */
+    shedding?: boolean;
+    /** Sheds on this leg since the pipeline started. */
+    shedCount?: number;
 }
 
 /** What the shortfall was attributed to — drives the message and the journal line. */
@@ -34,7 +49,13 @@ export type RenderLagKind =
     /** Fewer frames arrive in the first place — a feed/link problem. */
     | 'source-shortfall'
     /** NOTHING is presented and nothing reaches the sink. */
-    | 'total-stall';
+    | 'total-stall'
+    /**
+     * The leg is holding more latency than the route's playout budget: frames
+     * are late, not missing. See `describeRenderLag` for why nothing else in
+     * the payload can tell you this.
+     */
+    | 'presentation-backlog';
 
 export interface RenderLagReport {
     kind: RenderLagKind;
@@ -85,6 +106,17 @@ export interface RenderLagContext {
  * that the display is keeping up, so that branch now requires `achievedFps > 0`
  * and the stall is attributed from `context.sourceSilent`, honestly labelled as
  * unconfirmed when the module has no signal to offer.
+ *
+ * THE RATCHET outranks both, and could not be told from either without
+ * `retainedMs`. When the leg is running a second behind the house clock, the
+ * `sync=true` sink's own back-pressure throttles ARRIVALS at its pad down to the
+ * rate it presents, and the frames that never make it are QoS-dropped in
+ * `videoconvert` — upstream of the sink, so the sink's `dropped` counter stays
+ * 0. The payload is then `achieved ≈ arrivals ≈ 1 fps, dropped 0`, which every
+ * rule below reads as "the source is under-delivering" while the source
+ * delivers a clean 50 fps and the decoder decodes all of it. That verbatim line
+ * is what .42 logged for hours (2026-08-14 07:19). Retained latency against the
+ * route's budget is the only field that separates them, so it is checked first.
  */
 export function describeRenderLag(
     payload: unknown,
@@ -95,6 +127,30 @@ export function describeRenderLag(
         typeof p.achievedFps === 'number' && typeof p.expectedFps === 'number'
             ? ` (${p.achievedFps}/${p.expectedFps} fps)`
             : '';
+
+    // Retained latency past the budget, with frames still moving: the leg is
+    // late, not starved. `latenessMs > 0` IS "retained beyond D" (the runner
+    // computes it against the sink's live ts-offset), and only a shedder-armed
+    // leg reports it at all — so this branch simply does not exist on legacy
+    // legs and older runners, and the attribution below is unchanged for them.
+    if (typeof p.latenessMs === 'number' && p.latenessMs > 0) {
+        const retained = typeof p.retainedMs === 'number' ? Math.round(p.retainedMs) : undefined;
+        const budget = typeof p.budgetMs === 'number' ? Math.round(p.budgetMs) : undefined;
+        const held =
+            retained !== undefined && budget !== undefined
+                ? ` — holding ${retained} ms against a ${budget} ms playout budget`
+                : ` — holding ${Math.round(p.latenessMs)} ms more latency than the playout budget`;
+        return {
+            kind: 'presentation-backlog',
+            // A rebuild is a legitimate answer to a wedged chain, and shedding
+            // is the cheaper one already under way — either way the SOURCE is
+            // not at fault, so this must not read as a shortfall.
+            sourceShortfall: false,
+            message:
+                `Video running behind the house clock${rate}${held}` +
+                (p.shedding ? ' — shedding backlog now' : ''),
+        };
+    }
     /** The sink presented nothing at all this window. */
     const nothingRendered = typeof p.achievedFps === 'number' && p.achievedFps <= 0;
     /** Nothing reached the sink pad either — or an older runner didn't say. */

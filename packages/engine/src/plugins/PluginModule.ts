@@ -359,6 +359,32 @@ export interface PipelineDescription {
      */
     keyframeGate?: KeyframeGateConfig;
     /**
+     * Hand a clock-paced leg's RETAINED BACKLOG back — the time-sync contract's
+     * latency ratchet guard (ADR-0005; `plugins/backlogShed.ts` carries the full
+     * rationale and the numbers).
+     *
+     * WHY. A `sync=true` sink drains at exactly media rate, so anything the
+     * leg's leaky queues absorb during a downstream hiccup is retained latency
+     * for ever — the legacy `sync=false` sink presented on arrival and drained
+     * its own backlog, which is why nothing needed this before. Field (.42, ~16 h
+     * under the contract): 50 fps decoded, 2.5 fps on the glass, restored
+     * instantly by a live +1 s `ts-offset` and broken again by reverting it.
+     *
+     * WHAT THE RUNNER DOES. Measures lateness on the named element's sink pad
+     * (`now_running_time − (buffer_running_time + ts-offset)`, so the number is
+     * the excess over the route's D directly), and when that stays over
+     * `toleranceMs` for `holdMs` it DROPS the oldest queued data until the leg
+     * is back inside D — up to the next keyframe when `keyframeAligned`, which
+     * a video leg must set (a delta unit whose references were dropped is the
+     * V4L2 wedge the keyframe gate exists for). One `backlog_shed` plugin event
+     * per episode with before/after retained latency, and `cooldownMs` between
+     * episodes so it cannot oscillate.
+     *
+     * Set ONLY under the contract. Omitted, nothing is armed — which is what
+     * keeps `MR_TIME_SYNC_CONTRACT=0` the legacy path byte for byte.
+     */
+    backlogShed?: BacklogShedConfig;
+    /**
      * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
      * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
      * rebased ~0 per incarnation), so a transcoding pipeline's output mux
@@ -371,12 +397,46 @@ export interface PipelineDescription {
      * discontinuities and the 26.5 h 33-bit PTS wrap are not followed.
      */
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
+    /**
+     * Anchor a multi-branch pipeline's input branches to the PRODUCER'S STAMPS
+     * (time-sync contract only — `GstPluginBase.applyTimeSync` drops it when the
+     * contract is off, so the legacy path stays byte-identical).
+     *
+     * WHY. Each named `tsdemux` works out its own zero point: it slaves the PES
+     * timeline it emits to the timestamp of the bus buffer it locked on. That
+     * timestamp is the producer's house stamp, which is exact — EXCEPT on a
+     * reordered stream, where the stamper's monotone floor clamps the buffers
+     * whose first PES walks backwards (measured on the .202 video leg: 120.009 ms
+     * of K spread, against 0.316 ms on its audio sibling). A branch that locks on
+     * a clamped buffer runs that far late for its whole incarnation, its sibling
+     * does not, and the pair leaves the mux 100–121 ms apart — from inputs
+     * measured 0.001 ms apart, re-drawn on every restart.
+     *
+     * WHAT THE RUNNER DOES. Per branch it measures the producer's mapping
+     * `K = stamp − ns(firstPES)` (minimum over the buffers seen — the floor only
+     * pushes stamps up) and the first PES its demuxer can use, then shifts the
+     * demuxer's src pad by `K + ns(anchorPES) − firstBufferPts` so the branch's
+     * running time IS that media's house time. Every branch lands on the same
+     * absolute reference, so alignment holds across branches, across producers,
+     * and across restarts. Rejected (and logged) past 500 ms, where the reading
+     * is no longer the zero-point error this removes.
+     *
+     * The per-input `offsetMs` lipsync trim is unaffected: it rides on the mux's
+     * request pad, this on the demuxer's src pad.
+     */
+    alignBranchesToStamps?: AlignBranchesToStampsConfig;
 }
 
 /** Config for `PipelineDescription.preserveSourceTimeline`. */
 export interface PreserveSourceTimelineConfig {
     /** `name=` of the tsdemux whose branches must carry the source timeline. */
     demux: string;
+}
+
+/** Config for `PipelineDescription.alignBranchesToStamps`. */
+export interface AlignBranchesToStampsConfig {
+    /** `name=`s of the input-branch tsdemux elements to anchor. */
+    demuxes: string[];
 }
 
 /** TS video-info probe config — see PipelineDescription.tsProbe. */
@@ -395,6 +455,28 @@ export interface RenderWatchRunnerConfig {
 export interface KeyframeGateConfig {
     /** `name=` of the decoder in `pipeline` whose sink pad is gated. */
     decoder: string;
+}
+
+/**
+ * Backlog shedder config — see PipelineDescription.backlogShed. Plugins never
+ * write this literal: `backlogShedConfig()` (plugins/backlogShed.ts) owns the
+ * numbers and the contract gate for every leg.
+ */
+export interface BacklogShedConfig {
+    /** `name=` of the element whose sink pad is measured and shed at. */
+    element: string;
+    /** `name=` of the presentation sink whose `ts-offset` is the route's D. */
+    sink: string;
+    /** End a shed only on a keyframe (mandatory ahead of a video decoder). */
+    keyframeAligned: boolean;
+    /** Retained latency over D, in ms, that is tolerated before shedding. */
+    toleranceMs: number;
+    /** How long the excess must hold before it counts, in ms. */
+    holdMs: number;
+    /** Minimum gap between sheds on this leg, in ms. */
+    cooldownMs: number;
+    /** Lateness past which a reading is a timeline mismatch, not a backlog. */
+    sanityMs: number;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

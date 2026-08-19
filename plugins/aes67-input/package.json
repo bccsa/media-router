@@ -1,0 +1,186 @@
+{
+    "name": "@media-router/plugin-aes67-input",
+    "version": "2.0.0",
+    "private": true,
+    "description": "AES67 input — receives an AES67 / ST 2110-30 RTP audio stream and publishes it on the bus as SMPTE-302M",
+    "mediaRouter": {
+        "pluginId": "aes67-input",
+        "displayName": "AES67 In",
+        "description": "Receives an AES67 / SMPTE ST 2110-30 audio stream (L24 or L16, 48 kHz, multicast or unicast) and publishes it on the local bus as SMPTE-302M. Streams announced over SAP can be picked from a list instead of typed in.",
+        "color": "#6366f1",
+        "icon": "arrow-down-to-line",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "audio-out",
+                "direction": "output",
+                "streamType": "audio/302m",
+                "label": "Audio Out (302M)",
+                "maxConnections": -1,
+                "requiresOrderedApply": true
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "discoveredStream": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Stream announced over SAP on this network. Picking one supplies its address, port, encoding, channel count and payload type — leave empty to configure them by hand below.",
+                    "x-deviceType": "aes67-stream"
+                },
+                "address": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Multicast group to join (e.g. 239.69.0.1) or the local address to receive unicast on. Ignored when a discovered stream is selected."
+                },
+                "port": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 65535,
+                    "default": 5004,
+                    "description": "RTP port (AES67 default 5004)"
+                },
+                "interface": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Network interface for the multicast join and SAP discovery; empty = system default",
+                    "x-deviceType": "network-interface"
+                },
+                "encoding": {
+                    "type": "string",
+                    "enum": [
+                        "L24",
+                        "L16"
+                    ],
+                    "default": "L24",
+                    "description": "Wire sample format: L24 (24-bit, the AES67 default) or L16"
+                },
+                "channels": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 2,
+                    "description": "Channels in the received stream. The 302M bus carries stereo, so more than 2 are downmixed."
+                },
+                "payloadType": {
+                    "type": "number",
+                    "minimum": 96,
+                    "maximum": 127,
+                    "default": 96,
+                    "description": "RTP dynamic payload type the sender uses"
+                },
+                "jitterBufferMs": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 20,
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "ms",
+                    "description": "Receive buffer. AES67 packets are 1 ms, so this is 20 packet times by default — enough for ordinary switch jitter without adding audible delay. Raise on a congested or wireless path."
+                },
+                "ptpSync": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Schedule audio against the sender's PTP media clock (RFC 7273) instead of arrival time. Needs a PTP grandmaster on the network AND the grandmaster ID below; without them the stream goes silent, which is why it is off by default."
+                },
+                "ptpGmid": {
+                    "type": "string",
+                    "default": "",
+                    "description": "PTP grandmaster ID, e.g. 00-1D-C1-FF-FE-50-30-EE. Required by PTP sync; a discovered stream's announcement shows the sender's."
+                },
+                "ptpDomain": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 127,
+                    "default": 0,
+                    "description": "PTP domain (AES67 media profile default 0)"
+                },
+                "playoutOffsetMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10000,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "description": "Playout offset for every player fed from this source — how far behind the shared house clock they present. This is the ROUTE's latency budget, set once here instead of per player, so a video-player and an audio-decoder split off this source stay locked to each other. Leave EMPTY to use the engine-wide default (300 ms unless the engine sets otherwise). Raise it if playback stutters on a jittery link; lower it for the tightest latency. Applies live to every connected player, with no restart. Has no effect while the engine time-sync contract is off."
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "stream",
+                "label": "Stream",
+                "fields": [
+                    {
+                        "key": "source",
+                        "label": "Source"
+                    },
+                    {
+                        "key": "format",
+                        "label": "Format"
+                    },
+                    {
+                        "key": "payloadType",
+                        "label": "Payload Type"
+                    },
+                    {
+                        "key": "multicast",
+                        "label": "Multicast"
+                    }
+                ]
+            },
+            {
+                "id": "clock",
+                "label": "Clock",
+                "fields": [
+                    {
+                        "key": "ptpSync",
+                        "label": "PTP Sync"
+                    }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "Mbps"
+                    },
+                    {
+                        "key": "bytesReceived",
+                        "label": "Bytes Received"
+                    }
+                ]
+            },
+            {
+                "id": "discovery",
+                "label": "SAP Discovery",
+                "fields": [
+                    {
+                        "key": "discovered",
+                        "label": "Streams Seen"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/Aes67InputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-aes67-core": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

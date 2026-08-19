@@ -357,6 +357,90 @@ describe('planLivePipeline', () => {
         });
     });
 
+    describe('backlog shedder', () => {
+        // The time-sync contract's latency ratchet guard: a `sync=true` sink
+        // drains at media rate, so backlog the leaky queues absorb is never
+        // handed back (field .42: 50 fps decoded, 2.5 fps on the glass after
+        // ~16 h). Armed by the contract, on the same pad and the same rungs as
+        // the keyframe gate.
+        const explicitDec: DecoderSelection = {
+            id: 'v4l2slh265dec',
+            chain: `h265parse ! v4l2slh265dec name=${VIDEO_DECODER_NAME}`,
+            caps: 'capsfilter caps="video/x-h265"',
+            hardware: true,
+            explicit: true,
+        };
+        const contract = { timeSyncContract: true };
+
+        it('sheds at the DECODER, measured against the sink that carries D', () => {
+            const desc = planLivePipeline({
+                ...base,
+                decoder: explicitDec,
+                services: contract,
+            });
+            expect(desc.backlogShed).toMatchObject({
+                element: VIDEO_DECODER_NAME,
+                sink: 'sink',
+                // A delta unit whose references were dropped is the V4L2 wedge
+                // — a video shed can only ever end on an IRAP.
+                keyframeAligned: true,
+            });
+            // Both names must exist in the string the runner parses, or `start`
+            // hard-errors on the lookup.
+            expect(desc.pipeline).toContain(`name=${VIDEO_DECODER_NAME}`);
+            expect(desc.pipeline).toContain('name=sink');
+        });
+
+        it('is NOT armed with the contract off — the legacy leg is untouched', () => {
+            expect(
+                planLivePipeline({ ...base, decoder: explicitDec }).backlogShed,
+            ).toBeUndefined();
+            expect(
+                planLivePipeline({ ...base, decoder: explicitDec, services: null }).backlogShed,
+            ).toBeUndefined();
+            expect(
+                planLivePipeline({
+                    ...base,
+                    decoder: explicitDec,
+                    services: { timeSyncContract: false },
+                }).backlogShed,
+            ).toBeUndefined();
+        });
+
+        it('never arms on the decodebin3 rung — there is no decoder to name', () => {
+            // Same constraint as the gate: the bin plugs its own decoder. That
+            // rung only carries the stream for the second or two before the TS
+            // probe names the codec, far short of the hold window anyway.
+            expect(planLivePipeline({ ...base, services: contract }).backlogShed).toBeUndefined();
+        });
+
+        it('never arms on an unnamed sink (autovideosink, dev)', () => {
+            // A bin, not a basesink: no `name=sink` to resolve and no
+            // `ts-offset` to measure the budget against.
+            expect(
+                planLivePipeline({
+                    ...base,
+                    sinkElement: 'autovideosink sync=true',
+                    decoder: explicitDec,
+                    services: contract,
+                }).backlogShed,
+            ).toBeUndefined();
+        });
+
+        it('never arms it on the fallback card', () => {
+            // The card is a local videotestsrc/still: no bus, no producer
+            // stamps, nothing that can retain latency against a house clock.
+            expect(
+                planFallbackPipeline({
+                    fallbackText: 'No video',
+                    sinkElement: 'kmssink name=sink',
+                    env: {},
+                    surface: DEFAULT_SURFACE,
+                }).description.backlogShed,
+            ).toBeUndefined();
+        });
+    });
+
     it('drops the software scaler when the compositor scales for us', () => {
         expect(planLivePipeline({ ...base, waylandFullscreen: true }).pipeline).not.toContain(
             'videoscale',

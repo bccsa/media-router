@@ -1609,7 +1609,7 @@ args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
 **Playout offset D on producers.** The per-route override for D lives on the
 **route head** — the producer module the consumers take their bus from — as a
 `playoutOffsetMs` config key (declared so far by `srt-input`, `rist-input`,
-`mpegts-ip-input`, `ts-splitter`). Declare it with **no schema `default`**
+`mpegts-ip-input`, `ts-splitter`, `aes67-input`). Declare it with **no schema `default`**
 (absent means "inherit the engine default": `EngineConfig.playoutOffsetMs`,
 300 ms, `MR_PLAYOUT_OFFSET_MS` env fallback) and list it in
 `liveUpdatableParams`; your producer never reads it — the engine resolves it
@@ -1909,6 +1909,42 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates, **codec-aware decoder selection** (see below) |
 | Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignBusChannel(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |
+| AES67 In / Out | `plugins/aes67-input/`, `plugins/aes67-output/` | Network audio in both directions off the 302M bus; a python sidecar per module for SAP discovery/announce, a device provider fed by what that sidecar sees, and PTP-epoch RTP stamping that refuses to fake itself (see below) |
+
+### AES67 — SAP discovery and PTP-epoch RTP stamping
+
+Two plugins plus the `aes67-core` library plugin (SAP/SDP and the TAI clock
+arithmetic, in python, one definition shared by both ends). ADR-0005 decision 7
+and its "Stage AES67" implementation notes carry the full design; the parts
+worth copying:
+
+- **A picker fed by a sidecar.** `aes67-input` spawns `mr-sap.py --listen`
+  (`spawnRunnerProcess`, so it dies with the module) and publishes each
+  SNAPSHOT it emits into a module-level table; a `x-deviceType: "aes67-stream"`
+  device provider lists that table, so the operator picks "Studio A" instead of
+  typing a group, port, encoding, channel count and payload type. Snapshots —
+  not add/remove deltas — mean a sidecar restart re-syncs the GUI instead of
+  leaving a phantom entry. Discovery is owned by the RUNNING modules, so a box
+  with no AES67 input joins no multicast group and runs no extra process.
+- **A route head like any other.** `aes67-input` ends in `buildBusSink`, so the
+  engine's stamper anchors it onto the house clock with no plugin work, and it
+  declares `playoutOffsetMs` (no schema `default`) for the players it feeds.
+- **The epoch is one integer, and it is measured, not assumed.** GStreamer's
+  payloader computes `rtptime = timestamp-offset + running_time x rate / 1e9`
+  from ABSOLUTE running time (pinned against real elements in
+  `aes67-core/tests/aes67Gst.test.ts`), and under the time-sync contract
+  running time IS CLOCK_MONOTONIC — so setting `timestamp-offset` to
+  `(CLOCK_TAI - CLOCK_MONOTONIC) x rate / 1e9 mod 2^32` makes the wire
+  timestamps PTP-epoch media time. No TAI pipeline clock, no change to the
+  contract. `aes67_clock.py` measures it and REFUSES on a box whose kernel TAI
+  offset is unset (no ptp4l/phc2sys): the payloader then keeps its random
+  RFC 3550 offset and the SDP carries no `ts-refclk`/`mediaclk`, because
+  announcing a PTP media clock you do not have is undetectable at the receiver.
+- **Pacing is not playout offset D.** The AES67 egress sink syncs against the
+  house clock with a small `senderLatencyMs` (default 20 ms) so 1 ms packets
+  leave evenly instead of in decode-sized bursts. D is deliberately NOT applied
+  there: RTP timestamps carry the alignment, so delaying the egress by 300 ms
+  would only spend the receiver's link-offset budget.
 
 ### Video Player — codec-aware decoder selection
 

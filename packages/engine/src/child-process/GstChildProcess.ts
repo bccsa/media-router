@@ -215,7 +215,9 @@ export class GstChildProcess extends EventEmitter {
             tsProbe: desc.tsProbe,
             renderWatch: desc.renderWatch,
             keyframeGate: desc.keyframeGate,
+            backlogShed: desc.backlogShed,
             preserveSourceTimeline: desc.preserveSourceTimeline,
+            alignBranchesToStamps: desc.alignBranchesToStamps,
         };
     }
 

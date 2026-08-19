@@ -116,6 +116,21 @@ describe('GstPluginBase time-sync mode resolution', () => {
             expect(sent!.preserveSourceTimeline).toBeUndefined();
         });
 
+        it('keeps alignBranchesToStamps — it is anchored to the contract stamps', async () => {
+            // The mirror of the drop above. A multi-input mux's branches each
+            // zero their own timeline off the ONE bus buffer their tsdemux
+            // locked on, which is only a house-clock mapping while the contract
+            // is stamping; this is where that mapping is put back.
+            const sent = await resolve(
+                {
+                    pipeline: 'unixfdsrc ! tsdemux name=demux_0 ! mpegtsmux name=mux',
+                    alignBranchesToStamps: { demuxes: ['demux_0', 'demux_1'] },
+                },
+                { timeSyncContract: true },
+            );
+            expect(sent!.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
+        });
+
         it('never resolves a net clock for a non-clockSync pipeline either', async () => {
             // Widening the gate must not widen what the contract COSTS: still no
             // daemon, still nothing waited on, for any pipeline.
@@ -168,6 +183,21 @@ describe('GstPluginBase time-sync mode resolution', () => {
                 {},
             );
             expect(sent!.preserveSourceTimeline).toEqual({ demux: 'demux' });
+        });
+
+        it('drops alignBranchesToStamps — there are no house stamps to anchor to', async () => {
+            // Legacy bus buffers carry arrival times, so the runner's per-branch
+            // measurement (`stamp − ns(firstPES)`) would be noise and the pad
+            // offsets it derives from it would be a live change to a path that
+            // must stay byte-identical. The mux keeps declaring it either way.
+            const sent = await resolve(
+                {
+                    pipeline: 'unixfdsrc ! tsdemux name=demux_0 ! mpegtsmux name=mux',
+                    alignBranchesToStamps: { demuxes: ['demux_0'] },
+                },
+                {},
+            );
+            expect(sent!.alignBranchesToStamps).toBeUndefined();
         });
 
         it('an explicit `timeSyncContract: false` keeps the legacy path', async () => {

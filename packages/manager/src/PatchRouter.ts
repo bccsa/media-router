@@ -88,7 +88,27 @@ export class PatchRouter {
             },
         );
 
+        // Module runtime state is cached per engine and merged, never deleted —
+        // reconcile it here, the one place every module add/remove passes
+        // through. Without this a removed module's last state lingers and
+        // `watch:engine` rehydration serves the ghost (docs/TodoNotes.md).
+        this.reconcileModuleStateCache(engineId, processed);
+
         this.broadcast(engineId, senderId, processed, cascades, ops, updatedConfig);
+    }
+
+    /** Purge cached state for removed modules; lift tombstones for re-added ones. */
+    private reconcileModuleStateCache(engineId: string, processed: PatchOp[]): void {
+        const removed: string[] = [];
+        const added: string[] = [];
+        for (const op of processed) {
+            const match = /^\/modules\/([^/]+)$/.exec(op.path);
+            if (!match) continue;
+            if (op.op === 'remove') removed.push(match[1]);
+            else if (op.op === 'add') added.push(match[1]);
+        }
+        if (added.length > 0) this.eventForwarder.clearModuleTombstones(engineId, added);
+        if (removed.length > 0) this.eventForwarder.purgeModuleStates(engineId, removed);
     }
 
     /**

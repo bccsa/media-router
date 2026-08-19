@@ -2,6 +2,58 @@
 
 ## Open
 
+- [ ] **SOAK RESTART — the contract's latency RATCHET, fixed 2026-08-14
+  (ADR-0005 Stage 3c):** .42 was found at 2.5 fps on the glass with 50 fps
+  decoded, ~16 h into the soak. Cause: decision 1 makes every presentation sink
+  `sync=true`, which drains at exactly media rate, so backlog the leg's leaky
+  queues absorb during any downstream hiccup is never handed back — retained
+  latency ratchets one hiccup at a time until frames are dropped for lateness.
+  Fix is the contract-layer BACKLOG SHEDDER (`plugins/backlogShed.ts` +
+  `_start_backlog_shedder`): retention past `D + 250 ms` held 5 s drops the
+  oldest data (up to the next keyframe on video) until the leg is back at D, at
+  most once a minute per leg, with a `backlog_shed` event carrying before/after
+  numbers. renderWatch now reports retained latency so this failure names itself
+  instead of reading as a source shortfall. **The soak clock restarts from the
+  deploy** — the hours already run were on the unguarded build, and the fault it
+  exposed is exactly what a soak is for. What to watch, per box: the `vc4 crtc`
+  IRQ rate BY NAME (glass fps — 50/s healthy on .42; `v3d` on .202-class), and
+  `backlog_shed` lines in the journal (occasional = the guard working; every
+  cooldown, for hours = a render chain that cannot sustain the source rate,
+  which is a different fault).
+
+- [ ] **SOAK NOTE — multi-input mux A/V skew, fixed 2026-08-14 (ADR-0005 Stage
+  3d):** the .202 X-Chain rig measured two legs of ONE producer arriving at a
+  mux 0.001 ms apart and leaving it 100–121 ms apart, re-drawn on every mux
+  incarnation. Each input branch's `tsdemux` zeroes its own timeline off the ONE
+  bus buffer it locked on, and on a REORDERED stream that stamp can be up to the
+  reorder depth late — the producer's monotone floor clamps the buffers whose
+  first PES walks backwards (measured: 120.009 ms of K spread on the video leg,
+  0.316 ms on its audio sibling). Fix is `alignBranchesToStamps`: the runner
+  measures each branch's house mapping (minimum `stamp − ns(firstPES)`, which is
+  the unclamped one) and its residual error against that mapping — the access
+  unit identified by a payload-TAIL join, read after a 3 s settle because a
+  tsdemux re-slaves for the first seconds — then shifts the demux src pad so the
+  branch's running time IS that media's house time. Contract-only; the operator
+  `offsetMs` trim is a different pad and unaffected.
+  **FIELD VALIDATION IS OUTSTANDING.** Three earlier designs were each measured
+  and refuted on .202 (residual skews −80 / −25.9 / −186.6 / +46.7 ms); the
+  design that fixed what those refutations exposed could NOT be measured, because
+  the rig's HLS VOD source signature expired (13:17:05Z, HTTP 403) and the chain
+  has had no media since. .202 is back on the pre-fix build (md5-verified);
+  `/data/ba6.tgz` + `/data/ba6.md5` are staged to re-deploy. Do not call this
+  closed until a round shows the skew at ≈0 across two mux restarts.
+  **Watch during the soak:** `branchAlign:` lines in the journal, one per mux
+  input branch per incarnation — the offset they report is the skew that would
+  otherwise have been in the output, so a value that starts exceeding ~1 buffer
+  of media, a `REJECTED` line, or an `un-anchored` line means the pair is back on
+  luck. Known follow-up, NOT this fix: the mux's own egress stamps still carry
+  ~200 ms of spread because the KLV carousel pad (do-timestamp, PID 0x1f0) sits
+  on a different phase from the media pads, so whichever PID leads a buffer
+  decides that buffer's stamp — harmless to this mux's arithmetic (measured: the
+  video and audio output PIDs share a K minimum to the nanosecond, the KLV PID
+  sits 19.6 ms off it, and a constant is absorbed by the stamper's anchor), but
+  it is the same class of quantisation for anything downstream of it.
+
 - [ ] **PROCESS NOTE — feature freeze (2026-08-13):** no new tracks — PTP,
   AES67, cleanup/removal work included — until the time-sync contract's
   Stage-2/3 burn-in soak passes on BOTH test devices. The burn-in is the
@@ -11,6 +63,29 @@
   sink can report healthy arrivals/presented while the screen tells a
   different story (the renderWatch/pipeline-metrics-vs-screen lesson,
   `TodoNotes-video-hw-decode.md`).
+  **AMENDED 2026-08-13 (operator decision):** the freeze was lifted for the
+  PTP and AES67 *build* tracks — code lands on the branch, nothing merges or
+  ships. The burn-in soak remains the release/merge gate for the whole branch,
+  and every on-device test must include the glass-level fps gate.
+
+- [ ] **AES67 track landed REPO-SIDE while the freeze above holds
+  (2026-08-13):** `aes67-input`, `aes67-output` and the `aes67-core` library
+  plugin (SAP announce/discovery, TAI clock arithmetic) are in the tree, with
+  ADR-0005's "Stage AES67" implementation notes. Read this as a conflict with
+  the freeze, recorded rather than papered over: it is code + tests only —
+  **nothing was deployed to any device, and the two-box live test has NOT been
+  run.** The plugins are additive (no change to the contract machinery, the
+  runner, or any video path), so they cannot affect the burn-in soak that gates
+  release; they are also inert on the fleet until someone adds a module. What
+  is still owed after the soak passes: (1) the two-box AES67 live test —
+  multicast join/IGMP on real NICs, DSCP survival across the switch, interop
+  with a third-party AES67 device; (2) everything behind `ptpSync`, which needs
+  linuxptp (decision 6) and is refused-with-a-warning until the box's kernel TAI
+  offset is set; (3) the epoch-through-the-bus gap (ADR-0005 Stage AES67: RX
+  RFC 7273 sync is exact inside the RX pipeline, but the egress stamper
+  re-anchors onto local house time, so cross-device sample-exactness through the
+  bus needs the stamper to accept an external anchor — a contract change, its
+  own stage).
 
 - [ ] **DEPLOY NOTE — video-player `sync` default flips ON (2026-08-01):**
   instances whose stored config never set `sync` change from

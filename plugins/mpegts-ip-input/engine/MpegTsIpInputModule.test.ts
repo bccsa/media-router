@@ -1,6 +1,22 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { formatBytes, bitrateBadge } from '@media-router/engine';
+import { formatBytes, bitrateBadge, interfaceAddress } from '@media-router/engine';
+import { sniffEncapsulation } from './detectEncapsulation.js';
 import { MpegTsIpInputModule } from './MpegTsIpInputModule.js';
+
+// The sniff binds a real UDP socket and waits — stub it so these tests only
+// assert the options the module hands it (the socket itself is covered by
+// detectEncapsulation.test.ts).
+vi.mock('./detectEncapsulation.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('./detectEncapsulation.js')>()),
+    sniffEncapsulation: vi.fn(async () => 'rtp'),
+}));
+
+// NIC-name → IPv4 now comes from the engine (the plugin no longer carries its
+// own copy) — stub it so the join address doesn't depend on this host's NICs.
+vi.mock('@media-router/engine', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@media-router/engine')>()),
+    interfaceAddress: vi.fn((name: string) => (name === 'eth0' ? '192.168.1.10' : '')),
+}));
 
 // `as any` reaches private fields/methods without re-declaring them in a typed
 // intersection (TS collapses such intersections to `never` over privates).
@@ -234,5 +250,53 @@ describe('MpegTsIpInputModule video-info probe', () => {
         const { module } = makeModule();
         module.onPluginEvent('stream:discovered', { pid: 0x65 });
         expect(module.setStatusData).not.toHaveBeenCalled();
+    });
+});
+
+describe('MpegTsIpInputModule.detectEncapsulation', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    const sniffOpts = () => vi.mocked(sniffEncapsulation).mock.calls[0]![0];
+
+    it('joins the group on the configured NIC — resolved by the engine helper', async () => {
+        const { module } = makeModule();
+        module.config = {
+            encapsulation: 'auto',
+            address: '239.1.1.1',
+            port: 5004,
+            interface: 'eth0',
+        };
+        await module.detectEncapsulation();
+        expect(interfaceAddress).toHaveBeenCalledWith('eth0');
+        expect(sniffOpts()).toMatchObject({
+            port: 5004,
+            multicastGroup: '239.1.1.1',
+            ifaceAddr: '192.168.1.10',
+        });
+        expect(module.detectedEncap).toBe('rtp');
+    });
+
+    it('passes undefined — never the empty string — when the NIC has no external IPv4', async () => {
+        const { module } = makeModule();
+        // dgram's addMembership reads '' as an address and rejects it; the
+        // engine helper returns '' for an unknown/IPv6-only/internal NIC.
+        module.config = { encapsulation: 'auto', address: '239.1.1.1', interface: 'tun0' };
+        await module.detectEncapsulation();
+        expect(sniffOpts().ifaceAddr).toBeUndefined();
+    });
+
+    it('sniffs a unicast listen without a join', async () => {
+        const { module } = makeModule();
+        module.config = { encapsulation: 'auto', address: '0.0.0.0', interface: 'eth0' };
+        await module.detectEncapsulation();
+        expect(sniffOpts()).toMatchObject({ multicastGroup: undefined, ifaceAddr: undefined });
+    });
+
+    it('skips the sniff entirely when encapsulation is explicit', async () => {
+        const { module } = makeModule();
+        module.config = { encapsulation: 'rtp', address: '239.1.1.1' };
+        await module.detectEncapsulation();
+        expect(sniffEncapsulation).not.toHaveBeenCalled();
+        expect(module.detectedEncap).toBeNull();
     });
 });

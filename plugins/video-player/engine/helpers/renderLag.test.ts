@@ -106,6 +106,85 @@ describe('describeRenderLag', () => {
             ).toBe(true);
         });
     });
+
+    describe('presentation backlog (the time-sync contract ratchet)', () => {
+        // THE FIELD PAYLOAD, verbatim from .42 on 2026-08-14 07:19 — hours of
+        // it, every two seconds. The source was delivering a clean 50 fps and
+        // the decoder was decoding all of it (codec IRQ ~100/s); the leg was
+        // simply running a second behind the house clock, so the `sync=true`
+        // sink's own back-pressure throttled ARRIVALS at its pad to the rate it
+        // presented, and the frames that never made it were QoS-dropped in
+        // `videoconvert` — upstream of the sink, so `droppedFps` stayed 0.
+        const field = { achievedFps: 1, expectedFps: 50, droppedFps: 0, arrivalsFps: 1 };
+
+        it('named it a SOURCE shortfall before retained latency was reported', () => {
+            // The old attribution, kept as a test so the reason this field
+            // cannot be diagnosed from fps alone stays on the record.
+            expect(describeRenderLag(field).kind).toBe('source-shortfall');
+        });
+
+        it('names itself once the runner reports retained latency', () => {
+            const report = describeRenderLag({
+                ...field,
+                retainedMs: 1350,
+                budgetMs: 300,
+                latenessMs: 1050,
+            });
+            expect(report.kind).toBe('presentation-backlog');
+            expect(report.message).toBe(
+                'Video running behind the house clock (1/50 fps) — holding 1350 ms against a 300 ms playout budget',
+            );
+            // NOT a source shortfall: nothing upstream is at fault, and a
+            // rebuild is a legitimate answer where manufacturing frames is not.
+            expect(report.sourceShortfall).toBe(false);
+        });
+
+        it('says so while the shed is under way', () => {
+            expect(
+                describeRenderLag({ ...field, retainedMs: 1350, budgetMs: 300, latenessMs: 1050, shedding: true })
+                    .message,
+            ).toContain('shedding backlog now');
+        });
+
+        it('outranks the total-stall reading — late is not stopped', () => {
+            expect(
+                describeRenderLag(
+                    { achievedFps: 0, expectedFps: 50, arrivalsFps: 0, retainedMs: 2000, budgetMs: 300, latenessMs: 1700 },
+                    { sourceSilent: false },
+                ).kind,
+            ).toBe('presentation-backlog');
+        });
+
+        it('stays out of the way when the leg is INSIDE its budget', () => {
+            // Negative lateness is the healthy case (the buffer reaches the
+            // shed point before its slot), and it must not colour an ordinary
+            // render-chain or source diagnosis.
+            expect(
+                describeRenderLag({ achievedFps: 41, expectedFps: 50, arrivalsFps: 50, retainedMs: 210, budgetMs: 300, latenessMs: -90 })
+                    .kind,
+            ).toBe('render-chain');
+            expect(
+                describeRenderLag({ achievedFps: 41, expectedFps: 50, arrivalsFps: 41.5, retainedMs: 210, budgetMs: 300, latenessMs: -90 })
+                    .kind,
+            ).toBe('source-shortfall');
+        });
+
+        it('falls back to the excess alone when only lateness is reported', () => {
+            expect(describeRenderLag({ ...field, latenessMs: 1050 }).message).toContain(
+                'holding 1050 ms more latency than the playout budget',
+            );
+        });
+
+        it('is absent entirely on a legacy leg — no shedder, no reading', () => {
+            // The runner only reports these fields when a shedder is armed, so
+            // an unpaced leg and an older runner both take the old paths
+            // unchanged.
+            expect(describeRenderLag(field).kind).toBe('source-shortfall');
+            expect(
+                describeRenderLag({ achievedFps: 41, expectedFps: 50, arrivalsFps: 50 }).kind,
+            ).toBe('render-chain');
+        });
+    });
 });
 
 describe('shouldSelfHealAfterResume', () => {

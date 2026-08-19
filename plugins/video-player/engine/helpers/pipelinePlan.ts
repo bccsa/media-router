@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import {
+    backlogShedConfig,
     effectivePlayoutOffsetNs,
+    type BacklogShedServices,
     type PipelineDescription,
     type PlayoutOffsetServices,
 } from '@media-router/engine';
@@ -196,9 +198,36 @@ export interface LivePlanInput {
     cpuDecodeThreading: unknown;
     clockSync: boolean;
     sinkPaced: boolean;
+    /**
+     * Module services, read ONLY for the time-sync contract gate — the backlog
+     * shedder is armed by the same switch that paces the sink, because the
+     * ratchet it guards is a property of pacing (see `backlogShedConfig`).
+     */
+    services?: BacklogShedServices | null;
 }
 
 export function planLivePipeline(input: LivePlanInput): PipelineDescription {
+    // The sink is only addressable when it carries `name=sink` — autovideosink
+    // (dev) is a bin without one, the same condition renderWatch is gated on.
+    const namedSink = input.sinkElement.includes('name=sink');
+    // Backlog shedder — the contract's latency ratchet guard. EXPLICIT rungs
+    // only, and for the same reason the keyframe gate is: it sheds on the
+    // decoder's sink pad (where the backlog actually is, and where `h26xparse`
+    // has already flagged every access unit), and the `decodebin3` bootstrap
+    // rung plugs its own decoder so there is no element to name. That rung only
+    // ever carries the stream for the second or two before the TS probe names
+    // the codec, which is far short of the hold window anyway.
+    const backlogShed =
+        input.decoder.explicit && namedSink
+            ? backlogShedConfig(input.services, {
+                  element: VIDEO_DECODER_NAME,
+                  sink: 'sink',
+                  // A delta unit whose references were dropped is the V4L2
+                  // wedge the keyframe gate exists for — a video shed can only
+                  // ever end on an IRAP.
+                  keyframeAligned: true,
+              })
+            : undefined;
     return {
         pipeline: buildLivePipeline(
             input.sinkElement,
@@ -230,7 +259,9 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // Keep-up watch on the live render chain (see onPluginEvent).
         // Only the wayland/kms sinks are named — autovideosink (dev) is a
         // bin without `name=sink`, so the runner would fail the lookup.
-        ...(input.sinkElement.includes('name=sink') ? { renderWatch: { sink: 'sink' } } : {}),
+        ...(namedSink ? { renderWatch: { sink: 'sink' } } : {}),
+        // See `backlogShed` above — armed only under the time-sync contract.
+        ...(backlogShed ? { backlogShed } : {}),
         // EXPLICIT rungs only. A live TS join lands mid-GOP, and feeding a
         // stateless V4L2 decoder delta units before its first keyframe leaves
         // the kernel driver holding a decode request that never completes —

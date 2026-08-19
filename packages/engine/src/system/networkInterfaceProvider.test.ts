@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as os from 'node:os';
 import {
+    interfaceAddress,
     listNetworkInterfaces,
     registerNetworkInterfaceDeviceProvider,
     NETWORK_INTERFACE_DEVICE_TYPE,
@@ -31,6 +32,32 @@ describe('listNetworkInterfaces', () => {
             tun0: [{ address: 'fe80::2', family: 'IPv6', internal: false } as os.NetworkInterfaceInfo],
         });
         expect(listNetworkInterfaces()[0]).toMatchObject({ name: 'tun0', label: 'tun0' });
+    });
+});
+
+describe('interfaceAddress', () => {
+    // The translation between what the picker stores (an interface NAME, which
+    // is what GStreamer's multicast-iface wants) and what a raw socket API
+    // takes (an address — e.g. a SAP announcement's source, or a join).
+    it('resolves a NIC name to its external IPv4', () => {
+        mockNics.mockReturnValue({
+            eth0: [
+                { address: 'fe80::1', family: 'IPv6', internal: false } as os.NetworkInterfaceInfo,
+                { address: '192.168.1.10', family: 'IPv4', internal: false } as os.NetworkInterfaceInfo,
+            ],
+        });
+        expect(interfaceAddress('eth0')).toBe('192.168.1.10');
+    });
+
+    it('is empty — never a guess — for an unknown name, no name, or IPv6-only', () => {
+        mockNics.mockReturnValue({
+            lo: [{ address: '127.0.0.1', family: 'IPv4', internal: true } as os.NetworkInterfaceInfo],
+            tun0: [{ address: 'fe80::2', family: 'IPv6', internal: false } as os.NetworkInterfaceInfo],
+        });
+        expect(interfaceAddress('')).toBe('');
+        expect(interfaceAddress('eth9')).toBe('');
+        expect(interfaceAddress('tun0')).toBe('');
+        expect(interfaceAddress('lo')).toBe(''); // internal: a join here reaches nothing
     });
 });
 

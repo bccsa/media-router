@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BUS_WATCHDOG_PREFIX, buildBusSink, buildBusSrc, busTeeName } from './busHelpers.js';
+import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 
 /**
  * Cross-language contract pins between the TS bus helpers and the python
@@ -281,6 +282,60 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(stamperSource).toContain('sink = tee.get_static_pad("sink")');
         expect(stamperSource).toContain('peer.link(stamp.get_static_pad("sink"))');
         expect(stamperSource).toContain('stamp.get_static_pad("src").link(sink)');
+    });
+
+    it('the runner implements the backlogShed start option', () => {
+        // Both presentation legs send `backlogShed` under the contract
+        // (backlogShedConfig → PipelineDescription → GstChildProcess
+        // startPayload → runner). Silently losing the key (the
+        // decoderThreadType trap) would leave every paced leg on the latency
+        // ratchet with nothing to notice it: the picture decays over HOURS and
+        // the pipeline reports itself healthy the whole time.
+        expect(runnerSource).toContain('data.get("backlogShed")');
+        expect(runnerSource).toContain('def _start_backlog_shedder');
+        // Every field of the config the TS side sends is read by name.
+        for (const key of [
+            'element',
+            'sink',
+            'keyframeAligned',
+            'toleranceMs',
+            'holdMs',
+            'cooldownMs',
+            'sanityMs',
+        ]) {
+            expect(runnerSource).toContain(`cfg.get("${key}"`);
+        }
+    });
+
+    it('the shedder reports on the channel GstPluginBase logs', () => {
+        // One literal, two processes: the runner emits it, the base class logs
+        // every leg's episodes off it.
+        expect(runnerSource).toContain(`emit_plugin_event("${BACKLOG_SHED_EVENT}"`);
+        expect(runnerSource).toContain('"outcome": outcome');
+    });
+
+    it('the shedder measures against the SINK\'s live ts-offset, not a copy of D', () => {
+        // The route's playout offset moves live (`notifyPlayoutOffsetChanged`
+        // pushes a new `ts-offset` to the running sink). Reading the property
+        // is what keeps the guard measuring against the budget the route is
+        // actually presenting on, instead of one baked in at pipeline build.
+        expect(runnerSource).toContain('sink.get_property("ts-offset")');
+    });
+
+    it('the shedder is armed AFTER the keyframe gate on the same pad', () => {
+        // A probe returning DROP stops the rest of the chain being called, so
+        // order decides who wins when both are on the decoder's sink pad. A
+        // shut gate must: it is already dropping everything, which drains the
+        // same backlog, and its rule is the safety-critical one.
+        const gateIdx = runnerSource.indexOf('_start_keyframe_gate(pipeline, data.get("keyframeGate"))');
+        const shedIdx = runnerSource.indexOf('_start_backlog_shedder(pipeline, data.get("backlogShed"))');
+        expect(gateIdx).toBeGreaterThan(0);
+        expect(shedIdx).toBeGreaterThan(gateIdx);
+    });
+
+    it('a backlogShed naming an element the pipeline lacks is a HARD error', () => {
+        expect(runnerSource).toContain('"backlogShed: element not found:');
+        expect(runnerSource).toContain('"backlogShed: sink not found:');
     });
 
     it('a keyframeGate naming an element the pipeline lacks is a HARD error', () => {

@@ -64,6 +64,8 @@ function createMocks() {
     // manager's own manifest. Tests override the return value to exercise #661.
     const eventForwarder: any = {
         getPluginSchemas: vi.fn().mockReturnValue(undefined),
+        purgeModuleStates: vi.fn(),
+        clearModuleTombstones: vi.fn(),
     };
 
     const router = new PatchRouter(configStore, engineManager, io, pluginRegistry, eventForwarder);
@@ -1255,6 +1257,61 @@ describe('PatchRouter', () => {
             const emitCalls = io.emit.mock.calls;
             const browserOps = emitCalls[0][1].patch;
             expect(browserOps[0].path).toBe('/connections/conn-a');
+        });
+    });
+
+    describe('module state cache reconciliation', () => {
+        it('purges cached state for a removed module', () => {
+            const { router, eventForwarder } = createMocks();
+
+            router.onPatch('browser-1', 'eng-1', [{ op: 'remove', path: '/modules/mod-1' }]);
+
+            expect(eventForwarder.purgeModuleStates).toHaveBeenCalledWith('eng-1', ['mod-1']);
+        });
+
+        it('purges every module removed in one batch', () => {
+            const { router, eventForwarder } = createMocks();
+
+            router.onPatch('browser-1', 'eng-1', [
+                { op: 'remove', path: '/modules/mod-1' },
+                { op: 'remove', path: '/modules/mod-2' },
+            ]);
+
+            expect(eventForwarder.purgeModuleStates).toHaveBeenCalledWith('eng-1', [
+                'mod-1',
+                'mod-2',
+            ]);
+        });
+
+        it('does not purge on settings changes or connection removals', () => {
+            const { router, configStore, eventForwarder } = createMocks();
+            configStore.modifyProfileConfig.mockImplementation(
+                (_eid: string, _pid: string, fn: any) =>
+                    fn({
+                        modules: { 'mod-1': { pluginId: 'audio-input', settings: {} } },
+                        connections: [
+                            { id: 'conn-a', sourceModuleId: 'mod-1', sinkModuleId: 'mod-2' },
+                        ],
+                    }),
+            );
+
+            router.onPatch('browser-1', 'eng-1', [
+                { op: 'replace', path: '/modules/mod-1/settings/volume', value: 50 },
+                { op: 'remove', path: '/connections/conn-a' },
+            ]);
+
+            expect(eventForwarder.purgeModuleStates).not.toHaveBeenCalled();
+        });
+
+        it('lifts the tombstone when a module id is added back', () => {
+            const { router, eventForwarder } = createMocks();
+
+            router.onPatch('browser-1', 'eng-1', [
+                { op: 'add', path: '/modules/mod-1', value: { pluginId: 'audio-input' } },
+            ]);
+
+            expect(eventForwarder.clearModuleTombstones).toHaveBeenCalledWith('eng-1', ['mod-1']);
+            expect(eventForwarder.purgeModuleStates).not.toHaveBeenCalled();
         });
     });
 });
