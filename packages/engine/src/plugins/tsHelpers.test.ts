@@ -69,8 +69,10 @@ describe('buildTsUdpInput', () => {
         expect(s).toContain('queue leaky=2 max-size-time=5000000000');
         // jitter queue defaults to 200 ms (absorbs encoder I-frame bursts)
         expect(s).toContain('queue leaky=2 max-size-time=200000000');
-        // tsparse re-anchors PCR to local clock (the load-bearing fix)
-        expect(s).toContain('tsparse set-timestamps=true');
+        // tsparse re-frames to packet boundaries but must NOT touch timestamps:
+        // the producer stamped this stream onto the shared house timeline
+        // (ADR-0005), so a local PCR re-anchor here would throw it away.
+        expect(s).toContain('tsparse set-timestamps=false');
         // ordering: unixfdsrc, then jitter queue, then tsparse
         const idxSrc = s.indexOf('unixfdsrc');
         const idxJitter = s.indexOf('max-size-time=200000000');
@@ -94,9 +96,13 @@ describe('buildTsUdpInput', () => {
         const s = buildTsUdpInput({ port: 1, udpsrcName: 'in0' });
         expect(s).toContain('unixfdsrc name=in0');
     });
-    it('can preserve source PTS with setTimestamps=false (cross-pipeline A/V sync)', () => {
-        expect(buildTsUdpInput({ port: 1, setTimestamps: false })).toContain(
-            'tsparse set-timestamps=false',
-        );
+    it('never re-anchors from PCR — no caller can ask it to', () => {
+        // The default used to be true, then false-by-default with an opt-in
+        // nothing ever used. PCR re-anchoring resets a consumer to its own
+        // arrival, which is the divergence ADR-0005 removes, so the option is
+        // gone and the helper is fixed at false: the trap can come back neither
+        // by omission nor by a copied call site.
+        expect(buildTsUdpInput({ port: 1 })).toContain('tsparse set-timestamps=false');
+        expect(buildTsUdpInput({ port: 1 })).not.toContain('set-timestamps=true');
     });
 });

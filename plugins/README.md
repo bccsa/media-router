@@ -970,6 +970,37 @@ static registerServices(services: EngineServices): void {
 }
 ```
 
+If enumerating the devices is **expensive**, make it demand-driven rather than
+paying for it on every poll. V4L2 is the worked example: `v4l2-ctl` runs once for
+the listing plus twice per `/dev/video*` node, which on a Pi (a dozen-plus ISP and
+codec sub-devices) measured 12.4% of a core burnt continuously — on hosts with no
+video module at all. `registerV4l2DeviceProvider` therefore serves a cached list
+while nothing needs it, refreshing once per `V4L2_IDLE_ENUMERATE_MS` so hot-plug
+still lands, and returns to the full 2 s cadence while at least one instance holds
+a claim:
+
+```typescript
+export class VideoEncoderModule extends GstPluginBase {
+    static registerServices(services: EngineServices): void {
+        registerV4l2DeviceProvider(services);
+    }
+
+    constructor() {
+        super();
+        acquireV4l2Demand(); // instantiated, not started: a stopped module still shows a picker
+    }
+
+    async onDestroy(): Promise<void> {
+        releaseV4l2Demand();
+        await super.onDestroy();
+    }
+}
+```
+
+Gate inside `list()`, not on the poll timer: the registry's timer is not the only
+caller — the manager heartbeat re-sends every device snapshot through
+`getDevices()`, which calls `list()` directly.
+
 Any plugin's config schema can then point at the registered type:
 
 ```json
@@ -1116,6 +1147,39 @@ Two paths exist for marking a setting as live-updatable (changeable without rest
 - **Code property** — `protected liveUpdatableParams: string[] = ['volume', 'bitrate']` on the module class. This is the runtime override path. `GstPluginBase.getLiveUpdatableParams()` returns this array; subclasses can override the method to compute it dynamically (e.g. `video-encoder` only marks `bitrate` live when the current codec supports it).
 
 When the two disagree, the runtime `getLiveUpdatableParams()` result wins for behaviour, but the manifest flag still controls UI affordances. Keep them aligned unless you have a runtime reason to diverge.
+
+### Playout Offset D (`playoutOffsetMs`)
+
+Under the engine-wide time-sync contract, producers stamp bus buffer PTS with house-clock media time and every **presentation sink schedules at `stamped-time + D`**, where D is the *playout offset* — a configured latency budget, not a best-effort. See ADR-0005 decision 4.
+
+Two knobs, and neither of them lives on the sink:
+
+- **Engine-wide default** — `EngineConfig.playoutOffsetMs` (300 ms; `MR_PLAYOUT_OFFSET_MS` is the env fallback). Reaches every module as `services.playoutOffsetMs`.
+- **Per-route override** — a `playoutOffsetMs` property on the **route head**: the producer module the consumers take their bus from. Declare it in that plugin's `configSchema` (no `default` — an absent value means "inherit the engine default") and list it in `liveUpdatableParams`. The producer itself never reads it; the engine resolves it for the consumers and fans a change out to all of them live.
+
+**Consuming it.** A presentation plugin never does this arithmetic itself:
+
+```ts
+import { effectivePlayoutOffsetNs } from '@media-router/engine';
+
+// In buildPipeline: `trimMs` is the module's own per-sink trim, if it has one.
+const tsOffsetNs = effectivePlayoutOffsetNs(this.services, { trimMs: lipSyncMs });
+// → contract OFF: just the trim (legacy behaviour, unchanged)
+// → contract ON:  route override ?? engine default ?? 300, plus the trim
+```
+
+Then name the sink and re-push on the hot-update path:
+
+```ts
+async onRoutePlayoutOffsetChanged(): Promise<void> {
+    await this.setElementProperty('sink', 'ts-offset', effectivePlayoutOffsetNs(this.services));
+}
+```
+
+Two rules make this work:
+
+1. **One resolver.** Both legs of a route (e.g. a video-player and an audio-decoder split off one ts-splitter) call `effectivePlayoutOffsetMs` against the same route, so they get the same D by construction. Re-implementing the arithmetic in a plugin is the bug this exists to prevent.
+2. **Trims stack, they don't replace.** `lipSyncMs` / `syncOffsetMs` are deprecated as sync controls and survive as per-sink trims added on top of D — for skew a specific display or DAC chain adds, which D cannot know about.
 
 ### Interacting with the GStreamer Pipeline
 
@@ -1494,6 +1558,73 @@ buildPipeline(config: Record<string, unknown>): PipelineDescription | null {
 }
 ```
 
+### The time-sync contract (producer-stamped bus timing)
+
+Everything on the bus rides the engine-wide time-sync contract: every process
+shares one monotonic house clock, pipelines pin `base_time=0` so running-time
+≡ house-clock time, and **producers — not consumers — stamp bus buffer
+PTS/DTS with house-clock media time**. Every consumer therefore inherits
+identical timing by construction, and presentation sinks schedule at
+`stamped-time + D` (see "Playout Offset D (`playoutOffsetMs`)" above). Full
+design and the rejected alternatives:
+[`docs/adr/0005`](../docs/adr/0005-time-sync-backend.md).
+
+**On by default; one whole-engine kill-switch.** `MR_TIME_SYNC_CONTRACT=0`
+turns the contract off (`'1'` pins it on); flag-off reproduces the legacy
+pipeline strings byte for byte. There is deliberately no per-module opt-out —
+timing is a system property, and one legacy channel would put a producer back
+on a per-start base-time for every consumer downstream of it.
+
+**What a gst producer gets for free.** If your `buildPipeline` ends in
+`buildBusSink(...)`, stamping needs zero plugin work: the runner splices the
+native `mrtsstamp` element (`mpegts-core/native/mrtsstamp`, wrapping the same
+`TimelineStamper` the sidecars run) in front of each `busout_*` tee, falling
+back to a python pad probe — same arithmetic, a logged warning — on a box
+where the `.so` isn't built. Arming is **lazy**: an egress starts stamping on
+its first consumer edge and stops on its last, so an enabled-but-unrouted
+output costs nothing (and while debugging, expect no stamper activity until a
+consumer attaches; a re-attach after a full detach anchors afresh). Rules for
+plugin authors:
+
+- **Don't re-stamp.** No `tsparse set-timestamps=true`, no
+  `do-timestamp=true`, no arrival-based re-timing between your mux and the
+  bus sink — the contract's whole point is that the producer's stamp survives
+  to the consumer (a regression test pins that it survives `tsdemux`).
+- `preserveSourceTimeline` is dropped from the description while the contract
+  is on (the stamper's in-place re-anchor replaces its error-out-and-relatch).
+  Keep declaring it — it is the legacy behaviour under the kill-switch.
+
+**Sidecar/native producers stamp too (`--stamp-timeline`).** A module that
+publishes through its own child instead of a gst pipeline passes
+`--stamp-timeline`, gated on `services.timeSyncContract` — flag off means
+argv and wire bytes are unchanged. `unixfd-fanout.py`, `mr-bus-fanout` and
+`mr-tssplit` implement it already, all through the one shared
+`TimelineStamper` (`mpegts-core/py/ts_timeline.py` ↔ `native/mrts/`, pinned
+against each other by the conformance suite). Pattern, from hls-player:
+
+```typescript
+args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
+```
+
+**Playout offset D on producers.** The per-route override for D lives on the
+**route head** — the producer module the consumers take their bus from — as a
+`playoutOffsetMs` config key (declared so far by `srt-input`, `rist-input`,
+`mpegts-ip-input`, `ts-splitter`, `aes67-input`). Declare it with **no schema `default`**
+(absent means "inherit the engine default": `EngineConfig.playoutOffsetMs`,
+300 ms, `MR_PLAYOUT_OFFSET_MS` env fallback) and list it in
+`liveUpdatableParams`; your producer never reads it — the engine resolves it
+for the consumer legs and fans a change out to them live. The consuming side
+is covered in "Playout Offset D (`playoutOffsetMs`)" above.
+
+**Where stamper events come from (debugging).** Anchor / re-anchor /
+segment-warning events and the periodic `timeline_drift` report (per armed
+egress, every 30 s) originate in the runner's stamping subsystem —
+`packages/engine/src/child-process/gst_bus_stamper.py` (lifecycle: contract
+flag, lazy arming, drift timer) plus its `gst_stamp_probe.py` /
+`gst_stamp_native.py` / `gst_stamp_events.py` split; the sidecars publish the
+same `timeline` block in their 2 s stats line. If wire timing looks wrong,
+read those runner log lines before suspecting your own pipeline.
+
 ---
 
 ## Native & Python code in plugins
@@ -1778,6 +1909,42 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates, **codec-aware decoder selection** (see below) |
 | Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignBusChannel(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |
+| AES67 In / Out | `plugins/aes67-input/`, `plugins/aes67-output/` | Network audio in both directions off the 302M bus; a python sidecar per module for SAP discovery/announce, a device provider fed by what that sidecar sees, and PTP-epoch RTP stamping that refuses to fake itself (see below) |
+
+### AES67 — SAP discovery and PTP-epoch RTP stamping
+
+Two plugins plus the `aes67-core` library plugin (SAP/SDP and the TAI clock
+arithmetic, in python, one definition shared by both ends). ADR-0005 decision 7
+and its "Stage AES67" implementation notes carry the full design; the parts
+worth copying:
+
+- **A picker fed by a sidecar.** `aes67-input` spawns `mr-sap.py --listen`
+  (`spawnRunnerProcess`, so it dies with the module) and publishes each
+  SNAPSHOT it emits into a module-level table; a `x-deviceType: "aes67-stream"`
+  device provider lists that table, so the operator picks "Studio A" instead of
+  typing a group, port, encoding, channel count and payload type. Snapshots —
+  not add/remove deltas — mean a sidecar restart re-syncs the GUI instead of
+  leaving a phantom entry. Discovery is owned by the RUNNING modules, so a box
+  with no AES67 input joins no multicast group and runs no extra process.
+- **A route head like any other.** `aes67-input` ends in `buildBusSink`, so the
+  engine's stamper anchors it onto the house clock with no plugin work, and it
+  declares `playoutOffsetMs` (no schema `default`) for the players it feeds.
+- **The epoch is one integer, and it is measured, not assumed.** GStreamer's
+  payloader computes `rtptime = timestamp-offset + running_time x rate / 1e9`
+  from ABSOLUTE running time (pinned against real elements in
+  `aes67-core/tests/aes67Gst.test.ts`), and under the time-sync contract
+  running time IS CLOCK_MONOTONIC — so setting `timestamp-offset` to
+  `(CLOCK_TAI - CLOCK_MONOTONIC) x rate / 1e9 mod 2^32` makes the wire
+  timestamps PTP-epoch media time. No TAI pipeline clock, no change to the
+  contract. `aes67_clock.py` measures it and REFUSES on a box whose kernel TAI
+  offset is unset (no ptp4l/phc2sys): the payloader then keeps its random
+  RFC 3550 offset and the SDP carries no `ts-refclk`/`mediaclk`, because
+  announcing a PTP media clock you do not have is undetectable at the receiver.
+- **Pacing is not playout offset D.** The AES67 egress sink syncs against the
+  house clock with a small `senderLatencyMs` (default 20 ms) so 1 ms packets
+  leave evenly instead of in decode-sized bursts. D is deliberately NOT applied
+  there: RTP timestamps carry the alignment, so delaying the egress by 300 ms
+  would only spend the receiver's link-offset budget.
 
 ### Video Player — codec-aware decoder selection
 

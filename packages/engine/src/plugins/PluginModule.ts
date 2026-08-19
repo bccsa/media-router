@@ -51,6 +51,21 @@ export interface EngineServices {
      *  Optional: absent in test harnesses and on engines built before this; a
      *  `clockSync` pipeline then simply runs unsynced. */
     clockAuthority?: ClockAuthority;
+    /** Engine-wide time-sync contract (see `EngineConfig.timeSyncContract` and
+     *  `PipelineDescription.timeSyncContract`). When on it SUPERSEDES the
+     *  per-module `clockSync` opt-in: `GstPluginBase` marks the description for
+     *  the contract instead of resolving a net clock, so `clockAuthority` is
+     *  never contacted. Off → the legacy `clockSync` path, unchanged. The
+     *  engine resolves it on by default; absent here (test harnesses, engines
+     *  built before this) reads as off. */
+    timeSyncContract?: boolean;
+    /** Engine-wide default playout offset D in ms (ADR-0005 decision 4, see
+     *  `EngineConfig.playoutOffsetMs`). Presentation modules resolve their sink
+     *  `ts-offset` from it via `effectivePlayoutOffsetMs`, which also consults
+     *  the route head's override. Only read when `timeSyncContract` is on;
+     *  absent (test harnesses, older engines) falls back to the 300 ms
+     *  default. */
+    playoutOffsetMs?: number;
 }
 
 /**
@@ -103,6 +118,14 @@ export interface PluginModule {
     isLiveChange?(key: string, newValue: unknown, oldValue: unknown): boolean;
     /** Apply live config changes (only for params in getLiveUpdatableParams). */
     onLiveConfigUpdate(changes: Record<string, unknown>): Promise<void>;
+    /**
+     * The playout offset D of the route this module consumes changed — the
+     * ROUTE HEAD's `playoutOffsetMs` was edited (ADR-0005 decision 4). Fanned
+     * out by `MediaRouter.notifyPlayoutOffsetChanged` to every consumer of that
+     * producer, so both legs of a route re-anchor together. Presentation
+     * modules re-push their sink `ts-offset`; everyone else omits it.
+     */
+    onRoutePlayoutOffsetChanged?(): Promise<void>;
     /** Return PipeWire node names for audio routing (single-port modules). */
     getPipeWireNodes?(): { source?: string; sink?: string };
     /** Return PipeWire node names for a specific port (multi-port modules like N-1 mixer). */
@@ -227,6 +250,18 @@ export interface PipelineDescription {
      */
     clockSync?: boolean;
     /**
+     * Run this pipeline under the time-sync contract (engine-wide, on by
+     * default — see `EngineConfig.timeSyncContract`). The runner puts the
+     * pipeline on a plain monotonic `GstSystemClock` and PINS the timeline —
+     * `set_start_time(CLOCK_TIME_NONE)` + `set_base_time(0)` — so running-time
+     * ≡ clock time and every pipeline on the box shares one time base without
+     * any clock daemon to reach. Plugins don't set this themselves:
+     * `GstPluginBase` stamps it on a `clockSync` description when the engine
+     * runs the contract, INSTEAD of resolving a net clock. Never blocks
+     * playback (there is nothing external to wait for).
+     */
+    timeSyncContract?: boolean;
+    /**
      * Software (`avdec_*`) decoder threading mode for this pipeline.
      * `max-threads` is always the core count; this only controls ffmpeg's
      * `thread-type`:
@@ -324,6 +359,32 @@ export interface PipelineDescription {
      */
     keyframeGate?: KeyframeGateConfig;
     /**
+     * Hand a clock-paced leg's RETAINED BACKLOG back — the time-sync contract's
+     * latency ratchet guard (ADR-0005; `plugins/backlogShed.ts` carries the full
+     * rationale and the numbers).
+     *
+     * WHY. A `sync=true` sink drains at exactly media rate, so anything the
+     * leg's leaky queues absorb during a downstream hiccup is retained latency
+     * for ever — the legacy `sync=false` sink presented on arrival and drained
+     * its own backlog, which is why nothing needed this before. Field (.42, ~16 h
+     * under the contract): 50 fps decoded, 2.5 fps on the glass, restored
+     * instantly by a live +1 s `ts-offset` and broken again by reverting it.
+     *
+     * WHAT THE RUNNER DOES. Measures lateness on the named element's sink pad
+     * (`now_running_time − (buffer_running_time + ts-offset)`, so the number is
+     * the excess over the route's D directly), and when that stays over
+     * `toleranceMs` for `holdMs` it DROPS the oldest queued data until the leg
+     * is back inside D — up to the next keyframe when `keyframeAligned`, which
+     * a video leg must set (a delta unit whose references were dropped is the
+     * V4L2 wedge the keyframe gate exists for). One `backlog_shed` plugin event
+     * per episode with before/after retained latency, and `cooldownMs` between
+     * episodes so it cannot oscillate.
+     *
+     * Set ONLY under the contract. Omitted, nothing is armed — which is what
+     * keeps `MR_TIME_SYNC_CONTRACT=0` the legacy path byte for byte.
+     */
+    backlogShed?: BacklogShedConfig;
+    /**
      * Carry the SOURCE PES timeline through the named `tsdemux` (2026-07-23
      * incident / TodoNotes:20). tsdemux erases the source timeline (buffer PTS
      * rebased ~0 per incarnation), so a transcoding pipeline's output mux
@@ -336,12 +397,46 @@ export interface PipelineDescription {
      * discontinuities and the 26.5 h 33-bit PTS wrap are not followed.
      */
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
+    /**
+     * Anchor a multi-branch pipeline's input branches to the PRODUCER'S STAMPS
+     * (time-sync contract only — `GstPluginBase.applyTimeSync` drops it when the
+     * contract is off, so the legacy path stays byte-identical).
+     *
+     * WHY. Each named `tsdemux` works out its own zero point: it slaves the PES
+     * timeline it emits to the timestamp of the bus buffer it locked on. That
+     * timestamp is the producer's house stamp, which is exact — EXCEPT on a
+     * reordered stream, where the stamper's monotone floor clamps the buffers
+     * whose first PES walks backwards (measured on the .202 video leg: 120.009 ms
+     * of K spread, against 0.316 ms on its audio sibling). A branch that locks on
+     * a clamped buffer runs that far late for its whole incarnation, its sibling
+     * does not, and the pair leaves the mux 100–121 ms apart — from inputs
+     * measured 0.001 ms apart, re-drawn on every restart.
+     *
+     * WHAT THE RUNNER DOES. Per branch it measures the producer's mapping
+     * `K = stamp − ns(firstPES)` (minimum over the buffers seen — the floor only
+     * pushes stamps up) and the first PES its demuxer can use, then shifts the
+     * demuxer's src pad by `K + ns(anchorPES) − firstBufferPts` so the branch's
+     * running time IS that media's house time. Every branch lands on the same
+     * absolute reference, so alignment holds across branches, across producers,
+     * and across restarts. Rejected (and logged) past 500 ms, where the reading
+     * is no longer the zero-point error this removes.
+     *
+     * The per-input `offsetMs` lipsync trim is unaffected: it rides on the mux's
+     * request pad, this on the demuxer's src pad.
+     */
+    alignBranchesToStamps?: AlignBranchesToStampsConfig;
 }
 
 /** Config for `PipelineDescription.preserveSourceTimeline`. */
 export interface PreserveSourceTimelineConfig {
     /** `name=` of the tsdemux whose branches must carry the source timeline. */
     demux: string;
+}
+
+/** Config for `PipelineDescription.alignBranchesToStamps`. */
+export interface AlignBranchesToStampsConfig {
+    /** `name=`s of the input-branch tsdemux elements to anchor. */
+    demuxes: string[];
 }
 
 /** TS video-info probe config — see PipelineDescription.tsProbe. */
@@ -360,6 +455,28 @@ export interface RenderWatchRunnerConfig {
 export interface KeyframeGateConfig {
     /** `name=` of the decoder in `pipeline` whose sink pad is gated. */
     decoder: string;
+}
+
+/**
+ * Backlog shedder config — see PipelineDescription.backlogShed. Plugins never
+ * write this literal: `backlogShedConfig()` (plugins/backlogShed.ts) owns the
+ * numbers and the contract gate for every leg.
+ */
+export interface BacklogShedConfig {
+    /** `name=` of the element whose sink pad is measured and shed at. */
+    element: string;
+    /** `name=` of the presentation sink whose `ts-offset` is the route's D. */
+    sink: string;
+    /** End a shed only on a keyframe (mandatory ahead of a video decoder). */
+    keyframeAligned: boolean;
+    /** Retained latency over D, in ms, that is tolerated before shedding. */
+    toleranceMs: number;
+    /** How long the excess must hold before it counts, in ms. */
+    holdMs: number;
+    /** Minimum gap between sheds on this leg, in ms. */
+    cooldownMs: number;
+    /** Lateness past which a reading is a timeline mismatch, not a backlog. */
+    sanityMs: number;
 }
 
 /** librist runner config — see PipelineDescription.rist. */

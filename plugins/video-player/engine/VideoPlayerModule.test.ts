@@ -2325,7 +2325,15 @@ describe('VideoPlayerModule helpers', () => {
     });
 
     describe('onLiveConfigUpdate', () => {
-        function makeRunningModule(opts: { hasSource: boolean }) {
+        function makeRunningModule(opts: {
+            hasSource: boolean;
+            /** Engine-wide time-sync contract (ADR-0005). Off ⇒ legacy path. */
+            timeSyncContract?: boolean;
+            /** Engine-wide default playout offset D. */
+            playoutOffsetMs?: number;
+            /** Override declared by the route head feeding this player. */
+            routeOffsetMs?: number;
+        }) {
             const module = new VideoPlayerModule();
             const setProperty = vi.fn().mockResolvedValue(undefined);
             (module as any).services = {
@@ -2336,7 +2344,12 @@ describe('VideoPlayerModule helpers', () => {
                             ? { port: 5500, socketPath: '/tmp/mr-bus-5500-abc.sock' }
                             : undefined,
                     ),
+                    getRoutePlayoutOffsetMs: vi.fn(() => opts.routeOffsetMs),
                 },
+                ...(opts.timeSyncContract ? { timeSyncContract: true } : {}),
+                ...(opts.playoutOffsetMs !== undefined
+                    ? { playoutOffsetMs: opts.playoutOffsetMs }
+                    : {}),
             };
             (module as any).config = { fallbackText: 'old', display: '' };
             // Pretend a child process is running and reachable.
@@ -2375,6 +2388,43 @@ describe('VideoPlayerModule helpers', () => {
             (module as any).busStallDetected = true;
             await module.onLiveConfigUpdate({ fallbackText: 'Whats sup' });
             expect(setProperty).toHaveBeenCalledWith('nov', 'text', 'Whats sup');
+        });
+
+        /**
+         * Playout offset D on the video leg (ADR-0005 decision 4). The
+         * `lipSyncMs` live push predates D and must keep working — but under
+         * the contract what goes on the wire is the WHOLE offset (D + trim),
+         * not the raw trim, or a lip-sync nudge would silently throw the route
+         * offset away.
+         */
+        describe('playout offset', () => {
+            it('pushes the bare lipSyncMs trim with the contract off', async () => {
+                const { module, setProperty } = makeRunningModule({ hasSource: true });
+                await module.onLiveConfigUpdate({ lipSyncMs: 40 });
+                expect(setProperty).toHaveBeenCalledWith('sink', 'ts-offset', 40_000_000);
+            });
+
+            it('pushes D + trim with the contract on, not the trim alone', async () => {
+                const { module, setProperty } = makeRunningModule({
+                    hasSource: true,
+                    timeSyncContract: true,
+                    playoutOffsetMs: 300,
+                    routeOffsetMs: 500,
+                });
+                await module.onLiveConfigUpdate({ lipSyncMs: 40 });
+                expect(setProperty).toHaveBeenCalledWith('sink', 'ts-offset', 540_000_000);
+            });
+
+            it('re-pushes when the route head moves D, with no config change at all', async () => {
+                const { module, setProperty } = makeRunningModule({
+                    hasSource: true,
+                    timeSyncContract: true,
+                    playoutOffsetMs: 300,
+                    routeOffsetMs: 500,
+                });
+                await module.onRoutePlayoutOffsetChanged();
+                expect(setProperty).toHaveBeenCalledWith('sink', 'ts-offset', 500_000_000);
+            });
         });
     });
 });
@@ -2431,7 +2481,7 @@ describe('renderWatch health messages', () => {
         // second lag is a real render problem and stays visible.
         const module = makeModule();
         const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
-        (module as any).log = { info: vi.fn() };
+        (module as any).log = { info: vi.fn(), warn: vi.fn() };
         // Boot-relative clock on both sides — see SelfHealInput.now.
         (module as any).lastStallResumeAt = bootNowMs() - 10_000;
         const lag = { achievedFps: 44, expectedFps: 50, arrivalsFps: 49 };
@@ -2444,7 +2494,7 @@ describe('renderWatch health messages', () => {
     it('no self-heal outside the post-resume window or for source shortfall', () => {
         const module = makeModule();
         const restart = vi.spyOn(module as any, 'restartPipeline').mockResolvedValue(undefined);
-        (module as any).log = { info: vi.fn() };
+        (module as any).log = { info: vi.fn(), warn: vi.fn() };
         // Old resume: outside the heal window.
         (module as any).lastStallResumeAt = bootNowMs() - 600_000;
         (module as any).onPluginEvent('renderwatch:lag', {
@@ -2474,6 +2524,195 @@ describe('renderWatch health messages', () => {
         (module as any).health = 'warning';
         (module as any).onPluginEvent('renderwatch:recovered', {});
         expect((module as any).setHealth).toHaveBeenLastCalledWith('ok');
+    });
+
+    it('total stall with the bus still flowing blames the pipeline, not the source', () => {
+        // Field case: 0/50 fps for minutes while the source was healthy. The
+        // old `achieved >= arrivals - 1` guard is trivially true at 0/0 and
+        // sent the operator to check a link that was fine.
+        const module = makeModule();
+        (module as any).busStallDetected = false;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 0,
+            expectedFps: 50,
+            arrivalsFps: 0,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            'Video output stalled (0/50 fps) — the source is still delivering, the decode/display chain has stopped',
+        );
+    });
+
+    it('total stall while the bus-stall latch is set stays attributed to the source', () => {
+        const module = makeModule();
+        (module as any).busStallDetected = true;
+        (module as any).onPluginEvent('renderwatch:lag', {
+            achievedFps: 0,
+            expectedFps: 50,
+            arrivalsFps: 0,
+        });
+        expect((module as any).setHealth).toHaveBeenCalledWith(
+            'warning',
+            'No video arriving (0/50 fps) — the source has stopped delivering',
+        );
+    });
+});
+
+describe('renderWatch journal trail (health transitions)', () => {
+    // Field finding: renderwatch fps data lived only in module state, so a
+    // total render stall left NO journal line — log-based fleet monitoring
+    // could not see minutes of black screen. Transitions only: a warning per
+    // window would drown the journal in exactly the repeats it must not spam.
+    function makeModule() {
+        const module = new VideoPlayerModule() as any;
+        module.setHealth = vi.fn();
+        module.log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
+        return module;
+    }
+
+    const stall = { achievedFps: 0, expectedFps: 50, arrivalsFps: 0, droppedFps: 0 };
+
+    it('logs the ok→warning edge with the fps figures and the attributed reason', () => {
+        const module = makeModule();
+        module.onPluginEvent('renderwatch:lag', stall);
+        expect(module.log.warn).toHaveBeenCalledTimes(1);
+        const [fields, message] = module.log.warn.mock.calls[0];
+        expect(fields.renderWatch).toEqual(stall);
+        expect(fields.kind).toBe('total-stall');
+        expect(message).toContain('Render keep-up degraded');
+        expect(message).toContain('0/50 fps');
+    });
+
+    it('does not repeat the line while the same episode continues', () => {
+        const module = makeModule();
+        module.onPluginEvent('renderwatch:lag', stall);
+        module.onPluginEvent('renderwatch:lag', stall);
+        module.onPluginEvent('renderwatch:lag', stall);
+        expect(module.log.warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('logs the warning→ok edge on recovery, and only when a lag was latched', () => {
+        const module = makeModule();
+        // Recovery with no lag outstanding (fresh pipeline) says nothing.
+        module.onPluginEvent('renderwatch:recovered', { achievedFps: 50, expectedFps: 50 });
+        expect(module.log.info).not.toHaveBeenCalled();
+
+        module.onPluginEvent('renderwatch:lag', stall);
+        module.onPluginEvent('renderwatch:recovered', { achievedFps: 50, expectedFps: 50 });
+        expect(module.log.info).toHaveBeenCalledWith(
+            { renderWatch: { achievedFps: 50, expectedFps: 50 } },
+            'Render keep-up recovered',
+        );
+    });
+
+    it('a second episode after recovery logs again (both edges are real)', () => {
+        const module = makeModule();
+        module.onPluginEvent('renderwatch:lag', stall);
+        module.onPluginEvent('renderwatch:recovered', {});
+        module.onPluginEvent('renderwatch:lag', stall);
+        expect(module.log.warn).toHaveBeenCalledTimes(2);
+    });
+
+    // Measured on target (Pi 400, weston SIGSTOP 150 s, chain live, 0 fps):
+    // the runner's renderWatch reporter ticks on RENDERS, so a hard stall stops
+    // the event stream itself — one line at onset, then nothing until recovery.
+    // The event-driven re-emit cannot cover that; the timer below does.
+    describe('silent-chain re-emit (no events arriving at all)', () => {
+        it('arms one interval for the episode, however many events arrive', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            const timer = module.renderLagSilentTimer;
+            expect(timer).not.toBeNull();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.onPluginEvent('renderwatch:lag', stall);
+            expect(module.renderLagSilentTimer).toBe(timer);
+            module.clearRenderLagState();
+        });
+
+        it('re-states the episode with the last figures and a silence marker', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            // Pin the episode's clock: the edge warned and the last event
+            // arrived at t=1000, and nothing has arrived since.
+            module.renderLagEventAt = 1_000;
+            module.renderLagWarnedAt = 1_000;
+            module.log.warn.mockClear();
+
+            module.pollRenderLagSilence(() => 1_000 + 30_000); // not due yet
+            expect(module.log.warn).not.toHaveBeenCalled();
+
+            module.pollRenderLagSilence(() => 1_000 + 60_000);
+            expect(module.log.warn).toHaveBeenCalledTimes(1);
+            const [fields, message] = module.log.warn.mock.calls[0];
+            // The figures the runner managed to send before it went quiet.
+            expect(fields.renderWatch).toEqual(stall);
+            expect(fields.kind).toBe('total-stall');
+            expect(fields.eventsSilentMs).toBe(60_000);
+            expect(message).toContain('Render keep-up degraded');
+            expect(message).toContain('0/50 fps');
+            expect(message).toContain('no renderWatch update for 60s');
+            module.clearRenderLagState();
+        });
+
+        it('re-emits on the 60 s cadence for as long as the silence lasts', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            // The edge warned at t0 and the last event arrived with it.
+            const t0 = 1_000;
+            module.renderLagEventAt = t0;
+            module.renderLagWarnedAt = t0;
+            module.log.warn.mockClear();
+            // 150 s of silence, ticking every RENDER_LAG_SILENT_TICK_MS.
+            for (let t = 15_000; t <= 150_000; t += 15_000) {
+                module.pollRenderLagSilence(() => t0 + t);
+            }
+            expect(module.log.warn).toHaveBeenCalledTimes(2); // 60 s and 120 s
+            module.clearRenderLagState();
+        });
+
+        it('does not double-log while the event stream is still flowing', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.log.warn.mockClear();
+            // An event 2 s ago and a warning a minute ago: the event path owns
+            // this line, the timer must stay out of it.
+            module.renderLagEventAt = 118_000;
+            module.renderLagWarnedAt = 60_000;
+            module.pollRenderLagSilence(() => 120_000);
+            expect(module.log.warn).not.toHaveBeenCalled();
+            module.clearRenderLagState();
+        });
+
+        it('a tick after recovery says nothing — the latch is the gate', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.onPluginEvent('renderwatch:recovered', {});
+            expect(module.renderLagSilentTimer).toBeNull();
+            module.log.warn.mockClear();
+            module.pollRenderLagSilence(() => 10_000_000);
+            expect(module.log.warn).not.toHaveBeenCalled();
+        });
+
+        it('recovery drops the timer and the episode state', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.onPluginEvent('renderwatch:recovered', {});
+            expect(module.renderLagSilentTimer).toBeNull();
+            expect(module.renderLagActive).toBe(false);
+            expect(module.renderLagWarnedAt).toBe(0);
+            expect(module.renderLagEventAt).toBe(0);
+            expect(module.renderLagLast).toBeNull();
+        });
+
+        it('onStop mid-episode leaks nothing', async () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            expect(module.renderLagSilentTimer).not.toBeNull();
+            await module.onStop();
+            expect(module.renderLagSilentTimer).toBeNull();
+            expect(module.renderLagActive).toBe(false);
+            expect(module.renderLagLast).toBeNull();
+        });
     });
 });
 

@@ -1,5 +1,5 @@
 import type { Server as SocketIOServer } from 'socket.io';
-import { createLogger, applyJsonPatch } from '@media-router/shared-types';
+import { createLogger, applyJsonPatch, LiveArrayIndex } from '@media-router/shared-types';
 import type { PatchOp } from '@media-router/shared-types';
 import type { ConfigStore } from './config/ConfigStore.js';
 import type { EngineConnectionManager } from './engines/EngineConnectionManager.js';
@@ -88,7 +88,27 @@ export class PatchRouter {
             },
         );
 
+        // Module runtime state is cached per engine and merged, never deleted —
+        // reconcile it here, the one place every module add/remove passes
+        // through. Without this a removed module's last state lingers and
+        // `watch:engine` rehydration serves the ghost (docs/TodoNotes.md).
+        this.reconcileModuleStateCache(engineId, processed);
+
         this.broadcast(engineId, senderId, processed, cascades, ops, updatedConfig);
+    }
+
+    /** Purge cached state for removed modules; lift tombstones for re-added ones. */
+    private reconcileModuleStateCache(engineId: string, processed: PatchOp[]): void {
+        const removed: string[] = [];
+        const added: string[] = [];
+        for (const op of processed) {
+            const match = /^\/modules\/([^/]+)$/.exec(op.path);
+            if (!match) continue;
+            if (op.op === 'remove') removed.push(match[1]);
+            else if (op.op === 'add') added.push(match[1]);
+        }
+        if (added.length > 0) this.eventForwarder.clearModuleTombstones(engineId, added);
+        if (removed.length > 0) this.eventForwarder.purgeModuleStates(engineId, removed);
     }
 
     /**
@@ -157,11 +177,19 @@ export class PatchRouter {
      * `patchRules.ts`. Adding a new cascade = adding a new rule function.
      * The dispatcher itself never needs to change.
      *
-     * `RuleContext` is snapshotted once before the loop runs, so rules see
-     * the pre-patch state of modules/interlocks/connections. The full
-     * processed list is then applied in one `applyJsonPatch` call by the
-     * caller — this matches the old behaviour (cascades fire on pre-patch
-     * state, not on an intermediate state between ops).
+     * Module *state* is snapshotted once before the loop, so cascade rules see
+     * the pre-patch world — cascades fire on the state as it was when the
+     * patch arrived, not on an intermediate state between ops.
+     *
+     * Array *membership* is the one thing that has to move with the batch.
+     * Rules rewrite `/connections/<id>` to an index, and that index is only
+     * valid at the point its op lands in the processed list. Resolving every
+     * op against the pre-patch array made two id-based removes in one batch
+     * mis-target: the first removal shifts the array and the second index then
+     * deletes whatever slid into the freed slot. `LiveArrayIndex` folds each
+     * emitted op back in, so every op resolves ids against the array as it
+     * will be when that op applies. Element contents stay pre-patch, so the
+     * cascade rules keep their semantics.
      */
     private preprocessOps(
         engineId: string,
@@ -169,10 +197,16 @@ export class PatchRouter {
         ops: PatchOp[],
     ): { processed: PatchOp[]; cascades: PatchOp[] } {
         if (!Array.isArray(config.interlocks)) config.interlocks = [];
-        const ctx: RuleContext = {
+        const connections = new LiveArrayIndex(
+            '/connections',
+            (config.connections ?? []) as Array<Record<string, unknown>>,
+        );
+        const interlocks = new LiveArrayIndex(
+            '/interlocks',
+            config.interlocks as Array<{ id: string; members: string[] }>,
+        );
+        const base = {
             modules: (config.modules ?? {}) as Record<string, Record<string, unknown>>,
-            interlocks: config.interlocks as Array<{ id: string; members: string[] }>,
-            connections: (config.connections ?? []) as Array<Record<string, unknown>>,
             pluginRegistry: this.pluginRegistry,
             engineSchemas: this.eventForwarder.getPluginSchemas(engineId),
         };
@@ -180,9 +214,18 @@ export class PatchRouter {
         const processed: PatchOp[] = [];
         const cascades: PatchOp[] = [];
         for (const op of ops) {
+            const ctx: RuleContext = {
+                ...base,
+                connections: connections.snapshot(),
+                interlocks: interlocks.snapshot(),
+            };
             const result = dispatchRule(op, ctx);
             processed.push(...result.processed);
             cascades.push(...result.cascades);
+            for (const emitted of result.processed) {
+                connections.track(emitted);
+                interlocks.track(emitted);
+            }
         }
         return { processed, cascades };
     }

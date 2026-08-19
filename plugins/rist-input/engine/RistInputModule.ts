@@ -46,6 +46,9 @@ const WARN_STREAK = 3;
 const CLEAR_STREAK = 5;
 
 export class RistInputModule extends GstPluginBase {
+    /** Route-head playout offset (ADR-0005 decision 4) — consumed downstream,
+     *  never by this pipeline, so it is live and never pends a restart. */
+    protected liveUpdatableParams = ['playoutOffsetMs'];
     private linkWarnActive = false;
     private lowStreak = 0;
     private okStreak = 0;

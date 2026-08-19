@@ -1,0 +1,13 @@
+{
+    "name": "@media-router/plugin-aes67-core",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): AES67 domain base code. SAP announce/discovery (RFC 2974) with the SDP build/parse both AES67 plugins share, and the TAI↔house-clock arithmetic that PTP-epoch RTP stamping is derived from.",
+    "scripts": {
+        "test": "pnpm run test:py",
+        "test:py": "cd py && python3 aes67_sap_test.py && python3 aes67_clock_test.py"
+    },
+    "devDependencies": {
+        "@media-router/engine": "workspace:*"
+    }
+}

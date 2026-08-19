@@ -25,7 +25,10 @@ gstunixfd.c):
     memfd via SCM_RIGHTS; the payload bytes follow on the stream.
   - Client accept: send CAPS (NUL-terminated caps string) BEFORE any buffer.
   - pts/dts are absolute CLOCK_MONOTONIC ns; we stamp send-time pts (live
-    source equivalence — consumers re-timestamp from the TS anyway).
+    source equivalence — consumers re-timestamp from the TS anyway). With
+    `--stamp-timeline` (the time-sync contract, ADR-0005 decision 2) the pts
+    becomes the payload's media time mapped onto the house clock instead, so
+    consumers inherit our timeline rather than our arrival jitter.
   - One memfd per buffer, written once, fd closed after send: the client's
     dup keeps the pages alive, so no RELEASE_BUFFER bookkeeping is needed —
     but clients DO send RELEASE_BUFFER back and it must be drained.
@@ -37,7 +40,10 @@ send queue with a 500 ms time budget, drop-oldest (leaky=2), non-blocking
 sockets — one stalled consumer can never block the ingest loop or siblings.
 Drops are counted and reported, never silent.
 
-Pure stdlib; needs Python >= 3.9 (socket.send_fds, os.memfd_create).
+Pure stdlib; needs Python >= 3.9 (socket.send_fds, os.memfd_create). The one
+exception is `--stamp-timeline`, which imports the shared `ts_timeline` module
+from the mpegts-core plugin (itself pure stdlib) — lazily, so the default path
+loads nothing extra.
 """
 
 import argparse
@@ -94,6 +100,28 @@ def unlink_stale(path, log_label):
         os.unlink(path)
     except OSError:
         pass
+
+
+def make_stamper():
+    """The contract's egress stamper, or None when ts_timeline is unavailable.
+
+    The sidecar is spawned without the gst runner's PYTHONPATH, so it does the
+    plumbing itself: `plugins/mpegts-core/py` is a sibling of our own `py/` dir
+    (appended, so an env-provided path still wins). A missing module degrades to
+    send-time stamping with a warning rather than killing the producer.
+    """
+    sys.path.append(os.path.normpath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'mpegts-core', 'py')))
+    try:
+        import ts_timeline
+    except ImportError as err:
+        emit({'event': 'warning',
+              'message': f'--stamp-timeline: ts_timeline unavailable ({err}) — '
+                         f'falling back to send-time pts'})
+        return None
+    return ts_timeline.TimelineStamper(
+        on_anchor=lambda info: emit({'event': 'timeline_restamped', **info}),
+        on_reanchor=lambda info: emit({'event': 'timeline_reanchor', **info}))
 
 
 class Client:
@@ -174,8 +202,9 @@ class Client:
 
 
 class Fanout:
-    def __init__(self, ingest_path, caps):
+    def __init__(self, ingest_path, caps, stamper=None):
         self.ingest_path = ingest_path
+        self.stamper = stamper  # None = send-time pts (see broadcast)
         self.caps_message = HEADER.pack(COMMAND_TYPE_CAPS, len(caps) + 1) + caps.encode() + b'\0'
         self.sel = selectors.DefaultSelector()
         self.edges = {}         # edge path -> listener socket
@@ -387,9 +416,13 @@ class Fanout:
         if not self.clients:
             return  # tee with no branches: drop and keep flowing
         self.buffer_id += 1
+        now_ns = time.monotonic_ns()
         payload = NEW_BUFFER.pack(
             self.buffer_id,
-            time.monotonic_ns(),      # pts: absolute CLOCK_MONOTONIC, like unixfdsink
+            # pts: absolute CLOCK_MONOTONIC, like unixfdsink. Send time unless
+            # the contract is on, in which case it is this chunk's payload PES
+            # mapped onto the same monotonic house clock.
+            self.stamper.stamp(chunk, now_ns) if self.stamper else now_ns,
             CLOCK_TIME_NONE,          # dts
             CLOCK_TIME_NONE,          # duration
             CLOCK_TIME_NONE,          # offset
@@ -430,7 +463,16 @@ class Fanout:
                 self.flush_partial()
             if now - last_stats >= STATS_INTERVAL:
                 last_stats = now
-                emit({'stats': {'clients': len(self.clients), 'drops': dict(self.drops)}})
+                stats = {'clients': len(self.clients), 'drops': dict(self.drops)}
+                if self.stamper:
+                    # The drift loop's state (ADR-0005 decision 5): the ppm the
+                    # source's clock is off by and what holding it has cost the
+                    # anchor. Only while the contract is on, so with it off the
+                    # line is byte-identical to the pre-contract one. `mr-bus-
+                    # fanout` and `mr-tssplit` emit the same object from
+                    # `mrts::drift_stats_json`.
+                    stats['timeline'] = self.stamper.drift_stats()
+                emit({'stats': stats})
 
     def cleanup(self):
         for path in list(self.edges):
@@ -449,9 +491,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ingest', required=True, help='ingest unix socket path')
     parser.add_argument('--caps', required=True, help='GstCaps string sent to each client')
+    parser.add_argument('--stamp-timeline', action='store_true',
+                        help='stamp mapped media time instead of send time '
+                             '(time-sync contract; off = byte-identical)')
     args = parser.parse_args()
 
-    fanout = Fanout(args.ingest, args.caps)
+    fanout = Fanout(args.ingest, args.caps,
+                    make_stamper() if args.stamp_timeline else None)
     # SIGTERM (ManagedProcess graceful stop) → SystemExit so `finally` unlinks
     # our socket paths instead of leaving stale files for the next incarnation.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

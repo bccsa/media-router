@@ -247,6 +247,15 @@ export function buildDynamicPorts(
  * surfaces at the receiver as visible packet loss on live video. The runner-
  * injected parser + the per-pad input queue downstream provide the only
  * buffering this branch needs.
+ *
+ * EACH BRANCH ZEROES ITS OWN TIMELINE, which is why the description also asks
+ * for `alignBranchesToStamps` (see `buildPipeline` → `demuxes`): a `tsdemux`
+ * takes its basis from the bus buffer it locked on, and on a reordered stream
+ * that one stamp can be up to the reorder depth late (the producer's monotone
+ * floor), so the branches leave the mux 100–121 ms apart from inputs 0.001 ms
+ * apart — re-drawn on every restart. The runner anchors each branch to the
+ * producer's stamped house timeline instead; the option is dropped when the
+ * time-sync contract is off, where there are no house stamps to anchor to.
  */
 export function buildInputBranch(branchId: string, source: UdpInputSource): string {
     const src = buildBusSrc({
@@ -309,6 +318,9 @@ export interface MuxerPipelineResult {
     streamPids: MuxedStreamPid[];
     /** True when the pipeline contains the `klvsrc` stream-info appsrc. */
     hasStreamInfo: boolean;
+    /** Every input branch's `tsdemux`, for `alignBranchesToStamps` — the
+     *  contract-only fix for per-branch zero points (see buildInputBranch). */
+    demuxes: string[];
 }
 
 /**
@@ -462,6 +474,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         linkOnPadAdded,
         streamPids,
         hasStreamInfo: emitStreamInfo && pcrPid !== undefined,
+        demuxes: input.sources.map((_s, i) => `demux_${i}`),
     };
 }
 

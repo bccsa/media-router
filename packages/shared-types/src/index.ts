@@ -4,6 +4,7 @@
 
 export { createLogger, setLogTap } from './logger.js';
 export { ExponentialBackoff } from './ExponentialBackoff.js';
+export { LiveArrayIndex } from './LiveArrayIndex.js';
 export {
     PatchOpSchema,
     PatchOpsSchema,

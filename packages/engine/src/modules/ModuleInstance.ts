@@ -4,6 +4,7 @@ import { createLogger, formatError } from '@media-router/shared-types';
 import type { PluginModule, ModuleServices } from '../plugins/PluginModule.js';
 import type { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget, LiveSwapTarget } from '../child-process/UnixFdFanoutController.js';
+import { PLAYOUT_OFFSET_KEY } from '../plugins/playoutOffset.js';
 
 const log = createLogger('ModuleInstance');
 
@@ -235,6 +236,13 @@ export class ModuleInstance extends EventEmitter {
                 (this.plugin.isLiveChange?.(key, value, this.config[key]) ?? true);
             if (live) {
                 liveChanges[key] = value;
+            } else if (key === PLAYOUT_OFFSET_KEY) {
+                // A route head's playout offset is an ENGINE-level annotation on
+                // the route, not a parameter of the producer's own pipeline —
+                // nothing in the producer reads it, so it can never need a
+                // restart there. It reaches the consumers through the fan-out
+                // below. Live by construction, whatever the plugin's list says.
+                continue;
             } else {
                 hasNonLive = true;
             }
@@ -253,7 +261,31 @@ export class ModuleInstance extends EventEmitter {
             this._pendingRestart = true;
         }
 
+        // This module is a route head and its playout offset D moved — push it
+        // to every consumer of its bus so both legs of the route re-anchor
+        // together (ADR-0005 decision 4). Fire-and-forget: a consumer that can't
+        // take it self-corrects on its next rebuild.
+        if (PLAYOUT_OFFSET_KEY in changes && this.services?.mediaRouter) {
+            await this.services.mediaRouter
+                .notifyPlayoutOffsetChanged(this.instanceId)
+                .catch((err: unknown) => {
+                    log.debug(
+                        { err: formatError(err), instanceId: this.instanceId },
+                        'Playout-offset fan-out failed',
+                    );
+                });
+        }
+
         this.emitStateChange();
+    }
+
+    /**
+     * The route head feeding this module changed its playout offset D — let the
+     * plugin re-push its sink `ts-offset`. Optional hook: modules that don't
+     * present (producers, transcoders) simply don't implement it.
+     */
+    async notifyRoutePlayoutOffsetChanged(): Promise<void> {
+        await this.plugin.onRoutePlayoutOffsetChanged?.();
     }
 
     /** Get PipeWire node names for audio routing (single-port modules). */

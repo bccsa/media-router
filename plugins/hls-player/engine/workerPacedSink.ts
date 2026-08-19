@@ -155,6 +155,7 @@ export class WorkerPacedTsSink {
     private drainedBytesAcc = 0;
     private drainedSec = 0;
     private dead = false;
+    private abandoned = false;
     private ended: Promise<void> | null = null;
     private endedResolve: (() => void) | null = null;
 
@@ -232,6 +233,11 @@ export class WorkerPacedTsSink {
     }
 
     async write(chunk: Uint8Array, mediaSeconds: number): Promise<void> {
+        // Abandoned (SIGTERM) beats every other state: the caller is being torn
+        // down, so writes become quiet no-ops rather than throwing — a throw
+        // here would surface as a runner error exit and trip the restart
+        // policy on what is a deliberate stop.
+        if (this.abandoned) return;
         // FAIL CLOSED: a dead worker must abort the run (runner exits
         // non-zero → ManagedProcess restart with backoff), never silently
         // swallow writes — a no-op sink lets the extractor race through the
@@ -244,6 +250,7 @@ export class WorkerPacedTsSink {
         let lastProgressAt = Date.now();
         let lastSent = this.bytesSent;
         while (!this.tryPutFrame(chunk, mediaSeconds, 0)) {
+            if (this.abandoned) return;
             if (this.dead) throw new Error('paced-sink worker died while ring full');
             if (this.ended) return;
             const sent = this.bytesSent;
@@ -264,6 +271,7 @@ export class WorkerPacedTsSink {
         lastProgressAt = Date.now();
         lastSent = this.bytesSent;
         for (;;) {
+            if (this.abandoned) return;
             if (this.dead) throw new Error('paced-sink worker died under back-pressure');
             if (this.ended) return;
             this.syncDrained();
@@ -291,8 +299,32 @@ export class WorkerPacedTsSink {
         }
     }
 
+    /**
+     * Immediate teardown for SIGTERM — the opposite trade-off to `end()`.
+     *
+     * `end()` is the natural-end path: it drains the buffered tail AT MEDIA
+     * RATE, which is up to the sink's 60 s read-ahead budget. On a stop or a
+     * URL change nobody is left to watch that tail (the module tears the
+     * fan-out sidecar down in the same breath), and taking a minute over it is
+     * exactly what made the runner outlive ManagedProcess's 3 s SIGTERM grace.
+     *
+     * So: unpark every waiter (a `write` parked on back-pressure returns within
+     * one 50 ms poll), then terminate the worker — which closes the ingest
+     * socket, so the sidecar reads EOF rather than a half-open connection.
+     * Bytes already handed to the kernel still arrive; the unsent paced tail is
+     * deliberately dropped. Idempotent, and safe to call with `end()` in
+     * flight (a parked `end()` is released by the same unpark).
+     */
+    abandon(): void {
+        if (this.abandoned) return;
+        this.abandoned = true;
+        this.endedResolve?.();
+        void this.worker.terminate();
+    }
+
     /** Flush the buffered tail at media rate, then tear the worker down. */
     async end(): Promise<void> {
+        if (this.abandoned) return;
         if (this.ended) return this.ended;
         this.ended = (async () => {
             if (!this.dead) {

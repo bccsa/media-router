@@ -17,7 +17,7 @@
 // output_added/output_add_failed, stats.
 //
 // Usage: mr-tssplit --input <edge socket> --caps <BUS_TS_CAPS> [--ts-id 1]
-//                   [--stall-ms 2000] [--flush-ms 20]
+//                   [--stall-ms 2000] [--flush-ms 20] [--stamp-timeline]
 //                   --out 0x100:busout_40001[:0x1b] ...
 #include <fcntl.h>
 #include <poll.h>
@@ -50,6 +50,8 @@ int main(int argc, char** argv) {
             opts.stall_ns = (int64_t)std::atoll(argv[++i]) * 1'000'000;
         } else if (a == "--flush-ms" && i + 1 < argc) {
             opts.flush_ns = (int64_t)std::atoll(argv[++i]) * 1'000'000;
+        } else if (a == "--stamp-timeline") {
+            opts.stamp_timeline = true;
         } else if (a == "--out" && i + 1 < argc) {
             // pid:tee[:stream_type], e.g. 0x100:busout_40001:0x1b
             std::string spec = argv[++i];
@@ -76,7 +78,8 @@ int main(int argc, char** argv) {
     if (opts.input_socket.empty() || opts.caps.empty()) {
         std::fprintf(stderr,
                      "usage: mr-tssplit --input <socket> --caps <caps> "
-                     "[--ts-id N] [--stall-ms N] [--flush-ms N] --out pid:tee[:stype] ...\n");
+                     "[--ts-id N] [--stall-ms N] [--flush-ms N] [--stamp-timeline] "
+                     "--out pid:tee[:stype] ...\n");
         return 2;
     }
 

@@ -15,6 +15,7 @@ import {
     planSink,
     resolveBuildHealth,
     resolveResumeSocket,
+    videoTsOffsetNs,
 } from './pipelinePlan.js';
 import { DEFAULT_SURFACE, RESUME_SINK_NAME } from './pipelines.js';
 import {
@@ -38,35 +39,90 @@ function readyTarget(over: Partial<RenderTargetReady> = {}): RenderTargetReady {
     };
 }
 
+/** `planSink` with the ts-offset resolved the way the module resolves it. */
+function plan(
+    config: Record<string, unknown>,
+    services?: Parameters<typeof videoTsOffsetNs>[0],
+    target: RenderTargetReady = readyTarget(),
+) {
+    return planSink(target, config, videoTsOffsetNs(services ?? null, config));
+}
+
 describe('planSink', () => {
     it('defaults to a QoS-on, clock-paced KMS sink pinned to the connector id', () => {
-        const plan = planSink(readyTarget(), {});
-        expect(plan.sinkElement).toContain('kmssink name=sink connector-id=32');
-        expect(plan.sinkElement).toContain('sync=true max-lateness=1000000000');
-        expect(plan.sinkElement).toContain('qos=true');
-        expect(plan).toMatchObject({ clockSync: false, sinkPaced: true });
+        const sink = plan({});
+        expect(sink.sinkElement).toContain('kmssink name=sink connector-id=32');
+        expect(sink.sinkElement).toContain('sync=true max-lateness=1000000000');
+        expect(sink.sinkElement).toContain('qos=true');
+        expect(sink).toMatchObject({ clockSync: false, sinkPaced: true });
     });
 
     it('sync=false drops the pacing (and with it the tsparse chain)', () => {
-        const plan = planSink(readyTarget(), { sync: false });
-        expect(plan.sinkElement).toContain('sync=false');
-        expect(plan.sinkPaced).toBe(false);
+        const sink = plan({ sync: false });
+        expect(sink.sinkElement).toContain('sync=false');
+        expect(sink.sinkPaced).toBe(false);
     });
 
     it('clockSync forces pacing on even when sync is off', () => {
-        const plan = planSink(readyTarget(), { sync: false, clockSync: true });
-        expect(plan).toMatchObject({ clockSync: true, sinkPaced: true });
-        expect(plan.sinkElement).toContain('sync=true');
+        const sink = plan({ sync: false, clockSync: true });
+        expect(sink).toMatchObject({ clockSync: true, sinkPaced: true });
+        expect(sink.sinkElement).toContain('sync=true');
     });
 
     it('converts lipSyncMs to a nanosecond ts-offset on the named sink', () => {
-        expect(planSink(readyTarget(), { lipSyncMs: 40 }).sinkElement).toContain(
-            'ts-offset=40000000',
-        );
+        // Contract off (no services): the trim is the whole offset, unchanged.
+        expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=40000000');
     });
 
     it('passes qos=false through for paced HLS chains', () => {
-        expect(planSink(readyTarget(), { qos: false }).sinkElement).toContain('qos=false');
+        expect(plan({ qos: false }).sinkElement).toContain('qos=false');
+    });
+});
+
+/**
+ * Playout offset D on the video leg (ADR-0005 decision 4). `lipSyncMs` stops
+ * being the anchor and becomes a trim stacked on top of the ROUTE's D; with the
+ * contract off nothing about the legacy numbers moves.
+ */
+describe('videoTsOffsetNs', () => {
+    const route = (overrideMs?: number) => ({
+        instanceId: 'video-player-1',
+        timeSyncContract: true,
+        mediaRouter: { getRoutePlayoutOffsetMs: () => overrideMs },
+    });
+
+    it('is the bare lipSyncMs trim when the contract is off', () => {
+        expect(videoTsOffsetNs(null, { lipSyncMs: 40 })).toBe(40_000_000);
+        expect(videoTsOffsetNs({ instanceId: 'v1' }, {})).toBe(0);
+    });
+
+    it('uses the engine-wide default when the route declares no override', () => {
+        expect(videoTsOffsetNs({ ...route(undefined), playoutOffsetMs: 300 }, {})).toBe(
+            300_000_000,
+        );
+    });
+
+    it('falls back to 300 ms when the engine reports no default', () => {
+        expect(videoTsOffsetNs(route(undefined), {})).toBe(300_000_000);
+    });
+
+    it('lets the route head override win over the engine default', () => {
+        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, {})).toBe(500_000_000);
+    });
+
+    it('adds lipSyncMs on top of D as a per-sink trim, both signs', () => {
+        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, { lipSyncMs: 40 })).toBe(
+            540_000_000,
+        );
+        expect(videoTsOffsetNs({ ...route(500), playoutOffsetMs: 300 }, { lipSyncMs: -40 })).toBe(
+            460_000_000,
+        );
+    });
+
+    it('reaches the sink element as one ts-offset', () => {
+        expect(
+            plan({ lipSyncMs: 40 }, { ...route(500), playoutOffsetMs: 300 }).sinkElement,
+        ).toContain('ts-offset=540000000');
     });
 });
 
@@ -297,6 +353,90 @@ describe('planLivePipeline', () => {
                     env: {},
                     surface: DEFAULT_SURFACE,
                 }).description.keyframeGate,
+            ).toBeUndefined();
+        });
+    });
+
+    describe('backlog shedder', () => {
+        // The time-sync contract's latency ratchet guard: a `sync=true` sink
+        // drains at media rate, so backlog the leaky queues absorb is never
+        // handed back (field .42: 50 fps decoded, 2.5 fps on the glass after
+        // ~16 h). Armed by the contract, on the same pad and the same rungs as
+        // the keyframe gate.
+        const explicitDec: DecoderSelection = {
+            id: 'v4l2slh265dec',
+            chain: `h265parse ! v4l2slh265dec name=${VIDEO_DECODER_NAME}`,
+            caps: 'capsfilter caps="video/x-h265"',
+            hardware: true,
+            explicit: true,
+        };
+        const contract = { timeSyncContract: true };
+
+        it('sheds at the DECODER, measured against the sink that carries D', () => {
+            const desc = planLivePipeline({
+                ...base,
+                decoder: explicitDec,
+                services: contract,
+            });
+            expect(desc.backlogShed).toMatchObject({
+                element: VIDEO_DECODER_NAME,
+                sink: 'sink',
+                // A delta unit whose references were dropped is the V4L2 wedge
+                // — a video shed can only ever end on an IRAP.
+                keyframeAligned: true,
+            });
+            // Both names must exist in the string the runner parses, or `start`
+            // hard-errors on the lookup.
+            expect(desc.pipeline).toContain(`name=${VIDEO_DECODER_NAME}`);
+            expect(desc.pipeline).toContain('name=sink');
+        });
+
+        it('is NOT armed with the contract off — the legacy leg is untouched', () => {
+            expect(
+                planLivePipeline({ ...base, decoder: explicitDec }).backlogShed,
+            ).toBeUndefined();
+            expect(
+                planLivePipeline({ ...base, decoder: explicitDec, services: null }).backlogShed,
+            ).toBeUndefined();
+            expect(
+                planLivePipeline({
+                    ...base,
+                    decoder: explicitDec,
+                    services: { timeSyncContract: false },
+                }).backlogShed,
+            ).toBeUndefined();
+        });
+
+        it('never arms on the decodebin3 rung — there is no decoder to name', () => {
+            // Same constraint as the gate: the bin plugs its own decoder. That
+            // rung only carries the stream for the second or two before the TS
+            // probe names the codec, far short of the hold window anyway.
+            expect(planLivePipeline({ ...base, services: contract }).backlogShed).toBeUndefined();
+        });
+
+        it('never arms on an unnamed sink (autovideosink, dev)', () => {
+            // A bin, not a basesink: no `name=sink` to resolve and no
+            // `ts-offset` to measure the budget against.
+            expect(
+                planLivePipeline({
+                    ...base,
+                    sinkElement: 'autovideosink sync=true',
+                    decoder: explicitDec,
+                    services: contract,
+                }).backlogShed,
+            ).toBeUndefined();
+        });
+
+        it('never arms it on the fallback card', () => {
+            // The card is a local videotestsrc/still: no bus, no producer
+            // stamps, nothing that can retain latency against a house clock.
+            expect(
+                planFallbackPipeline({
+                    fallbackText: 'No video',
+                    sinkElement: 'kmssink name=sink',
+                    env: {},
+                    surface: DEFAULT_SURFACE,
+                }).description.backlogShed,
             ).toBeUndefined();
         });
     });

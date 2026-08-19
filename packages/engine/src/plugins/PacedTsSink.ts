@@ -17,6 +17,9 @@ const MAX_BUFFER_BYTES = 128 * 1024 * 1024;
  *     pipeline that's just been re-subscribed, and the player has to chew
  *     through it before finding sync — looks like "scrambled video for a while
  *     then clears up". 2 s keeps that recovery window tight.
+ *
+ * It is a CEILING on the lead, not a per-re-anchor grant — see the monotone
+ * rule in `drainLoop`.
  */
 const PREFILL_MS = 2_000;
 
@@ -86,7 +89,15 @@ export abstract class PacedTsSink {
     private writeWaiters: Array<() => void> = [];
     /** Media time (s) assigned to the next datagram — end of the last enqueued chunk. */
     private mediaCursorSec = 0;
-    private wallStartMs = 0;
+    /**
+     * Wall time (ms) that media time 0 maps to — the whole pacing contract.
+     * `null` until the first datagram anchors it. NOT a sentinel-0: on a worker
+     * thread `performance.now()` is small (or the back-date negative) early in
+     * the process, so 0 is a reachable value.
+     */
+    private wallStartMs: number | null = null;
+    /** Set when the queue runs dry; the next datagram re-anchors the mapping. */
+    private needsReanchor = false;
     private draining = false;
     private ending = false;
     private _closed = false;
@@ -162,20 +173,45 @@ export abstract class PacedTsSink {
                 if (this._closed || this.ending) break;
                 // Queue ran dry (source stalled longer than the buffered
                 // media, or a skip-on-stall jump advanced wall time without
-                // media time) — drop the anchor so the next datagram
-                // re-anchors. Keeping the old anchor would compute every
-                // subsequent datagram as "late" and burst-send whole
-                // segments: the exact receiver overflow this sink prevents.
-                this.wallStartMs = 0;
+                // media time) — mark the anchor for review. Keeping it
+                // unconditionally would compute every subsequent datagram as
+                // "late" and burst-send whole segments: the exact receiver
+                // overflow this sink prevents.
+                this.needsReanchor = true;
                 await sleep(10); // idle — wait for more input
                 continue;
             }
-            if (this.wallStartMs === 0) {
+            if (this.wallStartMs === null || this.needsReanchor) {
                 // Anchor relative to the head datagram's media time,
                 // back-dated by PREFILL_MS so the first bytes drain quickly.
-                this.wallStartMs = performance.now() - PREFILL_MS - item.atSec * 1000;
+                const fresh = performance.now() - PREFILL_MS - item.atSec * 1000;
+                // MONOTONE re-anchor: a re-anchor may only move the mapping
+                // LATER, never earlier. Earlier means handing ourselves a fresh
+                // PREFILL_MS head start on top of the lead we already hold, and
+                // those grants ACCUMULATE — the anchor downstream is latched
+                // once and, by design, never corrects the LEVEL of the margin
+                // (mpegts-core `TimelineStamper` cancels the trend only; see
+                // ts_timeline.py "NO SETPOINT"). So every dry spell shorter
+                // than PREFILL_MS permanently widened the producer's delivery
+                // lead by the difference — and a dry spell can be one 10 ms
+                // idle poll at a segment boundary. Field failure 2026-08-13 on
+                // .202: a transient `fetch failed` restart walked the lead from
+                // 2.2 s to 4.1 s (also seen: 5.9 s, 8.9 s), past the
+                // consumers' `leaky=2 max-size-time=bufferMs` window (3 s), so
+                // the pre-decoder queue leaked a chunk EVERY GOP for as long as
+                // the route ran: DISCONT on a delta AU → the runner's keyframe
+                // gate re-armed → ~20 of 50 frames per GOP never reached the
+                // decoder → glass stuck at 2-7 fps until the engine restarted.
+                //
+                // Clamping to the existing mapping keeps the lead at its
+                // PREFILL_MS ceiling instead: a short dry spell costs nothing,
+                // and a long one (later than the ceiling allows) still moves
+                // forward and still drains at most PREFILL_MS of backlog fast.
+                this.wallStartMs =
+                    this.wallStartMs === null ? fresh : Math.max(this.wallStartMs, fresh);
+                this.needsReanchor = false;
             }
-            const waitMs = this.wallStartMs + item.atSec * 1000 - performance.now();
+            const waitMs = this.wallStartMs! + item.atSec * 1000 - performance.now();
             if (waitMs > 2) {
                 await sleep(Math.min(waitMs, 250));
                 continue;

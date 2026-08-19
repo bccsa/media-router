@@ -3,6 +3,7 @@ import { createLogger } from '@media-router/shared-types';
 import type { ModuleManager } from './ModuleManager.js';
 import type { MediaRouter } from '../routing/MediaRouter.js';
 import type { PluginLoader } from '../plugins/PluginLoader.js';
+import { connectionRejectMessage, isConnectionReject } from './connectionReject.js';
 
 const log = createLogger('ConnectionApplier');
 
@@ -80,6 +81,15 @@ export function topoSortOrderedConns(conns: StoredConnection[]): StoredConnectio
  * Extracted from ModuleLifecycle to keep connection logic separate from lifecycle management.
  */
 export class ConnectionApplier {
+    /**
+     * Sink modules currently carrying a reject warning this applier set. Kept
+     * so the warning is raised once per sink, and so clearing it on a later
+     * success only touches health WE put there — blanket-clearing to 'ok'
+     * would wipe unrelated module warnings (e.g. GstPluginBase's "Waiting for
+     * producer bus socket(s)", LiveInputSwap's pending-swap notice).
+     */
+    private rejectedSinks = new Set<string>();
+
     constructor(
         private moduleManager: ModuleManager,
         private mediaRouter: MediaRouter,
@@ -216,6 +226,7 @@ export class ConnectionApplier {
                     },
                     'Connected',
                 );
+                this.clearRejectWarning(conn.sinkModuleId);
                 return;
             } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
@@ -242,8 +253,37 @@ export class ConnectionApplier {
                         { connectionId: conn.id },
                         `Connection failed after ${MAX_RETRIES + 1} attempts: ${msg}`,
                     );
+                    this.raiseRejectWarning(conn, msg);
                 }
             }
         }
+    }
+
+    /**
+     * Put the reason a connection was refused on the sink's card, once.
+     *
+     * Only for settled rejects (see `isConnectionReject`): a transient failure
+     * that exhausted its retries may still come good on the next re-apply, and
+     * parking a warning for it would train operators to ignore the channel.
+     * The sink is the module that goes silent, so it is the one that has to
+     * explain itself — before this, the leg just went dead with the reason
+     * confined to the engine journal.
+     */
+    private raiseRejectWarning(conn: StoredConnection, msg: string): void {
+        if (!isConnectionReject(msg)) return;
+        if (this.rejectedSinks.has(conn.sinkModuleId)) return;
+        const sink = this.moduleManager.get(conn.sinkModuleId);
+        if (!sink) return;
+        const text = connectionRejectMessage(msg, conn.sourceModuleId, conn.sourcePortId);
+        sink.setHealth?.('warning', text);
+        this.rejectedSinks.add(conn.sinkModuleId);
+        log.warn({ connectionId: conn.id, sink: conn.sinkModuleId }, text);
+    }
+
+    /** Drop the reject warning once a connection into this sink succeeds. */
+    private clearRejectWarning(sinkModuleId: string): void {
+        if (!this.rejectedSinks.delete(sinkModuleId)) return;
+        this.moduleManager.get(sinkModuleId)?.setHealth?.('ok');
+        log.info({ sink: sinkModuleId }, 'Connection reject cleared — sink wired');
     }
 }

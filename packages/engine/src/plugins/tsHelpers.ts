@@ -126,19 +126,11 @@ export interface TsUdpInputOpts {
     socketPath?: string;
     /** Source-silent watchdog (ms) — see `BusSrcOpts.stallTimeoutMs`. */
     stallTimeoutMs?: number;
-    /**
-     * `tsparse set-timestamps` (default true). True re-anchors PTS/DTS from PCR
-     * to the local timeline — the right default for single-pipeline playout and
-     * re-mux chains. Set **false** for cross-pipeline A/V sync (shared net
-     * clock): re-anchoring resets this pipeline to its own start, diverging it
-     * from its sibling; preserving the source PTS keeps both on one timeline.
-     */
-    setTimestamps?: boolean;
 }
 
 /**
  * Canonical inbound MPEG-TS bus receive chain:
- *   unixfdsrc (+ leaky ingress) ! queue (jitter) ! tsparse set-timestamps=true
+ *   unixfdsrc (+ leaky ingress) ! queue (jitter) ! tsparse set-timestamps=false
  *
  * Why each piece:
  *   - `buildBusSrc` connects this consumer's fan-out edge; caps arrive over
@@ -147,11 +139,15 @@ export interface TsUdpInputOpts {
  *     I-frame bursts; without enough headroom here a short burst of late
  *     packets is seen by tsdemux as a discontinuity and triggers a costly
  *     resync — which the user perceives as packet loss on fast motion.
- *   - `tsparse set-timestamps=true` re-frames to TS packet boundaries and
- *     re-derives PTS/DTS from PCR, anchoring them to the local clock. This
- *     is the load-bearing fix for progressive latency growth across
- *     re-muxing stages: each downstream `mpegtsmux` would otherwise mix
- *     the upstream encoder's clock with its own and drift over time.
+ *   - `tsparse` re-frames to TS packet boundaries, and `set-timestamps=false`
+ *     leaves the timestamps alone: the producer already stamped this stream
+ *     onto the shared house timeline, and re-deriving from PCR here would
+ *     replace one agreed timeline with this consumer's own arrival anchor — the
+ *     exact divergence ADR-0005 exists to remove. NOT an option: it was one,
+ *     defaulted false, and no caller ever passed true — a knob whose only
+ *     setting re-introduces the fault it was kept for is a trap, not a knob.
+ *     A genuinely self-contained chain that wants PCR re-anchoring builds its
+ *     own tsparse rather than reaching for this helper.
  */
 export function buildTsUdpInput(opts: TsUdpInputOpts): string {
     const src = buildBusSrc({
@@ -161,6 +157,5 @@ export function buildTsUdpInput(opts: TsUdpInputOpts): string {
         stallTimeoutMs: opts.stallTimeoutMs,
     });
     const queue = buildLeakyQueue(opts.jitterMs ?? 200);
-    const setTs = opts.setTimestamps ?? true;
-    return `${src} ! ${queue} ! tsparse set-timestamps=${setTs}`;
+    return `${src} ! ${queue} ! tsparse set-timestamps=false`;
 }

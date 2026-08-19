@@ -253,7 +253,11 @@ export class TranscoderModule extends GstPluginBase {
             // SOURCE timeline instead of a fresh per-incarnation rebase, so
             // downstream muxers align this video with its sibling audio by real
             // PTS. `preserveSourceTimeline: false` in settings is the per-module
-            // rollback (x-advanced).
+            // rollback (x-advanced). LEGACY PATH ONLY — under the time-sync
+            // contract the engine drops this (GstPluginBase.applyTimeSync): the
+            // producer-stamped egress supersedes it, and its restart-to-re-latch
+            // answer to a discontinuity would pre-empt the contract's in-place
+            // re-anchor.
             ...(config.preserveSourceTimeline === false
                 ? {}
                 : { preserveSourceTimeline: { demux: DEMUX_NAME } }),

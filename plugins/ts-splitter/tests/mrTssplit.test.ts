@@ -6,6 +6,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { STEP, ladderFixture, pesPacket, rungs, toNs } from '../../mpegts-core/tests/tsFixtures';
 
 /**
  * End-to-end integration of the native mr-tssplit child over real GstUnixFd
@@ -83,6 +84,46 @@ function shedCount(events: Array<Record<string, unknown>>): number {
     return Object.values(last?.drops ?? {}).reduce((a, b) => a + b, 0);
 }
 
+const LADDER_RUNGS = 20;
+/** Audio leads video by a fixed 100 ms, so a shared anchor is distinguishable
+ *  from two coincidental ones. */
+const AV_SKEW = 9000n;
+
+/**
+ * Interleaved A/V PES ladder for the stamping test: one video packet then one
+ * audio packet per rung, 40 ms apart. No PSI — the splitter routes by the
+ * `--out` PIDs and injects its own PAT/PMT per output. (The parity fixture
+ * can't serve here: its PES headers carry no PTS at all.)
+ */
+const avLadder = (count: number) =>
+    ladderFixture(rungs(count, 8_100_000n), { pids: [0x65, 0xc9], skew: AV_SKEW });
+
+/** Where the looping-VOD fixture below rewinds to — 50 ms, as the real source
+ *  restarts near zero. A multiple of 9, like every other PTS here, so the
+ *  90 kHz → ns conversion stays exact and implied anchors compare by equality. */
+const LOOP_PTS = 4500n;
+
+/**
+ * The 2026-08-13 field topology: a looping VOD, and a video PID that emits
+ * SEVERAL buffers between each audio one (which is what the splitter's
+ * coalescing does to a real A/V feed — video fills a batch in tens of ms,
+ * audio takes far longer). At the loop each output therefore sees a LONE
+ * anomaly with clean buffers either side, so the cross-PID confirmation rule
+ * — two anomalous buffers in a row — can never be satisfied on either. This
+ * shape is the difference between reproducing the field freeze and not: a 1:1
+ * A/V interleave would have confirmed on the audio buffer and recovered.
+ */
+function avLoopFixture(pre: number, post: number): Buffer {
+    const parts: Buffer[] = [];
+    for (let i = 0; i < pre + post; i++) {
+        const pts =
+            i < pre ? 8_100_000n + BigInt(i) * STEP : LOOP_PTS + BigInt(i - pre) * STEP;
+        parts.push(pesPacket(0x65, pts));
+        if (i % 4 === 3) parts.push(pesPacket(0xc9, pts + AV_SKEW));
+    }
+    return Buffer.concat(parts);
+}
+
 const SHED_MSG =
     'fan-out shed buffers — the capture client was starved of CPU, so the ' +
     'byte-exactness check below is meaningless (test-environment problem, ' +
@@ -127,6 +168,9 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         attach: (pid: number) => Promise<void>;
         captureClient: (pid: number, file: string, expectBytes?: number) => Promise<ChildProcess>;
         verdictOf: (proc: ChildProcess) => Promise<{ buffers: number; bytes: number; sha256: string }>;
+        /** Per-buffer client (reports wire pts + the payload's first PES). */
+        ladderClient: (pid: number, buffers: number) => Promise<ChildProcess>;
+        stampsOf: (proc: ChildProcess) => Promise<Array<{ pts: bigint; firstPes: bigint }>>;
         send: (cmd: Record<string, unknown>) => void;
     }
 
@@ -173,7 +217,29 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
             const v = await waitFor(() => evs.find((e) => e.captured), 'capture verdict');
             return v.captured as { buffers: number; bytes: number; sha256: string };
         };
-        return { split, events, inputSock, edge, attach, captureClient, verdictOf, send };
+        const ladderClient = async (pid: number, buffers: number) => {
+            const c = spawn('python3', [CLIENT, edge(pid), '--buffers', String(buffers)], {
+                stdio: ['ignore', 'pipe', 'inherit'],
+            });
+            cleanups.push(() => c.kill('SIGKILL'));
+            const evs = jsonLines(c);
+            (c as ChildProcess & { evs: typeof evs }).evs = evs;
+            await waitFor(() => evs.find((e) => e.caps), 'client accepted (caps)');
+            return c;
+        };
+        const stampsOf = async (proc: ChildProcess) => {
+            const evs = (proc as ChildProcess & { evs: Array<Record<string, unknown>> }).evs;
+            await waitFor(() => evs.find((e) => e.event === 'done' || e.error), 'stamp verdicts');
+            expect(evs.find((e) => e.error)?.error).toBeUndefined();
+            return evs
+                .map((e) => e.result as { pts: string; firstPes: number } | undefined)
+                .filter((v): v is { pts: string; firstPes: number } => v !== undefined)
+                .map((v) => ({ pts: BigInt(v.pts), firstPes: BigInt(v.firstPes) }));
+        };
+        return {
+            split, events, inputSock, edge, attach, captureClient, verdictOf,
+            ladderClient, stampsOf, send,
+        };
     }
 
     function server(sock: string, file: string, ...args: string[]) {
@@ -390,6 +456,106 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         expect(audioBytes[0]).toBe(0x47);
         expect(((audioBytes[1] & 0x1f) << 8) | audioBytes[2]).toBe(0x0000);
         srv.proc.kill();
+    }, 120_000);
+
+    it('stamps every output from ONE shared anchor (--stamp-timeline)', async () => {
+        // The time-sync contract's per-branch property, and the reason the
+        // splitter exists: each output is its own wire stream, but they must
+        // stay MUTUALLY aligned. With one shared anchor + epoch the implied
+        // anchor (wire pts - the buffer's own PES, in ns) is a single number
+        // across both branches; give each output its own stamper and the two
+        // constants drift apart by the wall gap between their first buffers.
+        const ladder = join(dir, 'ladder.ts');
+        writeFileSync(ladder, avLadder(LADDER_RUNGS));
+        const r = await rig(['--stamp-timeline', '--flush-ms', '0']);
+        await r.attach(0x65);
+        await r.attach(0xc9);
+        const video = await r.ladderClient(0x65, LADDER_RUNGS);
+        const audio = await r.ladderClient(0xc9, LADDER_RUNGS);
+        // One rung (the video+audio packet pair) per input chunk — the later
+        // --chunk wins in the server's argparse — so with --flush-ms 0 each
+        // output emits exactly one buffer per rung, carrying one ES packet.
+        const srv = server(r.inputSock, ladder, '--chunk', String(2 * 188));
+        await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'ladder consumed', 60000);
+
+        const stamps = await Promise.all([video, audio].map((c) => r.stampsOf(c)));
+        expect(shedCount(r.events), SHED_MSG).toBe(0);
+        // Every buffer carries exactly one ES packet here (--flush-ms 0), so
+        // each stamp is checkable against the payload it describes.
+        for (const s of stamps) expect(s).toHaveLength(LADDER_RUNGS);
+        const implied = stamps.flat().map((s) => s.pts - toNs(s.firstPes));
+        expect(new Set(implied.map(String)).size, 'branches anchored separately').toBe(1);
+        // The drift loop is per-EGRESS, like the anchor it corrects: ONE
+        // `timeline` object in the stats line for the whole splitter, not one
+        // per output — a per-branch loop would slew the branches apart, which
+        // is the failure a shared anchor exists to prevent. Field set is
+        // `mrts::drift_stats_json`, python's `drift_stats()` key for key.
+        const stats = (await waitFor(
+            () => r.events.find((e) => 'stats' in e),
+            'stats event',
+            8000,
+        )).stats as Record<string, unknown>;
+        expect(Object.keys(stats.timeline as object).sort()).toEqual([
+            'engageNs',
+            'marginNs',
+            'ppm',
+            'samples',
+            'slewNs',
+            'window',
+        ]);
+        // ...and the mapping is the contract's, not a constant offset that
+        // happens to match: the A/V lead the source encoded survives exactly.
+        expect(stamps[1][0].pts - stamps[0][0].pts).toBe(
+            toNs(stamps[1][0].firstPes - stamps[0][0].firstPes),
+        );
+        for (const pid of [0x65, 0xc9]) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
+    }, 120_000);
+
+    it('re-anchors every output when the source loops back to zero', async () => {
+        // The 2026-08-13 field failure, in the producer that showed it. The
+        // splitter's outputs are SINGLE-PID streams, so a source loop gives
+        // each of them one isolated anomaly and nothing to confirm it with —
+        // until the watch learned to confirm on the PID's own next buffer, no
+        // re-anchor was emitted at all and the monotone floor pinned every
+        // later stamp to the last pre-loop value. Measured on .202: newest and
+        // oldest of 20 tapped video buffers both at the SAME pts, 11.6 minutes
+        // behind CLOCK_MONOTONIC, with the sync=true sink dropping the lot.
+        const PRE = 12, POST = 24;
+        const ladder = join(dir, 'loop-ladder.ts');
+        writeFileSync(ladder, avLoopFixture(PRE, POST));
+        const r = await rig(['--stamp-timeline', '--flush-ms', '0']);
+        await r.attach(0x65);
+        await r.attach(0xc9);
+        const video = await r.ladderClient(0x65, PRE + POST);
+        const audio = await r.ladderClient(0xc9, (PRE + POST) / 4);
+        // One TS packet per input chunk, so every ES packet becomes its own
+        // output buffer — the per-PID buffer cadence the field ran at.
+        const srv = server(r.inputSock, ladder, '--chunk', '188');
+        await waitFor(() => srv.evs.find((e) => e.event === 'done'), 'ladder consumed', 60000);
+
+        const [vStamps, aStamps] = await Promise.all([video, audio].map((c) => r.stampsOf(c)));
+        expect(shedCount(r.events), SHED_MSG).toBe(0);
+        const reanchors = r.events.filter((e) => e.event === 'timeline_reanchor');
+        expect(reanchors).toHaveLength(1);
+        // The video PID both reports and confirms it — no second PID needed.
+        expect(reanchors[0]).toMatchObject({ pid: 0x65, count: 1 });
+
+        // The timeline is LIVE again on the far side of the loop: a surviving
+        // floor would flatten every one of these steps to zero for the rest of
+        // the loop, which is exactly what the field saw.
+        const tail = vStamps.slice(PRE + 2);
+        expect(tail.length).toBeGreaterThan(10);
+        for (let i = 1; i < tail.length; i++) {
+            expect(tail[i].pts - tail[i - 1].pts).toBe(toNs(STEP));
+        }
+        // ...and both branches came through it on ONE anchor, so the A/V lead
+        // the source encoded is still exactly the source's. Two anchors here
+        // would re-roll lipsync at every loop.
+        const implied = [...tail, ...aStamps.filter((s) => s.firstPes < 8_100_000n)].map(
+            (s) => s.pts - toNs(s.firstPes),
+        );
+        expect(new Set(implied.map(String)).size, 'branches re-anchored separately').toBe(1);
+        for (const pid of [0x65, 0xc9]) r.send({ cmd: 'bus_detach', socket: r.edge(pid) });
     }, 120_000);
 
     it('emits input_stalled / input_resumed around a silence window', async () => {

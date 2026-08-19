@@ -1,0 +1,212 @@
+{
+    "name": "@media-router/plugin-aes67-output",
+    "version": "2.0.0",
+    "private": true,
+    "description": "AES67 output — sends SMPTE-302M off the bus as an AES67 / ST 2110-30 RTP stream, announced over SAP",
+    "mediaRouter": {
+        "pluginId": "aes67-output",
+        "displayName": "AES67 Out",
+        "description": "Sends SMPTE-302M audio from the local bus to the network as an AES67 / SMPTE ST 2110-30 RTP stream (L24 or L16, 48 kHz, 1 ms packets, DSCP EF) and announces it over SAP so other devices can find it.",
+        "color": "#4f46e5",
+        "icon": "arrow-up-from-line",
+        "category": "protocol",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "audio-in",
+                "direction": "input",
+                "streamType": "audio/302m",
+                "label": "Audio In (302M)",
+                "maxConnections": 1
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Destination: a multicast group (e.g. 239.69.0.1 — AES67 streams are normally multicast) or a single unicast host"
+                },
+                "port": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 65535,
+                    "default": 5004,
+                    "description": "RTP port (AES67 default 5004)"
+                },
+                "interface": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Network interface to send on; empty = system default",
+                    "x-deviceType": "network-interface"
+                },
+                "encoding": {
+                    "type": "string",
+                    "enum": [
+                        "L24",
+                        "L16"
+                    ],
+                    "default": "L24",
+                    "description": "Wire sample format: L24 (24-bit, the AES67 default) or L16"
+                },
+                "channels": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 2,
+                    "default": 2,
+                    "description": "Channels to send. The 302M bus carries stereo, so this is 1 or 2."
+                },
+                "ptimeMs": {
+                    "type": "number",
+                    "enum": [
+                        0.125,
+                        0.25,
+                        1,
+                        4
+                    ],
+                    "default": 1,
+                    "x-unit": "ms",
+                    "description": "Packet time. 1 ms is the AES67 default every receiver must support; 4 ms lowers packet rate, 0.125/0.25 ms lower latency at high packet rates."
+                },
+                "payloadType": {
+                    "type": "number",
+                    "minimum": 96,
+                    "maximum": 127,
+                    "default": 96,
+                    "description": "RTP dynamic payload type to send with"
+                },
+                "mtu": {
+                    "type": "number",
+                    "minimum": 576,
+                    "maximum": 9000,
+                    "default": 1452,
+                    "description": "Maximum packet size. One packet time must fit inside it — the module refuses to start rather than fragment."
+                },
+                "ttl": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 255,
+                    "default": 16,
+                    "description": "Multicast TTL (hop limit)"
+                },
+                "dscp": {
+                    "type": "number",
+                    "minimum": -1,
+                    "maximum": 63,
+                    "default": 46,
+                    "description": "DSCP marking for the media packets. 46 (EF) is the AES67 recommendation; -1 leaves packets unmarked."
+                },
+                "senderLatencyMs": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 500,
+                    "default": 20,
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "ms",
+                    "description": "Sender pacing budget — how far behind the house clock packets leave, so they can be spaced evenly instead of leaving in bursts. This is NOT the route playout offset: RTP timestamps carry the alignment, so anything added here is spent from the receiver's link offset. Keep it small."
+                },
+                "ptpSync": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Stamp RTP timestamps from the PTP epoch, so receivers locked to the same grandmaster align sample-exactly. Requires a PTP-disciplined system clock (ptp4l/phc2sys); without one the module keeps free-running timestamps and says so rather than announcing a clock it does not have."
+                },
+                "ptpGmid": {
+                    "type": "string",
+                    "default": "",
+                    "description": "PTP grandmaster ID to announce, e.g. 00-1D-C1-FF-FE-50-30-EE. Only announced when the epoch was actually locked."
+                },
+                "ptpDomain": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 127,
+                    "default": 0,
+                    "description": "PTP domain (AES67 media profile default 0)"
+                },
+                "sapEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Announce this stream over SAP (239.255.255.255:9875) so other devices can discover it"
+                },
+                "sapIntervalS": {
+                    "type": "number",
+                    "minimum": 5,
+                    "maximum": 300,
+                    "default": 30,
+                    "x-unit": "s",
+                    "description": "Seconds between SAP announcements"
+                },
+                "sessionName": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Session name shown in other devices' stream pickers; empty = auto"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "stream",
+                "label": "Stream",
+                "fields": [
+                    {
+                        "key": "destination",
+                        "label": "Destination"
+                    },
+                    {
+                        "key": "format",
+                        "label": "Format"
+                    },
+                    {
+                        "key": "packetTime",
+                        "label": "Packet Time"
+                    },
+                    {
+                        "key": "multicast",
+                        "label": "Multicast"
+                    }
+                ]
+            },
+            {
+                "id": "clock",
+                "label": "Clock",
+                "fields": [
+                    {
+                        "key": "epoch",
+                        "label": "RTP Epoch"
+                    }
+                ]
+            },
+            {
+                "id": "stats",
+                "label": "Live Stats",
+                "fields": [
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "Mbps"
+                    },
+                    {
+                        "key": "bytesSent",
+                        "label": "Bytes Sent"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/Aes67OutputModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-aes67-core": "workspace:*"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

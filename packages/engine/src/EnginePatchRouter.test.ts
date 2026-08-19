@@ -175,6 +175,143 @@ describe('EnginePatchRouter', () => {
         });
     });
 
+    describe('side effects — batched connection removes', () => {
+        /** Ids the live router was actually told to tear down, in call order. */
+        const tornDown = (mediaRouter: any): string[] =>
+            mediaRouter.removeConnection.mock.calls.map((c: unknown[]) => c[0] as string);
+
+        it('tears down each connection of a two-remove batch exactly once', async () => {
+            const { router, config, mediaRouter } = createMocks();
+            (config as any).connections = [
+                { id: 'conn-a', sourceModuleId: 'a', sinkModuleId: 'x' },
+                { id: 'conn-b', sourceModuleId: 'b', sinkModuleId: 'y' },
+                { id: 'conn-keep', sourceModuleId: 'c', sinkModuleId: 'z' },
+            ];
+
+            // The manager emits progressively-valid indices: after the first
+            // remove the array shifts, so conn-b is at index 0 too. Resolving
+            // both against the pre-patch array named conn-a twice — conn-b's
+            // live routing was then never torn down.
+            router.onPatch('manager', 'manager', [
+                { op: 'remove', path: '/connections/0' },
+                { op: 'remove', path: '/connections/0' },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(tornDown(mediaRouter)).toEqual(['conn-a', 'conn-b']);
+            // Config and live state agree: everything that left the config was
+            // disconnected, and the survivor was left alone.
+            expect((config.connections as Array<{ id: string }>).map((c) => c.id)).toEqual([
+                'conn-keep',
+            ]);
+            expect(tornDown(mediaRouter)).not.toContain('conn-keep');
+        });
+
+        it('resolves id-based removes against the shifting array', async () => {
+            const { router, config, mediaRouter } = createMocks();
+            (config as any).connections = [
+                { id: 'conn-a', sourceModuleId: 'a', sinkModuleId: 'x' },
+                { id: 'conn-b', sourceModuleId: 'b', sinkModuleId: 'y' },
+            ];
+
+            // LCPs/browsers address connections by id — those never shift, and
+            // must keep resolving to themselves alongside index-based ops.
+            router.onPatch('manager', 'manager', [
+                { op: 'remove', path: '/connections/conn-b' },
+                { op: 'remove', path: '/connections/0' },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(tornDown(mediaRouter)).toEqual(['conn-b', 'conn-a']);
+            expect(config.connections).toEqual([]);
+        });
+
+        it('handles a mixed add + remove batch', async () => {
+            const { router, config, mediaRouter } = createMocks();
+            (config as any).connections = [
+                { id: 'conn-a', sourceModuleId: 'a', sinkModuleId: 'x' },
+                { id: 'conn-b', sourceModuleId: 'b', sinkModuleId: 'y' },
+            ];
+
+            router.onPatch('manager', 'manager', [
+                { op: 'remove', path: '/connections/0' },
+                {
+                    op: 'add',
+                    path: '/connections/-',
+                    value: {
+                        id: 'conn-new',
+                        sourceModuleId: 'n',
+                        sourcePortId: 'out',
+                        sinkModuleId: 'm',
+                        sinkPortId: 'in',
+                    },
+                },
+                // conn-b sat at index 1 pre-patch; the remove shifted it to 0.
+                { op: 'remove', path: '/connections/0' },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(tornDown(mediaRouter)).toEqual(['conn-a', 'conn-b']);
+            expect(mediaRouter.createConnection).toHaveBeenCalledWith(
+                'n',
+                'out',
+                'm',
+                'in',
+                undefined,
+            );
+            expect((config.connections as Array<{ id: string }>).map((c) => c.id)).toEqual([
+                'conn-new',
+            ]);
+        });
+
+        it('leaves the descending-index module-delete cascade unchanged', async () => {
+            const { router, config, mediaRouter, lifecycle } = createMocks();
+            (config as any).connections = [
+                { id: 'conn-0', sourceModuleId: 'mod-1', sinkModuleId: 'x' },
+                { id: 'conn-1', sourceModuleId: 'other', sinkModuleId: 'y' },
+                { id: 'conn-2', sourceModuleId: 'z', sinkModuleId: 'mod-1' },
+            ];
+
+            // cascadeModuleDelete emits connection removes in reverse index
+            // order precisely so earlier removals don't shift later indices.
+            router.onPatch('manager', 'manager', [
+                { op: 'remove', path: '/connections/2' },
+                { op: 'remove', path: '/connections/0' },
+                { op: 'remove', path: '/modules/mod-1' },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(tornDown(mediaRouter)).toEqual(['conn-2', 'conn-0']);
+            expect(lifecycle.deleteSingle).toHaveBeenCalledWith('mod-1');
+            expect((config.connections as Array<{ id: string }>).map((c) => c.id)).toEqual([
+                'conn-1',
+            ]);
+        });
+
+        it('resolves channelMap updates against the shifted array', async () => {
+            const { router, config, mediaRouter } = createMocks();
+            (config as any).connections = [
+                { id: 'conn-a', sourceModuleId: 'a', sinkModuleId: 'x' },
+                { id: 'conn-b', sourceModuleId: 'b', sinkModuleId: 'y', channelMap: null },
+            ];
+
+            router.onPatch('manager', 'manager', [
+                { op: 'remove', path: '/connections/0' },
+                {
+                    op: 'replace',
+                    path: '/connections/0/channelMap',
+                    value: [{ source: 0, sink: 0 }],
+                },
+            ]);
+
+            await new Promise((r) => setTimeout(r, 10));
+            expect(mediaRouter.removeConnection).toHaveBeenCalledWith('conn-a');
+            expect(mediaRouter.updateChannelMap).toHaveBeenCalledWith('conn-b', [
+                { source: 0, sink: 0 },
+            ]);
+        });
+    });
+
     describe('side effects — channel map update', () => {
         it('triggers updateChannelMap with resolved connection ID', async () => {
             const { router, config, mediaRouter } = createMocks();

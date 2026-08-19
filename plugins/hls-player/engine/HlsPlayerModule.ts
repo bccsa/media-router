@@ -13,6 +13,7 @@ import type { ManagedProcess } from '@media-router/engine';
 import type { AlternateRendition } from 'hls-pipe';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { classifyOriginFailure, originFailureMessage } from './originFailure.js';
 import { resolutionCapBitrateBps, resolveQuality } from './runnerOptions.js';
 
 /**
@@ -108,6 +109,11 @@ export class HlsPlayerModule extends GstPluginBase {
     private masterVariants: Array<{ bitrate: number; resolution?: { height: number } }> = [];
     /** Serializes live config updates — see `onLiveConfigUpdate`. */
     private updateLock: Promise<void> = Promise.resolve();
+    /** Latched operator-facing origin failure (see `noteOriginFailure`), or
+     *  null while the origin is behaving. */
+    private originFailure: string | null = null;
+    /** Consecutive non-auth fetch failures since bytes last flowed. */
+    private fetchFailures = 0;
 
     async onStart(): Promise<void> {
         this.log.info(
@@ -117,6 +123,9 @@ export class HlsPlayerModule extends GstPluginBase {
             },
             'onStart',
         );
+        // A restart is fresh evidence: whatever the origin did last time is
+        // no longer a fact about this run.
+        this.clearOriginFailure();
         if (!this.services?.mediaRouter) {
             this.setHealth('error', 'mediaRouter service unavailable');
             return;
@@ -160,7 +169,7 @@ export class HlsPlayerModule extends GstPluginBase {
             return;
         }
         if (!this.spawnRunner(url, endpoint.port)) return;
-        this.setHealth('ok');
+        this.setPlayingHealth();
         this.updateSourceStatus();
         // No GStreamer pipeline — the runner feeds the fan-out sidecar.
     }
@@ -221,6 +230,10 @@ export class HlsPlayerModule extends GstPluginBase {
                 ...fanout.prefix,
                 '--ingest', busIngestSocketPath(port),
                 '--caps', BUS_TS_CAPS,
+                // Producer half of the time-sync contract: the sidecar stamps
+                // the payload's mapped media time instead of send time. Both
+                // implementations take the same flag; off ⇒ argv unchanged.
+                ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : []),
             ],
             autoRestart: true,
             stdin: true,
@@ -283,6 +296,9 @@ export class HlsPlayerModule extends GstPluginBase {
         // Only relaunch on a real URL change. Other live params don't reach us
         // (`getLiveUpdatableParams` returns just `['url']`), but be explicit.
         if (!('url' in changes) || url === prevUrl) return;
+        // A new (or re-signed) URL is a new origin question — never carry the
+        // old URL's rejection over onto it.
+        this.clearOriginFailure();
         if (!this.running || !this.services?.mediaRouter || !this.services.processManager) {
             this.log.warn(
                 {
@@ -321,7 +337,7 @@ export class HlsPlayerModule extends GstPluginBase {
         const endpoint = this.services.mediaRouter.getBusChannel(this.services.instanceId);
         if (!endpoint) return;
         if (!this.spawnRunner(url, endpoint.port)) return;
-        this.setHealth('ok');
+        this.setPlayingHealth();
         this.updateSourceStatus();
     }
 
@@ -343,7 +359,7 @@ export class HlsPlayerModule extends GstPluginBase {
             autoRestart: true,
             clearBadges: ['bitrate'],
             onStdout: (line) => this.parseStats(line),
-            onStderr: (line) => this.log.info(line),
+            onStderr: (line) => this.handleRunnerStderr(line),
         });
         // A clean exit means the runner ran out of playlist — the VOD window
         // ended. That is a natural end of playback, not a fault: stop the
@@ -358,7 +374,64 @@ export class HlsPlayerModule extends GstPluginBase {
                 this.requestSelfStop('Stream ended (playlist complete)');
             }
         });
+        // `spawnRunnerProcess` wired the generic crash health ("hls-pipe
+        // crashed — restarting (attempt N)") first, so it fires first and
+        // would bury the reason the runner keeps dying. These listeners are
+        // registered last and therefore win — a rejected origin stays on the
+        // card, restart after restart.
+        proc.on('restarting', () => this.reassertOriginFailure());
+        proc.on('error', () => this.reassertOriginFailure());
         return true;
+    }
+
+    /**
+     * Runner stderr: hls-pipe's own log plus the fatal `hls-pipe error:` line.
+     * Ordinary chatter stays at info; a recognised origin failure is logged as
+     * a warning (so it is findable in the journal) and, once it earns a
+     * message, put on the module card by `noteOriginFailure`.
+     */
+    private handleRunnerStderr(line: string): void {
+        if (this.noteOriginFailure(line)) this.log.warn({ src: 'hls-pipe' }, line);
+        else this.log.info(line);
+    }
+
+    /**
+     * Classify one failure text — a runner stderr line or a probe error — and,
+     * when it is operator-actionable, latch it and show it on the module card.
+     *
+     * Latched rather than one-shot because the runner exits on these and comes
+     * straight back: the message has to survive the restart churn, and only
+     * bytes actually flowing again (`parseStats`) or a new URL retire it.
+     *
+     * @returns true when the text was recognised as an origin failure.
+     */
+    private noteOriginFailure(text: string): boolean {
+        const failure = classifyOriginFailure(text);
+        if (!failure) return false;
+        if (failure.kind === 'fetch') this.fetchFailures += 1;
+        const message = originFailureMessage(failure, this.fetchFailures);
+        if (!message) return true; // a blip so far — logged, but not alarming
+        this.originFailure = message;
+        this.setHealth('error', message);
+        return true;
+    }
+
+    /** Re-assert a latched origin failure over generic process health. */
+    private reassertOriginFailure(): void {
+        if (this.running && this.originFailure) this.setHealth('error', this.originFailure);
+    }
+
+    /** The origin is serving us again (or is a different origin entirely). */
+    private clearOriginFailure(): void {
+        this.originFailure = null;
+        this.fetchFailures = 0;
+    }
+
+    /** Health for a launched runner: 'ok', unless the origin has already told
+     *  us it won't serve this URL — a spawned but doomed runner isn't ok. */
+    private setPlayingHealth(): void {
+        if (this.originFailure) this.setHealth('error', this.originFailure);
+        else this.setHealth('ok');
     }
 
     private buildRunnerConfig(url: string, port: number): Record<string, unknown> {
@@ -431,7 +504,13 @@ export class HlsPlayerModule extends GstPluginBase {
             this.masterVariants = [];
             this.setFieldOptions('audio', []);
             this.setFieldOptions('subtitles', []);
-            this.log.warn({ err: err instanceof Error ? err.message : err }, 'HLS probe failed');
+            const msg = err instanceof Error ? err.message : String(err);
+            // The probe fetches the master playlist with the same signed URL the
+            // runner is about to use, so a 403 here is the earliest — and
+            // clearest — evidence of an expired token: surface it now instead of
+            // waiting out a crash-restart cycle to learn the same thing.
+            this.noteOriginFailure(msg);
+            this.log.warn({ err: msg }, 'HLS probe failed');
         }
     }
 
@@ -455,9 +534,14 @@ export class HlsPlayerModule extends GstPluginBase {
             };
             const s = msg.stats;
             if (!s) return;
+            // Bytes on the wire are the only proof that fetching RECOVERED —
+            // the runner being up says nothing (it restarts into the same 403,
+            // and its 2 s stats timer fires whether or not a segment landed).
+            if (typeof s.bytesSent === 'number' && s.bytesSent > 0) this.clearOriginFailure();
             // A stats line proves the runner is alive — clear the warning set
-            // while it was crash-looping / restarting.
-            if (this.running && this.health !== 'ok') this.setHealth('ok');
+            // while it was crash-looping / restarting. A latched origin failure
+            // outranks it.
+            if (this.running && this.health !== 'ok' && !this.originFailure) this.setHealth('ok');
             this.setStatusData('stats', {
                 bitrate: typeof s.bitrateMbps === 'number' ? s.bitrateMbps.toFixed(2) : '—',
                 data: typeof s.bytesSent === 'number' ? formatBytes(s.bytesSent) : '—',

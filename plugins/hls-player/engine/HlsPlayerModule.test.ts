@@ -7,7 +7,8 @@ import { join } from 'node:path';
 
 // hls-pipe is ESM and the probe loads it via dynamic import — mock it so tests
 // neither hit the network nor depend on the built library. The fetch mock is
-// URL-driven: '…fail…' rejects (probe-failure paths), '…slow…' resolves late
+// URL-driven: '…fail…' rejects (probe-failure paths), '…403…'/'…401…' reject
+// the way the real loader does on a refused origin, '…slow…' resolves late
 // (live-update serialization).
 vi.mock('hls-pipe', () => {
     const rendition = (type: string, name: string, language: string) => ({
@@ -22,6 +23,9 @@ vi.mock('hls-pipe', () => {
     return {
         NodeLoader: vi.fn().mockImplementation(() => ({
             fetch: vi.fn(async ({ url }: { url: string }) => {
+                // Same text NodeLoader throws: `HTTP <status> for <url>`.
+                const refused = /\b(401|403)\b/.exec(url);
+                if (refused) throw new Error(`HTTP ${refused[1]} for ${url}`);
                 if (url.includes('fail')) throw new Error('fetch failed');
                 if (url.includes('slow')) await new Promise((r) => setTimeout(r, 25));
                 return { body: Buffer.from('#EXTM3U') };
@@ -79,6 +83,15 @@ function makeModule() {
 function runnerConfigAt(spawn: ReturnType<typeof vi.fn>, n: number): Record<string, unknown> {
     return JSON.parse(spawn.mock.calls[n][1].env.HLS_CONFIG);
 }
+
+/** spawn call 1 = the hls-pipe runner (the sidecar takes call 0). */
+const runnerOf = (spawn: ReturnType<typeof vi.fn>) => ({
+    proc: spawn.mock.results[1]!.value as EventEmitter,
+    opts: spawn.mock.calls[1]![1] as {
+        onStdout: (line: string) => void;
+        onStderr: (line: string) => void;
+    },
+});
 
 /** spawn call 0 = the fan-out sidecar (always first, even idle). */
 const sidecarOf = (spawn: ReturnType<typeof vi.fn>) => ({
@@ -203,6 +216,26 @@ describe('HlsPlayerModule.onStart', () => {
         // Identical CLI either way — the two implementations are interchangeable.
         expect(opts.args.join(' ')).toContain('--ingest /tmp/mr-bus-41000-ingest.sock');
         expect(opts.args.join(' ')).toContain('video/mpegts');
+    });
+
+    it('passes --stamp-timeline only under the engine time-sync contract', async () => {
+        // Off (today's default): argv is byte-identical to before the contract.
+        const plain = makeModule();
+        await plain.module.onStart();
+        expect(sidecarOf(plain.spawn).opts.args).not.toContain('--stamp-timeline');
+
+        const contract = makeModule();
+        contract.module.services.timeSyncContract = true;
+        await contract.module.onStart();
+        const { opts } = sidecarOf(contract.spawn);
+        expect(opts.args).toContain('--stamp-timeline');
+        // Same flag on the python leg — the two fan-outs stay interchangeable.
+        const py = makeModule();
+        py.module.services.timeSyncContract = true;
+        process.env.MR_NATIVE_BIN_DIR = emptyBinDir;
+        await py.module.onStart();
+        expect(sidecarOf(py.spawn).opts.command).toBe('python3');
+        expect(sidecarOf(py.spawn).opts.args).toContain('--stamp-timeline');
     });
 
     it('reports an error when NEITHER fan-out implementation is available', async () => {
@@ -395,6 +428,114 @@ describe('HlsPlayerModule runner health', () => {
         proc.destroyed = true;
         proc.emit('stopped', 0, null); // deliberate module stop
         expect(selfStop).not.toHaveBeenCalled();
+    });
+});
+
+describe('HlsPlayerModule origin failures', () => {
+    /** Start with a working URL, then hand the runner a stderr line. */
+    async function withRunner() {
+        const ctx = makeModule();
+        ctx.module.config = { url: 'https://example.com/a.m3u8' };
+        await ctx.module.onStart();
+        ctx.module.setHealth.mockClear();
+        return { ...ctx, ...runnerOf(ctx.spawn) };
+    }
+
+    it('names the cause when the origin returns 403 — not just "crashed"', async () => {
+        const { module, opts } = await withRunner();
+        opts.onStderr('hls-pipe error: HTTP 403 for https://cdn.example.com/seg1.ts?token=abc');
+        expect(module.setHealth).toHaveBeenCalledWith(
+            'error',
+            'HLS origin rejecting requests (HTTP 403) — signed URL likely expired',
+        );
+        // Health 'error' is what puts the text on the module card (ModuleNode
+        // renders data.error only for error), and the journal line stops being
+        // level-30 chatter.
+        expect(module.log.warn).toHaveBeenCalledWith(
+            { src: 'hls-pipe' },
+            expect.stringContaining('HTTP 403'),
+        );
+    });
+
+    it('401 gets its own message — credentials, not an expired signature', async () => {
+        const { module, opts } = await withRunner();
+        opts.onStderr('hls-pipe error: HTTP 401 for https://cdn.example.com/master.m3u8');
+        expect(module.setHealth).toHaveBeenCalledWith(
+            'error',
+            expect.stringContaining('HTTP 401'),
+        );
+        expect(module.setHealth.mock.calls.at(-1)![1]).toContain('credentials');
+    });
+
+    it('holds fire on a single fetch failure, then reports the outage at three', async () => {
+        const { module, opts } = await withRunner();
+        opts.onStderr('hls-pipe error: fetch failed');
+        opts.onStderr('hls-pipe error: fetch failed');
+        // A blip is the runner's business — its own restart rides it out.
+        expect(module.setHealth).not.toHaveBeenCalled();
+
+        opts.onStderr('hls-pipe error: fetch failed');
+        expect(module.setHealth).toHaveBeenCalledWith(
+            'error',
+            'HLS fetch failing repeatedly (3× fetch failed) — check the URL, origin and network',
+        );
+    });
+
+    it('leaves ordinary runner chatter at info', async () => {
+        const { module, opts } = await withRunner();
+        opts.onStderr('hls: switching to level 3 (unstable network preset)');
+        expect(module.log.info).toHaveBeenCalledWith(
+            'hls: switching to level 3 (unstable network preset)',
+        );
+        expect(module.setHealth).not.toHaveBeenCalled();
+    });
+
+    it('survives the crash-restart churn — the cause outranks "restarting"', async () => {
+        const { module, proc, opts } = await withRunner();
+        opts.onStderr('hls-pipe error: HTTP 403 for https://cdn.example.com/seg1.ts');
+        proc.emit('restarting', 2, 6000); // base sets the generic warning…
+        // …and ours re-asserts, so the operator still sees WHY it is looping.
+        expect(module.setHealth.mock.calls.at(-1)).toEqual([
+            'error',
+            'HLS origin rejecting requests (HTTP 403) — signed URL likely expired',
+        ]);
+    });
+
+    it('clears only when bytes flow again — a live runner alone is not recovery', async () => {
+        const { module, opts } = await withRunner();
+        opts.onStderr('hls-pipe error: HTTP 403 for https://cdn.example.com/seg1.ts');
+        module.running = true;
+        module.health = 'error';
+        module.setHealth.mockClear();
+
+        // The stats timer fires every 2 s whether or not a segment landed.
+        opts.onStdout(JSON.stringify({ stats: { bitrateMbps: 0, bytesSent: 0 } }));
+        expect(module.setHealth).not.toHaveBeenCalledWith('ok');
+
+        opts.onStdout(JSON.stringify({ stats: { bitrateMbps: 2.5, bytesSent: 1048576 } }));
+        expect(module.setHealth).toHaveBeenCalledWith('ok');
+    });
+
+    it('a re-signed URL starts clean — the old URL’s rejection is not carried over', async () => {
+        const { module, opts } = await withRunner();
+        opts.onStderr('hls-pipe error: HTTP 403 for https://cdn.example.com/seg1.ts');
+        module.setHealth.mockClear();
+
+        await module.onLiveConfigUpdate({ url: 'https://example.com/a.m3u8?token=fresh' });
+        expect(module.setHealth).toHaveBeenLastCalledWith('ok');
+    });
+
+    it('the probe reports a refused origin before the runner is even spawned', async () => {
+        const { module, spawn } = makeModule();
+        module.config = { url: 'https://example.com/403/master.m3u8' };
+        await module.onStart();
+        // The runner still launches (the URL may recover), but the card shows
+        // the origin's answer rather than a green 'ok'.
+        expect(spawn).toHaveBeenCalledTimes(2);
+        expect(module.setHealth.mock.calls.at(-1)).toEqual([
+            'error',
+            'HLS origin rejecting requests (HTTP 403) — signed URL likely expired',
+        ]);
     });
 });
 

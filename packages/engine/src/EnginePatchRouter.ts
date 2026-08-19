@@ -1,4 +1,4 @@
-import { createLogger, applyJsonPatch } from '@media-router/shared-types';
+import { createLogger, applyJsonPatch, LiveArrayIndex } from '@media-router/shared-types';
 import type { PatchOp, ChannelMapEntry } from '@media-router/shared-types';
 
 /** PatchOp with resolved connection ID for side effect handling. */
@@ -220,28 +220,47 @@ export class EnginePatchRouter {
      * Pre-resolve connection IDs from index-based paths before applying the patch.
      * After applyJsonPatch removes a connection, we can't look it up anymore.
      * Attaches _connId to ops that reference connections by index.
+     *
+     * An index is only valid at the instant its own op applies. The manager
+     * emits progressively-valid indices for a batch — two removes of adjacent
+     * connections arrive as `[remove /connections/1, remove /connections/1]`,
+     * because the first removal shifts the array. Resolving the whole batch
+     * against the pre-patch array named the same connection twice: the live
+     * routing for the second one was never torn down (config ended correct,
+     * the pipeline leaked a running connection).
+     *
+     * So fold each op's structural effect into a working view as we map —
+     * `LiveArrayIndex`, the same fold the manager runs on the sending side of
+     * this boundary (shared-types, next to the `applyJsonPatch` semantics it
+     * mirrors: numeric index else `.id` match, `add` at an index assigns rather
+     * than inserts, `-` appends and never matches for remove). Element
+     * *contents* stay pre-patch; only membership and order move, which is
+     * exactly what the id lookup needs.
      */
     private resolveConnectionIds(
         ops: PatchOp[],
         config: Record<string, unknown>,
     ): ResolvedPatchOp[] {
-        const connections = (config.connections ?? []) as Array<Record<string, unknown>>;
+        const connections = new LiveArrayIndex<Record<string, unknown>>(
+            '/connections',
+            (config.connections ?? []) as Array<Record<string, unknown>>,
+        );
+
         return ops.map((op) => {
             const parts = op.path.split('/').filter(Boolean);
-            if (parts[0] === 'connections' && parts[1]) {
-                const key = parts[1];
-                const idx = parseInt(key, 10);
-                if (!isNaN(idx) && connections[idx]?.id) {
-                    // Numeric index → resolve to connection ID
-                    return { ...op, _connId: connections[idx].id as string } as ResolvedPatchOp;
-                }
-                // Non-numeric → treat as connection ID directly (browser sends ID-based paths)
-                const match = connections.find((c) => c.id === key);
-                if (match) {
-                    return { ...op, _connId: match.id as string } as ResolvedPatchOp;
-                }
-            }
-            return op;
+            if (parts[0] !== 'connections') return op;
+
+            // Read the id BEFORE folding this op in — a remove is exactly the
+            // case where the element is gone afterwards. A whole-array write
+            // (`/connections`) addresses no element, so there is nothing to
+            // read; `track` still resets the membership below.
+            const connId =
+                parts.length > 1
+                    ? (connections.at(parts[1])?.id as string | undefined)
+                    : undefined;
+            connections.track(op);
+
+            return connId ? ({ ...op, _connId: connId } as ResolvedPatchOp) : op;
         });
     }
 

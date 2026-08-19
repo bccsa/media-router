@@ -24,6 +24,12 @@ export class EngineEventForwarder {
     private cachedModuleStates = new Map<string, Record<string, unknown>>();
     /** Generic per-engine data cache — keyed by topic (e.g. 'audioDevices', 'networkInterfaces'). */
     private engineData = new Map<string, Map<string, unknown>>();
+    /**
+     * Module ids removed from each engine's graph. Incoming `engineState` keys
+     * matching a tombstone are dropped — see `purgeModuleStates` for why the
+     * purge alone isn't enough.
+     */
+    private removedModules = new Map<string, Set<string>>();
     private readonly LOG_BUFFER_MAX = 1000;
 
     constructor(
@@ -71,6 +77,7 @@ export class EngineEventForwarder {
             this.cachedModuleStates.delete(engineId);
             this.engineData.delete(engineId);
             this.logBuffers.delete(engineId);
+            this.removedModules.delete(engineId);
             this.io.emit('engine:offline', { engineId });
         });
 
@@ -79,16 +86,27 @@ export class EngineEventForwarder {
                 log.warn({ engineId }, 'engineState: expected object, dropping');
                 return;
             }
+            // Drop keys for modules already removed from the graph. The engine
+            // batches state deltas, so a batch enqueued just before the removal
+            // can arrive after the purge — without this it would reinstate the
+            // ghost permanently (nothing else ever deletes a cache key).
+            const tombstones = this.removedModules.get(engineId);
+            let incoming = state as Record<string, unknown>;
+            if (tombstones?.size) {
+                incoming = Object.fromEntries(
+                    Object.entries(incoming).filter(([id]) => !tombstones.has(id)),
+                );
+            }
             this.cachedModuleStates.set(engineId, {
                 ...(this.cachedModuleStates.get(engineId) ?? {}),
-                ...(state as Record<string, unknown>),
+                ...incoming,
             });
             // Watch-room only — this is the highest-rate stream (every module
             // re-sends full state on each stats tick) and only the routing
             // editor renders per-module state. The sidebar reads engine-level
             // events (engine:online/running), and `watch:engine` rehydrates a
             // full snapshot from cachedModuleStates when a browser switches.
-            this.io.to(`watch:${engineId}`).emit('engine:state', { engineId, state });
+            this.io.to(`watch:${engineId}`).emit('engine:state', { engineId, state: incoming });
         });
 
         // Engine reports its effective per-plugin config schemas on connect
@@ -239,6 +257,44 @@ export class EngineEventForwarder {
     }
 
     /**
+     * Drop cached runtime state for modules removed from the graph, and
+     * tombstone their ids so late state batches can't reinstate them.
+     *
+     * `engineState` merges deltas into the cache and never deletes, so without
+     * this a removed module keeps its last state (typically `running:false` +
+     * the error it died with) and `watch:engine` rehydration serves that ghost
+     * to every browser until the engine reconnects.
+     *
+     * Called by PatchRouter for each `remove /modules/<id>` it routes.
+     */
+    purgeModuleStates(engineId: string, moduleIds: string[]): void {
+        if (moduleIds.length === 0) return;
+        const cached = this.cachedModuleStates.get(engineId);
+        for (const id of moduleIds) {
+            if (cached) delete cached[id];
+        }
+        let tombstones = this.removedModules.get(engineId);
+        if (!tombstones) {
+            tombstones = new Set();
+            this.removedModules.set(engineId, tombstones);
+        }
+        for (const id of moduleIds) tombstones.add(id);
+        log.debug({ engineId, moduleIds }, 'Purged cached state for removed modules');
+    }
+
+    /**
+     * Lift the tombstones for module ids added back to the graph, so a re-added
+     * module's state is cached again. Ids are reused (the browser can re-add
+     * with the same id after an undo), so this has to be explicit.
+     */
+    clearModuleTombstones(engineId: string, moduleIds: string[]): void {
+        const tombstones = this.removedModules.get(engineId);
+        if (!tombstones) return;
+        for (const id of moduleIds) tombstones.delete(id);
+        if (tombstones.size === 0) this.removedModules.delete(engineId);
+    }
+
+    /**
      * Engine-reported effective plugin schemas (pluginId → configSchema), or
      * `undefined` when the engine hasn't reported (offline, or an older engine
      * version). Callers fall back to the manager's own probed schema in that
@@ -278,6 +334,11 @@ export class EngineEventForwarder {
         if (logBuffer !== undefined) {
             this.logBuffers.delete(oldId);
             this.logBuffers.set(newId, logBuffer);
+        }
+        const removed = this.removedModules.get(oldId);
+        if (removed !== undefined) {
+            this.removedModules.delete(oldId);
+            this.removedModules.set(newId, removed);
         }
     }
 }

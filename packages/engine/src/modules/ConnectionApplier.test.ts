@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
     ConnectionApplier,
     topoSortOrderedConns,
@@ -518,6 +518,112 @@ describe('ConnectionApplier', () => {
             await applier.reapplyModuleConnections('mod-a');
 
             expect(mockMediaRouter.createConnection).not.toHaveBeenCalled();
+        });
+    });
+
+    // A validation reject used to leave the sink up, healthy-looking and
+    // silent, with the reason only in the engine journal (2026-07-23
+    // transcoder DEPLOY NOTE). Fake timers here so exhausting the retry
+    // backoff costs no wall time.
+    describe('reject warnings on the sink', () => {
+        let setHealth: ReturnType<typeof vi.fn>;
+
+        beforeEach(() => {
+            vi.useFakeTimers();
+            setHealth = vi.fn();
+            mockModuleManager.get = vi.fn().mockReturnValue({ running: true, setHealth });
+        });
+
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        /** Run applyConnections to completion, driving the retry backoff. */
+        async function applyAll(conns: StoredConnection[], mods: string[]): Promise<void> {
+            const done = applier.applyConnections(conns, makeModules(mods));
+            await vi.advanceTimersByTimeAsync(30_000);
+            await done;
+        }
+
+        it('warns on the sink when the input refuses the source stream type', async () => {
+            mockMediaRouter.createConnection.mockRejectedValue(
+                new Error('Incompatible ports: Port accepts only muxed/mpegts — got audio/302m'),
+            );
+
+            await applyAll([makeConn({ sourceModuleId: 'ts-split-1', sourcePortId: 'out' })], [
+                'ts-split-1',
+                'sink-mod',
+            ]);
+
+            expect(setHealth).toHaveBeenCalledWith(
+                'warning',
+                'Not connected: Port accepts only muxed/mpegts — got audio/302m (from ts-split-1:out)',
+            );
+        });
+
+        it('warns when a port is already at capacity', async () => {
+            mockMediaRouter.createConnection.mockRejectedValue(
+                new Error('Port in already has 1/1 connections'),
+            );
+
+            await applyAll([makeConn()], ['src-mod', 'sink-mod']);
+
+            expect(setHealth).toHaveBeenCalledWith(
+                'warning',
+                'Not connected: Port in already has 1/1 connections (from src-mod:out)',
+            );
+        });
+
+        it('stays quiet for a transient failure that merely ran out of retries', async () => {
+            mockMediaRouter.createConnection.mockRejectedValue(
+                new Error('pw-link failed: node not found'),
+            );
+
+            await applyAll([makeConn()], ['src-mod', 'sink-mod']);
+
+            expect(setHealth).not.toHaveBeenCalled();
+        });
+
+        it('warns once when several connections into one sink are refused', async () => {
+            mockMediaRouter.createConnection.mockRejectedValue(
+                new Error('Incompatible ports: Stream type mismatch: audio/pcm → video/raw'),
+            );
+
+            await applyAll(
+                [
+                    makeConn({ id: 'c1', sourceModuleId: 'a' }),
+                    makeConn({ id: 'c2', sourceModuleId: 'b' }),
+                ],
+                ['a', 'b', 'sink-mod'],
+            );
+
+            const warnings = setHealth.mock.calls.filter((c) => c[0] === 'warning');
+            expect(warnings).toHaveLength(1);
+        });
+
+        it('clears the warning when a later connection into that sink succeeds', async () => {
+            mockMediaRouter.createConnection.mockRejectedValue(
+                new Error('Incompatible ports: Channel mismatch: 2 → 8'),
+            );
+            await applyAll([makeConn()], ['src-mod', 'sink-mod']);
+            expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('2 → 8'));
+
+            setHealth.mockClear();
+            mockMediaRouter.createConnection.mockResolvedValue('conn-id');
+            await applyAll([makeConn()], ['src-mod', 'sink-mod']);
+
+            expect(setHealth).toHaveBeenCalledWith('ok');
+        });
+
+        // Blanket-clearing to 'ok' on every success would wipe health this
+        // applier never set — e.g. GstPluginBase's "Waiting for producer bus
+        // socket(s)" warning on the very same module.
+        it('does not touch health on success when it never warned', async () => {
+            mockMediaRouter.createConnection.mockResolvedValue('conn-id');
+
+            await applyAll([makeConn()], ['src-mod', 'sink-mod']);
+
+            expect(setHealth).not.toHaveBeenCalled();
         });
     });
 });

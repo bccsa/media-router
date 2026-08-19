@@ -60,6 +60,10 @@ import { formatPid, languageFromEsInfo, streamLabel, streamTypeInfo } from './st
  * here (the demuxer keeps that duty — a name would outrank the language).
  */
 export class TsSplitterModule extends GstPluginBase {
+    /** Route-head playout offset (ADR-0005 decision 4) — the splitter reads it
+     *  itself for nothing; the engine fans it out to the consumers of each
+     *  output leg, which is why it must never mark a pending restart here. */
+    protected liveUpdatableParams = ['playoutOffsetMs'];
     /** Streams seen live this run (PID-keyed). Drives ports + status. */
     private readonly discovered = new Map<number, DiscoveredStreamConfig>();
     /** Live SPS-derived video parameters per pid ("1920×1080i50 (h264)") —
@@ -180,6 +184,9 @@ export class TsSplitterModule extends GstPluginBase {
                 // Fan-out coalescing window; 0 disables batching for
                 // ultra-low-latency chains (see the schema description).
                 busBatchMs: this.config.busBatchMs as number | undefined,
+                // Producer half of the time-sync contract: every output PID is
+                // stamped from its own payload against ONE shared anchor.
+                stampTimeline: this.services?.timeSyncContract === true,
             }),
             autoRestart: true,
             stdin: true,

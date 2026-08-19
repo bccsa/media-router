@@ -190,6 +190,11 @@ export class MpegTsMuxerModule extends GstPluginBase {
             pipeline: result.pipeline,
             linkOnPadAdded: result.linkOnPadAdded,
             restartOnError: true,
+            // Anchor every input branch to its producer's house stamps, so the
+            // branches' private zero points stop showing up as A/V skew at the
+            // mux output (and stop being re-rolled on every restart). Dropped by
+            // `applyTimeSync` when the time-sync contract is off.
+            alignBranchesToStamps: { demuxes: result.demuxes },
         };
     }
 

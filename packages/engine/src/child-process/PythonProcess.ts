@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, RenderWatchRunnerConfig, KeyframeGateConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
+import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, RenderWatchRunnerConfig, KeyframeGateConfig, BacklogShedConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
 import { pluginPythonPaths } from './nativeBinaries.js';
 
@@ -37,12 +37,14 @@ export interface RunnerStartOptions {
     /** Applied at fork (spawn env), not sent in the start command. */
     env?: Record<string, string>;
     clock?: ClockConfig;
+    timeSyncContract?: boolean;
     decoderThreadType?: 'auto' | 'frame';
     busReports?: BusReport[];
     rist?: RistRunnerConfig;
     tsProbe?: TsProbeRunnerConfig;
     renderWatch?: RenderWatchRunnerConfig;
     keyframeGate?: KeyframeGateConfig;
+    backlogShed?: BacklogShedConfig;
     preserveSourceTimeline?: PreserveSourceTimelineConfig;
 }
 

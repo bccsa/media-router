@@ -28,6 +28,19 @@ export function listNetworkInterfaces(): Device[] {
 }
 
 /**
+ * IPv4 address of one interface by NAME — the translation every module needs
+ * between what the picker stores (`eth0`, what GStreamer's `multicast-iface`
+ * wants) and what a raw socket API takes (an address, e.g. for a multicast
+ * join or a SAP announcement's source). Empty string when the name is unknown
+ * or the interface has no external IPv4.
+ */
+export function interfaceAddress(name: string): string {
+    if (!name) return '';
+    const entries = os.networkInterfaces()[name] ?? [];
+    return entries.find((e) => e.family === 'IPv4' && !e.internal)?.address ?? '';
+}
+
+/**
  * Register the `network-interface` device provider so a config field with
  * `x-deviceType: "network-interface"` renders as a dropdown of the host's NICs.
  * Idempotent across plugins — the first registration wins; later ones are no-ops

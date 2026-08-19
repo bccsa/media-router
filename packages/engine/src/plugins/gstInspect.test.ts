@@ -5,7 +5,12 @@ vi.mock('child_process', () => ({
     execFile: (...args: unknown[]) => execFileMock(...args),
 }));
 
-import { gstInspectMaxChannels, probeGstElement, findLadspaElement } from './gstInspect.js';
+import {
+    gstElementSupportsCaps,
+    gstInspectMaxChannels,
+    probeGstElement,
+    findLadspaElement,
+} from './gstInspect.js';
 
 type ExecCallback = (err: Error | null, stdout: string, stderr: string) => void;
 
@@ -40,6 +45,30 @@ describe('probeGstElement', () => {
         await probeGstElement('cached-element-3');
         await probeGstElement('cached-element-3');
         expect(execFileMock).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('gstElementSupportsCaps', () => {
+    beforeEach(() => {
+        execFileMock.mockReset();
+    });
+
+    it('caches per (element, caps) pair without letting two pairs collide', async () => {
+        // The cache key joins the two halves with a NUL. Pinned because the
+        // source carried a LITERAL NUL (invisible in editors and diffs, and it
+        // made grep treat the file as binary); the escape rewrite has to keep
+        // the exact same runtime key. Drop the separator and `('mux', 'a/b')`
+        // and `('muxa', '/b')` would share one cached probe result.
+        execFileMock.mockImplementation((_cmd, _args, _opts, cb: ExecCallback) =>
+            callBack(cb, null, 'audio/x-smpte-302m'),
+        );
+        await expect(gstElementSupportsCaps('mux', 'audio/x-smpte-302m')).resolves.toBe(true);
+        await expect(gstElementSupportsCaps('mux', 'audio/x-smpte-302m')).resolves.toBe(true);
+        expect(execFileMock).toHaveBeenCalledTimes(1);
+
+        // Same concatenation, different pair — must probe again, not reuse.
+        await gstElementSupportsCaps('muxa', 'udio/x-smpte-302m');
+        expect(execFileMock).toHaveBeenCalledTimes(2);
     });
 });
 

@@ -256,6 +256,38 @@ importers:
         specifier: ^25.5.0
         version: 25.5.0
 
+  plugins/aes67-core:
+    devDependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/aes67-input:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@media-router/plugin-aes67-core':
+        specifier: workspace:*
+        version: link:../aes67-core
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.5.0
+
+  plugins/aes67-output:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@media-router/plugin-aes67-core':
+        specifier: workspace:*
+        version: link:../aes67-core
+    devDependencies:
+      '@types/node':
+        specifier: ^25.5.0
+        version: 25.5.0
+
   plugins/audio-decoder:
     dependencies:
       '@media-router/engine':

@@ -173,6 +173,117 @@ describe('EngineEventForwarder', () => {
         });
     });
 
+    // Ghost module states after removal (docs/TodoNotes.md, 2026-07-23):
+    // engineState merges and never deletes, so a removed module kept its last
+    // state (running:false + the error it died with) and watch:engine
+    // rehydration served it until the engine reconnected.
+    describe('purgeModuleStates', () => {
+        it('drops the cached state of a removed module', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineState', 'eng-1', {
+                'mod-1': { running: false, error: 'Waiting for producer bus socket(s)' },
+                'mod-2': { running: true },
+            });
+
+            forwarder.purgeModuleStates('eng-1', ['mod-1']);
+
+            expect(forwarder.getCachedStates('eng-1')).toEqual({ 'mod-2': { running: true } });
+        });
+
+        it('leaves live modules untouched', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineState', 'eng-1', {
+                'mod-1': { running: true },
+                'mod-2': { running: true },
+            });
+
+            forwarder.purgeModuleStates('eng-1', ['mod-3']);
+
+            expect(forwarder.getCachedStates('eng-1')).toEqual({
+                'mod-1': { running: true },
+                'mod-2': { running: true },
+            });
+        });
+
+        it('rehydration after removal serves no ghost', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineState', 'eng-1', {
+                'mod-1': { running: false, error: 'Waiting for producer bus socket(s)' },
+            });
+
+            forwarder.purgeModuleStates('eng-1', ['mod-1']);
+            // Later ticks from the engine no longer mention the removed module.
+            engineManager.emit('engineState', 'eng-1', { 'mod-2': { running: true } });
+
+            const states = forwarder.getCachedStates('eng-1');
+            expect(states['mod-1']).toBeUndefined();
+            expect(states).toEqual({ 'mod-2': { running: true } });
+        });
+
+        // The engine batches state deltas, so a batch enqueued just before the
+        // removal lands after the purge. Without the tombstone that reinstated
+        // the ghost permanently.
+        it('ignores a late state batch for a removed module', () => {
+            const { forwarder, engineManager, roomEmit } = createMocks();
+            engineManager.emit('engineState', 'eng-1', { 'mod-1': { running: true } });
+            forwarder.purgeModuleStates('eng-1', ['mod-1']);
+            roomEmit.mockClear();
+
+            engineManager.emit('engineState', 'eng-1', {
+                'mod-1': { running: false, error: 'stopped' },
+                'mod-2': { running: true },
+            });
+
+            expect(forwarder.getCachedStates('eng-1')).toEqual({ 'mod-2': { running: true } });
+            // Nor is the ghost forwarded to watching browsers.
+            expect(roomEmit).toHaveBeenCalledWith('engine:state', {
+                engineId: 'eng-1',
+                state: { 'mod-2': { running: true } },
+            });
+        });
+
+        it('caches state again once the id is re-added', () => {
+            const { forwarder, engineManager } = createMocks();
+            forwarder.purgeModuleStates('eng-1', ['mod-1']);
+            engineManager.emit('engineState', 'eng-1', { 'mod-1': { running: true } });
+            expect(forwarder.getCachedStates('eng-1')).toEqual({});
+
+            forwarder.clearModuleTombstones('eng-1', ['mod-1']);
+            engineManager.emit('engineState', 'eng-1', { 'mod-1': { running: true } });
+
+            expect(forwarder.getCachedStates('eng-1')).toEqual({ 'mod-1': { running: true } });
+        });
+
+        it('clears tombstones when the engine goes offline', () => {
+            const { forwarder, engineManager } = createMocks();
+            forwarder.purgeModuleStates('eng-1', ['mod-1']);
+
+            engineManager.emit('engineOffline', 'eng-1');
+            engineManager.emit('engineState', 'eng-1', { 'mod-1': { running: true } });
+
+            expect(forwarder.getCachedStates('eng-1')).toEqual({ 'mod-1': { running: true } });
+        });
+
+        it('is a no-op for an empty id list', () => {
+            const { forwarder, engineManager } = createMocks();
+            engineManager.emit('engineState', 'eng-1', { 'mod-1': { running: true } });
+
+            forwarder.purgeModuleStates('eng-1', []);
+
+            expect(forwarder.getCachedStates('eng-1')).toEqual({ 'mod-1': { running: true } });
+        });
+
+        it('carries tombstones across an engine rename', () => {
+            const { forwarder, engineManager } = createMocks();
+            forwarder.purgeModuleStates('eng-1', ['mod-1']);
+
+            forwarder.notifyRename('eng-1', 'eng-2');
+            engineManager.emit('engineState', 'eng-2', { 'mod-1': { running: true } });
+
+            expect(forwarder.getCachedStates('eng-2')).toEqual({});
+        });
+    });
+
     describe('engineCapabilities (#661)', () => {
         it('caches schemas and pushes configSchema patches for matching modules', () => {
             const { forwarder, engineManager, configStore, io } = createMocks();

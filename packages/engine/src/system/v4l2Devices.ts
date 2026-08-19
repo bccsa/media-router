@@ -40,6 +40,15 @@ export async function listV4l2Devices(): Promise<Device[]> {
 }
 
 /**
+ * The last completed enumeration, WITHOUT spawning anything. Lets a caller
+ * serve the device list on a tick it has decided not to pay for — see
+ * `v4l2DeviceProvider.ts`, which skips enumeration while no module needs it.
+ */
+export function cachedV4l2Devices(): Device[] {
+    return cachedDevices;
+}
+
+/**
  * One full enumeration pass. Returns `null` when the guard cut the run short,
  * so the caller keeps its cache rather than publishing a truncated list.
  */
