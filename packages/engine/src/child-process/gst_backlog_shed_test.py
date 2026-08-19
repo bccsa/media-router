@@ -18,6 +18,7 @@ Skips (exit 0) where GStreamer / PyGObject is unavailable.
 Run:  python3 gst_backlog_shed_test.py
 """
 import importlib.util
+import io
 import os
 import sys
 import time
@@ -26,7 +27,7 @@ try:
     import gi
 
     gi.require_version("Gst", "1.0")
-    from gi.repository import Gst
+    from gi.repository import GLib, Gst
 except (ImportError, ValueError) as exc:  # pragma: no cover - environment gate
     print(f"SKIP gst_backlog_shed_test.py — GStreamer unavailable ({exc})")
     sys.exit(0)
@@ -68,7 +69,8 @@ def collect_plugin_events():
     return events
 
 
-def build(keyframe_aligned=True, budget_ms=BUDGET_MS, **policy):
+def build(keyframe_aligned=True, budget_ms=BUDGET_MS, dec="identity name=vdec",
+          **policy):
     """A contract-clocked leg: appsrc → `vdec` (the shed point) → sink.
 
     `identity` stands in for the decoder for the same reason the keyframe-gate
@@ -76,10 +78,13 @@ def build(keyframe_aligned=True, budget_ms=BUDGET_MS, **policy):
     real stateless decoder is exactly what a unit test must not exercise. The
     sink is `sync=false` so the fixture is deterministic — the shedder reads its
     `ts-offset` and never asks it to pace anything.
+
+    `dec` swaps that stand-in: the stall-watch case needs a `valve`, i.e. a
+    decoder that takes the resume and emits nothing.
     """
     pipe = Gst.parse_launch(
         "appsrc name=src is-live=true format=time do-timestamp=false "
-        "! identity name=vdec "
+        f"! {dec} "
         f"! fakesink name=sink sync=false async=false ts-offset={budget_ms * 1000000}")
     # The contract's clock: monotonic, base_time 0, so running time IS clock
     # time and a buffer stamped `now − backlog` is exactly `backlog` late.
@@ -125,6 +130,22 @@ def push_for(src, ms, backlog_ms, delta=True, step_ms=20):
         n += 1
         time.sleep(step_ms / 1000.0)
     return n
+
+
+def pump_until(cond, timeout_s=3.0):
+    """Iterate the default main context — where the stall watch's GLib timeouts
+    live, and nothing else in this suite needs — until `cond()` or the timeout.
+    """
+    ctx = GLib.MainContext.default()
+    end = time.monotonic() + timeout_s
+    while True:
+        while ctx.pending():
+            ctx.iteration(False)
+        if cond():
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.01)
 
 
 def teardown(pipe):
@@ -314,6 +335,151 @@ time.sleep(0.2)
 check("with no shedder armed, an hour-late leg is left exactly as it is",
       len(arrivals) == n and runner._backlog_shed is None)
 pipe.set_state(Gst.State.NULL)
+
+# --- the post-shed stall: a decoder that took the resume and went silent -----
+# Pi 400, 2026-08-18: a TEXTBOOK shed — correct IRAP resume, back inside
+# budget, one clean event — left the stateless V4L2 HEVC decoder producing
+# nothing at all, with no error posted and the pipeline still PLAYING, for 12 h.
+# `valve drop=true` is exactly that decoder: it accepts everything the shed
+# hands it and emits nothing. The grace is shortened per instance (it ships at
+# 10 s) so the two stages are seconds, not half a minute, of test time.
+STALL_GRACE_MS = 300
+
+events = collect_plugin_events()
+pipe, src, arrivals = build(keyframe_aligned=True, dec="valve name=vdec")
+vdec = pipe.get_by_name("vdec")
+runner._backlog_shed["stall"].grace_ms = STALL_GRACE_MS
+# FLUSH_STOP is a SERIALIZED downstream event, so a plain EVENT_FLUSH mask sees
+# only the start half — both flags, then filter, or the pair is unobservable.
+RESET_EVENTS = (Gst.EventType.FLUSH_START, Gst.EventType.FLUSH_STOP,
+                Gst.EventType.SEGMENT)
+resets = []
+
+
+def _watch_resets(_pad, info):
+    ev = info.get_event()
+    if ev is not None and ev.type in RESET_EVENTS:
+        resets.append(ev.type)
+    return Gst.PadProbeReturn.OK
+
+
+vdec.get_static_pad("sink").add_probe(
+    Gst.PadProbeType.EVENT_FLUSH | Gst.PadProbeType.EVENT_DOWNSTREAM, _watch_resets)
+# The real leg gates the same element. A flushed decoder has lost its
+# references, and nothing in the STREAM will say so — so the gate has to be
+# re-closed with it, or the first post-flush delta AU re-creates the wedge.
+runner._start_keyframe_gate(pipe, {"decoder": "vdec"})
+check("nothing is watched before a shed — the guard costs a healthy leg nothing",
+      runner._backlog_shed["stall"].armed is False
+      and runner._backlog_shed["stall_probe_id"] is None)
+
+push_for(src, HOLD_MS + 250, backlog_ms=BACKLOG_MS)
+check("the episode opened", runner._backlog_shed["shedding"] is True)
+vdec.set_property("drop", True)          # the wedge: nothing comes out again
+stderr_log = io.StringIO()
+real_stderr = sys.stderr
+sys.stderr = stderr_log
+try:
+    push(src, backlog_ms=BUDGET_MS - 50, delta=False)      # the IRAP ends it
+    ended = pump_until(lambda: runner._backlog_shed["shedding"] is False, 2.0)
+    check("the keyframe ends the episode as usual", ended)
+    check("and the shed arms a watch on the decoder's OUTPUT",
+          runner._backlog_shed["stall"].armed is True
+          and runner._backlog_shed["stall_probe_id"] is not None)
+    check("the shed itself is still reported exactly once",
+          len([p for ch, p in events if ch == "backlog_shed"]) == 1)
+
+    flushed = pump_until(lambda: Gst.EventType.FLUSH_STOP in resets, 3.0)
+    check("silence past the grace flushes the decoder", flushed)
+    # The pair, then the SEGMENT the flush-stop dropped put back — without it
+    # the decoder's next buffer would arrive on no timeline at all.
+    check("as a flush-start / flush-stop pair, with the segment restored after it",
+          resets[-3:] == [Gst.EventType.FLUSH_START, Gst.EventType.FLUSH_STOP,
+                          Gst.EventType.SEGMENT])
+    check("counted once — one flush per stall, not per tick",
+          runner._backlog_shed["stall"].flushes == 1)
+    check("and the keyframe gate is re-closed with it, so the flushed decoder "
+          "is fed an IRAP next",
+          runner._keyframe_gate["opened"] is False
+          and runner._keyframe_gate["rearms"] == 1)
+    check("and the watch stays armed for the flush to work",
+          runner._backlog_shed["stall"].armed is True)
+
+    errs = []
+    bus = pipe.get_bus()
+
+    def _drained(n):
+        msg = bus.pop_filtered(Gst.MessageType.ERROR)
+        if msg is not None:
+            errs.append(msg)
+        return len(errs) >= n
+
+    escalated = pump_until(lambda: _drained(1), 3.0)
+    check("a decoder still silent after the flush posts a bus ERROR", escalated)
+    err = errs[0].parse_error()[0] if errs else None
+    check("the error says what happened, in the grep-distinct wording",
+          err is not None and err.message.startswith("post-shed stall:")
+          and "escalating to pipeline restart" in err.message)
+    # Attribution matters: an error naming `vdec` would cost the hardware
+    # decoder its rung for the whole engine session (video-player's demotion
+    # rule). This watch judged the decoder wedged; the decoder posted nothing.
+    check("posted from the PIPELINE, not the decoder element", errs[0].src is pipe)
+    check("the watch is over — no second flush, no second escalation",
+          runner._backlog_shed["stall"].armed is False
+          and runner._backlog_shed["stall"].flushes == 1
+          and runner._backlog_shed["stall"].escalations == 1
+          and runner._backlog_shed["stall_probe_id"] is None)
+    check("and no further error is posted after the escalation",
+          not pump_until(lambda: _drained(2), 1.0))
+finally:
+    sys.stderr = real_stderr
+logged = stderr_log.getvalue()
+check("the stall is logged under the shedder's own prefix, grep-distinct",
+      "backlog shed: vdec post-shed stall: no decoder output for 0.3s "
+      "— flushing vdec" in logged)
+check("and the escalation is logged too",
+      "post-shed stall: decoder produced no output after shed + flush" in logged)
+check("the gate re-close is logged under the gate's own prefix",
+      "keyframe gate: vdec re-armed after a post-shed decoder flush" in logged)
+teardown(pipe)
+runner._stop_keyframe_gate()
+
+# The other outcome, which is the one every healthy leg takes: the decoder DOES
+# come back, and the watch costs a single probe callback.
+pipe, src, arrivals = build(keyframe_aligned=True)
+runner._backlog_shed["stall"].grace_ms = STALL_GRACE_MS
+push_for(src, HOLD_MS + 250, backlog_ms=BACKLOG_MS)
+push(src, backlog_ms=BUDGET_MS - 50, delta=False)
+check("the shed recovered",
+      pump_until(lambda: runner._backlog_shed["shedding"] is False, 2.0))
+check("one buffer out of the decoder disarms the watch immediately",
+      runner._backlog_shed["stall"].armed is False
+      and runner._backlog_shed["stall_probe_id"] is None)
+pump_until(lambda: False, (2 * STALL_GRACE_MS + 200) / 1000.0)
+check("so nothing is flushed and nothing is escalated",
+      runner._backlog_shed["stall"].flushes == 0
+      and runner._backlog_shed["stall"].escalations == 0
+      and pipe.get_bus().pop_filtered(Gst.MessageType.ERROR) is None)
+teardown(pipe)
+
+# The AUDIO leg is never watched: its shed drops whole decoded buffers at the
+# sink's own pad — a timestamp gap the sink re-anchors over, with no decoder
+# state to wedge and nothing a flush or a restart could improve.
+pipe, src, arrivals = build(keyframe_aligned=False)
+runner._backlog_shed["stall"].grace_ms = STALL_GRACE_MS
+push_for(src, HOLD_MS + 250, backlog_ms=BACKLOG_MS)
+push(src, backlog_ms=BUDGET_MS - 50, delta=True)          # ends an audio shed
+check("the audio shed finished",
+      pump_until(lambda: runner._backlog_shed["shedding"] is False, 2.0))
+check("an audio shed arms no stall watch at all",
+      runner._backlog_shed["stall"].armed is False
+      and runner._backlog_shed["stall_probe_id"] is None)
+pump_until(lambda: False, (2 * STALL_GRACE_MS + 200) / 1000.0)
+check("and none of its stages can ever run",
+      runner._backlog_shed["stall"].flushes == 0
+      and runner._backlog_shed["stall"].escalations == 0
+      and pipe.get_bus().pop_filtered(Gst.MessageType.ERROR) is None)
+teardown(pipe)
 
 print()
 if _failures:

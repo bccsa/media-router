@@ -3384,6 +3384,27 @@ def _start_keyframe_gate(pipe, cfg):
     return True
 
 
+def _reclose_keyframe_gate(decoder_name):
+    """Shut an open gate on `decoder_name` — "this decoder was just reset".
+
+    The gate re-closes itself on evidence the STREAM lost data (a DISCONT delta
+    AU). A decoder flushed under it (the post-shed stall watch's soft reset) is
+    the same hazard with no such evidence: the next delta AU would be handed to
+    a decoder that no longer holds its references. No-op when no gate is armed
+    on that element. Written from the main loop rather than the probe thread,
+    which is safe in the one direction it can move the gate: stricter.
+    """
+    st = _keyframe_gate
+    if not st or st["decoder"] != decoder_name or not st["opened"]:
+        return
+    st["opened"] = False
+    st["since_close"] = 0
+    st["rearms"] += 1
+    sys.stderr.write(f"[gst-runner.py] keyframe gate: {decoder_name} re-armed after "
+                     f"a post-shed decoder flush (re-arm #{st['rearms']})\n")
+    sys.stderr.flush()
+
+
 def _stop_keyframe_gate():
     """Take the gate probe off the pad. The probe never self-removes (it has to
     survive to re-arm), so this is the only thing that ever detaches it."""
@@ -3467,6 +3488,15 @@ def _start_backlog_shedder(pipe, cfg):
     to treat an implausible reading as a backlog (it would otherwise drop a
     whole stream chasing a target on a timeline it isn't on).
 
+    AND THE SHED ITSELF CAN WEDGE THE DECODER. Resuming on the IRAP is correct
+    and still not sufficient: on a Pi 400 (2026-08-18) a textbook shed left
+    the stateless V4L2 HEVC decoder producing nothing at all — for 12 h, with no
+    error posted and the pipeline still PLAYING. So every VIDEO shed arms
+    `backlog_shed.PostShedStallWatch` on the shed target's OUTPUT: one buffer
+    disarms it, silence past the grace flushes the decoder, silence past a
+    second grace posts a bus ERROR and lets the parent's existing restart policy
+    take it from there. Nothing of this exists until a shed fires.
+
     A missing element the module explicitly named is a hard error (matches
     tsProbe / renderWatch / keyframeGate).
     """
@@ -3477,7 +3507,7 @@ def _start_backlog_shedder(pipe, cfg):
     if not cfg:
         return True
     try:
-        from backlog_shed import BacklogShedPolicy
+        from backlog_shed import BacklogShedPolicy, PostShedStallWatch
     except Exception as e:  # noqa: BLE001
         emit_event({"event": "error", "message": f"backlog_shed unavailable: {e}"})
         return False
@@ -3509,13 +3539,21 @@ def _start_backlog_shedder(pipe, cfg):
     # (one streaming thread) — the same single-writer discipline as the keyframe
     # gate. `win_min`/`last_*` are read by renderWatch on the main loop, which is
     # a benign race: it reads a float that is only ever replaced, never mutated.
+    keyframe_aligned = cfg.get("keyframeAligned", True) is not False
     st = {"pad": pad, "element": name, "sink": sink, "policy": policy,
           "probe_id": None, "segment": None,
-          "keyframe_aligned": cfg.get("keyframeAligned", True) is not False,
+          "keyframe_aligned": keyframe_aligned,
           "shedding": False, "dropped": 0, "sheds": 0,
           "shed_at": None, "before_ms": None, "caught_up_at": None,
           "keyframe_warned": False,
-          "last_ms": None, "last_at": None, "win_min": None, "budget_ms": 0.0}
+          "last_ms": None, "last_at": None, "win_min": None, "budget_ms": 0.0,
+          # Post-shed stall watch. Armed only by a finished VIDEO shed, so on a
+          # leg that never sheds there is no probe, no timer and no cost. The
+          # generation counter is what makes a re-arm (or a stop) retire the
+          # previous stage's pending timeout instead of stacking a second one.
+          "stall": PostShedStallWatch(enabled=keyframe_aligned),
+          "out_pad": el.get_static_pad("src"),
+          "stall_probe_id": None, "stall_gen": 0}
     _backlog_shed = st
 
     def _log(line):
@@ -3527,6 +3565,91 @@ def _start_backlog_shedder(pipe, cfg):
             return float(sink.get_property("ts-offset")) / 1e6
         except (TypeError, AttributeError, GLib.Error):
             return 0.0
+
+    def _stall_now_ms():
+        """Monotonic ms — the base GLib's own timeouts run on. Deliberately NOT
+        the pipeline clock's running time: this watch asks whether WALL-CLOCK
+        time has passed with no output, and must stay right when the media
+        timeline is the very thing that stopped."""
+        return GLib.get_monotonic_time() / 1000.0
+
+    def _stall_disarm():
+        """Idempotent. Bumping the generation retires any pending timeout: its
+        callback is the only thing that could act on a watch that is over."""
+        st["stall_gen"] += 1
+        st["stall"].disarm()
+        if st["stall_probe_id"] is not None:
+            st["out_pad"].remove_probe(st["stall_probe_id"])
+            st["stall_probe_id"] = None
+
+    def _on_output(_pad, _info):
+        # One buffer out of the shed target and the episode is genuinely over.
+        # One-shot (REMOVE) — the steady state carries no output probe at all.
+        st["stall_probe_id"] = None
+        st["stall_gen"] += 1
+        st["stall"].saw_output()
+        return Gst.PadProbeReturn.REMOVE
+
+    def _stall_timeout(gen):
+        """A grace window expired with nothing out. Stage 1 flushes the decoder,
+        stage 2 escalates to the parent's restart policy."""
+        watch = st["stall"]
+        if gen != st["stall_gen"]:
+            return False        # a re-arm, a buffer or a stop already took over
+        action = watch.tick(_stall_now_ms())
+        if action == "flush":
+            _log(f"post-shed stall: no decoder output for "
+                 f"{watch.grace_ms / 1000.0:g}s — flushing {name}")
+            # WHY A FLUSH BEFORE A RESTART: the wedge is a stateless V4L2
+            # decoder still holding a decode request for references the shed
+            # dropped (the Pi 4-class failure, 2026-08-18). A flush pair is
+            # the cheapest thing that clears that, and costs nothing extra —
+            # the picture is already frozen. `reset_time=False` because the
+            # contract pins running time to the house clock. The flush also
+            # drops the pad's SEGMENT, so the last one the shed probe saw goes
+            # back: without it the decoder's next buffer arrives on no timeline.
+            pad.send_event(Gst.Event.new_flush_start())
+            pad.send_event(Gst.Event.new_flush_stop(False))
+            if st["segment"] is not None:
+                pad.send_event(Gst.Event.new_segment(st["segment"]))
+            # A flushed decoder needs a self-contained frame again, and nothing
+            # in the stream will say so.
+            _reclose_keyframe_gate(name)
+        elif action == "error":
+            _log("post-shed stall: decoder produced no output after shed + flush "
+                 "— escalating to pipeline restart")
+            _stall_disarm()
+            err = GLib.Error.new_literal(
+                Gst.StreamError.quark(),
+                "post-shed stall: decoder produced no output after shed + flush "
+                "— escalating to pipeline restart",
+                int(Gst.StreamError.DECODE))
+            # Posted from the PIPELINE, not the decoder element. The decoder
+            # posted nothing — this watch judged it wedged — and an error naming
+            # `vpdec` would cost the hardware decoder its rung for the rest of
+            # the engine session (video-player's demotion rule). A bus ERROR is
+            # all that is needed: the parent already restarts on one, with
+            # backoff, which is the recovery this escalates to.
+            pipe.post_message(Gst.Message.new_error(pipe, err, f"backlogShed {name}"))
+            return False
+        if watch.armed:
+            # Next stage, or the remainder if the timer beat the deadline.
+            GLib.timeout_add(max(1, int(watch.remaining_ms(_stall_now_ms()))),
+                             _stall_timeout, gen)
+        return False
+
+    def _stall_arm():
+        """Watch the shed target's output. No-op on an audio leg (see
+        `PostShedStallWatch`) or an element with no static src pad."""
+        watch = st["stall"]
+        out_pad = st["out_pad"]
+        if out_pad is None or not watch.arm(_stall_now_ms()):
+            return
+        st["stall_gen"] += 1
+        if st["stall_probe_id"] is None:
+            st["stall_probe_id"] = out_pad.add_probe(
+                Gst.PadProbeType.BUFFER, _on_output)
+        GLib.timeout_add(int(watch.grace_ms), _stall_timeout, st["stall_gen"])
 
     def _finish(late_ms, now_ms, outcome):
         st["shedding"] = False
@@ -3554,6 +3677,10 @@ def _start_backlog_shedder(pipe, cfg):
              f"(budget {budget:.0f} ms), {payload['droppedBuffers']} buffers dropped "
              f"in {payload['durationMs']:.0f} ms")
         emit_plugin_event("backlog_shed", payload)
+        # The resume is not proof the decoder took it — watch its output until
+        # one buffer says so. Armed AFTER the event so the shed is reported
+        # whatever the decoder then does.
+        _stall_arm()
 
     def _on_probe(_pad, info):
         if info.type & Gst.PadProbeType.EVENT_DOWNSTREAM:
@@ -3666,7 +3793,17 @@ def _stop_backlog_shedder():
     global _backlog_shed
     st = _backlog_shed
     _backlog_shed = None
-    if not st or st["probe_id"] is None:
+    if not st:
+        return
+    # Any armed stall watch dies with the shedder: its pending timeout would
+    # otherwise flush (or error) a pipeline that is being torn down or replaced.
+    st["stall_gen"] = st.get("stall_gen", 0) + 1
+    if st.get("stall") is not None:
+        st["stall"].disarm()
+    if st.get("stall_probe_id") is not None:
+        st["out_pad"].remove_probe(st["stall_probe_id"])
+        st["stall_probe_id"] = None
+    if st["probe_id"] is None:
         return
     st["pad"].remove_probe(st["probe_id"])
 

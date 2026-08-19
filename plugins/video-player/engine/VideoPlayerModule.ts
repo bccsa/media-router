@@ -56,7 +56,14 @@ import {
 import { cogNeedingRestack } from './helpers/cogRestack.js';
 import { pollResumeSignal } from './helpers/busResume.js';
 import { classifyDecoderFailure, planCodecReport } from './helpers/decoderRuntime.js';
-import { describeRenderLag, shouldSelfHealAfterResume } from './helpers/renderLag.js';
+import {
+    describeRenderLag,
+    RENDER_LAG_SILENT_TICK_MS,
+    shouldSelfHealAfterResume,
+    shouldWarnRenderLag,
+    shouldWarnSilentChain,
+    type RenderLagReport,
+} from './helpers/renderLag.js';
 
 export type { SinkAvailability };
 
@@ -221,6 +228,23 @@ export class VideoPlayerModule extends GstPluginBase {
      */
     private renderLagActive = false;
 
+    /**
+     * When the current lag episode last warned, BOOT-relative (`bootNowMs`).
+     * 0 = no episode. Drives the periodic re-emit — see `shouldWarnRenderLag`.
+     * Shared with the silent-chain timer, which is what stops the two paths
+     * double-logging the same minute.
+     */
+    private renderLagWarnedAt = 0;
+    /** When the last `renderwatch:lag` event arrived (`bootNowMs`, 0 = none). */
+    private renderLagEventAt = 0;
+    /**
+     * The last lag event and what it was attributed to, kept so the re-emit can
+     * re-state real figures after the runner has stopped sending any.
+     */
+    private renderLagLast: { payload: unknown; report: RenderLagReport } | null = null;
+    /** Ticks only while a lag episode is open — see `startRenderLagSilentWatch`. */
+    private renderLagSilentTimer: NodeJS.Timeout | null = null;
+
     static registerServices(services: EngineServices): void {
         services.deviceProviders.register({
             type: 'drm-connector',
@@ -369,18 +393,34 @@ export class VideoPlayerModule extends GstPluginBase {
             // went quiet" from "nothing gets through the decode/display chain"
             // when the sink pad sees zero arrivals — see RenderLagContext.
             const lag = describeRenderLag(payload, { sourceSilent: this.busStallDetected });
-            // TRANSITION only (the latch is the edge — the runner reports
-            // transitions too, but re-arms its streaks on a caps switch and can
-            // repeat). Without this the fps figures lived only in module state:
-            // a total render stall — 0/50 fps for minutes — left ZERO trace in
-            // the journal, so log-based fleet monitoring could not see it at all.
-            if (!this.renderLagActive) {
+            const nowMs = bootNowMs();
+            // The EDGE, then once a minute while it lasts. Edge-only was right
+            // for the transitions it was written for (the runner repeats them
+            // on a caps switch) and wrong for a chain that never comes back:
+            // its clearing edge is a `recovered` event that never arrives, so
+            // the field box logged one line and nothing for 12 h at 0 fps. See
+            // `shouldWarnRenderLag`.
+            if (
+                shouldWarnRenderLag({
+                    active: this.renderLagActive,
+                    lastWarnAt: this.renderLagWarnedAt,
+                    now: nowMs,
+                })
+            ) {
                 this.log.warn(
                     { renderWatch: payload, kind: lag.kind, sourceSilent: this.busStallDetected },
                     `Render keep-up degraded — ${lag.message}`,
                 );
+                this.renderLagWarnedAt = nowMs;
             }
             this.renderLagActive = true;
+            this.renderLagEventAt = nowMs;
+            this.renderLagLast = { payload, report: lag };
+            // The event-driven re-emit above only runs while events ARRIVE, and
+            // a hard render stall stops them (the runner reports per render).
+            // The timer is what covers that — armed by the episode, dropped by
+            // its recovery or by onStop.
+            this.startRenderLagSilentWatch();
             this.setHealth('warning', lag.message);
             if (
                 shouldSelfHealAfterResume({
@@ -388,7 +428,7 @@ export class VideoPlayerModule extends GstPluginBase {
                     healDone: this.postResumeHealDone,
                     lastStallResumeAt: this.lastStallResumeAt,
                     // Boot-relative on BOTH sides — see SelfHealInput.now.
-                    now: bootNowMs(),
+                    now: nowMs,
                 })
             ) {
                 this.postResumeHealDone = true;
@@ -408,7 +448,7 @@ export class VideoPlayerModule extends GstPluginBase {
             if (this.renderLagActive && this.health === 'warning') {
                 this.setHealth('ok');
             }
-            this.renderLagActive = false;
+            this.clearRenderLagState();
         } else if (channel === 'tsprobe:videoinfo') {
             // The probe emits an early codec-only line as soon as the PMT
             // parses (well before the SPS), so the upgrade off decodebin3
@@ -471,7 +511,7 @@ export class VideoPlayerModule extends GstPluginBase {
         if (this.renderLagActive && this.health === 'warning') {
             this.setHealth('ok');
         }
-        this.renderLagActive = false;
+        this.clearRenderLagState();
         // During an *internal* restart cycle (latched by pipelineRestartInProgress)
         // we deliberately keep the bus-stall latch alive so the rebuilt
         // pipeline picks the fallback path that triggered this very restart
@@ -485,6 +525,73 @@ export class VideoPlayerModule extends GstPluginBase {
         VideoPlayerModule.started.delete(this);
         VideoPlayerModule.unregisterForWaylandRestartWatch(this);
         await super.onStop();
+    }
+
+    /**
+     * Keep a degraded chain in the journal even when the runner stops talking.
+     *
+     * The event-driven re-emit (`shouldWarnRenderLag`) cannot run without
+     * events, and the renderWatch reporter ticks on RENDERS — so the harder the
+     * stall, the quieter it gets. Measured on target (Pi 400, weston SIGSTOP
+     * 150 s): one line at onset, nothing until recovery. This timer covers
+     * exactly that window; it shares `renderLagWarnedAt` with the event path so
+     * the two can never double-log the same minute.
+     *
+     * Lifetime is the episode: armed by the lag event, dropped by
+     * `clearRenderLagState` (recovery and onStop). Idempotent, so repeated lag
+     * events never stack a second interval.
+     */
+    private startRenderLagSilentWatch(): void {
+        if (this.renderLagSilentTimer) return;
+        this.renderLagSilentTimer = setInterval(
+            () => this.pollRenderLagSilence(),
+            RENDER_LAG_SILENT_TICK_MS,
+        );
+        // A diagnostic must never be the reason a process stays up.
+        this.renderLagSilentTimer.unref?.();
+    }
+
+    /** One silent-chain tick: re-state the episode if the runner has gone quiet. */
+    private pollRenderLagSilence(nowMs: typeof bootNowMs = bootNowMs): void {
+        const now = nowMs();
+        if (
+            !shouldWarnSilentChain({
+                active: this.renderLagActive,
+                lastEventAt: this.renderLagEventAt,
+                lastWarnAt: this.renderLagWarnedAt,
+                now,
+            })
+        ) {
+            return;
+        }
+        const silentMs = Math.round(now - this.renderLagEventAt);
+        const last = this.renderLagLast;
+        this.log.warn(
+            {
+                // The last figures the runner managed to send — stale by
+                // definition, and labelled as such by `eventsSilentMs`.
+                renderWatch: last?.payload,
+                kind: last?.report.kind,
+                sourceSilent: this.busStallDetected,
+                eventsSilentMs: silentMs,
+            },
+            `Render keep-up degraded — ${last?.report.message ?? 'render keep-up degraded'} — ` +
+                `no renderWatch update for ${Math.round(silentMs / 1000)}s ` +
+                `(the runner reports per rendered frame, so a silent monitor means nothing is reaching the display)`,
+        );
+        this.renderLagWarnedAt = now;
+    }
+
+    /** Drop the lag episode: the timer, the latch and the figures behind it. */
+    private clearRenderLagState(): void {
+        if (this.renderLagSilentTimer) {
+            clearInterval(this.renderLagSilentTimer);
+            this.renderLagSilentTimer = null;
+        }
+        this.renderLagActive = false;
+        this.renderLagWarnedAt = 0;
+        this.renderLagEventAt = 0;
+        this.renderLagLast = null;
     }
 
     /**

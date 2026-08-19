@@ -2612,6 +2612,108 @@ describe('renderWatch journal trail (health transitions)', () => {
         module.onPluginEvent('renderwatch:lag', stall);
         expect(module.log.warn).toHaveBeenCalledTimes(2);
     });
+
+    // Measured on target (Pi 400, weston SIGSTOP 150 s, chain live, 0 fps):
+    // the runner's renderWatch reporter ticks on RENDERS, so a hard stall stops
+    // the event stream itself — one line at onset, then nothing until recovery.
+    // The event-driven re-emit cannot cover that; the timer below does.
+    describe('silent-chain re-emit (no events arriving at all)', () => {
+        it('arms one interval for the episode, however many events arrive', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            const timer = module.renderLagSilentTimer;
+            expect(timer).not.toBeNull();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.onPluginEvent('renderwatch:lag', stall);
+            expect(module.renderLagSilentTimer).toBe(timer);
+            module.clearRenderLagState();
+        });
+
+        it('re-states the episode with the last figures and a silence marker', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            // Pin the episode's clock: the edge warned and the last event
+            // arrived at t=1000, and nothing has arrived since.
+            module.renderLagEventAt = 1_000;
+            module.renderLagWarnedAt = 1_000;
+            module.log.warn.mockClear();
+
+            module.pollRenderLagSilence(() => 1_000 + 30_000); // not due yet
+            expect(module.log.warn).not.toHaveBeenCalled();
+
+            module.pollRenderLagSilence(() => 1_000 + 60_000);
+            expect(module.log.warn).toHaveBeenCalledTimes(1);
+            const [fields, message] = module.log.warn.mock.calls[0];
+            // The figures the runner managed to send before it went quiet.
+            expect(fields.renderWatch).toEqual(stall);
+            expect(fields.kind).toBe('total-stall');
+            expect(fields.eventsSilentMs).toBe(60_000);
+            expect(message).toContain('Render keep-up degraded');
+            expect(message).toContain('0/50 fps');
+            expect(message).toContain('no renderWatch update for 60s');
+            module.clearRenderLagState();
+        });
+
+        it('re-emits on the 60 s cadence for as long as the silence lasts', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            // The edge warned at t0 and the last event arrived with it.
+            const t0 = 1_000;
+            module.renderLagEventAt = t0;
+            module.renderLagWarnedAt = t0;
+            module.log.warn.mockClear();
+            // 150 s of silence, ticking every RENDER_LAG_SILENT_TICK_MS.
+            for (let t = 15_000; t <= 150_000; t += 15_000) {
+                module.pollRenderLagSilence(() => t0 + t);
+            }
+            expect(module.log.warn).toHaveBeenCalledTimes(2); // 60 s and 120 s
+            module.clearRenderLagState();
+        });
+
+        it('does not double-log while the event stream is still flowing', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.log.warn.mockClear();
+            // An event 2 s ago and a warning a minute ago: the event path owns
+            // this line, the timer must stay out of it.
+            module.renderLagEventAt = 118_000;
+            module.renderLagWarnedAt = 60_000;
+            module.pollRenderLagSilence(() => 120_000);
+            expect(module.log.warn).not.toHaveBeenCalled();
+            module.clearRenderLagState();
+        });
+
+        it('a tick after recovery says nothing — the latch is the gate', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.onPluginEvent('renderwatch:recovered', {});
+            expect(module.renderLagSilentTimer).toBeNull();
+            module.log.warn.mockClear();
+            module.pollRenderLagSilence(() => 10_000_000);
+            expect(module.log.warn).not.toHaveBeenCalled();
+        });
+
+        it('recovery drops the timer and the episode state', () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            module.onPluginEvent('renderwatch:recovered', {});
+            expect(module.renderLagSilentTimer).toBeNull();
+            expect(module.renderLagActive).toBe(false);
+            expect(module.renderLagWarnedAt).toBe(0);
+            expect(module.renderLagEventAt).toBe(0);
+            expect(module.renderLagLast).toBeNull();
+        });
+
+        it('onStop mid-episode leaks nothing', async () => {
+            const module = makeModule();
+            module.onPluginEvent('renderwatch:lag', stall);
+            expect(module.renderLagSilentTimer).not.toBeNull();
+            await module.onStop();
+            expect(module.renderLagSilentTimer).toBeNull();
+            expect(module.renderLagActive).toBe(false);
+            expect(module.renderLagLast).toBeNull();
+        });
+    });
 });
 
 describe('cog restack rule (start-time comparison)', () => {

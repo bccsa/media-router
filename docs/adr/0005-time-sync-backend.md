@@ -155,6 +155,29 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
      priority, timestamping and interface are per-device escape hatches with
      GM-capable defaults, not a change to the fleet policy this decision fixed.
 
+   Note 2026-08-19 (hardening after the 2026-08-17/18 clock incident). A latched
+   servo wound a kernel clock +1.9% via ADJ_TICK over a weekend — linuxptp's
+   default `max_frequency` is the clock's own advertised maximum (±90%!). Three
+   mechanisms added to the `media-router-ptp` recipe in response, plus one
+   default, recorded here so a review reads them as incident response rather
+   than scope creep:
+   - **`max_frequency 100000` is clamped in both profile presets.** 100 ppm
+     covers any sane XO while making tick-level wind-up impossible; the
+     unclamped default is what let the incident happen at all.
+   - **The PHC is seeded from the system clock before the daemons start.** A
+     PHC left >1 day stale (a cold spare, a long power-off) otherwise hands the
+     servo a huge initial error and an enable becomes a step/slew episode.
+   - **A tick watchdog (`mr-ptp-tickcheck` timer + service)** alarms
+     independently, within seconds, if the kernel tick leaves 10000 — during
+     hardening it caught a deliberately re-provoked wind-up in 9 s. Two
+     diagnosis gotchas from the incident, one line each: ptp4l's logged freq
+     value is the servo OUTPUT, sign-inverted against intuition; and a box
+     measuring glass rates with its own wound clock reads a fast ruler — use
+     CLOCK_MONOTONIC_RAW.
+   - **The disable path's default, when no displaced-services record exists, is
+     restore htpdate only** — the fleet's baseline time source — rather than
+     guess at what PTP might have stopped.
+
 7. **AES67 scope.** First deliverable: RX plugin (`udpsrc` →
    `rtpjitterbuffer` RFC 7273 sync → L24 depay → bus), TX plugin (PTP-epoch
    RTP stamping, conformant packet pacing), SAP announce/discovery. Rejected

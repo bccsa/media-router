@@ -154,6 +154,87 @@ verdicts, t = feed(p, 800.0, t, 1_100)
 check("and the streak rebuilds normally after it",
       [v for v, _ in verdicts][:1] == ["shed"])
 
+# --- the post-shed stall watch -----------------------------------------------
+# The other half of an episode: a shed that ENDED correctly (on an IRAP, back
+# inside budget) still wedged a Pi 400's stateless V4L2 decoder for 12 h. What
+# must hold:
+#   * one buffer out of the decoder ends the watch — the normal case costs a
+#     single probe callback and nothing else,
+#   * silence past the grace flushes ONCE, and only escalates if the flush did
+#     not help (a restart is seconds of black; the flush is free),
+#   * repeat sheds RESET the watch, they never stack a second flush/escalation,
+#   * an audio leg is never watched: it sheds whole PCM buffers at the sink,
+#     which has no decoder state to wedge.
+GRACE = 10_000.0
+
+w = bs.PostShedStallWatch(grace_ms=GRACE)
+check("a fresh watch is idle", not w.armed and w.tick(0.0) is None)
+check("a video shed arms it", w.arm(0.0) is True and w.armed)
+check("inside the grace, nothing happens", w.tick(GRACE - 1) is None)
+check("a buffer out of the decoder disarms it", w.saw_output() is True and not w.armed)
+check("and disarming is idempotent", w.saw_output() is False)
+check("a disarmed watch never fires, however long it waits",
+      w.tick(GRACE * 100) is None and w.flushes == 0 and w.escalations == 0)
+
+# Stage 1 → stage 2, the wedge case.
+w = bs.PostShedStallWatch(grace_ms=GRACE)
+w.arm(0.0)
+check("the grace is not paid early", w.tick(GRACE - 0.1) is None)
+check("silence past the grace flushes the decoder", w.tick(GRACE) == "flush")
+check("the flush is counted once", w.flushes == 1)
+check("the flush re-arms rather than escalating immediately",
+      w.armed and w.tick(GRACE + 1) is None)
+check("it does not flush twice — the second grace escalates",
+      w.tick(2 * GRACE) == "error")
+check("the escalation is counted, and the watch is then over",
+      w.escalations == 1 and w.flushes == 1 and not w.armed)
+check("and it cannot escalate again on a later tick", w.tick(10 * GRACE) is None)
+
+# A decoder the FLUSH revived: stage 2 must never run.
+w = bs.PostShedStallWatch(grace_ms=GRACE)
+w.arm(0.0)
+check("stage 1 runs", w.tick(GRACE) == "flush")
+check("a buffer after the flush ends it", w.saw_output() is True)
+check("so no error is ever posted", w.tick(3 * GRACE) is None and w.escalations == 0)
+
+# Repeat sheds: the cooldown means minutes apart, but the watch must be safe
+# whatever the spacing — a re-arm restarts the grace from stage 1, so two sheds
+# can never leave two flushes (or an escalation the first shed's silence owns).
+w = bs.PostShedStallWatch(grace_ms=GRACE)
+w.arm(0.0)
+w.tick(GRACE)                                  # flushed, stage 2 pending
+w.arm(GRACE + 500)                             # a second shed lands
+check("a re-arm resets to stage 1", w.armed and w.tick(2 * GRACE) is None)
+check("so the first shed's pending escalation is gone",
+      w.escalations == 0 and w.flushes == 1)
+check("the new watch flushes on its OWN grace",
+      w.tick(GRACE + 500 + GRACE) == "flush" and w.flushes == 2)
+check("remaining_ms counts down the live grace",
+      w.remaining_ms(GRACE + 500 + GRACE) == GRACE
+      and w.remaining_ms(GRACE + 500 + 2 * GRACE) == 0.0)
+check("and is None once disarmed",
+      w.saw_output() and w.remaining_ms(0.0) is None)
+
+# The audio leg. Its shed drops whole decoded buffers at `pulsesink`'s own pad:
+# no decoder state, nothing to flush, and a bus error there would restart a
+# pipeline that is working.
+w = bs.PostShedStallWatch(grace_ms=GRACE, enabled=False)
+check("an audio shed does not arm the watch", w.arm(0.0) is False and not w.armed)
+check("and nothing it is asked afterwards fires",
+      w.tick(100 * GRACE) is None and w.flushes == 0 and w.escalations == 0)
+
+# The knob. Generous by default — the grace has to cover the stream's next IRAP
+# arriving AND decoding, and only a typo-proof override may change it.
+check("the default grace is 10 s", bs.DEFAULT_STALL_GRACE_MS == 10_000.0)
+check("an unset env leaves the default", bs.stall_grace_ms() == 10_000.0)
+os.environ[bs.STALL_GRACE_ENV] = "25"
+check("the env overrides it, in SECONDS", bs.stall_grace_ms() == 25_000.0)
+os.environ[bs.STALL_GRACE_ENV] = "nonsense"
+check("garbage keeps the default", bs.stall_grace_ms() == 10_000.0)
+os.environ[bs.STALL_GRACE_ENV] = "0"
+check("and 0 cannot disable the watch", bs.stall_grace_ms() == 10_000.0)
+del os.environ[bs.STALL_GRACE_ENV]
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")

@@ -46,7 +46,11 @@ or below zero (the runner drops until it is), so the streak has to be rebuilt
 from scratch: `tolerance_ms` of fresh retention, sustained `hold_ms`, and no
 sooner than `cooldown_ms` after the last shed finished. The worst case is one
 shed per cooldown, which the events make countable.
+
+`PostShedStallWatch` (below) owns the OTHER half of the episode: whether the
+decoder survived the drop. Same split — the decision here, the pads there.
 """
+import os
 
 # Defaults. Chosen against the video leg's own numbers: the ES queue holds 1 s
 # and the jitter queue `bufferMs` (200 ms default), so 250 ms of retention over
@@ -69,6 +73,114 @@ DEFAULT_COOLDOWN_MS = 60_000.0
 # on it would drop the entire stream for ever chasing a target it can never
 # reach. So it is reported, never acted on. 10 s is `MAX_PLAYOUT_OFFSET_MS`.
 DEFAULT_SANITY_MS = 10_000.0
+
+# How long a VIDEO leg has to prove its decoder survived the shed, per stage.
+# Field (Pi 400, 2026-08-18): a shed completed normally ("retained
+# 611 ms against a 300 ms budget for 5000 ms") and the stateless V4L2 HEVC
+# decoder produced ZERO frames from then on — no error posted, pipeline still
+# PLAYING, journal silent, glass frozen ~12 h until a manual moduleRestart. The
+# identical shed on a Pi 5 recovered in 10 s. So the drop stopping is not the
+# end of the episode: the decoder resuming on the IRAP is.
+#
+# 10 s has to cover the stream's next IRAP arriving AND decoding — a 2 s GOP
+# plus a re-negotiation is comfortably inside it, and a leg that has produced
+# nothing for 10 s after a shed is not slow, it is wedged.
+DEFAULT_STALL_GRACE_MS = 10_000.0
+STALL_GRACE_ENV = "MR_SHED_STALL_GRACE_S"
+
+
+def stall_grace_ms(default_ms=DEFAULT_STALL_GRACE_MS):
+    """`MR_SHED_STALL_GRACE_S` (seconds) or the default. Unset, unparseable or
+    <= 0 all mean the default — a knob that cannot disable the watch by typo."""
+    try:
+        secs = float(os.environ.get(STALL_GRACE_ENV, ""))
+    except (TypeError, ValueError):
+        return default_ms
+    return secs * 1000.0 if secs > 0 else default_ms
+
+
+class PostShedStallWatch:
+    """Did the decoder survive the shed? Two stages, one escalation.
+
+    Armed when a keyframe-aligned (VIDEO) shed finishes and disarmed by the
+    first buffer out of the shed target. While armed:
+
+        grace 1 elapses, nothing out   →  "flush"   soft decoder reset
+        grace 2 elapses, nothing out   →  "error"   escalate to a restart
+
+    WHY FLUSH FIRST. The wedge is a stateless V4L2 decoder left holding a
+    decode request for references the shed dropped; a flush-start/flush-stop
+    pair is the cheapest thing that clears that state, and it costs the
+    operator nothing extra (the picture is already frozen). A pipeline restart
+    is seconds of black plus a source re-join, so it is the answer only once
+    the cheap one has demonstrably failed.
+
+    AUDIO LEGS ARE NOT WATCHED (`enabled=False`): their shed drops whole PCM
+    buffers at the SINK, which is a timestamp gap the sink re-anchors over —
+    no decoder state to wedge, so nothing here would ever be right to do.
+
+    Times are any monotonic millisecond count; the runner uses GLib's monotonic
+    clock, because a wedged decoder is a wall-clock event and the machine must
+    not be tied to a media timeline that has stopped advancing.
+    """
+
+    def __init__(self, grace_ms=None, enabled=True):
+        self.grace_ms = float(stall_grace_ms() if grace_ms is None else grace_ms)
+        self.enabled = bool(enabled)
+        self.stage = "idle"        # idle → watching → flushed → idle
+        self.deadline_ms = None
+        self.flushes = 0           # stage-1 soft resets attempted
+        self.escalations = 0       # stage-2 bus errors posted
+
+    @property
+    def armed(self):
+        return self.stage != "idle"
+
+    def arm(self, now_ms):
+        """A shed just finished. Returns True when the caller must install its
+        output probe and timer, False when there is nothing to watch.
+
+        RE-ARMING RESETS, it never stacks: a second shed inside an already-open
+        watch restarts the grace from stage 1, so repeated sheds can only ever
+        have one watch (and one pending flush) between them.
+        """
+        if not self.enabled:
+            return False
+        self.stage = "watching"
+        self.deadline_ms = now_ms + self.grace_ms
+        return True
+
+    def saw_output(self):
+        """One buffer left the shed target — the decoder is alive. Returns True
+        if the watch was armed, i.e. the caller still has a probe to remove."""
+        was_armed = self.armed
+        self.disarm()
+        return was_armed
+
+    def disarm(self):
+        self.stage = "idle"
+        self.deadline_ms = None
+
+    def remaining_ms(self, now_ms):
+        """Milliseconds left on the current grace, or None when idle."""
+        if not self.armed:
+            return None
+        return max(0.0, self.deadline_ms - now_ms)
+
+    def tick(self, now_ms):
+        """Advance the machine. Returns "flush", "error" or None (idle, or the
+        grace has not expired yet — the caller re-arms its timer for the rest).
+        """
+        if not self.armed or now_ms < self.deadline_ms:
+            return None
+        if self.stage == "watching":
+            self.stage = "flushed"
+            self.deadline_ms = now_ms + self.grace_ms
+            self.flushes += 1
+            return "flush"
+        self.disarm()
+        self.escalations += 1
+        return "error"
 
 
 class BacklogShedPolicy:

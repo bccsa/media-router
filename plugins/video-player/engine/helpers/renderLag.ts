@@ -11,6 +11,26 @@
 /** How long after a stall-resume a renderwatch lag earns a free rebuild. */
 export const POST_RESUME_HEAL_WINDOW_MS = 120_000;
 
+/**
+ * How often a chain that is STILL degraded re-states itself in the journal.
+ *
+ * One a minute against runner lag events every 2 s: quiet enough that a
+ * two-window blip is one line, loud enough that a dead chain cannot be mistaken
+ * for a recovered one by anyone reading (or grepping) the journal.
+ */
+export const RENDER_LAG_REEMIT_MS = 60_000;
+
+/**
+ * How often the module CHECKS whether a lag episode has gone quiet, and the
+ * minimum event silence that counts as "the runner stopped reporting".
+ *
+ * The runner's renderWatch reports per window (2 s), so 15 s is several missed
+ * windows — not a scheduling hiccup. It also has to divide `RENDER_LAG_REEMIT_MS`
+ * finely enough that a re-emit lands near its minute rather than a whole window
+ * late: the timer can only fire on its own tick.
+ */
+export const RENDER_LAG_SILENT_TICK_MS = 15_000;
+
 /** Payload shape of `renderwatch:lag` (all fields optional — older runners). */
 export interface RenderLagPayload {
     achievedFps?: number;
@@ -192,6 +212,80 @@ export function describeRenderLag(
             ? `Stream under-delivering${rate} — check the source/link (display is keeping up)`
             : `Video output can't keep up${rate} — lower the stream or display resolution`,
     };
+}
+
+export interface RenderLagWarnInput {
+    /** The module's lag latch: false means this event is the ok→degraded EDGE. */
+    active: boolean;
+    /** When this episode last warned, 0 = never. */
+    lastWarnAt: number;
+    /**
+     * "Now" on the SAME clock as `lastWarnAt` — boot-relative (`bootNowMs`) for
+     * the reason spelled out in `SelfHealInput.now`: an NTP step must not be
+     * able to silence (or spam) the re-emit.
+     */
+    now: number;
+}
+
+/**
+ * Should this lag event be written to the journal?
+ *
+ * THE LATCH ALONE MUTED A DEAD CHAIN. Warning only on the ok→degraded edge is
+ * right for the transitions it was written for, but the clearing edge is a
+ * `renderwatch:recovered` event — and a chain that never recovers never sends
+ * one. Field (Pi 400, 2026-08-18): a post-shed decoder wedge produced ONE
+ * "Render keep-up degraded" line and then nothing at all for 12 h at 0 achieved
+ * fps, while the pipeline sat in PLAYING reporting itself degraded to nobody.
+ * Health state said so; the journal, which is what fleet monitoring reads, did
+ * not.
+ *
+ * So the edge still warns immediately (no transient is delayed) and a condition
+ * that PERSISTS re-states itself every `RENDER_LAG_REEMIT_MS`. That is a
+ * property of the episode's age, not of the payload, which is what makes it
+ * cover the case that hid: `achievedFps: 0` with the chain still nominally
+ * live, where every field in the payload stays constant for hours.
+ */
+export function shouldWarnRenderLag(input: RenderLagWarnInput): boolean {
+    if (!input.active) return true;
+    // Armed latch with no timestamp: an older state or a clock that never got
+    // set. Warn rather than go quiet — silence is the failure being fixed here.
+    if (input.lastWarnAt <= 0) return true;
+    return input.now - input.lastWarnAt >= RENDER_LAG_REEMIT_MS;
+}
+
+export interface SilentChainInput {
+    /** The module's lag latch. A tick outside an episode is never a warning. */
+    active: boolean;
+    /** When the last `renderwatch:lag` event arrived (0 = none this episode). */
+    lastEventAt: number;
+    /** When this episode last warned, by either path (0 = never). */
+    lastWarnAt: number;
+    /** "Now" on the SAME boot-relative clock as both — see `SelfHealInput.now`. */
+    now: number;
+}
+
+/**
+ * Should a TIMER tick re-state a degraded chain the runner has stopped
+ * reporting on?
+ *
+ * `shouldWarnRenderLag` can only run when an event arrives, and that is exactly
+ * what a hard render stall takes away: the runner's renderWatch reporter ticks
+ * on RENDERS, so a sink that presents nothing sends nothing. Measured on target
+ * (Pi 400, weston SIGSTOP for 150 s): one warning at onset, then total journal
+ * silence until recovery — the same blind spot as before, one layer down. A
+ * starved event stream at 0 fps is MORE alarming than a flowing one, so it has
+ * to be the case that speaks loudest.
+ *
+ * Two gates. The event stream must actually be silent (`RENDER_LAG_SILENT_TICK_MS`
+ * of it, i.e. several missed 2 s windows — not a late tick), and the episode
+ * must be due a line at all: `lastWarnAt` is shared with the event-driven path,
+ * so while events flow the timer can never double up on it.
+ */
+export function shouldWarnSilentChain(input: SilentChainInput): boolean {
+    if (!input.active) return false;
+    if (input.now - input.lastEventAt < RENDER_LAG_SILENT_TICK_MS) return false;
+    if (input.lastWarnAt > 0 && input.now - input.lastWarnAt < RENDER_LAG_REEMIT_MS) return false;
+    return true;
 }
 
 export interface SelfHealInput {
