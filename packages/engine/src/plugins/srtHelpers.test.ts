@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { formatBytes, bitrateBadge, SrtStatPoller, type SrtStatPollerHost } from './srtHelpers.js';
+import {
+    formatBytes,
+    formatBitrate,
+    bitrateBadge,
+    SrtStatPoller,
+    type SrtStatPollerHost,
+} from './srtHelpers.js';
 
 describe('formatBytes', () => {
     it('renders bytes in the smallest fitting unit', () => {
@@ -232,6 +238,17 @@ describe('SrtStatPoller.poll (caller mode)', () => {
                 callers: '—',
             }),
         );
+    });
+});
+
+describe('formatBitrate', () => {
+    it('stays in kbps below 1 Mbps and switches to one-decimal Mbps above', () => {
+        expect(formatBitrate(0)).toBe('0 kbps');
+        expect(formatBitrate(512)).toBe('512 kbps');
+        expect(formatBitrate(999)).toBe('999 kbps');
+        expect(formatBitrate(1000)).toBe('1.0 Mbps');
+        expect(formatBitrate(4500)).toBe('4.5 Mbps');
+        expect(formatBitrate(12500)).toBe('12.5 Mbps');
     });
 });
 
