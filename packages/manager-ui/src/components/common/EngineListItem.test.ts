@@ -26,7 +26,7 @@ function withRouter() {
         history: createMemoryHistory(),
         routes: [
             { path: '/', component: { template: '<div />' } },
-            { path: '/routing/:id', component: { template: '<div />' } },
+            { path: '/routing/:engineId', component: { template: '<div />' } },
         ],
     });
 }
@@ -104,5 +104,25 @@ describe('EngineListItem', () => {
         expect(emitted).toBeDefined();
         // Second arg is the engineId.
         expect((emitted as unknown[][])![0][1]).toBe('studio');
+    });
+
+    // Regression: highlight is an exact engineId match, not a path substring —
+    // '/routing/ivan-test-p4' must not light up the 'ivan-test' row.
+    it('highlights only the exact active engine, not id-prefix siblings', async () => {
+        const router = withRouter();
+        await router.push('/routing/ivan-test-p4');
+        await router.isReady();
+
+        const sibling = mount(EngineListItem, {
+            props: { engine: makeEngine({ engineId: 'ivan-test' }) },
+            global: { plugins: [router] },
+        });
+        const active = mount(EngineListItem, {
+            props: { engine: makeEngine({ engineId: 'ivan-test-p4' }) },
+            global: { plugins: [router] },
+        });
+
+        expect(sibling.find('.engine-row').classes()).not.toContain('text-accent-fg');
+        expect(active.find('.engine-row').classes()).toContain('text-accent-fg');
     });
 });
