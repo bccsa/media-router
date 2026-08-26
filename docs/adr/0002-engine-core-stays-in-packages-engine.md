@@ -10,6 +10,14 @@ the contract every plugin builds on, and moving them into plugins would
 invert that dependency and create version skew across per-plugin engine
 copies.
 
+"Orchestration core" is the boundary, not "anything a plugin imports":
+shared MEDIA-DOMAIN code is pulled the other way by [[0001]] and lives in a
+`<domain>-core` library plugin. The SMPTE-302M TypeScript helpers moved out
+on those grounds — `probe302mSupport` / `pacedMixer` / `buildAudioMixInput` /
+`build302mEncodeBranch` / `mixMatrixClause` now live in
+`plugins/audio-302m-core/`, which imports `@media-router/engine` (bus and
+gst-inspect helpers) and is imported back by nothing in `packages/engine`.
+
 Recorded exceptions:
 
 1. **By name/path only (never an import):** the gst pipeline runner lazily

@@ -2,12 +2,12 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
-    probe302mSupport,
     probeMpegTsStream,
     type PipelineDescription,
     type ProbeResult,
     type ThroughputSample,
 } from '@media-router/engine';
+import { probe302mSupport } from '@media-router/plugin-audio-302m-core';
 import { buildPipeline, DEMUX_NAME } from './audioTranscoderPipeline.js';
 import {
     INPUT_PORT_ID,

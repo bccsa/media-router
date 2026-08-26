@@ -1,0 +1,21 @@
+{
+    "name": "@media-router/plugin-audio-302m-core",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): SMPTE-302M domain base code. The runtime support probe, the paced fan-in / encode-tail pipeline fragments every 302M module builds through (ADR-0008), and the per-connection channel-map mix-matrix.",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        }
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

@@ -1,10 +1,10 @@
 import {
     GstPluginBase,
-    build302mEncodeBranch,
     buildBusSink,
     type ModuleServices,
     type PipelineDescription,
 } from '@media-router/engine';
+import { build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
 
 /**
  * Audio Input (302M) plugin.

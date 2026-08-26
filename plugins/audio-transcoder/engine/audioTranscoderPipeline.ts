@@ -9,14 +9,8 @@
  * anchor lottery) from downstream A/V sync.
  */
 
-import {
-    buildBusSink,
-    buildBusSrc,
-    busTeeName,
-    build302mEncodeBranch,
-    mixMatrixClause,
-    type ChannelMapEntry,
-} from '@media-router/engine';
+import { buildBusSink, buildBusSrc, busTeeName, type ChannelMapEntry } from '@media-router/engine';
+import { build302mEncodeBranch, mixMatrixClause } from '@media-router/plugin-audio-302m-core';
 import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
 /** `name=` of the input tsdemux — target of `preserveSourceTimeline`. The

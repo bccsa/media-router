@@ -1,9 +1,5 @@
-import {
-    GstPluginBase,
-    buildAudioMixInput,
-    type ModuleServices,
-    type PipelineDescription,
-} from '@media-router/engine';
+import { GstPluginBase, type ModuleServices, type PipelineDescription } from '@media-router/engine';
+import { buildAudioMixInput } from '@media-router/plugin-audio-302m-core';
 
 /**
  * Audio Output (302M) plugin.
@@ -101,7 +97,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const channels = (config.channels as number) ?? 2;
 
-        const { fragment, mixerName } = buildAudioMixInput({
+        const { fragment, continuationName } = buildAudioMixInput({
             sources,
             channels,
             latencyMs: Number(config.mixLatencyMs ?? 200),
@@ -112,7 +108,7 @@ export class AudioOutput302mModule extends GstPluginBase {
         // silence trap on top. audioconvert/audioresample let pulsesink
         // negotiate whatever format/rate the device wants.
         const pipeline =
-            `${fragment} ${mixerName}. ! audioconvert ! audioresample` +
+            `${fragment} ${continuationName}. ! audioconvert ! audioresample` +
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
             ` ! pulsesink device=${device} sync=false`;

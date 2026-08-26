@@ -95,7 +95,8 @@
         "lcpType": "mixer-strip"
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-audio-302m-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

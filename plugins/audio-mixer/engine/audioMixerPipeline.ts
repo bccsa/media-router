@@ -7,13 +7,12 @@
  * mix content-aligned and the output carries coherent PTS.
  */
 
+import { buildBusSink, busTeeName } from '@media-router/engine';
 import {
     buildAudioMixInput,
-    buildBusSink,
     build302mEncodeBranch,
-    busTeeName,
     type AudioMixSource,
-} from '@media-router/engine';
+} from '@media-router/plugin-audio-302m-core';
 
 export interface AudioMixerPipelineInputs {
     sources: AudioMixSource[];
@@ -41,14 +40,14 @@ export function buildMixerPipeline(
 ): AudioMixerPipelineResult | null {
     if (input.sources.length === 0) return null;
 
-    const { fragment, mixerName } = buildAudioMixInput({
+    const { fragment, continuationName } = buildAudioMixInput({
         sources: input.sources,
         channels: input.channels,
         latencyMs: input.latencyMs,
     });
 
     const pipeline =
-        `${fragment} ${mixerName}.` +
+        `${fragment} ${continuationName}.` +
         ` ! audioconvert ! volume name=vol volume=${input.volume.toFixed(2)}` +
         ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
         ` ! ${build302mEncodeBranch()} ! ${buildBusSink(input.outputPort)}`;
