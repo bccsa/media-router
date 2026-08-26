@@ -110,4 +110,45 @@ describe('MrSlider', () => {
         await num.setValue('60');
         expect(num.classes()).not.toContain('border-amber-500');
     });
+
+    it('blurs the focused number input on wheel instead of changing the value', async () => {
+        const wrapper = mount(MrSlider, {
+            props: { modelValue: 50, min: 0, max: 100, editable: true },
+            attachTo: document.body,
+        });
+        const el = wrapper.find('input[type="number"]').element as HTMLInputElement;
+        el.focus();
+        expect(document.activeElement).toBe(el);
+
+        const wheel = new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true });
+        el.dispatchEvent(wheel);
+        await wrapper.vm.$nextTick();
+
+        expect(document.activeElement).not.toBe(el);
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+        // Default is left alone so the page still scrolls over the input
+        expect(wheel.defaultPrevented).toBe(false);
+
+        wrapper.unmount();
+    });
+
+    it('blurs the focused range input on wheel instead of changing the value', async () => {
+        const wrapper = mount(MrSlider, {
+            props: { modelValue: 50, min: 0, max: 100 },
+            attachTo: document.body,
+        });
+        const el = wrapper.find('input[type="range"]').element as HTMLInputElement;
+        el.focus();
+        expect(document.activeElement).toBe(el);
+
+        const wheel = new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true });
+        el.dispatchEvent(wheel);
+        await wrapper.vm.$nextTick();
+
+        expect(document.activeElement).not.toBe(el);
+        expect(wrapper.emitted('update:modelValue')).toBeUndefined();
+        expect(wheel.defaultPrevented).toBe(false);
+
+        wrapper.unmount();
+    });
 });

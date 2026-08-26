@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{
+const props = defineProps<{
     modelValue?: string | number;
     label?: string;
     description?: string;
@@ -14,6 +14,12 @@ defineProps<{
 defineEmits<{
     'update:modelValue': [value: string | number];
 }>();
+
+// Browsers only spin a number input on wheel while it is focused, so dropping
+// focus stops the value changing while leaving the page scroll untouched.
+function onWheel(e: WheelEvent) {
+    if (props.type === 'number') (e.target as HTMLElement).blur();
+}
 </script>
 
 <template>
@@ -43,6 +49,7 @@ defineEmits<{
                         : ($event.target as HTMLInputElement).value,
                 )
             "
+            @wheel="onWheel"
             class="w-full px-2.5 py-1.5 text-sm rounded-md outline-none transition-colors bg-input border text-foreground"
             :class="[
                 disabled ? 'opacity-50 cursor-not-allowed' : '',

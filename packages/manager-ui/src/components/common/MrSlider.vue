@@ -43,6 +43,12 @@ function flagClamped() {
     }, 600);
 }
 
+// Browsers only change a range/number input on wheel while it is focused, so
+// dropping focus stops the value changing while leaving the page scroll untouched.
+function onWheel(e: WheelEvent) {
+    (e.target as HTMLElement).blur();
+}
+
 function onTextInput(e: Event) {
     const raw = (e.target as HTMLInputElement).value;
     if (raw === '') return;
@@ -63,6 +69,7 @@ function onTextInput(e: Event) {
             :step="step ?? 1"
             :value="modelValue"
             @input="emit('update:modelValue', Number(($event.target as HTMLInputElement).value))"
+            @wheel="onWheel"
             class="flex-1 h-1 accent-emerald-500 cursor-pointer"
         />
         <div v-if="editable" class="flex items-center gap-0.5 text-xs">
@@ -73,6 +80,7 @@ function onTextInput(e: Event) {
                 :step="step ?? 1"
                 :value="formatted(modelValue)"
                 @input="onTextInput"
+                @wheel="onWheel"
                 class="w-12 px-1 py-0.5 text-right tabular-nums rounded bg-input border text-foreground outline-none transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 :class="
                     wasClamped
