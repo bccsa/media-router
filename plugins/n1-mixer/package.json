@@ -5,11 +5,11 @@
     "description": "N-1 mix-minus audio mixer — each output gets all inputs except its own paired input",
     "mediaRouter": {
         "pluginId": "n1-mixer",
-        "displayName": "N-1 Audio Mixer",
-        "description": "Broadcast mix-minus: each output hears all inputs except its own return",
+        "displayName": "N-1 Audio Mixer (Deprecated)",
+        "description": "Broadcast mix-minus: each output hears all inputs except its own return. Deprecated — use N-1 Audio Mixer (302M) instead.",
         "color": "#a855f7",
         "icon": "shuffle",
-        "category": "processing",
+        "category": "deprecated",
         "architectures": [
             "arm64",
             "x86_64"

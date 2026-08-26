@@ -5,11 +5,11 @@
     "description": "Audio encoder — PCM input to MPEG-TS output (Opus/AAC/PCM)",
     "mediaRouter": {
         "pluginId": "audio-encoder",
-        "displayName": "Audio Encoder",
-        "description": "Encodes PCM audio into MPEG-TS container with selectable codec (Opus, AAC)",
+        "displayName": "Audio Encoder (Deprecated)",
+        "description": "Encodes PCM audio into MPEG-TS container with selectable codec (Opus, AAC). Deprecated — use Audio Transcoder instead.",
         "color": "#f59e0b",
         "icon": "upload",
-        "category": "codec",
+        "category": "deprecated",
         "interlock": true,
         "architectures": [
             "arm64",

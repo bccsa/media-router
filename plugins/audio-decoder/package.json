@@ -5,11 +5,11 @@
     "description": "Audio decoder \u2014 MPEG-TS input to PCM audio output",
     "mediaRouter": {
         "pluginId": "audio-decoder",
-        "displayName": "Audio Decoder",
-        "description": "Decodes audio from MPEG-TS container (auto-detects Opus, AAC, MP2) and outputs PCM audio",
+        "displayName": "Audio Decoder (Deprecated)",
+        "description": "Decodes audio from MPEG-TS container (auto-detects Opus, AAC, MP2) and outputs PCM audio. Deprecated — use Audio Transcoder instead.",
         "color": "#8b5cf6",
         "icon": "download",
-        "category": "codec",
+        "category": "deprecated",
         "interlock": true,
         "architectures": [
             "arm64",
