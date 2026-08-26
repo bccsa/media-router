@@ -10,6 +10,7 @@
         "color": "#06b6d4",
         "icon": "mic",
         "category": "input",
+        "interlock": true,
         "architectures": [
             "arm64",
             "x86_64"
