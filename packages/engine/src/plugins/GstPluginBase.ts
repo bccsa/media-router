@@ -1,5 +1,10 @@
 import { EventEmitter } from 'events';
-import type { ModuleRuntimeState, ModuleHealth } from '@media-router/shared-types';
+import type {
+    ModuleRuntimeState,
+    ModuleHealth,
+    StatusGraph,
+    StatusValue,
+} from '@media-router/shared-types';
 import { createLogger } from '@media-router/shared-types';
 import { GstChildProcess } from '../child-process/GstChildProcess.js';
 import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js';
@@ -351,7 +356,7 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
     }
 
     /** Status data for stats popup — plugins override to provide live data. */
-    protected statusData: Record<string, Record<string, string | number | boolean>> = {};
+    protected statusData: Record<string, Record<string, StatusValue>> = {};
     /** Dynamic status sections — plugins can add/remove sections at runtime (e.g. per-caller stats). */
     protected dynamicStatusSections: Array<{
         id: string;
@@ -398,13 +403,35 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
     /** Update status data for a section and emit state change. Values are coerced to primitives. */
     protected setStatusData(sectionId: string, data: Record<string, unknown>): void {
-        const clean: Record<string, string | number | boolean> = {};
+        const clean: Record<string, StatusValue> = {};
         for (const [k, v] of Object.entries(data)) {
             if (v === null || v === undefined) clean[k] = '—';
             else if (typeof v === 'object') clean[k] = JSON.stringify(v);
             else clean[k] = v as string | number | boolean;
         }
         this.statusData[sectionId] = clean;
+        this.emit('stateChange', this.getState());
+    }
+
+    /**
+     * Publish structured GRAPH data on the status channel — the settings
+     * panel's `graph` widget renders whatever a schema prop's `x-graph`
+     * points at (`{ section, key }`).
+     *
+     * Same transport and same store as `setStatusData`; the difference is that
+     * the value keeps its shape instead of being flattened to a primitive. The
+     * plugin owns every domain decision (what the curve is, its units, how it
+     * was computed) and the UI only plots. Pass null to clear one graph.
+     *
+     * Merges into the section instead of replacing it, so several graphs can
+     * share one section id — but `setStatusData` still REPLACES a section
+     * wholesale, so give graphs a section of their own (e.g. `graphs`).
+     */
+    protected setStatusGraph(sectionId: string, key: string, graph: StatusGraph | null): void {
+        const section = { ...(this.statusData[sectionId] ?? {}) };
+        if (graph) section[key] = graph;
+        else delete section[key];
+        this.statusData[sectionId] = section;
         this.emit('stateChange', this.getState());
     }
 

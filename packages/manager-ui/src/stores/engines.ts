@@ -6,7 +6,12 @@ import { ref, computed } from 'vue';
 // "X is not exported by …/dist/index.js". Use a namespace import — that
 // gives us `esModuleInterop`-style access to the underlying CJS exports.
 import * as shared from '@media-router/shared-types';
-import type { ModuleSize, PatchOp, ResizableBounds } from '@media-router/shared-types';
+import type {
+    ModuleSize,
+    PatchOp,
+    ResizableBounds,
+    StatusValue,
+} from '@media-router/shared-types';
 const { applyJsonPatch, coerceArray } = shared;
 
 // --- Types ---
@@ -84,7 +89,7 @@ export interface ModuleState {
     ports?: PortInfo[];
     configSchema?: Record<string, unknown>;
     statusSections?: StatusSectionDef[];
-    statusData?: Record<string, Record<string, string | number | boolean>>;
+    statusData?: Record<string, Record<string, StatusValue>>;
     dynamicStatusSections?: StatusSectionDef[];
     badges?: Array<{ id: string; icon?: string; text: string; color?: string }>;
     /** Probe-discovered option lists for config fields, keyed by `x-optionsFrom`. */
@@ -212,9 +217,7 @@ export const useEngineStore = defineStore('engines', () => {
             icon: mod.icon as string | undefined,
             statusSections: mod.statusSections as StatusSectionDef[] | undefined,
             faceWidgets: mod.faceWidgets as Array<Record<string, unknown>> | undefined,
-            statusData: mod.statusData as
-                | Record<string, Record<string, string | number | boolean>>
-                | undefined,
+            statusData: mod.statusData as ModuleState['statusData'],
             focused: (mod.focused as boolean) ?? false,
             interlock: mod.interlock === true,
             size: mod.size as ModuleSize | undefined,

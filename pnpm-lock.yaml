@@ -270,6 +270,9 @@ importers:
       '@media-router/plugin-aes67-core':
         specifier: workspace:*
         version: link:../aes67-core
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
     devDependencies:
       '@types/node':
         specifier: ^25.5.0
@@ -287,6 +290,12 @@ importers:
       '@types/node':
         specifier: ^25.5.0
         version: 25.5.0
+
+  plugins/audio-302m-core:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
 
   plugins/audio-decoder:
     dependencies:
@@ -321,12 +330,18 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
 
   plugins/audio-mixer:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
 
   plugins/audio-output:
     dependencies:
@@ -339,12 +354,27 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
+
+  plugins/audio-processing:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
 
   plugins/audio-transcoder:
     dependencies:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
       '@media-router/plugin-mpegts-core':
         specifier: workspace:*
         version: link:../mpegts-core
@@ -396,6 +426,9 @@ importers:
       '@media-router/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@media-router/plugin-audio-302m-core':
+        specifier: workspace:*
+        version: link:../audio-302m-core
 
   plugins/note:
     dependencies:

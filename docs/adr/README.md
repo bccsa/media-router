@@ -27,3 +27,5 @@ the old one `superseded by ADR-NNNN`). Number = highest existing + 1.
 | [0004](0004-out-of-repo-plugins-injected-at-image-build.md) | Product-specific plugins may live in the consuming product's repo (under `media-router-plugin/`) and be injected into `plugins/` at image build |
 | [0005](0005-time-sync-backend.md) | Monotonic house clock in every process; producers stamp bus PTS as contractual media time; `base_time=0`, playout offset D; linuxptp discipline for AES67/ST 2110 |
 | [0006](0006-hardware-sinks-held-at-unity-gain.md) | Hardware PipeWire sinks are forced to unity gain on detection; all attenuation happens in software (`MR_PW_*` nodes / GStreamer) |
+| [0007](0007-plugins-compute-ui-renders.md) | `packages/` holds only generic systems; UI widget vocabulary is generic and never module-specific; domain computation lives plugin-side and travels as data (`StatusGraph` → `x-widget: "graph"`) |
+| [0008](0008-302m-fan-in-contract.md) | Every 302M fan-in: force-live mixers are clock-paced (`identity sync=true`), callers chain only from the returned `continuationName`, and one source bypasses the mixer — trading silence-fill for a restart |
