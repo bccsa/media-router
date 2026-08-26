@@ -96,8 +96,10 @@ describe('N1Mixer302mModule.buildPipeline', () => {
         const { module, setHealth } = makeModule([mkSource('in-0'), mkSource('in-1', 1)]);
         const desc = module.buildPipeline({ pairCount: 2 });
         expect(desc).not.toBeNull();
-        expect(desc!.pipeline).toContain('audiomixer name=inmix0 force-live=true');
-        expect(desc!.pipeline).toContain('audiomixer name=inmix1 force-live=true');
+        // One source per input pin → direct branches, no input aggregators.
+        expect(desc!.pipeline).not.toContain('audiomixer name=inmix');
+        expect(desc!.pipeline).toContain('capsfilter name=inmix0_out');
+        expect(desc!.pipeline).toContain('capsfilter name=inmix1_out');
         expect(desc!.pipeline).toContain('audiomixer name=omix0 force-live=true');
         expect(desc!.pipeline).toContain('audiomixer name=omix1 force-live=true');
         expect(desc!.pipeline).toContain('avenc_s302m strict=experimental');

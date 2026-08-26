@@ -10,6 +10,7 @@
         "color": "#06b6d4",
         "icon": "mic",
         "category": "input",
+        "interlock": true,
         "architectures": [
             "arm64",
             "x86_64"
@@ -94,7 +95,8 @@
         "lcpType": "mixer-strip"
     },
     "dependencies": {
-        "@media-router/engine": "workspace:*"
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-audio-302m-core": "workspace:*"
     },
     "scripts": {
         "build": "tsc",

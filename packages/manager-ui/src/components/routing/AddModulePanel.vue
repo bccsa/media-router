@@ -50,6 +50,7 @@ const categoryLabels: Record<string, string> = {
     codec: 'Codec',
     processing: 'Processing',
     utility: 'Utility',
+    deprecated: 'Deprecated',
 };
 
 const filteredPlugins = computed(() => {

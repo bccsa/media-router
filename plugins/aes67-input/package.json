@@ -174,6 +174,7 @@
     },
     "dependencies": {
         "@media-router/engine": "workspace:*",
+        "@media-router/plugin-audio-302m-core": "workspace:*",
         "@media-router/plugin-aes67-core": "workspace:*"
     },
     "devDependencies": {

@@ -6,6 +6,7 @@ import MrMultiSelect from '@/components/common/MrMultiSelect.vue';
 import MrSlider from '@/components/common/MrSlider.vue';
 import MrToggle from '@/components/common/MrToggle.vue';
 import MrArrayField from '@/components/common/MrArrayField.vue';
+import GraphField from '@/components/routing/widgets/GraphField.vue';
 import type { FormField } from '@/composables/useModuleSettingsForm';
 import { useSocketStore } from '@/stores/socket';
 import { useEngineStore } from '@/stores/engines';
@@ -240,9 +241,17 @@ function clearUpload(field: FormField): void {
         <p v-if="field.description" class="text-[10px] text-muted">
             {{ field.description }}
         </p>
+        <!-- Display-only widget: holds no value, renders data the plugin
+             publishes. `useModuleSettingsForm` keeps it out of saved settings. -->
+        <GraphField
+            v-if="field.widget === 'graph'"
+            :field="field"
+            :engine-id="engineId"
+            :module-id="moduleId"
+        />
         <!-- Read-only field (auto-detected values) -->
         <div
-            v-if="field.readOnly"
+            v-else-if="field.readOnly"
             class="w-full px-2 py-1.5 text-sm rounded-md opacity-60 bg-surface-alt border border-border-alt text-muted"
         >
             {{ settings[field.key] ?? '—' }}

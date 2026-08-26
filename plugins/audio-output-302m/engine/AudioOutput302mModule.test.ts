@@ -44,6 +44,10 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('audiomixer name=mixin force-live=true');
         expect(desc!.pipeline.match(/! mixin\./g)).toHaveLength(2);
+        // `pulsesink sync=false` paces nothing, so the mixer carries its own
+        // clock pacer — without it a force-live mixer whose inputs have all
+        // gone EOS generates silence at CPU speed.
+        expect(desc!.pipeline).toContain('identity name=mixin_out sync=true');
         expect(desc!.pipeline).toContain('volume name=vol volume=0.80');
         expect(desc!.pipeline).toContain('level post-messages=true');
         expect(desc!.pipeline).toContain('pulsesink device=alsa_output.usb-foo sync=false');
@@ -58,6 +62,19 @@ describe('AudioOutput302mModule.buildPipeline', () => {
             audioEnabled: false,
         });
         expect(desc!.pipeline).toContain('volume name=vol volume=0.00');
+    });
+
+    it('a single source plays direct — no mixer, no mix latency', () => {
+        const { module } = makeModule({ sources: 1 });
+        const desc = module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+            mixLatencyMs: 400,
+        });
+        expect(desc!.pipeline).not.toContain('audiomixer');
+        expect(desc!.pipeline).not.toContain('latency=400000000');
+        expect(desc!.pipeline).toContain('capsfilter name=mixin_out');
+        expect(desc!.pipeline).toContain('mixin_out. ! audioconvert ! audioresample');
+        expect(desc!.pipeline).toContain('pulsesink device=alsa_output.usb-foo sync=false');
     });
 
     it('consumes the per-connection unixfd edge sockets', () => {

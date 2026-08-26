@@ -5,11 +5,11 @@
     "description": "Audio dynamics \u2014 compressor, ducker, and gate with external sidechain",
     "mediaRouter": {
         "pluginId": "audio-dynamics",
-        "displayName": "Audio Dynamics",
-        "description": "Compressor / ducker / gate. The sidechain input keys the processing from any other module's audio output (e.g. voice ducks music)",
+        "displayName": "Audio Dynamics (Deprecated)",
+        "description": "Compressor / ducker / gate. The sidechain input keys the processing from any other module's audio output (e.g. voice ducks music). Deprecated — 302M replacement (Audio Processing) pending.",
         "color": "#f59e0b",
         "icon": "activity",
-        "category": "processing",
+        "category": "deprecated",
         "architectures": [
             "arm64",
             "x86_64"

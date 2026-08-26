@@ -5,11 +5,11 @@
     "description": "Audio output \u2014 plays audio to a PipeWire/PulseAudio sink device",
     "mediaRouter": {
         "pluginId": "audio-output",
-        "displayName": "Audio Output",
-        "description": "Plays audio to a system audio sink (speakers, headphones, or virtual device)",
+        "displayName": "Audio Output (Deprecated)",
+        "description": "Plays audio to a system audio sink (speakers, headphones, or virtual device). Deprecated — use Audio Output (302M) instead.",
         "color": "#10b981",
         "icon": "volume-2",
-        "category": "protocol",
+        "category": "deprecated",
         "interlock": true,
         "architectures": [
             "arm64",

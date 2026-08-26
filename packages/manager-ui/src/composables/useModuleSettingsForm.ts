@@ -2,6 +2,7 @@ import { computed, onUnmounted, ref, watch, type ComputedRef, type Ref } from 'v
 import type { ModuleState } from '@/stores/engines';
 import { patch } from '@/composables/usePatch';
 import { matchShowWhen } from '@/utils/showWhen';
+import { stripDisplayFields, type GraphSource } from '@/utils/displayWidgets';
 
 /** JSON Schema property shape with media-router extensions. */
 interface SchemaProperty {
@@ -16,6 +17,7 @@ interface SchemaProperty {
     'x-deviceType'?: string;
     'x-optionsFrom'?: string;
     'x-widget'?: string;
+    'x-graph'?: GraphSource;
     'x-step'?: number;
     'x-maxFrom'?: string;
     'x-enumBy'?: { field: string; map: Record<string, unknown[]> };
@@ -42,6 +44,8 @@ export interface FormField {
     /** Key into the module's pushed `fieldOptions` for a discovery-driven multi-select. */
     optionsFrom?: string;
     widget?: string;
+    /** `x-graph` — where a `graph` widget reads its plot data from. */
+    graph?: GraphSource;
     minimum?: number;
     maximum?: number;
     step?: number;
@@ -100,6 +104,7 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
             deviceType: prop['x-deviceType'],
             optionsFrom: prop['x-optionsFrom'],
             widget: prop['x-widget'],
+            graph: prop['x-graph'],
             minimum: prop.minimum,
             maximum: prop.maximum,
             step: prop['x-step'],
@@ -124,7 +129,9 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
             for (const f of formFields.value) {
                 if (f.defaultValue !== undefined) defaults[f.key] = f.defaultValue;
             }
-            localSettings.value = { ...defaults, ...settings };
+            // Stripped on the way IN too: a seeded virtual key survives to Apply.
+            const merged = { ...defaults, ...settings };
+            localSettings.value = stripDisplayFields(formFields.value, merged);
         },
         { immediate: true, deep: true },
     );
@@ -222,7 +229,12 @@ export function useModuleSettingsForm(opts: ModuleSettingsFormOptions) {
     });
 
     function applyAll(): void {
-        patch.moduleSettings(opts.engineId.value, opts.moduleId.value, localSettings.value);
+        // Belt and braces with the hydration strip above — this is the gate.
+        patch.moduleSettings(
+            opts.engineId.value,
+            opts.moduleId.value,
+            stripDisplayFields(formFields.value, localSettings.value),
+        );
     }
 
     return {

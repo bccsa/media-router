@@ -2,10 +2,10 @@ import {
     GstPluginBase,
     ThroughputPoller,
     bitrateBadge,
-    probe302mSupport,
     type PipelineDescription,
     type ThroughputSample,
 } from '@media-router/engine';
+import { probe302mSupport } from '@media-router/plugin-audio-302m-core';
 import { buildMixerPipeline } from './audioMixerPipeline.js';
 
 const INPUT_PORT_ID = 'audio-in';

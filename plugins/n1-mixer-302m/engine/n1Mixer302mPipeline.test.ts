@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { AudioMixSource } from '@media-router/engine';
+import type { AudioMixSource } from '@media-router/plugin-audio-302m-core';
 import {
     activeOutputIndices,
     buildN1Pipeline,
@@ -91,7 +91,11 @@ describe('buildN1Pipeline', () => {
         expect(matrix).toHaveLength(12);
         for (const [, i, o] of matrix) expect(i).not.toBe(o);
         for (let i = 0; i < 4; i++) {
-            expect(pipeline).toContain(`audiomixer name=inmix${i} force-live=true`);
+            // One source per input pin → direct branch, no input aggregator
+            // and none of its latency. The N-1 OUTPUT mixers are the feature
+            // and stay force-live.
+            expect(pipeline).not.toContain(`audiomixer name=inmix${i}`);
+            expect(pipeline).toContain(`capsfilter name=inmix${i}_out`);
             expect(pipeline).toContain(`tee name=in${i}t`);
             expect(pipeline).toContain(`audiomixer name=omix${i} force-live=true`);
         }
@@ -104,6 +108,48 @@ describe('buildN1Pipeline', () => {
         expect(pipeline.match(/tee name=busout_/g)).toHaveLength(4);
     });
 
+    it('paces EVERY output mixer on the pipeline clock — force-live free-runs after all its contributors EOS', () => {
+        const pipeline = buildN1Pipeline({
+            inputs: mkInputs([0, 1, 2, 3]),
+            outputs: mkOutputs([0, 1, 2, 3]),
+            latencyMs: 200,
+        })!;
+        expect(pipeline.match(/identity name=omix\d+_pace sync=true/g)).toHaveLength(4);
+        for (let o = 0; o < 4; o++) {
+            // Contiguous: the pacer sits between the caps pin and the encode
+            // branch, so nothing can tap the mixer ahead of the clock.
+            expect(pipeline).toContain(
+                `audiomixer name=omix${o} force-live=true` +
+                    ' latency=50000000 min-upstream-latency=50000000' +
+                    ' ! audio/x-raw,rate=48000,channels=2' +
+                    ` ! identity name=omix${o}_pace sync=true` +
+                    ' ! audioconvert ! audioresample',
+            );
+        }
+    });
+
+    it('paces the output mixer even when only one output is active', () => {
+        const pipeline = buildN1Pipeline({
+            inputs: mkInputs([1]),
+            outputs: mkOutputs([0]),
+            latencyMs: 200,
+        })!;
+        expect(pipeline.match(/identity name=omix\d+_pace sync=true/g)).toHaveLength(1);
+        expect(pipeline).toContain('identity name=omix0_pace sync=true');
+    });
+
+    it('does not double-pace the input fan-in — a single-source pin has no aggregator to pace', () => {
+        const pipeline = buildN1Pipeline({
+            inputs: mkInputs([0, 1]),
+            outputs: mkOutputs([0, 1]),
+            latencyMs: 200,
+        })!;
+        // Only the two output mixers carry an identity; the direct input
+        // branches carry none (buildAudioMixInput's single-source arm).
+        expect(pipeline.match(/identity /g)).toHaveLength(2);
+        expect(pipeline).not.toContain('identity name=inmix0_out');
+    });
+
     it('sums multiple sources wired to one input port', () => {
         const pipeline = buildN1Pipeline({
             inputs: mkInputs([0, 1], 3),
@@ -112,6 +158,9 @@ describe('buildN1Pipeline', () => {
         })!;
         expect(pipeline.match(/! inmix0\./g)).toHaveLength(3);
         expect(pipeline.match(/! inmix1\./g)).toHaveLength(3);
+        // Summing brings the aggregator back — with its clock pacer.
+        expect(pipeline).toContain('audiomixer name=inmix0 force-live=true');
+        expect(pipeline).toContain('identity name=inmix0_out sync=true');
     });
 
     it('single connected input feeds every output except its own pair', () => {
@@ -143,13 +192,22 @@ describe('buildN1Pipeline', () => {
     });
 
     it('honours the mix latency budget on the input mixers only', () => {
+        // Two sources per pin — a single source bypasses the input mixer, and
+        // with it the latency budget entirely.
         const pipeline = buildN1Pipeline({
-            inputs: mkInputs([0, 1]),
+            inputs: mkInputs([0, 1], 2),
             outputs: mkOutputs([0, 1]),
             latencyMs: 500,
         })!;
         expect(pipeline).toContain('audiomixer name=inmix0 force-live=true latency=500000000');
         expect(pipeline).toContain('audiomixer name=omix0 force-live=true latency=50000000');
+
+        const single = buildN1Pipeline({
+            inputs: mkInputs([0, 1]),
+            outputs: mkOutputs([0, 1]),
+            latencyMs: 500,
+        })!;
+        expect(single).not.toContain('latency=500000000');
     });
 
     it('per-edge unixfd sockets in, fan-out tees out', () => {

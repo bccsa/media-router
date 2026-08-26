@@ -9,13 +9,13 @@
  * no `pulsesrc`, no `do-timestamp`, no re-stamping anywhere).
  */
 
+import { buildBusSink, type DynamicPort } from '@media-router/engine';
 import {
     buildAudioMixInput,
-    buildBusSink,
     build302mEncodeBranch,
+    pacedMixer,
     type AudioMixSource,
-    type DynamicPort,
-} from '@media-router/engine';
+} from '@media-router/plugin-audio-302m-core';
 
 export type { DynamicPort };
 
@@ -87,7 +87,8 @@ const OUTPUT_MIX_LATENCY_NS = 50_000_000;
 /**
  * Assemble the full pipeline:
  *   per connected input  — 302M sum (`inmix{i}`) → `tee name=in{i}t`
- *   per active output    — `audiomixer omix{o}` → 302M encode → bus sink
+ *   per active output    — `audiomixer omix{o}` → `omix{o}_pace` → 302M
+ *                          encode → bus sink
  *   exclusion matrix     — `in{i}t. ! queue ! omix{o}.` for every i ≠ o
  */
 /** Output indices that have ≥1 contributing input (some connected i ≠ o) —
@@ -115,22 +116,32 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     const parts: string[] = [];
 
     for (const [i, sources] of input.inputs) {
-        const { fragment, mixerName } = buildAudioMixInput({
+        const { fragment, continuationName } = buildAudioMixInput({
             sources,
             channels: 2,
             latencyMs: input.latencyMs,
             mixerName: `inmix${i}`,
         });
-        parts.push(`${fragment} ${mixerName}. ! tee name=in${i}t`);
+        parts.push(`${fragment} ${continuationName}. ! tee name=in${i}t`);
     }
 
+    // The N-1 FEATURE mixers, built through the shared `pacedMixer` so the
+    // `identity sync=true` clock pacer can never be dropped from one side of
+    // the codebase: a force-live aggregator keeps generating silence after ALL
+    // its sink pads go EOS, and nothing downstream paces it here — the 302M
+    // encode tail ends in an unsynced bus tee. Un-paced, an output whose every
+    // contributor has died free-runs at CPU speed and floods the bus (the
+    // measured OOM pathology, see `buildAudioMixInput`). The input fan-in is
+    // already paced inside that helper; these mixers it never sees.
     for (const out of outputs) {
         const sink = buildBusSink(out.port);
         parts.push(
-            `audiomixer name=omix${out.index} force-live=true ` +
-                `latency=${OUTPUT_MIX_LATENCY_NS} min-upstream-latency=${OUTPUT_MIX_LATENCY_NS}` +
-                ' ! audio/x-raw,rate=48000,channels=2' +
-                ` ! ${build302mEncodeBranch()} ! ${sink}`,
+            pacedMixer({
+                name: `omix${out.index}`,
+                latencyNs: OUTPUT_MIX_LATENCY_NS,
+                caps: 'audio/x-raw,rate=48000,channels=2',
+                pacerName: `omix${out.index}_pace`,
+            }) + ` ! ${build302mEncodeBranch()} ! ${sink}`,
         );
     }
 

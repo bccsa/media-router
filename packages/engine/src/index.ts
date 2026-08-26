@@ -4,6 +4,7 @@ export { PluginLoader } from './plugins/PluginLoader.js';
 export type {
     PluginModule,
     PipelineDescription,
+    BusReport,
     PadLinkRule,
     RistRunnerConfig,
     TsProbeRunnerConfig,
@@ -106,17 +107,9 @@ export {
     NET_UDP_RCV_BUF,
 } from './plugins/netUdpHelpers.js';
 export type { NetUdpSrcOpts, NetUdpSinkOpts } from './plugins/netUdpHelpers.js';
-export {
-    buildAudioMixInput,
-    build302mEncodeBranch,
-    mixMatrixClause,
-    probe302mSupport,
-} from './plugins/audio302mHelpers.js';
-export type {
-    AudioMixSource,
-    AudioMixInputOpts,
-    Audio302mEncodeOpts,
-} from './plugins/audio302mHelpers.js';
+// SMPTE-302M helpers are NOT here: they live in the `audio-302m-core`
+// library plugin (ADR-0001), which imports the engine, not the reverse
+// (ADR-0002). Import them from `@media-router/plugin-audio-302m-core`.
 export {
     aes67DepayloaderElement,
     aes67PayloaderElement,
@@ -139,6 +132,19 @@ export type { Aes67Encoding, Aes67RtpCapsOpts } from './plugins/aes67Helpers.js'
 // Re-exported for plugins (per-connection channel maps on mix inputs) —
 // plugin packages depend on @media-router/engine only, not shared-types.
 export type { ChannelMapEntry } from '@media-router/shared-types';
+// The `graph` status-field contract — a plugin computes its own plots and
+// publishes them with `setStatusGraph`; the UI only renders.
+export type {
+    StatusGraph,
+    StatusValue,
+    GraphAxis,
+    GraphMarker,
+    GraphPoint,
+    GraphRole,
+    GraphScale,
+    GraphSeries,
+    GraphStroke,
+} from '@media-router/shared-types';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
     TS_VIDEO_PID_BASE,

@@ -18,7 +18,8 @@ change *how* plugins work rather than add one.
   shared assets) fully participates in build and runtime resolution. Named
   `<domain>-core`: `unixfdbus-core` (GstUnixFd bus transport), `mpegts-core`
   (MPEG-TS packet core + its python reference spec), `rist-core` (librist
-  bindings).
+  bindings), `aes67-core` (SAP/SDP + the TAI clock), `audio-302m-core` (the
+  shared SMPTE-302M TypeScript helpers).
 
 Not every plugin lives in this repo: product-specific plugins may be owned by
 the consuming product's repo (under its `media-router-plugin/` folder) and
@@ -161,6 +162,7 @@ Don't start from a blank file — copy an existing plugin whose architecture mat
 | A PipeWire-only plugin (no GStreamer) | `n1-mixer` | Per-port PipeWire nodes via `getPipeWireNodeForPort` |
 | A multi-port plugin with variable port count | `ts-splitter` (1→N) / `mpegts-muxer` (N→1) / `n1-mixer` | `getDynamicPorts(config)` |
 | A bus-native N→1 audio processing plugin (302M in/out, per-connection channel maps) | `audio-mixer` | `buildAudioMixInput` fan-in + `build302mEncodeBranch`, `probe302mSupport()` gating, shared `applyVolumeLiveUpdate` fader, `ThroughputPoller` badge |
+| A DSP chain plugin (LADSPA stages, live parameter control, a sidechain input) | `audio-processing` | Optional stages assembled into one chain, `findLadspaElement` per enabled stage, live writes guarded by which stages actually exist, native `level`→`volume` control loop for ducking |
 | A plugin that probes hardware at load time to populate its manifest | `video-encoder` (HW encoders) / `audio-encoder` (codec capability) | `static initManifest(manifest)` |
 
 The Quick Start example above is a minimal skeleton — for anything non-trivial, copying a real plugin will save more time than reading docs.
@@ -174,7 +176,7 @@ The Quick Start example above is a minimal skeleton — for anything non-trivial
 | `pluginId` | `string` | Yes | Unique identifier (e.g. `"srt-input"`) |
 | `displayName` | `string` | Yes | UI display name |
 | `description` | `string` | Yes | Description for the Add Module panel |
-| `category` | `string` | Yes | One of: `"protocol"`, `"codec"`, `"processing"`, `"utility"` |
+| `category` | `string` | Yes | Palette group. Shipped today: `"input"`, `"output"`, `"protocol"`, `"codec"`, `"processing"`, `"utility"`, `"deprecated"`. See "Categories and palette order" |
 | `color` | `string` | No | Hex color for module accent (left border + icon tint). E.g. `"#3b82f6"` |
 | `icon` | `string` | No | Lucide icon name in kebab-case. E.g. `"mic"`, `"volume-2"`, `"radio"` |
 | `architectures` | `string[]` | Yes | Supported platforms: `["arm64", "x86_64"]` |
@@ -186,6 +188,29 @@ The Quick Start example above is a minimal skeleton — for anything non-trivial
 | `resizable` | `boolean \| ResizableBounds` | No | User can resize the module card on the routing view. See "Resizable Modules" |
 | `lcpType` | `string` | No | Makes the module visible on the Local Control Panel. Any truthy value works — the presence is what matters, not the value. Only needed for plugins that want LCP visibility *without* shipping a `ui/LcpStrip.vue`; plugins with a strip component are auto-detected and don't need this field. See "Plugin UI Components → LCP visibility". |
 | `engine` | `string` | Yes | Path to engine module `.ts` file |
+
+### Categories and palette order
+
+`category` is only a grouping key for the Add Module panel. `AddModulePanel.vue`
+renders the known ones in a fixed order — **Input, Output, Protocol, Codec,
+Processing, Utility** — and then sweeps up everything else into trailing groups
+of its own, so a category the panel has never heard of appears at the bottom
+rather than silently vanishing (that regression is why the sweep exists: see the
+2026-07-18 entry in `docs/TodoNotes.md`, where `input`/`output` were missing from
+the list and the 302M plugins were unreachable, search included).
+
+`"deprecated"` is deliberately NOT in the ordered list — it rides the trailing
+sweep, which is what puts the **Deprecated** group last, below everything an
+operator should be reaching for. It has a label of its own so it doesn't render
+as a bare id. Use it for a plugin that is superseded but still loadable for
+existing profiles — today `audio-decoder`, `audio-dynamics`, `audio-encoder`,
+`audio-input`, `audio-output`, `n1-mixer`.
+
+An empty group is not rendered, so shipping no plugins in a category costs
+nothing. `PluginManifest.category` in `packages/shared-types` carries the same
+list as a union, but nothing narrows on it — the trailing sweep is what actually
+keeps a new category safe, so the union going stale is a documentation gap
+rather than a runtime failure. Update both when you add one.
 
 ### Color and Icon
 
@@ -287,7 +312,8 @@ Ports define what a module can connect to. Each port has a direction, stream typ
   human-readable reason, not silently `false`
 - An INPUT port with `maxConnections: -1` and `streamType: audio/302m` can receive N
   sources — consume them with `getModuleBusSources(id).filter(s => s.sinkPortId === ...)`
-  and feed `buildAudioMixInput()` (see Engine Helpers) for implicit timeline-true mixing
+  and feed `buildAudioMixInput()` (see "Shared 302M audio helpers" — it ships in the
+  `audio-302m-core` library plugin) for implicit timeline-true mixing
 - Per-connection **channel maps** work on `audio/302m` edges like on `audio/pcm` ones
   (same `ChannelMapEntry[]`, same context menu): the map renders as an
   `audioconvert mix-matrix` on that connection's decode branch — mono→stereo,
@@ -372,7 +398,8 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 |-----------|------|-------------|
 | `x-deviceType` | `string` | Device type to populate dropdown from (e.g. `"audio-source"`, `"audio-sink"`, `"video"`, `"drm-connector"`). Plugin must register a matching `DeviceProvider` via `registerServices`. |
 | `x-optionsFrom` | `string` | Renders the field as a **multi-select** whose options come from the module's pushed `fieldOptions[<key>]` (set at runtime via `this.setFieldOptions(key, options)`). Use for options discovered from the configured source rather than a fixed enum — e.g. `hls-player` probes the playlist and reports detected audio / subtitle languages. The stored value is a string array. |
-| `x-widget` | `"slider"` \| `"imageUpload"` | `"slider"` renders a range slider instead of a number input. `"imageUpload"` (string-valued field) renders a file picker that uploads via the `plugin:upload` RPC and stores the resulting absolute path; preview thumbnail loaded back through `plugin:upload-get`. |
+| `x-widget` | `"slider"` \| `"imageUpload"` \| `"graph"` | `"slider"` renders a range slider instead of a number input. `"imageUpload"` (string-valued field) renders a file picker that uploads via the `plugin:upload` RPC and stores the resulting absolute path; preview thumbnail loaded back through `plugin:upload-get`. `"graph"` renders plot data the module publishes — see [Graph status fields](#graph-status-fields-x-widget-graph). |
+| `x-graph` | `{ section, key, height? }` | **(`x-widget: "graph"` only)** Which status field carries the plot — `statusData[section][key]`, published with `setStatusGraph()`. `height` is the plot height in SVG units (default 150). |
 | `x-step` | `number` | Step value for slider |
 | `x-live` | `boolean` | Send value changes immediately (no Apply button needed) |
 | `x-liveUpdatable` | `boolean` | Mark as live-updatable (same as `x-live`) |
@@ -387,6 +414,83 @@ Uses JSON Schema to define user-configurable settings. The Manager UI auto-gener
 | `x-readOnly` | `boolean` | Display as read-only (greyed out, not editable) |
 
 **Array-of-object fields** (`{ "type": "array", "items": { "type": "object", "properties": {...} } }`) render through `MrArrayField`. Inside item schemas, `x-enumLabels`, `x-advanced`, and item-relative `x-showWhen` are honoured — `x-showWhen` is evaluated against the item's own value, falling back to the module-global config when that field is inherited on the item (e.g. show a per-rendition `h264Profile` only when the rendition's codec — its override or the inherited global — is `h264`).
+
+#### Graph status fields (`x-widget: "graph"`)
+
+**The rule: `packages/` contains only generic systems.** A widget in
+manager-ui may encode generic presentation (a slider knows min/max/step, the
+graph widget knows axes and series) but never a specific module's config keys,
+value mappings, or element semantics — those stay in the plugin. **Plugins
+compute, the UI renders** (ADR-0007).
+
+So a plugin that wants a curve computes the curve and publishes it as data:
+
+```ts
+// engine-side, on config apply and on every live update
+this.setStatusGraph('graphs', 'dynamics', {
+    axes: {
+        x: { label: 'Input', unit: 'dB', min: -60, max: 0, gridStep: 10, labels: [-60, -40, -20, 0] },
+        y: { label: 'Output', unit: 'dB', min: -60, max: 0, gridStep: 10, labels: [-60, -40, -20, 0] },
+    },
+    series: [
+        { id: 'unity', points: [[-60, -60], [0, 0]], role: 'muted', stroke: 'dotted' },
+        { id: 'transfer', points: curve, role: 'primary' },
+    ],
+    markers: [{ axis: 'x', value: -20, label: 'Thr -20 dB', role: 'warning', stroke: 'dashed' }],
+    live: { x: -12.4, y: -18.1, span: [-18.1, -14.6] },
+    notes: ['4:1', 'Attack 5 ms', 'Release 200 ms'],
+});
+```
+
+```json
+"transferCurve": {
+    "type": "string",
+    "description": "Static transfer curve for the stage below.",
+    "x-widget": "graph",
+    "x-graph": { "section": "graphs", "key": "dynamics", "height": 150 },
+    "x-showWhen": "mode=compressor,gate,expander"
+}
+```
+
+**The `StatusGraph` contract** (typed in `@media-router/shared-types`, re-exported
+from `@media-router/engine`):
+
+| Field | Shape | Notes |
+|---|---|---|
+| `axes.x` / `axes.y` | `{ label?, unit?, min, max, scale?, gridStep?, labels? }` | `scale: "log"` spaces decades evenly and grids 1-2-5 per decade; `gridStep` grids a linear axis; `labels` are the values that get a printed tick (defaults to the gridlines). The UI never interprets `unit` — it only prints it. |
+| `series[]` | `{ id, points: [x, y][], role?, stroke? }` | Points are in axis units, ordered by x, and clamped to the axis when out of range. Draw order is array order. |
+| `markers[]` | `{ axis, value, label?, role?, stroke? }` | Reference line across the plot (a threshold, a ceiling, a corner frequency). |
+| `live` | `{ x, y, span?, role? }` | Current operating point. `span: [from, to]` shades a band at the same x (e.g. gain reduction). Omit it when there is no telemetry — the dot disappears rather than freezing. |
+| `notes[]` | `string[]` | Short annotations under the plot: timings, ratios, "bypassed". Anything the curve deliberately can't show. |
+| `role` | `primary` \| `secondary` \| `warning` \| `error` \| `muted` | Theme slot. A publisher names intent, never a colour. |
+| `stroke` | `solid` \| `dashed` \| `dotted` | |
+
+Rules of the road:
+
+- **Give graphs their own status section.** `setStatusData` REPLACES a section
+  wholesale, so a graph sharing a section with meter fields is wiped on the next
+  poll. `setStatusGraph` merges, so several graphs can share one section.
+- **Don't declare that section in `statusSections`** unless you want it in the
+  stats popup — a graph field is skipped there, and an undeclared section is
+  simply not rendered.
+- **Republish on every change that moves the curve**: config apply, live
+  updates, and (if the graph has a `live` point) the stat poll that produces it.
+  Publishing from `onInit` too means a stopped module still draws its curve.
+- **Keep it small.** The graph rides the module's runtime state, which is
+  rebroadcast on every status change. Sample 60–80 points and round the
+  coordinates (`Number(v.toFixed(2))`); nothing plotted at 230 px wide needs
+  more.
+- **The prop carries no value.** It exists for placement (`x-showWhen` works as
+  usual) and never reaches saved settings or the engine config, so give it no
+  `default`.
+
+Worked example: `plugins/audio-processing` — `dynamicsCurve.ts` /
+`dynamicsGraph.ts` (transfer curve), `eqBiquad.ts` / `eqGraph.ts` (RBJ
+magnitude response), `duckEnvelopeGraph.ts` (the ducker's time-domain gain
+envelope, on a deliberately non-linear x axis), published through
+`graphPublisher.ts`. `duckLive.ts` shows the other half of a live graph: a
+telemetry source that ticks far faster than status wants, throttled down to
+on-change-only at 4 Hz and silent while there is nothing to say.
 
 #### Context Menu Settings
 
@@ -871,7 +975,9 @@ Real examples: [`video-encoder`](video-encoder/engine/VideoEncoderModule.ts) (HW
 
 ##### LADSPA-wrapped elements
 
-`findLadspaElement(suffix)` (from `@media-router/engine`) resolves a GStreamer `ladspa` wrapper element by name suffix — e.g. `findLadspaElement('sc-compressor-stereo')`. LADSPA element names embed the plugin's .so filename *including its version* (`ladspa-lsp-plugins-ladspa-1-2-5-so-…`), so never hardcode them; resolve at start and fail with a clear error when null (plugin library not installed). Real example: [`audio-dynamics`](audio-dynamics/engine/AudioDynamicsModule.ts). Note the wrapper exposes a multi-audio-input plugin as **one interleaved sink pad** (all audio ports in declaration order) — merge streams with `deinterleave`/`interleave` and force `channel-mask=(bitmask)0x0` on the merged caps.
+`findLadspaElement(suffix)` (from `@media-router/engine`) resolves a GStreamer `ladspa` wrapper element by name suffix — e.g. `findLadspaElement('sc-compressor-stereo')`. LADSPA element names embed the plugin's .so filename *including its version* (`ladspa-lsp-plugins-ladspa-1-2-5-so-…`), so never hardcode them; resolve at start and fail with a clear error when null (plugin library not installed). Real example: [`audio-processing`](audio-processing/engine/AudioProcessingModule.ts) (its predecessor [`audio-dynamics`](audio-dynamics/engine/AudioDynamicsModule.ts) is deprecated). Note the wrapper exposes a multi-audio-input plugin as **one interleaved sink pad** (all audio ports in declaration order) — merge streams with `deinterleave`/`interleave` and force `channel-mask=(bitmask)0x0` on the merged caps. Prefer the SELF-keyed LSP variant of a processor (`compressor-stereo`, not `sc-compressor-stereo`) whenever the DSP doesn't need an external key: it takes plain stereo, so the whole interleave dance disappears.
+
+Two more LADSPA facts that cost time to rediscover: control ports carry **no enum nicks and no units**, so anything enum-like (LSP's `filter-type-N`, `filter-mode-N`, `filter-slope-N`) arrives as a bare `gint` and the label↔index map has to live in the plugin (re-check it on any library version bump), and `(G)`-suffixed ports are **linear gain factors, not dB** — convert in the plugin and clamp to the port range from `gst-inspect-1.0` (an out-of-range write is a GObject warning per keystroke). See `audio-processing/engine/lspProcessing.ts`.
 
 ##### Shared video-encoder helpers
 
@@ -894,14 +1000,39 @@ static async initManifest(manifest: Record<string, any>): Promise<void> {
 ##### Shared 302M audio helpers
 
 SMPTE-302M (PCM-in-MPEG-TS) is the timeline-preserving audio transport between modules
-— use these from `@media-router/engine` instead of hand-rolling pipelines:
+— use these instead of hand-rolling pipelines. They live in the **`audio-302m-core`
+library plugin**, not in the engine (shared media-domain code belongs to a
+`<domain>-core` plugin per [ADR-0001](../docs/adr/0001-plugin-owned-native-and-python-code.md)),
+so import them from `@media-router/plugin-audio-302m-core` and declare the dependency:
+
+```json
+"dependencies": {
+    "@media-router/engine": "workspace:*",
+    "@media-router/plugin-audio-302m-core": "workspace:*"
+}
+```
 
 - `buildAudioMixInput({ sources, channels?, latencyMs?, mixerName?, branchQueueMs? })` —
   N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
-  a dark input silence-fills instead of stalling the mix). Returns `{ fragment, mixerName }`;
-  continue the chain from `${mixerName}. ! …`. Feed it `getModuleBusSources(id)` entries
-  filtered by your input port. PTS-preserving by contract — never add `pulsesrc`,
-  `do-timestamp`, or `tsparse set-timestamps` around it.
+  a dark input silence-fills instead of stalling the mix), or a direct branch with no
+  aggregator at all when there is exactly one source. Returns
+  `{ fragment, continuationName }`; continue the chain from `${continuationName}. ! …` —
+  that element is a `capsfilter`, an `identity` or a mixer depending on the arm, so never
+  hard-code the name. Feed it `getModuleBusSources(id)` entries filtered by your input
+  port. PTS-preserving by contract — never add `pulsesrc`, `do-timestamp`, or
+  `tsparse set-timestamps` around it.
+  `mixerName` is a name PREFIX for the fan-in's elements, not the name of an
+  `audiomixer` — the continuation point is always `<mixerName>_out`, and in the
+  single-source arm there is no mixer for it to name, only the terminal capsfilter.
+  Give it a distinct value per input pin when a module builds more than one fan-in.
+- `pacedMixer({ name, latencyNs, caps, pacerName, capsName? })` — the
+  `audiomixer force-live=true ! <caps> ! identity sync=true` shape every 302M aggregation
+  point uses. The trailing `identity` is load-bearing, not style: a force-live aggregator
+  keeps emitting silence after every sink pad has gone EOS, and with no synced element
+  downstream it free-runs at CPU speed (11.64 s CPU / 10 s wall on a fleet box, vs 0.07 s
+  paced). Build every new mixer through this rather than assembling the string by hand.
+  All three fan-in rules — pacing, chaining only from `continuationName`, and the
+  single-source bypass — are locked in [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md).
 - `build302mEncodeBranch({ format? })` — PCM → 302M-in-TS encode tail
   (`S32LE`/48 kHz/stereo, `avenc_s302m strict=experimental` — ffmpeg gates the encoder;
   the bitstream is standard). Caller appends `buildBusSink(...)`.
@@ -910,7 +1041,12 @@ SMPTE-302M (PCM-in-MPEG-TS) is the timeline-preserving audio transport between m
   once from `static initManifest` and cache the flag (real examples:
   [`audio-transcoder`](audio-transcoder/engine/AudioTranscoderModule.ts),
   [`audio-mixer`](audio-mixer/engine/AudioMixerModule.ts)). The underlying
-  `gstElementSupportsCaps(element, mediaType)` stays available for other caps probes.
+  `gstElementSupportsCaps(element, mediaType)` stays in `@media-router/engine` and is
+  available for other caps probes.
+- `mixMatrixClause(channelMap, srcChannels, dstChannels)` — a `ChannelMapEntry[]`
+  rendered as an `audioconvert mix-matrix` (mono→stereo fan-out, downmix, channel
+  picking, per-channel gain). `buildAudioMixInput` applies it per branch; single-source
+  modules like `audio-transcoder` inline it on the trunk.
 - `applyVolumeLiveUpdate(changes)` (protected on `GstPluginBase`) — the shared
   `volume`/`audioEnabled` live-update for any pipeline with the standard
   `volume name=vol` fader: merges config + drives the element (gst only, no pactl).
@@ -1322,6 +1458,14 @@ this.setStatusData('udp', {
     port: 40000,
 });
 ```
+
+Values are coerced to primitives. For structured PLOT data — a transfer curve,
+a frequency response — use `setStatusGraph(section, key, graph)` instead: same
+channel and same store, but the value keeps its shape so a `x-widget: "graph"`
+settings prop can render it. See
+[Graph status fields](#graph-status-fields-x-widget-graph). Note that
+`setStatusData` replaces a section wholesale while `setStatusGraph` merges into
+one, so graphs want a section of their own.
 
 #### Polling Live Stats — `ThroughputPoller`
 
@@ -1753,14 +1897,17 @@ build.
 
 A folder under `plugins/` whose `package.json` has **no `mediaRouter` field**
 is a *library plugin*: `PluginLoader` skips it, so it never appears in the
-Add Module panel, but its `native/` and `py/` fully participate in build and
-resolution. Convention: name them `<domain>-core` (`unixfdbus-core`, `mpegts-core`,
-`rist-core`) — one folder per domain, not a generic "shared" junk drawer.
-Single-plugin code stays in that plugin's folder; promote to a library plugin
-when a domain's code serves several plugins.
+Add Module panel, but its `native/`, `py/` and `engine/` fully participate in
+build and resolution. Convention: name them `<domain>-core` (`unixfdbus-core`,
+`mpegts-core`, `rist-core`, `aes67-core`, `audio-302m-core`) — one folder per
+domain, not a generic "shared" junk drawer. Single-plugin code stays in that
+plugin's folder; promote to a library plugin when a domain's code serves
+several plugins.
 
-Dependents declare library plugins in `dependencies` for visibility and an
-existence guarantee (no runtime effect):
+Dependents declare library plugins in `dependencies` — for a native/python
+core that is visibility plus an existence guarantee (no runtime effect); for a
+**TypeScript** core it is the real import edge, and pnpm uses it to build the
+core before its consumers:
 
 ```json
 "dependencies": {
@@ -1768,6 +1915,15 @@ existence guarantee (no runtime effect):
     "@media-router/plugin-unixfdbus-core": "workspace:*"
 }
 ```
+
+A TypeScript library plugin (`audio-302m-core` is the reference) keeps sources
+in `engine/`, builds with the same `tsconfig.json` as a module plugin
+(`extends ../tsconfig.plugin.json`, `rootDir: ./engine`, `outDir: ./dist`), and
+adds `main` / `types` / `exports` pointing at `dist/index.js` so consumers
+import the package name, never a deep path. Its `*.test.ts` sit beside the
+sources and are picked up by vitest's `plugins/*/engine/**/*.test.ts`. The
+dependency direction is one-way (ADR-0002): a core plugin may import
+`@media-router/engine`; `packages/engine` never imports a plugin.
 
 Cross-language test suites live in the owning plugin's `tests/` dir
 (vitest picks up `plugins/*/tests/**/*.test.ts`): the bus protocol
@@ -1906,6 +2062,7 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |
 | N-1 Mixer (302M) | `plugins/n1-mixer-302m/` | Mix-minus on the 302M bus — decode-once + `tee` per input, one force-live `audiomixer` per output (i ≠ o matrix), `buildAudioMixInput`/`build302mEncodeBranch`, per-output `assignBusChannel` only for outputs with contributors |
+| Audio Processing | `plugins/audio-processing/` | HPF → EQ → dynamics → limiter → ducker on the 302M bus (supersedes the PipeWire `audio-dynamics`). Program + sidechain are both `buildAudioMixInput` fan-ins; LSP LADSPA stages resolved per enabled stage; dB→linear + range clamping isolated in `lspProcessing.ts`; the `sc-*` 4-channel packing survives only for a sidechain-keyed gate |
 | Video Encoder | `plugins/video-encoder/` | `static initManifest` for HW encoder probing (V4L2 vs software), per-codec `getLiveUpdatableParams` override, DRM/V4L2 device providers |
 | Video Player | `plugins/video-player/` | Multi-sink selection (Wayland → KMS direct → KMS auto → fallback), text-overlay live updates, **codec-aware decoder selection** (see below) |
 | Transcoder | `plugins/transcoder/` | Config-driven dynamic *outputs* (one per rendition); one static pipeline that decodes once → `tee` → N scale/encode/mux branches, per-output `assignBusChannel(instanceId, portId)`; own `encoderBranch.ts` (CBR element selection, sibling to Video Encoder's) |

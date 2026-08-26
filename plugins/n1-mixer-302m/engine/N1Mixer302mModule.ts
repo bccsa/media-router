@@ -1,9 +1,5 @@
-import {
-    GstPluginBase,
-    probe302mSupport,
-    type AudioMixSource,
-    type PipelineDescription,
-} from '@media-router/engine';
+import { GstPluginBase, type PipelineDescription } from '@media-router/engine';
+import { probe302mSupport, type AudioMixSource } from '@media-router/plugin-audio-302m-core';
 import {
     activeOutputIndices,
     buildN1Pipeline,

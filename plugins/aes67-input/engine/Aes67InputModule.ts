@@ -2,7 +2,6 @@ import {
     GstPluginBase,
     aes67DepayloaderElement,
     aes67RtpCaps,
-    build302mEncodeBranch,
     buildBusSink,
     buildNetUdpSrc,
     clampChannels,
@@ -19,6 +18,7 @@ import {
     type EngineServices,
     type PipelineDescription,
 } from '@media-router/engine';
+import { build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
 import {
     aes67Discovery,
     registerAes67StreamDeviceProvider,

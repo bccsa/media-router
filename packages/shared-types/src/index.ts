@@ -372,8 +372,12 @@ export interface ModuleRuntimeState {
     srtStats?: SrtStatistics;
     /** RIST connection statistics (when module is RIST-based). */
     ristStats?: RistStatistics;
-    /** Generic status data — keyed by section ID, values are key-value pairs. */
-    statusData?: Record<string, Record<string, string | number | boolean>>;
+    /**
+     * Generic status data — keyed by section ID, values are key-value pairs.
+     * A value is normally a primitive; a `StatusGraph` carries plot data for a
+     * `graph` settings widget (see `setStatusGraph`).
+     */
+    statusData?: Record<string, Record<string, StatusValue>>;
     /** Dynamic status sections added at runtime (e.g. per-caller SRT stats). */
     dynamicStatusSections?: Array<{
         id: string;
@@ -410,6 +414,85 @@ export interface ModuleBadge {
     /** CSS color for the badge. Defaults to text-muted. */
     color?: string;
 }
+
+/**
+ * Structured graph data on the status channel — the ONE shape the manager-ui
+ * `graph` widget renders.
+ *
+ * The UI is a plotter and nothing else: it knows axes, series, markers and one
+ * live point. Every domain decision (what the curve means, how it was computed,
+ * what the units are) is made by the plugin that publishes it, so a new graph
+ * anywhere in the fleet costs plugin code plus one schema prop — never a
+ * manager-ui change. Plugins publish it with `setStatusGraph()`.
+ */
+export interface StatusGraph {
+    axes: { x: GraphAxis; y: GraphAxis };
+    series: GraphSeries[];
+    /** Reference lines (a threshold, a ceiling, a corner frequency). */
+    markers?: GraphMarker[];
+    /** Current operating point, when the publisher has live telemetry. */
+    live?: GraphPoint;
+    /** Short annotations rendered under the plot (timings, ratios, state). */
+    notes?: string[];
+}
+
+/** One axis of a `StatusGraph`. */
+export interface GraphAxis {
+    /** Axis caption, e.g. "Input". Rendered with `unit` appended. */
+    label?: string;
+    /** Unit shown on the caption, e.g. "dB" / "Hz". Never interpreted. */
+    unit?: string;
+    min: number;
+    max: number;
+    /** `log` spaces decades evenly and grids 1-2-5 per decade. Default linear. */
+    scale?: GraphScale;
+    /** Gridline step in axis units. Linear axes only. */
+    gridStep?: number;
+    /** Values that get a printed tick label. Defaults to the gridlines. */
+    labels?: number[];
+}
+
+export type GraphScale = 'linear' | 'log';
+
+/**
+ * Theme slot for a graph element. The UI maps these to its own palette — a
+ * publisher names intent, never a colour.
+ */
+export type GraphRole = 'primary' | 'secondary' | 'warning' | 'error' | 'muted';
+
+export type GraphStroke = 'solid' | 'dashed' | 'dotted';
+
+/** One plotted line. Points are `[x, y]` in axis units, ordered by x. */
+export interface GraphSeries {
+    id: string;
+    points: Array<[number, number]>;
+    role?: GraphRole;
+    stroke?: GraphStroke;
+}
+
+/** A reference line across the plot at `value` on the named axis. */
+export interface GraphMarker {
+    axis: 'x' | 'y';
+    value: number;
+    label?: string;
+    role?: GraphRole;
+    stroke?: GraphStroke;
+}
+
+/** The live operating point, optionally with a shaded band at the same x. */
+export interface GraphPoint {
+    x: number;
+    y: number;
+    /** `[from, to]` in y units — e.g. the gain reduction being applied. */
+    span?: [number, number];
+    role?: GraphRole;
+}
+
+/**
+ * A status field's value. Primitives render in the stats popup; a `StatusGraph`
+ * is structured data for a `graph` widget and is skipped by the popup.
+ */
+export type StatusValue = string | number | boolean | StatusGraph;
 
 /** A status section declared in the plugin manifest. */
 export interface StatusSection {
@@ -595,8 +678,8 @@ export interface PluginManifest {
     displayName: string;
     /** Short description. */
     description: string;
-    /** Plugin category for grouping in UI. */
-    category: 'protocol' | 'codec' | 'processing' | 'utility';
+    /** Palette group — see `plugins/README.md` → "Categories and palette order". */
+    category: 'input' | 'output' | 'protocol' | 'codec' | 'processing' | 'utility' | 'deprecated';
     /** Supported CPU architectures. */
     architectures: string[];
     /** Declared input/output ports. */

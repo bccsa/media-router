@@ -30,9 +30,30 @@ describe('buildMixerPipeline', () => {
         expect(r.pipeline).toContain('audiomixer name=mixin force-live=true');
         expect(r.pipeline.match(/! mixin\./g)).toHaveLength(2);
         expect(r.pipeline).toContain('mixin_out. ! audioconvert');
+        // Clock pacer on the mixer output — the caller MUST chain from it.
+        expect(r.pipeline).toContain('identity name=mixin_out sync=true');
         expect(r.pipeline).toContain('avenc_s302m');
         expect(r.pipeline).toContain('tee name=busout_41000');
         expect(r.sinkName).toBe('busout_41000');
+    });
+
+    it('a lone source bypasses the mixer — no aggregation latency in the path', () => {
+        const r = buildMixerPipeline({
+            sources: [SOURCES[0]],
+            outputPort: 41000,
+            channels: 2,
+            volume: 1,
+            latencyMs: 200,
+        })!;
+        expect(r.pipeline).not.toContain('audiomixer');
+        expect(r.pipeline).not.toContain('latency=200000000');
+        expect(r.pipeline).not.toContain('sync=true');
+        // Same continuation point, so the tail is unchanged.
+        expect(r.pipeline).toContain(
+            'capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2" mixin_out. ! audioconvert',
+        );
+        expect(r.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40010-c1.sock');
+        expect(r.pipeline).toContain('avenc_s302m');
     });
 
     it('master volume + VU level sit between the mix and the encode', () => {

@@ -1,0 +1,866 @@
+{
+    "name": "@media-router/plugin-audio-processing",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Audio processing on the 302M bus — high-pass, 6-band parametric EQ, dynamics, limiter and sidechain ducking",
+    "mediaRouter": {
+        "pluginId": "audio-processing",
+        "displayName": "Audio Processing",
+        "description": "HPF → EQ → dynamics → limiter → ducker on the 302M bus. The sidechain input keys the ducker (or the gate) from any other module's 302M audio.",
+        "color": "#f59e0b",
+        "icon": "sliders-vertical",
+        "category": "processing",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [
+            {
+                "id": "program-in",
+                "direction": "input",
+                "streamType": "audio/302m",
+                "label": "Program In",
+                "maxConnections": -1,
+                "acceptsStreamTypes": [
+                    "audio/302m"
+                ]
+            },
+            {
+                "id": "sidechain-in",
+                "direction": "input",
+                "streamType": "audio/302m",
+                "label": "Sidechain",
+                "maxConnections": -1,
+                "acceptsStreamTypes": [
+                    "audio/302m"
+                ]
+            },
+            {
+                "id": "audio-out",
+                "direction": "output",
+                "streamType": "audio/302m",
+                "label": "Audio Out",
+                "maxConnections": -1,
+                "requiresOrderedApply": true
+            }
+        ],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "ducker",
+                        "compressor",
+                        "gate",
+                        "expander"
+                    ],
+                    "default": "none",
+                    "x-enumLabels": {
+                        "none": "Off",
+                        "ducker": "Ducker (sidechain-keyed)",
+                        "compressor": "Compressor",
+                        "gate": "Gate",
+                        "expander": "Expander"
+                    },
+                    "description": "Dynamics stage. Ducker: the sidechain input pulls the program down (voice ducks music). Compressor / Gate / Expander act on the program itself unless the gate is keyed from the sidechain."
+                },
+                "transferCurve": {
+                    "type": "string",
+                    "description": "Static transfer curve for the stage below — input dB in, output dB out, with the live operating point. Timing (attack / release) is annotated, not drawn.",
+                    "x-widget": "graph",
+                    "x-graph": {
+                        "section": "graphs",
+                        "key": "dynamics",
+                        "height": 150
+                    },
+                    "x-showWhen": "mode=compressor,gate,expander"
+                },
+                "duckEnvelope": {
+                    "type": "string",
+                    "description": "Program gain while the key opens and closes: attack down to the duck floor, hold, release back to normal, with the live gain on it. Attack and release are full travel to the floor and back. Phases are ordered, not to scale (they differ by orders of magnitude) — each is labelled with its real time.",
+                    "x-widget": "graph",
+                    "x-graph": {
+                        "section": "graphs",
+                        "key": "duckEnvelope",
+                        "height": 150
+                    },
+                    "x-showWhen": "mode=ducker"
+                },
+                "threshold": {
+                    "type": "number",
+                    "minimum": -60,
+                    "maximum": 0,
+                    "default": -35,
+                    "description": "Key level where the dynamics stage engages",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "mode=ducker,compressor,gate,expander",
+                    "x-debounceMs": 100
+                },
+                "duckDepth": {
+                    "type": "number",
+                    "minimum": -40,
+                    "maximum": 0,
+                    "default": -12,
+                    "description": "Exact level the program drops to while the sidechain is active (relative to normal)",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "mode=ducker",
+                    "x-debounceMs": 100
+                },
+                "hold": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2000,
+                    "default": 250,
+                    "description": "How long to stay ducked after the sidechain goes quiet, before releasing",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "x-showWhen": "mode=ducker",
+                    "x-debounceMs": 100
+                },
+                "ratio": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 8,
+                    "description": "Compression / expansion ratio",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-live": true,
+                    "x-showWhen": "mode=compressor,expander",
+                    "x-debounceMs": 100
+                },
+                "attack": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 500,
+                    "default": 5,
+                    "description": "Attack time",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "x-showWhen": "mode=ducker,compressor,gate,expander",
+                    "x-debounceMs": 100
+                },
+                "release": {
+                    "type": "number",
+                    "minimum": 5,
+                    "maximum": 2000,
+                    "default": 200,
+                    "description": "Release time",
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "x-showWhen": "mode=ducker,compressor,gate,expander",
+                    "x-debounceMs": 100
+                },
+                "knee": {
+                    "type": "number",
+                    "minimum": -24,
+                    "maximum": 0,
+                    "default": -6,
+                    "description": "Soft knee width (0 = hard knee)",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "mode=compressor,expander",
+                    "x-debounceMs": 100
+                },
+                "makeupGain": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 24,
+                    "default": 0,
+                    "description": "Makeup gain after the dynamics stage",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "mode=compressor,gate,expander",
+                    "x-debounceMs": 100
+                },
+                "gateDepth": {
+                    "type": "number",
+                    "minimum": -72,
+                    "maximum": 0,
+                    "default": -48,
+                    "description": "Attenuation while the gate is closed",
+                    "x-widget": "slider",
+                    "x-step": 1,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "mode=gate",
+                    "x-debounceMs": 100
+                },
+                "gateKey": {
+                    "type": "string",
+                    "enum": [
+                        "self",
+                        "sidechain"
+                    ],
+                    "default": "self",
+                    "x-enumLabels": {
+                        "self": "Program (self)",
+                        "sidechain": "Sidechain input"
+                    },
+                    "description": "Signal that opens the gate. Switching the key swaps the DSP element, so it takes effect on the next restart.",
+                    "x-showWhen": "mode=gate"
+                },
+                "hpfEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "High-pass filter ahead of the EQ — removes rumble and handling noise (4-pole Chebyshev)."
+                },
+                "hpfFreq": {
+                    "type": "number",
+                    "minimum": 20,
+                    "maximum": 500,
+                    "default": 80,
+                    "description": "High-pass cutoff frequency",
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "hpfEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "6-band parametric EQ (LSP para-equalizer). Bands start Off — pick a filter type per band to bring it in."
+                },
+                "eqBypass": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Bypass the EQ without rebuilding the pipeline (A/B a curve live).",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqInputGain": {
+                    "type": "number",
+                    "minimum": -24,
+                    "maximum": 20,
+                    "default": 0,
+                    "description": "Gain into the EQ",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqOutputGain": {
+                    "type": "number",
+                    "minimum": -24,
+                    "maximum": 20,
+                    "default": 0,
+                    "description": "Gain out of the EQ",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqMode": {
+                    "type": "string",
+                    "enum": [
+                        "rlc-bt",
+                        "rlc-mt",
+                        "bwc-bt",
+                        "bwc-mt",
+                        "lrx-bt",
+                        "lrx-mt",
+                        "apo-dr"
+                    ],
+                    "default": "rlc-bt",
+                    "x-enumLabels": {
+                        "rlc-bt": "RLC (BT)",
+                        "rlc-mt": "RLC (MT)",
+                        "bwc-bt": "BWC (BT)",
+                        "bwc-mt": "BWC (MT)",
+                        "lrx-bt": "LRX (BT)",
+                        "lrx-mt": "LRX (MT)",
+                        "apo-dr": "APO (DR)"
+                    },
+                    "description": "Filter model, applied to all six bands. RLC (BT) is the neutral default.",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqSlope": {
+                    "type": "string",
+                    "enum": [
+                        "x1",
+                        "x2",
+                        "x3",
+                        "x4"
+                    ],
+                    "default": "x1",
+                    "x-enumLabels": {
+                        "x1": "x1",
+                        "x2": "x2",
+                        "x3": "x3",
+                        "x4": "x4"
+                    },
+                    "description": "Filter steepness, applied to all six bands. Steeper slopes add latency.",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "frequencyResponse": {
+                    "type": "string",
+                    "description": "Summed response of the six bands (and the high-pass filter when it is on), 20 Hz – 20 kHz.",
+                    "x-widget": "graph",
+                    "x-graph": {
+                        "section": "graphs",
+                        "key": "eq",
+                        "height": 150
+                    },
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand0Type": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "bell",
+                        "hipass",
+                        "hishelf",
+                        "lopass",
+                        "loshelf",
+                        "notch",
+                        "resonance",
+                        "allpass"
+                    ],
+                    "default": "off",
+                    "x-enumLabels": {
+                        "off": "Off",
+                        "bell": "Bell",
+                        "hipass": "Hi-pass",
+                        "hishelf": "Hi-shelf",
+                        "lopass": "Lo-pass",
+                        "loshelf": "Lo-shelf",
+                        "notch": "Notch",
+                        "resonance": "Resonance",
+                        "allpass": "Allpass"
+                    },
+                    "description": "Band 1 filter type",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand0Freq": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 24000,
+                    "default": 80,
+                    "description": "Band 1 centre / corner frequency",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand0Gain": {
+                    "type": "number",
+                    "minimum": -36,
+                    "maximum": 36,
+                    "default": 0,
+                    "description": "Band 1 gain",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand0Q": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 1,
+                    "description": "Band 1 quality factor (width)",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand1Type": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "bell",
+                        "hipass",
+                        "hishelf",
+                        "lopass",
+                        "loshelf",
+                        "notch",
+                        "resonance",
+                        "allpass"
+                    ],
+                    "default": "off",
+                    "x-enumLabels": {
+                        "off": "Off",
+                        "bell": "Bell",
+                        "hipass": "Hi-pass",
+                        "hishelf": "Hi-shelf",
+                        "lopass": "Lo-pass",
+                        "loshelf": "Lo-shelf",
+                        "notch": "Notch",
+                        "resonance": "Resonance",
+                        "allpass": "Allpass"
+                    },
+                    "description": "Band 2 filter type",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand1Freq": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 24000,
+                    "default": 240,
+                    "description": "Band 2 centre / corner frequency",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand1Gain": {
+                    "type": "number",
+                    "minimum": -36,
+                    "maximum": 36,
+                    "default": 0,
+                    "description": "Band 2 gain",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand1Q": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 1,
+                    "description": "Band 2 quality factor (width)",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand2Type": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "bell",
+                        "hipass",
+                        "hishelf",
+                        "lopass",
+                        "loshelf",
+                        "notch",
+                        "resonance",
+                        "allpass"
+                    ],
+                    "default": "off",
+                    "x-enumLabels": {
+                        "off": "Off",
+                        "bell": "Bell",
+                        "hipass": "Hi-pass",
+                        "hishelf": "Hi-shelf",
+                        "lopass": "Lo-pass",
+                        "loshelf": "Lo-shelf",
+                        "notch": "Notch",
+                        "resonance": "Resonance",
+                        "allpass": "Allpass"
+                    },
+                    "description": "Band 3 filter type",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand2Freq": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 24000,
+                    "default": 750,
+                    "description": "Band 3 centre / corner frequency",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand2Gain": {
+                    "type": "number",
+                    "minimum": -36,
+                    "maximum": 36,
+                    "default": 0,
+                    "description": "Band 3 gain",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand2Q": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 1,
+                    "description": "Band 3 quality factor (width)",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand3Type": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "bell",
+                        "hipass",
+                        "hishelf",
+                        "lopass",
+                        "loshelf",
+                        "notch",
+                        "resonance",
+                        "allpass"
+                    ],
+                    "default": "off",
+                    "x-enumLabels": {
+                        "off": "Off",
+                        "bell": "Bell",
+                        "hipass": "Hi-pass",
+                        "hishelf": "Hi-shelf",
+                        "lopass": "Lo-pass",
+                        "loshelf": "Lo-shelf",
+                        "notch": "Notch",
+                        "resonance": "Resonance",
+                        "allpass": "Allpass"
+                    },
+                    "description": "Band 4 filter type",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand3Freq": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 24000,
+                    "default": 2200,
+                    "description": "Band 4 centre / corner frequency",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand3Gain": {
+                    "type": "number",
+                    "minimum": -36,
+                    "maximum": 36,
+                    "default": 0,
+                    "description": "Band 4 gain",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand3Q": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 1,
+                    "description": "Band 4 quality factor (width)",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand4Type": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "bell",
+                        "hipass",
+                        "hishelf",
+                        "lopass",
+                        "loshelf",
+                        "notch",
+                        "resonance",
+                        "allpass"
+                    ],
+                    "default": "off",
+                    "x-enumLabels": {
+                        "off": "Off",
+                        "bell": "Bell",
+                        "hipass": "Hi-pass",
+                        "hishelf": "Hi-shelf",
+                        "lopass": "Lo-pass",
+                        "loshelf": "Lo-shelf",
+                        "notch": "Notch",
+                        "resonance": "Resonance",
+                        "allpass": "Allpass"
+                    },
+                    "description": "Band 5 filter type",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand4Freq": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 24000,
+                    "default": 6000,
+                    "description": "Band 5 centre / corner frequency",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand4Gain": {
+                    "type": "number",
+                    "minimum": -36,
+                    "maximum": 36,
+                    "default": 0,
+                    "description": "Band 5 gain",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand4Q": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 1,
+                    "description": "Band 5 quality factor (width)",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand5Type": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "bell",
+                        "hipass",
+                        "hishelf",
+                        "lopass",
+                        "loshelf",
+                        "notch",
+                        "resonance",
+                        "allpass"
+                    ],
+                    "default": "off",
+                    "x-enumLabels": {
+                        "off": "Off",
+                        "bell": "Bell",
+                        "hipass": "Hi-pass",
+                        "hishelf": "Hi-shelf",
+                        "lopass": "Lo-pass",
+                        "loshelf": "Lo-shelf",
+                        "notch": "Notch",
+                        "resonance": "Resonance",
+                        "allpass": "Allpass"
+                    },
+                    "description": "Band 6 filter type",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true"
+                },
+                "eqBand5Freq": {
+                    "type": "number",
+                    "minimum": 10,
+                    "maximum": 24000,
+                    "default": 12000,
+                    "description": "Band 6 centre / corner frequency",
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "Hz",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand5Gain": {
+                    "type": "number",
+                    "minimum": -36,
+                    "maximum": 36,
+                    "default": 0,
+                    "description": "Band 6 gain",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "eqBand5Q": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 1,
+                    "description": "Band 6 quality factor (width)",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-live": true,
+                    "x-showWhen": "eqEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "limiterEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Brickwall limiter on the output (LSP limiter) — the last thing before the fader."
+                },
+                "limiterThreshold": {
+                    "type": "number",
+                    "minimum": -24,
+                    "maximum": 0,
+                    "default": -1,
+                    "description": "Ceiling the output is held below",
+                    "x-widget": "slider",
+                    "x-step": 0.5,
+                    "x-unit": "dB",
+                    "x-live": true,
+                    "x-showWhen": "limiterEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "limiterAttack": {
+                    "type": "number",
+                    "minimum": 0.25,
+                    "maximum": 20,
+                    "default": 1,
+                    "description": "Limiter attack time",
+                    "x-widget": "slider",
+                    "x-step": 0.25,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "x-showWhen": "limiterEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "limiterRelease": {
+                    "type": "number",
+                    "minimum": 0.25,
+                    "maximum": 20,
+                    "default": 5,
+                    "description": "Limiter release time",
+                    "x-widget": "slider",
+                    "x-step": 0.25,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "x-showWhen": "limiterEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "limiterLookahead": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 20,
+                    "default": 5,
+                    "description": "Lookahead — buys the limiter time to react, and adds exactly this much latency",
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "x-showWhen": "limiterEnabled=true",
+                    "x-debounceMs": 100
+                },
+                "mixLatencyMs": {
+                    "type": "number",
+                    "default": 200,
+                    "minimum": 50,
+                    "maximum": 2000,
+                    "x-widget": "slider",
+                    "x-step": 25,
+                    "x-unit": "ms",
+                    "description": "Mix latency budget — how long each input waits for lagging sources before emitting; starved sources are silence-filled."
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "chain",
+                "label": "Chain",
+                "fields": [
+                    {
+                        "key": "chain",
+                        "label": "Stages"
+                    },
+                    {
+                        "key": "sidechain",
+                        "label": "Sidechain"
+                    }
+                ]
+            },
+            {
+                "id": "meters",
+                "label": "Meters",
+                "fields": [
+                    {
+                        "key": "inputLevel",
+                        "label": "Chain In (L/R)"
+                    },
+                    {
+                        "key": "outputLevel",
+                        "label": "Chain Out (L/R)"
+                    },
+                    {
+                        "key": "gainReduction",
+                        "label": "Gain Reduction"
+                    },
+                    {
+                        "key": "keyLevel",
+                        "label": "Key Level"
+                    },
+                    {
+                        "key": "latency",
+                        "label": "DSP Latency"
+                    }
+                ]
+            },
+            {
+                "id": "throughput",
+                "label": "Output",
+                "fields": [
+                    {
+                        "key": "bitrate",
+                        "label": "Bitrate",
+                        "unit": "kbps"
+                    }
+                ]
+            }
+        ],
+        "engine": "./engine/AudioProcessingModule.ts"
+    },
+    "dependencies": {
+        "@media-router/engine": "workspace:*",
+        "@media-router/plugin-audio-302m-core": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}
