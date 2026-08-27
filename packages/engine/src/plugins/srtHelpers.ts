@@ -28,14 +28,22 @@ type StatusSection = {
  * bps (issue #680 — a trickle reads as "400 bps", not "0 kbps"). Exactly 0
  * stays "0 kbps" so an idle badge keeps its familiar text.
  *
+ * A tier only renders a figure it can hold: rounding inside the bps tier can
+ * land ON the boundary (0.9996 kbps → "1000 bps"), which is a unit the tier
+ * above owns, so that value is promoted and rendered as "1 kbps" instead.
+ *
  * The single home for bitrate text across the codebase — badges, status fields
  * and face templates all render through here so units never drift apart.
  * Callers working in Mbps pass `mbps * 1000`, callers working in bps (librist)
  * pass `bps / 1000` — unrounded, so sub-kbps rates reach the bps tier.
  */
 export function formatBitrate(kbps: number): string {
-    if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
-    if (kbps > 0 && kbps < 1) return `${Math.round(kbps * 1000)} bps`;
+    if (Math.round(kbps) >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+    if (kbps > 0 && kbps < 1) {
+        const bps = Math.round(kbps * 1000);
+        if (bps < 1000) return `${bps} bps`;
+        // Rounded up out of its own tier — fall through to kbps.
+    }
     return `${Math.round(kbps)} kbps`;
 }
 

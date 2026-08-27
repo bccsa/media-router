@@ -255,20 +255,12 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
 
         // unixfd socket-gate progress: the runner waits indefinitely for
         // producer edge sockets before launching. Surface the wait as a
-        // health warning naming the pending sockets — otherwise a gated
-        // module reports 'ok' forever while nothing runs (e.g. a consumer
-        // whose producer is disabled). Cleared when the gate opens
+        // health warning naming the modules we are waiting on — otherwise a
+        // gated module reports 'ok' forever while nothing runs (e.g. a
+        // consumer whose producer is disabled). Cleared when the gate opens
         // (pending: []) and superseded by the 'playing' health flip.
         this.childProcess.on('busGate', (data: { pending: string[] }) => {
-            if (data.pending.length > 0) {
-                this.setStatusData('bus', {
-                    'Waiting for producer': data.pending.join(', '),
-                });
-                this.setHealth('warning', `Waiting for producer bus socket(s): ${data.pending.join(', ')}`);
-            } else {
-                this.setStatusData('bus', {});
-                if (this.health === 'warning') this.setHealth('ok');
-            }
+            this.handleBusGate(data.pending);
         });
 
         await this.childProcess.start(desc);
@@ -306,6 +298,61 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             this.log.warn({ err }, 'VU process failed to start');
             this.vuProcess = null;
         }
+    }
+
+    // --- unixfd input gate (bus consumers) ---
+
+    /** True while the CURRENT warning is this module's socket-gate warning —
+     *  see `handleBusGate` and `setHealth`. */
+    private gateWarningActive = false;
+
+    /**
+     * Report (or clear) the runner's indefinite wait for its producer edge
+     * sockets.
+     *
+     * The wait is named by MODULE, not by socket path: the path is derived from
+     * (channel port, connection id) — `Waiting for producer bus socket(s):
+     * /tmp/mr-bus-41000-<connid>.sock` told an operator nothing about which
+     * upstream module was late, which is the one thing they need to fix it.
+     */
+    private handleBusGate(pending: string[]): void {
+        if (pending.length > 0) {
+            const waitingOn = this.describePendingProducers(pending);
+            this.setStatusData('bus', { 'Waiting for producer': waitingOn.join(', ') });
+            this.setHealth('warning', `Waiting for upstream module(s): ${waitingOn.join(', ')}`);
+            // AFTER setHealth — which clears the flag for every caller, so it
+            // only ever marks a warning we put there ourselves.
+            this.gateWarningActive = true;
+        } else {
+            this.setStatusData('bus', {});
+            // Clear ONLY our own warning. Anything else that warned since (a
+            // crashed helper process, a missing device) owns the health text
+            // now, and flipping it to 'ok' here hid a real failure behind an
+            // unrelated gate opening.
+            if (this.gateWarningActive && this.health === 'warning') this.setHealth('ok');
+            this.gateWarningActive = false;
+        }
+    }
+
+    /**
+     * Translate pending edge socket paths into `<sourceModuleId> (<sinkPortId>)`.
+     *
+     * Both ends derive the same path from (channel port, connection id) via
+     * `busEdgeSocketPath`, so the routing layer's view of this module's bus
+     * inputs matches what the runner is gating on. A path with no matching
+     * connection (a stale gate report mid-reconnect) falls back to the raw
+     * path rather than being dropped — an unexplained wait is worse than an
+     * ugly one.
+     */
+    private describePendingProducers(pending: string[]): string[] {
+        const sources = this.services?.instanceId
+            ? (this.services.mediaRouter?.getModuleBusSources(this.services.instanceId) ?? [])
+            : [];
+        const byPath = new Map(sources.map((s) => [s.socketPath, s]));
+        return pending.map((p) => {
+            const src = byPath.get(p);
+            return src ? `${src.sourceModuleId} (${src.sinkPortId})` : p;
+        });
     }
 
     async onStop(): Promise<void> {
@@ -717,6 +764,9 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
      *  layer also surfaces module-scoped conditions here (e.g. the live
      *  input-swap pending window — MpegTsBusExecutor). */
     setHealth(health: ModuleHealth, error?: string): void {
+        // Any other health write supersedes the socket-gate warning, so the
+        // gate opening must not stomp it back to 'ok' — see `handleBusGate`.
+        this.gateWarningActive = false;
         this.health = health;
         this.error = error;
         this.emit('stateChange', this.getState());

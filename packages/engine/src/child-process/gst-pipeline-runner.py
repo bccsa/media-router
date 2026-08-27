@@ -2259,7 +2259,16 @@ def _try_bus_attach(tee_name, socket):
     """Attach one branch. Returns True on success, False if the tee isn't up yet."""
     global _bus_branch_seq
     if pipeline is None:
-        return True
+        # No pipeline YET — not "no pipeline ever". `bus_attach` can legitimately
+        # arrive before `start` (the engine queues attaches for a producer whose
+        # own input socket gate hasn't opened; GstRunner flushes them at launch),
+        # and the old `return True` popped them off `_pending_bus_attaches`, so
+        # the branch was never built and every consumer of that edge waited on a
+        # socket nobody would create. Stay pending: identical to the
+        # tee-not-created-yet case, which the 250 ms retry already owns.
+        # `handle_stop` clears the queue and quits the loop, so this cannot
+        # outlive the pipeline it is waiting for.
+        return False
     if socket in _bus_teardowns:
         return False  # old branch still detaching — caller queues a retry
     existing = _bus_branches.get(socket)
@@ -2530,8 +2539,12 @@ def _retry_pending_bus_attaches():
         else:
             attempts += 1
             if attempts == _BUS_ATTACH_WARN_AFTER:
+                # Name what is actually missing: with no pipeline at all, "tee
+                # not up yet" sends the reader hunting for a tee that no
+                # pipeline could contain.
+                what = "pipeline" if pipeline is None else f"tee {tee_name}"
                 emit_event({"event": "warning",
-                            "message": f"bus_attach: tee {tee_name} not up yet for {socket} — still retrying"})
+                            "message": f"bus_attach: {what} not up yet for {socket} — still retrying"})
             _pending_bus_attaches[socket] = [tee_name, attempts]
     if not _pending_bus_attaches:
         _bus_retry_timer_id = None

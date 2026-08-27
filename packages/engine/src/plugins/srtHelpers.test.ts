@@ -261,6 +261,16 @@ describe('formatBitrate', () => {
     it('rounds a fractional kbps figure so unrounded callers stay tidy', () => {
         expect(formatBitrate(512.4)).toBe('512 kbps');
     });
+
+    it('promotes a bps figure that rounds onto the boundary into the kbps tier', () => {
+        // 999.6 bps must not render as "1000 bps" — that unit belongs to kbps.
+        expect(formatBitrate(0.9996)).toBe('1 kbps');
+        expect(formatBitrate(0.9995)).toBe('1 kbps');
+        expect(formatBitrate(0.9994)).toBe('999 bps'); // still inside its tier
+        // Same rule one tier up: 999.6 kbps must not render as "1000 kbps".
+        expect(formatBitrate(999.6)).toBe('1.0 Mbps');
+        expect(formatBitrate(999.4)).toBe('999 kbps');
+    });
 });
 
 describe('bitrateBadge', () => {

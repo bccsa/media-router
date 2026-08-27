@@ -71,6 +71,23 @@ export class GstRunner {
         0,
         RESTART_STABILITY_MS,
     );
+    /**
+     * `busAttach`es that arrived before the Python child existed — i.e. while
+     * the INPUT socket gate was still holding this pipeline back (see
+     * `startPipeline`). Edge socket → tee name, so a duplicate attach collapses
+     * (Python is idempotent per socket anyway) while insertion order — the order
+     * the coordinator attached the consumers — survives the flush.
+     *
+     * Dropping them (which `this.python?.sendCommand` did silently) stranded
+     * every consumer of a gated producer: the only other path that ever
+     * (re)attaches is the producer's PLAYING edge
+     * (`BusFanoutCoordinator.reattachProducer`), so a producer that gates for
+     * minutes — or never reaches PLAYING at all — left its consumers reporting
+     * "Waiting for producer bus socket(s)" forever against an edge nobody was
+     * going to create.
+     */
+    private readonly queuedBusAttaches = new Map<string, string>();
+
     /** A terminal path (`stopPipeline` / `shutdown`) has begun — see `exitWhenDrained`. */
     private exiting = false;
     /** The armed post-drain exit, so re-entry can't stack timers. */
@@ -99,6 +116,7 @@ export class GstRunner {
             case 'stopPipeline':
                 this.restartOnError = false; // Cancel any pending restarts
                 this.startEpoch++; // Invalidate any in-flight socket-gate wait
+                this.clearQueuedBusAttaches('pipeline stopped');
                 this.restartBackoff.reset();
                 if (this.restartTimer) {
                     clearTimeout(this.restartTimer);
@@ -192,12 +210,26 @@ export class GstRunner {
                 // side is idempotent per socket, so a duplicate (re-apply /
                 // producer-restart re-attach) is a no-op.
                 const d = msg.data as { tee: string; socket: string };
-                this.python?.sendCommand({ cmd: 'bus_attach', tee: d.tee, socket: d.socket });
+                if (this.python) {
+                    this.python.sendCommand({ cmd: 'bus_attach', tee: d.tee, socket: d.socket });
+                } else {
+                    // No python yet: the INPUT socket gate is still holding this
+                    // pipeline back (see startPipeline). Queue, don't drop.
+                    this.queueBusAttach(d.tee, d.socket);
+                }
                 break;
             }
 
             case 'busDetach': {
                 const d = msg.data as { socket: string };
+                // A detach for an edge still sitting in the queue cancels it —
+                // flushing it later would rebuild a branch the coordinator has
+                // already torn down (and re-create its socket file).
+                if (this.queuedBusAttaches.delete(d.socket)) {
+                    console.error(
+                        `[gst-runner] busDetach cancelled queued bus_attach: ${d.socket}`,
+                    );
+                }
                 this.python?.sendCommand({ cmd: 'bus_detach', socket: d.socket });
                 break;
             }
@@ -430,6 +462,43 @@ export class GstRunner {
         }, delay);
     }
 
+    // --- Gated bus-attach queue ---
+
+    /** Hold a `bus_attach` until the socket gate opens and Python exists. */
+    private queueBusAttach(tee: string, socket: string): void {
+        this.queuedBusAttaches.set(socket, tee);
+        console.error(
+            `[gst-runner] Queued bus_attach while gated (tee=${tee} socket=${socket}, ${this.queuedBusAttaches.size} queued)`,
+        );
+    }
+
+    /** Replay the queue into a freshly-launched Python, in arrival order. */
+    private flushQueuedBusAttaches(): void {
+        if (this.queuedBusAttaches.size === 0) return;
+        console.error(
+            `[gst-runner] Flushing ${this.queuedBusAttaches.size} queued bus_attach(es) after gate opened`,
+        );
+        for (const [socket, tee] of this.queuedBusAttaches) {
+            this.python?.sendCommand({ cmd: 'bus_attach', tee, socket });
+        }
+        this.queuedBusAttaches.clear();
+    }
+
+    /**
+     * Drop the queue on a start-epoch change (`stopPipeline`, or any newer
+     * start — including the restart loop's replay). The queued attaches belong
+     * to the superseded epoch's topology; the parent re-attaches on the next
+     * PLAYING edge, so replaying them into a different pipeline would only
+     * build branches on tees the coordinator no longer believes in.
+     */
+    private clearQueuedBusAttaches(reason: string): void {
+        if (this.queuedBusAttaches.size === 0) return;
+        console.error(
+            `[gst-runner] Dropping ${this.queuedBusAttaches.size} queued bus_attach(es): ${reason}`,
+        );
+        this.queuedBusAttaches.clear();
+    }
+
     /** Bumped on every start/stop; invalidates in-flight socket-gate waits. */
     private startEpoch = 0;
 
@@ -442,6 +511,7 @@ export class GstRunner {
 
         this.lastStart = opts;
         const epoch = ++this.startEpoch;
+        this.clearQueuedBusAttaches('superseded by a newer start');
 
         const launch = () => {
             // Capture this instance locally — `this.python` may already point to a
@@ -458,6 +528,12 @@ export class GstRunner {
             });
             this.python = py;
             py.start(opts);
+            // `py.start` writes the `start` command synchronously and Python
+            // executes commands in order, so anything flushed here lands AFTER
+            // the pipeline exists — the queued attaches find their tee (or the
+            // runner's own 250 ms pending-attach retry covers a tee that is
+            // created later, at pad-added).
+            this.flushQueuedBusAttaches();
         };
 
         // unixfdsrc has no retry: connect() runs once in start(), so launching

@@ -1,15 +1,37 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { GstPluginBase } from '@media-router/engine';
 import { AudioTranscoderModule } from './AudioTranscoderModule.js';
 import { INPUT_PORT_ID } from './audioTranscoderPorts.js';
+import { REPROBE_INTERVAL_MS } from './reprobeLoop.js';
 
 interface SourceOpts {
     streamType?: string;
     channelMap?: Array<{ srcChannel: number; dstChannel: number; gain?: number }>;
 }
 
+/**
+ * Test double for the codec probe — scripted codecs instead of spawning
+ * gst-launch against a bus socket. Successive probes shift the list; the last
+ * value repeats (matches the `resolveLadspa` override seam in audio-processing).
+ */
+class TestTranscoder extends AudioTranscoderModule {
+    /** Codecs returned by successive probes; the last entry repeats. */
+    public codecs: string[] = ['unknown'];
+    public probeCalls = 0;
+
+    protected async probeStream(): Promise<{ codec: string; rawCaps: string }> {
+        this.probeCalls++;
+        const codec = this.codecs.length > 1 ? this.codecs.shift()! : this.codecs[0];
+        return { codec, rawCaps: '' };
+    }
+}
+
 /** Harness with an optional single source wired to the input port. */
-function makeModule(source?: SourceOpts, opts: { busPort?: number | null } = {}) {
-    const module = new AudioTranscoderModule() as any;
+function makeModule(
+    source?: SourceOpts,
+    opts: { busPort?: number | null; instance?: AudioTranscoderModule } = {},
+) {
+    const module = (opts.instance ?? new AudioTranscoderModule()) as any;
     let nextPort = 41000;
     const busSources = source
         ? [
@@ -152,6 +174,8 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain('decodebin');
         expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('codec unknown'));
+        // The warning names the self-heal, not a manual restart.
+        expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('re-probing'));
         expect(setHealth).not.toHaveBeenCalledWith('ok');
     });
 
@@ -184,5 +208,243 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         expect(desc!.pipeline).not.toContain('pulsesrc');
         expect(desc!.pipeline).not.toContain('pulsesink');
         expect(desc!.pipeline).not.toContain('do-timestamp');
+    });
+});
+
+describe('AudioTranscoderModule re-probe self-heal', () => {
+    /** Start a module whose probe returns `codecs` in order (last repeats),
+     *  with the base-class pipeline spawn stubbed out. */
+    async function startModule(codecs: string[], source: SourceOpts | undefined = {}) {
+        const instance = new TestTranscoder();
+        instance.codecs = [...codecs];
+        const { module, setHealth } = makeModule(source, { instance });
+        const superStart = vi
+            .spyOn(GstPluginBase.prototype, 'onStart')
+            .mockResolvedValue(undefined);
+        const superStop = vi.spyOn(GstPluginBase.prototype, 'onStop').mockResolvedValue(undefined);
+        await module.onStart();
+        return { module, setHealth, superStart, superStop };
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    it('arms the re-probe timer when the start-time probe returns unknown', async () => {
+        const { module } = await startModule(['unknown']);
+        expect(module.probeCalls).toBe(1);
+        expect(module.reprobe.armed).toBe(true);
+        // …and the build it produced is the degraded fallback.
+        module.buildPipeline({ renditions: [{ codec: 'opus' }] });
+        expect(module.setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining('re-probing every 10s'),
+        );
+    });
+
+    it('never arms the timer when the start-time probe identifies the codec', async () => {
+        const { module, superStart } = await startModule(['aac']);
+        expect(module.reprobe.armed).toBe(false);
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS * 5);
+        expect(module.probeCalls).toBe(1);
+        expect(superStart).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-asserts the fallback warning on a still-unknown tick, without restarting', async () => {
+        const { module, setHealth, superStart, superStop } = await startModule(['unknown']);
+        setHealth.mockClear();
+
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS * 2);
+
+        expect(module.probeCalls).toBe(3); // start + 2 ticks
+        expect(setHealth).toHaveBeenCalledWith(
+            'warning',
+            expect.stringContaining('Source codec unknown'),
+        );
+        expect(setHealth).toHaveBeenCalledTimes(2);
+        expect(superStart).toHaveBeenCalledTimes(1);
+        expect(superStop).not.toHaveBeenCalled();
+        expect(module.reprobe.armed).toBe(true);
+    });
+
+    it('restarts exactly once when a real codec arrives, and disarms', async () => {
+        const { module, superStart, superStop } = await startModule(['unknown', 'aac']);
+        const onStop = vi.spyOn(module, 'onStop');
+        const onStart = vi.spyOn(module, 'onStart');
+
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
+
+        expect(onStop).toHaveBeenCalledTimes(1);
+        expect(onStart).toHaveBeenCalledTimes(1);
+        expect(superStop).toHaveBeenCalledTimes(1);
+        expect(superStart).toHaveBeenCalledTimes(2); // initial + restart
+        expect(module.probeResult).toEqual({ codec: 'aac', rawCaps: '' });
+        expect(module.reprobe.armed).toBe(false);
+
+        // Nothing left to fire — the healthy pipeline is never bounced again.
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS * 5);
+        expect(onStop).toHaveBeenCalledTimes(1);
+    });
+
+    it('coalesces triggers that land mid-restart into ONE follow-up cycle', async () => {
+        const { module, superStart, superStop } = await startModule(['unknown']);
+        let release!: () => void;
+        superStop.mockImplementation(
+            () =>
+                new Promise<void>((resolve) => {
+                    release = () => resolve();
+                }),
+        );
+
+        const first = module.restartPipeline();
+        await vi.advanceTimersByTimeAsync(0);
+        // Two more triggers while cycle 1 is mid-flight → exactly one follow-up.
+        void module.restartPipeline();
+        void module.restartPipeline();
+        superStop.mockResolvedValue(undefined);
+        release();
+        await first;
+
+        expect(superStop).toHaveBeenCalledTimes(2);
+        expect(superStart).toHaveBeenCalledTimes(3); // initial + 2 cycles
+    });
+
+    it('a follow-up cycle is a no-op once the codec is known (ADR-0005 guard)', async () => {
+        const { module, superStop } = await startModule(['unknown', 'aac']);
+        let release!: () => void;
+        superStop.mockImplementation(
+            () =>
+                new Promise<void>((resolve) => {
+                    release = () => resolve();
+                }),
+        );
+
+        const first = module.restartPipeline();
+        await vi.advanceTimersByTimeAsync(0);
+        void module.restartPipeline(); // queued follow-up
+        superStop.mockResolvedValue(undefined);
+        release();
+        await first;
+
+        // Cycle 1 re-probed 'aac' → the queued cycle must NOT bounce it.
+        expect(superStop).toHaveBeenCalledTimes(1);
+        expect(module.probeResult).toEqual({ codec: 'aac', rawCaps: '' });
+    });
+
+    it('re-arms after a FAILED restart cycle, so the next tick retries', async () => {
+        const { module, superStart, superStop } = await startModule(['unknown', 'aac']);
+        // The field shape of a failed cycle: the teardown throws, which skips
+        // `onStart`. The loop had already disarmed to run this cycle, so
+        // without a re-arm the module stayed degraded forever — contradicting
+        // ADR-0009's unbounded wait.
+        superStop.mockRejectedValueOnce(new Error('teardown failed'));
+
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
+        expect(superStop).toHaveBeenCalledTimes(1);
+        expect(superStart).toHaveBeenCalledTimes(1); // start skipped by the throw
+        expect(module.reprobe.armed).toBe(true);
+
+        // Next tick retries — EXACTLY one more restart, and it succeeds.
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
+        expect(superStop).toHaveBeenCalledTimes(2);
+        expect(superStart).toHaveBeenCalledTimes(2);
+        expect(module.probeResult).toEqual({ codec: 'aac', rawCaps: '' });
+        expect(module.reprobe.armed).toBe(false);
+
+        // …and the now-healthy pipeline is never bounced again.
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS * 3);
+        expect(superStop).toHaveBeenCalledTimes(2);
+    });
+
+    it('an external stop landing mid-restart is never revived by the cycle', async () => {
+        const { module, superStart, superStop } = await startModule(['unknown', 'aac']);
+        let release!: () => void;
+        superStop.mockImplementation(
+            () =>
+                new Promise<void>((resolve) => {
+                    release = () => resolve();
+                }),
+        );
+
+        // Tick 1 probes 'aac' and enters the restart cycle, parking inside its
+        // own onStop — past the fallback guard, before onStart.
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
+        expect(superStop).toHaveBeenCalledTimes(1);
+
+        // The engine stops the module in that window.
+        superStop.mockResolvedValue(undefined);
+        await module.onStop();
+        release();
+        await vi.advanceTimersByTimeAsync(0);
+
+        // No revival: the cycle aborted instead of starting a stopped module.
+        expect(superStart).toHaveBeenCalledTimes(1);
+        expect(module.reprobe.armed).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS * 3);
+        expect(superStart).toHaveBeenCalledTimes(1);
+        expect(module.probeCalls).toBe(2); // start + the one tick, nothing after
+    });
+
+    it('a cycle that fails after an external stop does not re-arm the loop', async () => {
+        const { module, superStop } = await startModule(['unknown', 'aac']);
+        let fail!: (err: Error) => void;
+        superStop.mockImplementation(
+            () =>
+                new Promise<void>((_resolve, reject) => {
+                    fail = reject;
+                }),
+        );
+
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
+        superStop.mockResolvedValue(undefined);
+        await module.onStop(); // engine-level stop lands mid-cycle
+        fail(new Error('teardown failed')); // …and then the cycle fails
+        await vi.advanceTimersByTimeAsync(0);
+
+        // Self-heal is for a degraded RUNNING module, not a stopped one.
+        expect(module.reprobe.armed).toBe(false);
+    });
+
+    it('an external stop then start clears the latch and self-heals normally', async () => {
+        const { module, superStart } = await startModule(['unknown']);
+
+        await module.onStop();
+        expect(module.reprobe.armed).toBe(false);
+
+        await module.onStart();
+        expect(module.probeCalls).toBe(2);
+        expect(module.reprobe.armed).toBe(true); // latch cleared, probe unknown
+
+        // The loop still drives a real restart once the codec lands.
+        module.codecs = ['aac'];
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS);
+        expect(superStart).toHaveBeenCalledTimes(3); // initial + external + restart
+        expect(module.probeResult).toEqual({ codec: 'aac', rawCaps: '' });
+        expect(module.reprobe.armed).toBe(false);
+    });
+
+    it('an external start after a known-codec stop does not arm the loop', async () => {
+        const { module } = await startModule(['unknown']);
+        await module.onStop();
+        module.codecs = ['aac'];
+        await module.onStart();
+        expect(module.reprobe.armed).toBe(false);
+    });
+
+    it('onStop disarms the timer — no restart lands after the module stopped', async () => {
+        const { module, superStart } = await startModule(['unknown', 'aac']);
+        expect(module.reprobe.armed).toBe(true);
+
+        await module.onStop();
+        expect(module.reprobe.armed).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(REPROBE_INTERVAL_MS * 3);
+        expect(module.probeCalls).toBe(1); // no tick ever ran
+        expect(superStart).toHaveBeenCalledTimes(1);
     });
 });
