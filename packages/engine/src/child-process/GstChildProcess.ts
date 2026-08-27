@@ -330,7 +330,15 @@ export class GstChildProcess extends EventEmitter {
      * is idempotent per socket, so a duplicate attach is a no-op.
      */
     sendBusAttach(tee: string, socket: string): void {
-        if (!this.ipc) return;
+        if (!this.ipc) {
+            // Pre-fork (or post-destroy): there is no runner to queue it in.
+            // Left as a drop on purpose — the coordinator re-attaches on the
+            // producer's next PLAYING edge — but logged, because the same
+            // silent `return` inside the RUNNER stranded consumers for the
+            // whole of a producer's socket gate.
+            log.debug({ tee, socket }, 'sendBusAttach dropped — no runner IPC yet');
+            return;
+        }
         this.ipc.sendEvent('busAttach', { tee, socket });
     }
 
