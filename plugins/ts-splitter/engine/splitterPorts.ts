@@ -10,7 +10,7 @@
  * from it (a configured-but-absent stream keeps its port so a downstream stays
  * wired when the source briefly goes dark).
  */
-import { streamLabel, streamTypeInfo, type StreamMedia } from './streamTypes.js';
+import { streamLabel, type StreamMedia } from './streamTypes.js';
 import type { DynamicPort } from '@media-router/engine';
 
 export type { DynamicPort };
@@ -30,6 +30,10 @@ const PID_OUT_PREFIX = 'pid-';
 export interface DiscoveredStreamConfig {
     pid: number;
     streamType: number;
+    /** Resolved by the module at discovery from stream_type PLUS the ES
+     *  descriptor loop (Opus is signalled by descriptor only), and used
+     *  verbatim here — never re-derived from streamType, which would drop the
+     *  descriptor-only identities. */
     media: StreamMedia;
     codec: string;
     /** ISO 639 code from the source PMT's language descriptor (natively
@@ -61,18 +65,17 @@ export function buildDynamicPorts(discovered: DiscoveredStreamConfig[]): Dynamic
         },
     ];
     for (const s of [...discovered].sort((a, b) => a.pid - b.pid)) {
-        const { media, codec } = streamTypeInfo(s.streamType);
         ports.push({
             id: pidPortId(s.pid),
             direction: 'output',
             streamType: 'muxed/mpegts',
-            label: streamLabel(s.pid, s.streamType, s.language),
+            label: streamLabel(s.pid, s, s.language),
             maxConnections: -1,
             requiresOrderedApply: true,
             streamInfo: {
                 pid: s.pid,
-                media,
-                codec,
+                media: s.media,
+                codec: s.codec,
                 ...(s.language ? { language: s.language } : {}),
             },
         });
@@ -108,7 +111,15 @@ function sameStreams(a: DiscoveredStreamConfig[], b: DiscoveredStreamConfig[]): 
     const byPid = new Map(a.map((s) => [s.pid, s]));
     for (const s of b) {
         const p = byPid.get(s.pid);
-        if (!p || p.streamType !== s.streamType || (p.language ?? '') !== (s.language ?? '')) {
+        // codec (not just streamType): a descriptor-derived identity can change
+        // under an unchanged stream_type — e.g. an Opus 0x06 persisted as
+        // 'private' by an older build must re-persist as 'opus'.
+        if (
+            !p ||
+            p.streamType !== s.streamType ||
+            p.codec !== s.codec ||
+            (p.language ?? '') !== (s.language ?? '')
+        ) {
             return false;
         }
     }

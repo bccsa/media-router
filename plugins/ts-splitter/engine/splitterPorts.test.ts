@@ -11,6 +11,13 @@ import {
 
 const video = (pid: number): DiscoveredStreamConfig => ({ pid, streamType: 0x1b, media: 'video', codec: 'h264' });
 const audio = (pid: number): DiscoveredStreamConfig => ({ pid, streamType: 0x0f, media: 'audio', codec: 'aac' });
+const opus = (pid: number): DiscoveredStreamConfig => ({
+    pid,
+    streamType: 0x06,
+    media: 'audio',
+    codec: 'opus',
+    language: 'nor',
+});
 
 describe('pid port ids', () => {
     it('round-trips pid <-> portId and rejects non-pid ports', () => {
@@ -57,6 +64,20 @@ describe('buildDynamicPorts', () => {
             codec: 'h264',
         });
     });
+
+    it('uses the persisted media/codec, so a descriptor-derived Opus stays opus', () => {
+        // Opus rides stream_type 0x06: re-deriving from streamType here would
+        // report it as private data (issue #698).
+        const ports = buildDynamicPorts([opus(0x20)]);
+        const port = ports.find((p) => p.id === 'pid-0x20')!;
+        expect(port.streamInfo).toEqual({
+            pid: 0x20,
+            media: 'audio',
+            codec: 'opus',
+            language: 'nor',
+        });
+        expect(port.label).toBe('Audio nor (opus, PID 0x20)');
+    });
 });
 
 describe('mergeDiscovered', () => {
@@ -72,6 +93,13 @@ describe('mergeDiscovered', () => {
         const merged = mergeDiscovered([{ ...video(0x65), streamType: 0x02 }], [video(0x65)]);
         expect(merged).not.toBeNull();
         expect(merged![0].streamType).toBe(0x1b);
+    });
+
+    it('re-persists when only the codec changes (Opus 0x06 persisted as private)', () => {
+        const stale = [{ ...opus(0x20), media: 'data' as const, codec: 'private' }];
+        const merged = mergeDiscovered(stale, [opus(0x20)]);
+        expect(merged).not.toBeNull();
+        expect(merged![0]).toMatchObject({ media: 'audio', codec: 'opus' });
     });
 });
 

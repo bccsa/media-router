@@ -6,6 +6,10 @@
  * old GStreamer demuxer, which reported parsed caps. Kept free of engine imports
  * so it's unit-testable with plain values.
  *
+ * stream_type alone is not always enough: some codecs ride the generic private
+ * PES type (0x06) and are named only by the ES descriptor loop — Opus is one —
+ * so the raw descriptor bytes are a second input to the mapping.
+ *
  * Labels follow the fleet-wide layering order (in-band name → ISO descriptor →
  * generated): the splitter reads no KLV name channel (the demuxer keeps that
  * duty), so its labels layer the natively-signalled **ISO 639 language
@@ -35,7 +39,18 @@ const STREAM_TYPES: Record<number, StreamTypeInfo> = {
     0x87: { media: 'audio', codec: 'eac3' },
 };
 
-export function streamTypeInfo(streamType: number): StreamTypeInfo {
+const PRIVATE_PES = 0x06;
+
+/**
+ * media/codec for a PMT entry. `esInfoHex` is the ES's raw descriptor-loop
+ * bytes: pass it whenever they are available, since some codecs are signalled
+ * ONLY there (Opus — see `isOpusEsInfo`) and stream_type alone under-reports
+ * them as private data.
+ */
+export function streamTypeInfo(streamType: number, esInfoHex?: string): StreamTypeInfo {
+    if (streamType === PRIVATE_PES && isOpusEsInfo(esInfoHex)) {
+        return { media: 'audio', codec: 'opus' };
+    }
     return STREAM_TYPES[streamType] ?? { media: 'data', codec: `0x${streamType.toString(16)}` };
 }
 
@@ -44,16 +59,49 @@ export function formatPid(pid: number): string {
 }
 
 /**
- * ISO 639 language code (tag 0x0a, first entry) from an ES's raw PMT
- * descriptor-loop bytes as hex (the `esInfo` field of `tssplit:discovered`).
- * Total: malformed/truncated loops and non-letter codes yield undefined,
- * never a throw — descriptor data is source-controlled wire input.
+ * An ES's raw PMT descriptor-loop bytes from the hex `esInfo` field of
+ * `tssplit:discovered` — undefined when absent or not clean hex. Descriptor
+ * data is source-controlled wire input, so every walk below bounds-checks and
+ * the parsers are total: garbage yields "unknown", never a throw.
  */
-export function languageFromEsInfo(esInfoHex: string | undefined): string | undefined {
-    if (!esInfoHex || !/^[0-9a-fA-F]*$/.test(esInfoHex) || esInfoHex.length % 2 !== 0) {
+function esInfoBytes(esInfoHex: string | undefined): Buffer | undefined {
+    if (!esInfoHex || !/^[0-9a-fA-F]+$/.test(esInfoHex) || esInfoHex.length % 2 !== 0) {
         return undefined;
     }
-    const bytes = Buffer.from(esInfoHex, 'hex');
+    return Buffer.from(esInfoHex, 'hex');
+}
+
+/**
+ * Does the descriptor loop identify the ES as Opus? Opus rides stream_type 0x06
+ * (private PES), so the PMT's stream_type says nothing — identity lives only in
+ * the descriptors: a registration descriptor (tag 0x05) with format_identifier
+ * "Opus", and/or the DVB extension descriptor (tag 0x7f) with extension tag
+ * 0x80. Other 0x06 streams (DVB subtitle, teletext) carry neither and stay
+ * generic private data.
+ */
+function isOpusEsInfo(esInfoHex: string | undefined): boolean {
+    const bytes = esInfoBytes(esInfoHex);
+    if (!bytes) return false;
+    for (let i = 0; i + 2 <= bytes.length; i += 2 + bytes[i + 1]) {
+        const len = bytes[i + 1];
+        if (i + 2 + len > bytes.length) break; // truncated descriptor — stop
+        if (bytes[i] === 0x05 && len >= 4) {
+            if (bytes.subarray(i + 2, i + 6).toString('latin1') === 'Opus') return true;
+        } else if (bytes[i] === 0x7f && len >= 1 && bytes[i + 2] === 0x80) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * ISO 639 language code (tag 0x0a, first entry) from an ES's raw PMT
+ * descriptor-loop bytes as hex. Total: malformed/truncated loops and
+ * non-letter codes yield undefined, never a throw.
+ */
+export function languageFromEsInfo(esInfoHex: string | undefined): string | undefined {
+    const bytes = esInfoBytes(esInfoHex);
+    if (!bytes) return undefined;
     for (let i = 0; i + 2 <= bytes.length; i += 2 + bytes[i + 1]) {
         if (bytes[i] !== 0x0a || bytes[i + 1] < 3 || i + 5 > bytes.length) continue;
         const code = bytes.subarray(i + 2, i + 5).toString('latin1');
@@ -67,10 +115,12 @@ export function languageFromEsInfo(esInfoHex: string | undefined): string | unde
  * carries a natively-signalled ISO 639 language the label leads with it —
  * `Audio nor (aac, PID 0x141)`. An in-band stream NAME would outrank the
  * language (fleet layering order), but the splitter reads no name channel.
+ *
+ * Takes the already-resolved media/codec rather than the stream_type, so a
+ * descriptor-derived identity (Opus) reaches the label too.
  */
-export function streamLabel(pid: number, streamType: number, language?: string): string {
-    const { media, codec } = streamTypeInfo(streamType);
-    const m = media.charAt(0).toUpperCase() + media.slice(1);
+export function streamLabel(pid: number, info: StreamTypeInfo, language?: string): string {
+    const m = info.media.charAt(0).toUpperCase() + info.media.slice(1);
     const lang = language ? ` ${language}` : '';
-    return `${m}${lang} (${codec}, PID ${formatPid(pid)})`;
+    return `${m}${lang} (${info.codec}, PID ${formatPid(pid)})`;
 }
