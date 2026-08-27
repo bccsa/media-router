@@ -254,15 +254,20 @@ export class TsSplitterModule extends GstPluginBase {
             // natively-signalled ISO 639 language (from the raw PMT
             // descriptor bytes in `esInfo`) is the strongest label input.
             const language = languageFromEsInfo(s.esInfo);
+            // Same descriptor bytes also carry the CODEC for stream types that
+            // don't state one (Opus rides 0x06 private PES), so `esInfo` goes
+            // in here too — and the resolved media/codec is what gets
+            // persisted, since ports and status must not re-derive it.
+            const { media, codec } = streamTypeInfo(streamType, s.esInfo);
             const existing = this.discovered.get(pid);
             if (
                 existing &&
                 existing.streamType === streamType &&
+                existing.codec === codec &&
                 (existing.language ?? '') === (language ?? '')
             ) {
                 continue;
             }
-            const { media, codec } = streamTypeInfo(streamType);
             this.discovered.set(pid, {
                 pid,
                 streamType,
@@ -329,7 +334,7 @@ export class TsSplitterModule extends GstPluginBase {
         // stream); a conditional language field would split the table.
         this.dynamicStatusSections = streams.map((s) => ({
             id: `stream-${s.pid}`,
-            label: streamLabel(s.pid, s.streamType, s.language),
+            label: streamLabel(s.pid, s, s.language),
             fields: [
                 { key: 'media', label: 'Media' },
                 { key: 'codec', label: 'Codec' },

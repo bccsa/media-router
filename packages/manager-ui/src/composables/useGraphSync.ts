@@ -19,8 +19,11 @@ const STREAM_TYPE_COLORS: Record<string, string> = {
     'video/raw': '#10b981',
 };
 
+/** Idle edges (nothing flowing) and unknown stream types share this grey. */
+const IDLE_EDGE_COLOR = '#6b7280';
+
 function edgeColor(streamType?: string): string {
-    return STREAM_TYPE_COLORS[streamType ?? ''] ?? '#6b7280';
+    return STREAM_TYPE_COLORS[streamType ?? ''] ?? IDLE_EDGE_COLOR;
 }
 
 /**
@@ -110,26 +113,33 @@ export function useGraphSync(
         const modules = engine.value?.modules;
         if (!modules) return [];
 
+        const engineRunning = engine.value?.running === true;
+
         const result: Edge[] = [];
         for (const conn of conns) {
-            if (!modules[conn.sourceModuleId] || !modules[conn.sinkModuleId]) continue;
-            const srcPort = modules[conn.sourceModuleId]?.ports?.find(
-                (p) => p.id === conn.sourcePortId,
-            );
-            const color = edgeColor(srcPort?.streamType);
+            const srcModule = modules[conn.sourceModuleId];
+            const sinkModule = modules[conn.sinkModuleId];
+            if (!srcModule || !sinkModule) continue;
+            const srcPort = srcModule.ports?.find((p) => p.id === conn.sourcePortId);
             const dimmed = isEdgeDimmed(conn.sourceModuleId, conn.sinkModuleId);
+            // Only animate media that's actually flowing: the engine must be
+            // running AND both endpoints of this connection must be running.
+            const flowing = engineRunning && srcModule.running && sinkModule.running;
+            // Idle connections also drop their stream-type colour, so a stopped
+            // graph reads as grey wiring rather than live signal.
+            const color = flowing ? edgeColor(srcPort?.streamType) : IDLE_EDGE_COLOR;
             const edge: Edge = {
                 id: conn.id,
                 source: conn.sourceModuleId,
                 sourceHandle: conn.sourcePortId,
                 target: conn.sinkModuleId,
                 targetHandle: conn.sinkPortId,
-                animated: true,
+                animated: flowing,
                 interactionWidth: 20,
                 style: {
                     stroke: color,
                     opacity: dimmed ? 0.1 : 1,
-                    transition: 'opacity 0.2s ease',
+                    transition: 'opacity 0.2s ease, stroke 0.2s ease',
                 },
             };
             if (conn.label) {
@@ -157,6 +167,16 @@ export function useGraphSync(
                 .sort()
                 .join(',') ?? '',
         mods: engine.value ? Object.keys(engine.value.modules).sort().join(',') : '',
+        // Edge `animated` tracks run state, so it has to be part of the
+        // fingerprint — otherwise starting/stopping leaves stale animations.
+        engineRunning: engine.value?.running === true,
+        running: engine.value
+            ? Object.values(engine.value.modules)
+                  .filter((m) => m.running)
+                  .map((m) => m.instanceId)
+                  .sort()
+                  .join(',')
+            : '',
         focus: focusMode.value,
         focused: Array.from(focusedModules.value).sort().join(','),
     }));

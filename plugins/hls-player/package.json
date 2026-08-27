@@ -56,7 +56,7 @@
                         "default": "Default",
                         "unstable": "Unstable network"
                     },
-                    "x-showWhen": "quality=auto",
+                    "x-showWhen": "quality=auto,max1080,max720,max480,max360",
                     "description": "ABR tuning — 'unstable' tightens reactivity for slow / lossy networks"
                 },
                 "audioLanguages": {

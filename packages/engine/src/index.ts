@@ -160,7 +160,7 @@ export {
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
 export { capsStreamInfo } from './plugins/streamCapsInfo.js';
 export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';
-export { formatBytes, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';
+export { formatBytes, formatBitrate, bitrateBadge, SrtStatPoller } from './plugins/srtHelpers.js';
 export type { SrtDirection, SrtStatPollerHost } from './plugins/srtHelpers.js';
 export { PacedTsSink, packetizeTs, TS_PACKET_BYTES } from './plugins/PacedTsSink.js';
 export { PacedUnixStreamTsSink } from './plugins/PacedUnixStreamTsSink.js';

@@ -90,7 +90,13 @@ describe('RistOutputModule rist:stats rendering', () => {
                 peer: {
                     id: 1,
                     cname: 'remote-tx',
-                    stats: { quality: 95, sent: 1000, retransmitted: 5, bandwidth: 4500, avg_rtt: 12.3 },
+                    stats: {
+                        quality: 95,
+                        sent: 1000,
+                        retransmitted: 5,
+                        bandwidth: 4_500_000,
+                        avg_rtt: 12.3,
+                    },
                 },
             },
         });
@@ -98,7 +104,42 @@ describe('RistOutputModule rist:stats rendering', () => {
         expect(module.dynamicStatusSections[0]).toMatchObject({ id: 'peer-1', label: 'remote-tx' });
         expect(setStatusData).toHaveBeenCalledWith(
             'peer-1',
-            expect.objectContaining({ quality: 95, sent: 1000, retransmitted: 5, bandwidth: '4500 kbps', rtt: '12.30' }),
+            expect.objectContaining({ quality: 95, sent: 1000, retransmitted: 5, bandwidth: '4.5 Mbps', rtt: '12.30' }),
+        );
+    });
+
+    it('renders librist bits/s bandwidth with adaptive kbps/Mbps units', () => {
+        const { module, setStatusData } = makeModule();
+        // librist reports bits per second, not kbps — a 512 kbit/s link must
+        // not surface as "512000 kbps".
+        stats(module, {
+            'sender-stats': { peer: { id: 1, stats: { quality: 99, bandwidth: 512_000 } } },
+        });
+        expect(setStatusData).toHaveBeenCalledWith(
+            'peer-1',
+            expect.objectContaining({ bandwidth: '512 kbps' }),
+        );
+    });
+
+    it('keeps a sub-kbps trickle visible in bps', () => {
+        const { module, setStatusData } = makeModule();
+        // bits/s are handed to the formatter unrounded, so 400 bps reads as
+        // "400 bps" instead of collapsing to "0 kbps" (issue #680).
+        stats(module, {
+            'sender-stats': { peer: { id: 1, stats: { quality: 40, bandwidth: 400 } } },
+        });
+        expect(setStatusData).toHaveBeenCalledWith(
+            'peer-1',
+            expect.objectContaining({ bandwidth: '400 bps' }),
+        );
+    });
+
+    it('shows a dash when librist reports no bandwidth', () => {
+        const { module, setStatusData } = makeModule();
+        stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 99 } } } });
+        expect(setStatusData).toHaveBeenCalledWith(
+            'peer-1',
+            expect.objectContaining({ bandwidth: '—' }),
         );
     });
 

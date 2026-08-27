@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     buildBusSrc,
+    formatBitrate,
     type PipelineDescription,
     type RistRunnerConfig,
 } from '@media-router/engine';
@@ -148,7 +149,12 @@ export class RistOutputModule extends GstPluginBase {
             quality: typeof s.quality === 'number' ? s.quality : 0,
             sent: Number(s.sent ?? 0),
             retransmitted: Number(s.retransmitted ?? 0),
-            bandwidth: typeof s.bandwidth === 'number' ? `${s.bandwidth} kbps` : '—',
+            // librist reports bandwidth in bits/s — convert to kbps for the
+            // shared formatter, which picks bps/kbps/Mbps and carries the unit
+            // in the string (so the field descriptor below stays unit-less).
+            // Unrounded on purpose: a sub-kbps trickle must survive as a
+            // fraction to reach the formatter's bps tier.
+            bandwidth: typeof s.bandwidth === 'number' ? formatBitrate(s.bandwidth / 1000) : '—',
             rtt: typeof s.avg_rtt === 'number' ? `${s.avg_rtt.toFixed(2)}` : String(s.rtt ?? '—'),
         });
 

@@ -14,7 +14,7 @@ const route = useRoute();
         :to="`/routing/${engine.engineId}`"
         class="engine-row flex flex-col px-3 py-1.5 rounded-md text-sm transition-colors cursor-grab active:cursor-grabbing"
         :class="
-            route.path.includes(engine.engineId)
+            route.params.engineId === engine.engineId
                 ? 'text-accent-fg bg-accent-muted'
                 : 'text-subtle'
         "
