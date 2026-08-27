@@ -111,12 +111,15 @@ function sameStreams(a: DiscoveredStreamConfig[], b: DiscoveredStreamConfig[]): 
     const byPid = new Map(a.map((s) => [s.pid, s]));
     for (const s of b) {
         const p = byPid.get(s.pid);
-        // codec (not just streamType): a descriptor-derived identity can change
-        // under an unchanged stream_type — e.g. an Opus 0x06 persisted as
-        // 'private' by an older build must re-persist as 'opus'.
+        // media/codec (not just streamType): a descriptor-derived identity can
+        // change under an unchanged stream_type — e.g. an Opus 0x06 persisted
+        // as 'data'/'private' by an older build must re-persist as
+        // 'audio'/'opus'. They move together today; comparing both keeps the
+        // guard honest if one ever re-classifies on its own.
         if (
             !p ||
             p.streamType !== s.streamType ||
+            p.media !== s.media ||
             p.codec !== s.codec ||
             (p.language ?? '') !== (s.language ?? '')
         ) {

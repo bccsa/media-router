@@ -100,6 +100,11 @@ describe('mergeDiscovered', () => {
         const merged = mergeDiscovered(stale, [opus(0x20)]);
         expect(merged).not.toBeNull();
         expect(merged![0]).toMatchObject({ media: 'audio', codec: 'opus' });
+        // media is compared too, so a media-only re-classification (can't
+        // happen today — media and codec move together) still re-persists.
+        expect(
+            mergeDiscovered([{ ...opus(0x20), media: 'data' as const }], [opus(0x20)]),
+        ).not.toBeNull();
     });
 });
 

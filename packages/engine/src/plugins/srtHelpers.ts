@@ -23,21 +23,27 @@ type StatusSection = {
 };
 
 /**
- * Format a kbps figure with adaptive units (kbps below 1 Mbps, Mbps above).
+ * Format a kbps figure with adaptive units, in three tiers:
+ * `>= 1000` → one-decimal Mbps, `>= 1` → whole kbps, `0 < kbps < 1` → whole
+ * bps (issue #680 — a trickle reads as "400 bps", not "0 kbps"). Exactly 0
+ * stays "0 kbps" so an idle badge keeps its familiar text.
+ *
  * The single home for bitrate text across the codebase — badges, status fields
  * and face templates all render through here so units never drift apart.
- * Callers working in Mbps pass `Math.round(mbps * 1000)`, callers working in
- * bps (librist) pass `Math.round(bps / 1000)`.
+ * Callers working in Mbps pass `mbps * 1000`, callers working in bps (librist)
+ * pass `bps / 1000` — unrounded, so sub-kbps rates reach the bps tier.
  */
 export function formatBitrate(kbps: number): string {
-    return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`;
+    if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+    if (kbps > 0 && kbps < 1) return `${Math.round(kbps * 1000)} bps`;
+    return `${Math.round(kbps)} kbps`;
 }
 
 /**
  * Live-bitrate face badge from a kbps figure. Adaptive units via
- * `formatBitrate`, green while flowing and grey at zero. The single home
- * for every transport/encoder module's bitrate badge. Re-exported from the
- * package index alongside `formatBytes`.
+ * `formatBitrate` (Mbps / kbps / bps), green while flowing and grey at zero.
+ * The single home for every transport/encoder module's bitrate badge.
+ * Re-exported from the package index alongside `formatBytes`.
  */
 export function bitrateBadge(kbps: number): Badge {
     return { icon: 'activity', text: formatBitrate(kbps), color: kbps > 0 ? '#10b981' : '#6b7280' };

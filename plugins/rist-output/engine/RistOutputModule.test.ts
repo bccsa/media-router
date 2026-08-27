@@ -121,6 +121,19 @@ describe('RistOutputModule rist:stats rendering', () => {
         );
     });
 
+    it('keeps a sub-kbps trickle visible in bps', () => {
+        const { module, setStatusData } = makeModule();
+        // bits/s are handed to the formatter unrounded, so 400 bps reads as
+        // "400 bps" instead of collapsing to "0 kbps" (issue #680).
+        stats(module, {
+            'sender-stats': { peer: { id: 1, stats: { quality: 40, bandwidth: 400 } } },
+        });
+        expect(setStatusData).toHaveBeenCalledWith(
+            'peer-1',
+            expect.objectContaining({ bandwidth: '400 bps' }),
+        );
+    });
+
     it('shows a dash when librist reports no bandwidth', () => {
         const { module, setStatusData } = makeModule();
         stats(module, { 'sender-stats': { peer: { id: 1, stats: { quality: 99 } } } });

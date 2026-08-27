@@ -150,12 +150,11 @@ export class RistOutputModule extends GstPluginBase {
             sent: Number(s.sent ?? 0),
             retransmitted: Number(s.retransmitted ?? 0),
             // librist reports bandwidth in bits/s — convert to kbps for the
-            // shared formatter, which picks kbps/Mbps and carries the unit in
-            // the string (so the field descriptor below stays unit-less).
-            bandwidth:
-                typeof s.bandwidth === 'number'
-                    ? formatBitrate(Math.round(s.bandwidth / 1000))
-                    : '—',
+            // shared formatter, which picks bps/kbps/Mbps and carries the unit
+            // in the string (so the field descriptor below stays unit-less).
+            // Unrounded on purpose: a sub-kbps trickle must survive as a
+            // fraction to reach the formatter's bps tier.
+            bandwidth: typeof s.bandwidth === 'number' ? formatBitrate(s.bandwidth / 1000) : '—',
             rtt: typeof s.avg_rtt === 'number' ? `${s.avg_rtt.toFixed(2)}` : String(s.rtt ?? '—'),
         });
 
