@@ -141,6 +141,14 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('Gst.ClockType.MONOTONIC');
         expect(runnerSource).toContain('pipe.set_start_time(Gst.CLOCK_TIME_NONE)');
         expect(runnerSource).toContain('pipe.set_base_time(0)');
+        // …and the live-capture variant that keeps the clock but skips the
+        // pinning. The skip must sit BEFORE both pin calls — placed after
+        // either one the flag reads as implemented and changes nothing, which
+        // is exactly the mis-schedule it exists to fix (video-encoder's
+        // `v4l2src ! … ! mpegtsmux` bursting on a Pi4 + ATEM).
+        expect(runnerSource).toContain(
+            'if live_capture_clock:\n        return\n    pipe.set_start_time(Gst.CLOCK_TIME_NONE)',
+        );
     });
 
     it('the contract and the legacy net clock are mutually exclusive', () => {
@@ -148,7 +156,9 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // not two independent ifs. `_apply_net_clock` is the only path that can
         // block a start (2 s wait_for_sync) and the only one that relaxes the
         // sink to sync=false — neither belongs on the contract path.
-        expect(runnerSource).toContain('        _apply_contract_clock(pipeline)\n    else:\n');
+        expect(runnerSource).toContain(
+            '        _apply_contract_clock(pipeline, data.get("liveCaptureClock"))\n    else:\n',
+        );
         expect(runnerSource).toContain('_apply_net_clock(pipeline, data.get("clock"))');
     });
 

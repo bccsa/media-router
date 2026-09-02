@@ -2,13 +2,10 @@ import {
     GstPluginBase,
     ENCODER_ELEMENTS,
     H264_PROFILES,
+    ProbedEncoders,
     SPEED_PRESETS,
     ThroughputPoller,
     bitrateBadge,
-    resolveImpl,
-    probeEncoderAvailability,
-    probeGstElement,
-    applyEncoderAvailabilityToManifest,
     type CodecId,
     type H264Profile,
     type ImplId,
@@ -17,6 +14,7 @@ import {
     type ThroughputSample,
 } from '@media-router/engine';
 import { buildPipeline, DEMUX_NAME } from './transcoderPipeline.js';
+import { renditionSummary, throughputSection } from './transcoderStatus.js';
 import {
     buildDynamicPorts,
     outputPortId,
@@ -48,7 +46,7 @@ import {
  * empty `liveUpdatableParams` default is exactly right, so it isn't overridden.
  */
 export class TranscoderModule extends GstPluginBase {
-    /** udpsink element names captured at build time (`usink_0`…), one per rendition. */
+    /** Bus-egress tee names captured at build time (`busout_<port>`), one per rendition. */
     private sinkNames: string[] = [];
     /** Renditions captured at build time, index-aligned with `sinkNames`. */
     private renditions: Rendition[] = [];
@@ -69,38 +67,42 @@ export class TranscoderModule extends GstPluginBase {
         publish: (total, perSink) => this.publishThroughput(total, perSink),
     });
 
-    /** Runtime availability map — populated by `initManifest` after probing. */
-    private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
-
-    /** Hardware scaler availability (vapostproc / v4l2convert), probed alongside
-     *  the encoders. Renditions on a hardware encoder impl get their scale stage
-     *  offloaded to the matching hardware scaler when it's installed. */
-    private static hwScalers: { va: boolean; v4l2: boolean } = { va: false, v4l2: false };
+    /**
+     * What this host can encode with — impls per codec plus hardware-scaler
+     * availability, filled in by `initManifest`. Hardware scalers are probed
+     * because a rendition on a hardware encoder impl gets its scale stage
+     * offloaded to the matching scaler when it's installed. Starts as the
+     * all-empty host so a build before/without probing fails cleanly rather
+     * than naming an encoder that isn't there.
+     */
+    static probed: ProbedEncoders = ProbedEncoders.unprobed();
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        const [availability, vapost, v4l2conv] = await Promise.all([
-            probeEncoderAvailability(ENCODER_ELEMENTS),
-            probeGstElement('vapostproc'),
-            probeGstElement('v4l2convert'),
-        ]);
-        TranscoderModule.availableImpls = availability;
-        TranscoderModule.hwScalers = { va: vapost, v4l2: v4l2conv };
-        applyEncoderAvailabilityToManifest(manifest, availability);
+        TranscoderModule.probed = await ProbedEncoders.probe(ENCODER_ELEMENTS, {
+            probeHwScalers: true,
+        });
+        TranscoderModule.probed.applyToManifest(manifest);
     }
 
     /** Exposed for tests. */
     static getAvailableImpls(): Record<CodecId, ImplId[]> {
-        return TranscoderModule.availableImpls;
+        return TranscoderModule.probed.availability;
     }
 
-    /** Exposed for tests. */
+    /** Exposed for tests — replaces the availability, keeping the probed scalers. */
     static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
-        TranscoderModule.availableImpls = availability;
+        TranscoderModule.probed = ProbedEncoders.forTest(
+            availability,
+            TranscoderModule.probed.hwScalers,
+        );
     }
 
-    /** Exposed for tests. */
+    /** Exposed for tests — replaces the scalers, keeping the availability. */
     static setHwScalers(hwScalers: { va: boolean; v4l2: boolean }): void {
-        TranscoderModule.hwScalers = hwScalers;
+        TranscoderModule.probed = ProbedEncoders.forTest(
+            TranscoderModule.probed.availability,
+            hwScalers,
+        );
     }
 
     /** One MPEG-TS input + one MPEG-TS output per configured rendition. */
@@ -162,9 +164,7 @@ export class TranscoderModule extends GstPluginBase {
         // stream rate (measured: 0.4 s keeps a 5 Mbps 1080p50 rendition's
         // IDRs deliverable over a ~2x-headroom RIST path).
         const rawCpb = Number(config.cpbSeconds);
-        const globalCpbSeconds = Number.isFinite(rawCpb)
-            ? Math.min(2, Math.max(0.1, rawCpb))
-            : 1;
+        const globalCpbSeconds = Number.isFinite(rawCpb) ? Math.min(2, Math.max(0.1, rawCpb)) : 1;
 
         // Resolve each rendition's effective encoder settings (override ??
         // global) and its concrete impl. The impl is resolved PER rendition
@@ -176,7 +176,7 @@ export class TranscoderModule extends GstPluginBase {
             const r = renditions[i];
             const codec = r.codec ?? globalCodec;
             const implChoice = r.encoderImpl ?? globalImplChoice;
-            const impl = resolveImpl(codec, implChoice, TranscoderModule.availableImpls[codec] ?? []);
+            const impl = TranscoderModule.probed.resolve(codec, implChoice);
             if (!impl) {
                 this.setHealth(
                     'error',
@@ -220,7 +220,7 @@ export class TranscoderModule extends GstPluginBase {
             bufferMs,
             decodeThreads,
             deinterlace,
-            hwScalers: TranscoderModule.hwScalers,
+            hwScalers: TranscoderModule.probed.hwScalers,
         });
         if (!result) return null;
 
@@ -238,7 +238,7 @@ export class TranscoderModule extends GstPluginBase {
             codec: codecs.size === 1 ? [...codecs][0] : 'mixed',
             impl: impls.size === 1 ? [...impls][0] : 'mixed',
             framerate: `${framerate} fps`,
-            renditions: this.renditionSummary(outputs),
+            renditions: renditionSummary(outputs),
         });
         this.setHealth('ok');
 
@@ -266,34 +266,6 @@ export class TranscoderModule extends GstPluginBase {
 
     // --- internals ---
 
-    private renditionSummary(outputs: TranscoderOutput[]): string {
-        return outputs
-            .map((o) => {
-                const r = o.rendition;
-                // Flag only the knobs this rendition actually overrides, using the
-                // resolved value so 'auto'/inherited entries don't show noise.
-                const tags: string[] = [];
-                if (r.codec) tags.push(o.encode.codec);
-                if (r.encoderImpl) tags.push(o.encode.impl);
-                if (r.rateControl) tags.push(o.encode.rateControl);
-                if (r.speedPreset) tags.push(o.encode.speedPreset);
-                if (r.h264Profile && r.h264Profile !== 'auto') tags.push(o.encode.h264Profile);
-                if (r.sceneCut !== undefined) tags.push(`sc${o.encode.sceneCut}`);
-                const suffix = tags.length ? ` [${tags.join(', ')}]` : '';
-                return `${r.width}x${r.height}@${r.bitrate}k${suffix}`;
-            })
-            .join(', ');
-    }
-
-    /**
-     * Label for a per-rendition throughput row, e.g. `1280x720 @ 2500k`. Named
-     * distinctly from `transcoderPorts.renditionLabel` (which returns the
-     * operator-facing output name) — same family, different output.
-     */
-    private renditionStatLabel(r: Rendition | undefined, i: number): string {
-        return r ? `${r.width}x${r.height} @ ${r.bitrate}k` : `Rendition ${i + 1}`;
-    }
-
     /**
      * Publish a PER-RENDITION live bitrate (not a single aggregate) as a
      * runtime status section — one row per quality plus a Total. The face
@@ -303,25 +275,7 @@ export class TranscoderModule extends GstPluginBase {
         total: ThroughputSample,
         perSink: Record<string, ThroughputSample>,
     ): void {
-        const fields: Array<{ key: string; label: string; unit?: string }> = [];
-        const data: Record<string, number | string> = {};
-
-        for (let i = 0; i < this.sinkNames.length; i++) {
-            const sample = perSink[this.sinkNames[i]];
-            if (!sample) continue;
-            fields.push({
-                key: `r${i}`,
-                label: this.renditionStatLabel(this.renditions[i], i),
-                unit: 'Mbps',
-            });
-            data[`r${i}`] = Math.round(sample.bitrateKbps / 10) / 100;
-        }
-
-        fields.push({ key: 'total', label: 'Total', unit: 'Mbps' });
-        data.total = Math.round(total.bitrateKbps / 10) / 100;
-        fields.push({ key: 'totalBytes', label: 'Total Bytes' });
-        data.totalBytes = `${(total.totalBytes / 1024 / 1024).toFixed(1)} MB`;
-
+        const { fields, data } = throughputSection(this.sinkNames, this.renditions, total, perSink);
         this.dynamicStatusSections = [{ id: 'throughput', label: 'Live Throughput', fields }];
         this.setStatusData('throughput', data);
         this.setBadge('bitrate', bitrateBadge(total.bitrateKbps));

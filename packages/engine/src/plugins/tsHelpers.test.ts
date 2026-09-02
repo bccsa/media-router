@@ -67,8 +67,10 @@ describe('buildTsUdpInput', () => {
         expect(s).toContain('unixfdsrc socket-path=/tmp/mr-bus-5500.sock');
         // buildBusSrc's leaky deep ingress queue (5 s)
         expect(s).toContain('queue leaky=2 max-size-time=5000000000');
-        // jitter queue defaults to 200 ms (absorbs encoder I-frame bursts)
-        expect(s).toContain('queue leaky=2 max-size-time=200000000');
+        // jitter queue defaults to 200 ms and BACK-PRESSURES (leaky=0): raw TS
+        // must never be shed mid-slice — see buildTsUdpInput.
+        expect(s).toContain('queue leaky=0 max-size-time=200000000');
+        expect(s).not.toContain('leaky=2 max-size-time=200000000');
         // tsparse re-frames to packet boundaries but must NOT touch timestamps:
         // the producer stamped this stream onto the shared house timeline
         // (ADR-0005), so a local PCR re-anchor here would throw it away.

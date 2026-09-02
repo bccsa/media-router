@@ -1,5 +1,6 @@
 {
     "debug.allowBreakpointsEverywhere": true,
+    "debug.javascript.autoAttachFilter": "onlyWithFlag",
     "cSpell.words": ["apply", "ristreceiver"],
     "files.associations": {
         "system_error": "cpp",

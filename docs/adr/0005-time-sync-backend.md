@@ -848,3 +848,44 @@ the mux 100–121 ms apart — a fresh value on every mux incarnation (120.4 /
   the build to re-deploy is staged there as `/data/ba6.tgz` + `/data/ba6.md5`.
   Re-run once the source is re-signed: deploy, restart the mux module, read the
   `branchAlign:` lines, then `/data/xchain-test-20260814/xchain-round2.sh`.
+
+## Implementation notes (Stage 3e — live-capture producers: `liveCaptureClock`)
+
+**Amends Decision 3.** Decision 3 pins `base_time=0`, `start_time=NONE` on
+every contract pipeline so running-time ≡ house time. One class of producer
+cannot run pinned: a pipeline whose head is a REAL LIVE CAPTURE element feeding
+an aggregator-based muxer — today exactly `v4l2src ! … ! mpegtsmux`
+(video-encoder). `mpegtsmux` is a GstAggregator (gst 1.28) and schedules its
+output off running time; with base-time pinned to 0, running time is the box's
+uptime while the capture source produces from its own natural zero, and the
+aggregator mis-schedules — it holds video and releases it in GOP-sized bursts
+(measured on a Pi 4 + ATEM, 2026-09-01: egress alternating ~31 KB/s starve
+seconds with ~300 KB/s spikes, ~2.3 s period; every live consumer froze on one
+frame).
+
+- **Decision 3 now reads:** bus-attached synced pipelines pin
+  `base_time=0`/`start_time=NONE`, EXCEPT a producer that declares
+  `PipelineDescription.liveCaptureClock`, which keeps the contract's monotonic
+  house clock but lets base-time anchor naturally at PLAYING
+  (`_apply_contract_clock(pipe, live_capture_clock=True)` in the runner).
+- **Why the contract still holds.** The producer stamp is base-time independent
+  by construction: both stamping backends read house time as
+  `clock − base_time` and `unixfdsink` transmits
+  `segment_to_running_time(pts) + base_time`, so base-time cancels and the wire
+  carries the same absolute house time either way. The clock half — one fixed
+  monotonic `GstSystemClock` per pipeline — is untouched. Consumers see an
+  identical timeline; nothing consumer-side knows or cares which variant
+  produced the stream.
+- **Scope, deliberately narrow.** Read only on the contract path (the legacy
+  net-clock path never zeroed base-time, so it is a no-op there). It is a
+  property of the pipeline, not the plugin: bus-fed producers (transcoder,
+  mpegts-muxer) take already-stamped bus input and MUST NOT set it — their
+  branch alignment (Stage 3d) is built on running-time ≡ house time. It is not
+  to be set speculatively on other live-source modules: it is a targeted fix
+  for a measured aggregator mis-schedule, and the egress-rate burst pattern
+  above is the test for whether a new module needs it.
+- Rejected: fixing the aggregator's scheduling instead (a gst-plugins-bad
+  patch — carries a fork of mpegtsmux for one producer class); re-basing the
+  capture source's timestamps onto house time before the mux (a second
+  timeline rewrite in the same pipeline, which the stamping contract exists
+  to avoid).

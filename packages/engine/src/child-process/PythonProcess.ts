@@ -38,6 +38,9 @@ export interface RunnerStartOptions {
     env?: Record<string, string>;
     clock?: ClockConfig;
     timeSyncContract?: boolean;
+    /** Contract clock WITHOUT the base-time zeroing — see
+     *  `PipelineDescription.liveCaptureClock`. Only read under the contract. */
+    liveCaptureClock?: boolean;
     decoderThreadType?: 'auto' | 'frame';
     busReports?: BusReport[];
     rist?: RistRunnerConfig;

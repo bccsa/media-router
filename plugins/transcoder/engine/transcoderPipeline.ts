@@ -8,7 +8,7 @@ import {
     buildTsUdpInput,
     buildBusSink,
     buildLeakyQueue,
-    buildEncoderBranch,
+    buildEncodeLeaf,
     busTeeName,
 } from '@media-router/engine';
 import type { TranscoderOutput } from './transcoderPorts.js';
@@ -56,9 +56,9 @@ export interface TranscoderPipelineInputs {
 
 export interface TranscoderPipelineResult {
     pipeline: string;
-    /** udpsink element names (one per rendition, `usink_0`…) — the module polls
-     *  these for aggregate output throughput. Single source of truth for the
-     *  names constructed in the leaf builder. */
+    /** Bus-egress tee names (one per rendition, `busout_<port>`) — the module
+     *  polls these for per-rendition output throughput. Single source of truth
+     *  for the names constructed in the leaf builder. */
     sinkNames: string[];
 }
 
@@ -152,29 +152,15 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         jitterMs: bufferMs,
     });
 
-    // Per-rendition leaf: a short leaky queue (so a slow encoder sheds whole
-    // frames instead of stalling the shared tee and starving its siblings),
-    // then scale → encode → mux → per-output udpsink.
-    // videoconvert lives HERE (after videoscale), not before the tee: this way
-    // the pixel-format conversion runs on the small, already-downscaled frame
-    // (e.g. 854x480) instead of the full 1080p source — a fraction of the cost.
-    // Each leaf is its own thread (the leading queue), so the scale+convert+encode
-    // of every rendition runs on its own core.
+    // Per-rendition leaf — the shared `queue ! scale ! encode ! mux ! sink` tail
+    // (buildEncodeLeaf); only the scale stage is transcoder-specific. The leaf's
+    // head queue is 'decoder-pool': these buffers are frames from the single
+    // shared decoder, and the queue is what keeps a slow encoder from stalling
+    // the tee and starving its siblings.
     const sinkNames: string[] = [];
     const leaf = (out: TranscoderOutput, i: number): string => {
         const r = out.rendition;
         const e = out.encode;
-        // 4 buffers (80 ms @50 fps), not 2: vah264enc accepts frames in GPU
-        // batch cycles, and with only 40 ms of slack every cycle shed frames —
-        // measured on gate01 (file-paced replica, per-stage probes): videorate
-        // feeds a clean 50/s, encoder-out was 38/s at buffers=2 vs 48.4/s at
-        // buffers=4 (8/16 add nothing; encoder preset and vapostproc change
-        // nothing — the 40 ms admission window was the choke). Kept BUFFERS-
-        // bounded and small on purpose: these queues hold DECODER-POOL frames,
-        // and a deep time-bound queue here (300 ms ≈ 15 frames × N leaves)
-        // exhausted avdec's buffer pool and froze the whole transcode chain.
-        // 4 × 3 leaves = 12 refs is well inside the pool.
-        const q = 'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0';
         // Scale/convert stage, hardware where the rendition's encoder impl has
         // its scaler installed (probed by the module):
         //   va   → vapostproc does scale+format-convert+GPU-upload in one step
@@ -187,32 +173,37 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
         //   else → software videoscale, with videoconvert HERE (after the
         //          scale) so pixel-format conversion runs on the small
         //          downscaled frame instead of the full-size source.
-        const scale =
+        const scaleStage =
             e.impl === 'va' && input.hwScalers?.va
                 ? `vapostproc ! video/x-raw(memory:VAMemory),width=${r.width},height=${r.height}`
                 : e.impl === 'v4l2' && input.hwScalers?.v4l2
                   ? `v4l2convert ! video/x-raw,width=${r.width},height=${r.height}`
                   : `videoscale ! video/x-raw,width=${r.width},height=${r.height} ! videoconvert`;
-        // Every knob is per-rendition here: `out.encode` is already fully resolved
-        // (override ?? global, impl picked for this rendition's codec) by the
-        // module, so this builder just forwards it — no defaults to keep in sync.
-        const encoder = buildEncoderBranch({
-            codec: e.codec,
-            impl: e.impl,
-            bitrateKbps: r.bitrate,
-            kif,
-            name: `venc_${i}`,
-            rateControl: e.rateControl,
-            speedPreset: e.speedPreset,
-            h264Profile: e.h264Profile,
-            sceneCut: e.sceneCut,
-            cpbSeconds: e.cpbSeconds,
-            interlacedOutput: deinterlaceMode === 'off',
-        });
-        const sink = buildBusSink(out.port);
         // Throughput element: the fan-out `tee` (busTeeName).
         sinkNames.push(busTeeName(out.port));
-        return `${q} ! ${scale} ! ${encoder} ! mpegtsmux name=mux_${i} latency=0 alignment=7 ! ${sink}`;
+        return buildEncodeLeaf({
+            inputQueue: 'decoder-pool',
+            scaleStage,
+            // Every knob is per-rendition here: `out.encode` is already fully
+            // resolved (override ?? global, impl picked for this rendition's
+            // codec) by the module, so this builder just forwards it — no
+            // defaults to keep in sync.
+            encoder: {
+                codec: e.codec,
+                impl: e.impl,
+                bitrateKbps: r.bitrate,
+                kif,
+                name: `venc_${i}`,
+                rateControl: e.rateControl,
+                speedPreset: e.speedPreset,
+                h264Profile: e.h264Profile,
+                sceneCut: e.sceneCut,
+                cpbSeconds: e.cpbSeconds,
+                interlacedOutput: deinterlaceMode === 'off',
+            },
+            muxName: `mux_${i}`,
+            sink: buildBusSink(out.port),
+        });
     };
 
     // Video-only capsfilter on the tsdemux output — steers pad selection to the

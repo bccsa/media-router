@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // `initManifest` now delegates the element probing to the engine's shared
-// `probeEncoderAvailability` (which calls `probeGstElement` internally, not
-// through this barrel). Mock that helper to control availability; the real
-// `applyEncoderAvailabilityToManifest`, `buildEncoderBranch` and `resolveImpl`
-// come through from `...actual`. The element-probing logic itself is covered by
-// packages/engine/src/plugins/encoderManifest.test.ts.
+// `ProbedEncoders.probe` (which calls `probeGstElement` internally, not through
+// this barrel). Stub the static to control availability; the real
+// `applyToManifest`, `buildEncoderBranch` and `resolveImpl` behaviour comes
+// through from `...actual`. The element-probing logic itself is covered by
+// packages/engine/src/plugins/encoderManifest.test.ts and probedEncoders.test.ts.
 // The v4l2 demand gate itself is covered by
 // packages/engine/src/system/v4l2DeviceProvider.test.ts; mocked here so this
 // file can pin the LIFECYCLE wiring — which hook claims and releases it.
@@ -13,7 +13,6 @@ vi.mock('@media-router/engine', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@media-router/engine');
     return {
         ...actual,
-        probeEncoderAvailability: vi.fn(),
         registerV4l2DeviceProvider: vi.fn(),
         acquireV4l2Demand: vi.fn(),
         releaseV4l2Demand: vi.fn(),
@@ -21,21 +20,21 @@ vi.mock('@media-router/engine', async () => {
 });
 
 import * as engine from '@media-router/engine';
-import { buildEncoderBranch, resolveImpl } from '@media-router/engine';
+import { buildEncoderBranch, resolveImpl, ProbedEncoders } from '@media-router/engine';
 import { bitrateBadge } from '@media-router/engine';
+import type { CodecId, ImplId } from '@media-router/engine';
 import { VideoEncoderModule } from './VideoEncoderModule.js';
-import { buildV4l2Source, parseResolution, supportsLiveBitrate } from './videoEncoderPipeline.js';
+import { parseResolution } from '@media-router/engine';
+import { buildV4l2Source, supportsLiveBitrate } from './videoEncoderPipeline.js';
 
-const probeMock = engine.probeEncoderAvailability as unknown as ReturnType<typeof vi.fn>;
-
-function setAvailability(availability: Record<string, string[]>) {
-    probeMock.mockResolvedValue(availability);
+function setAvailability(availability: Partial<Record<CodecId, ImplId[]>>) {
+    vi.spyOn(ProbedEncoders, 'probe').mockResolvedValue(ProbedEncoders.forTest(availability));
 }
 
 describe('VideoEncoderModule', () => {
     beforeEach(() => {
-        probeMock.mockReset();
-        // Reset the static availability map between tests so stale state from
+        vi.restoreAllMocks();
+        // Reset the static availability between tests so stale state from
         // one test's initManifest doesn't leak into another.
         VideoEncoderModule.setAvailableImpls({ h264: [], h265: [], av1: [] });
     });
@@ -109,26 +108,43 @@ describe('VideoEncoderModule', () => {
 
     describe('buildEncoderBranch', () => {
         // Video Encoder passes name 'venc0' + speed-preset 'superfast'; the other
-        // knobs stay at the shared builder's defaults (CBR, auto profile,
-        // scenecut 40 — x264's own default, so it's behaviourally neutral).
-        const branch = (codec: 'h264' | 'h265' | 'av1', impl: 'v4l2' | 'software', bitrateKbps: number, kif: number) =>
-            buildEncoderBranch({ codec, impl, bitrateKbps, kif, name: 'venc0', speedPreset: 'superfast' });
+        // knobs stay at the shared builder's defaults (CBR for software, auto
+        // profile, scenecut 40 — x264's own default, so it's behaviourally
+        // neutral). The v4l2 branch pins VBR regardless — see
+        // buildV4l2ExtraControls (CBR stalls the bcm2835 encoder live).
+        const branch = (
+            codec: 'h264' | 'h265' | 'av1',
+            impl: 'v4l2' | 'software',
+            bitrateKbps: number,
+            kif: number,
+        ) =>
+            buildEncoderBranch({
+                codec,
+                impl,
+                bitrateKbps,
+                kif,
+                name: 'venc0',
+                speedPreset: 'superfast',
+            });
 
-        it('builds H.264 V4L2 with CBR mode (video_bitrate_mode=1), bitrate, and keyframe period', () => {
+        it('builds H.264 V4L2 pinned to VBR (video_bitrate_mode=0) with bitrate and both keyframe-period controls', () => {
             const s = branch('h264', 'v4l2', 4000, 60);
             expect(s).toContain('v4l2h264enc name=venc0');
             expect(s).toContain('video_bitrate=4000000');
-            // CBR mode is load-bearing — without it the V4L2 driver picks its
-            // default (typically VBR) and bursts well above target on motion.
-            expect(s).toContain('video_bitrate_mode=1');
+            // VBR is load-bearing: video_bitrate_mode=1 throttles the bcm2835
+            // encoder to ~10 fps on live input (see buildV4l2ExtraControls).
+            expect(s).toContain('video_bitrate_mode=0');
+            expect(s).not.toContain('video_bitrate_mode=1');
+            expect(s).toContain('repeat_sequence_header=1');
+            expect(s).toContain('video_gop_size=60');
             expect(s).toContain('h264_i_frame_period=60');
             expect(s).toContain('h264parse');
         });
-        it('builds H.265 V4L2 with CBR mode and the H.265 keyframe-period control', () => {
+        it('builds H.265 V4L2 pinned to VBR with the H.265 keyframe-period control', () => {
             const s = branch('h265', 'v4l2', 5000, 90);
             expect(s).toContain('v4l2h265enc name=venc0');
             expect(s).toContain('video_bitrate=5000000');
-            expect(s).toContain('video_bitrate_mode=1');
+            expect(s).toContain('video_bitrate_mode=0');
             expect(s).toContain('h265_i_frame_period=90');
             expect(s).toContain('h265parse');
         });
@@ -140,7 +156,9 @@ describe('VideoEncoderModule', () => {
             expect(s).toContain('key-int-max=90');
             // scenecut=40 is x264's own default → behaviourally neutral, now
             // spelled out because the shared builder always emits it.
-            expect(s).toContain('option-string="nal-hrd=cbr:vbv-maxrate=3500:vbv-bufsize=3500:scenecut=40"');
+            expect(s).toContain(
+                'option-string="nal-hrd=cbr:vbv-maxrate=3500:vbv-bufsize=3500:scenecut=40"',
+            );
             expect(s).toContain('h264parse');
         });
         it('builds H.265 software as CBR (strict-cbr, peak capped at target)', () => {
@@ -148,7 +166,9 @@ describe('VideoEncoderModule', () => {
             expect(s).toContain('x265enc name=venc0');
             expect(s).toContain('speed-preset=superfast');
             expect(s).toContain('bitrate=3000');
-            expect(s).toContain('option-string="vbv-maxrate=3000:vbv-bufsize=3000:strict-cbr=1:scenecut=40"');
+            expect(s).toContain(
+                'option-string="vbv-maxrate=3000:vbv-bufsize=3000:strict-cbr=1:scenecut=40"',
+            );
             expect(s).toContain('h265parse');
         });
         it('builds AV1 software with svtav1enc target-bitrate', () => {
@@ -177,14 +197,16 @@ describe('VideoEncoderModule', () => {
         it('falls back to raw caps when the device cannot be probed', () => {
             const s = buildV4l2Source('/dev/video-nonexistent', 1920, 1080, 30);
             expect(s).toContain('v4l2src device=/dev/video-nonexistent');
-            expect(s).toContain('video/x-raw,width=1920,height=1080,framerate=30/1');
+            expect(s).toContain('video/x-raw,width=1920,height=1080');
+            expect(s).toContain('video/x-raw,framerate=30/1');
         });
         it('threads videorate through the conversion tail so devices that cannot do the requested fps still negotiate cleanly', () => {
             // Cam Link 4K and similar HDMI capture devices only expose
             // specific framerates — without videorate the encoder fails
             // caps negotiation when the user picks an unsupported fps.
             const s = buildV4l2Source('/dev/video-nonexistent', 1920, 1080, 30);
-            expect(s).toContain('videoconvert ! videorate ! videoscale');
+            expect(s).toContain('videoscale n-threads=2');
+            expect(s).toContain('videorate drop-only=true');
         });
     });
 
@@ -243,7 +265,7 @@ describe('VideoEncoderModule', () => {
             return { module, setElementProperty };
         }
 
-        it('re-asserts video_bitrate_mode=1 (CBR) on every v4l2 bitrate update — drivers store the full controls struct from the last write, so dropping the mode silently reverts to VBR', async () => {
+        it('re-sends the FULL controls struct (mode pinned to VBR) on every v4l2 bitrate update — the driver keeps only the last write', async () => {
             VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
             const { module, setElementProperty } = makeRunning({
                 codec: 'h264',
@@ -256,7 +278,9 @@ describe('VideoEncoderModule', () => {
             expect(name).toBe('venc0');
             expect(prop).toBe('extra-controls');
             expect(value).toContain('video_bitrate=5000000');
-            expect(value).toContain('video_bitrate_mode=1');
+            expect(value).toContain('video_bitrate_mode=0');
+            expect(value).toContain('repeat_sequence_header=1');
+            expect(value).toContain('video_gop_size=60');
             expect(value).toContain('h264_i_frame_period=60');
         });
 
@@ -270,7 +294,7 @@ describe('VideoEncoderModule', () => {
             await (module as any).applyLiveBitrate(6000);
             const [, , value] = setElementProperty.mock.calls[0];
             expect(value).toContain('h265_i_frame_period=90');
-            expect(value).toContain('video_bitrate_mode=1');
+            expect(value).toContain('video_bitrate_mode=0');
         });
 
         it('does nothing for software encoders — bitrate changes there must rebuild the pipeline so vbv-maxrate stays consistent', async () => {
@@ -332,6 +356,12 @@ describe('VideoEncoderModule', () => {
             expect(desc!.pipeline).not.toContain('udpsink');
             expect((module as any).busSinkName).toBe('busout_5000');
             expect(desc!.restartOnError).toBe(true);
+            // v4l2src head into the aggregator mpegtsmux: the contract's house
+            // clock without its base-time zeroing. Dropped, the mux schedules
+            // off house time while the capture produces from its own zero and
+            // releases video in GOP-sized ~2.3 s bursts — the pipeline string
+            // asserted above is unchanged and every live consumer freezes.
+            expect(desc!.liveCaptureClock).toBe(true);
         });
 
         it('falls back to a fakesink when no bus channel endpoint is assigned', () => {
@@ -436,7 +466,12 @@ describe('VideoEncoderModule', () => {
                 instanceId: 'video-enc-1',
                 mediaRouter: { getBusChannel: vi.fn(() => ({ port: 5000 })) },
             };
-            module.config = { codec: 'h264', resolution: '1920x1080', framerate: 30, bitrate: 6000 };
+            module.config = {
+                codec: 'h264',
+                resolution: '1920x1080',
+                framerate: 30,
+                bitrate: 6000,
+            };
             module.setStatusData = vi.fn();
             module.setBadge = vi.fn();
             return module;

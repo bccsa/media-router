@@ -189,6 +189,21 @@ describe('start payload', () => {
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).timeSyncContract).toBe(false);
     });
 
+    it('forwards liveCaptureClock — dropping it puts a live capture head back on the pinned timeline', () => {
+        // The flag selects the contract variant that keeps the house clock but
+        // lets base-time anchor naturally. Lost here, video-encoder's
+        // `v4l2src ! … ! mpegtsmux` goes back to running-time ≡ house time and
+        // the aggregator mux releases video in GOP-sized ~2.3 s bursts (Pi4 +
+        // ATEM): the pipeline string is unchanged and nothing reports it.
+        expect(
+            payloadFor({ pipeline: 'fakesrc ! fakesink', liveCaptureClock: true })
+                .liveCaptureClock,
+        ).toBe(true);
+        // Omitted → false, not undefined: every bus-fed producer keeps the
+        // pinned timeline its branch alignment is built on.
+        expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).liveCaptureClock).toBe(false);
+    });
+
     it('forwards alignBranchesToStamps — dropping it puts the mux back on luck', () => {
         // Caught HERE the hard way (.202, 2026-08-14): the mux built the config,
         // the runner knew what to do with it, and the field skew was untouched

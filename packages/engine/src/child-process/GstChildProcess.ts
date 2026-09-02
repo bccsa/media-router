@@ -209,6 +209,7 @@ export class GstChildProcess extends EventEmitter {
             env: desc.env ?? {},
             clock: desc.clock,
             timeSyncContract: desc.timeSyncContract ?? false,
+            liveCaptureClock: desc.liveCaptureClock ?? false,
             decoderThreadType: desc.decoderThreadType ?? 'auto',
             busReports: desc.busReports ?? [],
             rist: desc.rist,

@@ -1690,7 +1690,7 @@ def _apply_net_clock(pipe, clock_cfg):
     # value would make every buffer "late" and break playback.
 
 
-def _apply_contract_clock(pipe):
+def _apply_contract_clock(pipe, live_capture_clock=False):
     """Put `pipe` on the time-sync contract's clock and PIN its timeline.
 
     The contract (engine-wide `timeSyncContract`) replaces the net-clock dance
@@ -1707,6 +1707,27 @@ def _apply_contract_clock(pipe):
         the PAUSED→PLAYING transition, so the 0 we set here survives; both must
         therefore be set BEFORE the state change out of NULL/READY.
 
+    `live_capture_clock` (the start payload's `liveCaptureClock`) keeps the
+    first move and DROPS the second: the pipeline still runs on the shared
+    monotonic house clock, but base-time anchors naturally at PLAYING. It is for
+    pipelines whose head is a real live capture element feeding an
+    aggregator-based muxer — today `v4l2src ! ... ! mpegtsmux` (video-encoder).
+    `mpegtsmux` is a GstAggregator and schedules its output off RUNNING TIME:
+    with base-time pinned to 0 that is house time (the size of the box's
+    uptime) while the live source produces from its own natural zero, so the mux
+    mis-schedules and releases video in GOP-sized ~2.3 s bursts (measured on a
+    Pi4 + ATEM: ~31 KB/s starve seconds alternating with ~300 KB/s spikes, every
+    live consumer frozen on one frame).
+
+    The contract survives that: the producer stamp is base-time independent by
+    construction — both stamping backends read house time as `clock - base_time`
+    (`gst_stamp_probe.house_now`, `gst_mrtsstamp_house_now`) and `unixfdsink`
+    transmits `segment_to_running_time(pts) + base_time`, so the base-time
+    cancels and the wire carries the same absolute house time either way. Only
+    the pinning is skipped; the clock half is identical. Bus-fed producers
+    (transcoder, mpegts-muxer) must NOT use it — their branch alignment is built
+    on running-time being house time. See `PipelineDescription.liveCaptureClock`.
+
     Nothing external is contacted or waited for, so unlike `_apply_net_clock`
     this can neither delay nor wedge a start — there is no timeout case and no
     sink to relax to `sync=false`.
@@ -1714,6 +1735,8 @@ def _apply_contract_clock(pipe):
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     pipe.use_clock(clock)
+    if live_capture_clock:
+        return
     pipe.set_start_time(Gst.CLOCK_TIME_NONE)
     pipe.set_base_time(0)
 
@@ -1770,8 +1793,13 @@ def handle_start(data):
     # under the time-sync contract, a monotonic system clock with a pinned
     # timeline (no daemon involved); otherwise the legacy shared net clock that
     # slaves this pipeline to its siblings (video-player ↔ audio-decoder).
+    # `liveCaptureClock` is read HERE AND ONLY HERE, inside the contract branch:
+    # it selects the contract variant that keeps the house clock but lets
+    # base-time anchor naturally (live capture head into an aggregator mux — see
+    # `_apply_contract_clock`). With the contract off the legacy path below is
+    # byte-identical to what it was.
     if data.get("timeSyncContract"):
-        _apply_contract_clock(pipeline)
+        _apply_contract_clock(pipeline, data.get("liveCaptureClock"))
     else:
         _apply_net_clock(pipeline, data.get("clock"))
 

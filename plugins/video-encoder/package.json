@@ -99,6 +99,76 @@
                     "minimum": 15,
                     "maximum": 300,
                     "description": "Keyframe interval (frames)"
+                },
+                "rateControl": {
+                    "type": "string",
+                    "enum": ["cbr", "vbr"],
+                    "default": "cbr",
+                    "x-enumLabels": {
+                        "cbr": "CBR (constant — safest for UDP/SRT)",
+                        "vbr": "VBR (variable — better quality on motion)"
+                    },
+                    "description": "Encoder rate control for the software (x264/x265) and Intel VA-API encoders. CBR (default) holds a constant bitrate (peak = target) — best for fixed-bandwidth UDP/SRT/MPEG-TS, since bursts can overrun the receiver's buffer and read as packet loss. VBR targets the bitrate as an average and lets per-frame size vary for better quality on motion, with the peak capped at 1.5x to bound bursts. The Pi's V4L2 hardware encoder always runs VBR (its CBR mode stalls live encoding), so this field is hidden there. Rebuilds the pipeline.",
+                    "x-showWhen": "encoderImpl=software,va,auto"
+                },
+                "speedPreset": {
+                    "type": "string",
+                    "enum": [
+                        "ultrafast",
+                        "superfast",
+                        "veryfast",
+                        "faster",
+                        "fast",
+                        "medium",
+                        "slow"
+                    ],
+                    "default": "superfast",
+                    "x-enumLabels": {
+                        "ultrafast": "Ultrafast — lowest CPU, lowest quality",
+                        "superfast": "Superfast",
+                        "veryfast": "Very fast",
+                        "faster": "Faster",
+                        "fast": "Fast",
+                        "medium": "Medium — balanced",
+                        "slow": "Slow — highest CPU, best quality"
+                    },
+                    "description": "Software x264/x265 speed↔quality preset (on Intel VA-API it maps to target-usage; ignored by V4L2 hardware and AV1). Faster presets use less CPU but block up on hard content; slower presets spend more CPU for cleaner quality at the same bitrate. Default 'superfast' suits a CPU-bound Pi. Rebuilds the pipeline.",
+                    "x-showWhen": "encoderImpl=software,va,auto"
+                },
+                "h264Profile": {
+                    "type": "string",
+                    "enum": ["auto", "baseline", "main", "high"],
+                    "default": "auto",
+                    "x-enumLabels": {
+                        "auto": "Auto — encoder default",
+                        "baseline": "Baseline — most compatible",
+                        "main": "Main",
+                        "high": "High — best efficiency"
+                    },
+                    "description": "H.264 output profile — constrains encoder features for decoder compatibility (H.264 only; ignored for H.265/AV1). Baseline is the most widely decodable (no CABAC or B-frames); Main adds CABAC; High adds the 8×8 transform for best efficiency. Auto lets the encoder choose. Rebuilds the pipeline.",
+                    "x-showWhen": "codec=h264"
+                },
+                "sceneCut": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 40,
+                    "x-widget": "slider",
+                    "x-step": 5,
+                    "description": "Scene-cut detection threshold for software x264/x265 (ignored by V4L2 and VA-API hardware). On a detected hard cut the encoder inserts an adaptive keyframe so the picture snaps clean at the cut. 40 is x264's default; higher = more sensitive; 0 = off (strict fixed-GOP). Rebuilds the pipeline.",
+                    "x-showWhen": "encoderImpl=software,auto"
+                },
+                "cpbSeconds": {
+                    "type": "number",
+                    "minimum": 0.1,
+                    "maximum": 2,
+                    "default": 1,
+                    "x-widget": "slider",
+                    "x-step": 0.1,
+                    "x-unit": "s",
+                    "x-advanced": true,
+                    "description": "HRD buffer depth in seconds of the rate cap (x264/x265 vbv-bufsize, VA-API cpb-size). Bounds the encoder's worst-case burst — above all scene-cut keyframes: an oversized keyframe serializes over the link at the stream rate and lands late at the receiver. 1 s is the classic default; lower it toward 0.3–0.5 s when the delivery path has little bandwidth headroom. Rebuilds the pipeline.",
+                    "x-showWhen": "encoderImpl=software,va,auto"
                 }
             }
         },

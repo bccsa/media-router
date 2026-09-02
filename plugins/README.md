@@ -759,6 +759,14 @@ interface PipelineDescription {
      * failure mode — SRT plugins ship 5s → 10s.
      */
     restartBackoffMs?: { baseMs?: number; maxMs?: number };
+    /**
+     * Time-sync contract WITHOUT the base-time pinning (ADR-0005, Stage 3e):
+     * for a pipeline whose head is a real live capture feeding an aggregator
+     * mux (`v4l2src ! … ! mpegtsmux`). Pinned base-time makes mpegtsmux
+     * mis-schedule and burst whole GOPs. Producer-only, measured-need-only —
+     * bus-fed producers must NOT set it.
+     */
+    liveCaptureClock?: boolean;
     /** Dynamic-pad linking rules (tsdemux, decodebin, …). See below. */
     linkOnPadAdded?: PadLinkRule[];
     /** In-runner librist (RIST without the CLI relay) — see rist-input/-output. */
@@ -984,18 +992,26 @@ Two more LADSPA facts that cost time to rediscover: control ports carry **no enu
 Codec plugins that emit H.264/H.265/AV1 (video-encoder, transcoder) share the encoder-element knowledge from `@media-router/engine` rather than forking it — don't copy an encoder branch builder into a new plugin, reuse these:
 
 - `ENCODER_ELEMENTS` — the `{codec × impl}` → GStreamer element-name table (`impl` is `v4l2` \| `va` \| `software`).
-- `resolveImpl(codec, preference, available)` — pick the impl to use at runtime (`auto` prefers a hardware block, then software), given the probed availability.
-- `buildEncoderBranch(opts)` — build one CBR/VBR-tuned encoder fragment ending at the parsed elementary stream. Options: `{ codec, impl, bitrateKbps, kif, name, rateControl?, speedPreset?, h264Profile?, sceneCut?, interlacedOutput? }` (defaults: CBR, `ultrafast`, `auto` profile, scenecut 40). `name` gives the encoder element a distinct name so several renditions can coexist in one pipeline. `interlacedOutput` marks the frames as undeinterlaced fields — only x264 can signal it in the bitstream (`interlaced=true`); VA-API/V4L2 ignore it.
-- `probeEncoderAvailability(ENCODER_ELEMENTS)` — probe every element with `gst-inspect` and return the installed impls per codec. Store the result for `resolveImpl`.
-- `applyEncoderAvailabilityToManifest(manifest, availability)` — narrow the manifest's `codec` enum to installed codecs and build the `encoderImpl` `x-enumBy` map. A codec plugin's `initManifest` is usually just these two calls:
+- `ProbedEncoders` — what the host can encode with. `await ProbedEncoders.probe(ENCODER_ELEMENTS, { probeHwScalers? })` from `initManifest` (gst-inspect results are cached per process); `.applyToManifest(manifest)` narrows the `codec` enum to installed codecs and builds the `encoderImpl` `x-enumBy` map; `.resolve(codec, choice)` turns the operator's `auto`/explicit choice into an installed impl (`auto` prefers `v4l2`, then `software`) or `null`; `.hwScalers` says whether `vapostproc`/`v4l2convert` exist. Start a module's static field from `ProbedEncoders.unprobed()` (no encoder at all — a build before probing fails cleanly). `forTest(availability, hwScalers?)` is the test double.
+- `buildEncodeLeaf(opts)` — the shared `queue ! [scale] ! encode ! h26xparse ! mpegtsmux ! sink` tail used by both plugins: `{ encoder: EncoderBranchOptions, inputQueue: 'decoder-pool' | 'none', muxName, sink, scale? }`.
+- `buildEncoderBranch(opts)` — one encoder fragment ending at the parsed elementary stream. Options: `{ codec, impl, bitrateKbps, kif, name, rateControl?, speedPreset?, h264Profile?, sceneCut?, cpbSeconds?, interlacedOutput? }` (defaults: CBR for software/VA, `ultrafast`, `auto` profile, scenecut 40). **The `v4l2` (Pi bcm2835) branch ignores `rateControl` and pins VBR** — its CBR mode throttles live encoding to ~10 fps (measured 2026-09-02; see `buildV4l2ExtraControls`). Hide CBR/VBR-only fields on that impl with `"x-showWhen": "encoderImpl=software,va,auto"`, as the video-encoder manifest does. The v4l2 H.264 branch declares level 4.2 (kernel 6.12 validates level vs resolution × fps at STREAMON; 4 rejects 1080p50).
+- `buildV4l2ExtraControls(codec, bitrateBps, kif)` — the `extra-controls` struct for `v4l2h26xenc`, also what a live bitrate update must re-send in full (the driver keeps only the last write). Always `video_bitrate_mode=0` plus `repeat_sequence_header=1` and both GOP controls.
+- `parseResolution('1280x720')` — the `resolution` config field parser (defaults to 1080p on garbage). Shared so no plugin re-implements it.
 
 ```typescript
+static probed: ProbedEncoders = ProbedEncoders.unprobed();
+
 static async initManifest(manifest: Record<string, any>): Promise<void> {
-    const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
-    MyModule.availableImpls = availability;
-    applyEncoderAvailabilityToManifest(manifest, availability);
+    MyModule.probed = await ProbedEncoders.probe(ENCODER_ELEMENTS);
+    MyModule.probed.applyToManifest(manifest);
 }
 ```
+
+Latency-sensitive knobs (SRT `latency`, the player's `bufferMs`, the video-encoder's `cpbSeconds`) are deliberately per-instance settings, not code defaults: SRT latency is a per-link number (10 ms on this LAN, 500–2000 ms on WAN links) and a code default of one of them would be wrong for the other.
+
+##### Rendering to the box's compositor
+
+`ensureWaylandEnv()` (from `@media-router/engine`) seeds `XDG_RUNTIME_DIR` / `WAYLAND_DISPLAY` from the live compositor socket when the engine was launched without a session env (systemd-user). Call it before building any `waylandsink` pipeline; the video-player and mjpeg-monitor share it — never copy the function into a plugin.
 
 ##### Shared 302M audio helpers
 
@@ -1132,6 +1148,8 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 }
 ```
+
+A module that is about to START a V4L2 capture pipeline calls `suspendV4l2Enumeration(ms)` first (from `onStart`, only when a device is configured — see the video-encoder): opening ANY `/dev/video*` node while a pipeline that uses the bcm2835 codec blocks is setting up wedges it or fails `v4l2src`'s buffer allocation, and every `v4l2-ctl` the provider spawns opens every node. The blackout is a window (10 s covers probe + spawn + reach-PLAYING), not a lock, and the cached list is served meanwhile. Don't call it from `buildPipeline`: that also runs for unconfigured modules (it would freeze the picker the operator is browsing) and from `refreshPipelineDescription`, which never re-enters V4L2 setup.
 
 Gate inside `list()`, not on the poll timer: the registry's timer is not the only
 caller — the manager heartbeat re-sends every device snapshot through

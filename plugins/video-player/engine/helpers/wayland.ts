@@ -1,5 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { ensureWaylandEnv } from '@media-router/engine';
+
+// The env seeding is shared engine infrastructure now (mjpeg-monitor renders
+// too); re-exported so this module's callers keep one import site.
+export { ensureWaylandEnv };
 
 /**
  * Helpers for working with Weston / labwc and the kiosk-shell cog browser.
@@ -125,9 +130,7 @@ export function findCogPidForDisplay(
  */
 export function currentWaylandSessionIdent(runtimeDir: string): string {
     try {
-        const sock = fs
-            .readdirSync(runtimeDir)
-            .find((entry) => /^wayland-\d+$/.test(entry));
+        const sock = fs.readdirSync(runtimeDir).find((entry) => /^wayland-\d+$/.test(entry));
         if (!sock) return '';
         const st = fs.statSync(path.join(runtimeDir, sock));
         return `${sock}:${st.ino}`;
@@ -147,9 +150,7 @@ export function hasWaylandSession(): boolean {
     const runtime = process.env.XDG_RUNTIME_DIR;
     if (!runtime) return false;
     try {
-        return fs
-            .readdirSync(runtime)
-            .some((entry) => /^wayland-\d+$/.test(entry));
+        return fs.readdirSync(runtime).some((entry) => /^wayland-\d+$/.test(entry));
     } catch {
         return false;
     }
@@ -169,37 +170,4 @@ export async function waitForWaylandSocket(timeoutMs: number, intervalMs = 250):
         await new Promise((r) => setTimeout(r, intervalMs));
     }
     return false;
-}
-
-/**
- * Best-effort: if a Wayland socket is present in the user runtime dir but
- * `WAYLAND_DISPLAY` isn't exported (e.g. systemd-user launch with no inherited
- * session env), set it on the parent process so child gst-runner inherits.
- * Also seeds `XDG_RUNTIME_DIR` if missing — we use `/run/user/<uid>` which
- * exists for any logged-in user.
- */
-export function ensureWaylandEnv(): void {
-    if (!process.env.XDG_RUNTIME_DIR && typeof process.getuid === 'function') {
-        const candidate = `/run/user/${process.getuid()}`;
-        try {
-            if (fs.statSync(candidate).isDirectory()) {
-                process.env.XDG_RUNTIME_DIR = candidate;
-            }
-        } catch {
-            /* /run/user/<uid> not present — nothing to do */
-        }
-    }
-    if (process.env.WAYLAND_DISPLAY) return;
-    const runtime = process.env.XDG_RUNTIME_DIR;
-    if (!runtime) return;
-    try {
-        const socket = fs
-            .readdirSync(runtime)
-            .find((entry) => /^wayland-\d+$/.test(entry));
-        if (socket) {
-            process.env.WAYLAND_DISPLAY = path.basename(socket);
-        }
-    } catch {
-        /* runtime dir unreadable */
-    }
 }
