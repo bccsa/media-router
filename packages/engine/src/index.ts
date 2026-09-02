@@ -91,10 +91,10 @@ export {
 } from './plugins/encoderManifest.js';
 export { ProbedEncoders } from './plugins/probedEncoders.js';
 export type { HwScalerAvailability, ProbeEncodersOptions } from './plugins/probedEncoders.js';
-export { buildEncodeLeaf } from './plugins/encoderLeaf.js';
+export { buildEncodeLeaf, buildScaleStage } from './plugins/encoderLeaf.js';
 export { parseResolution } from './plugins/videoGeometry.js';
 export { ensureWaylandEnv } from './system/waylandEnv.js';
-export type { EncodeLeafOptions } from './plugins/encoderLeaf.js';
+export type { EncodeLeafOptions, ScaleStageOptions } from './plugins/encoderLeaf.js';
 export { ThroughputPoller } from './plugins/ThroughputPoller.js';
 export type { ThroughputSample, ThroughputPollerOptions } from './plugins/ThroughputPoller.js';
 export {

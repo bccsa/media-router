@@ -28,11 +28,15 @@
  * case so the claim stays measured rather than assumed.
  *
  * LAZY ARM: the `active` property is the contract's arm/disarm. Inactive is
- * basetransform passthrough with `transform_ip_on_passthrough` off, i.e. the
- * buffer is not even handed to us — a tee with no consumer edge has nothing to
- * stamp for and must pay nothing. Activating starts a FRESH latch (an anchor
- * only ever means anything to the consumers that held it); deactivating drops
- * all state.
+ * basetransform passthrough; the buffer is still handed to `transform_ip`
+ * (`transform_ip_on_passthrough` on) but only for the `bytes-total` counter —
+ * one size read and one atomic add — and the stamping path stays behind the
+ * `active` check, so a tee with no consumer edge pays nothing for stamping.
+ * The counter is the producer's egress byte counter, read by the runner's
+ * throughput tracker instead of a per-buffer python probe (which cost 0.5-0.7
+ * of a core per producer on a Pi 4, 2026-09-02). Activating starts a FRESH
+ * latch (an anchor only ever means anything to the consumers that held it);
+ * deactivating drops all state; the byte counter runs across both.
  *
  * FILE SIZE, deliberately over the repo's ~250-line guideline (CLAUDE.md): a
  * GStreamer element is one cohesive unit — GObject boilerplate, property
@@ -46,13 +50,14 @@
 #include <gst/gst.h>
 #include <gst/base/gstbasetransform.h>
 
+#include <atomic>
 #include <vector>
 
 #include "mrts/ts_timeline.h"
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.0.0"
+#define MRTSSTAMP_VERSION "2.1.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -81,6 +86,7 @@ enum {
     PROP_ACTIVE,
     PROP_COPY_COUNT,
     PROP_DRIFT,
+    PROP_BYTES_TOTAL,
 };
 
 #define GST_TYPE_MRTSSTAMP (gst_mrtsstamp_get_type())
@@ -94,6 +100,15 @@ struct _GstMrTsStamp {
     gboolean checked;            /* one-shot clock/segment diagnostics per arm */
     gboolean seg_warned;         /* one-shot unmappable-segment report per arm */
     guint64 copies;              /* buffers we were handed as a COPY (see above) */
+    /* Bytes seen on the sink pad since construction, active OR passthrough —
+     * the producer's egress byte counter (`bytes-total`). Counted here, in C,
+     * because this element already sits in front of every `busout_*` tee and
+     * a python pad probe at this rate (~1170 single buffers/s at 12 Mbps —
+     * capssetter/capsfilter dismantle the mux's buffer lists) cost the runner
+     * 0.5-0.7 of a core PER PRODUCER (Pi 4, 2026-09-02: a box at 60 % fell
+     * to 26 % with the probe removed). Atomic: read by the runner's
+     * get_throughput from the main loop while the streaming thread adds. */
+    std::atomic<guint64> bytes_total;
     mrts::TimelineStamper *st;
     std::vector<MrTsStampPending> *pending;
 };
@@ -261,6 +276,12 @@ static GstFlowReturn gst_mrtsstamp_transform_ip(GstBaseTransform *base, GstBuffe
     GstMrTsStamp *self = GST_MRTSSTAMP(base);
     GstMapInfo mi;
 
+    /* Byte accounting first, every buffer, armed or not: in passthrough
+     * (`transform_ip_on_passthrough` on) this is the whole per-buffer cost —
+     * one size read and one atomic add, no map, no lock. */
+    self->bytes_total.fetch_add(gst_buffer_get_size(buf), std::memory_order_relaxed);
+    if (!self->active) return GST_FLOW_OK;
+
     /* READ, not READWRITE: only the buffer's PTS/DTS change, never its bytes. */
     if (!gst_buffer_map(buf, &mi, GST_MAP_READ)) return GST_FLOW_OK;
 
@@ -367,6 +388,9 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
             g_value_set_boolean(value, self->active);
             g_mutex_unlock(&self->lock);
             break;
+        case PROP_BYTES_TOTAL:
+            g_value_set_uint64(value, self->bytes_total.load(std::memory_order_relaxed));
+            break;
         case PROP_COPY_COUNT:
             g_mutex_lock(&self->lock);
             g_value_set_uint64(value, self->copies);
@@ -405,6 +429,8 @@ static void gst_mrtsstamp_finalize(GObject *object) {
 }
 
 static void gst_mrtsstamp_init(GstMrTsStamp *self) {
+    /* GObject memory is zeroed, but be explicit for the atomic. */
+    self->bytes_total.store(0, std::memory_order_relaxed);
     g_mutex_init(&self->lock);
     self->active = FALSE;
     self->checked = FALSE;
@@ -445,6 +471,15 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
                             0, G_MAXUINT64, 0,
                             (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
+        gobject_class, PROP_BYTES_TOTAL,
+        g_param_spec_uint64("bytes-total", "Bytes total",
+                            "Bytes that passed this element since construction, whether "
+                            "stamping or in passthrough — the producer's egress byte "
+                            "counter, read by the runner's throughput tracker instead of "
+                            "a per-buffer python probe.",
+                            0, G_MAXUINT64, 0,
+                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
         gobject_class, PROP_DRIFT,
         g_param_spec_boxed("drift", "Drift",
                            "Drift-servo state (ppm, slewNs, marginNs, engageNs, "
@@ -464,10 +499,13 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
 
     base_class->transform_ip = gst_mrtsstamp_transform_ip;
     base_class->prepare_output_buffer = gst_mrtsstamp_prepare_output_buffer;
-    /* Passthrough must mean UNTOUCHED. basetransform defaults this to TRUE,
-     * which would still hand every buffer to transform_ip while disarmed —
-     * exactly the per-buffer cost lazy arming exists to remove. */
-    base_class->transform_ip_on_passthrough = FALSE;
+    /* Passthrough still hands every buffer to transform_ip — for the byte
+     * counter only (one atomic add, then return; the stamping path is behind
+     * the `active` check). This used to be FALSE so a disarmed egress paid
+     * nothing per buffer; the counter's cost is a rounding error next to the
+     * python probe it replaces, and a producer with no consumer attached must
+     * still report its output bitrate. */
+    base_class->transform_ip_on_passthrough = TRUE;
     /* In and out caps are always identical, so leaving this on would pin
      * passthrough permanently and the element could never arm. */
     base_class->passthrough_on_same_caps = FALSE;

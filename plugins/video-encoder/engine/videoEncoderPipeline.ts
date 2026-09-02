@@ -1,6 +1,19 @@
 import { execFileSync } from 'child_process';
-import { parseFormats, type CodecId, type ImplId } from '@media-router/engine';
+import { buildScaleStage, parseFormats, type CodecId, type ImplId } from '@media-router/engine';
 import { pickCaptureMode, type CaptureMode } from './captureModes.js';
+
+/**
+ * The capture tail's software scale/convert. The default (tests, non-Pi
+ * hosts), and ALSO what a hardware host gets when the chosen capture mode
+ * already has the requested size: `videoscale`/`videoconvert` go basetransform
+ * passthrough at near-zero cost when caps match, whereas the Pi 4 ISP
+ * (`v4l2convert`) round-trips every frame regardless and caps at ~46 fps at
+ * 1080p (measured, see the video-player's scaling note) — a 1080p50 capture
+ * encoded at 1080p must not go through it for nothing.
+ */
+function softwareScaleStage(width: number, height: number): string {
+    return buildScaleStage({ width, height, impl: 'software', threads: 2 });
+}
 
 export { pickCaptureMode, type CaptureMode } from './captureModes.js';
 
@@ -47,6 +60,7 @@ export function buildV4l2SourceForModes(
     height: number,
     framerate: number,
     modes: CaptureMode[] | undefined,
+    scaleStage: string = softwareScaleStage(width, height),
 ): string {
     // `do-timestamp=true` (v1 parity): stamp each captured buffer with the
     // pipeline clock at capture time instead of trusting driver timestamps.
@@ -65,21 +79,29 @@ export function buildV4l2SourceForModes(
     // Buffers-bounded and small on purpose: these are decoder-pool frames (see
     // the same rule on `buildEncodeLeaf`'s decoder-pool queue).
     //
-    // `videoscale` FIRST (on the full-size frame, threaded), `videoconvert`
-    // after (on the downscaled one) — same cost ordering as the transcoder
-    // leaf. `videorate` conforms the framerate for devices that can't hit the
-    // requested fps, and is `drop-only`: it must never DUPLICATE. Duplicating
-    // turns any transient overload into a death spiral — one shed frame leaves
-    // a PTS gap, videorate fills it with ~a dozen dups, the dups eat the very
-    // thread budget whose exhaustion caused the shed, and real throughput
-    // pins at ~2 fps (measured, same date). Dropping conforms a too-fast
-    // device; a too-slow device now just delivers its real rate, which every
-    // consumer of this live stream handles.
+    // `videorate` FIRST: it conforms the framerate for devices that can't hit
+    // the requested fps, and every frame it drops is one the scale stage never
+    // touches. It is `drop-only` — it must never DUPLICATE. Duplicating turns
+    // any transient overload into a death spiral — one shed frame leaves a PTS
+    // gap, videorate fills it with ~a dozen dups, the dups eat the very thread
+    // budget whose exhaustion caused the shed, and real throughput pins at
+    // ~2 fps (measured 2026-09-01). Dropping conforms a too-fast device; a
+    // too-slow device just delivers its real rate, which every consumer of
+    // this live stream handles. The scale stage LAST, directly before the
+    // encoder: `buildScaleStage` — v4l2convert (Pi 4 ISP) or vapostproc when
+    // the encoder impl's hardware scaler is installed (its VA-memory caps must
+    // touch the encoder), else threaded videoscale ! videoconvert.
+    const mode = modes ? pickCaptureMode(modes, width, height) : undefined;
+    // No scaling to do (rung 1, exact size) → the software stage, which is a
+    // passthrough here; the caller's hardware stage is only worth its ISP
+    // round-trip when the frame actually changes size (see softwareScaleStage).
+    const stage =
+        mode && mode.width === width && mode.height === height
+            ? softwareScaleStage(width, height)
+            : scaleStage;
     const tail =
         `queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! ` +
-        `videoscale n-threads=2 ! video/x-raw,width=${width},height=${height} ! ` +
-        `videoconvert n-threads=2 ! videorate drop-only=true ! video/x-raw,framerate=${framerate}/1`;
-    const mode = modes ? pickCaptureMode(modes, width, height) : undefined;
+        `videorate drop-only=true ! video/x-raw,framerate=${framerate}/1 ! ${stage}`;
     if (!mode) {
         // Probe failed or the device names nothing we can pin — let v4l2src
         // negotiate freely and rely on the conversion tail to bridge.
@@ -109,7 +131,7 @@ export function buildV4l2SourceForModes(
             ? ` ! videorate drop-only=true ! image/jpeg,framerate=${framerate}/1`
             : '';
     // Caps are the CHOSEN mode's, not the request's — on rung 2 they differ
-    // and the tail's videoscale does the conforming.
+    // and the tail's scale stage does the conforming.
     if (mode.pixelFormat === 'MJPG') {
         // `jpegparse` re-frames the stream on the actual JPEG markers instead
         // of trusting the driver's buffer boundaries. Load-bearing for the ATEM
@@ -161,6 +183,7 @@ export function buildV4l2Source(
     width: number,
     height: number,
     framerate: number,
+    scaleStage: string = softwareScaleStage(width, height),
 ): string {
     let modes: CaptureMode[] | undefined;
     try {
@@ -172,5 +195,5 @@ export function buildV4l2Source(
     } catch {
         /* probe failed — leave `modes` undefined for bare negotiation */
     }
-    return buildV4l2SourceForModes(device, width, height, framerate, modes);
+    return buildV4l2SourceForModes(device, width, height, framerate, modes, scaleStage);
 }

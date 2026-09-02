@@ -14,7 +14,8 @@
  * about renditions, ports or hardware availability.
  */
 
-import { buildEncoderBranch, type EncoderBranchOptions } from './encoderElements.js';
+import { type ImplId, buildEncoderBranch, type EncoderBranchOptions } from './encoderElements.js';
+import type { HwScalerAvailability } from './probedEncoders.js';
 
 /**
  * Bounded LEAKY queue at the head of a leaf fed from a shared decode tee, so a
@@ -67,6 +68,49 @@ export interface EncodeLeafOptions {
     /** Pre-built sink fragment — `buildBusSink(port)`, or a fakesink when the
      *  module has no bus channel assigned yet. */
     sink: string;
+}
+
+export interface ScaleStageOptions {
+    width: number;
+    height: number;
+    /** The encoder impl this stage feeds — hardware scaling is only chosen for
+     *  the scaler that PAIRS with it (`vapostproc`→vah26Xenc, `v4l2convert`→
+     *  v4l2h26Xenc). */
+    impl: ImplId;
+    /** What the host has installed (`ProbedEncoders.hwScalers`). Omitted or
+     *  partial = nothing installed — the software stage. */
+    hwScalers?: Partial<HwScalerAvailability>;
+    /** `n-threads` for the software videoscale/videoconvert; omitted = element
+     *  default (1). Capture paths on a Pi set 2 — see the video-encoder. */
+    threads?: number;
+}
+
+/**
+ * The scale/convert fragment for `EncodeLeafOptions.scaleStage` (and the
+ * video-encoder's capture tail). Hardware where the impl's own scaler is
+ * installed:
+ *   va   → vapostproc does scale + format-convert + GPU upload in one step
+ *          and hands vah26Xenc frames already in VA memory. The software chain
+ *          uploaded anyway (vah26Xenc needs the frames on the GPU) AFTER
+ *          burning CPU on videoscale+videoconvert — strictly worse. Its caps
+ *          carry `memory:VAMemory`, so nothing may sit between it and the
+ *          encoder (a plain `video/x-raw` capsfilter would fail negotiation).
+ *   v4l2 → v4l2convert, the Pi 4 ISP M2M scaler that pairs with v4l2h26Xenc
+ *          (bcm2835; a Pi 5 exposes neither). Measured 2026-09-02 on the ATEM
+ *          1080p→720p capture chain: 0.46 → 0.34 cores at a steady 25 fps.
+ *   else → software videoscale, with videoconvert AFTER the scale so the
+ *          pixel-format conversion runs on the small downscaled frame.
+ */
+export function buildScaleStage(opts: ScaleStageOptions): string {
+    const { width, height, impl, hwScalers } = opts;
+    if (impl === 'va' && hwScalers?.va) {
+        return `vapostproc ! video/x-raw(memory:VAMemory),width=${width},height=${height}`;
+    }
+    if (impl === 'v4l2' && hwScalers?.v4l2) {
+        return `v4l2convert ! video/x-raw,width=${width},height=${height}`;
+    }
+    const t = opts.threads ? ` n-threads=${opts.threads}` : '';
+    return `videoscale${t} ! video/x-raw,width=${width},height=${height} ! videoconvert${t}`;
 }
 
 /** Assemble one encode leaf. */

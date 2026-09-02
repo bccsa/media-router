@@ -6,6 +6,7 @@ import {
     bitrateBadge,
     buildBusSink,
     buildEncodeLeaf,
+    buildScaleStage,
     buildV4l2ExtraControls,
     busTeeName,
     registerV4l2DeviceProvider,
@@ -52,11 +53,12 @@ export class VideoEncoderModule extends GstPluginBase {
     private busSinkName: string | undefined;
 
     /**
-     * What this host can encode with, filled in by `initManifest`. Starts as the
-     * all-empty host so a build before/without probing fails cleanly rather
-     * than naming an encoder that isn't there. Hardware scalers are not probed:
-     * this pipeline has no scale stage to offload (`buildV4l2Source` conforms
-     * resolution on the capture side).
+     * What this host can encode with — impls per codec plus hardware-scaler
+     * availability, filled in by `initManifest`. The capture tail's scale
+     * stage goes to the encoder impl's own scaler when it is installed
+     * (`buildScaleStage`: v4l2convert on a Pi 4). Starts as the all-empty host
+     * so a build before/without probing fails cleanly rather than naming an
+     * encoder that isn't there.
      */
     static probed: ProbedEncoders = ProbedEncoders.unprobed();
 
@@ -79,7 +81,9 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        VideoEncoderModule.probed = await ProbedEncoders.probe(ENCODER_ELEMENTS);
+        VideoEncoderModule.probed = await ProbedEncoders.probe(ENCODER_ELEMENTS, {
+            probeHwScalers: true,
+        });
         VideoEncoderModule.probed.applyToManifest(manifest);
     }
 
@@ -89,8 +93,11 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     /** Exposed for tests. */
-    static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
-        VideoEncoderModule.probed = ProbedEncoders.forTest(availability);
+    static setAvailableImpls(
+        availability: Record<CodecId, ImplId[]>,
+        hwScalers: { va: boolean; v4l2: boolean } = { va: false, v4l2: false },
+    ): void {
+        VideoEncoderModule.probed = ProbedEncoders.forTest(availability, hwScalers);
     }
 
     /**
@@ -180,7 +187,14 @@ export class VideoEncoderModule extends GstPluginBase {
             sceneCut,
             cpbSeconds,
         } = knobs;
-        const source = buildV4l2Source(device, width, height, framerate);
+        const scaleStage = buildScaleStage({
+            width,
+            height,
+            impl,
+            hwScalers: VideoEncoderModule.probed.hwScalers,
+            threads: 2,
+        });
+        const source = buildV4l2Source(device, width, height, framerate, scaleStage);
 
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);

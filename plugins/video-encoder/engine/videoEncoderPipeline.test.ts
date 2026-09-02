@@ -66,7 +66,7 @@ describe('buildV4l2SourceForModes', () => {
         ]);
         expect(s).toBe(
             `v4l2src device=/dev/video0 do-timestamp=true ! image/jpeg,width=1920,height=1080,framerate=60/1 ! videorate drop-only=true ! image/jpeg,framerate=30/1 ! ${QUEUE} ! jpegparse ! jpegdec ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2 ! videorate drop-only=true ! video/x-raw,framerate=30/1',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true ! video/x-raw,framerate=30/1 ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2',
         );
     });
 
@@ -76,7 +76,7 @@ describe('buildV4l2SourceForModes', () => {
         ]);
         expect(s).toBe(
             `v4l2src device=/dev/video1 do-timestamp=true ! video/x-raw,format=NV12,width=1280,height=720,framerate=50/1 ! ${QUEUE} ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2 ! videorate drop-only=true ! video/x-raw,framerate=50/1',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true ! video/x-raw,framerate=50/1 ! videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2',
         );
     });
 
@@ -94,7 +94,7 @@ describe('buildV4l2SourceForModes', () => {
         expect(s).toContain('video/x-raw,framerate=25/1');
         expect(s).toBe(
             `v4l2src device=/dev/video0 do-timestamp=true ! image/jpeg,width=1920,height=1080,framerate=50/1 ! videorate drop-only=true ! image/jpeg,framerate=25/1 ! ${QUEUE} ! jpegparse ! jpegdec ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2 ! videorate drop-only=true ! video/x-raw,framerate=25/1',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true ! video/x-raw,framerate=25/1 ! videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2',
         );
     });
 
@@ -138,7 +138,7 @@ describe('buildV4l2SourceForModes', () => {
         const s = buildV4l2SourceForModes('/dev/video0', 1920, 1080, 30, undefined);
         expect(s).toBe(
             `v4l2src device=/dev/video0 do-timestamp=true ! ${QUEUE} ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2 ! videorate drop-only=true ! video/x-raw,framerate=30/1',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true ! video/x-raw,framerate=30/1 ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2',
         );
         expect(s).not.toContain('jpegdec');
         expect(s).not.toContain('image/jpeg');
@@ -150,7 +150,7 @@ describe('buildV4l2SourceForModes', () => {
         ]);
         expect(s).toBe(
             `v4l2src device=/dev/video0 do-timestamp=true ! ${QUEUE} ! ` +
-                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2 ! videorate drop-only=true ! video/x-raw,framerate=30/1',
+                'queue leaky=2 max-size-buffers=4 max-size-time=0 max-size-bytes=0 ! videorate drop-only=true ! video/x-raw,framerate=30/1 ! videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2',
         );
     });
 });
@@ -162,5 +162,39 @@ describe('MJPG decode path', () => {
         const p = buildV4l2SourceForModes('/dev/video0', 1280, 720, 25, atem);
         expect(p).toContain('! jpegparse ! jpegdec !');
         expect(p).not.toContain('v4l2jpegdec');
+    });
+});
+
+describe('scale stage injection', () => {
+    const atem = [{ pixelFormat: 'MJPG', width: 1920, height: 1080, framerates: [50, 25] }];
+    it('uses the caller-built hardware scale stage after the rate conform, directly before the encoder', () => {
+        const p = buildV4l2SourceForModes(
+            '/dev/video0',
+            1280,
+            720,
+            25,
+            atem,
+            'v4l2convert ! video/x-raw,width=1280,height=720',
+        );
+        expect(p).toMatch(
+            /videorate drop-only=true ! video\/x-raw,framerate=25\/1 ! v4l2convert ! video\/x-raw,width=1280,height=720$/,
+        );
+        expect(p).not.toContain('videoscale');
+    });
+
+    it('drops the hardware stage when the chosen mode already has the requested size (ISP round-trip for nothing)', () => {
+        const camlink = [{ pixelFormat: 'NV12', width: 1920, height: 1080, framerates: [50] }];
+        const p = buildV4l2SourceForModes(
+            '/dev/video4',
+            1920,
+            1080,
+            25,
+            camlink,
+            'v4l2convert ! video/x-raw,width=1920,height=1080',
+        );
+        expect(p).not.toContain('v4l2convert');
+        expect(p).toContain(
+            'videoscale n-threads=2 ! video/x-raw,width=1920,height=1080 ! videoconvert n-threads=2',
+        );
     });
 });

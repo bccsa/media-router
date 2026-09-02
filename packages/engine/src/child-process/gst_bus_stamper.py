@@ -188,11 +188,10 @@ def enable(pipe, on):
 
     The native `mrtsstamp` elements ARE spliced in here, before PLAYING, because
     splicing is a graph change and the graph is only safely mutable while the
-    pipeline is still in NULL. That costs nothing while they sit inactive
-    (basetransform passthrough, `transform_ip_on_passthrough` off — the buffer
-    is never even handed to the element), so lazy arming is unaffected: what
-    arms per consumer edge is the `active` property, not the element's
-    existence.
+    pipeline is still in NULL. Inactive they are basetransform passthrough that
+    only counts bytes (`bytes-total`, one atomic add per buffer — the runner's
+    throughput source for the tee), so lazy arming is unaffected: what arms
+    per consumer edge is the `active` property, not the element's existence.
     """
     global enabled, pipeline
     clear()

@@ -563,3 +563,40 @@ describe('VideoEncoderModule', () => {
         });
     });
 });
+
+describe('capture scale stage', () => {
+    it('offloads scale+convert to v4l2convert when the v4l2 encoder has the Pi ISP scaler', () => {
+        VideoEncoderModule.setAvailableImpls(
+            { h264: ['v4l2'], h265: [], av1: [] },
+            { va: false, v4l2: true },
+        );
+        const mod = new VideoEncoderModule();
+        const desc = mod.buildPipeline({
+            device: '/dev/video0',
+            codec: 'h264',
+            encoderImpl: 'v4l2',
+            resolution: '1280x720',
+            framerate: 25,
+            bitrate: 6928,
+        });
+        expect(desc?.pipeline).toContain(
+            'video/x-raw,framerate=25/1 ! v4l2convert ! video/x-raw,width=1280,height=720 ! v4l2h264enc',
+        );
+        expect(desc?.pipeline).not.toContain('videoscale');
+    });
+    it('stays on threaded software scaling when no hardware scaler is installed', () => {
+        VideoEncoderModule.setAvailableImpls({ h264: ['v4l2'], h265: [], av1: [] });
+        const mod = new VideoEncoderModule();
+        const desc = mod.buildPipeline({
+            device: '/dev/video0',
+            codec: 'h264',
+            encoderImpl: 'v4l2',
+            resolution: '1280x720',
+            framerate: 25,
+            bitrate: 6928,
+        });
+        expect(desc?.pipeline).toContain(
+            'videoscale n-threads=2 ! video/x-raw,width=1280,height=720 ! videoconvert n-threads=2 ! v4l2h264enc',
+        );
+    });
+});

@@ -579,6 +579,8 @@ check(f"a singly-owned buffer is stamped IN PLACE — no copies "
       len(seen) == 60 and el.get_property("copy-count") == 0)
 check("and the ladder is still the exact 40 ms staircase",
       {seen[i + 1][0] - seen[i][0] for i in range(len(seen) - 1)} == {40_000_000})
+check(f"bytes-total counts every byte while armed ({el.get_property('bytes-total')} of {60 * ts_psi.PKT})",
+      el.get_property("bytes-total") == 60 * ts_psi.PKT)
 
 # The other side of the same claim: hold a reference to every buffer on the
 # element's sink pad and basetransform must make it writable first.
@@ -606,6 +608,26 @@ check("the input buffers are left untouched (the copy is real, not in-place)",
 check("and the copied buffers carry the correct stamp anyway",
       len(seen) == 10
       and {seen[i + 1][0] - seen[i][0] for i in range(9)} == {40_000_000})
+
+# The byte counter is the producer's throughput source and must run in
+# PASSTHROUGH too — a producer with no consumer attached still reports its
+# output bitrate, and the runner reads `bytes-total` instead of installing a
+# per-buffer python probe on the tee (0.5-0.7 of a core per producer, Pi 4).
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe)
+el = pipe.get_by_name(STAMP_EL)
+seen = tap_timestamps(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+for i in range(10):
+    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i), i * 7 * Gst.MSECOND, 0)
+bus.wait(seen, 10)
+bus.drain(pipe, src)
+teardown()
+check(f"bytes-total counts in passthrough, never armed "
+      f"({el.get_property('bytes-total')} of {10 * ts_psi.PKT}, active={el.get_property('active')})",
+      el.get_property("active") is False and el.get_property("bytes-total") == 10 * ts_psi.PKT)
 
 
 # ---------------------------------------------------------------------------

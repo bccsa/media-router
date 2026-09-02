@@ -5,6 +5,7 @@
  */
 
 import {
+    buildScaleStage,
     buildTsUdpInput,
     buildBusSink,
     buildLeakyQueue,
@@ -161,24 +162,15 @@ export function buildPipeline(input: TranscoderPipelineInputs): TranscoderPipeli
     const leaf = (out: TranscoderOutput, i: number): string => {
         const r = out.rendition;
         const e = out.encode;
-        // Scale/convert stage, hardware where the rendition's encoder impl has
-        // its scaler installed (probed by the module):
-        //   va   → vapostproc does scale+format-convert+GPU-upload in one step
-        //          and hands vah26Xenc frames already in VA memory. The software
-        //          chain uploaded anyway (vah26Xenc needs the frames on the GPU)
-        //          AFTER burning CPU on videoscale+videoconvert — strictly worse.
-        //   v4l2 → v4l2convert, the Pi ISP M2M scaler that pairs with
-        //          v4l2h26Xenc (bcm2835; Pi 5 exposes neither, so this never
-        //          triggers there).
-        //   else → software videoscale, with videoconvert HERE (after the
-        //          scale) so pixel-format conversion runs on the small
-        //          downscaled frame instead of the full-size source.
-        const scaleStage =
-            e.impl === 'va' && input.hwScalers?.va
-                ? `vapostproc ! video/x-raw(memory:VAMemory),width=${r.width},height=${r.height}`
-                : e.impl === 'v4l2' && input.hwScalers?.v4l2
-                  ? `v4l2convert ! video/x-raw,width=${r.width},height=${r.height}`
-                  : `videoscale ! video/x-raw,width=${r.width},height=${r.height} ! videoconvert`;
+        // Scale/convert stage — hardware where the rendition's encoder impl
+        // has its scaler installed (probed by the module); the selection and
+        // its rationale live in the shared `buildScaleStage`.
+        const scaleStage = buildScaleStage({
+            width: r.width,
+            height: r.height,
+            impl: e.impl,
+            hwScalers: input.hwScalers,
+        });
         // Throughput element: the fan-out `tee` (busTeeName).
         sinkNames.push(busTeeName(out.port));
         return buildEncodeLeaf({
