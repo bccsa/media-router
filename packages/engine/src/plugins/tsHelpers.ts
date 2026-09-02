@@ -118,8 +118,9 @@ export interface TsUdpInputOpts {
     udpsrcName?: string;
     /** Jitter buffer length in milliseconds (default 200). Absorbs delivery
      *  jitter so downstream tsdemux doesn't see late bursts as discontinuities.
-     *  200 ms covers encoder I-frame bursts on fast motion; 50 ms (the previous
-     *  default) routinely overflowed and surfaced as visible "packet loss". */
+     *  Sizes a BACK-PRESSURING queue (never leaky — see `buildTsUdpInput`), so
+     *  a value that is too small costs a momentary stall, never a corrupted
+     *  picture. */
     jitterMs?: number;
     /** Per-consumer edge socket (from MediaRouter). Falls back to the
      *  channel-level socket when absent. */
@@ -130,15 +131,26 @@ export interface TsUdpInputOpts {
 
 /**
  * Canonical inbound MPEG-TS bus receive chain:
- *   unixfdsrc (+ leaky ingress) ! queue (jitter) ! tsparse set-timestamps=false
+ *   unixfdsrc (+ leaky ingress) ! queue (jitter, back-pressuring) ! tsparse set-timestamps=false
  *
  * Why each piece:
  *   - `buildBusSrc` connects this consumer's fan-out edge; caps arrive over
  *     the socket from the producer.
- *   - `queue leaky=2` (200 ms) absorbs delivery jitter and encoder
- *     I-frame bursts; without enough headroom here a short burst of late
- *     packets is seen by tsdemux as a discontinuity and triggers a costly
- *     resync — which the user perceives as packet loss on fast motion.
+ *   - `queue leaky=0` (jitterMs) absorbs delivery jitter and encoder I-frame
+ *     bursts and BACK-PRESSURES when it fills — it must never leak. This
+ *     queue carries raw TS: a leaked chunk is a mid-slice hole that corrupts
+ *     every dependent frame until the next IDR, which the operator sees as
+ *     "packet loss on movement" while every counter (SRT loss, decoder
+ *     errors on an independent tap) reads zero. Measured 2026-09-02, Pi 5
+ *     player: a 30→25 fps source (66 ms between some frames) into a 50 ms
+ *     LEAKY jitter queue smeared every moving object; 200 ms hid it; the
+ *     leak is the fault, not the size. Raising the size was the previous
+ *     answer (50→200 default) and merely moved the cliff. A full queue now
+ *     pushes back into `buildBusSrc`'s 5 s ingress queue instead; a
+ *     `sync=false` sink drains that backlog at max speed and a clock-paced
+ *     sink hands it to the backlog shedder, which drops whole GOP tails
+ *     (keyframe-aligned — never mid-slice). Same finding as the
+ *     mpegts-muxer's input queues (leaky shed 11 % of audio, non-leaky zero).
  *   - `tsparse` re-frames to TS packet boundaries, and `set-timestamps=false`
  *     leaves the timestamps alone: the producer already stamped this stream
  *     onto the shared house timeline, and re-deriving from PCR here would
@@ -156,6 +168,6 @@ export function buildTsUdpInput(opts: TsUdpInputOpts): string {
         socketPath: opts.socketPath,
         stallTimeoutMs: opts.stallTimeoutMs,
     });
-    const queue = buildLeakyQueue(opts.jitterMs ?? 200);
+    const queue = buildBackpressureQueue(opts.jitterMs ?? 200);
     return `${src} ! ${queue} ! tsparse set-timestamps=false`;
 }

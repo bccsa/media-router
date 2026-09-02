@@ -1,17 +1,18 @@
 import {
     GstPluginBase,
+    ProbedEncoders,
     ThroughputPoller,
     acquireV4l2Demand,
     bitrateBadge,
     buildBusSink,
+    buildEncodeLeaf,
+    buildScaleStage,
+    buildV4l2ExtraControls,
     busTeeName,
     registerV4l2DeviceProvider,
+    suspendV4l2Enumeration,
     releaseV4l2Demand,
     ENCODER_ELEMENTS,
-    buildEncoderBranch,
-    resolveImpl,
-    probeEncoderAvailability,
-    applyEncoderAvailabilityToManifest,
     type CodecId,
     type EngineServices,
     type ImplId,
@@ -19,11 +20,15 @@ import {
     type PipelineDescription,
     type ThroughputSample,
 } from '@media-router/engine';
-import {
-    buildV4l2Source,
-    parseResolution,
-    supportsLiveBitrate,
-} from './videoEncoderPipeline.js';
+import { buildV4l2Source, supportsLiveBitrate } from './videoEncoderPipeline.js';
+import { readEncoderKnobs } from './videoEncoderConfig.js';
+import { encoderStatus, throughputStatus } from './videoEncoderStatus.js';
+
+/**
+ * How long V4L2 enumeration stays blacked out around a pipeline start: probe +
+ * runner spawn + reach-PLAYING, with margin. See `suspendV4l2Enumeration`.
+ */
+const V4L2_SETUP_BLACKOUT_MS = 10_000;
 
 /**
  * Video Encoder plugin.
@@ -47,8 +52,15 @@ export class VideoEncoderModule extends GstPluginBase {
      *  the fan-out `tee` (busTeeName). */
     private busSinkName: string | undefined;
 
-    /** Runtime availability map — populated by `initManifest` after probing each encoder element. */
-    private static availableImpls: Record<CodecId, ImplId[]> = { h264: [], h265: [], av1: [] };
+    /**
+     * What this host can encode with — impls per codec plus hardware-scaler
+     * availability, filled in by `initManifest`. The capture tail's scale
+     * stage goes to the encoder impl's own scaler when it is installed
+     * (`buildScaleStage`: v4l2convert on a Pi 4). Starts as the all-empty host
+     * so a build before/without probing fails cleanly rather than naming an
+     * encoder that isn't there.
+     */
+    static probed: ProbedEncoders = ProbedEncoders.unprobed();
 
     static registerServices(services: EngineServices): void {
         registerV4l2DeviceProvider(services);
@@ -69,19 +81,23 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     static async initManifest(manifest: Record<string, any>): Promise<void> {
-        const availability = await probeEncoderAvailability(ENCODER_ELEMENTS);
-        VideoEncoderModule.availableImpls = availability;
-        applyEncoderAvailabilityToManifest(manifest, availability);
+        VideoEncoderModule.probed = await ProbedEncoders.probe(ENCODER_ELEMENTS, {
+            probeHwScalers: true,
+        });
+        VideoEncoderModule.probed.applyToManifest(manifest);
     }
 
     /** Exposed for tests. */
     static getAvailableImpls(): Record<CodecId, ImplId[]> {
-        return VideoEncoderModule.availableImpls;
+        return VideoEncoderModule.probed.availability;
     }
 
     /** Exposed for tests. */
-    static setAvailableImpls(availability: Record<CodecId, ImplId[]>): void {
-        VideoEncoderModule.availableImpls = availability;
+    static setAvailableImpls(
+        availability: Record<CodecId, ImplId[]>,
+        hwScalers: { va: boolean; v4l2: boolean } = { va: false, v4l2: false },
+    ): void {
+        VideoEncoderModule.probed = ProbedEncoders.forTest(availability, hwScalers);
     }
 
     /**
@@ -102,6 +118,16 @@ export class VideoEncoderModule extends GstPluginBase {
     async onStart(): Promise<void> {
         const instanceId = this.services?.instanceId ?? '';
         this.services?.mediaRouter?.assignBusChannel(instanceId);
+
+        // Black out V4L2 device enumeration around the pipeline start: any
+        // concurrent /dev/video* open wedges the bcm2835 M2M setup or EINVALs
+        // v4l2src's buffer allocation (reproduction on
+        // `suspendV4l2Enumeration`). Here, not in `buildPipeline`: that is also
+        // called from `refreshPipelineDescription`, which never re-enters V4L2
+        // setup, and it runs for an UNCONFIGURED module too — which would
+        // freeze the device picker for 10 s exactly while the operator is
+        // browsing it for a device.
+        if (this.config.device) suspendV4l2Enumeration(V4L2_SETUP_BLACKOUT_MS);
 
         await super.onStart();
         this.updateStatusData();
@@ -136,11 +162,11 @@ export class VideoEncoderModule extends GstPluginBase {
             this.setHealth('warning', 'No V4L2 device selected');
             return null;
         }
-        const codec = (config.codec as CodecId) ?? 'h264';
-        const impl = resolveImpl(
+        const knobs = readEncoderKnobs(config);
+        const { codec } = knobs;
+        const impl = VideoEncoderModule.probed.resolve(
             codec,
-            (config.encoderImpl as ImplId | 'auto') ?? 'auto',
-            VideoEncoderModule.availableImpls[codec] ?? [],
+            config.encoderImpl as ImplId | 'auto' | undefined,
         );
         if (!impl) {
             this.setHealth(
@@ -149,40 +175,71 @@ export class VideoEncoderModule extends GstPluginBase {
             );
             return null;
         }
-        const { width, height } = parseResolution((config.resolution as string) ?? '1920x1080');
-        const framerate = (config.framerate as number) ?? 30;
-        const bitrateKbps = (config.bitrate as number) ?? 4000;
-        const kif = (config.keyframeInterval as number) ?? 60;
-
-        const source = buildV4l2Source(device, width, height, framerate);
-        // name 'venc0' + speed-preset 'superfast' keep the Video Encoder's
-        // established behaviour; the shared builder's other knobs stay at their
-        // defaults (CBR, auto profile, scenecut 40 — x264's own default).
-        const encoder = buildEncoderBranch({
-            codec,
-            impl,
+        const {
+            width,
+            height,
+            framerate,
             bitrateKbps,
             kif,
-            name: 'venc0',
-            speedPreset: 'superfast',
+            rateControl,
+            speedPreset,
+            h264Profile,
+            sceneCut,
+            cpbSeconds,
+        } = knobs;
+        const scaleStage = buildScaleStage({
+            width,
+            height,
+            impl,
+            hwScalers: VideoEncoderModule.probed.hwScalers,
+            threads: 2,
         });
+        const source = buildV4l2Source(device, width, height, framerate, scaleStage);
 
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
         this.busSinkName = endpoint ? busTeeName(endpoint.port) : undefined;
-        const udpSink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
+        const sink = endpoint ? buildBusSink(endpoint.port) : 'fakesink name=usink sync=false';
 
-        // No leaky queue between mpegtsmux and the bus tee: any drop here is a
+        // name 'venc0' keeps the Video Encoder's established element name; the
+        // knobs come from `readEncoderKnobs` (validated, defaulted).
+        //
+        // `inputQueue: 'none'` — the leaf gets NO head queue, and nothing leaky
+        // sits between mpegtsmux and the bus egress: a drop there is a
         // mid-stream TS slice and corrupts decode at the receiver. The
-        // source→encoder boundary still has its own queue placed by
+        // source→encoder boundary still has its own queue, placed by
         // `buildV4l2Source` immediately after v4l2src, where it's needed to
         // protect the V4L2 kernel ringbuffer from filling up under
         // back-pressure.
-        const pipeline = `${source} ! ${encoder} ! mpegtsmux name=mux latency=0 alignment=7 ! ${udpSink}`;
+        const leaf = buildEncodeLeaf({
+            encoder: {
+                codec,
+                impl,
+                bitrateKbps,
+                kif,
+                name: 'venc0',
+                rateControl,
+                speedPreset,
+                h264Profile,
+                sceneCut,
+                cpbSeconds,
+            },
+            inputQueue: 'none',
+            muxName: 'mux',
+            sink,
+        });
 
         return {
-            pipeline,
+            pipeline: `${source} ! ${leaf}`,
             restartOnError: true,
+            // v4l2src head feeding the aggregator mpegtsmux: keep the time-sync
+            // contract's monotonic house clock but NOT its base-time zeroing.
+            // With base-time pinned to 0 the mux schedules off a running time
+            // the size of the box's uptime while the live capture produces from
+            // its own natural zero, and it releases video in GOP-sized ~2.3 s
+            // bursts — every live consumer freezes on one frame. Full trace on
+            // `PipelineDescription.liveCaptureClock`.
+            liveCaptureClock: true,
         };
     }
 
@@ -190,10 +247,9 @@ export class VideoEncoderModule extends GstPluginBase {
 
     private resolveCurrentImpl(): ImplId | null {
         const codec = (this.config.codec as CodecId) ?? 'h264';
-        return resolveImpl(
+        return VideoEncoderModule.probed.resolve(
             codec,
-            (this.config.encoderImpl as ImplId | 'auto') ?? 'auto',
-            VideoEncoderModule.availableImpls[codec] ?? [],
+            this.config.encoderImpl as ImplId | 'auto' | undefined,
         );
     }
 
@@ -201,38 +257,24 @@ export class VideoEncoderModule extends GstPluginBase {
         const codec = (this.config.codec as CodecId) ?? 'h264';
         const impl = this.resolveCurrentImpl();
         if (!impl || !supportsLiveBitrate(codec, impl)) return;
-        // v4l2h264enc/v4l2h265enc only — the V4L2 driver stores the full
-        // controls struct from the last `extra-controls` write, so we must
-        // re-assert `video_bitrate_mode=1` (CBR) every time. Dropping it here
-        // silently reverts to whatever default the driver chose (typically
-        // VBR), which defeats the rate-control set up at build time.
-        const key = codec === 'h265' ? 'h265_i_frame_period' : 'h264_i_frame_period';
+        // v4l2h264enc/v4l2h265enc only — `buildV4l2ExtraControls` writes the
+        // FULL controls struct because the driver keeps only the last one
+        // written; a partial write would silently reset the omitted fields to
+        // driver defaults. The helper pins VBR (the only working bcm2835 mode).
+        const v4l2Codec = codec === 'h265' ? 'h265' : 'h264';
         const kif = (this.config.keyframeInterval as number) ?? 60;
         await this.setElementProperty(
             'venc0',
             'extra-controls',
-            `controls,video_bitrate=${kbps * 1000},video_bitrate_mode=1,${key}=${kif}`,
+            buildV4l2ExtraControls(v4l2Codec, kbps * 1000, kif),
         );
     }
 
     private updateStatusData(): void {
-        const codec = (this.config.codec as CodecId) ?? 'h264';
-        const impl = this.resolveCurrentImpl();
-        const resolution = (this.config.resolution as string) ?? '1920x1080';
-        const fps = (this.config.framerate as number) ?? 30;
-        const bitrate = (this.config.bitrate as number) ?? 4000;
-        this.setStatusData('encoder', {
-            codec,
-            impl: impl ?? 'unavailable',
-            resolution,
-            framerate: `${fps} fps`,
-            bitrate,
-        });
+        this.setStatusData('encoder', encoderStatus(this.config, this.resolveCurrentImpl()));
         const instanceId = this.services?.instanceId ?? '';
         const endpoint = this.services?.mediaRouter?.getBusChannel(instanceId);
-        this.setStatusData('bus', {
-            channel: endpoint?.port ?? 0,
-        });
+        this.setStatusData('bus', { channel: endpoint?.port ?? 0 });
     }
 
     private async readSinkBytes(): Promise<number | undefined> {
@@ -240,10 +282,7 @@ export class VideoEncoderModule extends GstPluginBase {
     }
 
     private publishThroughput(sample: ThroughputSample): void {
-        this.setStatusData('throughput', {
-            'Output Bitrate': `${sample.bitrateKbps} kbps`,
-            'Total Bytes': `${(sample.totalBytes / 1024 / 1024).toFixed(1)} MB`,
-        });
+        this.setStatusData('throughput', throughputStatus(sample));
         this.setBadge('bitrate', bitrateBadge(sample.bitrateKbps));
     }
 }

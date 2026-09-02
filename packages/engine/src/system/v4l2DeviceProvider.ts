@@ -44,11 +44,38 @@ let lastEnumerateAt = 0;
  * engine's on-demand `/api/v1/system/devices/:type` route.)
  */
 export function listV4l2DevicesOnDemand(): Promise<Device[]> | Device[] {
+    if (Date.now() < suspendedUntil) {
+        return cachedV4l2Devices();
+    }
     if (consumers === 0 && Date.now() - lastEnumerateAt < V4L2_IDLE_ENUMERATE_MS) {
         return cachedV4l2Devices();
     }
     lastEnumerateAt = Date.now();
     return listV4l2Devices();
+}
+
+/** Enumeration blackout deadline — see `suspendV4l2Enumeration`. */
+let suspendedUntil = 0;
+
+/**
+ * Black out V4L2 enumeration for the next `ms` milliseconds; overlapping calls
+ * extend, never shorten. The cached list is served meanwhile.
+ *
+ * WHY THIS EXISTS. Opening ANY `/dev/video*` node while a pipeline that uses
+ * the bcm2835 hardware JPEG decoder is SETTING UP wedges that pipeline before
+ * PLAYING, or fails v4l2src's buffer allocation with EINVAL (kernel 6.12,
+ * Pi 4 — reproduced deterministically: a `v4l2-ctl --list-devices` loop wedged
+ * 3/3 startup attempts of `v4l2src ! jpegparse ! v4l2jpegdec`, including
+ * variants that only touched OTHER nodes; the identical pipeline starts clean
+ * every time with enumeration quiet). Every `v4l2-ctl` this provider spawns
+ * opens every node, so a module that is about to start a capture pipeline
+ * calls this first. The blackout is a WINDOW, not a lock, because
+ * runner-internal restarts can also re-enter setup without the engine's
+ * knowledge — those stay exposed, but the runner's 10 s reach-PLAYING watchdog
+ * turns a wedged attempt into a retry rather than a hang.
+ */
+export function suspendV4l2Enumeration(ms: number): void {
+    suspendedUntil = Math.max(suspendedUntil, Date.now() + ms);
 }
 
 /**
@@ -85,8 +112,9 @@ export function registerV4l2DeviceProvider(services: EngineServices): void {
     });
 }
 
-/** Test-only: forget the demand count and the idle-refresh timestamp. */
+/** Test-only: forget the demand count, idle-refresh timestamp and blackout. */
 export function _resetV4l2DemandForTests(): void {
     consumers = 0;
     lastEnumerateAt = 0;
+    suspendedUntil = 0;
 }

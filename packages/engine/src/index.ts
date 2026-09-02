@@ -28,6 +28,7 @@ export {
     registerV4l2DeviceProvider,
     acquireV4l2Demand,
     releaseV4l2Demand,
+    suspendV4l2Enumeration,
     listV4l2DevicesOnDemand,
     V4L2_DEVICE_TYPE,
     V4L2_IDLE_ENUMERATE_MS,
@@ -74,6 +75,7 @@ export {
     H264_PROFILES,
     resolveImpl,
     buildEncoderBranch,
+    buildV4l2ExtraControls,
 } from './plugins/encoderElements.js';
 export type {
     CodecId,
@@ -87,6 +89,12 @@ export {
     probeEncoderAvailability,
     applyEncoderAvailabilityToManifest,
 } from './plugins/encoderManifest.js';
+export { ProbedEncoders } from './plugins/probedEncoders.js';
+export type { HwScalerAvailability, ProbeEncodersOptions } from './plugins/probedEncoders.js';
+export { buildEncodeLeaf, buildScaleStage } from './plugins/encoderLeaf.js';
+export { parseResolution } from './plugins/videoGeometry.js';
+export { ensureWaylandEnv } from './system/waylandEnv.js';
+export type { EncodeLeafOptions, ScaleStageOptions } from './plugins/encoderLeaf.js';
 export { ThroughputPoller } from './plugins/ThroughputPoller.js';
 export type { ThroughputSample, ThroughputPollerOptions } from './plugins/ThroughputPoller.js';
 export {
@@ -212,16 +220,15 @@ export type { DeviceFormatState, DeviceDetection } from './audio/deviceFormat.js
 export { ProcessManager } from './child-process/ProcessManager.js';
 export { ManagedProcess } from './child-process/ManagedProcess.js';
 export type { ManagedProcessOptions } from './child-process/ManagedProcess.js';
-export { UnixFdFanoutController, NativeSinkController } from './child-process/UnixFdFanoutController.js';
+export {
+    UnixFdFanoutController,
+    NativeSinkController,
+} from './child-process/UnixFdFanoutController.js';
 export { probeUnixSocket } from './child-process/busSocketGate.js';
 export type { BusAttachTarget, LiveSwapTarget } from './child-process/UnixFdFanoutController.js';
 export { resolveNativeBinary, resolvePythonScript } from './child-process/nativeBinaries.js';
 export type { ProcessInfo } from './child-process/ProcessManager.js';
-export {
-    probeMpegTsStream,
-    classifyCaps,
-    registerCodecClassifier,
-} from './routing/MpegTsProbe.js';
+export { probeMpegTsStream, classifyCaps, registerCodecClassifier } from './routing/MpegTsProbe.js';
 export type { ProbeResult, CodecClassifier } from './routing/MpegTsProbe.js';
 export { StreamTypeExecutorRegistry, makeConnLabel } from './routing/StreamTypeExecutor.js';
 export type { StreamTypeExecutor } from './routing/StreamTypeExecutor.js';

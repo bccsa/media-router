@@ -8,7 +8,7 @@
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit",
-        "dev": "tsx watch --inspect=9229 examples/test-manager.ts"
+        "dev": "tsx watch examples/test-manager.ts"
     },
     "dependencies": {
         "@media-router/dgram-comms": "workspace:*",

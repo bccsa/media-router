@@ -1690,7 +1690,7 @@ def _apply_net_clock(pipe, clock_cfg):
     # value would make every buffer "late" and break playback.
 
 
-def _apply_contract_clock(pipe):
+def _apply_contract_clock(pipe, live_capture_clock=False):
     """Put `pipe` on the time-sync contract's clock and PIN its timeline.
 
     The contract (engine-wide `timeSyncContract`) replaces the net-clock dance
@@ -1707,6 +1707,27 @@ def _apply_contract_clock(pipe):
         the PAUSED→PLAYING transition, so the 0 we set here survives; both must
         therefore be set BEFORE the state change out of NULL/READY.
 
+    `live_capture_clock` (the start payload's `liveCaptureClock`) keeps the
+    first move and DROPS the second: the pipeline still runs on the shared
+    monotonic house clock, but base-time anchors naturally at PLAYING. It is for
+    pipelines whose head is a real live capture element feeding an
+    aggregator-based muxer — today `v4l2src ! ... ! mpegtsmux` (video-encoder).
+    `mpegtsmux` is a GstAggregator and schedules its output off RUNNING TIME:
+    with base-time pinned to 0 that is house time (the size of the box's
+    uptime) while the live source produces from its own natural zero, so the mux
+    mis-schedules and releases video in GOP-sized ~2.3 s bursts (measured on a
+    Pi4 + ATEM: ~31 KB/s starve seconds alternating with ~300 KB/s spikes, every
+    live consumer frozen on one frame).
+
+    The contract survives that: the producer stamp is base-time independent by
+    construction — both stamping backends read house time as `clock - base_time`
+    (`gst_stamp_probe.house_now`, `gst_mrtsstamp_house_now`) and `unixfdsink`
+    transmits `segment_to_running_time(pts) + base_time`, so the base-time
+    cancels and the wire carries the same absolute house time either way. Only
+    the pinning is skipped; the clock half is identical. Bus-fed producers
+    (transcoder, mpegts-muxer) must NOT use it — their branch alignment is built
+    on running-time being house time. See `PipelineDescription.liveCaptureClock`.
+
     Nothing external is contacted or waited for, so unlike `_apply_net_clock`
     this can neither delay nor wedge a start — there is no timeout case and no
     sink to relax to `sync=false`.
@@ -1714,6 +1735,8 @@ def _apply_contract_clock(pipe):
     clock = Gst.SystemClock.obtain()
     clock.set_property("clock-type", Gst.ClockType.MONOTONIC)
     pipe.use_clock(clock)
+    if live_capture_clock:
+        return
     pipe.set_start_time(Gst.CLOCK_TIME_NONE)
     pipe.set_base_time(0)
 
@@ -1770,8 +1793,13 @@ def handle_start(data):
     # under the time-sync contract, a monotonic system clock with a pinned
     # timeline (no daemon involved); otherwise the legacy shared net clock that
     # slaves this pipeline to its siblings (video-player ↔ audio-decoder).
+    # `liveCaptureClock` is read HERE AND ONLY HERE, inside the contract branch:
+    # it selects the contract variant that keeps the house clock but lets
+    # base-time anchor naturally (live capture head into an aggregator mux — see
+    # `_apply_contract_clock`). With the contract off the legacy path below is
+    # byte-identical to what it was.
     if data.get("timeSyncContract"):
-        _apply_contract_clock(pipeline)
+        _apply_contract_clock(pipeline, data.get("liveCaptureClock"))
     else:
         _apply_net_clock(pipeline, data.get("clock"))
 
@@ -2032,13 +2060,31 @@ def handle_get_stats(data):
                      name=f"stats-{element_name}").start()
 
 def _pad_probe_cb(pad, info, element_name):
-    """Pad probe callback — counts bytes flowing through."""
+    """Pad probe callback — counts bytes flowing through (the FALLBACK counter).
+
+    Buffer LISTS are counted as one callback for the whole list: an mpegtsmux
+    emits its output as lists, and a probe that only sees single buffers is
+    either blind to them (BUFFER-only, upstream of any basetransform) or fires
+    ~1170 times/s (downstream of capssetter/capsfilter, which dismantle the
+    lists) — the latter measured at 0.5-0.7 of a core per producer on a Pi 4.
+    Producers with the time-sync contract on never reach this callback: their
+    `busout_*` tee is counted natively in `mrtsstamp` (`bytes-total`), see
+    handle_track_throughput.
+    """
     buf = info.get_buffer()
-    if buf:
+    size = 0
+    if buf is not None:
+        size = buf.get_size()
+    else:
+        blist = info.get_buffer_list()
+        if blist is not None:
+            for i in range(blist.length()):
+                size += blist.get(i).get_size()
+    if size:
         with throughput_lock:
             tracker = throughput_trackers.get(element_name)
             if tracker:
-                tracker['bytes'] += buf.get_size()
+                tracker['bytes'] += size
     return Gst.PadProbeReturn.OK
 
 def handle_track_throughput(data):
@@ -2064,11 +2110,21 @@ def handle_track_throughput(data):
     with throughput_lock:
         if element_name not in throughput_trackers:
             import time
-            throughput_trackers[element_name] = {
+            tracker = {
                 'bytes': 0, 'last_bytes': 0,
                 'last_time': time.monotonic(), 'bps': 0,
             }
-            pad.add_probe(Gst.PadProbeType.BUFFER, _pad_probe_cb, element_name)
+            # A `busout_*` tee with the contract on has a native `mrtsstamp`
+            # spliced in front of it that counts every byte in C: read its
+            # counter on each get_throughput instead of running a python
+            # callback per buffer on the streaming thread (see _pad_probe_cb).
+            native_el = gst_bus_stamper.elements.get(element_name) if pad_name == "sink" else None
+            if native_el is not None:
+                tracker['native'] = native_el
+            else:
+                pad.add_probe(Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
+                              _pad_probe_cb, element_name)
+            throughput_trackers[element_name] = tracker
 
     # Always ack — second call for an already-tracked element is a no-op but
     # the parent's pending RPC still needs to resolve.
@@ -2086,6 +2142,12 @@ def handle_get_throughput(data):
     with throughput_lock:
         now = time.monotonic()
         for name, tracker in throughput_trackers.items():
+            native_el = tracker.get('native')
+            if native_el is not None:
+                try:
+                    tracker['bytes'] = gst_bus_stamper.native.bytes_total(native_el)
+                except Exception:  # noqa: BLE001 — element disposed mid-teardown: keep the last count
+                    pass
             elapsed = now - tracker['last_time']
             if elapsed > 0:
                 delta_bytes = tracker['bytes'] - tracker['last_bytes']

@@ -202,3 +202,38 @@ describe('v4l2 device provider demand gate', () => {
         expect(spawns).toHaveLength(3);
     });
 });
+
+describe('suspendV4l2Enumeration', () => {
+    it('serves the cache during the blackout window even under demand', async () => {
+        const {
+            suspendV4l2Enumeration,
+            acquireV4l2Demand,
+            listV4l2DevicesOnDemand,
+            _resetV4l2DemandForTests,
+        } = await import('./v4l2DeviceProvider.js');
+        _resetV4l2DemandForTests();
+        acquireV4l2Demand();
+        suspendV4l2Enumeration(60_000);
+        // During the blackout the provider must not spawn v4l2-ctl — the
+        // cached (synchronous) list is the tell: a live enumeration returns a
+        // Promise, the cache returns an array.
+        const result = listV4l2DevicesOnDemand();
+        expect(Array.isArray(result)).toBe(true);
+        _resetV4l2DemandForTests();
+    });
+
+    it('overlapping suspensions extend, never shorten', async () => {
+        const {
+            suspendV4l2Enumeration,
+            listV4l2DevicesOnDemand,
+            acquireV4l2Demand,
+            _resetV4l2DemandForTests,
+        } = await import('./v4l2DeviceProvider.js');
+        _resetV4l2DemandForTests();
+        acquireV4l2Demand();
+        suspendV4l2Enumeration(60_000);
+        suspendV4l2Enumeration(1); // must NOT shorten the standing window
+        expect(Array.isArray(listV4l2DevicesOnDemand())).toBe(true);
+        _resetV4l2DemandForTests();
+    });
+});

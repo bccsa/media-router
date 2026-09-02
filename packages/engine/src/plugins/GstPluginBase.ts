@@ -156,9 +156,16 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // declaring it: with the contract off (MR_TIME_SYNC_CONTRACT=0) the
             // legacy behaviour is exactly what it was.
             delete desc.preserveSourceTimeline;
+            // Name the VARIANT, not just the contract: `liveCaptureClock` keeps
+            // the house clock but lets base-time anchor naturally, and which of
+            // the two a module got is the first thing to establish when its
+            // egress is bursting — invisible from anywhere else.
+            const liveCaptureClock = desc.liveCaptureClock === true;
             this.log.info(
-                { clockSync: desc.clockSync === true },
-                'Time-sync contract: monotonic house clock, base_time=0, producer-stamped bus PTS',
+                { clockSync: desc.clockSync === true, liveCaptureClock },
+                liveCaptureClock
+                    ? 'Time-sync contract: monotonic house clock, base_time=natural (live capture), producer-stamped bus PTS'
+                    : 'Time-sync contract: monotonic house clock, base_time=0, producer-stamped bus PTS',
             );
             return;
         }

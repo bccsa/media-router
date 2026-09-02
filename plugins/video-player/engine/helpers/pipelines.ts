@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { buildBusSrc, buildLeakyQueue, buildTsUdpInput } from '@media-router/engine';
+import { buildBackpressureQueue, buildBusSrc, buildTsUdpInput } from '@media-router/engine';
 import {
     DECODEBIN_SELECTION,
     resolveCpuDecodeThreading,
@@ -344,10 +344,13 @@ export function buildLivePipeline(
     // Pre-tsparse jitter buffer scales with `bufferMs`: with a paced sender on
     // a busy Node loop (hls-pipe runner transmuxing the next segment), the
     // event-loop stalls for 50–100 ms and `drainLoop` catches up by bursting
-    // datagrams. The default 200 ms queue leaks under that burst → frames lost
-    // at every segment join. Tracking `bufferMs` (up to `buildLeakyQueue`'s 5 s
-    // cap) gives HLS chains a multi-second jitter buffer that absorbs sender
-    // bursts; SRT/RIST (`bufferMs=200`) keeps the original tight latency.
+    // datagrams. Tracking `bufferMs` (up to the helper's 5 s cap) gives HLS
+    // chains a multi-second jitter buffer; SRT/RIST (`bufferMs=200`) keeps the
+    // tight latency. The queue BACK-PRESSURES rather than leaks, in both
+    // variants: it carries raw TS, and a leaked chunk corrupts decode until the
+    // next IDR — the "frames lost at every segment join" this comment used to
+    // describe, and the "packet loss on movement" of 2026-09-02 (rationale and
+    // measurements on `buildTsUdpInput`).
     // The inbound chain has two variants, chosen by how the SINK presents:
     //
     // DEFAULT (`sync=false`, presents on arrival): NO `tsparse` (field-
@@ -388,7 +391,7 @@ export function buildLivePipeline(
               port: udpSource.port,
               socketPath: udpSource.socketPath,
               stallTimeoutMs: STREAM_STALL_TIMEOUT_MS,
-          })} ! ${buildLeakyQueue(bufferMs)}`;
+          })} ! ${buildBackpressureQueue(bufferMs)}`;
     // Post-demux ES queue: floored at 1 s regardless of `bufferMs`. This queue
     // absorbs the decoder-side stall while an IDR burst drains (keyframe AUs at
     // 8 Mbps span >200 ms on a Pi 4); at 200 ms it sheds the tail of nearly

@@ -10,7 +10,9 @@ is silently thrown away the moment the pipeline plays — leaving every pipeline
 on its own per-start base-time, which is the drift the contract exists to
 remove (ADR-0005: running-time ≡ house-clock time).
 
-Also pins the two halves of the contract's "never blocks playback" promise:
+Also covers the `liveCaptureClock` variant, which keeps the house clock and
+drops ONLY the pinning (live capture head into an aggregator muxer), and pins
+the two halves of the contract's "never blocks playback" promise:
 the clock is the monotonic system clock (no daemon to reach), and applying it
 never pulls in GstNet.
 
@@ -107,6 +109,68 @@ pipe.get_state(2 * Gst.SECOND)
 pipe.set_state(Gst.State.PLAYING)
 pipe.get_state(2 * Gst.SECOND)
 check("base-time is still 0 after a PAUSED→PLAYING cycle", pipe.get_base_time() == 0)
+pipe.set_state(Gst.State.NULL)
+
+
+print("\n--- liveCaptureClock: same clock, natural base-time ---")
+# The variant for a live capture head feeding an aggregator muxer
+# (`v4l2src ! ... ! mpegtsmux`): keep the house clock, drop the pinning. With
+# the pinning on, mpegtsmux schedules off a running time the size of the box's
+# uptime while the source produces from its own zero, and releases video in
+# GOP-sized ~2.3 s bursts. Both halves are asserted here because keeping ONE of
+# them is the whole point — a variant that also swapped the clock would break
+# cross-pipeline rate agreement, and one that still pinned base-time would not
+# fix anything.
+pipe = build()
+runner._apply_contract_clock(pipe, live_capture_clock=True)
+clock = pipe.get_pipeline_clock()
+check("live capture: a clock is still selected", clock is not None)
+check(
+    "live capture: still the monotonic system clock (house clock unchanged)",
+    isinstance(clock, Gst.SystemClock)
+    and clock.get_property("clock-type") == Gst.ClockType.MONOTONIC,
+)
+check(
+    "live capture: the clock is still FIXED — auto-selection stays off",
+    bool(pipe.flags & Gst.PipelineFlags.FIXED_CLOCK),
+)
+check(
+    "live capture: start-time is NOT set to CLOCK_TIME_NONE",
+    pipe.get_start_time() != Gst.CLOCK_TIME_NONE,
+)
+
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(2 * Gst.SECOND)
+base_time = pipe.get_base_time()
+clock_time = pipe.get_clock().get_time()
+check("live capture: base-time anchors naturally at PLAYING (not 0)", base_time != 0)
+check(
+    "live capture: running-time is near the source's own zero, not house time",
+    0 <= clock_time - base_time < 10 * Gst.SECOND < clock_time,
+)
+pipe.set_state(Gst.State.NULL)
+
+# Default/off must be byte-identical to the pinned contract above — the flag is
+# opt-in per pipeline, and every bus-fed producer relies on it staying off.
+pipe = build()
+runner._apply_contract_clock(pipe, live_capture_clock=False)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(2 * Gst.SECOND)
+check("flag off: base-time is still pinned to 0 after PLAYING", pipe.get_base_time() == 0)
+check(
+    "flag off: start-time is still CLOCK_TIME_NONE",
+    pipe.get_start_time() == Gst.CLOCK_TIME_NONE,
+)
+pipe.set_state(Gst.State.NULL)
+
+# A payload with no `liveCaptureClock` key reaches the runner as None (that is
+# literally what `data.get("liveCaptureClock")` yields), so None must behave as
+# off — not as a truthy object.
+pipe = build()
+runner._apply_contract_clock(pipe, None)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(2 * Gst.SECOND)
+check("a missing flag (None) pins the timeline like the default", pipe.get_base_time() == 0)
 pipe.set_state(Gst.State.NULL)
 
 

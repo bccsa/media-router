@@ -1,0 +1,57 @@
+{
+    "name": "@media-router/plugin-mjpeg-monitor",
+    "version": "2.0.0",
+    "private": true,
+    "description": "Low-latency MJPEG monitor \u2014 receives RTP/JPEG and shows it on the local display",
+    "mediaRouter": {
+        "pluginId": "mjpeg-monitor",
+        "displayName": "MJPEG Monitor",
+        "description": "Ultra-low-latency display for an MJPEG Relay feed: receives RTP/JPEG over UDP, decodes, and presents frames the moment they arrive (no jitter buffer, no clock sync). Pair with an MJPEG Relay module pointed at this box.",
+        "color": "#f59e0b",
+        "icon": "tv",
+        "category": "output",
+        "architectures": [
+            "arm64",
+            "x86_64"
+        ],
+        "ports": [],
+        "configSchema": {
+            "type": "object",
+            "properties": {
+                "port": {
+                    "type": "number",
+                    "minimum": 1024,
+                    "maximum": 65535,
+                    "default": 5008,
+                    "description": "UDP port to listen on for the RTP/JPEG feed"
+                },
+                "fullscreen": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Fill the display output"
+                }
+            }
+        },
+        "statusSections": [
+            {
+                "id": "monitor",
+                "label": "Monitor",
+                "fields": [
+                    {
+                        "key": "listen",
+                        "label": "Listening on"
+                    }
+                ]
+            }
+        ],
+        "engine": "engine/MjpegMonitorModule.ts"
+    },
+    "main": "dist/MjpegMonitorModule.js",
+    "dependencies": {
+        "@media-router/engine": "workspace:*"
+    },
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    }
+}

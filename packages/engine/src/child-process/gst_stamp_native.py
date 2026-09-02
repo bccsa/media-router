@@ -18,8 +18,9 @@ mr-tssplit).
 The elements are spliced in ONCE, before PLAYING (a graph change is only safe
 while the pipeline is in NULL) and arrive INACTIVE; `active` is the lazy arm the
 runner's bus_attach/bus_detach paths toggle. Inactive is basetransform
-passthrough with `transform_ip_on_passthrough` off, so a disarmed egress never
-sees the buffer at all and costs nothing.
+passthrough; the element still sees each buffer for one atomic size add (its
+`bytes-total` counter — the producer's throughput source, see `bytes_total`),
+and nothing else.
 """
 import os
 import sys
@@ -179,3 +180,11 @@ def copy_count_note(el):
     copy); anything else says something up the chain is holding a reference and
     every buffer is paying a shallow GstBuffer copy for it."""
     return f" (native, {el.get_property('copy-count')} non-writable buffers)"
+
+
+def bytes_total(el):
+    """Bytes that passed the element since it was spliced in (armed or not).
+    The runner's throughput tracker reads this for a `busout_*` tee instead of
+    installing a per-buffer python probe on the tee — that probe cost 0.5-0.7
+    of a core per producer at 12 Mbps (Pi 4, 2026-09-02)."""
+    return int(el.get_property("bytes-total"))

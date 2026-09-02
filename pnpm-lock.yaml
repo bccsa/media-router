@@ -391,6 +391,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/hls-pipe
 
+  plugins/mjpeg-monitor:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
+  plugins/mjpeg-relay:
+    dependencies:
+      '@media-router/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+
   plugins/mpegts-core: {}
 
   plugins/mpegts-ip-input:

@@ -262,6 +262,46 @@ export interface PipelineDescription {
      */
     timeSyncContract?: boolean;
     /**
+     * Contract clock WITHOUT the timeline pinning: the runner still puts this
+     * pipeline on the contract's monotonic house clock, but skips
+     * `set_base_time(0)` / `set_start_time(CLOCK_TIME_NONE)` and lets base-time
+     * anchor naturally at PLAYING. For pipelines whose head is a REAL LIVE
+     * CAPTURE element feeding an aggregator-based muxer — today exactly
+     * `v4l2src ! … ! mpegtsmux` (video-encoder).
+     *
+     * WHY. `mpegtsmux` is a GstAggregator (gst 1.28) and schedules its output
+     * off RUNNING TIME. With base-time pinned to 0, running time equals house
+     * time — a number the size of the box's uptime — while a live capture source
+     * starts producing buffers at its own natural zero. The aggregator then
+     * mis-schedules: it holds video and releases it in GOP-sized bursts. Measured
+     * on a Pi4 + ATEM: egress alternates ~31 KB/s starve seconds with ~300 KB/s
+     * spikes (~2.3 s period) instead of a flat rate, and every live consumer
+     * freezes on one frame. Letting base-time anchor naturally puts the mux's
+     * running time back next to the source's own timeline and the egress is flat.
+     *
+     * WHY THE CONTRACT STILL HOLDS. The producer stamp is base-time INDEPENDENT
+     * by construction: both stamping backends read house time as
+     * `clock − base_time` (`gst_stamp_probe.house_now`,
+     * `gst_mrtsstamp_house_now`) and `unixfdsink` transmits
+     * `segment_to_running_time(pts) + base_time`, so the base-time cancels and
+     * the wire carries the same absolute house time either way. The clock half —
+     * one fixed monotonic `GstSystemClock` per pipeline, shared by every process
+     * on the box — is untouched. Consumers therefore see an identical timeline.
+     *
+     * SCOPE. Read ONLY on the contract path (`timeSyncContract`); the legacy
+     * net-clock path never zeroed base-time, so this is a no-op there. It is a
+     * property of the PIPELINE, not of the plugin: bus-fed producers (transcoder,
+     * mpegts-muxer) take their buffers from already-stamped bus input, not from a
+     * live capture device, and MUST NOT set it — their branch alignment is built
+     * on running-time ≡ house time.
+     *
+     * Do not set this speculatively on other live-source modules. It is a
+     * targeted fix for a measured aggregator mis-schedule; without the burst
+     * pattern above (measure the egress rate), leave the pipeline on the pinned
+     * timeline.
+     */
+    liveCaptureClock?: boolean;
+    /**
      * Software (`avdec_*`) decoder threading mode for this pipeline.
      * `max-threads` is always the core count; this only controls ffmpeg's
      * `thread-type`:
