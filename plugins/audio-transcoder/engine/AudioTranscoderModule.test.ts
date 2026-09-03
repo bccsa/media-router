@@ -51,9 +51,7 @@ function makeModule(
         instanceId: 'atx-1',
         mediaRouter: {
             getModuleBusSources: vi.fn(() => busSources),
-            assignBusChannel: vi.fn(() =>
-                opts.busPort === null ? null : { port: nextPort++ },
-            ),
+            assignBusChannel: vi.fn(() => (opts.busPort === null ? null : { port: nextPort++ })),
         },
     };
     module.config = {};
@@ -92,10 +90,7 @@ describe('AudioTranscoderModule.buildPipeline', () => {
     it('returns null + warning on zero renditions', () => {
         const { module, setHealth } = makeModule({});
         expect(module.buildPipeline({ renditions: [] })).toBeNull();
-        expect(setHealth).toHaveBeenCalledWith(
-            'warning',
-            expect.stringContaining('No renditions'),
-        );
+        expect(setHealth).toHaveBeenCalledWith('warning', expect.stringContaining('No renditions'));
     });
 
     it('decode-once front-end, probed codec picks the chain (no mixer element)', () => {
@@ -114,6 +109,9 @@ describe('AudioTranscoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'aac' };
         const desc = module.buildPipeline({ renditions: [{ codec: 'opus' }] });
         expect(desc!.preserveSourceTimeline).toEqual({ demux: 'demux' });
+        // A producer never asks for branch alignment: its egress stamper has
+        // anchored by the time the correction would land (see buildPipeline).
+        expect(desc!.alignBranchesToStamps).toBeUndefined();
     });
 
     it('preserveSourceTimeline: false disables the runner feature (rollback knob)', () => {

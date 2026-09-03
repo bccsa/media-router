@@ -532,7 +532,7 @@ describe('VideoPlayerModule helpers', () => {
                 // the probe tap that discovers the codec in the first place).
                 const s = buildLivePipeline(wayland, busSource, true);
                 expect(s).toContain(
-                    'tsdemux latency=0 ! queue leaky=2 max-size-time=1000000000 ' +
+                    'tsdemux name=vpdemux latency=0 ! queue leaky=2 max-size-time=1000000000 ' +
                         'max-size-buffers=0 max-size-bytes=0 ! decodebin3 ! videoconvert ! ' +
                         wayland,
                 );
@@ -552,7 +552,7 @@ describe('VideoPlayerModule helpers', () => {
                     selectDecoder({ codec: 'h264', available: all }),
                 );
                 expect(s).toContain(
-                    'tsdemux latency=0 ! capsfilter caps="video/x-h264" ! ' +
+                    'tsdemux name=vpdemux latency=0 ! capsfilter caps="video/x-h264" ! ' +
                         'queue leaky=2 max-size-time=1000000000 max-size-buffers=0 max-size-bytes=0 ! ' +
                         'h264parse ! v4l2h264dec name=vpdec ! videoconvert ! ' +
                         wayland,

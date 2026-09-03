@@ -75,12 +75,12 @@ describe('buildAudioMixInput — many sources (mixer arm)', () => {
     });
 
     it('clamps the latency budget to 50–2000 ms', () => {
-        expect(
-            buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 10 }).fragment,
-        ).toContain('latency=50000000');
-        expect(
-            buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).fragment,
-        ).toContain('latency=2000000000');
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 10 }).fragment).toContain(
+            'latency=50000000',
+        );
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).fragment).toContain(
+            'latency=2000000000',
+        );
     });
 
     it('builds one branch per source, each ending at the mixer', () => {
@@ -106,6 +106,42 @@ describe('buildAudioMixInput — many sources (mixer arm)', () => {
     });
 });
 
+describe('buildAudioMixInput — named demuxers for stamp alignment', () => {
+    it('names every branch tsdemux and returns them in source order', () => {
+        const two = buildAudioMixInput({ sources: [SRC, SRC2] });
+        expect(two.demuxes).toEqual(['mixin_demux0', 'mixin_demux1']);
+        expect(two.fragment).toContain('tsdemux name=mixin_demux0 latency=0');
+        expect(two.fragment).toContain('tsdemux name=mixin_demux1 latency=0');
+        expect(buildAudioMixInput({ sources: [SRC], mixerName: 'prog' }).demuxes).toEqual([
+            'prog_demux0',
+        ]);
+        expect(buildAudioMixInput({ sources: [] }).demuxes).toEqual([]);
+    });
+});
+
+describe('buildAudioMixInput — declared aggregation latency', () => {
+    it('the mixer arm reports its effective (clamped) latency so a paced sink can subtract it', () => {
+        expect(buildAudioMixInput({ sources: [SRC, SRC2] }).mixerLatencyNs).toBe(200_000_000);
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 50 }).mixerLatencyNs).toBe(
+            50_000_000,
+        );
+        // Same clamp as the fragment: 50–2000 ms.
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 10 }).mixerLatencyNs).toBe(
+            50_000_000,
+        );
+        expect(buildAudioMixInput({ sources: [SRC, SRC2], latencyMs: 9999 }).mixerLatencyNs).toBe(
+            2_000_000_000,
+        );
+        expect(buildAudioMixInput({ sources: [] }).mixerLatencyNs).toBe(200_000_000);
+    });
+
+    it('the single-source arm declares none — nothing to compensate', () => {
+        expect(
+            buildAudioMixInput({ sources: [SRC], latencyMs: 500 }).mixerLatencyNs,
+        ).toBeUndefined();
+    });
+});
+
 describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
     it('drops the aggregator entirely: no audiomixer, no pacer, no mix latency', () => {
         const { fragment, continuationName } = buildAudioMixInput({
@@ -117,9 +153,9 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
         expect(fragment).not.toContain('latency=500000000');
         // Same continuation name as the mixer arm — callers stay topology-agnostic.
         expect(continuationName).toBe('mixin_out');
-        expect(fragment.endsWith('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2"')).toBe(
-            true,
-        );
+        expect(
+            fragment.endsWith('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=2"'),
+        ).toBe(true);
     });
 
     it('keeps the decode chain, the branch queue bound and the channel map', () => {
@@ -138,7 +174,9 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
             branchQueueMs: 250,
         });
         expect(fragment).toContain('unixfdsrc socket-path=/tmp/mr-bus-40001-abc.sock');
-        expect(fragment).toContain('tsdemux latency=0 ! audio/x-smpte-302m ! avdec_s302m');
+        expect(fragment).toContain(
+            'tsdemux name=mixin_demux0 latency=0 ! audio/x-smpte-302m ! avdec_s302m',
+        );
         expect(fragment).toContain(
             'audioconvert mix-matrix="<<(float)1.0000>, <(float)1.0000>>" ! audioresample',
         );
@@ -174,7 +212,9 @@ describe('buildAudioMixInput — shared branch contract', () => {
     it('steers tsdemux pad selection with 302M caps (wrong-content TS fails soft)', () => {
         for (const sources of [[SRC], [SRC, SRC2]]) {
             const { fragment } = buildAudioMixInput({ sources });
-            expect(fragment).toContain('tsdemux latency=0 ! audio/x-smpte-302m ! avdec_s302m');
+            expect(fragment).toContain(
+                'tsdemux name=mixin_demux0 latency=0 ! audio/x-smpte-302m ! avdec_s302m',
+            );
         }
     });
 

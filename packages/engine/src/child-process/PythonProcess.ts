@@ -1,5 +1,14 @@
 import { spawn, type ChildProcess } from 'child_process';
-import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, RenderWatchRunnerConfig, KeyframeGateConfig, BacklogShedConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
+import type {
+    PadLinkRule,
+    BusReport,
+    RistRunnerConfig,
+    TsProbeRunnerConfig,
+    RenderWatchRunnerConfig,
+    KeyframeGateConfig,
+    BacklogShedConfig,
+    PreserveSourceTimelineConfig,
+} from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
 import { pluginPythonPaths } from './nativeBinaries.js';
 import { runnerEnv } from './runnerEnv.js';
@@ -116,9 +125,7 @@ export class PythonProcess {
         // dir stays first overall (python puts the script dir at sys.path[0]).
         const pyPaths = pluginPythonPaths();
         if (pyPaths.length > 0) {
-            spawnEnv.PYTHONPATH = [...pyPaths, spawnEnv.PYTHONPATH]
-                .filter(Boolean)
-                .join(':');
+            spawnEnv.PYTHONPATH = [...pyPaths, spawnEnv.PYTHONPATH].filter(Boolean).join(':');
         }
 
         if (this.options.useStdioForData) {
@@ -164,11 +171,26 @@ export class PythonProcess {
             this.proc.stderr?.on('data', this.parseStderr);
         }
 
+        // ERROR BOUNDARY on both, for the same reason `dispatchPythonEvent` has
+        // one (ADR-0012: every entry into the runner is a fault boundary). These
+        // callbacks run on the ChildProcess emitter, so a throw inside the
+        // engine process is an UNCAUGHT exception that would take every other
+        // module's runner down with it — not just this one's restart.
         this.proc.on('exit', (code, signal) => {
             console.error(`[gst-runner] Python runner exited: code=${code} signal=${signal}`);
-            this.options.onExit(code, signal);
+            try {
+                this.options.onExit(code, signal);
+            } catch (err) {
+                console.error('[gst-runner] Python exit handler threw:', err);
+            }
         });
-        this.proc.on('error', (err) => this.options.onSpawnError(err));
+        this.proc.on('error', (err) => {
+            try {
+                this.options.onSpawnError(err);
+            } catch (handlerErr) {
+                console.error('[gst-runner] Python spawn-error handler threw:', handlerErr);
+            }
+        });
 
         // Pass the options verbatim (minus `env`, which is applied at spawn).
         // `useStdioForData` is fixed at construction, so it wins.

@@ -11,20 +11,66 @@ import {
 } from '@media-router/engine';
 
 /**
+ * `pulsesink buffer-time` (µs) this leg runs under the contract, and the
+ * scheduling latency it DECLARES for that ring (ms).
+ *
+ * A live GStreamer sink renders at `running-time + ts-offset + latency`, where
+ * `latency` is the pipeline's min latency from the LATENCY query — for an audio
+ * sink essentially its ring. Measured on the 10.9.16.103 USB DAC (PipeWire 1.6,
+ * GStreamer 1.28): 151.3 ms at a 200 ms ring, 101.3 ms at 100 ms, 71.3 ms at
+ * 50 ms. The video leg's `waylandsink` declares ~20 ms, so a leg that ignores
+ * this presents that much behind the picture on the SAME D — which is what
+ * decision 4 exists to prevent.
+ *
+ * So the contract pins ONE ring for both audio legs (the 302M output's
+ * `SINK_BUFFER_US`) and cancels ONE number, and the two resolve D identically
+ * by construction rather than by two tunings happening to agree. `sinkBufferMs`
+ * still sizes the ring on every legacy path, untouched. The 100 ms floor is
+ * itself field-derived: a 50 ms ring xrunned audibly on a Pi 4.
+ *
+ * Residual, deliberately left: the declared figure is ring-dependent and only
+ * measured at three points, so it is a CONSTANT here rather than a model. The
+ * exact fix is a runner-side LATENCY query feeding the offset back — worth it
+ * only when a leg needs a ring other than this one.
+ */
+const CONTRACT_SINK_BUFFER_US = 100_000;
+const SINK_DECLARED_LATENCY_MS = 100;
+
+/**
  * The audio leg's sink `ts-offset`, in nanoseconds: the route's playout offset D
- * plus the deprecated `syncOffsetMs` trim (ADR-0005 decision 4). The video leg
+ * plus the deprecated `syncOffsetMs` trim (ADR-0005 decision 4), MINUS the
+ * latency the sink declares for its paced ring (see above). The video leg
  * computes its own through `videoTsOffsetNs`, which calls the same
  * `effectivePlayoutOffsetNs` against the same route — so one route resolves to
  * one D on both legs, by construction rather than by two implementations
  * agreeing. Only used when the contract is on; see `buildPipeline`.
+ *
+ * NEVER NEGATIVE: a D smaller than the ring clamps to 0. Audio cannot be
+ * presented before it arrives (`max-lateness=-1` then plays it on arrival), and
+ * the backlog shedder reads this very `ts-offset` as the leg's budget, so a
+ * negative value makes every buffer read as retained backlog — field, .103,
+ * 2026-09-03: a −1700 ms sink offset had the shedder drop ~10 s of audio
+ * chasing a phantom 1943 ms backlog.
+ *
+ * TWIN: `audio302mTsOffsetNs` in
+ * `plugins/audio-output-302m/engine/audio302mTiming.ts` cancels the same
+ * declared ring latency and clamps the same way. TWO COPIES ON PURPOSE: plugin
+ * `dist`s are hot-deployed onto boxes whose engine `dist` may be older, so a
+ * shared export from `@media-router/engine` would fail to resolve there. Keep
+ * them in step — if one changes, the two legs of a route stop agreeing, which
+ * is the exact fault decision 4 forbids.
  */
 export function audioTsOffsetNs(
     services: PlayoutOffsetServices | null | undefined,
     config: Record<string, unknown>,
 ): number {
-    return effectivePlayoutOffsetNs(services, {
-        trimMs: Math.max(0, Number(config.syncOffsetMs ?? 0) || 0),
-    });
+    return Math.max(
+        0,
+        effectivePlayoutOffsetNs(services, {
+            trimMs: Math.max(0, Number(config.syncOffsetMs ?? 0) || 0),
+        }) -
+            SINK_DECLARED_LATENCY_MS * 1_000_000,
+    );
 }
 
 /**
@@ -34,6 +80,14 @@ export function audioTsOffsetNs(
  * (see `buildPipeline`); 0 = resample, the legacy default, is what it replaces.
  */
 const SLAVE_METHOD_SKEW = 1;
+
+/**
+ * `name=` of this leg's `tsdemux` under the contract — what
+ * `alignBranchesToStamps` addresses (see `buildPipeline`). Named ONLY on the
+ * contract path: the legacy pipeline string has to stay byte-identical under
+ * `MR_TIME_SYNC_CONTRACT=0`.
+ */
+const DEMUX_NAME = 'addemux';
 
 /**
  * Audio Decoder plugin.
@@ -65,11 +119,7 @@ export class AudioDecoderModule extends GstPluginBase {
 
         // 1. Probe the stream for codec (and channels if available — opus includes it, AAC doesn't)
         if (udpSource) {
-            this.probeResult = await probeMpegTsStream(
-                udpSource.port,
-                3000,
-                udpSource.socketPath,
-            );
+            this.probeResult = await probeMpegTsStream(udpSource.port, 3000, udpSource.socketPath);
             this.log.info(
                 { codec: this.probeResult.codec, channels: this.probeResult.channels },
                 'Stream probe',
@@ -308,7 +358,12 @@ export class AudioDecoderModule extends GstPluginBase {
         // proportional standing latency.
         const sinkBufferUs =
             Math.max(80, Math.min(1000, Number(config.sinkBufferMs ?? 200))) * 1000;
-        const pacedSinkBufferUs = Math.max(100_000, sinkBufferUs);
+        // CONTRACT: the one ring both audio legs run, so both cancel the one
+        // declared latency (see CONTRACT_SINK_BUFFER_US). `lowLatencySync` (a
+        // legacy mode) keeps its own floor over the operator's `sinkBufferMs`.
+        const pacedSinkBufferUs = contract
+            ? CONTRACT_SINK_BUFFER_US
+            : Math.max(100_000, sinkBufferUs);
 
         const parts = [
             // Post-tsdemux dejitter buffer — NON-LEAKY (leaky=0), sized to at
@@ -334,7 +389,7 @@ export class AudioDecoderModule extends GstPluginBase {
             // (the encoder re-stamps at capture). Operators tuning latency
             // must be able to shrink it; the old hard 300 ms floor was
             // demuxer-burst-era protection.
-            `${udpSrc} ! tsdemux latency=0 ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
+            `${udpSrc} ! tsdemux${contract ? ` name=${DEMUX_NAME}` : ''} latency=0 ! queue leaky=0 max-size-time=${(config.bufferMs !== undefined ? Math.min(5000, Math.max(50, Number(config.bufferMs) || 50)) : 300) * 1_000_000} max-size-buffers=0 max-size-bytes=0 ! ${decoder}`,
             'audioconvert',
             `volume name=vol volume=${gstVolume}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
@@ -383,6 +438,14 @@ export class AudioDecoderModule extends GstPluginBase {
                           sink: 'sink',
                           keyframeAligned: false,
                       }),
+                      // Anchor this branch's running time to the producer's
+                      // house stamps (ADR-0005 Stage 3c — the same correction
+                      // the mpegts-muxer and the 302M output apply). A tsdemux
+                      // keeps the zero-point error of the one bus buffer it
+                      // locked on for its whole life (−73…−125 ms measured on
+                      // .103's edges, re-rolled per restart); on a sync=true
+                      // leg that error IS lipsync against the video leg.
+                      alignBranchesToStamps: { demuxes: [DEMUX_NAME] },
                   }
                 : {}),
         };

@@ -297,6 +297,14 @@ export const TS_PROBE_SINK_NAME = 'tsprobe';
 /** Name of the tee that feeds the demux branch and the video-info tap. */
 const PROBE_TEE_NAME = 'vp_ts';
 
+/**
+ * `name=` of the live pipeline's `tsdemux` — what `planLivePipeline` hands the
+ * runner's `alignBranchesToStamps` so the branch's running time is anchored to
+ * the producer's house stamps rather than to the one bus buffer the demuxer
+ * happened to lock on (ADR-0005 Stage 3c; −85 ms on .103's video edge).
+ */
+export const VP_DEMUX_NAME = 'vpdemux';
+
 export function buildLivePipeline(
     sinkElement: string,
     udpSource: { port: number; socketPath?: string },
@@ -510,7 +518,7 @@ export function buildLivePipeline(
         ` ${PROBE_TEE_NAME}. ! queue leaky=downstream max-size-buffers=64` +
         ` ! appsink name=${TS_PROBE_SINK_NAME}`;
     return (
-        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! tsdemux latency=0 ! ${caps}${q} ! ` +
+        `${tsInput} ! tee name=${PROBE_TEE_NAME} ! tsdemux name=${VP_DEMUX_NAME} latency=0 ! ${caps}${q} ! ` +
         `${decoder.chain} ! ${convert} ! ${sinkElement}${probeTap}`
     );
 }
