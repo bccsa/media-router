@@ -11,8 +11,7 @@ import { FORCE_KILL_TIMEOUT_MS } from './PythonProcess.js';
 describe('GstRunner — Python event routing', () => {
     let runner: GstRunner;
     let sent: ControlIpcMessage[];
-    let originalSend: typeof process.send;
-    let originalConnected: PropertyDescriptor | undefined;
+    let exitFn: ReturnType<typeof vi.fn>;
 
     const emit = (event: Record<string, unknown>): void => {
         (
@@ -28,16 +27,16 @@ describe('GstRunner — Python event routing', () => {
 
     beforeEach(() => {
         sent = [];
-        originalSend = process.send;
-        originalConnected = Object.getOwnPropertyDescriptor(process, 'connected');
-
-        Object.defineProperty(process, 'connected', { value: true, configurable: true });
-        process.send = ((msg: ControlIpcMessage) => {
-            sent.push(msg);
-            return true;
-        }) as unknown as typeof process.send;
-
-        runner = new GstRunner('/nonexistent/python-runner.py');
+        exitFn = vi.fn();
+        // The host seam: everything the runner says goes through `post`, and
+        // `exit` is the only way it can end — never `process.*` (it shares the
+        // engine process by default).
+        runner = new GstRunner('/nonexistent/python-runner.py', {
+            post: (msg) => {
+                sent.push(msg);
+            },
+            exit: exitFn,
+        });
         // Mark the runner as having a live pipeline so the IPC routing for
         // setProperty/getProperty matches the production path — we never
         // actually spawn Python (the optional chaining no-ops the sendCommand).
@@ -46,10 +45,6 @@ describe('GstRunner — Python event routing', () => {
 
     afterEach(() => {
         vi.useRealTimers();
-        if (originalConnected) {
-            Object.defineProperty(process, 'connected', originalConnected);
-        }
-        process.send = originalSend;
     });
 
     it('rejects pending setProperty when Python emits command_error', () => {
@@ -295,36 +290,52 @@ describe('GstRunner — Python event routing', () => {
         });
 
         it('stopPipeline during the gate cancels it — python never spawns', async () => {
-            const exitSpy = vi
-                .spyOn(process, 'exit')
-                .mockImplementation((() => undefined) as never);
+            gatedStart('rpc-g2', `/tmp/gate-gr-${process.pid}-b.sock`);
+            await sleep(50);
+            runner.handleControlMessage({
+                id: 'rpc-g3',
+                type: 'request',
+                action: 'stopPipeline',
+                data: {},
+            });
+            // Even if the producer socket appeared now, the aborted gate
+            // must not launch a pipeline for the stopped epoch.
+            const { createServer } = await import('node:net');
+            const srv = createServer(() => {});
+            await new Promise<void>((resolve) =>
+                srv.listen(`/tmp/gate-gr-${process.pid}-b.sock`, () => resolve()),
+            );
+            await sleep(800);
+            expect(pythonOf()).toBeNull();
+            await new Promise((r) => srv.close(r));
+            const { unlinkSync } = await import('node:fs');
             try {
-                gatedStart('rpc-g2', `/tmp/gate-gr-${process.pid}-b.sock`);
-                await sleep(50);
-                runner.handleControlMessage({
-                    id: 'rpc-g3',
-                    type: 'request',
-                    action: 'stopPipeline',
-                    data: {},
-                });
-                // Even if the producer socket appeared now, the aborted gate
-                // must not launch a pipeline for the stopped epoch.
-                const { createServer } = await import('node:net');
-                const srv = createServer(() => {});
-                await new Promise<void>((resolve) =>
-                    srv.listen(`/tmp/gate-gr-${process.pid}-b.sock`, () => resolve()),
-                );
-                await sleep(800);
-                expect(pythonOf()).toBeNull();
-                await new Promise((r) => srv.close(r));
-                const { unlinkSync } = await import('node:fs');
-                try {
-                    unlinkSync(`/tmp/gate-gr-${process.pid}-b.sock`);
-                } catch {
-                    /* gone */
-                }
-            } finally {
-                exitSpy.mockRestore();
+                unlinkSync(`/tmp/gate-gr-${process.pid}-b.sock`);
+            } catch {
+                /* gone */
+            }
+        });
+
+        it('shutdown during the gate cancels it too — in-process nothing else would', async () => {
+            // Under the fork the shim's process exit ended the probe loop; a
+            // hosted runner's `shutdown` must bump the epoch itself, or the
+            // loop launches a Python for a module the engine already stopped.
+            gatedStart('rpc-g6', `/tmp/gate-gr-${process.pid}-e.sock`);
+            await sleep(50);
+            runner.shutdown('module stop');
+            const { createServer } = await import('node:net');
+            const srv = createServer(() => {});
+            await new Promise<void>((resolve) =>
+                srv.listen(`/tmp/gate-gr-${process.pid}-e.sock`, () => resolve()),
+            );
+            await sleep(800);
+            expect(pythonOf()).toBeNull();
+            await new Promise((r) => srv.close(r));
+            const { unlinkSync } = await import('node:fs');
+            try {
+                unlinkSync(`/tmp/gate-gr-${process.pid}-e.sock`);
+            } catch {
+                /* gone */
             }
         });
 
@@ -376,9 +387,7 @@ describe('GstRunner — teardown exits as soon as Python is gone', () => {
     const STOP_PIPELINE_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 1000;
 
     let runner: GstRunner;
-    let exitSpy: ReturnType<typeof vi.spyOn>;
-    let originalSend: typeof process.send;
-    let originalConnected: PropertyDescriptor | undefined;
+    let exitSpy: ReturnType<typeof vi.fn>;
 
     /** Stand-in for the Python child — shutdown/stop only reach these. */
     const fakePython = () => ({
@@ -401,19 +410,15 @@ describe('GstRunner — teardown exits as soon as Python is gone', () => {
 
     beforeEach(() => {
         vi.useFakeTimers();
-        originalSend = process.send;
-        originalConnected = Object.getOwnPropertyDescriptor(process, 'connected');
-        Object.defineProperty(process, 'connected', { value: true, configurable: true });
-        process.send = (() => true) as unknown as typeof process.send;
-        exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-        runner = new GstRunner('/nonexistent/python-runner.py');
+        exitSpy = vi.fn();
+        runner = new GstRunner('/nonexistent/python-runner.py', {
+            post: () => {},
+            exit: exitSpy,
+        });
     });
 
     afterEach(() => {
-        exitSpy.mockRestore();
         vi.useRealTimers();
-        if (originalConnected) Object.defineProperty(process, 'connected', originalConnected);
-        process.send = originalSend;
     });
 
     it('exits on the flush window when there is no Python left to drain', () => {
@@ -485,11 +490,97 @@ describe('GstRunner — teardown exits as soon as Python is gone', () => {
         setPython(py);
         (runner as unknown as { restartOnError: boolean }).restartOnError = true;
         exitPython(py, 139, 'SIGSEGV');
-        expect((runner as unknown as { exitTimer: unknown }).exitTimer).toBeNull();
+        expect((runner as unknown as { handback: { isArmed: boolean } }).handback.isArmed).toBe(false);
         expect((runner as unknown as { restartTimer: unknown }).restartTimer).not.toBeNull();
         // Short of the minimum restart delay (1000 ms base, 0.75 jitter floor)
         // so no respawn is attempted inside the test.
         vi.advanceTimersByTime(700);
         expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('a CLEAN Python exit outside a teardown is restarted too (gate01 wedge)', () => {
+        // The field shape (gate01, 2026-07-18): the replacement Python found
+        // nothing to serve after its predecessor SIGSEGVed and exited 0. Read
+        // as "intentional", the runner sat with no Python forever and every
+        // downstream consumer gated on a socket that would never come back.
+        // Only `exiting` (a real teardown) makes an exit intentional.
+        const py = fakePython();
+        setPython(py);
+        (runner as unknown as { restartOnError: boolean }).restartOnError = true;
+        exitPython(py, 0);
+        expect((runner as unknown as { restartTimer: unknown }).restartTimer).not.toBeNull();
+        expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('a clean exit that FOLLOWS a reported bus error posts no second error', () => {
+        // Python exits 0 after every bus error / EOS it reports itself; the
+        // restart is already scheduled and the real message already in module
+        // health. A generic "exited unexpectedly" on top overwrote it.
+        const py = fakePython();
+        setPython(py);
+        (runner as unknown as { restartOnError: boolean }).restartOnError = true;
+        const posted: string[] = [];
+        (runner as unknown as { host: { post: (m: { action: string }) => void } }).host.post = (
+            m,
+        ) => {
+            posted.push(m.action);
+        };
+        (
+            runner as unknown as { handlePythonEvent: (e: Record<string, unknown>) => void }
+        ).handlePythonEvent({ event: 'error', message: 'Bus ERROR: not-linked' });
+        expect(posted.filter((a) => a === 'error')).toHaveLength(1);
+        exitPython(py, 0);
+        expect(posted.filter((a) => a === 'error')).toHaveLength(1);
+        expect((runner as unknown as { restartTimer: unknown }).restartTimer).not.toBeNull();
+    });
+
+    it('a retiring Python’s exit during a gated restart neither errors nor bumps the backoff', () => {
+        // A newer start told the old Python to stop and is now gated on its
+        // producer; the old one's clean exit must not be read as the NEW
+        // pipeline dying (which re-entered startPipeline and abandoned the
+        // live gate wait).
+        const old = fakePython();
+        setPython(old);
+        (runner as unknown as { restartOnError: boolean }).restartOnError = true;
+        runner.handleControlMessage({
+            id: 'rpc-g',
+            type: 'request',
+            action: 'startPipeline',
+            data: { pipeline: `unixfdsrc socket-path=/tmp/gate-${process.pid}-retire.sock ! fakesink` },
+        });
+        expect(old.stop).toHaveBeenCalled();
+        expect((runner as unknown as { python: unknown }).python).toBeNull();
+        // While it drains, an engine exit still reaches it…
+        runner.emergencyKill();
+        expect(old.emergencyKill).toHaveBeenCalled();
+        // …and its exit is expected: no error, no backoff, the gate wait lives on.
+        exitPython(old, 0);
+        expect((runner as unknown as { restartTimer: unknown }).restartTimer).toBeNull();
+        expect(exitSpy).not.toHaveBeenCalled();
+        runner.shutdown('test'); // cancel the gate wait
+    });
+
+    it('exits its host exactly once, whichever deadline fires first', () => {
+        // stop() sends stopPipeline AND shutdown (the fork's SIGTERM nudge):
+        // two deadlines, one host exit — and no timer left behind to fire into
+        // a host that has already let go of the runner.
+        const py = fakePython();
+        setPython(py);
+        stopPipeline();
+        runner.shutdown('module stop');
+        vi.advanceTimersByTime(STOP_PIPELINE_EXIT_MS + SHUTDOWN_EXIT_MS);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('a Python that drains in time leaves no SIGKILL timer behind', () => {
+        const py = fakePython();
+        setPython(py);
+        runner.shutdown('module stop');
+        exitPython(py, 0);
+        vi.advanceTimersByTime(SHUTDOWN_FLUSH_MS);
+        expect(exitSpy).toHaveBeenCalledTimes(1);
+        expect(py.kill).not.toHaveBeenCalledWith('SIGKILL');
+        expect(vi.getTimerCount()).toBe(0);
     });
 });

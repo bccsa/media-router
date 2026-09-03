@@ -123,8 +123,9 @@ describe('EOS drain before teardown (runner ↔ parent contract)', () => {
         // Python's own deadline: drain + the NULL transition must fit.
         expect(FORCE_KILL_TIMEOUT_MS).toBeGreaterThanOrEqual(drainMs + 1000);
 
-        // gst-runner shutdown: SIGKILL no earlier than Python's deadline, and
-        // don't exit (which triggers the emergency SIGKILL) before that. These
+        // GstRunner shutdown: SIGKILL no earlier than Python's deadline, and
+        // don't hand the runner back to its host (which ends the wait and,
+        // under the fork, triggers the emergency SIGKILL) before that. These
         // are derived from FORCE_KILL_TIMEOUT_MS rather than re-typed, so pin
         // the derivation — a literal here would drift.
         expect(gstRunnerSource).toContain('const SHUTDOWN_KILL_MS = FORCE_KILL_TIMEOUT_MS');
@@ -133,13 +134,23 @@ describe('EOS drain before teardown (runner ↔ parent contract)', () => {
             'const STOP_PIPELINE_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 1000',
         );
         expect(gstRunnerSource).toContain('}, SHUTDOWN_KILL_MS);');
-        expect(gstRunnerSource).toContain('process.exit(0), SHUTDOWN_EXIT_MS)');
-        expect(gstRunnerSource).toContain('process.exit(0), STOP_PIPELINE_EXIT_MS)');
+        expect(gstRunnerSource).toContain('this.handback.after(SHUTDOWN_EXIT_MS)');
+        expect(gstRunnerSource).toContain('this.handback.after(STOP_PIPELINE_EXIT_MS)');
 
-        // The outer fork kill must outlast the runner's own exit window
-        // (SHUTDOWN_EXIT_MS = FORCE_KILL_TIMEOUT_MS + 500), or a draining
-        // Python is orphaned by a SIGKILL'd parent.
-        const forkKill = constantOf(gstChildProcessSource, 'GST_RUNNER_KILL_TIMEOUT_MS');
-        expect(forkKill).toBeGreaterThan(FORCE_KILL_TIMEOUT_MS + 500);
+        // The runner shares the engine process by default (ADR-0012): its only
+        // exit is the host seam. A `process.exit` here would take the engine
+        // — and every other module's runner — down with one module's teardown.
+        const gstRunnerCode = gstRunnerSource
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/^\s*\/\/.*$/gm, '');
+        expect(gstRunnerCode).not.toMatch(/process\.(exit|send|on)\(/);
+
+        // The host's wait for the runner (in-process) / the shim kill (fork)
+        // must outlast the runner's own exit window (SHUTDOWN_EXIT_MS =
+        // FORCE_KILL_TIMEOUT_MS + 500), or a draining Python is SIGKILLed
+        // — the mid-decode teardown this whole contract exists to prevent.
+        const hostCap = constantOf(gstChildProcessSource, 'GST_RUNNER_KILL_TIMEOUT_MS');
+        expect(hostCap).toBeGreaterThan(FORCE_KILL_TIMEOUT_MS + 500);
+        expect(gstChildProcessSource).toContain('backend.stop(GST_RUNNER_KILL_TIMEOUT_MS)');
     });
 });

@@ -14,8 +14,8 @@ import { GstChildProcess } from '../src/child-process/GstChildProcess.js';
 async function main() {
     console.log('=== GstChildProcess Test ===\n');
 
-    // gst-runner.ts needs to be compiled first or run via tsx
-    // For this test, we point to the source file and use tsx
+    // Hosts the runner in this process (ADR-0012) and spawns the python
+    // pipeline runner from src/child-process — no build step needed under tsx.
     const child = new GstChildProcess();
 
     child.on('stateChange', (data) => {

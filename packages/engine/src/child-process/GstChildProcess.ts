@@ -1,9 +1,10 @@
-import { fork, type ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import * as path from 'path';
-import * as fs from 'fs';
 import { createLogger, ExponentialBackoff } from '@media-router/shared-types';
-import { ControlIpc } from './ControlIpc.js';
+import type { RunnerChannel } from './ControlIpc.js';
+import type { RunnerBackend } from './RunnerBackend.js';
+import { InProcessRunnerHost } from './InProcessRunnerHost.js';
+import { ForkedRunnerBackend } from './ForkedRunnerBackend.js';
 import type { PipelineDescription } from '../plugins/PluginModule.js';
 
 const log = createLogger('GstChildProcess');
@@ -11,14 +12,26 @@ const log = createLogger('GstChildProcess');
 const MAX_RESTARTS = 10;
 
 /**
- * How long the forked gst-runner gets to shut down after SIGTERM before we
- * SIGKILL it. Must outlast the runner's own shutdown budget, which in turn
+ * How long a runner gets to finish shutting down before its Python is
+ * SIGKILLed. Must outlast the runner's own shutdown budget, which in turn
  * outlasts the Python EOS drain (`EOS_DRAIN_TIMEOUT_MS`) — see `stop()`.
  *
  * Tail of the chain: 6000 ms drain → 8000 FORCE_KILL_TIMEOUT_MS → 8500
- * SHUTDOWN_EXIT_MS in GstRunner → 9000 here.
+ * SHUTDOWN_EXIT_MS in GstRunner → 9000 here. In-process it caps the wait for
+ * the hosted runner to hand itself back; under the fork it is the SIGTERM →
+ * SIGKILL window on the shim (whose exit hook SIGKILLs Python).
  */
 const GST_RUNNER_KILL_TIMEOUT_MS = 9000;
+
+/**
+ * Rollback switch: `MR_GST_RUNNER_FORK=1` puts every runner back behind a
+ * forked `gst-runner.js` shim (one extra node process per module — ~60 MB RSS
+ * on a Pi 4 — which is what hosting the runner in-process removes). Read per
+ * spawn so a test can flip it; documented in ADR-0012.
+ */
+export function useForkedRunner(): boolean {
+    return process.env.MR_GST_RUNNER_FORK === '1';
+}
 
 /**
  * Reject when a Python-side RPC handler emitted `command_error` (surfaced by
@@ -36,7 +49,10 @@ export function throwIfRpcError(result: unknown, label: string): void {
 }
 
 /**
- * Wraps a forked gst-runner child process.
+ * One module's GStreamer runner: a `GstRunner` hosted in this process
+ * (`InProcessRunnerHost`) that owns the module's python
+ * `gst-pipeline-runner.py` child — or, under `MR_GST_RUNNER_FORK=1`, the same
+ * runner behind a forked `gst-runner.js` shim.
  *
  * Manages lifecycle (start, stop, restart), monitors health,
  * and provides typed event subscriptions.
@@ -46,17 +62,21 @@ export function throwIfRpcError(result: unknown, label: string): void {
  *   - 'vuData' (data) — VU meter data
  *   - 'pluginEvent' ({channel, payload}) — generic pipeline→plugin data
  *   - 'error' (data) — error from pipeline
- *   - 'exit' (code) — child process exited
+ *   - 'exit' (code) — the runner finished (in-process: after `stop()`;
+ *     fork: the shim process exited)
  */
 export class GstChildProcess extends EventEmitter {
-    private child: ChildProcess | null = null;
-    private ipc: ControlIpc | null = null;
+    private backend: RunnerBackend | null = null;
+    /** `backend.channel` — its own field so tests can inject a fake channel. */
+    private ipc: RunnerChannel | null = null;
     private pipelineDesc: PipelineDescription | null = null;
     private running = false;
     private backoff = new ExponentialBackoff(3000, 60000, MAX_RESTARTS, 30000);
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
     private destroyed = false;
-    private gstRunnerPath: string;
+    /** Fork backend only: an explicit shim script (tests); default resolved by the backend. */
+    private readonly gstRunnerPath: string | undefined;
+    private readonly pythonRunnerPath = path.resolve(__dirname, 'gst-pipeline-runner.py');
     /**
      * Last value set per element property since `start()`. Replayed on every
      * PLAYING transition: any restart layer (runner-internal Python respawn or
@@ -68,22 +88,7 @@ export class GstChildProcess extends EventEmitter {
 
     constructor(gstRunnerPath?: string) {
         super();
-        if (gstRunnerPath) {
-            this.gstRunnerPath = gstRunnerPath;
-        } else {
-            // Prefer compiled dist/ version (always up-to-date after build)
-            // __dirname is src/child-process/ under tsx, dist/child-process/ when compiled
-            const distPath = path.resolve(__dirname, '../../dist/child-process/gst-runner.js');
-            const localJs = path.resolve(__dirname, 'gst-runner.js');
-            const localTs = path.resolve(__dirname, 'gst-runner.ts');
-            if (fs.existsSync(distPath)) {
-                this.gstRunnerPath = distPath;
-            } else if (fs.existsSync(localJs)) {
-                this.gstRunnerPath = localJs;
-            } else {
-                this.gstRunnerPath = localTs;
-            }
-        }
+        this.gstRunnerPath = gstRunnerPath;
     }
 
     /** Start a GStreamer pipeline. */
@@ -98,26 +103,68 @@ export class GstChildProcess extends EventEmitter {
     private async spawnChild(): Promise<void> {
         if (!this.pipelineDesc) return;
 
-        // Clean up previous child/ipc if restarting (prevents listener leaks)
+        // Clean up previous runner/ipc if restarting (prevents listener leaks)
         this.cleanup();
 
-        // Fork the gst-runner script
-        // Determine execArgv: if running a .ts file, use tsx loader
-        const isTsFile = this.gstRunnerPath.endsWith('.ts');
-        const execArgv = isTsFile ? ['--import', 'tsx'] : [];
-
-        this.child = fork(this.gstRunnerPath, [], {
-            // fork() automatically creates IPC on fd 3
-            // Use 'pipe' for stdin/stdout (MPEG-TS data), inherit stderr for debugging
-            stdio: ['pipe', 'pipe', 'inherit', 'ipc'],
-            execArgv,
-            env: childEnv(),
+        const backend = useForkedRunner()
+            ? new ForkedRunnerBackend(this.gstRunnerPath)
+            : this.hostRunner(this.pipelineDesc);
+        if (!backend) return;
+        this.backend = backend;
+        this.ipc = backend.channel;
+        this.wireRunnerEvents(this.ipc);
+        backend.onExit((code) => {
+            if (this.backend !== backend) return; // superseded — a later start owns the state
+            this.running = false;
+            this.emit('exit', code);
+            // A hosted runner only ever hands back with 0, after stop(); a
+            // non-zero code is the fork's shim dying — respawn it.
+            if (!this.destroyed && this.pipelineDesc && code !== 0) {
+                this.clearRestartTimer();
+                this.scheduleRestart();
+            }
         });
 
-        this.ipc = new ControlIpc(this.child);
+        // Send the pipeline to the runner
+        try {
+            await this.ipc.sendRequest('startPipeline', this.startPayload(this.pipelineDesc));
+        } catch (err) {
+            // Synthesised by this layer, not posted by the gst bus: it names no
+            // element, so plugins doing per-element attribution (video-player's
+            // decoder demotion) must be able to tell it apart — hence `kind`.
+            this.emit('error', {
+                kind: 'spawn_failed',
+                message: `Failed to start pipeline: ${err}`,
+            });
+        }
+    }
 
-        // Wire up event handlers
-        this.ipc.on('stateChange', (data) => {
+    /**
+     * Default backend: host the runner here. There is no process to die
+     * unexpectedly, so no outer restart loop — the runner's own restart loop
+     * (bus error / Python exit → respawn Python) is the whole recovery path,
+     * and `exit` fires only after `stop()` has finished with it.
+     */
+    private hostRunner(desc: PipelineDescription): InProcessRunnerHost | null {
+        if (desc.useStdioForData) {
+            // The data-pipe mode relays MPEG-TS over the SHIM's stdin/stdout;
+            // hosted in the engine those would be the engine's own stdio. No
+            // plugin uses it — refuse loudly rather than wire the engine's
+            // stdin into a pipeline.
+            this.emit('error', {
+                kind: 'spawn_failed',
+                message:
+                    'useStdioForData needs the forked runner (MR_GST_RUNNER_FORK=1); in-process runners carry data on the unixfd bus',
+            });
+            return null;
+        }
+        return new InProcessRunnerHost(this.pythonRunnerPath);
+    }
+
+    /** Route the runner's events to this emitter (same wiring for both backends). */
+    private wireRunnerEvents(ipc: RunnerChannel): void {
+        // Same wiring for both backends — the module never sees which one runs.
+        ipc.on('stateChange', (data) => {
             const { state } = data as { state: string };
             if (state === 'playing') {
                 this.running = true;
@@ -141,7 +188,7 @@ export class GstChildProcess extends EventEmitter {
             this.emit('stateChange', data);
         });
 
-        this.ipc.on('vuData', (data) => {
+        ipc.on('vuData', (data) => {
             this.emit('vuData', data);
         });
 
@@ -149,11 +196,11 @@ export class GstChildProcess extends EventEmitter {
         // passthrough — the module decides what to do with each channel (e.g.
         // `level:sclevel` for the audio-dynamics ducker, `stream:discovered` /
         // `stream:names` for the mpegts demuxer's inspector).
-        this.ipc.on('pluginEvent', (data) => {
+        ipc.on('pluginEvent', (data) => {
             this.emit('pluginEvent', data);
         });
 
-        this.ipc.on('error', (data) => {
+        ipc.on('error', (data) => {
             this.emit('error', data);
         });
 
@@ -162,34 +209,9 @@ export class GstChildProcess extends EventEmitter {
         // so the module can surface a health warning naming the pending
         // sockets — without it a gated module reports healthy while nothing
         // runs. `pending: []` clears the signal (gate opened).
-        this.ipc.on('busGate', (data) => {
+        ipc.on('busGate', (data) => {
             this.emit('busGate', data);
         });
-
-        // Monitor child exit for auto-restart
-        this.child.on('exit', (code) => {
-            this.running = false;
-            this.emit('exit', code);
-
-            // Auto-restart if not intentionally stopped
-            if (!this.destroyed && this.pipelineDesc && code !== 0) {
-                this.clearRestartTimer();
-                this.scheduleRestart();
-            }
-        });
-
-        // Send the pipeline to the child
-        try {
-            await this.ipc.sendRequest('startPipeline', this.startPayload(this.pipelineDesc));
-        } catch (err) {
-            // Synthesised by this layer, not posted by the gst bus: it names no
-            // element, so plugins doing per-element attribution (video-player's
-            // decoder demotion) must be able to tell it apart — hence `kind`.
-            this.emit('error', {
-                kind: 'spawn_failed',
-                message: `Failed to start pipeline: ${err}`,
-            });
-        }
     }
 
     /**
@@ -223,7 +245,11 @@ export class GstChildProcess extends EventEmitter {
         };
     }
 
-    /** Stop the pipeline and child process. */
+    /**
+     * Stop the pipeline and its runner. The backend owns the teardown shape
+     * (see `InProcessRunnerHost.stop` / `ForkedRunnerBackend.stop`); the kill
+     * window is the same for both and pinned by eosDrainContract.test.ts.
+     */
     async stop(): Promise<void> {
         this.clearRestartTimer();
         this.backoff.reset();
@@ -231,54 +257,8 @@ export class GstChildProcess extends EventEmitter {
         this.pipelineDesc = null;
         this.stickyProps.clear();
 
-        if (!this.child) {
-            this.cleanup();
-            return;
-        }
-
-        // If child is already dead, just clean up
-        if (!this.child.connected && this.child.exitCode !== null) {
-            this.cleanup();
-            return;
-        }
-
-        // Try graceful stop via IPC
-        try {
-            if (this.ipc && this.child.connected) {
-                await this.ipc.sendRequest('stopPipeline', undefined, 2000);
-            }
-        } catch {
-            // Channel closed or timeout — will force kill below
-        }
-
-        // Kill the gst-runner child process directly
-        const child = this.child;
-        if (child && child.exitCode === null) {
-            child.kill('SIGTERM');
-
-            // Wait for a clean exit, then SIGKILL. The window covers the whole
-            // shutdown chain below us: the runner tells Python to stop, Python
-            // EOS-drains its pipeline before NULL (so a stateless HEVC decoder
-            // is never stopped mid-decode — that wedges the kernel driver), and
-            // the runner exits after its own SIGKILL deadline. Killing the fork
-            // sooner orphans a draining Python. Pinned by eosDrainContract.test.ts.
-            await new Promise<void>((resolve) => {
-                const killTimer = setTimeout(() => {
-                    try {
-                        child.kill('SIGKILL');
-                    } catch {
-                        /* already dead */
-                    }
-                    resolve();
-                }, GST_RUNNER_KILL_TIMEOUT_MS);
-
-                child.once('exit', () => {
-                    clearTimeout(killTimer);
-                    resolve();
-                });
-            });
-        }
-
+        const backend = this.backend;
+        if (backend) await backend.stop(GST_RUNNER_KILL_TIMEOUT_MS);
         this.cleanup();
     }
 
@@ -290,14 +270,14 @@ export class GstChildProcess extends EventEmitter {
         this.removeAllListeners();
     }
 
-    /** Get the child's stdin (for piping MPEG-TS data in). */
+    /** Fork backend only: the shim's stdin (data-pipe mode, MPEG-TS in). */
     getStdin() {
-        return this.child?.stdin ?? null;
+        return this.backend instanceof ForkedRunnerBackend ? this.backend.stdin : null;
     }
 
-    /** Get the child's stdout (for piping MPEG-TS data out). */
+    /** Fork backend only: the shim's stdout (data-pipe mode, MPEG-TS out). */
     getStdout() {
-        return this.child?.stdout ?? null;
+        return this.backend instanceof ForkedRunnerBackend ? this.backend.stdout : null;
     }
 
     // --- Live element control ---
@@ -442,9 +422,12 @@ export class GstChildProcess extends EventEmitter {
         return (result as any)?.data ?? {};
     }
 
-    /** Get the child PID. */
+    /**
+     * PID of the process this runner owns: the Python child in-process, the
+     * shim under the fork (whose own exit hook reaps its Python).
+     */
     get pid(): number | undefined {
-        return this.child?.pid;
+        return this.backend?.pid;
     }
 
     /** Whether the pipeline is currently running. */
@@ -493,41 +476,10 @@ export class GstChildProcess extends EventEmitter {
     }
 
     private cleanup(): void {
+        this.backend?.destroy();
         this.ipc?.destroy();
+        this.backend = null;
         this.ipc = null;
-        this.child = null;
         this.running = false;
     }
-}
-
-/**
- * Build the env block passed to the gst-runner child. Resolves Wayland
- * connectivity at spawn time so a compositor that started after the engine
- * is still picked up — and so an engine launched without session env (SSH,
- * systemd-user with no inherited environment) still gets `WAYLAND_DISPLAY`
- * set when a wayland socket exists in the user runtime dir.
- */
-function childEnv(): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env };
-
-    if (!env.XDG_RUNTIME_DIR && typeof process.getuid === 'function') {
-        const candidate = `/run/user/${process.getuid()}`;
-        try {
-            if (fs.statSync(candidate).isDirectory()) env.XDG_RUNTIME_DIR = candidate;
-        } catch {
-            /* nothing to do */
-        }
-    }
-
-    if (!env.WAYLAND_DISPLAY && env.XDG_RUNTIME_DIR) {
-        try {
-            const socket = fs
-                .readdirSync(env.XDG_RUNTIME_DIR)
-                .find((entry) => /^wayland-\d+$/.test(entry));
-            if (socket) env.WAYLAND_DISPLAY = socket;
-        } catch {
-            /* runtime dir unreadable */
-        }
-    }
-    return env;
 }

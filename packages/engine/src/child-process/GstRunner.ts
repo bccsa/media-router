@@ -2,6 +2,7 @@ import { ExponentialBackoff, type ControlIpcMessage } from '@media-router/shared
 import { PythonProcess, FORCE_KILL_TIMEOUT_MS, type RunnerStartOptions } from './PythonProcess.js';
 import { ParentIpc } from './ParentIpc.js';
 import { unixFdSrcSocketPaths, waitForBusSockets } from './busSocketGate.js';
+import { RunnerHandback } from './runnerHandback.js';
 
 // Restart policy:
 //   - Default 1s base, 5s cap — fast recovery for transient errors.
@@ -47,18 +48,36 @@ interface StartPipelineMessage extends RunnerStartOptions {
 }
 
 /**
+ * Whoever hosts a `GstRunner` — the one seam through which the runner reaches
+ * the outside world. `post` carries every event/response to the parent;
+ * `exit` is called ONCE, when a terminal path (`stopPipeline` / `shutdown`)
+ * has finished draining Python (or hit its deadline) and the runner is done.
+ *
+ * In-process (`InProcessRunnerHost`, the default) `post` is a direct method
+ * call and `exit` marks the host finished. Under the legacy fork
+ * (`gst-runner.ts`) they are `process.send` and `process.exit(0)`. The runner
+ * itself never touches `process`, so an in-process runner can never take the
+ * engine down with it.
+ */
+export interface RunnerHost {
+    post(msg: ControlIpcMessage): void;
+    exit(): void;
+}
+
+/**
  * Orchestrates the Python GStreamer runner child process.
  *
  * Owns the pipeline state machine (currentState + restart loop) and the
- * translation between parent IPC actions and Python commands. Spawning,
+ * translation between parent control actions and Python commands. Spawning,
  * stdio wiring, and the raw JSON event stream live in `PythonProcess`. The
- * parent IPC channel and round-trip request tracking live in `ParentIpc`.
- * The surrounding `gst-runner.ts` entry script wires signals/IPC to a single
- * `GstRunner` instance.
+ * outbound channel and round-trip request tracking live in `ParentIpc`.
+ * One instance per pipeline, hosted in the engine by `InProcessRunnerHost`
+ * (or, under `MR_GST_RUNNER_FORK=1`, by the `gst-runner.ts` entry script in
+ * a forked child).
  */
 export class GstRunner {
     private python: PythonProcess | null = null;
-    private readonly ipc = new ParentIpc();
+    private readonly ipc: ParentIpc;
     private currentState: 'stopped' | 'playing' | 'error' = 'stopped';
     private restartOnError = false;
     private restartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -90,12 +109,25 @@ export class GstRunner {
 
     /** A terminal path (`stopPipeline` / `shutdown`) has begun — see `exitWhenDrained`. */
     private exiting = false;
-    /** The armed post-drain exit, so re-entry can't stack timers. */
-    private exitTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The one-shot hand-back to the host; every deadline below arms it. */
+    private readonly handback = new RunnerHandback(() => {
+        this.ipc.clearPending();
+        this.host.exit();
+    });
 
-    constructor(private readonly pythonRunnerPath: string) {}
+    constructor(
+        private readonly pythonRunnerPath: string,
+        private readonly host: RunnerHost,
+    ) {
+        this.ipc = new ParentIpc((msg) => host.post(msg));
+    }
 
-    // --- Public entry points (called by the gst-runner entry script) ---
+    /** PID of the live Python runner, if one is up (the process a module owns). */
+    get pythonPid(): number | undefined {
+        return this.python?.pid;
+    }
+
+    // --- Public entry points (called by the host: InProcessRunnerHost, or gst-runner.ts under the fork) ---
 
     /** Dispatch one IPC message from the parent (the `child_process.fork`'er). */
     handleControlMessage(msg: ControlIpcMessage): void {
@@ -125,7 +157,7 @@ export class GstRunner {
                 this.exiting = true;
                 this.python?.stop();
                 this.ipc.sendResponse(msg.id, { ok: true });
-                setTimeout(() => process.exit(0), STOP_PIPELINE_EXIT_MS);
+                this.handback.after(STOP_PIPELINE_EXIT_MS);
                 // …unless the drain is already over, in which case go now.
                 this.exitWhenDrained();
                 break;
@@ -139,58 +171,44 @@ export class GstRunner {
 
             case 'setProperty': {
                 const d = msg.data as { element: string; property: string; value: unknown };
-                const reqId = this.makeRequestId('setprop');
-                this.ipc.trackPending(reqId, msg.id, 'set_property');
-                this.python?.sendCommand({
+                this.forwardTracked(msg.id, 'setprop', 'set_property', {
                     cmd: 'set_property',
                     element: d.element,
                     property: d.property,
                     value: d.value,
-                    id: reqId,
                 });
                 break;
             }
 
             case 'getProperty': {
                 const d = msg.data as { element: string; property: string };
-                const reqId = this.makeRequestId('prop');
-                this.ipc.trackPending(reqId, msg.id, 'property');
-                this.python?.sendCommand({
+                this.forwardTracked(msg.id, 'prop', 'property', {
                     cmd: 'get_property',
                     element: d.element,
                     property: d.property,
-                    id: reqId,
                 });
                 break;
             }
 
             case 'getStats': {
                 const d = msg.data as { element: string };
-                const reqId = this.makeRequestId('stats');
-                this.ipc.trackPending(reqId, msg.id, 'stats');
-                this.python?.sendCommand({ cmd: 'get_stats', element: d.element, id: reqId });
+                this.forwardTracked(msg.id, 'stats', 'stats', { cmd: 'get_stats', element: d.element });
                 break;
             }
 
             case 'trackThroughput': {
                 const d = msg.data as { element: string; pad?: string };
-                const reqId = this.makeRequestId('track');
-                this.ipc.trackPending(reqId, msg.id, 'track_throughput');
-                this.python?.sendCommand({
+                this.forwardTracked(msg.id, 'track', 'track_throughput', {
                     cmd: 'track_throughput',
                     element: d.element,
                     pad: d.pad ?? 'src',
-                    id: reqId,
                 });
                 break;
             }
 
-            case 'getThroughput': {
-                const reqId = this.makeRequestId('tp');
-                this.ipc.trackPending(reqId, msg.id, 'throughput');
-                this.python?.sendCommand({ cmd: 'get_throughput', id: reqId });
+            case 'getThroughput':
+                this.forwardTracked(msg.id, 'tp', 'throughput', { cmd: 'get_throughput' });
                 break;
-            }
 
             case 'setKlvPayload': {
                 // In-band name carousel (mpegts muxer, Phase 2). Fire-and-forget
@@ -239,13 +257,10 @@ export class GstRunner {
                 // socket without a pipeline rebuild. Tracked — the executor must
                 // know the swap landed before it detaches the old edge.
                 const d = msg.data as { element: string; socket: string };
-                const reqId = this.makeRequestId('reinput');
-                this.ipc.trackPending(reqId, msg.id, 'bus_reinput');
-                this.python?.sendCommand({
+                this.forwardTracked(msg.id, 'reinput', 'bus_reinput', {
                     cmd: 'bus_reinput',
                     element: d.element,
                     socket: d.socket,
-                    id: reqId,
                 });
                 break;
             }
@@ -265,27 +280,40 @@ export class GstRunner {
         }
     }
 
-    /** Graceful shutdown — SIGTERM, SIGINT, parent disconnect. */
+    /**
+     * Graceful shutdown — the host is done with this runner (module stop /
+     * destroy in-process; SIGTERM, SIGINT or parent disconnect under the fork).
+     * Idempotent: a second call re-nudges a still-draining Python and re-arms
+     * the same deadline, and the hand-back fires the host exactly once.
+     */
     shutdown(reason: string): void {
         console.error(`[gst-runner] Shutting down: ${reason}`);
         // Disarm the auto-restart loop before we kill the child, otherwise the
         // child's exit handler will spawn a fresh Python within our exit
-        // window — which then gets killed by the process.on('exit') SIGKILL
+        // window — which then gets killed by the host's emergency SIGKILL
         // fallback, leaking a Python child every shutdown.
         this.restartOnError = false;
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
             this.restartTimer = null;
         }
+        // Invalidate an in-flight socket-gate wait and its queued attaches:
+        // under the fork the process exit ended them, in-process nothing else
+        // would — the probe loop is immortal until its epoch is superseded.
+        this.startEpoch++;
+        this.clearQueuedBusAttaches('runner shut down');
         this.exiting = true;
         if (this.python) {
             const py = this.python;
             py.sendCommand({ cmd: 'stop' });
             // SIGTERM is a second nudge, not a kill: the runner's handler runs
             // the same EOS drain as the `stop` command. The SIGKILL below is
-            // the deadline for that drain (see SHUTDOWN_KILL_MS).
+            // the deadline for that drain (see SHUTDOWN_KILL_MS) — tracked so
+            // a Python that drains in time leaves no timer holding it.
             py.kill('SIGTERM');
-            setTimeout(() => {
+            this.clearShutdownKill();
+            this.shutdownKillTimer = setTimeout(() => {
+                this.shutdownKillTimer = null;
                 try {
                     py.kill('SIGKILL');
                 } catch (err) {
@@ -293,13 +321,13 @@ export class GstRunner {
                 }
             }, SHUTDOWN_KILL_MS);
         }
-        setTimeout(() => process.exit(0), SHUTDOWN_EXIT_MS);
+        this.handback.after(SHUTDOWN_EXIT_MS);
         // …unless there is nothing left to drain.
         this.exitWhenDrained();
     }
 
     /**
-     * Exit as soon as Python is verifiably gone.
+     * Hand back as soon as Python is verifiably gone.
      *
      * `SHUTDOWN_EXIT_MS` / `STOP_PIPELINE_EXIT_MS` are the DEADLINE for the
      * Python EOS drain — the point past which a still-running drain must be
@@ -318,16 +346,56 @@ export class GstRunner {
      * proof that a teardown — not a restart — asked for this.
      */
     private exitWhenDrained(): void {
-        if (!this.exiting || this.python || this.exitTimer) return;
-        this.exitTimer = setTimeout(() => process.exit(0), SHUTDOWN_FLUSH_MS);
+        if (!this.exiting || this.python) return;
+        this.handback.after(SHUTDOWN_FLUSH_MS);
     }
 
-    /** Last-ditch sync cleanup from `process.on('exit')`. */
+    /**
+     * Last-ditch sync cleanup — the host's process is exiting (or gave up
+     * waiting for the drain): SIGKILL whatever Python is still up, retiring
+     * ones included.
+     */
     emergencyKill(): void {
         this.python?.emergencyKill();
+        for (const py of this.retiring) py.emergencyKill();
+    }
+
+    /** The `shutdown` SIGKILL deadline, cleared once its Python has exited. */
+    private shutdownKillTimer: ReturnType<typeof setTimeout> | null = null;
+
+    private clearShutdownKill(): void {
+        if (this.shutdownKillTimer) {
+            clearTimeout(this.shutdownKillTimer);
+            this.shutdownKillTimer = null;
+        }
+    }
+
+    /** One tracked RPC: register the pending id, forward the command to Python with it. */
+    private forwardTracked(
+        parentReqId: string,
+        prefix: string,
+        label: string,
+        cmd: Record<string, unknown>,
+    ): void {
+        const reqId = this.makeRequestId(prefix);
+        this.ipc.trackPending(reqId, parentReqId, label);
+        this.python?.sendCommand({ ...cmd, id: reqId });
     }
 
     // --- Python event handling ---
+
+    /**
+     * Error boundary around every Python event. The runner shares the engine
+     * process, so a throw here must stay a logged, dropped event — never an
+     * uncaught exception that takes every other module's runner with it.
+     */
+    private dispatchPythonEvent(eventJson: Record<string, unknown>): void {
+        try {
+            this.handlePythonEvent(eventJson);
+        } catch (err) {
+            console.error(`[gst-runner] Python event handler threw (event=${String(eventJson.event)}):`, err);
+        }
+    }
 
     private handlePythonEvent(eventJson: Record<string, unknown>): void {
         const event = eventJson.event as string;
@@ -456,8 +524,14 @@ export class GstRunner {
         );
         this.restartTimer = setTimeout(() => {
             this.restartTimer = null;
-            if (this.lastStart) {
+            if (!this.lastStart) return;
+            try {
                 this.startPipeline(this.lastStart, `restart-${this.restartBackoff.attempts}`);
+            } catch (err) {
+                // In-process, a throw here would be an uncaught exception in
+                // the engine. Log it and let the next tick retry.
+                console.error('[gst-runner] restart failed:', err);
+                this.scheduleRestart();
             }
         }, delay);
     }
@@ -502,12 +576,27 @@ export class GstRunner {
     /** Bumped on every start/stop; invalidates in-flight socket-gate waits. */
     private startEpoch = 0;
 
+    /**
+     * Pythons a newer start has told to stop but which have not exited yet.
+     * Off `this.python` the moment they retire: a gated start can wait
+     * minutes for its producer, and a retiring Python's clean exit inside
+     * that window used to pass the identity guard in `handlePythonExit`, fire
+     * a spurious error, bump the backoff and re-enter `startPipeline` —
+     * abandoning the live gate wait. Kept here only so `emergencyKill` can
+     * still reach them.
+     */
+    private readonly retiring = new Set<PythonProcess>();
+
     private startPipeline(opts: RunnerStartOptions, requestId: string): void {
         if (this.restartTimer) {
             clearTimeout(this.restartTimer);
             this.restartTimer = null;
         }
-        if (this.python) this.python.stop();
+        if (this.python) {
+            this.retiring.add(this.python);
+            this.python.stop();
+            this.python = null;
+        }
 
         this.lastStart = opts;
         const epoch = ++this.startEpoch;
@@ -522,7 +611,7 @@ export class GstRunner {
             const py: PythonProcess = new PythonProcess({
                 pythonRunnerPath: this.pythonRunnerPath,
                 useStdioForData: opts.useStdioForData ?? false,
-                onEvent: (event) => this.handlePythonEvent(event),
+                onEvent: (event) => this.dispatchPythonEvent(event),
                 onExit: (code, signal) => this.handlePythonExit(py, code, signal),
                 onSpawnError: (err) => this.handlePythonSpawnError(py, err),
             });
@@ -558,12 +647,24 @@ export class GstRunner {
                     );
                     this.ipc.sendEvent('busGate', { pending });
                 },
-            }).then((ready) => {
-                if (!ready || epoch !== this.startEpoch) return; // superseded by stop/newer start
-                // All producer sockets accept — clear the gate signal, launch.
-                this.ipc.sendEvent('busGate', { pending: [] });
-                launch();
-            });
+            })
+                .then((ready) => {
+                    if (!ready || epoch !== this.startEpoch) return; // superseded by stop/newer start
+                    // All producer sockets accept — clear the gate signal, launch.
+                    this.ipc.sendEvent('busGate', { pending: [] });
+                    launch();
+                })
+                .catch((err) => {
+                    // Fault boundary: an unhandled rejection here would be
+                    // fatal to the ENGINE in-process (no handler installed).
+                    // Surface it as a spawn failure; the restart loop retries.
+                    console.error('[gst-runner] gated launch failed:', err);
+                    this.ipc.sendEvent('error', {
+                        kind: 'spawn_failed',
+                        message: `Gated launch failed: ${err instanceof Error ? err.message : String(err)}`,
+                    });
+                    if (this.restartOnError) this.scheduleRestart();
+                });
         }
 
         this.ipc.sendResponse(requestId, { ok: true });
@@ -574,7 +675,10 @@ export class GstRunner {
         code: number | null,
         signal: NodeJS.Signals | null,
     ): void {
+        if (this.retiring.delete(py)) return; // told to stop by a newer start — expected
         if (this.python !== py) return; // a successor has taken over
+        this.clearShutdownKill();
+        const priorState = this.currentState;
         this.currentState = 'stopped';
         this.ipc.sendEvent('stateChange', { state: 'stopped', exitCode: code, signal });
         this.python = null;
@@ -586,13 +690,24 @@ export class GstRunner {
             this.exitWhenDrained();
             return;
         }
-        // An unexpected exit (non-zero code or fatal signal) means the
-        // pipeline died without going through the bus — e.g. decoder
-        // segfault, OOM, GStreamer assertion. Treat the same as a bus error:
-        // schedule a restart. Without this, the gst-runner stays alive with
-        // no Python child and no recovery path; the outer GstChildProcess
-        // can't see it because *this* process is still healthy.
-        if (this.restartOnError && (code !== 0 || signal)) {
+        // Any exit outside a teardown means the pipeline died without the
+        // runner asking it to — decoder segfault, OOM, GStreamer assertion —
+        // and ALSO the clean `code=0` a fresh Python takes when its unixfd
+        // teardown SIGSEGVs the predecessor and the replacement finds nothing
+        // to serve (gate01, 2026-07-18). That clean exit used to be read as
+        // "intentional stop": the runner stayed alive with no Python and no
+        // recovery path, and every downstream consumer gated forever on a
+        // socket that would never come back. Only the two terminal paths
+        // (`exiting`, handled above) and a superseding start (`retiring`) are
+        // intentional; everything else restarts per policy.
+        if (!this.restartOnError) return;
+        // Python also exits 0 AFTER every bus error / EOS / stall it reported
+        // itself — those already scheduled this restart and carry the real
+        // message. Posting a generic "exited unexpectedly" on top would
+        // overwrite the bus error text in module health, so the synthesised
+        // error is for the silent exits only.
+        const alreadyReported = this.restartTimer !== null || priorState === 'error';
+        if (!alreadyReported) {
             this.ipc.sendEvent('error', {
                 // SYNTHESISED, not a bus error: it names no element because
                 // the pipeline never got to post one. Plugins that attribute
@@ -601,8 +716,8 @@ export class GstRunner {
                 kind: 'runner_exit',
                 message: `Python runner exited unexpectedly (code=${code} signal=${signal ?? 'none'})`,
             });
-            this.scheduleRestart();
         }
+        this.scheduleRestart();
     }
 
     private handlePythonSpawnError(py: PythonProcess, err: Error): void {
