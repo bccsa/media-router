@@ -1,25 +1,31 @@
 import * as crypto from 'crypto';
 import type { ChildProcess } from 'child_process';
 import type { ControlIpcMessage } from '@media-router/shared-types';
+import { PendingRequests } from './pendingRequests.js';
 
 /**
- * Typed IPC layer for parent↔child process communication.
- *
- * Supports:
- * - Request/response with ID correlation and timeout
- * - Fire-and-forget events
- * - Incoming event routing by action name
+ * What `GstChildProcess` needs from whatever carries its control traffic to a
+ * `GstRunner`: request/response with ID correlation and timeout, fire-and-
+ * forget events, and incoming event routing by action name. Two carriers:
+ * `InProcessRunnerHost` (the runner lives in this process — the default) and
+ * `ControlIpc` below (the runner lives in a forked `gst-runner.js`, kept as
+ * the `MR_GST_RUNNER_FORK=1` rollback).
  */
-export class ControlIpc {
+export interface RunnerChannel {
+    sendRequest(action: string, data?: unknown, timeout?: number): Promise<unknown>;
+    sendEvent(action: string, data?: unknown): void;
+    on(action: string, handler: (data: unknown) => void): void;
+    off(action: string): void;
+    destroy(): void;
+}
+
+/**
+ * Typed IPC layer for parent↔child process communication (the forked-runner
+ * carrier of `RunnerChannel`).
+ */
+export class ControlIpc implements RunnerChannel {
     private child: ChildProcess;
-    private pending = new Map<
-        string,
-        {
-            resolve: (data: unknown) => void;
-            reject: (err: Error) => void;
-            timer: ReturnType<typeof setTimeout>;
-        }
-    >();
+    private readonly pending = new PendingRequests('IPC');
     private eventHandlers = new Map<string, (data: unknown) => void>();
     private messageHandler: (msg: ControlIpcMessage) => void;
     private exitHandler: () => void;
@@ -29,13 +35,7 @@ export class ControlIpc {
 
         this.messageHandler = (msg: ControlIpcMessage) => {
             if (msg.type === 'response') {
-                // Resolve pending request
-                const pending = this.pending.get(msg.id);
-                if (pending) {
-                    clearTimeout(pending.timer);
-                    this.pending.delete(msg.id);
-                    pending.resolve(msg.data);
-                }
+                this.pending.resolve(msg.id, msg.data);
             } else if (msg.type === 'event') {
                 // Route to registered handler
                 const handler = this.eventHandlers.get(msg.action);
@@ -44,12 +44,7 @@ export class ControlIpc {
         };
 
         this.exitHandler = () => {
-            // Reject all pending requests
-            for (const [, pending] of this.pending) {
-                clearTimeout(pending.timer);
-                pending.reject(new Error('Child process exited'));
-            }
-            this.pending.clear();
+            this.pending.rejectAll(new Error('Child process exited'));
         };
 
         child.on('message', this.messageHandler);
@@ -60,25 +55,15 @@ export class ControlIpc {
      * Send a request and wait for a response with matching ID.
      */
     sendRequest(action: string, data?: unknown, timeout = 10000): Promise<unknown> {
-        return new Promise((resolve, reject) => {
-            const id = crypto.randomUUID();
-
-            const timer = setTimeout(() => {
-                this.pending.delete(id);
-                reject(new Error(`IPC request timeout: ${action} (${timeout}ms)`));
-            }, timeout);
-
-            this.pending.set(id, { resolve, reject, timer });
-
-            const msg: ControlIpcMessage = { id, type: 'request', action, data };
-            if (!this.child.connected) {
-                clearTimeout(timer);
-                this.pending.delete(id);
-                reject(new Error('IPC channel closed'));
-                return;
-            }
-            this.child.send(msg);
-        });
+        const id = crypto.randomUUID();
+        const result = this.pending.open(id, action, timeout);
+        if (!this.child.connected) {
+            this.pending.reject(id, new Error('IPC channel closed'));
+            return result;
+        }
+        const msg: ControlIpcMessage = { id, type: 'request', action, data };
+        this.child.send(msg);
+        return result;
     }
 
     /**
@@ -115,11 +100,7 @@ export class ControlIpc {
     destroy(): void {
         this.child.removeListener('message', this.messageHandler);
         this.child.removeListener('exit', this.exitHandler);
-        for (const [, pending] of this.pending) {
-            clearTimeout(pending.timer);
-            pending.reject(new Error('ControlIpc destroyed'));
-        }
-        this.pending.clear();
+        this.pending.rejectAll(new Error('ControlIpc destroyed'));
         this.eventHandlers.clear();
     }
 }

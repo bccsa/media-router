@@ -19,35 +19,11 @@ import type { ControlIpcMessage } from '@media-router/shared-types';
  * bookkeeping and the ORDER the commands reach Python in (`start` first, then
  * the attaches, because Python executes its command stream in order).
  */
-const h = vi.hoisted(() => {
-    class FakePythonProcess {
-        static spawned: FakePythonProcess[] = [];
-        readonly commands: Record<string, unknown>[] = [];
-        constructor(readonly options: Record<string, unknown>) {
-            FakePythonProcess.spawned.push(this);
-        }
-        get pid(): number {
-            return 4242;
-        }
-        start(): void {
-            // The real PythonProcess writes the `start` command synchronously
-            // at the end of start() — mirrored so command order is observable.
-            this.commands.push({ cmd: 'start' });
-        }
-        sendCommand(cmd: Record<string, unknown>): void {
-            this.commands.push(cmd);
-        }
-        stop(): void {}
-        kill(): void {}
-        emergencyKill(): void {}
-    }
-    return { FakePythonProcess };
-});
-
 vi.mock('./PythonProcess.js', async (importOriginal) => ({
     ...(await importOriginal<typeof import('./PythonProcess.js')>()),
-    PythonProcess: h.FakePythonProcess,
+    PythonProcess: (await import('./testing/FakePythonProcess.js')).FakePythonProcess,
 }));
+import { FakePythonProcess } from './testing/FakePythonProcess.js';
 
 import { GstRunner } from './GstRunner.js';
 
@@ -65,9 +41,6 @@ async function waitUntil(cond: () => boolean, budgetMs = 4000): Promise<boolean>
 
 describe('GstRunner — gated busAttach queue', () => {
     let runner: GstRunner;
-    let originalSend: typeof process.send;
-    let originalConnected: PropertyDescriptor | undefined;
-    let exitSpy: ReturnType<typeof vi.spyOn>;
     let servers: Server[];
     let paths: string[];
     let seq = 0;
@@ -98,8 +71,7 @@ describe('GstRunner — gated busAttach queue', () => {
     const busDetach = (socket: string): void =>
         send({ id: 'd', type: 'event', action: 'busDetach', data: { socket } });
 
-    const spawned = (): InstanceType<typeof h.FakePythonProcess>[] =>
-        h.FakePythonProcess.spawned as InstanceType<typeof h.FakePythonProcess>[];
+    const spawned = (): FakePythonProcess[] => FakePythonProcess.spawned;
     const queued = (): string[] => [
         ...(
             runner as unknown as { queuedBusAttaches: Map<string, string> }
@@ -107,15 +79,13 @@ describe('GstRunner — gated busAttach queue', () => {
     ];
 
     beforeEach(() => {
-        h.FakePythonProcess.spawned = [];
+        FakePythonProcess.reset();
         servers = [];
         paths = [];
-        originalSend = process.send;
-        originalConnected = Object.getOwnPropertyDescriptor(process, 'connected');
-        Object.defineProperty(process, 'connected', { value: true, configurable: true });
-        process.send = (() => true) as unknown as typeof process.send;
-        exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-        runner = new GstRunner('/nonexistent/python-runner.py');
+        runner = new GstRunner('/nonexistent/python-runner.py', {
+            post: () => {},
+            exit: () => {},
+        });
     });
 
     afterEach(async () => {
@@ -129,9 +99,6 @@ describe('GstRunner — gated busAttach queue', () => {
                 /* never bound */
             }
         }
-        exitSpy.mockRestore();
-        if (originalConnected) Object.defineProperty(process, 'connected', originalConnected);
-        process.send = originalSend;
     });
 
     it('queues attaches that arrive while gated and flushes them, in order, at launch', async () => {

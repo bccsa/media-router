@@ -6,11 +6,11 @@ interface PendingRequest {
 }
 
 /**
- * Thin wrapper around the `process.send` IPC channel inherited from
- * `child_process.fork()`. Survives the brief window during graceful shutdown
- * where the channel is closed but late Python events are still being relayed
- * — without the `process.connected` / try-catch guard those writes throw
- * `ERR_IPC_CHANNEL_CLOSED` and crash the child.
+ * The runner's outbound side of the control channel: events and responses go
+ * to whoever hosts the `GstRunner` through one `post` function. In-process
+ * (the default) that is `InProcessRunnerHost.receive`; under the legacy fork
+ * it is `process.send` (see `gst-runner.ts`, which also absorbs the closed-
+ * channel window during shutdown so late Python events can't throw).
  *
  * Also owns the in-flight request map for round-trip Python commands
  * (`get_property`, `get_stats`, `get_throughput`). Each tracked request has a
@@ -18,6 +18,8 @@ interface PendingRequest {
  */
 export class ParentIpc {
     private readonly pending = new Map<string, PendingRequest>();
+
+    constructor(private readonly post: (msg: ControlIpcMessage) => void) {}
 
     /** Fire-and-forget event to the parent (no request id). */
     sendEvent(action: string, data?: unknown): void {
@@ -56,12 +58,17 @@ export class ParentIpc {
         this.sendResponse(entry.requestId, payload);
     }
 
+    /** Drop every in-flight request (host gone — nothing to answer to). */
+    clearPending(): void {
+        for (const entry of this.pending.values()) clearTimeout(entry.timer);
+        this.pending.clear();
+    }
+
     private send(msg: ControlIpcMessage): void {
-        if (!process.connected) return;
         try {
-            process.send?.(msg);
+            this.post(msg);
         } catch {
-            /* channel closed mid-write */
+            /* host gone mid-write */
         }
     }
 }

@@ -244,6 +244,14 @@ v2/
 
 #### Tasks
 
+> **As built (ADR-0012, 2026-09-03):** the forked `gst-runner.ts` child in
+> 3.1–3.6 below was the Phase 3 design. The runner orchestration now lives in
+> the engine process (`InProcessRunnerHost` hosts `GstRunner`); only the
+> python `gst-pipeline-runner.py` is a child, and media travels on the unixfd
+> bus rather than the stdin/stdout piping of 3.6. The rows are kept as the
+> historical plan.
+
+
 | # | Task | Details | URS | FDS |
 |---|------|---------|-----|-----|
 | 3.1 | `gst-runner.ts` child script | Standalone Node.js script spawned by the engine. Receives pipeline description via IPC (`process.send`). Builds and runs GStreamer pipeline via `gst-launch-1.0` (or node-gstreamer-superficial bindings). Reports state changes (NULL→READY→PAUSED→PLAYING→EOS→ERROR) back to parent. Stays alive until parent sends `stop` command or parent dies | UR-ENG-003 | §3.5 |

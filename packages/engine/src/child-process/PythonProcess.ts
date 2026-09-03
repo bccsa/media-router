@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import type { PadLinkRule, BusReport, RistRunnerConfig, TsProbeRunnerConfig, RenderWatchRunnerConfig, KeyframeGateConfig, BacklogShedConfig, PreserveSourceTimelineConfig } from '../plugins/PluginModule.js';
 import type { ClockConfig } from './ClockAuthority.js';
 import { pluginPythonPaths } from './nativeBinaries.js';
+import { runnerEnv } from './runnerEnv.js';
 
 export type PythonEventHandler = (event: Record<string, unknown>) => void;
 
@@ -88,7 +89,8 @@ export class PythonProcess {
      * Spawn the Python runner and send the initial `start` command. Returns
      * once the process is spawned (not when GStreamer reaches PLAYING).
      *
-     * `env` is merged on top of the inherited process env — values that
+     * `env` is merged on top of the runner env (`runnerEnv`: this process's
+     * env plus Wayland seeding and the allocator cap) — values that
      * must be visible *before* `Gst.init()` runs in the child (e.g. the
      * runner's `MR_GLIB_PRGNAME` hook for pre-init `GLib.set_prgname`).
      * The contents are plugin-defined; the engine just passes them through.
@@ -107,7 +109,7 @@ export class PythonProcess {
             console.error(`[gst-runner] Pad-link rules: ${JSON.stringify(linkOnPadAdded)}`);
         }
 
-        const spawnEnv = { ...process.env, ...env };
+        const spawnEnv = { ...runnerEnv(), ...env };
         // Plugin-owned python (plugins/*/py) must be importable by the runner
         // (e.g. `import librist`, `import ts_psi`) — prepend those dirs so
         // repo-shipped modules win over anything system-wide. The runner's own
@@ -210,15 +212,19 @@ export class PythonProcess {
         const proc = this.proc;
         console.error('[gst-runner] Stopping pipeline...');
 
-        try {
-            process.stdin.unpipe(proc.stdin!);
-        } catch {
-            /* nothing piped */
-        }
-        try {
-            proc.stdout?.unpipe(process.stdout);
-        } catch {
-            /* nothing piped */
+        // Only the data-pipe mode (fork only) ever piped the host's stdio in;
+        // in-process the host is the ENGINE, whose stdin/stdout are not ours.
+        if (this.options.useStdioForData) {
+            try {
+                process.stdin.unpipe(proc.stdin!);
+            } catch {
+                /* nothing piped */
+            }
+            try {
+                proc.stdout?.unpipe(process.stdout);
+            } catch {
+                /* nothing piped */
+            }
         }
 
         this.sendCommand({ cmd: 'stop' });
@@ -265,12 +271,7 @@ export class PythonProcess {
             const trimmed = line.trim();
             if (!trimmed) continue;
             if (trimmed.startsWith('GST_JSON:')) {
-                try {
-                    const json = JSON.parse(trimmed.substring(9));
-                    this.options.onEvent(json);
-                } catch {
-                    /* not valid JSON — ignore */
-                }
+                this.dispatch(trimmed.substring(9));
             } else {
                 // Forward raw GStreamer / Python stderr to engine logs so plugin
                 // pipeline errors are visible. Without this, anything that doesn't
@@ -286,22 +287,28 @@ export class PythonProcess {
         for (const line of text.split('\n')) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            if (trimmed.startsWith('GST_JSON:')) {
-                try {
-                    const json = JSON.parse(trimmed.substring(9));
-                    this.options.onEvent(json);
-                } catch {
-                    /* ignore */
-                }
-            } else {
-                // Plain JSON line (no prefix on fd 4)
-                try {
-                    const json = JSON.parse(trimmed);
-                    this.options.onEvent(json);
-                } catch {
-                    /* ignore */
-                }
-            }
+            this.dispatch(trimmed.startsWith('GST_JSON:') ? trimmed.substring(9) : trimmed);
         }
     };
+
+    /**
+     * Parse one event line and hand it to the runner. The parse failure is
+     * ignored (a non-JSON line on the event channel is noise), but a throw
+     * from the HANDLER is logged — it used to be swallowed by the same catch,
+     * which hid real bugs and, now that the runner shares the engine process,
+     * is the one place a handler fault must be visible.
+     */
+    private dispatch(jsonText: string): void {
+        let json: Record<string, unknown>;
+        try {
+            json = JSON.parse(jsonText);
+        } catch {
+            return; // not valid JSON — ignore
+        }
+        try {
+            this.options.onEvent(json);
+        } catch (err) {
+            console.error('[gst-runner] Python event handler threw:', err);
+        }
+    }
 }

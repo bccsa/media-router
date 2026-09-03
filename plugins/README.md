@@ -753,7 +753,7 @@ interface PipelineDescription {
     /** Auto-restart on bus error / EOS. */
     restartOnError?: boolean;
     /**
-     * Inner gst-runner restart backoff window. Defaults to 1s → 5s, which
+     * GstRunner restart backoff window. Defaults to 1s → 5s, which
      * pegs CPU when the failure is durable (e.g. SRT caller against an
      * unreachable remote re-spawns Python every few seconds). Tune for the
      * failure mode — SRT plugins ship 5s → 10s.
@@ -1360,17 +1360,19 @@ Media Router uses a **Python GStreamer runner** (`gst-pipeline-runner.py`) inste
 Plugin (TypeScript)
     │ this.setElementProperty('enc', 'bitrate', 256000)
     ▼
-GstChildProcess (Node.js)
-    │ IPC request → gst-runner.ts
+GstChildProcess ──► InProcessRunnerHost ──► GstRunner      (all in the engine process)
+    │ JSON command → python stdin
     ▼
-gst-runner.ts (forked child)
-    │ JSON command → stdin/fd3
-    ▼
-gst-pipeline-runner.py (Python)
+gst-pipeline-runner.py (Python child, one per module)
     │ pipeline.get_by_name('enc').set_property('bitrate', 256000)
     ▼
 GStreamer C library (live property change on running pipeline)
 ```
+
+The runner orchestration lives in the engine process (ADR-0012); only the
+python runner is a child, so a GStreamer crash still takes down one module
+and nothing else. `MR_GST_RUNNER_FORK=1` puts the runner back behind a forked
+`gst-runner.js` shim per module (the pre-ADR-0012 shape) as a rollback.
 
 #### Element Naming
 
