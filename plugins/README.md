@@ -1047,9 +1047,20 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   N × 302M inputs into one force-live `audiomixer` (running-time/content-aligned mixing;
   a dark input silence-fills instead of stalling the mix), or a direct branch with no
   aggregator at all when there is exactly one source. Returns
-  `{ fragment, continuationName }`; continue the chain from `${continuationName}. ! …` —
-  that element is a `capsfilter`, an `identity` or a mixer depending on the arm, so never
-  hard-code the name. Feed it `getModuleBusSources(id)` entries filtered by your input
+  `{ fragment, continuationName, mixerLatencyNs?, demuxes }`; continue the chain from
+  `${continuationName}. ! …` — that element is a `capsfilter`, an `identity` or a mixer
+  depending on the arm, so never hard-code the name. `mixerLatencyNs` is the mixer arm's
+  clamped aggregation latency (absent in the single-source arm): it is pipeline latency a
+  `sync=true` sink adds to every render time, so a PRESENTATION module scheduling against
+  the route's playout offset subtracts it from its `ts-offset` (see `audio-output-302m`);
+  producers ending in an unsynced bus tee ignore it. `demuxes` names every input
+  branch's `tsdemux` in source order (empty with no sources): a PRESENTATION
+  module passes it straight to `PipelineDescription.alignBranchesToStamps`, which
+  anchors each branch's running time to the producer's house stamps. Without it a
+  `tsdemux` keeps the zero-point error of the one bus buffer it locked on for the
+  pipeline's whole life (−73…−125 ms measured on the fleet, re-rolled on every
+  restart) and a `sync=true` sink presents that error as lipsync — see
+  [ADR-0005](../docs/adr/0005-time-sync-backend.md) Stage 3c. Feed it `getModuleBusSources(id)` entries filtered by your input
   port. PTS-preserving by contract — never add `pulsesrc`, `do-timestamp`, or
   `tsparse set-timestamps` around it.
   `mixerName` is a name PREFIX for the fan-in's elements, not the name of an

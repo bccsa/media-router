@@ -166,6 +166,30 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     /** Element to chain from. NOT always a mixer — it is a `capsfilter` in the
      *  single-source arm and the `identity` pacer in the mixer arm. */
     continuationName: string;
+    /**
+     * The mixer arm's effective aggregation latency in ns (the clamped
+     * `latencyMs`); ABSENT in the single-source arm, which declares none.
+     *
+     * This is pipeline latency in GStreamer's sense: the aggregator reports it
+     * on the LATENCY query and a `sync=true` sink downstream adds it to every
+     * render time. A presentation module that schedules against a playout
+     * offset (ADR-0005 decision 4) therefore subtracts it from its `ts-offset`,
+     * or the same route would play `latencyMs` later through a mixer than
+     * through a single-source bypass. Returned rather than re-derived so the
+     * clamp lives in one place.
+     */
+    mixerLatencyNs?: number;
+    /**
+     * `name=` of every input branch's `tsdemux`, in source order — what a
+     * PRESENTATION module passes as `alignBranchesToStamps.demuxes`, so the
+     * runner anchors each branch's running time to the producer's house stamps
+     * (ADR-0005 Stage 3c). Without it a `tsdemux` keeps the zero-point error of
+     * the one bus buffer it locked on for the pipeline's whole life — measured
+     * on the .103 muxer's branches at −73…−85 ms, re-rolled on every restart —
+     * and a `sync=true` sink presents that error as lipsync. Empty only when
+     * there are no sources.
+     */
+    demuxes: string[];
 } {
     const channels = opts.channels ?? 2;
     const latencyNs = Math.max(50, Math.min(2000, opts.latencyMs ?? 200)) * 1_000_000;
@@ -174,18 +198,20 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
 
     const outName = `${mixerName}_out`;
     const caps = `audio/x-raw,rate=48000,channels=${channels}`;
-    const branchQueue =
-        `queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`;
+    const branchQueue = `queue leaky=0 max-size-time=${branchQueueNs} max-size-buffers=0 max-size-bytes=0`;
 
+    /** `name=` of branch i's tsdemux — returned as `demuxes` so a presentation
+     *  module can hand them to the runner's `alignBranchesToStamps`. */
+    const demuxName = (i: number): string => `${mixerName}_demux${i}`;
     /** 302M edge socket → decoded, channel-mapped, resampled raw audio. */
-    const decode = (s: AudioMixSource): string => {
+    const decode = (s: AudioMixSource, i: number): string => {
         const src = buildBusSrc({ port: s.port, socketPath: s.socketPath });
         // Per-connection channel mapping on THIS branch's audioconvert.
         const matrix = s.channelMap?.length
             ? mixMatrixClause(s.channelMap, s.sourceChannels ?? 2, channels)
             : '';
         return (
-            `${src} ! tsdemux latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
+            `${src} ! tsdemux name=${demuxName(i)} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
             ` ! audioconvert${matrix} ! audioresample`
         );
     };
@@ -195,9 +221,9 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         // transparent to negotiation), so the branch pins the same format the
         // mixer arm publishes, with one element fewer.
         const fragment =
-            `${decode(opts.sources[0])} ! ${branchQueue}` +
+            `${decode(opts.sources[0], 0)} ! ${branchQueue}` +
             ` ! capsfilter name=${outName} caps="${caps}"`;
-        return { fragment, continuationName: outName };
+        return { fragment, continuationName: outName, demuxes: [demuxName(0)] };
     }
 
     // The mixer's OUTPUT caps are pinned immediately on its src pad: a
@@ -214,10 +240,15 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
     });
 
     const branches = opts.sources.map(
-        (s) => `${decode(s)} ! ${caps} ! ${branchQueue} ! ${mixerName}.`,
+        (s, i) => `${decode(s, i)} ! ${caps} ! ${branchQueue} ! ${mixerName}.`,
     );
 
-    return { fragment: [mixer, ...branches].join(' '), continuationName: outName };
+    return {
+        fragment: [mixer, ...branches].join(' '),
+        continuationName: outName,
+        mixerLatencyNs: latencyNs,
+        demuxes: opts.sources.map((_, i) => demuxName(i)),
+    };
 }
 
 export interface Audio302mEncodeOpts {

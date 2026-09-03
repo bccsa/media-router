@@ -70,6 +70,17 @@
                     "x-unit": "ms",
                     "description": "Mix latency budget — how long the mixer waits for lagging inputs before emitting; starved inputs are silence-filled."
                 },
+                "lipSyncMs": {
+                    "type": "number",
+                    "default": 0,
+                    "minimum": -1000,
+                    "maximum": 1000,
+                    "x-widget": "slider",
+                    "x-step": 10,
+                    "x-unit": "ms",
+                    "x-live": true,
+                    "description": "Lip-sync trim for THIS output, added on top of the route's Playout offset (set on the source module). Positive DELAYS audio, negative advances it. Keep it small (tens of ms) — it is for the residual skew of this output's own chain (transcoder hop, DAC); the route offset is what keeps it locked to the video-player. A trim beyond the route offset is clamped: audio cannot play before it arrives. Applies live. No effect while the engine time-sync contract is off."
+                },
                 "channels": {
                     "type": "number",
                     "minimum": 1,

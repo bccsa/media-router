@@ -18,8 +18,8 @@ left to `audio302mHelpers.ts` comments alone.
 silence-fills instead of stalling it — but the aggregator keeps producing after
 every sink pad has gone EOS, by design: it cannot know a dead input will not come
 back. Nothing else in a 302M chain paces it. Producer modules end in an unsynced
-bus tee and the output module in `pulsesink sync=false`, so with no synced element
-downstream the mixer generates silence at CPU speed: `level` message storms,
+bus tee and the output module (time-sync contract off) in `pulsesink sync=false`,
+so with no synced element downstream the mixer generates silence at CPU speed: `level` message storms,
 faster-than-realtime bus traffic, a memory balloon that OOM'd a fleet box.
 Measured 2026-08-25 on the fleet box (gst 1.28.2) — one EOS'd input into an
 unsynced tail: **11.64 s CPU per 10 s wall**, the same pipeline with the pacer:
@@ -70,3 +70,29 @@ no post-EOS free-run to pace, so the arm needs no pacer.
   pacer" and "Single-source 302M fan-in bypasses the mixer entirely" (both
   2026-08-25, both live-deployed to the two test boxes).
 - `plugins/README.md` → "Shared 302M audio helpers".
+
+## Addendum (2026-09-03): the output module's sink is contract-paced
+
+Under the engine-wide time-sync contract ([[0005]] decisions 1 and 4) the
+`audio-output-302m` tail is no longer `pulsesink sync=false`: it presents at
+`stamped-time + D` on the house clock (`sync=true ts-offset=D+trim
+provide-clock=false slave-method=skew max-lateness=-1 name=sink`, backlog
+shedder on the sink pad, live D push, `lipSyncMs` trim), exactly like the
+audio-decoder leg — so a 302M output and a video-player fed from one source
+schedule off the same number. Field cause and measurements are in ADR-0005's
+"Implementation notes (302M output leg)". The kill-switch path still emits the
+legacy string byte for byte.
+
+Two consequences for the three rules above:
+
+- **Rule 1 stands.** The paced sink bounds the mixer's post-EOS free-run only
+  by back-pressure through the sink's ring; the `identity sync=true` pacer is
+  still what keeps the mixer at real time everywhere upstream of that ring
+  (`level` storms, bus traffic). Do not drop it because the tail is synced now.
+- **The mixer's latency is now visible to the caller.** `buildAudioMixInput`
+  returns `mixerLatencyNs` (the clamped `latencyMs`) in the mixer arm and
+  nothing in the single-source arm. It is pipeline latency in GStreamer's sense
+  — a `sync=true` sink adds it to every render time — so a presentation module
+  scheduling against a playout offset subtracts it from `ts-offset`, or the same
+  route plays `latencyMs` later through a mixer than through the bypass. Callers
+  that end in an unsynced bus tee (the producer modules) ignore it.

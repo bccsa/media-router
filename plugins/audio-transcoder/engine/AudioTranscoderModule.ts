@@ -74,9 +74,7 @@ export class AudioTranscoderModule extends GstPluginBase {
                 this.sinks.map((s) => this.readBusSinkBytes(s.sinkName)),
             );
             if (served.some((v) => typeof v !== 'number')) return undefined;
-            return Object.fromEntries(
-                this.sinks.map((s, i) => [s.sinkName, served[i] as number]),
-            );
+            return Object.fromEntries(this.sinks.map((s, i) => [s.sinkName, served[i] as number]));
         },
         publish: (total, perSink) => this.publishThroughput(total, perSink),
     });
@@ -163,10 +161,7 @@ export class AudioTranscoderModule extends GstPluginBase {
             this.setHealth('warning', 'No renditions configured — add at least one output');
             return null;
         }
-        if (
-            renditions.some((r) => r.codec === 'pcm') &&
-            !AudioTranscoderModule.s302mSupported
-        ) {
+        if (renditions.some((r) => r.codec === 'pcm') && !AudioTranscoderModule.s302mSupported) {
             this.setHealth(
                 'error',
                 'PCM 302M renditions need GStreamer ≥ 1.26 (mpegtsmux without audio/x-smpte-302m support detected)',
@@ -243,6 +238,16 @@ export class AudioTranscoderModule extends GstPluginBase {
             ...(config.preserveSourceTimeline === false
                 ? {}
                 : { preserveSourceTimeline: { demux: DEMUX_NAME } }),
+            // NO `alignBranchesToStamps` here, on purpose. This module is a
+            // PRODUCER: its egress stamper anchors on its first output PES
+            // ~0.5 s in, and a branch correction lands ~3 s in as a step on
+            // the demux branch — AFTER the anchor is latched — so the egress
+            // stamps shift by the whole correction and the output timeline
+            // moves (measured on .103, 2026-09-03: +12 ms → −71 ms against the
+            // source, twice). A correction only helps a PRESENTATION leg, whose
+            // sink reads the corrected running time directly. Making this hop
+            // timeline-exact needs the egress stamper to anchor on the INPUT
+            // timeline (ADR-0005 follow-up), not a branch offset.
         };
     }
 

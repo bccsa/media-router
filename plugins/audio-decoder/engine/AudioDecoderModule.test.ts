@@ -36,9 +36,7 @@ function makeModule(
         instanceId: 'dec-1',
         mediaRouter: { getModuleBusSource, getRoutePlayoutOffsetMs },
         ...(opts.timeSyncContract ? { timeSyncContract: true } : {}),
-        ...(opts.playoutOffsetMs !== undefined
-            ? { playoutOffsetMs: opts.playoutOffsetMs }
-            : {}),
+        ...(opts.playoutOffsetMs !== undefined ? { playoutOffsetMs: opts.playoutOffsetMs } : {}),
     };
     module.config = {};
     module.probeResult = null;
@@ -117,7 +115,9 @@ describe('AudioDecoderModule.buildPipeline', () => {
     it('clockSync=true → sync=true + provide-clock=false + clockSync flag (shared engine clock)', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({ clockSync: true });
-        expect(desc!.pipeline).toContain('pulsesink device=MR_PW_dec-1 sync=true provide-clock=false');
+        expect(desc!.pipeline).toContain(
+            'pulsesink device=MR_PW_dec-1 sync=true provide-clock=false',
+        );
         expect(desc!.clockSync).toBe(true);
     });
 
@@ -189,9 +189,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };
         expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).toContain('slave-method=0');
-        expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).not.toContain(
-            'slave-method=1',
-        );
+        expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).not.toContain('slave-method=1');
     });
 
     it('targets the module-instance null-sink as the pulsesink device', () => {
@@ -232,9 +230,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(module.buildPipeline({ sinkBufferMs: 100 })!.pipeline).toContain(
             'buffer-time=100000',
         );
-        expect(module.buildPipeline({ sinkBufferMs: 10 })!.pipeline).toContain(
-            'buffer-time=80000',
-        );
+        expect(module.buildPipeline({ sinkBufferMs: 10 })!.pipeline).toContain('buffer-time=80000');
         // lowLatencySync honours sinkBufferMs with a 100 ms floor — the old
         // hardcoded 50 ms ring xrunned on the field Pi 4 (audible dropouts).
         const lls = module.buildPipeline({ lowLatencySync: true, sinkBufferMs: 500 });
@@ -258,7 +254,35 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
     it('paces at the engine default D with no route override', () => {
         const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('ts-offset=300000000');
+        expect(desc!.pipeline).toContain('ts-offset=200000000');
+    });
+
+    it('cancels the latency its paced ring declares, so it lands on D like the 302M leg', () => {
+        // D 300 − 100 ms declared ring = 200 ms of scheduling offset, and the
+        // ring is PINNED under the contract so both audio legs cancel the same
+        // number (ADR-0005 decision 4 — one route, one D on every leg).
+        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        expect(module.buildPipeline({})!.pipeline).toContain('buffer-time=100000');
+        expect(module.buildPipeline({ sinkBufferMs: 400 })!.pipeline).toContain(
+            'buffer-time=100000',
+        );
+        // …and a D at or under the ring clamps to 0 rather than going negative
+        // (the shedder reads ts-offset as its budget).
+        const tight = makeModule({ timeSyncContract: true, playoutOffsetMs: 80 });
+        expect(tight.module.buildPipeline({})!.pipeline).toContain('ts-offset=0');
+    });
+
+    it('anchors its demux branch to the producer stamps, named only on the contract path', () => {
+        const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
+        const desc = module.buildPipeline({});
+        expect(desc!.pipeline).toContain('tsdemux name=addemux latency=0');
+        expect(desc!.alignBranchesToStamps).toEqual({ demuxes: ['addemux'] });
+
+        const legacy = makeModule({});
+        const legacyDesc = legacy.module.buildPipeline({});
+        expect(legacyDesc!.pipeline).toContain('tsdemux latency=0');
+        expect(legacyDesc!.pipeline).not.toContain('name=addemux');
+        expect(legacyDesc!.alignBranchesToStamps).toBeUndefined();
     });
 
     it('presents sync=true with the never-silent guard, whatever the legacy mode flags say', () => {
@@ -266,7 +290,9 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         // arrival-anchored while the video leg paced off the house clock.
         const { module } = makeModule({ timeSyncContract: true, playoutOffsetMs: 300 });
         const desc = module.buildPipeline({});
-        expect(desc!.pipeline).toContain('pulsesink name=sink device=MR_PW_dec-1 sync=true provide-clock=false');
+        expect(desc!.pipeline).toContain(
+            'pulsesink name=sink device=MR_PW_dec-1 sync=true provide-clock=false',
+        );
         expect(desc!.pipeline).toContain('max-lateness=-1');
         expect(desc!.pipeline).not.toContain('max-lateness=200000000');
         // Paced ⇒ the ring takes the 100 ms floor, as on lowLatencySync.
@@ -287,9 +313,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         module.probeResult = { codec: 'opus' };
         expect(module.buildPipeline({})!.pipeline).toContain('slave-method=1');
         expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).toContain('slave-method=1');
-        expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).not.toContain(
-            'slave-method=0',
-        );
+        expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).not.toContain('slave-method=0');
     });
 
     it('names the sink so the offset can be pushed live', () => {
@@ -303,7 +327,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
             playoutOffsetMs: 300,
             routeOffsetMs: 500,
         });
-        expect(module.buildPipeline({})!.pipeline).toContain('ts-offset=500000000');
+        expect(module.buildPipeline({})!.pipeline).toContain('ts-offset=400000000');
     });
 
     it('adds syncOffsetMs on top of D as a deprecated per-sink trim', () => {
@@ -313,7 +337,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
             routeOffsetMs: 500,
         });
         expect(module.buildPipeline({ syncOffsetMs: 40 })!.pipeline).toContain(
-            'ts-offset=540000000',
+            'ts-offset=440000000',
         );
     });
 
@@ -331,7 +355,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         const setElementProperty = vi.fn();
         module.setElementProperty = setElementProperty;
         await module.onRoutePlayoutOffsetChanged();
-        expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 500_000_000);
+        expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 400_000_000);
     });
 
     it('pushes a syncOffsetMs trim live too, resolved whole against the route', async () => {
@@ -339,7 +363,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         const setElementProperty = vi.fn();
         module.setElementProperty = setElementProperty;
         await module.onLiveConfigUpdate({ syncOffsetMs: 40 });
-        expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 540_000_000);
+        expect(setElementProperty).toHaveBeenCalledWith('sink', 'ts-offset', 440_000_000);
     });
 
     it('arms the backlog shedder on its own sink, without keyframe alignment', () => {
@@ -373,11 +397,7 @@ describe('AudioDecoderModule playout offset (time-sync contract)', () => {
         module.setElementProperty = setElementProperty;
         await module.onRoutePlayoutOffsetChanged();
         await module.onLiveConfigUpdate({ syncOffsetMs: 40 });
-        expect(setElementProperty).not.toHaveBeenCalledWith(
-            'sink',
-            'ts-offset',
-            expect.anything(),
-        );
+        expect(setElementProperty).not.toHaveBeenCalledWith('sink', 'ts-offset', expect.anything());
     });
 });
 

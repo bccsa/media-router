@@ -435,8 +435,9 @@ anchor is *not* here; it is Stage 3b, below.
   samples, i.e. by drifting off the time it was told to present at, which makes D
   approximate on the audio leg alone. Legacy paths still honour the stored value
   exactly. Decision 5's own validation item — A/B the AUDIBILITY of skew-slaving
-  on 302M outputs — **remains open** (2026-08-13); the 302M output sink does not
-  take D yet, so it is untouched by this.
+  on 302M outputs — **remains open** (2026-08-13). The 302M output sink takes D
+  since 2026-09-03 (see "Implementation notes (302M output leg)" below), with the
+  same skew pin, so the A/B now has a live subject.
 - A head's `playoutOffsetMs` is treated as live in `ModuleInstance` regardless of
   what the plugin's `liveUpdatableParams` says: nothing in the producer's own
   pipeline reads it, so it can never need a restart there. It reaches the
@@ -889,3 +890,111 @@ frame).
   capture source's timestamps onto house time before the mux (a second
   timeline rewrite in the same pipeline, which the stamping contract exists
   to avoid).
+
+## Implementation notes (302M output leg, 2026-09-03)
+
+The contract paired the video-player with the audio-decoder; the 302M fan-in
+path ([[0008]]) — `audio-transcoder → audio-output-302m`, the fleet's actual
+headphone/monitor leg — was still free-running, and the field showed exactly the
+failure decision 1 exists to remove.
+
+- **Field, 10.9.16.103 (RIST → mr-tssplit → video-player + audio-transcoder →
+  audio-output-302m).** Measured with a passive second fan-out client on the
+  splitter's two edges and the transcoder's 302M edge (20 s, house clock pinned
+  the runner's way): video buffers arrive 24 ms after their stamp, audio 40 ms;
+  the two PIDs' stamps are content-aligned (identical `stamp − PES` on both
+  edges — one anchor); the player's `tsdemux` timeline runs 59 ms ahead of
+  arrival (the source's PTS−PCR lead, ~83 ms above the stamps), so the video
+  leg rendered at arrival + 359 ms + decode/compositor. The 302M output ended in
+  `pulsesink sync=false` with no `ts-offset` and — one wired source — no pacer,
+  so audio played at arrival + whatever the transcoder's 50 ms queue, the 302M
+  branch queue and PipeWire's 110 ms `tlength` (S32LE) happened to hold:
+  **50–200 ms early, re-rolled on every restart** of the audio chain. No knob
+  could make the two legs agree because they were not scheduling off the same
+  number — decision 4's failure mode, one plugin over.
+- **The fix is decision 1 applied to the leg**, the same way the audio-decoder
+  got it: under the contract the 302M sink is `sync=true ts-offset=D+trim
+  provide-clock=false slave-method=skew max-lateness=-1 name=sink`, the
+  backlog shedder is armed on its pad (whole-buffer, not keyframe-aligned), the
+  route head's live D push reaches it through `onRoutePlayoutOffsetChanged`, and
+  a `lipSyncMs` trim (live, ±1 s) covers residual DAC-chain skew — decision 4's
+  legitimate per-sink use, not a sync control. The legacy string is unchanged
+  under the kill-switch.
+- **The mixer arm's aggregation latency is subtracted from `ts-offset`.**
+  `audiomixer latency=L` is pipeline latency in GStreamer's sense: a `sync=true`
+  sink adds it to every render time, so the same route would otherwise play L
+  later through a mixer than through the single-source bypass. `buildAudioMixInput`
+  now returns the clamped `mixerLatencyNs` and the output subtracts it, keeping
+  presentation at `stamp + D + trim` in both arms.
+- **Known residual, deliberately left for a later stage.** The transcoder is a
+  producer, so its egress stamper re-anchors: `anchor = house time of its FIRST
+  output PES`, which bakes the transcoder's own start-up transit (~40–80 ms of
+  decode/encode plus the wire margin at that instant) into the 302M timeline,
+  and the 302M output's `tsdemux` adds that mux's PTS−PCR lead on top. Both are
+  near-constant per incarnation, so the leg now lands a fixed few-tens-of-ms
+  late rather than randomly early, and the trim removes it — but "identical by
+  construction" would need house-timeline producers (mpegtsmux outputs under the
+  contract, whose PES PTS ARE house time modulo the 33-bit wrap) to anchor the
+  egress stamp as an identity mapping instead of at egress time. That is a
+  stamper change (`mrts::TimelineStamper` + the python probe) with fleet-wide
+  reach, tracked separately.
+- **Field-verified the same day, physically.** With the fix deployed on .103: a
+  passive shadow of the player's chain (same queues, `tsparse`, `tsdemux`, ES
+  queue, `h264parse`, synced fakesink) rendered every AU at exactly `pts + 300 ms`,
+  ~107 ms demux lead over arrival, ES queue holding ~380 ms, zero leaks at 50 fps.
+  The headphone sink, measured by cross-correlating a PipeWire monitor recording
+  against the 302M edge's decoded PCM, played each sample at `demux PTS + 391 ms`
+  (300 ms offset + ~90 ms sink/quantum/DAC) with `lipSyncMs` 0 — i.e. both legs
+  now present within a few tens of ms of each other; before, the same sink played
+  on arrival, 50–200 ms early.
+- **The trim is clamped so the sink `ts-offset` never goes negative.** The slider
+  was swept to −2000 ms during testing: the sink sat at −1700 ms, and because the
+  backlog shedder reads `ts-offset` as the budget, it saw a "1943 ms backlog" and
+  dropped 458 buffers (~10 s of audio) in 9.8 s. A negative offset can never
+  advance audio before it arrives anyway (`max-lateness=-1` just plays it on
+  arrival), so `audio302mTsOffsetNs` floors at 0 and the schema range is ±1 s.
+- **The two PRESENTATION legs of the 302M route now anchor their demuxers to
+  the stamps (later the same day); the transcoder does not.** Field, .103: the mpegts-muxer's
+  `alignBranchesToStamps` measured its two input demuxers' zero-point errors at
+  −85 ms (video) and −73/−76 ms (audio), the same on two incarnations — the
+  ~80 ms by which a fresh `tsdemux` runs ahead of the bus stamps on these
+  edges. The video-player, the audio-transcoder's input and the 302M output
+  carried that error uncorrected, each locking independently at its own start,
+  so the legs' offset moved with every restart of any of the three.
+  `pipelinePlan` (video-player), `AudioOutput302mModule` and the audio-decoder
+  now pass `alignBranchesToStamps` for their named demuxers (`vpdemux`,
+  `<mixer>_demux<i>` — `buildAudioMixInput` returns `demuxes` — and `addemux`);
+  `applyTimeSync` drops it off-contract. Field after the first deploy (which
+  also aligned the transcoder): video −85, transcoder −78, 302M output −125 ms
+  corrections applied, and the route confirmed IN SYNC BY EAR with `lipSyncMs`
+  0 — until the next module restarts re-drew it (+190 ms trim needed an hour
+  later), which is what took the transcoder's alignment back out.
+- **Why the transcoder is NOT aligned, and the one caveat that remains.** The
+  transcoder is a producer: its egress stamper anchors ~0.5 s in, a branch
+  correction lands ~3 s in as a −78 ms step, so its output timeline moved by
+  the whole correction (+12 → −71 ms vs the source, on two incarnations) and
+  the leg's offset became a per-restart draw. Aligning is for presentation
+  legs; a producer hop is only made timeline-exact by the identity-anchor
+  stamper change. The remaining caveat: the 302M sink (and now the
+  audio-decoder) pins a 100 ms ring and cancels the 101 ms it declares (151 ms
+  at the default ring); the physical output lags the declared figure by
+  ~35 ms, which is what the per-sink trim is for.
+- **Measurement trap, physical audio.** A monitor recording started with
+  `pw-record` begins some 150–200 ms after the process is spawned; using the
+  spawn time as the recording's t0 biased every "DAC time" early by that much
+  and mis-called the direction twice. Anchor recordings with the first
+  sample's own clock, or calibrate the start offset, before trusting a sign.
+- **A step at start is a stream discontinuity for downstream players.** The
+  same muxer correction was visible on its SRT output as a −85/−73 ms backward
+  PTS step at t≈3.5 s with no discontinuity indicator. A muxed stream fed to a
+  PTS-honouring player that anchors on its first frames (OBS) can carry a
+  permanent A/V offset from that step; the direct RIST→SRT path has no step
+  and played in sync on the same receiver. Follow-up: land the correction
+  before the mux emits (settle inside the latency budget, or hold the
+  branches), or signal it.
+- **Measurement trap, recorded because it cost time.** `renderWatch.retainedMs`
+  is the window FLOOR of the shedder's lateness. Right after a RIST stall the
+  catch-up burst hits empty queues and the floor reads a second early
+  (−1040 ms retained was logged at 09:49:51 the same day); it is a transient, not
+  the steady offset (59 ms). Measure with a second fan-out client tap, never from
+  a single renderWatch line.
