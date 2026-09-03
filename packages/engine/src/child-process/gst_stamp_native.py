@@ -86,18 +86,46 @@ def load_plugin():
     return False
 
 
+def egress_head(tee):
+    """The link at the HEAD of `tee`'s egress chain, as (upstream src pad,
+    downstream sink pad): walk upstream from the tee through the caps-only
+    elements `buildBusSink` puts in front of it (capssetter, capsfilter) and
+    stop at the first element that is neither — the mux. The stamper splices in
+    THERE, not at the tee, so it is handed the mux's per-access-unit buffer
+    LISTS intact: a GstBaseTransform (capssetter and capsfilter both are) has no
+    chain_list, so the core dismantles a list into single buffers before the
+    element's neighbour ever sees it — and the element's whole coalescing job
+    (ADR-0011) is to merge each list into one bus buffer before that happens.
+    Returns (None, None) when the tee has no upstream at all."""
+    sink = tee.get_static_pad("sink")
+    while sink is not None:
+        peer = sink.get_peer()
+        if peer is None:
+            return None, None
+        el = peer.get_parent_element()
+        factory = el.get_factory() if el is not None else None
+        fname = factory.get_name() if factory is not None else ""
+        if fname not in ("capssetter", "capsfilter"):
+            return peer, sink
+        sink = el.get_static_pad("sink")
+    return None, None
+
+
 def insert_elements(pipe):
-    """Splice an inactive `mrtsstamp` in front of every `busout_*` tee.
+    """Splice an inactive `mrtsstamp` at the head of every `busout_*` egress.
 
     Element API, not pipeline strings: the TS-side `buildBusSink` fragment stays
     byte-identical, so with the contract off the graph a producer builds is the
     same graph it built before this existed. Inserted BEFORE the tee so one
     stamp fans out to every consumer edge — on a tee branch each branch would
     see a shared (non-writable) buffer and pay its own copy, and the branches
-    are created and destroyed at runtime anyway.
+    are created and destroyed at runtime anyway — and before the caps pair so
+    the element sees the mux's buffer lists (`egress_head`).
 
     Inactive on arrival: `active` is the lazy arm, toggled from the same
-    bus_attach / bus_detach paths that arm and disarm the python probe.
+    bus_attach / bus_detach paths that arm and disarm the python probe. The
+    list coalescing is NOT gated by `active`: it is a bus-format property of
+    the egress, on from the first buffer.
     """
     # Collect first, splice second: adding elements invalidates a live
     # GstIterator (RESYNC), and the walk is the only place we need it.
@@ -111,8 +139,7 @@ def insert_elements(pipe):
             tees.append(element)
     for tee in tees:
         name = tee.get_name()
-        sink = tee.get_static_pad("sink")
-        peer = sink.get_peer() if sink is not None else None
+        peer, sink = egress_head(tee)
         if peer is None:
             sys.stderr.write(f"[gst-runner.py] busStamp: {name} has no upstream peer "
                              f"— not inserting mrtsstamp\n")

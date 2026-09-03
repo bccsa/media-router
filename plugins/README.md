@@ -818,6 +818,20 @@ interface PipelineDescription {
      * 33-bit PTS wrap are not followed.
      */
     preserveSourceTimeline?: { demux: string };
+    /**
+     * Runner-side dark-input detection on NAMED bus sources — the `watchdog`
+     * element's contract (no buffer for `timeoutMs` → error `kind: 'bus_stall'`,
+     * `element: 'buswd_<name>'`, errored teardown, restartOnError) without its
+     * per-buffer cost. The element re-creates a GLib timeout source on every
+     * buffer on its own thread (~900 wakeups/s per video input at 1316-byte
+     * bus chunks, measured on the mpegts-muxer 2026-09-02); the runner instead
+     * arms a one-shot probe on the source's src pad and checks it once a
+     * second. Build entries with `busStallWatch(name, timeoutMs)`; the source
+     * is `buildBusSrc({ name })`. Armed on the first PLAYING transition. Used
+     * by `mpegts-muxer`; `video-player` still uses `buildBusSrc({
+     * stallTimeoutMs })` (the element) until measured on its own.
+     */
+    inputStallWatch?: InputStallWatch[];
 }
 ```
 
@@ -1516,7 +1530,7 @@ export class MyEncoderModule extends GstPluginBase {
 The poller owns the timing so every plugin gets the same correct behaviour:
 
 - **Idle skip** — when `getBytes` returns `undefined` (pipeline not playing yet), the tick is skipped and nothing is published, so an idle module stops emitting spurious "0 kbps" updates.
-- **Where the bytes are counted.** For a producer's `busout_*` tee under the time-sync contract, the runner reads the native `mrtsstamp` element's `bytes-total` property (it is spliced in front of every egress tee and counts in C, armed or in passthrough). Everything else — including every producer when the time-sync contract is OFF (no element spliced) — falls back to a pad probe that is buffer-LIST aware, which does not help on that tee: the lists are already dismantled there, so the per-buffer cost returns whenever the contract is off. Never add a per-buffer python probe on an egress path: `capssetter`/`capsfilter` dismantle the mux's buffer lists into ~1170 single buffers/s at 12 Mbps, and the old BUFFER-only probe there cost 0.5–0.7 of a core PER PRODUCER (a Pi 4 at 60 % busy fell to 26 % without it, 2026-09-02).
+- **Where the bytes are counted.** For a producer's `busout_*` tee under the time-sync contract, the runner reads the native `mrtsstamp` element's `bytes-total` property (it is spliced at the head of every egress — directly on the producer's src, ahead of the caps pair and the tee — and counts in C, armed or in passthrough). Everything else — including every producer when the time-sync contract is OFF (no element spliced) — falls back to a pad probe that is buffer-LIST aware, which does not help on that tee: the lists are already dismantled there, so the per-buffer cost returns whenever the contract is off. Never add a per-buffer python probe on an egress path: `capssetter`/`capsfilter` dismantle the mux's buffer lists into ~1170 single buffers/s at 12 Mbps, and the old BUFFER-only probe there cost 0.5–0.7 of a core PER PRODUCER (a Pi 4 at 60 % busy fell to 26 % without it, 2026-09-02).
 - **Counter-reset guard** — if a byte counter drops below its previous sample (the child was re-spawned via `restartOnError` and `udpsink` reset `bytes-served` to 0), that counter's delta clamps to 0 instead of reporting a negative rate. Guarded per counter.
 - **Multiple counters** — `getBytes` may return a `Record<name, bytes>` instead of one number (one entry per sink); `publish` then receives `(total, counters)` with a per-counter `ThroughputSample` breakdown alongside the aggregate. Read the counters with `Promise.all` and return `undefined` if *any* is unavailable (a partial read would misreport rates). Real example: the transcoder publishes one bitrate row per rendition plus a Total from a single poller.
 
@@ -1640,6 +1654,18 @@ Volume is in percentage (0-500+).
 
 Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime, and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
+**Bus buffer contract (ADR-0011).** A bus buffer is one access unit of whole
+188-byte TS packets — a gst producer's egress element coalesces the mux's
+per-AU buffer list into one buffer; relay producers (srt-input, rist-input,
+mpegts-ip-input) forward 1316-byte datagrams; native ingest chunks at 24 KB.
+Two rules for every consumer: (1) **never assume a buffer size** — whole-packet
+alignment is the only guarantee, a buffer may be 188 B or a 400 KB keyframe;
+(2) **a wire-facing output must know whether its sink slices** — srtsink
+slices to its payload size itself, librist is fed 1316-byte slices by the
+runner, udpsink does not slice so use `buildTsRechunk(7)` (a pure re-chunk,
+`set-timestamps=false`, never a re-timing). Forgetting (2) ships oversized
+datagrams that fragment at the IP layer.
+
 | Method on `services.mediaRouter` | Purpose |
 |---|---|
 | `assignBusChannel(instanceId, portId?)` | Acquire a channel for this module (or a specific output port for multi-port plugins). Returns `{ port }` or `null` if the pool is exhausted. |
@@ -1742,7 +1768,9 @@ on a per-start base-time for every consumer downstream of it.
 **What a gst producer gets for free.** If your `buildPipeline` ends in
 `buildBusSink(...)`, stamping needs zero plugin work: the runner splices the
 native `mrtsstamp` element (`mpegts-core/native/mrtsstamp`, wrapping the same
-`TimelineStamper` the sidecars run) in front of each `busout_*` tee, falling
+`TimelineStamper` the sidecars run) at the head of each `busout_*` egress —
+directly on the producer's src, ahead of the `capssetter ! capsfilter` pair,
+where it also coalesces the mux's per-AU buffer lists (ADR-0011) — falling
 back to a python pad probe — same arithmetic, a logged warning — on a box
 where the `.so` isn't built. Arming is **lazy**: an egress starts stamping on
 its first consumer edge and stops on its last, so an enabled-but-unrouted

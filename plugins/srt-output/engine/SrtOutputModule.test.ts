@@ -5,7 +5,9 @@ import { SrtOutputModule } from './SrtOutputModule.js';
 // and is covered by srtHelpers.test.ts. These tests focus on what the module
 // still owns directly: pipeline construction and the static status fields.
 
-function makeModule(opts: { upstream?: { port?: number; socketPath?: string } | null; instanceId?: string } = {}) {
+function makeModule(
+    opts: { upstream?: { port?: number; socketPath?: string } | null; instanceId?: string } = {},
+) {
     const module = new SrtOutputModule() as any;
     const upstream =
         opts.upstream === null
@@ -56,9 +58,13 @@ describe('SrtOutputModule.buildPipeline', () => {
                 ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
         );
         expect(desc!.pipeline).not.toContain('udpsrc');
-        // Passthrough by default — no TS re-parsing (safest for lossy live streams).
+        // No tsparse by default (ADR-0011): bus buffers are one access unit
+        // each and srtsink slices them to its 1316 B payload size itself —
+        // measured 2026-09-02, full rate, no datagram over 1316 B.
         expect(desc!.pipeline).not.toContain('tsparse');
-        expect(desc!.pipeline).toContain('srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"');
+        expect(desc!.pipeline).toContain(
+            'srtsink name=sink uri="srt://0.0.0.0:9000?mode=caller&latency=125"',
+        );
     });
 
     it('inserts tsparse only when a wire datagram size is explicitly forced', () => {

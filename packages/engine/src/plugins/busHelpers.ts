@@ -29,6 +29,8 @@
  *
  * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
  */
+import type { InputStallWatch } from './PluginModule.js';
+
 export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
 /**
@@ -95,6 +97,20 @@ export function busIngestSocketPath(port: number): string {
  *  `stallTimeoutMs`. The python runner matches this prefix on error messages
  *  to tag them `kind: 'bus_stall'` (source-silent, not a hard failure). */
 export const BUS_WATCHDOG_PREFIX = 'buswd';
+
+/**
+ * Runner-side stall watch entry for a NAMED bus source (`buildBusSrc({ name })`)
+ * — the replacement for `BusSrcOpts.stallTimeoutMs`. Same contract (silence
+ * for `timeoutMs` → `kind: 'bus_stall'`, element prefixed `BUS_WATCHDOG_PREFIX`,
+ * restartOnError), asked once a second instead of per buffer; an input that
+ * never delivered is warned about, not restarted. Mechanism, measurements and
+ * the never-fed rule: `gst_input_stall_watch.py`. Goes on
+ * `PipelineDescription.inputStallWatch`. Used by mpegts-muxer; video-player
+ * still carries the element until measured on its own.
+ */
+export function busStallWatch(element: string, timeoutMs: number): InputStallWatch {
+    return { element, timeoutMs };
+}
 
 export interface BusSrcOpts {
     /** Allocated bus channel port (identity only — names the socket). */

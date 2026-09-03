@@ -498,10 +498,10 @@ export function buildLivePipeline(
     // nothing (the runner calls that out and swallows it — report-only). It
     // never comes to that here: unixfd carries producer buffer boundaries
     // across the socket untouched, every bus producer emits whole-packet
-    // buffers (mpegtsmux `alignment=7` = 1316 B; libmrbus ingest chunks at
-    // BUFFER_BYTES = 128×188 and drops a dead producer's sub-packet remainder;
-    // mr-tssplit coalesces whole-packet batches), and neither `watchdog` nor
-    // `queue` re-slices a buffer. Tapping off tsInput also puts the branch
+    // buffers of ANY size (ADR-0011: one access unit per buffer from a gst
+    // producer, 1316 B from relay producers, 128×188 from libmrbus ingest,
+    // whole-packet batches from mr-tssplit — never assume a size), and neither
+    // `watchdog` nor `queue` re-slices a buffer. Tapping off tsInput also puts the branch
     // downstream of the stall watchdog in both variants, so it cannot interfere
     // with bus_stall detection. The branch is leaky and the appsink drops
     // (runner sets max-buffers/drop), so a stalled tap can never back-pressure

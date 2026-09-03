@@ -9,6 +9,7 @@ export type {
     RistRunnerConfig,
     TsProbeRunnerConfig,
     BacklogShedConfig,
+    InputStallWatch,
     EngineServices,
     ModuleServices,
     DynamicPort,
@@ -106,6 +107,7 @@ export {
     busIngestSocketPath,
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
+    busStallWatch,
 } from './plugins/busHelpers.js';
 export type { BusSrcOpts } from './plugins/busHelpers.js';
 export {
@@ -155,6 +157,7 @@ export type {
 } from '@media-router/shared-types';
 export {
     DEFAULT_MPEGTS_ALIGNMENT,
+    buildTsRechunk,
     TS_VIDEO_PID_BASE,
     TS_AUDIO_PID_BASE,
     TS_METADATA_PID,

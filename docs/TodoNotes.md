@@ -2,6 +2,36 @@
 
 ## Open
 
+- [ ] **Egress stamper anchors on whatever PID's PES comes first — on the
+  muxer that is the KLV carousel (0x1f0).** Every muxer start in the .108 log
+  history anchored on 0x1f0 because the metadata pad flows before the media
+  pads link; a receiving srt-input re-rolls the draw per incarnation. The
+  stamped timeline then follows the carousel's push clock as a 50 ms
+  staircase. Fix in `mrts::TimelineStamper` / `ts_timeline.py`: skip
+  private-data stream types (or anchor on the PCR PID the mux already pins)
+  — one rule, both languages, parity test. Found 2026-09-02
+  (`docs/research/mpegts-muxer-cpu-baseline.md`, Stage 3 notes).
+
+- [ ] **Receiver does not survive a sender engine restart.** After each
+  restart of .108's engine the srt-input → ts-splitter → video-player chain
+  on .103 stayed frozen (~one frame) until its modules were restarted by hand
+  (2026-09-02, twice). srt-input is a caller with `auto-reconnect=false` in
+  its pipeline string; the reconnect path after the listener drops needs a
+  look. Same day's second observation: srt-outputs fed by a never-fed
+  rist-input restart every 10 s on the PLAYING watchdog — the consumer-side
+  twin of the dark-input loop fixed in `gst_input_stall_watch.py`.
+
+- [ ] **RIST bridge is the last per-buffer python path.** On .46 the
+  receiving rist-input (0.14 core) and each busy rist-output (0.10–0.12 core)
+  spend almost all of it on the runner's main thread: appsink pull in python,
+  1316-byte slicing, librist write per slice. Candidate for a native element
+  or a native sidecar the way `mrtsstamp`/`mr-tssplit` went (2026-09-03).
+
+- [ ] **One node relay per pipeline costs ~18 MB each.** Every runner has a
+  `gst-runner.js` parent that only relays stdio JSON; on .46 (17 pipelines)
+  that layer is 317 MB PSS, a third of media-router's memory on a 2 GB box.
+  Folding the relays into the engine process is the biggest memory lever.
+
 - [ ] **SOAK RESTART — the contract's latency RATCHET, fixed 2026-08-14
   (ADR-0005 Stage 3c):** .42 was found at 2.5 fps on the glass with 50 fps
   decoded, ~16 h into the soak. Cause: decision 1 makes every presentation sink

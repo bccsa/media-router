@@ -64,6 +64,18 @@ carousel timer (sporadic audio drops). Reinstated with a hard invariant: the
 appsrc is only ever emitted together with a `prog-map` pinning `PCR_1` to the
 first media pad (see `mpegtsMuxerPipeline.ts` + the invariant test).
 
+*Amended 2026-09-03 (klvsrc is non-live):* the metadata appsrc is
+`is-live=false`. A live pad takes part in mpegtsmux's aggregator latency
+arithmetic, and with the media pads' one-frame minimum above the appsrc's zero
+maximum the aggregator posted "Impossible to configure latency" ~130×/s — the
+muxer's whole main-thread cost. Non-live excludes the pad from that sum;
+`do-timestamp` still stamps every push with the running time, so the
+carousel's timestamps keep advancing and the PCR pin above is unchanged.
+Validated on the local rig (`plugins/mpegts-muxer/spike/muxer_rig.py`): same
+buf/s, kbps, video AU/s and 19.5 KLV PES/s with monotonic PTS, warnings 129/s
+→ 0, runner CPU 63 → 34 ticks/10 s; confirmed on .108 (muxer 235 → 136
+ticks/10 s).
+
 Label resolution order at the demuxer:
 **KLV name → ISO-639 language descriptor → generated** (`Audio (aac, PID 0x141)`).
 

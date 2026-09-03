@@ -244,7 +244,7 @@ teardown()
 
 
 # ---------------------------------------------------------------------------
-print("\n--- the element is spliced BEFORE the tee, inactive ---")
+print("\n--- the element is spliced at the HEAD of the egress, inactive ---")
 pipe, src = build_pipe()
 bus = Bus(pipe)
 start(pipe)
@@ -252,15 +252,104 @@ el = pipe.get_by_name(STAMP_EL)
 check("an mrtsstamp is inserted for the busout tee", el is not None)
 upstream = el.get_static_pad("sink").get_peer()
 downstream = el.get_static_pad("src").get_peer()
-check("its upstream peer is the bus capsfilter",
-      upstream is not None and upstream.get_parent_element().get_name() == "busfilter")
-check("its downstream peer is the tee sink — the fan-out is BELOW the stamp",
+# ADR-0011: before the caps pair, not between the capsfilter and the tee — a
+# basetransform (capssetter, capsfilter) dismantles the mux's buffer lists,
+# and the element must see them whole to coalesce them.
+check("its upstream peer is the mux (here the appsrc) — ahead of the caps pair",
+      upstream is not None and upstream.get_parent_element().get_name() == "src")
+check("its downstream peer is the capssetter — the fan-out is BELOW the stamp",
       downstream is not None
-      and downstream.get_parent_element().get_name() == "busout_41000")
+      and downstream.get_parent_element().get_factory().get_name() == "capssetter")
+tee_up = pipe.get_by_name("busout_41000").get_static_pad("sink").get_peer()
+check("the tee's own upstream is still the capsfilter (strings untouched)",
+      tee_up is not None and tee_up.get_parent_element().get_name() == "busfilter")
 check("it arrives inactive (the flag alone arms nothing)",
       el.get_property("active") is False and stamper.armed == [])
 teardown()
 pipe.set_state(Gst.State.NULL)
+
+
+# ---------------------------------------------------------------------------
+print("\n--- egress_head: walks every caps-only element, stops at the producer ---")
+# Two capsfilters and a capssetter in front of the tee: the walk must pass ALL
+# of them and land on the producer's src pad.
+p2 = Gst.parse_launch(
+    f"appsrc name=src2 caps={TS_CAPS} ! capsfilter caps={TS_CAPS} ! capssetter caps=\"{TS_CAPS}\" replace=true "
+    f"! capsfilter caps={TS_CAPS} ! tee name=busout_41001 allow-not-linked=true")
+peer, sink = stamper.native.egress_head(p2.get_by_name("busout_41001"))
+check("multi-caps walk lands on the producer (appsrc) src pad",
+      peer is not None and peer.get_parent_element().get_name() == "src2")
+check("and the returned sink is the FIRST caps element's sink (the splice point)",
+      sink is not None and sink.get_parent_element().get_factory().get_name() == "capsfilter"
+      and sink.get_parent_element().get_static_pad("sink").get_peer() == peer)
+# A tee with a non-caps element directly upstream: the walk stops there.
+p3 = Gst.parse_launch(f"appsrc name=src3 caps={TS_CAPS} ! queue name=q3 ! tee name=busout_41002 allow-not-linked=true")
+peer3, sink3 = stamper.native.egress_head(p3.get_by_name("busout_41002"))
+check("a non-caps upstream (queue) is the head — the walk does not pass it",
+      peer3 is not None and peer3.get_parent_element().get_name() == "q3"
+      and sink3.get_parent_element().get_name() == "busout_41002")
+# A tee with nothing upstream at all.
+p4 = Gst.parse_launch("tee name=busout_41003 allow-not-linked=true ! fakesink")  # sink pad unlinked
+check("no upstream at all → (None, None), never an exception",
+      stamper.native.egress_head(p4.get_by_name("busout_41003")) == (None, None))
+for p in (p2, p3, p4):
+    p.set_state(Gst.State.NULL)
+
+
+# ---------------------------------------------------------------------------
+print("\n--- coalesce (ADR-0011): one bus buffer per buffer LIST, armed or not ---")
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe)
+el = pipe.get_by_name(STAMP_EL)
+sizes = []
+
+
+def _size_probe(_pad, info):
+    buf = info.get_buffer()
+    if buf is not None:
+        sizes.append((buf.get_size(), buf.pts, buf.dts))
+    return Gst.PadProbeReturn.OK
+
+
+pipe.get_by_name("tap").get_static_pad("src").add_probe(Gst.PadProbeType.BUFFER, _size_probe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+check("coalescing is on by default", el.get_property("coalesce") is True)
+
+
+def push_list(members, pts, dts):
+    """A mux-shaped list: N whole-packet buffers of one access unit, the
+    timestamps on every member (what mpegtsmux alignment=7 emits)."""
+    lst = Gst.BufferList.new()
+    for m in members:
+        b = Gst.Buffer.new_wrapped(m)
+        b.pts, b.dts = pts, dts
+        lst.insert(-1, b)
+    assert src.emit("push-buffer-list", lst) == Gst.FlowReturn.OK
+
+
+members = [pes_packet(0x100, 900000, 0), filler_packet(cc=1), filler_packet(cc=2)]
+push_list(members, 10 * Gst.MSECOND, 10 * Gst.MSECOND + 7)
+bus.wait(sizes, 1)
+check("a 3-member list arrives downstream as ONE buffer of the concatenated bytes",
+      len(sizes) == 1 and sizes[0][0] == 3 * ts_psi.PKT)
+check("carrying the first member's timestamps",
+      sizes and sizes[0][1] == 10 * Gst.MSECOND and sizes[0][2] == 10 * Gst.MSECOND + 7)
+check("and the element counted the merge", el.get_property("coalesced-lists") == 1)
+check("bytes-total counts the coalesced bytes once",
+      el.get_property("bytes-total") == 3 * ts_psi.PKT)
+push(src, filler_packet(cc=3), 20 * Gst.MSECOND, 20 * Gst.MSECOND)
+bus.wait(sizes, 2)
+check("a plain buffer still passes as itself", len(sizes) == 2 and sizes[1][0] == ts_psi.PKT)
+el.set_property("coalesce", False)
+push_list([filler_packet(cc=4), filler_packet(cc=5)], 30 * Gst.MSECOND, 30 * Gst.MSECOND)
+bus.wait(sizes, 4)
+check("coalesce=false hands the members on one by one",
+      len(sizes) == 4 and sizes[2][0] == ts_psi.PKT and sizes[3][0] == ts_psi.PKT
+      and el.get_property("coalesced-lists") == 1)
+bus.drain(pipe, src)
+teardown()
 
 
 # ---------------------------------------------------------------------------

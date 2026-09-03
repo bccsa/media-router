@@ -465,6 +465,24 @@ export interface PipelineDescription {
      * request pad, this on the demuxer's src pad.
      */
     alignBranchesToStamps?: AlignBranchesToStampsConfig;
+    /**
+     * Runner-side stall watch on named bus sources — the `watchdog` element's
+     * contract (no buffer for `timeoutMs` → `kind: 'bus_stall'` error, errored
+     * teardown, restartOnError) asked once a second instead of per buffer, and
+     * never for an input that has yet to deliver its first buffer (reported
+     * once as a `warning`, `kind: 'input_silent'`). Build entries with
+     * `busStallWatch()`. Mechanism, measurements and rationale live in
+     * `gst_input_stall_watch.py`.
+     */
+    inputStallWatch?: InputStallWatch[];
+}
+
+/** One entry of `PipelineDescription.inputStallWatch`. */
+export interface InputStallWatch {
+    /** `name=` of the bus source element (its src pad is watched). */
+    element: string;
+    /** Silence tolerated before the pipeline fails with `bus_stall`. */
+    timeoutMs: number;
 }
 
 /** Config for `PipelineDescription.preserveSourceTimeline`. */

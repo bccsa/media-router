@@ -11,9 +11,11 @@ import {
     buildBusSink,
     buildBusSrc,
     buildLeakyQueue,
+    busStallWatch,
     muxSinkPadName,
     TS_METADATA_PID,
     videoStreamPid,
+    type InputStallWatch,
     type PadLinkRule,
     type DynamicPort,
 } from '@media-router/engine';
@@ -45,14 +47,16 @@ const AUDIO_PORT_PREFIX = 'audio-';
 const OUTPUT_PORT_ID = 'mpegts-out';
 
 /**
- * Per-input stall watchdog (5 s, in ms). A silent-but-connected input —
+ * Per-input stall watch (5 s, in ms). A silent-but-connected input —
  * producer alive but its source dark — is otherwise invisible: unixfdsrc
  * posts no bus error, so the muxer's aggregator quietly stalls its output
- * with no signal to trigger `restartOnError`. The `watchdog` element that
- * `buildBusSrc` inserts for this option turns the silence into a tagged
- * error event, so a dark source recovers via the normal restart path
- * instead of hanging until manually restarted. (A DEAD producer needs no
- * watchdog — its edge socket closes and unixfdsrc errors out on its own.)
+ * with no signal to trigger `restartOnError`. The runner-side watch
+ * (`PipelineDescription.inputStallWatch`, one entry per input source) turns
+ * the silence into a tagged error event, so a dark source recovers via the
+ * normal restart path. An input that never delivered at all is waited for,
+ * not restarted. Mechanism and history: `gst_input_stall_watch.py`. (A DEAD
+ * producer needs no watch — its edge socket closes and unixfdsrc errors out
+ * on its own.)
  */
 const INPUT_STALL_TIMEOUT_MS = 5_000;
 
@@ -142,7 +146,7 @@ export function streamEntries(
         return arr.slice(0, MAX_STREAMS[media]).map((e) => ({
             name:
                 typeof (e as { name?: unknown } | null)?.name === 'string'
-                    ? ((e as { name: string }).name)
+                    ? (e as { name: string }).name
                     : '',
             offsetMs: normalizeOffsetMs((e as { offsetMs?: unknown } | null)?.offsetMs),
             language: normalizeLanguage((e as { language?: unknown } | null)?.language),
@@ -176,10 +180,7 @@ export function isAudioInputPort(portId: string): boolean {
 
 /** Compact stream identity for a muxer input pin — operator name and/or
  *  language when set, undefined otherwise (pin keeps its role label). */
-function entryStreamInfo(
-    entry: StreamEntry,
-    media: 'video' | 'audio',
-): DynamicPort['streamInfo'] {
+function entryStreamInfo(entry: StreamEntry, media: 'video' | 'audio'): DynamicPort['streamInfo'] {
     const name = entry.name.trim();
     if (!name && !entry.language) return undefined;
     return {
@@ -261,24 +262,35 @@ export function buildInputBranch(branchId: string, source: UdpInputSource): stri
     const src = buildBusSrc({
         port: source.port,
         socketPath: source.socketPath,
-        name: `busin_${branchId}`,
-        stallTimeoutMs: INPUT_STALL_TIMEOUT_MS,
+        name: inputBusSrcName(branchId),
     });
-    // The stall watchdog is load-bearing on a MULTI-source mux, not just a
-    // nicety: `mpegtsmux` aggregates all its sink pads and CANNOT distinguish a
-    // late pad from a dead one, so when any single input goes dark it stalls
-    // the WHOLE combined output indefinitely (spike: `multi_source_dark_input.py`
-    // — 1 output buffer in the 6.5 s after one of two inputs was killed). With
-    // no watchdog that stall is silent and unrecoverable. The watchdog turns it
-    // into a tagged runner error → `restartOnError` rebuild, which is the only
+    // The stall watch (see `inputStallWatch` in buildPipeline — the runner
+    // watches `busin_<i>`'s src pad, no `watchdog` element in the branch) is
+    // load-bearing on a MULTI-source mux, not just a nicety: `mpegtsmux`
+    // aggregates all its sink pads and CANNOT distinguish a late pad from a
+    // dead one, so when any single input goes dark it stalls the WHOLE
+    // combined output indefinitely (spike: `multi_source_dark_input.py` — 1
+    // output buffer in the 6.5 s after one of two inputs was killed). With no
+    // watch that stall is silent and unrecoverable. The watch turns it into a
+    // tagged runner error → `restartOnError` rebuild, which is the only
     // available recovery: the healthy inputs are already frozen by the stall,
     // so the restart disrupts nothing that was still flowing. The restart does
-    // loop while a source stays permanently dark — making the mux survive a
-    // dead input without a rebuild needs per-pad keepalive/fallback (a real
-    // feature, not a tuning knob), since mpegtsmux has no drop-dead-pad mode.
+    // loop while a source that WAS flowing stays permanently dark — making the
+    // mux survive a dead input without a rebuild needs per-pad
+    // keepalive/fallback (a real feature, not a tuning knob), since mpegtsmux
+    // has no drop-dead-pad mode. An input that never delivered is different:
+    // it has no mux pad yet (pads are requested on tsdemux pad-added), so the
+    // mux runs on the fed inputs and the watch only warns (see
+    // gst_input_stall_watch.py).
     // `tsdemux latency=0` removes its default 700 ms input buffer — the
     // per-pad leaky queue downstream provides flow control.
     return `${src} ! tsdemux latency=0 name=demux_${branchId}`;
+}
+
+/** Element name of input branch `i`'s bus source (what the stall watch and
+ *  the tests address). */
+export function inputBusSrcName(branchId: string): string {
+    return `busin_${branchId}`;
 }
 
 export interface MuxerPipelineInputs {
@@ -321,6 +333,9 @@ export interface MuxerPipelineResult {
     /** Every input branch's `tsdemux`, for `alignBranchesToStamps` — the
      *  contract-only fix for per-branch zero points (see buildInputBranch). */
     demuxes: string[];
+    /** One stall watch per input source (INPUT_STALL_TIMEOUT_MS), for
+     *  `PipelineDescription.inputStallWatch`. */
+    inputStallWatch: InputStallWatch[];
 }
 
 /**
@@ -350,9 +365,8 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // dark source's own udpsrc timeout (above) is poll-based and fires
     // regardless of downstream back-pressure.
     const depth = Math.max(100, Math.min(5000, input.queueDepthMs ?? MUX_INPUT_QUEUE_MS));
-    const inputQueue = (input.queueLeaky ?? false)
-        ? buildLeakyQueue(depth)
-        : buildBackpressureQueue(depth);
+    const inputQueue =
+        (input.queueLeaky ?? false) ? buildLeakyQueue(depth) : buildBackpressureQueue(depth);
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
 
     // Deterministic output PIDs (plan D3), assigned BEFORE the mux element is
@@ -402,10 +416,21 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         const progEntries = [...streamPids.map((s) => s.pid), TS_METADATA_PID]
             .map((pid) => `${muxSinkPadName(pid)}=(int)1`)
             .join(',');
-        muxProps +=
-            ` prog-map="program_map,${progEntries},PCR_1=${muxSinkPadName(pcrPid)}"`;
+        muxProps += ` prog-map="program_map,${progEntries},PCR_1=${muxSinkPadName(pcrPid)}"`;
+        // `is-live=false` on purpose (2026-09-02). A LIVE appsrc pad enters the
+        // aggregator's latency arithmetic and makes it impossible (its max
+        // latency is below the media pads' min), so `mpegtsmux` posted the
+        // "Impossible to configure latency: max < min" WARNING on the bus about
+        // 130 times a second — every one a main-loop wakeup marshalled into
+        // the runner's python bus handler. Measured in the muxer rig
+        // (spike/muxer_rig.py): runner 63 → 34 ticks/10 s, main thread 17 → 5,
+        // mux:src 27 → 11, bus messages 129/s → 0, with the output identical
+        // (same buf/s, kbps, video AU/s, 19.5 KLV PES/s with monotonic PTS). A
+        // non-live pad is simply excluded from that computation; `do-timestamp`
+        // still stamps each push with the running time, which is all the
+        // carousel needs to keep the metadata pad's timestamps advancing.
         metadataBranch =
-            ' appsrc name=klvsrc is-live=true do-timestamp=true format=time' +
+            ' appsrc name=klvsrc is-live=false do-timestamp=true format=time' +
             ` caps="meta/x-klv,parsed=true" ! mux.${muxSinkPadName(TS_METADATA_PID)}`;
     }
 
@@ -418,8 +443,7 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // jolts ("ignoring DTS going backward") and invalid PTS<DTS audio PES the
     // receiver discards in bursts. 1.2s covers the observed ~1.07s lateness.
     const muxer =
-        'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 ' +
-        muxProps;
+        'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 ' + muxProps;
     const sink = buildBusSink(input.output.port);
     // No leaky queue between mpegtsmux and the bus tee: any drop here is a
     // mid-stream TS slice (part of a frame's payload) and corrupts decode
@@ -475,6 +499,9 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
         streamPids,
         hasStreamInfo: emitStreamInfo && pcrPid !== undefined,
         demuxes: input.sources.map((_s, i) => `demux_${i}`),
+        inputStallWatch: input.sources.map((_s, i) =>
+            busStallWatch(inputBusSrcName(String(i)), INPUT_STALL_TIMEOUT_MS),
+        ),
     };
 }
 
