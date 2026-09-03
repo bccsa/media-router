@@ -2,6 +2,7 @@ import {
     GstPluginBase,
     buildBackpressureQueue,
     buildBusSrc,
+    buildTsRechunk,
     SrtStatPoller,
     type PipelineDescription,
     type SrtStatPollerHost,
@@ -102,15 +103,17 @@ export class SrtOutputModule extends GstPluginBase {
         // tight (10s) — unlike a transient crash, an unreachable SRT peer
         // gains nothing from longer backoff: we don't know when it returns,
         // so retrying often is what feels snappy when it finally does.
-        // Pure byte passthrough by default (packetsPerDatagram=0): relay the bus
-        // datagrams to SRT as-is, no TS parsing. Re-parsing/re-chunking a lossy
-        // live stream can scramble the picture (tsparse re-timing — see the
-        // mpegts-demuxer notes), and for a same-size passthrough it is needless.
-        // Only insert tsparse when a specific wire datagram size is forced (>= 1).
-        const repack =
-            packetsPerDatagram >= 1
-                ? [`tsparse alignment=${packetsPerDatagram} set-timestamps=false`]
-                : [];
+        // No re-chunk by default. Bus buffers are one access unit each (ADR-0011,
+        // tens of KB for a video keyframe) and srtsink slices every buffer to
+        // its SRT payload size itself: measured 2026-09-02 (dev Pi 5, 9.7 Mbit/s
+        // of 30-55 KB buffers straight into srtsink) the caller received 919
+        // datagrams/s, none over 1316 B, at the full bitrate — and the short
+        // tail of each buffer goes out at once instead of waiting for the next
+        // buffer the way `tsparse alignment=7` would hold it. Whole-packet
+        // buffers keep every slice 188-aligned. tsparse is only inserted when a
+        // specific datagram size is forced (>= 1); `set-timestamps=false` keeps
+        // even that a pure re-slice, never a PCR re-timing.
+        const repack = packetsPerDatagram >= 1 ? [buildTsRechunk(packetsPerDatagram)] : [];
         const pipeline = [
             buildBusSrc({
                 port: udpSource.port,

@@ -112,6 +112,17 @@ export function buildBackpressureQueue(bufferMs: number): string {
     return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
 }
 
+/**
+ * Re-slice bus buffers to `packets` TS packets per buffer for a datagram sink
+ * that does not split on its own (udpsink; srtsink slices itself — ADR-0011
+ * rule 2). `set-timestamps=false` makes this a pure re-chunk: the producer's
+ * house stamps ride through, no PCR re-timing (the one thing tsparse must never
+ * do mid-pipeline under ADR-0005).
+ */
+export function buildTsRechunk(packets: number): string {
+    return `tsparse alignment=${packets} set-timestamps=false`;
+}
+
 export interface TsUdpInputOpts {
     port: number;
     /** Optional element name so callers can address the ingress (e.g. for live props). */

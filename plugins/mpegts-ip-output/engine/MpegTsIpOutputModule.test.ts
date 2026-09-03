@@ -6,9 +6,7 @@ function makeModule(opts: { hasSource?: boolean } = {}) {
     const module = new MpegTsIpOutputModule() as any;
     const hasSource = opts.hasSource ?? true;
     const getModuleBusSource = vi.fn(() =>
-        hasSource
-            ? { port: 41000, socketPath: '/tmp/mr-bus-41000-abc123.sock' }
-            : undefined,
+        hasSource ? { port: 41000, socketPath: '/tmp/mr-bus-41000-abc123.sock' } : undefined,
     );
     module.services = {
         instanceId: 'mpegts-ip-out-1',
@@ -49,8 +47,10 @@ describe('MpegTsIpOutputModule.buildPipeline', () => {
             'unixfdsrc name=busin socket-path=/tmp/mr-bus-41000-abc123.sock',
         );
         expect(desc!.pipeline).not.toContain('udpsrc');
-        // Passthrough by default — no TS re-parsing (safest for lossy live streams).
-        expect(desc!.pipeline).not.toContain('tsparse');
+        // ADR-0011: bus buffers are one access unit each, so raw mode always
+        // re-slices to 1316 B datagrams — a pure re-chunk, never re-timed.
+        expect(desc!.pipeline).toContain('tsparse alignment=7 set-timestamps=false');
+        expect(desc!.pipeline).not.toContain('set-timestamps=true');
         expect(desc!.pipeline).toContain('udpsink name=netsink host=239.1.1.1 port=5000');
         expect(desc!.pipeline).toContain('multicast-iface=eth0');
         expect(desc!.pipeline).toContain('ttl-mc=8');
@@ -155,7 +155,11 @@ describe('MpegTsIpOutputModule.pollStats', () => {
         });
         // Second face badge: the live bitrate (3.2 Mbps = 3200 kbps here).
         expect(module.setBadge).toHaveBeenCalledWith('bitrate', bitrateBadge(3200));
-        expect(bitrateBadge(3200)).toEqual({ icon: 'activity', text: '3.2 Mbps', color: '#10b981' });
+        expect(bitrateBadge(3200)).toEqual({
+            icon: 'activity',
+            text: '3.2 Mbps',
+            color: '#10b981',
+        });
     });
 
     it('shows grey "Waiting" and clears the bitrate badge when nothing has been sent', async () => {

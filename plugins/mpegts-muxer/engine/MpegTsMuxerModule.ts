@@ -123,11 +123,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
         // the pipeline builder.
         const allSources = router.getModuleBusSources(instanceId);
         const muxedSources: UdpInputSource[] = allSources
-            .filter(
-                (s) =>
-                    isVideoInputPort(s.sinkPortId) ||
-                    isAudioInputPort(s.sinkPortId),
-            )
+            .filter((s) => isVideoInputPort(s.sinkPortId) || isAudioInputPort(s.sinkPortId))
             .map((s) => {
                 const entry = entryForPort(config, s.sinkPortId);
                 return {
@@ -195,6 +191,9 @@ export class MpegTsMuxerModule extends GstPluginBase {
             // mux output (and stop being re-rolled on every restart). Dropped by
             // `applyTimeSync` when the time-sync contract is off.
             alignBranchesToStamps: { demuxes: result.demuxes },
+            // Dark-input detection (see INPUT_STALL_TIMEOUT_MS): runner-side,
+            // one entry per input source, no `watchdog` element in the branch.
+            inputStallWatch: result.inputStallWatch,
         };
     }
 

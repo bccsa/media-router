@@ -143,7 +143,11 @@ describe('mpegtsMuxerPipeline helpers', () => {
     });
 
     describe('buildInputBranch', () => {
-        it('reads the per-consumer edge socket via a named unixfdsrc with a 5 s stall watchdog', () => {
+        it('reads the per-consumer edge socket via a named unixfdsrc, with NO watchdog element in the branch', () => {
+            // The stall watch moved runner-side (inputStallWatch) on 2026-09-02:
+            // the `watchdog` element churned a GLib timeout source per bus
+            // buffer (~900 wakeups/s on a video input). The branch is now the
+            // bare bus ingress; the watch is declared on the description.
             const s = buildInputBranch('0', {
                 sinkPortId: 'video-0',
                 port: 40000,
@@ -151,10 +155,10 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(s).toBe(
                 'unixfdsrc name=busin_0 socket-path=/tmp/mr-bus-40000-abc123.sock' +
-                    ' ! watchdog name=buswd_busin_0 timeout=5000' +
                     ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0' +
                     ' ! tsdemux latency=0 name=demux_0',
             );
+            expect(s).not.toContain('watchdog');
             // No inline `! mux.` chain — pad-linking is done at runtime via linkOnPadAdded
             expect(s).not.toContain('! mux.');
         });
@@ -201,7 +205,9 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 alignment: 7,
             });
             expect(result).not.toBeNull();
-            expect(result!.pipeline).toContain('mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7');
+            expect(result!.pipeline).toContain(
+                'mpegtsmux name=mux latency=1200000000 min-upstream-latency=1200000000 alignment=7',
+            );
             expect(result!.pipeline).toContain(
                 'capssetter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" replace=true ! ' +
                     'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
@@ -267,13 +273,26 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(videoRule.requestedPadNames).toEqual(['sink_256']); // 0x100, not 0x101
             expect(audioRule.requestedPadNames).toEqual(['sink_320']); // 0x140
         });
-        it('adds a 5 s stall watchdog on every input branch so a silent-but-connected source restarts', () => {
+        it('declares a 5 s runner-side stall watch on every input source so a silent-but-connected source restarts', () => {
             const result = buildPipeline({
-                sources: [{ sinkPortId: 'video-0', port: 40001 }],
+                sources: [
+                    { sinkPortId: 'audio-0', port: 40002 },
+                    { sinkPortId: 'video-0', port: 40001 },
+                ],
                 output: { port: 40010 },
                 alignment: 7,
             });
-            expect(result!.pipeline).toContain('watchdog name=buswd_busin_0 timeout=5000 ! queue');
+            // One entry per input, addressed by the branch's unixfdsrc name —
+            // the runner probes that element's src pad (what the socket
+            // delivers, ahead of any queue) once a second.
+            expect(result!.inputStallWatch).toEqual([
+                { element: 'busin_0', timeoutMs: 5000 },
+                { element: 'busin_1', timeoutMs: 5000 },
+            ]);
+            for (const w of result!.inputStallWatch) {
+                expect(result!.pipeline).toContain(`unixfdsrc name=${w.element} `);
+            }
+            expect(result!.pipeline).not.toContain('watchdog');
         });
         it('does not emit a video rule for an audio-only source (and vice versa)', () => {
             const result = buildPipeline({
@@ -366,12 +385,16 @@ describe('mpegtsMuxerPipeline helpers', () => {
             ];
             const output = { port: 40010 };
 
-            it('emits the klvsrc metadata appsrc on the fixed metadata PID by default', () => {
+            it('emits the klvsrc metadata appsrc on the fixed metadata PID by default, NON-live', () => {
                 const result = buildPipeline({ sources: twoSources, output, alignment: 7 });
+                // is-live=false is load-bearing: a live pad makes the aggregator's
+                // latency arithmetic impossible and mpegtsmux posts a bus WARNING
+                // ~130×/s (the muxer's whole main-thread cost, 2026-09-02).
                 expect(result!.pipeline).toContain(
-                    'appsrc name=klvsrc is-live=true do-timestamp=true format=time' +
+                    'appsrc name=klvsrc is-live=false do-timestamp=true format=time' +
                         ' caps="meta/x-klv,parsed=true" ! mux.sink_496',
                 );
+                expect(result!.pipeline).not.toContain('klvsrc is-live=true');
                 expect(result!.hasStreamInfo).toBe(true);
             });
 
@@ -434,9 +457,11 @@ describe('mpegtsMuxerPipeline helpers', () => {
                 expect(off!.pipeline).not.toContain('mux.sink_496');
                 expect(off!.hasStreamInfo).toBe(false);
                 // Same pipeline minus the prog-map clause and metadata branch.
-                expect(on!.pipeline.replace(/ prog-map="[^"]*"/, '').replace(/ appsrc [^!]+! mux\.sink_496/, '')).toBe(
-                    off!.pipeline,
-                );
+                expect(
+                    on!.pipeline
+                        .replace(/ prog-map="[^"]*"/, '')
+                        .replace(/ appsrc [^!]+! mux\.sink_496/, ''),
+                ).toBe(off!.pipeline);
             });
 
             it('reports the output-PID map for every routed stream (discovery join key)', () => {
@@ -460,9 +485,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
 
             it('appends a taginject to the audio branch when a language is set', () => {
                 const result = buildPipeline({
-                    sources: [
-                        { sinkPortId: 'audio-0', port: 40002, language: 'deu' },
-                    ],
+                    sources: [{ sinkPortId: 'audio-0', port: 40002, language: 'deu' }],
                     output,
                     alignment: 7,
                 });
@@ -547,9 +570,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
 
         it('clamps out-of-range offsetMs at the rule level too (±2000)', () => {
             const result = buildPipeline({
-                sources: [
-                    { sinkPortId: 'audio-0', port: 40002, offsetMs: -5000 },
-                ],
+                sources: [{ sinkPortId: 'audio-0', port: 40002, offsetMs: -5000 }],
                 output: { port: 40010 },
                 alignment: 7,
             });
@@ -673,6 +694,24 @@ describe('MpegTsMuxerModule', () => {
             expect(desc!.alignBranchesToStamps).toEqual({ demuxes: ['demux_0', 'demux_1'] });
         });
 
+        it('hands the runner one stall watch per input source (no watchdog element)', () => {
+            const { module } = makeModule({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                ],
+            });
+            (module as any).config = { alignment: 7 };
+            (module as any).setHealth = vi.fn();
+            (module as any).setStatusData = vi.fn();
+            const desc = module.buildPipeline((module as any).config);
+            expect(desc!.inputStallWatch).toEqual([
+                { element: 'busin_0', timeoutMs: 5000 },
+                { element: 'busin_1', timeoutMs: 5000 },
+            ]);
+            expect(desc!.pipeline).not.toContain('watchdog');
+        });
+
         it('declares the stream arrays as live-updatable', () => {
             const { module } = makeModule();
             expect(module.getLiveUpdatableParams()).toEqual(['videoStreams', 'audioStreams']);
@@ -681,9 +720,9 @@ describe('MpegTsMuxerModule', () => {
         it('isLiveChange: rename is live, add/remove or legacy shape is not', () => {
             const { module } = makeModule();
             // Same length → rename (label only) → live update, no rebuild.
-            expect(
-                module.isLiveChange('videoStreams', [{ name: 'B' }], [{ name: 'A' }]),
-            ).toBe(true);
+            expect(module.isLiveChange('videoStreams', [{ name: 'B' }], [{ name: 'A' }])).toBe(
+                true,
+            );
             // Length change → port set changed → pending restart.
             expect(
                 module.isLiveChange('audioStreams', [{ name: '' }, { name: '' }], [{ name: '' }]),
@@ -720,9 +759,9 @@ describe('MpegTsMuxerModule', () => {
                 ),
             ).toBe(true);
             // Rename where neither side carries an offset stays live too.
-            expect(
-                module.isLiveChange('audioStreams', [{ name: 'B' }], [{ name: 'A' }]),
-            ).toBe(true);
+            expect(module.isLiveChange('audioStreams', [{ name: 'B' }], [{ name: 'A' }])).toBe(
+                true,
+            );
         });
 
         it('passes audioStreams offsetMs from config through to the audio pad-link rule', () => {
@@ -747,9 +786,8 @@ describe('MpegTsMuxerModule', () => {
         });
 
         it('exposes offsetMs in the audioStreams schema (and not in videoStreams)', () => {
-            const schema = JSON.parse(
-                readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
-            ).mediaRouter.configSchema.properties;
+            const schema = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'))
+                .mediaRouter.configSchema.properties;
             const audioItem = schema.audioStreams.items.properties;
             expect(audioItem.offsetMs).toMatchObject({
                 type: 'number',
@@ -761,9 +799,8 @@ describe('MpegTsMuxerModule', () => {
         });
 
         it('exposes language on audioStreams items and the emitStreamInfo toggle in the schema', () => {
-            const schema = JSON.parse(
-                readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
-            ).mediaRouter.configSchema.properties;
+            const schema = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'))
+                .mediaRouter.configSchema.properties;
             expect(schema.audioStreams.items.properties.language).toMatchObject({
                 type: 'string',
                 default: '',
@@ -786,7 +823,11 @@ describe('MpegTsMuxerModule', () => {
             ).toBe(false);
             // Absent language (old entry shape) is equivalent to blank.
             expect(
-                module.isLiveChange('audioStreams', [{ name: 'ENG', language: 'eng' }], [{ name: 'ENG' }]),
+                module.isLiveChange(
+                    'audioStreams',
+                    [{ name: 'ENG', language: 'eng' }],
+                    [{ name: 'ENG' }],
+                ),
             ).toBe(false);
             // Rename with unchanged language stays live.
             expect(
@@ -926,7 +967,9 @@ describe('MpegTsMuxerModule', () => {
                 padName: 'audio_0_0152',
             });
             const last = JSON.parse(setKlvPayload.mock.calls.at(-1)![1]);
-            expect(last.streams.find((s: { pid: number }) => s.pid === 0x140)?.codec).toBe('webvtt');
+            expect(last.streams.find((s: { pid: number }) => s.pid === 0x140)?.codec).toBe(
+                'webvtt',
+            );
         });
 
         it('re-pushes on a live stream-array rename', async () => {

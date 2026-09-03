@@ -19,13 +19,32 @@
  * arithmetic inside `mr-tssplit` cost ~18. The only way down is off the python
  * probe, so: same maths, native call path, no copy.
  *
- * PLACEMENT: between the bus egress capsfilter and the `busout_*` tee (the
- * runner inserts it there via the element API — the pipeline STRINGS are
- * untouched, so with the contract off the graph is byte-identical). Upstream of
- * the tee the buffer is normally singly-owned, so basetransform hands it to us
- * in place with no copy at all; downstream of the tee every branch would see a
- * shared buffer and pay a (shallow) copy each. `copy-count` counts exactly that
- * case so the claim stays measured rather than assumed.
+ * PLACEMENT: at the HEAD of the bus egress — directly after the mux, before the
+ * `capssetter ! capsfilter` pair and the `busout_*` tee (the runner inserts it
+ * there via the element API — the pipeline STRINGS are untouched, so with the
+ * contract off the graph is byte-identical). Upstream of the tee the buffer is
+ * normally singly-owned, so basetransform hands it to us in place with no copy
+ * at all; downstream of the tee every branch would see a shared buffer and pay
+ * a (shallow) copy each. `copy-count` counts exactly that case so the claim
+ * stays measured rather than assumed.
+ *
+ * COALESCE (ADR-0011): `mpegtsmux alignment=7` emits every access unit as a
+ * GstBufferList of 1316-byte buffers, and a GstBaseTransform — capssetter,
+ * capsfilter, this element's own base class — has no chain_list, so the
+ * default pad handler dismantles the list into one chain() per member. On the
+ * bus that made every 1316 bytes a unixfd message (memfd + sendmsg + recvmsg
+ * + release), ~760 of them per second at 8 Mbit/s, per hop. Measured 2026-09-02
+ * (Pi 5, 8.6 Mbit/s over unixfdsink→unixfdsrc): the hop cost 25 producer + 45
+ * consumer ticks/10 s at 1316-byte buffers and 11 + 9 at 24 KB buffers; on the
+ * Pi 4 mpegts-muxer (two hops) the transport was ~45 % of 0.54 core. A large
+ * mux `alignment` is not the answer: it holds packets across access units
+ * (a 128 kbit/s audio mux at alignment=128 emitted once per ~950 ms). So the
+ * sink pad gets a chain_list that concatenates each list into ONE buffer —
+ * one buffer per access unit, no added latency — and hands that to the base
+ * chain. Being first in the chain is what makes this possible: nothing before
+ * us has taken the list apart yet. Bytes per second and packet alignment are
+ * unchanged; only the buffer boundaries move, and every bus consumer already
+ * accepts arbitrary whole-packet buffers (the native ingest chunks at 24 KB).
  *
  * LAZY ARM: the `active` property is the contract's arm/disarm. Inactive is
  * basetransform passthrough; the buffer is still handed to `transform_ip`
@@ -57,14 +76,19 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.1.0"
+#define MRTSSTAMP_VERSION "2.2.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
 
-/* Bus caps, identical to busHelpers.BUS_TS_CAPS minus packetsize: the element
- * only ever sits behind that capsfilter, and leaving packetsize open keeps it
- * from inventing a negotiation failure the python probe never had. */
+/* Bus caps, identical to busHelpers.BUS_TS_CAPS minus packetsize. Since the
+ * egress-head splice (ADR-0011) the element sits directly on the PRODUCER's
+ * src (mpegtsmux, srtsrc, ristsrc, an appsrc…), ahead of the caps pair that
+ * pins the bus caps, so it negotiates whatever TS caps that producer emits —
+ * including a `streamheader` field from mpegtsmux, which caps intersection
+ * keeps and the downstream capssetter then strips. Leaving packetsize open
+ * keeps it from inventing a negotiation failure the python probe never had.
+ * The element test drives it from a caps-only appsrc for exactly this reason. */
 #define MRTSSTAMP_CAPS "video/mpegts, systemstream=(boolean)true"
 
 /* One anchor / re-anchor notification, collected under the lock by the
@@ -87,6 +111,8 @@ enum {
     PROP_COPY_COUNT,
     PROP_DRIFT,
     PROP_BYTES_TOTAL,
+    PROP_COALESCE,
+    PROP_COALESCED_LISTS,
 };
 
 #define GST_TYPE_MRTSSTAMP (gst_mrtsstamp_get_type())
@@ -109,6 +135,12 @@ struct _GstMrTsStamp {
      * to 26 % with the probe removed). Atomic: read by the runner's
      * get_throughput from the main loop while the streaming thread adds. */
     std::atomic<guint64> bytes_total;
+    /* COALESCE (see the header): merge each incoming GstBufferList into one
+     * buffer before the base chain sees it. Written from the property thread,
+     * read on the streaming thread — atomic, like every other cross-thread
+     * field here. `coalesced-lists` counts merges for the element test. */
+    std::atomic<int> coalesce;
+    std::atomic<guint64> coalesced_lists;
     mrts::TimelineStamper *st;
     std::vector<MrTsStampPending> *pending;
 };
@@ -349,6 +381,77 @@ static GstFlowReturn gst_mrtsstamp_prepare_output_buffer(GstBaseTransform *base,
         ->prepare_output_buffer(base, inbuf, outbuf);
 }
 
+/* --- coalesce (ADR-0011) ------------------------------------------------- */
+
+/* Sink-pad chain_list. GstBaseTransform installs a chain function but no
+ * chain_list, so without this the core's default would split every list into
+ * single chain() calls before the element ran — and the 1316-byte members of
+ * the mux's per-access-unit lists would each travel the bus as their own
+ * message. Here the members are concatenated (one allocation, one copy of the
+ * AU's bytes — at 8 Mbit/s that is 1 MB/s of memcpy, nothing next to the
+ * per-message kernel work it removes) into a single buffer carrying the first
+ * member's timestamps and flags, and THAT goes down the base chain: stamping,
+ * byte accounting and everything downstream see one buffer per AU. Lists of
+ * one, or `coalesce=false`, take the original path member by member. */
+static GstFlowReturn gst_mrtsstamp_sink_chain_list(GstPad *pad, GstObject *parent,
+                                                   GstBufferList *list) {
+    GstMrTsStamp *self = GST_MRTSSTAMP(parent);
+    guint n = gst_buffer_list_length(list);
+    GstBuffer *out = NULL;
+
+    /* Everything below hands buffers to gst_pad_chain() on our own sink pad —
+     * the same path the core's default chain_list takes — so a BUFFER probe
+     * on this pad still fires for list input; calling the base chain function
+     * directly would skip it. The stream lock is recursive, so re-entering
+     * the pad from inside its chain_list is legal. */
+    if (self->coalesce.load(std::memory_order_relaxed) && n >= 2) {
+        gsize total = 0;
+        GstClockTime duration = 0;
+        gboolean all_durations = TRUE;
+        for (guint i = 0; i < n; i++) {
+            GstBuffer *b = gst_buffer_list_get(list, i);
+            total += gst_buffer_get_size(b);
+            if (GST_BUFFER_DURATION_IS_VALID(b)) duration += GST_BUFFER_DURATION(b);
+            else all_durations = FALSE;
+        }
+        out = gst_buffer_new_allocate(NULL, total, NULL);
+        GstMapInfo mo;
+        if (out != NULL && gst_buffer_map(out, &mo, GST_MAP_WRITE)) {
+            gsize off = 0;
+            for (guint i = 0; i < n; i++) {
+                GstBuffer *b = gst_buffer_list_get(list, i);
+                off += gst_buffer_extract(b, 0, mo.data + off, gst_buffer_get_size(b));
+            }
+            gst_buffer_unmap(out, &mo);
+            /* The AU's identity comes from its first member: flags, PTS/DTS and
+             * metas. Duration is the SUM of the members' (they tile the AU), or
+             * left as the first member's when any member lacks one. */
+            gst_buffer_copy_into(out, gst_buffer_list_get(list, 0),
+                                 (GstBufferCopyFlags)(GST_BUFFER_COPY_FLAGS
+                                                      | GST_BUFFER_COPY_TIMESTAMPS
+                                                      | GST_BUFFER_COPY_META),
+                                 0, (gsize)-1);
+            if (all_durations) GST_BUFFER_DURATION(out) = duration;
+            self->coalesced_lists.fetch_add(1, std::memory_order_relaxed);
+        } else if (out != NULL) {
+            gst_buffer_unref(out);       /* map failed: fall back to member-wise */
+            out = NULL;
+        }
+    }
+    if (out != NULL) {
+        gst_buffer_list_unref(list);
+        return gst_pad_chain(pad, out);
+    }
+
+    /* Member by member — exactly what the core's default chain_list did. */
+    GstFlowReturn ret = GST_FLOW_OK;
+    for (guint i = 0; i < n && ret == GST_FLOW_OK; i++) {
+        ret = gst_pad_chain(pad, gst_buffer_ref(gst_buffer_list_get(list, i)));
+    }
+    gst_buffer_list_unref(list);
+    return ret;
+}
+
 /* --- GObject ------------------------------------------------------------- */
 
 static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
@@ -373,6 +476,9 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
             gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), !want);
             break;
         }
+        case PROP_COALESCE:
+            self->coalesce.store(g_value_get_boolean(value) ? 1 : 0, std::memory_order_relaxed);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
             break;
@@ -387,6 +493,12 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
             g_mutex_lock(&self->lock);
             g_value_set_boolean(value, self->active);
             g_mutex_unlock(&self->lock);
+            break;
+        case PROP_COALESCE:
+            g_value_set_boolean(value, self->coalesce.load(std::memory_order_relaxed) != 0);
+            break;
+        case PROP_COALESCED_LISTS:
+            g_value_set_uint64(value, self->coalesced_lists.load(std::memory_order_relaxed));
             break;
         case PROP_BYTES_TOTAL:
             g_value_set_uint64(value, self->bytes_total.load(std::memory_order_relaxed));
@@ -438,8 +550,14 @@ static void gst_mrtsstamp_init(GstMrTsStamp *self) {
     self->copies = 0;
     self->st = NULL;
     self->pending = new std::vector<MrTsStampPending>();
+    self->coalesce.store(1, std::memory_order_relaxed);
+    self->coalesced_lists.store(0, std::memory_order_relaxed);
     gst_mrtsstamp_reset(self);
     gst_base_transform_set_in_place(GST_BASE_TRANSFORM(self), TRUE);
+    /* The base class has already installed its chain function on the sink pad
+     * (parent instance init runs first); chain_list is ours alone. */
+    gst_pad_set_chain_list_function(GST_BASE_TRANSFORM(self)->sinkpad,
+                                    gst_mrtsstamp_sink_chain_list);
     /* Inactive by default: the runner arms per tee on that tee's first consumer
      * edge, exactly where it armed the python probe. */
     gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), TRUE);
@@ -489,6 +607,22 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
                            "stamper's drift_stats().",
                            GST_TYPE_STRUCTURE,
                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
+
+    g_object_class_install_property(
+        gobject_class, PROP_COALESCE,
+        g_param_spec_boolean("coalesce", "Coalesce buffer lists",
+                             "Merge each incoming GstBufferList (mpegtsmux emits one per "
+                             "access unit) into a single buffer, so the bus carries one "
+                             "message per access unit instead of one per 1316-byte chunk "
+                             "(ADR-0011). FALSE hands the members on one by one.",
+                             TRUE,
+                             (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
+    g_object_class_install_property(
+        gobject_class, PROP_COALESCED_LISTS,
+        g_param_spec_uint64("coalesced-lists", "Coalesced lists",
+                            "Buffer lists merged into one buffer since construction.",
+                            0, G_MAXUINT64, 0,
+                            (GParamFlags)(G_PARAM_READABLE | G_PARAM_STATIC_STRINGS)));
 
     gst_element_class_add_static_pad_template(element_class, &mrtsstamp_sink_tmpl);
     gst_element_class_add_static_pad_template(element_class, &mrtsstamp_src_tmpl);

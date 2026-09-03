@@ -80,12 +80,12 @@
                         7
                     ],
                     "x-enumLabels": {
-                        "0": "Passthrough (as received)",
+                        "0": "Default (srtsink slices to 1316 B)",
                         "1": "One TS packet (188 B)",
                         "7": "SRT-aligned (1316 B)"
                     },
                     "default": 0,
-                    "description": "Wire datagram packing. Passthrough (default) relays bus datagrams as-is — no TS re-parsing, lowest CPU, and safest for lossy live streams. 1/7 force a specific SRT payload size (inserts tsparse) — only needed when the bus datagram size differs from the wire size."
+                    "description": "Wire datagram packing. Default lets srtsink slice each bus buffer (one access unit) to its 1316 B SRT payload size itself — no TS re-parsing, lowest latency. 1/7 force a specific size through tsparse (a pure re-chunk, no timestamp changes)."
                 }
             }
         },

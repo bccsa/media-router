@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BUS_WATCHDOG_PREFIX, buildBusSink, buildBusSrc, busTeeName } from './busHelpers.js';
+import {
+    BUS_WATCHDOG_PREFIX,
+    buildBusSink,
+    buildBusSrc,
+    busStallWatch,
+    busTeeName,
+} from './busHelpers.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
 
 /**
@@ -48,6 +54,29 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         const fragment = buildBusSrc({ port: 41000, name: 'busin_x', stallTimeoutMs: 5000 });
         const name = /watchdog name=(\S+)/.exec(fragment)?.[1] ?? '';
         expect(name.startsWith(BUS_WATCHDOG_PREFIX)).toBe(true);
+    });
+
+    it('the runner-side input stall watch reads the field the parent sends, and tags like the element did', () => {
+        // PipelineDescription.inputStallWatch → GstChildProcess.startPayload →
+        // handle_start's data.get("inputStallWatch"). A rename on any hop
+        // silently disables dark-input recovery on the muxer.
+        const childProcess = readFileSync(
+            join(__dirname, '..', 'child-process', 'GstChildProcess.ts'),
+            'utf8',
+        );
+        expect(childProcess).toContain('inputStallWatch: desc.inputStallWatch');
+        expect(runnerSource).toContain('data.get("inputStallWatch")');
+        // The mechanism lives in its own module; the runner aliases it.
+        expect(runnerSource).toContain('import gst_input_stall_watch as input_stall');
+        const stallWatch = readFileSync(
+            join(__dirname, '..', 'child-process', 'gst_input_stall_watch.py'),
+            'utf8',
+        );
+        // Same error shape as the `watchdog` element path: kind + prefixed element.
+        expect(stallWatch).toContain(`ELEMENT_PREFIX = "${BUS_WATCHDOG_PREFIX}_"`);
+        expect(stallWatch).toContain('"element": ELEMENT_PREFIX + name');
+        expect(stallWatch).toContain('"kind": "bus_stall"');
+        expect(busStallWatch('busin_0', 5000)).toEqual({ element: 'busin_0', timeoutMs: 5000 });
     });
 
     it('the runner group-bind workaround for the removed UDP bus is gone', () => {
@@ -212,8 +241,9 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // ...and released from the teardown path, which is what `bus_detach`
         // (and the stall watchdog's edge reset) funnels through.
         const teardownIdx = runnerSource.indexOf('def _teardown_bus_branch');
-        expect(runnerSource.indexOf('_release_bus_stamper(entry.get("tee_name"))', teardownIdx))
-            .toBeGreaterThan(teardownIdx);
+        expect(
+            runnerSource.indexOf('_release_bus_stamper(entry.get("tee_name"))', teardownIdx),
+        ).toBeGreaterThan(teardownIdx);
     });
 
     it('the stamper rewrites DTS as well as PTS', () => {
@@ -324,7 +354,7 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         expect(runnerSource).toContain('"outcome": outcome');
     });
 
-    it('the shedder measures against the SINK\'s live ts-offset, not a copy of D', () => {
+    it("the shedder measures against the SINK's live ts-offset, not a copy of D", () => {
         // The route's playout offset moves live (`notifyPlayoutOffsetChanged`
         // pushes a new `ts-offset` to the running sink). Reading the property
         // is what keeps the guard measuring against the budget the route is
@@ -337,8 +367,12 @@ describe('bus helpers ↔ gst-pipeline-runner contracts', () => {
         // order decides who wins when both are on the decoder's sink pad. A
         // shut gate must: it is already dropping everything, which drains the
         // same backlog, and its rule is the safety-critical one.
-        const gateIdx = runnerSource.indexOf('_start_keyframe_gate(pipeline, data.get("keyframeGate"))');
-        const shedIdx = runnerSource.indexOf('_start_backlog_shedder(pipeline, data.get("backlogShed"))');
+        const gateIdx = runnerSource.indexOf(
+            '_start_keyframe_gate(pipeline, data.get("keyframeGate"))',
+        );
+        const shedIdx = runnerSource.indexOf(
+            '_start_backlog_shedder(pipeline, data.get("backlogShed"))',
+        );
         expect(gateIdx).toBeGreaterThan(0);
         expect(shedIdx).toBeGreaterThan(gateIdx);
     });

@@ -219,6 +219,7 @@ export class GstChildProcess extends EventEmitter {
             backlogShed: desc.backlogShed,
             preserveSourceTimeline: desc.preserveSourceTimeline,
             alignBranchesToStamps: desc.alignBranchesToStamps,
+            inputStallWatch: desc.inputStallWatch,
         };
     }
 

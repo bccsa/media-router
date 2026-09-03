@@ -442,12 +442,14 @@ def on_bus_message(bus, message):
         # Stop the pipeline on error. `errored`: the source that just failed
         # can no longer carry a pipeline-level EOS, so the drain goes straight
         # at the decoder instead of burning its budget (see _eos_drain).
+        _stop_input_stall_watch()
         _teardown_pipeline(pipeline, errored=True)
         if loop and loop.is_running():
             loop.quit()
 
     elif t == Gst.MessageType.EOS:
         emit_event({"event": "eos"})
+        _stop_input_stall_watch()
         # Already drained by definition — EOS reached the sinks, so the decoder
         # is idle and a second EOS would only stall the teardown.
         _teardown_pipeline(pipeline, drain=False)
@@ -460,6 +462,7 @@ def on_bus_message(bus, message):
             state_name = new.value_nick  # 'playing', 'paused', 'ready', 'null'
             if new == Gst.State.PLAYING:
                 _cancel_playing_watchdog()
+                _arm_input_stall_watch()
             emit_event({"event": "state_change", "state": state_name})
 
     elif t == Gst.MessageType.ELEMENT:
@@ -1401,6 +1404,8 @@ def _install_branch_stamp_align(pipe, cfg):
             "t0": None,         # running time of this branch's first output
             "settled": False,
             "done": False,
+            "out_probes": [],   # (pad, probe_id) of every armed src-pad probe
+            "lock": threading.Lock(),   # `finish()` winner election across pads
         }
         _branch_align[name] = state
 
@@ -1424,20 +1429,20 @@ def _install_branch_stamp_align(pipe, cfg):
                 # between them, so it decides nothing (None disqualifies it).
                 st["byTail"][tail] = None
 
-        def on_sink_buffer(_pad, info, st=state):
+        def index_sink_buffer(_pad, info, st=state):
             """One pass over the branch's TS: the producer's mapping (K), and a
             payload-tail → PTS index of the access units in flight."""
             buf = info.get_buffer()
             if buf is None or st["done"]:
                 return Gst.PadProbeReturn.OK
             stamp = buf.pts
-            ok, mi = buf.map(Gst.MapFlags.READ)
-            if not ok:
-                return Gst.PadProbeReturn.OK
-            try:
-                data = bytes(mi.data)
-            finally:
-                buf.unmap(mi)
+            # `extract_dup`, not map/unmap: one copy either way (`bytes(mi.data)`
+            # copied too), but the map path raised
+            # `TypeError: Expected Gst.MapInfo, but got gi.repository.Gst.MapInfo`
+            # on 10.9.16.108 (2026-09-02, GStreamer 1.28 / PyGObject 3.56) and
+            # a probe that raises, raises on EVERY buffer — 45,854 tracebacks in
+            # 30 min, a full core burned on formatting them.
+            data = buf.extract_dup(0, buf.get_size())
             first_pts = None
             for pkt in ts_psi.iter_packets(data):
                 if not ts_psi.ts_has_payload(pkt):
@@ -1470,6 +1475,21 @@ def _install_branch_stamp_align(pipe, cfg):
                 st["k"] = k
             return Gst.PadProbeReturn.OK
 
+        def on_sink_buffer(pad, info, st=state):
+            """The sink index, fenced: an exception here must cost ONE line and
+            the feature, never a traceback per buffer for the pipeline's life."""
+            try:
+                return index_sink_buffer(pad, info, st)
+            except Exception as exc:  # noqa: BLE001 — see the note in index_sink_buffer
+                sys.stderr.write(
+                    f"[gst-runner.py] branchAlign: {st['name']} sink probe failed "
+                    f"({exc!r}) — branch left un-anchored\n")
+                sys.stderr.flush()
+                st["done"] = True
+                st["settled"] = True          # src-pad probes drop on their next buffer
+                st["sink_probe_id"] = None    # REMOVE below retires this probe
+                return Gst.PadProbeReturn.REMOVE
+
         def release_sink_probe(st=state):
             if st["pending"] or st["done"]:
                 return
@@ -1496,8 +1516,15 @@ def _install_branch_stamp_align(pipe, cfg):
             branch actually runs at.
             """
             pid, st = arg
+            if st.get("settled"):
+                # The branch is done (another pad settled, or gave up) and the
+                # winner of `finish()` is removing this probe; returning OK
+                # (not REMOVE) leaves that removal the only one, so no
+                # "pad has no probe with id" race. Before 2026-09-02 these
+                # probes were never removed at all.
+                return Gst.PadProbeReturn.OK
             buf = info.get_buffer()
-            if buf is None or st.get("settled"):
+            if buf is None:
                 return Gst.PadProbeReturn.OK
             pts = buf.pts
             if pts == Gst.CLOCK_TIME_NONE or st["k"] is None:
@@ -1527,17 +1554,19 @@ def _install_branch_stamp_align(pipe, cfg):
                             st["k"] + ts_timeline.pts90k_to_ns(anchor) - pts)
                 if len(samples) < _BRANCH_ALIGN_SAMPLES:
                     if elapsed > _BRANCH_ALIGN_GIVEUP_MS:
-                        st["settled"] = True
+                        if not finish(st, pad):
+                            return Gst.PadProbeReturn.OK  # a sibling settled first
                         sys.stderr.write(
                             f"[gst-runner.py] branchAlign: {st['name']} pid=0x{pid:x} "
                             f"joined only {len(samples)} access units in "
                             f"{elapsed:.0f} ms — branch left un-anchored\n")
                         sys.stderr.flush()
-                        finish(st)
+                        return Gst.PadProbeReturn.REMOVE
                     return Gst.PadProbeReturn.OK
             off = sorted(samples)[len(samples) // 2]      # median of the window
             spread = max(samples) - min(samples)
-            st["settled"] = True
+            if not finish(st, pad):
+                return Gst.PadProbeReturn.OK          # a sibling settled first; it retires us
             note = ""
             if abs(off) > _BRANCH_ALIGN_MAX_NS:
                 note = " — REJECTED (past the plausible zero-point error), branch left as-is"
@@ -1551,14 +1580,35 @@ def _install_branch_stamp_align(pipe, cfg):
                 f"(median of {len(samples)} joined AUs, spread {spread / 1e6:.3f} ms, "
                 f"K={st['k']} from {st['ksamples']} buffers, ausIndexed={len(st['byTail'])})\n")
             sys.stderr.flush()
-            finish(st)
-            return Gst.PadProbeReturn.OK
+            return Gst.PadProbeReturn.REMOVE
 
-        def finish(st):
-            """One branch is done measuring: drop its probes so the steady state
-            costs nothing (the sink index is the expensive half)."""
-            st["pending"] -= 1
+        def finish(st, pad=None):
+            """One branch is done measuring: drop EVERY probe it armed so the
+            steady state costs nothing. The sink index is the expensive half;
+            the per-AU src-pad probes are the long tail — before 2026-09-02
+            they were never removed, and on a branch carrying more than one
+            elementary stream `pending` never reached zero either, so the sink
+            index (a python TS parse of every bus buffer) ran for the
+            pipeline's life.
+
+            Returns True for the ONE caller that settles the branch; every
+            other pad runs its probe on its own streaming thread, so two pads
+            can reach this together. The winner is decided under `lock`, takes
+            the sibling list with it and removes those probes; a loser gets
+            False and must return OK (not REMOVE) so the winner's remove_probe
+            is the only thing that retires it — a self-REMOVE racing that
+            remove is the "pad has no probe with id" warning."""
+            with st["lock"]:
+                if st["settled"]:
+                    return False
+                st["settled"] = True
+                siblings = [(p, i) for p, i in st["out_probes"] if i is not None and p != pad]
+                st["out_probes"] = []
+                st["pending"] = 0
+            for p, probe_id in siblings:
+                p.remove_probe(probe_id)
             release_sink_probe(st)
+            return True
 
         def on_pad_added(_element, pad, st=state):
             pad_name = pad.get_name() or ""
@@ -1567,12 +1617,15 @@ def _install_branch_stamp_align(pipe, cfg):
             pid = _pid_from_tsdemux_pad_name(pad_name)
             if pid is None:
                 return
+            if st["settled"] or st["done"]:
+                return                      # nothing left to measure on this branch
             st["pending"] += 1
             # A plain BUFFER probe, NOT a blocking one: the correction lands a
             # few seconds in (see on_out_buffer), and nothing may be held up
             # waiting for it. The offset then arrives as one timeline step on
             # this pad while the mux is still filling its latency budget.
-            pad.add_probe(Gst.PadProbeType.BUFFER, on_out_buffer, (pid, st))
+            probe_id = pad.add_probe(Gst.PadProbeType.BUFFER, on_out_buffer, (pid, st))
+            st["out_probes"].append((pad, probe_id))
 
         state["sink_probe_id"] = sink_pad.add_probe(
             Gst.PadProbeType.BUFFER, on_sink_buffer)
@@ -1816,6 +1869,7 @@ def handle_start(data):
     # reason — the first TS bytes carry the mapping every branch is anchored to,
     # and a branch that has already emitted cannot be re-zeroed without a jolt).
     _install_branch_stamp_align(pipeline, data.get("alignBranchesToStamps"))
+    _start_input_stall_watch(pipeline, data.get("inputStallWatch"))
 
     # The producer half of the time-sync contract: stamp every bus egress with
     # house-clock media time. The FLAG is recorded here, before PLAYING, for the
@@ -1936,6 +1990,7 @@ def handle_stop(data=None):
     _stop_rist()
     _stop_ts_probe()
     _stop_render_watch()
+    _stop_input_stall_watch()
     if pipeline:
         _teardown_pipeline(pipeline)
         running = False
@@ -3026,8 +3081,9 @@ def _start_ts_probe(pipe, cfg):
 
     CPU strategy: every buffer is processed until the first SPS parses
     (seconds), then 1 buffer in PROBE_SAMPLE_STRIDE keeps discovery + the
-    SPS byte-compare alive at ~1.5% duty on a 30 Mbps feed. Buffers arrive
-    datagram-aligned (7x188); a misaligned buffer yields nothing from
+    SPS byte-compare alive at ~1.5% duty on a 30 Mbps feed. Bus buffers are
+    whole TS packets (one access unit each under ADR-0011, 1316 B chunks
+    from relay producers); a misaligned buffer yields nothing from
     iter_packets — harmless on a report-only path.
     """
     global _ts_probe
@@ -3269,6 +3325,30 @@ def _stop_render_watch():
         GLib.source_remove(st["timer_id"])
     if st["probe_id"] is not None:
         st["pad"].remove_probe(st["probe_id"])
+
+
+# ---------------------------------------------------------------------------
+# Input stall watch (`inputStallWatch` config) — lives in gst_input_stall_watch.py
+# ---------------------------------------------------------------------------
+# The `watchdog` element's contract without its per-buffer cost, and without
+# restart-looping on an input that never delivered. The module owns the probes
+# and the tick; this file wires in the two things only the runner knows — how
+# to emit an engine event and how to fail the pipeline the way the bus ERROR
+# path does (errored teardown, loop quit → the parent's restartOnError).
+import gst_input_stall_watch as input_stall                       # noqa: E402
+
+
+def _fail_pipeline_on_stall():
+    _teardown_pipeline(pipeline, errored=True)
+    if loop and loop.is_running():
+        loop.quit()
+
+
+input_stall.configure(lambda obj: emit_event(obj), _fail_pipeline_on_stall,
+                      lambda: pipeline is not None)
+_start_input_stall_watch = input_stall.start
+_arm_input_stall_watch = input_stall.arm
+_stop_input_stall_watch = input_stall.stop
 
 
 # ---------------------------------------------------------------------------

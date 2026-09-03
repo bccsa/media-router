@@ -81,12 +81,12 @@
                         7
                     ],
                     "x-enumLabels": {
-                        "0": "Passthrough (as received)",
+                        "0": "Default (7 packets, 1316 B)",
                         "1": "One TS packet (188 B)",
-                        "7": "SRT-aligned (1316 B)"
+                        "7": "Seven TS packets (1316 B)"
                     },
                     "default": 0,
-                    "description": "Wire datagram packing (raw mode). Passthrough (default) forwards bus datagrams as-is — no TS re-parsing, lowest CPU, safest for lossy live streams. 1/7 force a specific size (inserts tsparse). In RTP mode the payloader governs the final size."
+                    "description": "Wire datagram packing (raw mode). The bus carries one buffer per access unit, so the output always re-slices to the wire size (a pure re-chunk, no timestamp changes). Default and 7 = 1316 B; 1 = one TS packet per datagram. In RTP mode the payloader governs the final size unless a size is forced here."
                 }
             }
         },

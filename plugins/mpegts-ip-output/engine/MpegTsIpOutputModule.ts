@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     buildBusSrc,
+    buildTsRechunk,
     buildNetUdpSink,
     buildBackpressureQueue,
     isMulticastAddr,
@@ -96,13 +97,17 @@ export class MpegTsIpOutputModule extends GstPluginBase {
             }),
             buildBackpressureQueue(200),
         ];
-        // Passthrough by default (packetsPerDatagram=0): forward bus datagrams
-        // as-is, no TS parsing. Only re-chunk to a specific wire size when forced
-        // (>= 1) — parsing/re-chunking a lossy live stream can scramble the
-        // picture, and for a same-size passthrough it is needless. In RTP mode
-        // rtpmp2tpay governs the final datagram size regardless.
-        if (packetsPerDatagram >= 1) {
-            head.push(`tsparse alignment=${packetsPerDatagram} set-timestamps=false`);
+        // ALWAYS re-chunk in raw mode (ADR-0011): bus buffers are one access
+        // unit each — tens of KB for a video keyframe — and a udpsink datagram
+        // of that size fragments at the IP layer (one lost fragment loses the
+        // whole AU). `set-timestamps=false` keeps this a pure re-slice: no PCR
+        // re-timing, the producer's house stamps ride through untouched.
+        // packetsPerDatagram=0 is the 1316 B default; 1/7 force a size. In RTP
+        // mode rtpmp2tpay governs the final datagram size, so tsparse is only
+        // inserted there when a size is explicitly forced.
+        const wirePackets = packetsPerDatagram >= 1 ? packetsPerDatagram : 7;
+        if (encapsulation !== 'rtp' || packetsPerDatagram >= 1) {
+            head.push(buildTsRechunk(wirePackets));
         }
         if (encapsulation === 'rtp') head.push('rtpmp2tpay');
 
@@ -121,7 +126,9 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         } else {
             // tee → one queued udpsink branch per destination.
             const branches = destinations
-                .map((d, i) => `t. ! ${buildBackpressureQueue(200)} ! ${makeSink(d, `netsink${i}`)}`)
+                .map(
+                    (d, i) => `t. ! ${buildBackpressureQueue(200)} ! ${makeSink(d, `netsink${i}`)}`,
+                )
                 .join(' ');
             pipeline = `${head.join(' ! ')} ! tee name=t ${branches}`;
         }
@@ -138,7 +145,10 @@ export class MpegTsIpOutputModule extends GstPluginBase {
         const raw = Array.isArray(config.destinations) ? config.destinations : [];
         return raw
             .map((d) => d as Partial<Destination>)
-            .filter((d): d is Destination => typeof d.host === 'string' && d.host.length > 0 && typeof d.port === 'number');
+            .filter(
+                (d): d is Destination =>
+                    typeof d.host === 'string' && d.host.length > 0 && typeof d.port === 'number',
+            );
     }
 
     private async pollStats(): Promise<void> {
