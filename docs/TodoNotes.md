@@ -26,6 +26,21 @@
   spend almost all of it on the runner's main thread: appsink pull in python,
   1316-byte slicing, librist write per slice. Candidate for a native element
   or a native sidecar the way `mrtsstamp`/`mr-tssplit` went (2026-09-03).
+  2026-09-04: native elements `mrristsink`/`mrristsrc` (`plugins/rist-core/
+  native/mrrist`, ADR-0013) replace both python drains; the modules build
+  `mrristsink …` / `mrristsrc …` pipelines and read stats from `mrrist-stats`
+  bus messages. Live on .108 (loopback pair, muxer-fed 12 Mbit/s) and .46:
+  Pi 4 rist-output 42 → 8 % of a core, rist-input 54 → 8 %. Root cause of
+  most of the old cost besides the python drain: librist's
+  `rist_stats_callback_set()` never sets the SENDER thread's interval, so it
+  built + delivered a cJSON stats report on EVERY loop iteration (= per
+  packet); worked around by also registering the legacy
+  `rist_sender_stats_callback_set()` (element + librist.py). A librist
+  "wake-on-write" patch was tried and REVERTED: with the elements + stats fix
+  it was worth ~0.5 %/direction. Python drain (pull thread, extract_dup,
+  batched reads) kept only as the runner's `rist`-config fallback.
+  Still open: retire the runner's python `rist` path (`librist.py`,
+  `_start_rist`) once the elements have a few weeks in the field.
 
 - [x] **One node relay per pipeline costs ~18 MB each.** Every runner has a
   `gst-runner.js` parent that only relays stdio JSON; on .46 (17 pipelines)

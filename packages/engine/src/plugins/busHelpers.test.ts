@@ -8,7 +8,19 @@ import {
     busIngestSocketPath,
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
+    quoteGstString,
 } from './busHelpers.js';
+
+describe('quoteGstString', () => {
+    it('wraps a value in double quotes', () => {
+        expect(quoteGstString('rist://h:5004?weight=5&cname=a b')).toBe('"rist://h:5004?weight=5&cname=a b"');
+    });
+
+    it('escapes embedded quotes and backslashes for gst-launch', () => {
+        expect(quoteGstString('say "hi"')).toBe('"say \\"hi\\""');
+        expect(quoteGstString('a\\b')).toBe('"a\\\\b"');
+    });
+});
 
 describe('bus socket-path helpers', () => {
     afterEach(() => {

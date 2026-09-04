@@ -38,6 +38,15 @@ export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize
  * socket for a channel with no per-consumer fan-out; the live path is
  * `busEdgeSocketPath` (one socket per consumer edge).
  */
+/**
+ * Quote a string for a gst-launch pipeline description property value
+ * (`prop="..."`): backslash-escapes `\\` and `"`, so URLs with `?&=`,
+ * passphrases with spaces or quotes, etc. survive `Gst.parse_launch`.
+ */
+export function quoteGstString(value: string): string {
+    return '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
 export function busSocketPath(port: number): string {
     const dir = process.env.MR_BUS_SOCKET_DIR ?? '/tmp';
     return `${dir}/mr-bus-${port}.sock`;

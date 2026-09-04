@@ -722,7 +722,7 @@ Not every plugin runs a GStreamer pipeline. `GstPluginBase` supports three archi
 | Variant | `buildPipeline` returns | Process model | Examples |
 |---|---|---|---|
 | **GStreamer pipeline** | a `PipelineDescription` | Python `gst-pipeline-runner.py` child process spawned by `GstChildProcess` | `audio-decoder`, `audio-encoder`, `srt-input`, `srt-output`, `ts-splitter`, `mpegts-muxer`, `video-encoder`, `video-player`, `audio-input`, `audio-output` |
-| **External CLI tool** | `null` | A long-running CLI managed by `services.processManager` (auto-killed on stop) | `rist-input` (`ristreceiver`), `rist-output` (`ristsender`) |
+| **External CLI tool** | `null` | A long-running CLI managed by `services.processManager` (auto-killed on stop) | (none in-tree today; `rist-input`/`rist-output` used to wrap `ristreceiver`/`ristsender` before moving to native GStreamer elements, ADR-0013) |
 | **PipeWire-only** | `null` | No subprocess — pure PipeWire null-sinks/loopbacks via `services.pipeWire` | `n1-mixer` |
 
 For the two "no-pipeline" variants:
@@ -1665,6 +1665,8 @@ Volume is in percentage (0-500+).
 
 ## The Inter-Module Bus (Generic Plugin Infrastructure)
 
+String-valued pipeline properties (URLs, passphrases) go through `quoteGstString(value)` from `@media-router/engine`, which double-quotes and backslash-escapes for `Gst.parse_launch`.
+
 Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime, and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
 **Bus buffer contract (ADR-0011).** A bus buffer is one access unit of whole
@@ -1674,8 +1676,8 @@ mpegts-ip-input) forward 1316-byte datagrams; native ingest chunks at 24 KB.
 Two rules for every consumer: (1) **never assume a buffer size** — whole-packet
 alignment is the only guarantee, a buffer may be 188 B or a 400 KB keyframe;
 (2) **a wire-facing output must know whether its sink slices** — srtsink
-slices to its payload size itself, librist is fed 1316-byte slices by the
-runner, udpsink does not slice so use `buildTsRechunk(7)` (a pure re-chunk,
+slices to its payload size itself, `mrristsink` re-slices to 1316 bytes
+itself, udpsink does not slice so use `buildTsRechunk(7)` (a pure re-chunk,
 `set-timestamps=false`, never a re-timing). Forgetting (2) ships oversized
 datagrams that fragment at the IP layer.
 
@@ -1878,8 +1880,11 @@ own folder — no registration anywhere. Architecture decisions behind this:
    .PHONY: all test clean install
    ```
 
-   Rules: C++17, **libc/libstdc++ only** — no third-party dependencies (the
-   Yocto build has no network access). Linux-only tools should self-guard
+   Rules: C++17, libc/libstdc++ by default; a GStreamer element may also use
+   the GStreamer/GLib dev packages and, for `mrrist`, librist — anything else
+   must be added to the recipe's `DEPENDS` (the Yocto build has no network
+   access) and the Makefile must FAIL, not skip, when pkg-config cannot find
+   it (see `rist-core/native/mrrist/Makefile`). Linux-only tools should self-guard
    with `ifeq ($(shell uname -s),Linux)` (see `unixfdbus-core/native/*/Makefile`).
    Add a `native/.gitignore` for the build outputs.
 
@@ -2118,7 +2123,7 @@ Complete working plugins to copy from. Each one demonstrates a distinct subset o
 | Audio Encoder | `plugins/audio-encoder/` | `static initManifest` for codec capability probing, live bitrate via `setElementProperty`, UDP-port allocation |
 | Audio Decoder | `plugins/audio-decoder/` | Stream probing (`probeMpegTsStream`), idle when no upstream connected (`null` from `buildPipeline`). **Requires `ts-splitter` to be installed** — that plugin's `static registerServices` provides the opus/aac/mp2/ac3 codec classifiers `probeMpegTsStream` consults. Without it, `probeResult.codec` always reports `'unknown'` and the decoder silently falls back to `decodebin`. |
 | SRT Input / Output | `plugins/srt-input/`, `plugins/srt-output/` | Per-caller stat polling, dynamic `statusSections` for multi-peer state, badges, `restartBackoffMs` tuning |
-| RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | **No GStreamer pipeline** — `ProcessManager` driving `ristreceiver` / `ristsender`, stderr-JSON stat parsing |
+| RIST Input / Output | `plugins/rist-input/`, `plugins/rist-output/` | Native `mrristsrc` / `mrristsink` elements (`rist-core/native/mrrist`, librist in C, ADR-0013); stats via `busReports` on `mrrist-stats` bus messages; `quoteGstString` for URL/passphrase properties |
 | MPEG-TS Demuxer | `plugins/mpegts-demuxer/` | `getDynamicPorts(config)`, per-output `assignBusChannel(instanceId, portId)`, `linkOnPadAdded` rules |
 | MPEG-TS Muxer | `plugins/mpegts-muxer/` | Symmetric to demuxer — dynamic *inputs*, fanning into one muxed/mpegts output |
 | N-1 Mixer | `plugins/n1-mixer/` | **PipeWire-only** (no GStreamer), `getPipeWireNodeForPort` for per-port routing, dynamic port pairs |

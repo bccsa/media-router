@@ -1,8 +1,8 @@
 import {
     GstPluginBase,
     buildBusSink,
+    quoteGstString,
     type PipelineDescription,
-    type RistRunnerConfig,
 } from '@media-router/engine';
 
 interface RistLink {
@@ -13,8 +13,10 @@ interface RistLink {
     cname: string;
 }
 
-/** `name=` of the appsrc the runner's librist receiver pushes payloads into. */
-const RIST_APPSRC = 'ristsrc';
+/** `name=` of the native `mrristsrc` element (rist-core/native/mrrist). */
+const RIST_SRC = 'ristsrc';
+/** Bus-message structure the element posts librist's stats JSON under. */
+const RIST_STATS_STRUCTURE = 'mrrist-stats';
 
 /**
  * RIST Input plugin.
@@ -83,34 +85,45 @@ export class RistInputModule extends GstPluginBase {
             return null;
         }
 
-        // appsrc: live (PLAYING without preroll — required by the runner's
-        // playing watchdog), timestamped on arrival like udpsrc was, and
-        // bounded+leaky so a downstream stall sheds here instead of growing
-        // memory — librist's own recovery buffer is the real jitter absorber.
+        // mrristsrc: live, arrival-timestamped (what the appsrc it replaced was
+        // configured to). The leaky queue keeps the old contract that a
+        // downstream stall sheds HERE instead of growing memory — librist's own
+        // recovery buffer is the real jitter absorber.
+        const secret = (this.config.secret as string) || '';
+        const encType = (this.config.encryptionType as number) || 0;
+        const sessionTimeout = (this.config.sessionTimeout as number) || 0;
+        const props = [
+            `urls=${quoteGstString(this.links().map(buildRistUrl).join(' '))}`,
+            `profile=${(this.config.profile as number) ?? 1}`,
+            `buffer=${(this.config.buffer as number) ?? 1000}`,
+            // librist deletes a flow after this long with no data (default
+            // 2000 ms); on links with brief blackouts ~10000 ms keeps the flow
+            // alive through the gap instead of a delete/reconnect churn.
+            ...(sessionTimeout ? [`session-timeout=${sessionTimeout}`] : []),
+            ...(secret ? [`secret=${quoteGstString(secret)}`] : []),
+            ...(encType ? [`aes-type=${encType}`] : []),
+            `stats-interval=${(this.config.statsInterval as number) ?? 1000}`,
+        ];
         const pipeline =
-            `appsrc name=${RIST_APPSRC} is-live=true do-timestamp=true format=time ` +
-            'caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ' +
-            'leaky-type=downstream max-bytes=4194304 ! ' +
+            `mrristsrc name=${RIST_SRC} ${props.join(' ')} ! ` +
+            'queue leaky=downstream max-size-bytes=4194304 max-size-buffers=0 max-size-time=0 ! ' +
             buildBusSink(endpoint.port);
 
-        const rist: RistRunnerConfig = {
-            role: 'receiver',
-            urls: this.links().map(buildRistUrl),
-            profile: (this.config.profile as number) ?? 1,
-            buffer: (this.config.buffer as number) ?? 1000,
-            sessionTimeout: (this.config.sessionTimeout as number) || undefined,
-            secret: (this.config.secret as string) || undefined,
-            encType: (this.config.encryptionType as number) || undefined,
-            statsInterval: (this.config.statsInterval as number) ?? 1000,
-            appElement: RIST_APPSRC,
+        return {
+            pipeline,
+            restartOnError: true,
+            busReports: [{ element: RIST_SRC, structure: RIST_STATS_STRUCTURE }],
         };
-
-        return { pipeline, restartOnError: true, rist };
     }
 
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel === 'rist:stats') {
+            // Legacy channel: the runner's python librist binding (still the
+            // fallback when a pipeline carries a `rist` runner config).
             this.applyStats(payload as Record<string, any>);
+        } else if (channel === `${RIST_STATS_STRUCTURE}:${RIST_SRC}`) {
+            const parsed = parseStatsMessage(payload);
+            if (parsed) this.applyStats(parsed);
         }
     }
 
@@ -240,6 +253,17 @@ export class RistInputModule extends GstPluginBase {
             if (this.health === 'warning') this.setHealth('ok');
             this.linkWarnActive = false;
         }
+    }
+}
+
+/** `mrrist-stats` bus message → the stats object librist produced (or null). */
+function parseStatsMessage(payload: unknown): Record<string, any> | null {
+    const json = (payload as { json?: unknown } | null)?.json;
+    if (typeof json !== 'string') return null;
+    try {
+        return JSON.parse(json) as Record<string, any>;
+    } catch {
+        return null;
     }
 }
 

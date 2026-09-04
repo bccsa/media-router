@@ -108,6 +108,7 @@ export {
     BUS_TS_CAPS,
     BUS_WATCHDOG_PREFIX,
     busStallWatch,
+    quoteGstString,
 } from './plugins/busHelpers.js';
 export type { BusSrcOpts } from './plugins/busHelpers.js';
 export {

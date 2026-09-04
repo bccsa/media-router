@@ -2,8 +2,8 @@ import {
     GstPluginBase,
     buildBusSrc,
     formatBitrate,
+    quoteGstString,
     type PipelineDescription,
-    type RistRunnerConfig,
 } from '@media-router/engine';
 
 interface RistLink {
@@ -14,18 +14,20 @@ interface RistLink {
     cname: string;
 }
 
-/** `name=` of the appsink the runner drains into its librist sender. */
-const RIST_APPSINK = 'ristsink';
+/** `name=` of the native `mrristsink` element (rist-core/native/mrrist). */
+const RIST_SINK = 'ristsink';
+/** Bus-message structure the element posts librist's stats JSON under. */
+const RIST_STATS_STRUCTURE = 'mrrist-stats';
 
 /**
  * RIST Output plugin.
  *
  * Reads local MPEG-TS off the inter-module bus as a normal gst consumer
- * (per-edge unixfdsrc under the fan-out bus, udpsrc on the legacy udp bus)
- * and sends it over the network via RIST — librist driven in-process by the
- * pipeline runner (ctypes binding), fed from this module's appsink. No
- * intermediate UDP relay hop, unlike the old ristsender CLI which could only
- * read the bus through its own loopback UDP socket.
+ * (per-edge unixfdsrc under the fan-out bus) and sends it over the network
+ * via RIST through the native `mrristsink` element (rist-core/native/mrrist,
+ * librist in C). It replaced the runner's python appsink→ctypes drain, which
+ * cost ~0.2 ms per 1316-byte packet on a Pi 4 (docs/TodoNotes.md); librist's
+ * stats JSON comes back as `mrrist-stats` bus messages (busReports).
  *
  * librist (not the gst ristsink element, which is Simple-Profile/RTP only) is
  * kept for full feature support: per-link weight, cname, main/advanced
@@ -69,34 +71,42 @@ export class RistOutputModule extends GstPluginBase {
             return null;
         }
 
-        // appsink properties (bounded/dropping/unsynced) are applied by the
-        // runner when it wires librist — the string only names the element.
+        const secret = (this.config.secret as string) || '';
+        const encType = (this.config.encryptionType as number) || 0;
+        const props = [
+            // Per-link params (weight, cname) stay in each URL; the element
+            // folds buffer/secret/aes-type in as query params (librist urlparam).
+            `urls=${quoteGstString(this.links().map(buildRistUrl).join(' '))}`,
+            `profile=${(this.config.profile as number) ?? 1}`,
+            `buffer=${(this.config.buffer as number) ?? 1000}`,
+            ...(secret ? [`secret=${quoteGstString(secret)}`] : []),
+            ...(encType ? [`aes-type=${encType}`] : []),
+            `npd=${((this.config.nullPacketDeletion as boolean) ?? false) ? 'true' : 'false'}`,
+            `stats-interval=${(this.config.statsInterval as number) ?? 1000}`,
+        ];
         const pipeline = [
             buildBusSrc({
                 port: udpSource.port,
                 socketPath: udpSource.socketPath,
             }),
-            `appsink name=${RIST_APPSINK}`,
+            `mrristsink name=${RIST_SINK} ${props.join(' ')}`,
         ].join(' ! ');
 
-        const rist: RistRunnerConfig = {
-            role: 'sender',
-            urls: this.links().map(buildRistUrl),
-            profile: (this.config.profile as number) ?? 1,
-            buffer: (this.config.buffer as number) ?? 1000,
-            secret: (this.config.secret as string) || undefined,
-            encType: (this.config.encryptionType as number) || undefined,
-            npd: (this.config.nullPacketDeletion as boolean) ?? false,
-            statsInterval: (this.config.statsInterval as number) ?? 1000,
-            appElement: RIST_APPSINK,
+        return {
+            pipeline,
+            restartOnError: true,
+            busReports: [{ element: RIST_SINK, structure: RIST_STATS_STRUCTURE }],
         };
-
-        return { pipeline, restartOnError: true, rist };
     }
 
     protected onPluginEvent(channel: string, payload: unknown): void {
         if (channel === 'rist:stats') {
+            // Legacy channel: the runner's python librist binding (still the
+            // fallback when a pipeline carries a `rist` runner config).
             this.applyStats(payload as Record<string, any>);
+        } else if (channel === `${RIST_STATS_STRUCTURE}:${RIST_SINK}`) {
+            const parsed = parseStatsMessage(payload);
+            if (parsed) this.applyStats(parsed);
         }
     }
 
@@ -192,6 +202,17 @@ export class RistOutputModule extends GstPluginBase {
             text: `${peerCount}`,
             color: peerCount > 0 ? '#10b981' : '#6b7280',
         });
+    }
+}
+
+/** `mrrist-stats` bus message → the stats object librist produced (or null). */
+function parseStatsMessage(payload: unknown): Record<string, any> | null {
+    const json = (payload as { json?: unknown } | null)?.json;
+    if (typeof json !== 'string') return null;
+    try {
+        return JSON.parse(json) as Record<string, any>;
+    } catch {
+        return null;
     }
 }
 

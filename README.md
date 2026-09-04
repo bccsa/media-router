@@ -54,8 +54,8 @@ All config changes (settings, rename, position, connections, etc.) flow through 
 | Audio Decoder | `plugins/audio-decoder` | Decodes MPEG-TS audio with auto-detection (Opus, AAC, MP2) |
 | SRT Input | `plugins/srt-input` | Receives SRT streams (listener mode) |
 | SRT Output | `plugins/srt-output` | Sends SRT streams (caller mode) |
-| RIST Input | `plugins/rist-input` | Receives RIST streams via `ristreceiver` CLI |
-| RIST Output | `plugins/rist-output` | Sends RIST streams via `ristsender` CLI |
+| RIST Input | `plugins/rist-input` | Receives RIST streams (native `mrristsrc` element on librist; main/advanced profile, encryption, bonding) |
+| RIST Output | `plugins/rist-output` | Sends RIST streams (native `mrristsink` element on librist) |
 | N-1 Mixer | `plugins/n1-mixer` | Mix-minus routing — each output gets all inputs except its own |
 
 See [plugins/README.md](plugins/README.md) for the full plugin development guide.

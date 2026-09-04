@@ -12,6 +12,7 @@ Media Router is developed and tested on **Debian 12 (Bookworm)** on **Raspberry 
 | **Python 3** | 3.10+ | 3.11.2 | GStreamer pipeline runner (GI bindings) |
 | **PipeWire** | 1.0+ | 1.2.7 | Audio routing, null-sinks, loopbacks |
 | **GStreamer** | 1.22+ | 1.22.0 | Media pipeline framework |
+| **librist** | 0.2.7+ | 0.2.12 | RIST transport for the native `mrristsrc`/`mrristsink` elements (`librist.so.4`; headers at build time) |
 | **SQLite 3** | 3.x | (via better-sqlite3) | Manager config storage |
 
 ### GStreamer Plugins
@@ -51,6 +52,8 @@ All GStreamer plugin packages are required:
 | **pnpm** | 10.x | Package manager (workspace monorepo) |
 | **TypeScript** | 5.9+ | Type checking and compilation |
 
+
+Native GStreamer elements (`plugins/mpegts-core/native/mrtsstamp`, `plugins/rist-core/native/mrrist`) additionally need the `gstreamer-1.0`, `gstreamer-base-1.0` and (mrrist) `librist` pkg-config packages at build time — Debian: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev librist-dev`; Yocto: the media-router recipe's `DEPENDS`. The runner's legacy python RIST drain also needs the GstApp typelib (`gir1.2-gst-plugins-base-1.0`); without it the runner still runs every non-RIST pipeline.
 ## Installation (Debian/Ubuntu)
 
 ```bash

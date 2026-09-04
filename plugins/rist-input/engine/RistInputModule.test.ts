@@ -29,20 +29,21 @@ describe('RistInputModule.buildPipeline', () => {
         expect(module.buildPipeline({})).toBeNull();
     });
 
-    it('builds a live appsrc feeding the bus fan-out tee', () => {
+    it('builds a native mrristsrc feeding the bus fan-out tee through a leaky queue', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({})!;
-        expect(desc.pipeline).toContain(
-            'appsrc name=ristsrc is-live=true do-timestamp=true format=time',
-        );
-        expect(desc.pipeline).toContain('caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188"');
-        expect(desc.pipeline).toContain('leaky-type=downstream');
+        expect(desc.pipeline).toMatch(/^mrristsrc name=ristsrc /);
+        expect(desc.pipeline).not.toContain('appsrc');
+        // Downstream stall sheds here (bounded, leaky) — the old appsrc contract.
+        expect(desc.pipeline).toContain('queue leaky=downstream max-size-bytes=4194304');
         expect(desc.pipeline).toContain(
             'capsfilter caps="video/mpegts, systemstream=(boolean)true, packetsize=(int)188" ! ' +
                 'tee name=busout_41000 allow-not-linked=true',
         );
         expect(desc.pipeline).not.toContain('udpsink');
+        expect(desc.rist).toBeUndefined();
         expect(desc.restartOnError).toBe(true);
+        expect(desc.busReports).toEqual([{ element: 'ristsrc', structure: 'mrrist-stats' }]);
     });
 
     it('carries the librist receiver config with per-link rist:// URLs', () => {
@@ -60,33 +61,41 @@ describe('RistInputModule.buildPipeline', () => {
             sessionTimeout: 10000,
         };
         const desc = module.buildPipeline({})!;
-        expect(desc.rist).toMatchObject({
-            role: 'receiver',
-            profile: 1,
-            buffer: 800,
-            secret: 's3cret',
-            encType: 128,
-            statsInterval: 500,
-            sessionTimeout: 10000,
-            appElement: 'ristsrc',
-        });
-        expect(desc.rist.urls).toEqual([
-            'rist://@0.0.0.0:5004?weight=50&cname=link1',
-            'rist://10.0.0.9:5006?weight=10&cname=link2',
-        ]);
+        const src = desc.pipeline.split(' ! ')[0];
+        expect(src).toContain(
+            'urls="rist://@0.0.0.0:5004?weight=50&cname=link1 rist://10.0.0.9:5006?weight=10&cname=link2"',
+        );
+        expect(src).toContain(' profile=1 ');
+        expect(src).toContain(' buffer=800 ');
+        expect(src).toContain(' session-timeout=10000 ');
+        expect(src).toContain(' secret="s3cret" ');
+        expect(src).toContain(' aes-type=128 ');
+        expect(src).toContain(' stats-interval=500');
     });
 
-    it('omits sessionTimeout when unset/zero (librist default applies)', () => {
+    it('omits session-timeout when unset/zero (librist default applies)', () => {
         const { module } = makeModule();
         module.config = { sessionTimeout: 0 };
-        const desc = module.buildPipeline({})!;
-        expect(desc.rist.sessionTimeout).toBeUndefined();
+        expect(module.buildPipeline({})!.pipeline).not.toContain('session-timeout=');
     });
 
     it('defaults to a single listener link on :5004', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({})!;
-        expect(desc.rist.urls).toEqual(['rist://@0.0.0.0:5004?weight=50&cname=link1']);
+        expect(desc.pipeline).toContain('urls="rist://@0.0.0.0:5004?weight=50&cname=link1"');
+    });
+
+    it("renders stats from the element's mrrist-stats bus message", () => {
+        const { module, setStatusData } = makeModule();
+        module.onPluginEvent('mrrist-stats:ristsrc', {
+            json: JSON.stringify({
+                'receiver-stats': { flowinstant: { flow_id: 1, stats: { quality: 97, received: 10, recovered: 1, lost: 0 } } },
+            }),
+        });
+        expect(setStatusData).toHaveBeenCalled();
+        setStatusData.mockClear();
+        module.onPluginEvent('mrrist-stats:ristsrc', { json: 'nope' });
+        expect(setStatusData).not.toHaveBeenCalled();
     });
 });
 

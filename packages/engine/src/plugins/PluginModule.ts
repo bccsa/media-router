@@ -327,14 +327,13 @@ export interface PipelineDescription {
      */
     busReports?: BusReport[];
     /**
-     * librist half of a RIST module pipeline. When set, the runner drives
-     * librist in-process (ctypes binding, `librist.py`): a `receiver` pushes
-     * every RIST payload into the named appsrc; a `sender` drains the named
-     * appsink into librist. This replaces the ristreceiver/ristsender CLI
-     * relay and its loopback UDP hop, so RIST modules ride the normal bus
-     * transport (tee fan-out under unixfd) like any other gst module. librist
-     * stats arrive on the `rist:stats` plugin-event channel (same JSON shape
-     * the CLI printed on stderr).
+     * LEGACY python RIST path (ADR-0013 keeps it as a fallback only). When
+     * set, the runner drives librist in-process (ctypes binding,
+     * `librist.py`): a `receiver` pushes every RIST payload into the named
+     * appsrc; a `sender` drains the named appsink into librist; stats arrive
+     * on the `rist:stats` plugin-event channel. The shipped RIST modules no
+     * longer set this — they use the native `mrristsrc`/`mrristsink`
+     * elements and `busReports` for `mrrist-stats`.
      */
     rist?: RistRunnerConfig;
     /**

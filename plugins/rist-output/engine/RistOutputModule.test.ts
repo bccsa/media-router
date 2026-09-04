@@ -32,16 +32,20 @@ describe('RistOutputModule.buildPipeline', () => {
         expect(module.buildPipeline({})).toBeNull();
     });
 
-    it('reads its per-consumer edge socket and drains into the librist appsink', () => {
+    it('reads its per-consumer edge socket and drains into the native mrristsink', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({})!;
         expect(desc.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock');
-        // The queue between unixfdsrc and the appsink is buildBusSrc's drain
+        // The queue between unixfdsrc and the sink is buildBusSrc's drain
         // contract — presence matters here, its tuning is the builder's test.
         expect(desc.pipeline).toMatch(/unixfdsrc[^!]+! queue /);
-        expect(desc.pipeline).toContain('appsink name=ristsink');
+        expect(desc.pipeline).toContain('mrristsink name=ristsink');
+        expect(desc.pipeline).not.toContain('appsink');
         expect(desc.pipeline).not.toContain('udpsrc');
+        expect(desc.rist).toBeUndefined();
         expect(desc.restartOnError).toBe(true);
+        // Stats come back as `mrrist-stats` bus messages from the element.
+        expect(desc.busReports).toEqual([{ element: 'ristsink', structure: 'mrrist-stats' }]);
     });
 
     it('carries the librist sender config with per-link rist:// URLs', () => {
@@ -56,23 +60,49 @@ describe('RistOutputModule.buildPipeline', () => {
             statsInterval: 1000,
         };
         const desc = module.buildPipeline({})!;
-        expect(desc.rist).toMatchObject({
-            role: 'sender',
-            profile: 1,
-            buffer: 1200,
-            secret: 'hush',
-            encType: 256,
-            npd: true,
-            statsInterval: 1000,
-            appElement: 'ristsink',
+        const sink = desc.pipeline.split(' ! ').pop()!;
+        expect(sink).toContain('urls="rist://rist.example.net:5004?weight=5&cname=tx1"');
+        expect(sink).toContain(' profile=1 ');
+        expect(sink).toContain(' buffer=1200 ');
+        expect(sink).toContain(' secret="hush" ');
+        expect(sink).toContain(' aes-type=256 ');
+        expect(sink).toContain(' npd=true ');
+        expect(sink).toMatch(/ stats-interval=1000$/);
+    });
+
+    it('omits secret and aes-type when encryption is off', () => {
+        const { module } = makeModule();
+        module.config = { secret: '', encryptionType: 0 };
+        const sink = module.buildPipeline({})!.pipeline.split(' ! ').pop()!;
+        expect(sink).not.toContain('secret=');
+        expect(sink).not.toContain('aes-type=');
+    });
+
+    it('quotes a passphrase with spaces and quotes for the pipeline parser', () => {
+        const { module } = makeModule();
+        module.config = { secret: 'say "hi" there', encryptionType: 128 };
+        const sink = module.buildPipeline({})!.pipeline.split(' ! ').pop()!;
+        expect(sink).toContain('secret="say \\"hi\\" there"');
+    });
+
+    it("renders stats from the element's mrrist-stats bus message", () => {
+        const { module, setStatusData } = makeModule();
+        module.onPluginEvent('mrrist-stats:ristsink', {
+            json: JSON.stringify({
+                'sender-stats': { peer: { id: 1, cname: 'tx1', stats: { quality: 99, sent: 5, retransmitted: 0, bandwidth: 1000, avg_rtt: 1.5 } } },
+            }),
         });
-        expect(desc.rist.urls).toEqual(['rist://rist.example.net:5004?weight=5&cname=tx1']);
+        expect(setStatusData).toHaveBeenCalledWith('peer-1', expect.objectContaining({ quality: 99, sent: 5 }));
+        setStatusData.mockClear();
+        module.onPluginEvent('mrrist-stats:ristsink', { json: '{not json' });
+        module.onPluginEvent('mrrist-stats:other', { json: '{}' });
+        expect(setStatusData).not.toHaveBeenCalled();
     });
 
     it('defaults to a single caller link on :5004', () => {
         const { module } = makeModule();
         const desc = module.buildPipeline({})!;
-        expect(desc.rist.urls).toEqual(['rist://localhost:5004?weight=50&cname=link1']);
+        expect(desc.pipeline).toContain('urls="rist://localhost:5004?weight=50&cname=link1"');
     });
 });
 

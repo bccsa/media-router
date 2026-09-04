@@ -10,8 +10,9 @@ into one buffer before anything else sees it. Two rules bind every consumer:
 1. **No bus consumer may assume a buffer size.** Whole-packet alignment is the
    only guarantee; a buffer may be 188 bytes or a 400 KB keyframe.
 2. **Anything that sends bus buffers to a datagram socket must know whether
-   its sink slices.** srtsink splits to its SRT payload size itself; librist is
-   fed 1316-byte slices by the runner; udpsink does not split, so
+   its sink slices.** srtsink splits to its SRT payload size itself; the
+   native `mrristsink` re-slices to 1316 bytes itself (ADR-0013; before that
+   the runner fed librist the slices); udpsink does not split, so
    mpegts-ip-output raw mode inserts `tsparse alignment=7 set-timestamps=false`
    (`buildTsRechunk`). A new output plugin that forgets this ships oversized
    datagrams.
