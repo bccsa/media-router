@@ -2,5 +2,8 @@
     "name": "@media-router/plugin-rist-core",
     "version": "2.0.0",
     "private": true,
-    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): RIST domain base code. librist.py ctypes bindings loaded by the gst pipeline runner for rist-input / rist-output."
+    "description": "Library plugin (no mediaRouter manifest — never appears in Add Module): RIST domain base code. native/mrrist: mrristsrc/mrristsink GStreamer elements on librist used by rist-input / rist-output; py/librist.py: legacy ctypes binding for the runner's `rist` config path.",
+    "scripts": {
+        "test:py": "python3 py/librist_test.py"
+    }
 }

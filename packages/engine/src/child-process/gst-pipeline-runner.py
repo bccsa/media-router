@@ -21,6 +21,17 @@ Usage:
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
+# GstApp is only needed by the LEGACY python RIST sender drain (`rist` runner
+# config, try_pull_sample()), and it must be loaded BEFORE any pipeline is
+# parsed: PyGObject types an element's wrapper when it is first seen, and an
+# appsink wrapped before the typelib is loaded is a bare stub. Optional so a
+# box without the typelib still runs every non-RIST pipeline.
+try:
+    gi.require_version('GstApp', '1.0')
+    from gi.repository import GstApp  # noqa: F401 — import for side effect
+    _GSTAPP_AVAILABLE = True
+except (ValueError, ImportError):
+    _GSTAPP_AVAILABLE = False
 
 import json
 import math
@@ -1642,6 +1653,7 @@ def _install_branch_stamp_align(pipe, cfg):
 # is the wiring: the emitter it reports through, and the consumer-edge
 # bookkeeping only this file knows about (`_bus_branches`).
 import gst_bus_stamper                                            # noqa: E402
+import gst_rist_native                                            # noqa: E402
 
 # A lambda, not the function object: the emitter is resolved on every event, so
 # a test (or a future indirection) that replaces this module's `emit_event`
@@ -1834,6 +1846,11 @@ def handle_start(data):
     if not pipeline_str:
         emit_event({"event": "error", "message": "No pipeline string provided"})
         return
+
+    # Native RIST elements live in a plugin the runner loads by path (never
+    # GST_PLUGIN_PATH) — must be registered before the parse sees their names.
+    if "mrristsink" in pipeline_str or "mrristsrc" in pipeline_str:
+        gst_rist_native.load_plugin()
 
     try:
         pipeline = Gst.parse_launch(pipeline_str)
@@ -2897,6 +2914,8 @@ _rist_stop = threading.Event()
 # what a RIST datagram carried under the old CLI relay. Buffers on this bus
 # are 188-aligned by caps, so 1316-byte slices stay packet-aligned.
 _RIST_WRITE_CHUNK = 1316
+# Receiver: max packets folded into one appsrc push (32 x 1316 B = 42 KB).
+_RIST_READ_BATCH = 32
 
 
 def _rist_log(_level, msg):
@@ -2999,8 +3018,23 @@ def _start_rist(pipe, cfg):
                     err_streak = 0
                     if not data:
                         continue
+                    # librist's data-out thread releases packets in 5 ms
+                    # batches; drain what is ALREADY released (timeout 0, no
+                    # waiting) and push the batch as one 188-aligned buffer.
+                    # Cuts the per-packet Python/GObject push overhead ~6x at
+                    # typical rates without adding latency.
+                    chunks = [data]
                     try:
-                        element.emit("push-buffer", Gst.Buffer.new_wrapped(data))
+                        while len(chunks) < _RIST_READ_BATCH:
+                            more = ctx.read(0)
+                            if not more:
+                                break
+                            chunks.append(more)
+                    except librist.RistError:
+                        pass  # surfaces on the next blocking read
+                    buf = Gst.Buffer.new_wrapped(chunks[0] if len(chunks) == 1 else b"".join(chunks))
+                    try:
+                        element.push_buffer(buf)   # GstApp method, no signal marshalling
                     except Exception:  # noqa: BLE001 — teardown race
                         pass
 
@@ -3011,30 +3045,49 @@ def _start_rist(pipe, cfg):
             # string) so the drain contract can't drift: bounded + dropping +
             # unsynced. data_write only copies into librist's own buffers, so
             # the streaming thread is never held hostage.
-            element.set_property("emit-signals", True)
+            #
+            # Drained by a dedicated thread with try_pull_sample() rather than
+            # the `new-sample` signal: at bus rates (~1200 buffers/s at
+            # 12 Mbit/s) the GObject signal round trip into Python and the
+            # `pull-sample` emit back out cost more than the write itself, and
+            # they ran ON the streaming thread. The blocking pull releases the
+            # GIL; the streaming thread just queues into the appsink.
+            if not _GSTAPP_AVAILABLE:
+                emit_event({"event": "error",
+                            "message": "GstApp typelib unavailable — python RIST sender drain cannot run"})
+                return False
+            element.set_property("emit-signals", False)
             element.set_property("sync", False)
             element.set_property("max-buffers", 64)
             element.set_property("drop", True)
+            _rist_stop.clear()
 
-            def _on_sample(sink):
-                smp = sink.emit("pull-sample")
-                if not smp:
-                    return Gst.FlowReturn.OK
-                buf = smp.get_buffer()
-                ok, mi = buf.map(Gst.MapFlags.READ)
-                if not ok:
-                    return Gst.FlowReturn.OK
-                try:
-                    data = bytes(mi.data)
-                    for off in range(0, len(data), _RIST_WRITE_CHUNK):
-                        ctx.write(data[off:off + _RIST_WRITE_CHUNK])
-                except librist.RistError:
-                    pass  # transient send failure — recovery is librist's job
-                finally:
-                    buf.unmap(mi)
-                return Gst.FlowReturn.OK
+            def _drain_loop():
+                while not _rist_stop.is_set():
+                    smp = element.try_pull_sample(200 * Gst.MSECOND)
+                    if smp is None:
+                        # Timeout or flushing → re-check stop. Before PLAYING
+                        # and after EOS the pull returns immediately, so only
+                        # then pay for the property read and back off.
+                        if element.get_property("eos"):
+                            _rist_stop.wait(0.2)
+                        continue
+                    buf = smp.get_buffer()
+                    # extract_dup is one C memcpy into a bytes object; the
+                    # map()/bytes(mi.data)/unmap() route costs ~5x more per
+                    # buffer in PyGObject (51 vs 9 us on a Pi 4).
+                    data = buf.extract_dup(0, buf.get_size())
+                    try:
+                        if len(data) <= _RIST_WRITE_CHUNK:
+                            ctx.write(data)
+                        else:
+                            for off in range(0, len(data), _RIST_WRITE_CHUNK):
+                                ctx.write(data[off:off + _RIST_WRITE_CHUNK])
+                    except librist.RistError:
+                        pass  # transient send failure — recovery is librist's job
 
-            element.connect("new-sample", _on_sample)
+            _rist_thread = threading.Thread(
+                target=_drain_loop, daemon=True, name="rist-writer")
 
         ctx.start()
         _rist_ctx = ctx
