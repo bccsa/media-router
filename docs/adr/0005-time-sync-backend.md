@@ -42,7 +42,8 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    direct cause of the first-frame freeze; distributing a session base-time —
    previously rejected as fragile (`gst-net-clock.py` header), stays rejected.
 
-4. **Playout offset D.** One engine-wide default (~300 ms) plus per-route
+4. **Playout offset D.** One engine-wide default (~300 ms at the time of this
+   decision; **amended 2026-09-04 to 60 ms**, see below) plus per-route
    override, hot-updatable; `lipSyncMs`/`syncOffsetMs` become deprecated
    aliases onto it. Rejected: per-sink-only config — reproduces today's
    failure mode of independently trimmed sinks; an explicit sync-group
@@ -50,8 +51,19 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
 
    **Delivered in Stage 3** (D plumbing in 3a; the drift-slewing anchor that
    keeps D from being eaten by clock drift in 3b, below). The engine-wide default is `EngineConfig.playoutOffsetMs` —
-   300 ms, `MR_PLAYOUT_OFFSET_MS` as the env fallback, same precedence shape as
-   the contract flag itself. The per-route override lives on the **route head**:
+   60 ms, `MR_PLAYOUT_OFFSET_MS` as the env fallback, same precedence shape as
+   the contract flag itself.
+
+   **Amendment 2026-09-04 — default 300 → 60 ms.** Measured on the .108 → .103
+   LAN route (SRT latency 10, 25 fps H.264): frames reach the player 2 ms after
+   their house stamp with arrival jitter of −19/+14 ms (p10/p90) and a worst
+   case of +79 ms over a 25 s window, so 300 ms was ~220 ms of idle waiting on
+   every LAN route. 60 ms keeps margin over the p90 jitter while removing that.
+   The route override is unchanged and remains the knob for jittery WAN links;
+   the value is still a CONFIGURED budget, not a measurement (auto-measured D
+   stays deferred). Below ~95 ms at 25 fps the software-decode chain (tsdemux
+   + decode) already exceeds D, so frames render as soon as decoded — lowering
+   D further buys nothing and only opens A/V skew against a paced audio leg. The per-route override lives on the **route head**:
    the producer module both consumer legs take their bus from, as a
    `playoutOffsetMs` config key on its own schema (ts-splitter, srt-input,
    rist-input, mpegts-ip-input so far). Not on the sink, and not per-edge —

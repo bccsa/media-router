@@ -131,8 +131,8 @@ describe('Engine — default playout offset', () => {
         delete process.env.MR_PLAYOUT_OFFSET_MS;
     });
 
-    it('defaults to 300 ms', () => {
-        expect(makeEngine().playoutOffsetMs).toBe(300);
+    it('defaults to 60 ms', () => {
+        expect(makeEngine().playoutOffsetMs).toBe(60);
     });
 
     it('takes an explicit engine config value, including 0', () => {
@@ -156,7 +156,7 @@ describe('Engine — default playout offset', () => {
     it('ignores an unusable env value and falls through to the default', () => {
         for (const bad of ['', 'soon', '-1', '99999']) {
             process.env.MR_PLAYOUT_OFFSET_MS = bad;
-            expect(makeEngine().playoutOffsetMs).toBe(300);
+            expect(makeEngine().playoutOffsetMs).toBe(60);
         }
     });
 });
