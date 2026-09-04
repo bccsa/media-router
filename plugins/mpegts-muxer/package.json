@@ -75,6 +75,12 @@
                     "description": "Input queue behaviour. OFF (non-leaky): never drop — hold the leading stream up to Queue depth while waiting out A/V skew or a stall; backlog flushes after recovery (contribution/stability). ON (leaky): shed the oldest frame once Queue depth of backlog builds, so output resumes at the live edge immediately after a stall (live production). Queues sit upstream of the muxer, after the codec parser — drops always land on whole frames; the mux output itself is never queued (a drop there would corrupt the TS mid-frame).",
                     "x-liveUpdatable": false
                 },
+                "videoParserBypass": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Low-latency video input: skip the H.264/H.265 parser in front of the mux and take each demuxed access unit as-is. Saves one frame of latency per video input (40 ms at 25 fps) — the parser can only close a frame when the next one starts. Only for sources that repeat SPS/PPS before every keyframe (every Media Router encoder does); on a foreign source with sloppy PES framing leave this OFF, the parser is what re-frames it and speeds recovery after packet loss. Applied at pad-link time — changing it restarts the muxer.",
+                    "x-liveUpdatable": false
+                },
                 "queueDepthMs": {
                     "type": "number",
                     "minimum": 100,

@@ -63,7 +63,7 @@ export interface EngineServices {
      *  `EngineConfig.playoutOffsetMs`). Presentation modules resolve their sink
      *  `ts-offset` from it via `effectivePlayoutOffsetMs`, which also consults
      *  the route head's override. Only read when `timeSyncContract` is on;
-     *  absent (test harnesses, older engines) falls back to the 300 ms
+     *  absent (test harnesses, older engines) falls back to the 60 ms
      *  default. */
     playoutOffsetMs?: number;
 }
@@ -632,4 +632,14 @@ export interface PadLinkRule {
      * per-audio-input lipsync offset (cancels a measured constant path skew).
      */
     padOffsetNs?: number;
+    /**
+     * Optional — `'none'` skips the codec parser the runner injects in front of
+     * each branch and, for H.264/H.265 pads, declares `alignment=au` instead
+     * (tsdemux already emits one whole PES = one access unit per buffer on this
+     * bus, ADR-0011). Saves one frame of latency per branch — the parser can
+     * only close an AU when the next one starts — at the cost of the parser's
+     * SPS/PPS re-emission before every IDR. Opt-in per module; the source must
+     * repeat its parameter sets in-band. Default `'auto'`.
+     */
+    parser?: 'auto' | 'none';
 }

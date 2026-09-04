@@ -864,6 +864,8 @@ return {
 
 Each branch's first element's sink pad is auto-ghosted, so the rule only needs the downstream elements. Pads beyond the supplied list are ignored.
 
+**Skipping the injected parser (`parser: 'none'`).** The runner prepends a codec parser to every branch it links (`h264parse config-interval=-1`, `aacparse`, …) so mixed-codec sources work without per-pad config and parameter sets are re-emitted before every IDR. On a video branch that parser costs one frame of latency: it can only close an access unit when it sees the start of the next one (41 ms at 25 fps, measured into the mpegts-muxer 2026-09-04). A rule may set `parser: 'none'` to skip it; for H.264/H.265 pads the runner then declares `alignment=au` with a `capssetter` instead (truthful on this bus — tsdemux emits one whole PES = one access unit per buffer, ADR-0011), so `mpegtsmux`/`avdec_*` negotiate. Audio and unknown codecs ignore the flag. It is opt-in per module (mpegts-muxer `videoParserBypass`) and must stay off for sources whose PES framing is sloppy or that do not repeat SPS/PPS in-band.
+
 **Matching pads by PID (`matchPids`).** The default contract is positional — the Nth matching pad links to `branches[N]`, which is fragile when the source can reorder streams or carries extra unrouted PIDs. For MPEG-TS demuxing where each branch belongs to a known PID, set `matchPids: [pid0, pid1, …]` (parsed from the demux pad name `<media>_<prog>_<pidhex>`): `branches[N]` then links to the pad whose PID equals `matchPids[N]`, regardless of pad-added order, and a pad whose PID isn't listed is ignored rather than misrouted. A PID may appear more than once (e.g. a stable PID-based port plus a legacy positional port that maps to the same stream) — the runner fans that pad out through a `tee`, feeding every branch for that PID. `matchPids` and `linkTo` are mutually exclusive (the demuxer branches are self-contained `queue ! mpegtsmux ! udpsink`). This was the (retired) mpegts-demuxer's PID-based port routing (plan Phase 3); the mpegts-muxer's per-PID inputs still use `matchPids`; without it the positional contract is unchanged.
 
 **Pinning an outer muxer's request-pad name (`requestedPadNames`).** With `linkTo`, the runner asks the target for an implicit `sink_%d` pad by default. Pass `requestedPadNames: ['sink_256', …]` to request an exact pad per branch index — the mpegts-muxer uses `sink_<pid>` to pin each stream's PID (plan D3). Indices past the list end fall back to `sink_%d`.
@@ -1334,7 +1336,7 @@ Under the engine-wide time-sync contract, producers stamp bus buffer PTS with ho
 
 Two knobs, and neither of them lives on the sink:
 
-- **Engine-wide default** — `EngineConfig.playoutOffsetMs` (300 ms; `MR_PLAYOUT_OFFSET_MS` is the env fallback). Reaches every module as `services.playoutOffsetMs`.
+- **Engine-wide default** — `EngineConfig.playoutOffsetMs` (60 ms; `MR_PLAYOUT_OFFSET_MS` is the env fallback). Reaches every module as `services.playoutOffsetMs`.
 - **Per-route override** — a `playoutOffsetMs` property on the **route head**: the producer module the consumers take their bus from. Declare it in that plugin's `configSchema` (no `default` — an absent value means "inherit the engine default") and list it in `liveUpdatableParams`. The producer itself never reads it; the engine resolves it for the consumers and fans a change out to all of them live.
 
 **Consuming it.** A presentation plugin never does this arithmetic itself:
@@ -1818,7 +1820,7 @@ args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
 `playoutOffsetMs` config key (declared so far by `srt-input`, `rist-input`,
 `mpegts-ip-input`, `ts-splitter`, `aes67-input`). Declare it with **no schema `default`**
 (absent means "inherit the engine default": `EngineConfig.playoutOffsetMs`,
-300 ms, `MR_PLAYOUT_OFFSET_MS` env fallback) and list it in
+60 ms, `MR_PLAYOUT_OFFSET_MS` env fallback) and list it in
 `liveUpdatableParams`; your producer never reads it — the engine resolves it
 for the consumer legs and fans a change out to them live. The consuming side
 is covered in "Playout Offset D (`playoutOffsetMs`)" above.

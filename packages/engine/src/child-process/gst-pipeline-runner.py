@@ -830,11 +830,37 @@ def _install_decoder_thread_hook(pipe, thread_type="auto"):
     sys.stderr.flush()
 
 
-def _parser_prefix_for_pad(pad, rule_id):
+# `parser: "none"` on a pad-link rule: skip the codec parser and instead DECLARE
+# the framing tsdemux already delivers. tsdemux emits one whole PES payload per
+# buffer, and on this bus one PES is one access unit (ADR-0011), so the only
+# thing the parser adds on such a branch is one frame of latency: h264parse
+# closes an AU only when it sees the start of the NEXT one (measured 41 ms at
+# 25 fps into the mpegts-muxer, 2026-09-04). mpegtsmux/avdec refuse bare
+# `video/x-h264, stream-format=byte-stream` without an `alignment` field, so a
+# capssetter adds `alignment=au` — a truthful claim for our producers, NOT for a
+# foreign source whose PES framing is sloppy, which is why the option is opt-in
+# per module and never the default. Cost of opting in: no SPS/PPS re-emission
+# before every IDR (the parser's config-interval=-1) — the source must repeat
+# them itself.
+_AU_ALIGNED_CAPS = {
+    'video/x-h264': 'video/x-h264,stream-format=byte-stream,alignment=au',
+    'video/x-h265': 'video/x-h265,stream-format=byte-stream,alignment=au',
+}
+
+
+def _parser_prefix_for_pad(pad, rule_id, parser_mode="auto"):
     """Return the codec-parser prefix string (`'aacparse ! '`, or '') to prepend
     to a branch for this pad's caps, warning once per unknown codec. Shared by
-    the single-branch and tee fan-out link paths."""
+    the single-branch and tee fan-out link paths. `parser_mode="none"` replaces
+    a VIDEO parser with an `alignment=au` capssetter (see _AU_ALIGNED_CAPS);
+    audio and unknown codecs are unaffected by the mode."""
     caps = pad.get_current_caps() or pad.query_caps(None)
+    if parser_mode == "none" and caps and caps.get_size() > 0:
+        au_caps = _AU_ALIGNED_CAPS.get(caps.get_structure(0).get_name() or '')
+        if au_caps:
+            emit_event({"event": "warning",
+                        "message": f"linkOnPadAdded: parser bypass on {pad.get_name()} ({rule_id}) — declaring {au_caps}"})
+            return f'capssetter caps="{au_caps}" ! '
     parser = _parser_for_caps(caps)
     emit_event({"event": "warning",
                 "message": f"DEBUG parser pick: pad={pad.get_name()} caps={caps.to_string()[:120] if caps else None} parser={parser!r}"})
@@ -850,7 +876,8 @@ def _parser_prefix_for_pad(pad, rule_id):
 
 
 def _link_pad_to_branches_via_tee(pipe, pad, rule_id, indices, branches,
-                                  link_to_name):
+                                  link_to_name,
+                                  parser_mode="auto"):
     """Fan one demux pad out to several branches through a `tee`.
 
     Used when a PID appears more than once in `matchPids` — e.g. the mpegts-
@@ -873,7 +900,7 @@ def _link_pad_to_branches_via_tee(pipe, pad, rule_id, indices, branches,
         # with WRONG_HIERARCHY. As direct pipeline children they share the
         # branch bins' hierarchy and link cleanly. The parser (if any) sits
         # before the tee so every branch receives muxer-ready frames.
-        prefix = _parser_prefix_for_pad(pad, rule_id).removesuffix(" ! ")
+        prefix = _parser_prefix_for_pad(pad, rule_id, parser_mode).removesuffix(" ! ")
         head = Gst.parse_bin_from_description(prefix, True) if prefix else None
         tee = Gst.ElementFactory.make("tee", None)
         pipe.add(tee)
@@ -937,6 +964,10 @@ def _install_pad_link_rule(pipe, rule):
                                         # PID isn't listed is ignored. Fixes the
                                         # positional fragility for PID-based ports
                                         # (mpegts-demuxer, plan Phase 3).
+      "parser": "auto"|"none",          # optional — "none" skips the injected codec
+                                        # parser on VIDEO pads and declares
+                                        # alignment=au instead (one frame less
+                                        # latency; see _AU_ALIGNED_CAPS). Default auto.
       "padOffsetNs": -700000000,        # optional — GstPad.set_offset() on the
                                         # linkTo request pad, applied BEFORE the
                                         # link (the sticky segment propagates at
@@ -972,6 +1003,8 @@ def _install_pad_link_rule(pipe, rule):
     match_pids = rule.get("matchPids") or []
     # Optional timestamp offset (ns) on the linkTo request pad (lipsync knob).
     pad_offset_ns = rule.get("padOffsetNs")
+    # Optional parser bypass (video only) — see _parser_prefix_for_pad.
+    parser_mode = rule.get("parser") or "auto"
 
     def on_pad_added(_element, pad):
         if media_filter and _pad_caps_media(pad) != media_filter:
@@ -991,7 +1024,7 @@ def _install_pad_link_rule(pipe, rule):
             # from its own tee src pad.
             if len(indices) > 1:
                 _link_pad_to_branches_via_tee(pipe, pad, rule_id, indices, branches,
-                                              link_to_name)
+                                              link_to_name, parser_mode)
                 return
             index = indices[0]
         else:
@@ -1004,7 +1037,7 @@ def _install_pad_link_rule(pipe, rule):
         # codec-agnostic (`queue ! mpegtsmux ! udpsink`) and the same demuxer
         # can serve mixed-codec streams (e.g. one AAC pad + one Opus pad)
         # without per-pad config.
-        branch_str = _parser_prefix_for_pad(pad, rule_id) + branches[index]
+        branch_str = _parser_prefix_for_pad(pad, rule_id, parser_mode) + branches[index]
         try:
             bin_ = Gst.parse_bin_from_description(branch_str, True)
             bin_.set_name(f"branch_{rule_id.replace('::','_')}_{index}")

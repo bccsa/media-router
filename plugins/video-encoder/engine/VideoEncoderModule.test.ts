@@ -342,7 +342,7 @@ describe('VideoEncoderModule', () => {
             expect(desc).not.toBeNull();
             expect(desc!.pipeline).toContain('v4l2src device=/dev/video-nonexistent-for-test');
             expect(desc!.pipeline).toContain('v4l2h264enc name=venc0');
-            expect(desc!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=7');
+            expect(desc!.pipeline).toContain('mpegtsmux name=mux latency=0 alignment=0');
             // Bus egress: stripped + pinned TS caps, then a per-consumer
             // fan-out tee. The unixfdsink branches are attached at runtime by
             // the coordinator; allow-not-linked lets the encoder run with zero

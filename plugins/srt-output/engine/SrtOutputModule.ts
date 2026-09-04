@@ -94,6 +94,14 @@ export class SrtOutputModule extends GstPluginBase {
         if (streamId) params.push(`streamid=${streamId}`);
         if (passphrase) params.push(`passphrase=${passphrase}`);
         if (pbKeyLen > 0) params.push(`pbkeylen=${pbKeyLen}`);
+        // maxbw=0 lifts libsrt's sender pacing. By default (maxbw=-1) libsrt
+        // throttles sending to its running input-rate estimate plus 25 %, so a
+        // 47 KB video frame handed over in one push leaves the box spread over
+        // ~30 ms instead of ~1 ms — the receiver can only complete the frame
+        // when its last byte lands, so that spread is pure latency. Measured
+        // 2026-09-04 on the .108→.103 LAN link. Unlimited means frames go out
+        // as line-rate bursts; leave it off on links that cannot absorb bursts.
+        if (config.unpaced === true) params.push('maxbw=0');
         uri += '?' + params.join('&');
 
         // auto-reconnect=false: libsrt's built-in retry loop spawns a new SRT

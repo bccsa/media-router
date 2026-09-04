@@ -234,6 +234,32 @@ describe('mpegtsMuxerPipeline helpers', () => {
             expect(audioRule.branches[0]).not.toContain('aacparse');
             expect(videoRule.branches[0]).not.toContain('h264parse');
         });
+
+        it('videoParserBypass marks only the VIDEO rule parser:none (audio keeps its parser)', () => {
+            const result = buildPipeline({
+                sources: [
+                    { sinkPortId: 'video-0', port: 40001 },
+                    { sinkPortId: 'audio-0', port: 40002 },
+                ],
+                output: { port: 40010 },
+                alignment: 7,
+                videoParserBypass: true,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
+            expect(videoRule.parser).toBe('none');
+            expect(audioRule.parser).toBeUndefined();
+        });
+
+        it('omits the parser key entirely when videoParserBypass is off (rule shape unchanged)', () => {
+            const result = buildPipeline({
+                sources: [{ sinkPortId: 'video-0', port: 40001 }],
+                output: { port: 40010 },
+                alignment: 7,
+            });
+            const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
+            expect('parser' in videoRule).toBe(false);
+        });
         it('pins deterministic PIDs via requestedPadNames (D3 scheme)', () => {
             const result = buildPipeline({
                 sources: [

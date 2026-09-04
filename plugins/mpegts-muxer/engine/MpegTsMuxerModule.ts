@@ -169,6 +169,7 @@ export class MpegTsMuxerModule extends GstPluginBase {
             queueLeaky,
             queueDepthMs,
             emitStreamInfo: (config.emitStreamInfo as boolean) ?? true,
+            videoParserBypass: config.videoParserBypass === true,
         });
         if (!result) return null;
 

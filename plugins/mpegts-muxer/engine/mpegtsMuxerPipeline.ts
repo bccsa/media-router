@@ -309,6 +309,13 @@ export interface MuxerPipelineInputs {
      *  + pin the PCR to the first media stream. Default true; off → pipeline
      *  byte-identical to the no-metadata shape. */
     emitStreamInfo?: boolean;
+    /** Skip the runner-injected h26xparse on the VIDEO input branches
+     *  (`PadLinkRule.parser = 'none'`). tsdemux already hands the mux one whole
+     *  access unit per buffer; the parser only adds a frame of latency (41 ms
+     *  at 25 fps, measured 2026-09-04) while waiting for the next AU to close
+     *  the current one. Requires sources that repeat SPS/PPS in-band (ours do).
+     *  Default false. */
+    videoParserBypass?: boolean;
 }
 
 /** One muxed stream's identity: which sink port fed it, the branch that demuxes
@@ -467,6 +474,8 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
                 branches: [inputQueue],
                 linkTo: 'mux',
                 requestedPadNames: [muxSinkPadName(video.pid)],
+                // Omitted when off so the default rule shape stays byte-identical.
+                ...(input.videoParserBypass ? { parser: 'none' as const } : {}),
             });
         }
         const audio = bySinkPort.get(`audio:${source.sinkPortId}`);

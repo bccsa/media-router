@@ -67,6 +67,13 @@ describe('SrtOutputModule.buildPipeline', () => {
         );
     });
 
+    it('appends maxbw=0 to the URI only when unpaced is on (sender pacing off)', () => {
+        const { module } = makeModule();
+        expect(module.buildPipeline({ unpaced: true }).pipeline).toContain('&maxbw=0"');
+        expect(module.buildPipeline({ unpaced: false }).pipeline).not.toContain('maxbw');
+        expect(module.buildPipeline({}).pipeline).not.toContain('maxbw');
+    });
+
     it('inserts tsparse only when a wire datagram size is explicitly forced', () => {
         const { module } = makeModule();
         expect(module.buildPipeline({ packetsPerDatagram: 0 }).pipeline).not.toContain('tsparse');

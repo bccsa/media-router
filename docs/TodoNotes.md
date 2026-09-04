@@ -2,6 +2,18 @@
 
 ## Open
 
+- [ ] **Player-side tsdemux still completes each frame ~38 ms after its first
+  byte lands** (dec_replica on the .103 player bus, 2026-09-04) even after the
+  upstream muxes moved to `alignment=0`. Candidates: mr-tssplit's 20 ms flush
+  cadence / ~24 KB output chunking, SRT payload pacing on the receive side.
+  Measure the splitter edge vs the srt-input edge with content-matched taps.
+
+- [ ] **Encoder-side mux label offset.** `mpegtsmux` stamps its output buffers
+  ~90 ms behind the input PTS (PTS-based dwell probes read 92 ms where the
+  content-matched dwell is 5 ms). Harmless for the bus (the stamper re-stamps)
+  but a trap for anyone timing the mux by PTS — note it wherever mux latency
+  is next measured.
+
 - [ ] **Egress stamper anchors on whatever PID's PES comes first — on the
   muxer that is the KLV carousel (0x1f0).** Every muxer start in the .108 log
   history anchored on 0x1f0 because the metadata pad flows before the media
@@ -282,6 +294,19 @@
 - [x] New module visible without refresh
 
 ### Engine
+- [x] Playout offset D default 300 → 60 ms (ADR-0005 decision 4 amendment,
+  2026-09-04): LAN routes measured −19/+14 ms p10/p90 arrival jitter against
+  the stamp, so 300 ms was ~220 ms of idle wait per route.
+- [x] Pad-link rule `parser: 'none'` (runner) + mpegts-muxer `videoParserBypass`
+  + video-player `parserBypass` (software rungs only), all default off: skips
+  the injected h26xparse and declares `alignment=au` instead — one frame less
+  latency per hop (41 ms at 25 fps measured). 2026-09-04.
+- [x] Encode leaves mux with `alignment=0`; `alignment=7` held the last partial
+  1316-byte group of every access unit back until the next AU started (bus
+  buffers were exact 1316 multiples), so every downstream tsdemux completed a
+  frame one frame late. ADR-0011 note amended. 2026-09-04.
+- [x] srt-output `unpaced` (maxbw=0) opt-in: libsrt's input-rate pacing spread
+  each video frame over ~30 ms on the wire. 2026-09-04.
 - [x] Restart module while engine stopped no longer starts a dormant module
 - [x] Engine reconnect preserves running state
 - [x] Restart after engine restarted

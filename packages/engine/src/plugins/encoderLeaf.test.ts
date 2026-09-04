@@ -66,7 +66,7 @@ describe('buildEncodeLeaf', () => {
         });
         expect(
             leaf.endsWith(
-                '! mpegtsmux name=mux_3 latency=0 alignment=7 ! tee name=busout_40103 allow-not-linked=true',
+                '! mpegtsmux name=mux_3 latency=0 alignment=0 ! tee name=busout_40103 allow-not-linked=true',
             ),
         ).toBe(true);
     });
