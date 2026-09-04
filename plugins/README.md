@@ -1026,7 +1026,7 @@ Latency-sensitive knobs (SRT `latency`, the player's `bufferMs`, the video-encod
 
 ##### Rendering to the box's compositor
 
-`ensureWaylandEnv()` (from `@media-router/engine`) seeds `XDG_RUNTIME_DIR` / `WAYLAND_DISPLAY` from the live compositor socket when the engine was launched without a session env (systemd-user). Call it before building any `waylandsink` pipeline; the video-player and mjpeg-monitor share it — never copy the function into a plugin.
+`ensureWaylandEnv()` (from `@media-router/engine`) seeds `XDG_RUNTIME_DIR` / `WAYLAND_DISPLAY` from the live compositor socket when the engine was launched without a session env (systemd-user). Call it before building any `waylandsink` pipeline; every rendering plugin shares it — never copy the function into a plugin.
 
 ##### Shared 302M audio helpers
 
