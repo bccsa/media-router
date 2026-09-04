@@ -88,6 +88,7 @@ class RistStatsPrefix(Structure):
 
 LOG_CB = CFUNCTYPE(c_int, c_void_p, c_int, c_char_p)
 STATS_CB = CFUNCTYPE(c_int, c_void_p, POINTER(RistStatsPrefix))
+SENDER_STATS_CB = CFUNCTYPE(c_int, c_void_p, c_uint16, c_char_p, c_uint32)
 
 
 class RistLoggingSettings(Structure):
@@ -152,6 +153,12 @@ def _load():
 
         lib.rist_stats_callback_set.argtypes = [c_void_p, c_int, STATS_CB, c_void_p]
         lib.rist_stats_callback_set.restype = c_int
+        # Deprecated legacy sender-stats API — used ONLY to set the sender
+        # thread's stats interval (see RistSender.set_stats_callback).
+        fn = getattr(lib, "rist_sender_stats_callback_set", None)
+        if fn is not None:
+            fn.argtypes = [c_void_p, c_int, SENDER_STATS_CB, c_void_p]
+            fn.restype = c_int
         lib.rist_stats_free.argtypes = [POINTER(RistStatsPrefix)]
         lib.rist_stats_free.restype = c_int
 
@@ -181,14 +188,19 @@ def augment_url(url, buffer_ms=None, secret=None, aes_type=None,
     parsed peer config. Params already present in the URL win (appended params
     are parsed first come, first served by rist_parse_address2 — so keep ours
     behind the user's by appending)."""
+    def has(key):
+        # Whole-param match: a bare substring test would let librist's
+        # `reorder-buffer=` suppress `buffer=`.
+        return f"?{key}=" in url or f"&{key}=" in url
+
     extra = []
-    if buffer_ms and "buffer=" not in url:
+    if buffer_ms and not has("buffer"):
         extra.append(f"buffer={int(buffer_ms)}")
-    if session_timeout_ms and "session-timeout=" not in url:
+    if session_timeout_ms and not has("session-timeout"):
         extra.append(f"session-timeout={int(session_timeout_ms)}")
-    if secret and "secret=" not in url:
+    if secret and not has("secret"):
         extra.append(f"secret={secret}")
-        if aes_type and "aes-type=" not in url:
+        if aes_type and not has("aes-type"):
             extra.append(f"aes-type={int(aes_type)}")
     if not extra:
         return url
@@ -204,6 +216,7 @@ class _RistCtx:
         self._lock = threading.Lock()
         self._destroyed = False
         self._stats_cb_ref = None  # keep CFUNCTYPE alive for librist's lifetime
+        self._legacy_stats_cb_ref = None  # sender interval quirk, see RistSender
         self._log_fn = log_fn
 
         def _log_trampoline(_arg, level, msg):
@@ -256,6 +269,10 @@ class _RistCtx:
         if self._lib.rist_stats_callback_set(
                 self._ctx, int(interval_ms), self._stats_cb_ref, None) != 0:
             raise RistError("rist_stats_callback_set failed")
+        self._after_stats_callback_set(int(interval_ms))
+
+    def _after_stats_callback_set(self, interval_ms):
+        """Hook for role-specific follow-up (sender interval quirk)."""
 
     def start(self):
         if self._lib.rist_start(self._ctx) != 0:
@@ -322,6 +339,21 @@ class RistSender(_RistCtx):
             raise RistError("rist_sender_create failed")
         if npd:
             self._lib.rist_sender_npd_enable(self._ctx)
+
+    def _after_stats_callback_set(self, interval_ms):
+        # librist quirk (0.2.7 … 0.2.12): rist_stats_callback_set() stores the
+        # interval only in the common context, but the sender thread paces its
+        # reports from struct rist_sender's own copy, which only the deprecated
+        # rist_sender_stats_callback_set() writes. Left at 0 the sender reports
+        # on every loop iteration (200+/s), each one a GIL-acquiring callback
+        # and a plugin event through the engine. Register a no-op legacy
+        # callback purely to set the interval; the JSON string it receives is
+        # librist-owned and ignored.
+        fn = getattr(self._lib, "rist_sender_stats_callback_set", None)
+        if fn is None:
+            return
+        self._legacy_stats_cb_ref = SENDER_STATS_CB(lambda *_: 0)
+        fn(self._ctx, interval_ms, self._legacy_stats_cb_ref, None)
 
     def write(self, data):
         """Write one payload (librist copies it during the call). Returns
