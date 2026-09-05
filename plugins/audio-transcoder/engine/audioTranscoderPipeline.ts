@@ -10,7 +10,12 @@
  */
 
 import { buildBusSink, buildBusSrc, busTeeName, type ChannelMapEntry } from '@media-router/engine';
-import { build302mEncodeBranch, mixMatrixClause } from '@media-router/plugin-audio-302m-core';
+import {
+    build302mEncodeBranch,
+    mixMatrixClause,
+    s302mFormatFor,
+    type S302mFormat,
+} from '@media-router/plugin-audio-302m-core';
 import type { AudioTranscoderOutput } from './audioTranscoderPorts.js';
 
 /** `name=` of the input tsdemux — target of `preserveSourceTimeline`. The
@@ -47,6 +52,8 @@ export interface AudioTranscoderPipelineInputs {
     channels: number;
     volume: number; // 0..1.5 gst scale
     tsAlignment: number;
+    /** 302M word length of PCM renditions (`pcmBitDepth`). Default 16-bit. */
+    pcmFormat?: S302mFormat;
 }
 
 export interface AudioTranscoderPipelineResult {
@@ -94,20 +101,23 @@ export function decoderChainFor(codec: string | undefined): string {
  *  sound scratchy/scrambled. The PCM stream is gapless, so sample-count
  *  stamping is exact; genuine gaps beyond the 40 ms base-class tolerance
  *  still resync. */
-function encodeTail(r: AudioTranscoderOutput['rendition'], tsAlignment: number): string {
+function encodeTail(
+    r: AudioTranscoderOutput['rendition'],
+    tsAlignment: number,
+    pcmFormat: S302mFormat,
+): string {
     if (r.codec === 'aac') {
         return `audioconvert ! avenc_aac perfect-timestamp=true bitrate=${r.bitrate * 1000} aac-is=0 aac-ms=0 ! mpegtsmux latency=0 alignment=${tsAlignment}`;
     }
     if (r.codec === 'pcm') {
-        return build302mEncodeBranch();
+        return build302mEncodeBranch({ format: pcmFormat });
     }
     const frameSize = r.frameSize ?? 20;
     const inbandFec = r.inbandFec ?? false;
     const packetLoss = r.packetLoss ?? 10;
     // audioType=0 is the "Auto" sentinel: restricted-lowdelay for low-latency
     // frame sizes, generic otherwise (matches the audio-encoder).
-    const audioType =
-        r.audioType && r.audioType !== 0 ? r.audioType : frameSize <= 5 ? 2051 : 2048;
+    const audioType = r.audioType && r.audioType !== 0 ? r.audioType : frameSize <= 5 ? 2051 : 2048;
     return (
         `opusenc perfect-timestamp=true bitrate=${r.bitrate * 1000} frame-size=${frameSize} dtx=false` +
         ` inband-fec=${inbandFec} packet-loss-percentage=${packetLoss} audio-type=${audioType}` +
@@ -148,6 +158,7 @@ export function buildPipeline(
         ' ! tee name=t';
 
     const sinks: AudioTranscoderPipelineResult['sinks'] = [];
+    const pcmFormat = input.pcmFormat ?? s302mFormatFor(undefined);
     const leaves = input.outputs.map((out, i) => {
         // NON-leaky leaf queue, sized well past one source PES batch. The
         // decoder releases audio in bursts (~150 ms of 21 ms buffers at once —
@@ -165,7 +176,7 @@ export function buildPipeline(
             sinkName: busTeeName(out.port),
             renditionIndex: i,
         });
-        return `t. ! ${leafQueue} ! ${encodeTail(out.rendition, input.tsAlignment)} ! ${sink}`;
+        return `t. ! ${leafQueue} ! ${encodeTail(out.rendition, input.tsAlignment, pcmFormat)} ! ${sink}`;
     });
 
     const pipeline = `${frontEnd} ! ${trunk} ${leaves.join(' ')}`;

@@ -7,7 +7,7 @@ import {
     type ProbeResult,
     type ThroughputSample,
 } from '@media-router/engine';
-import { probe302mSupport } from '@media-router/plugin-audio-302m-core';
+import { probe302mSupport, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
 import { buildPipeline, DEMUX_NAME } from './audioTranscoderPipeline.js';
 import { CoalescedRestart } from './coalescedRestart.js';
 import { FALLBACK_DECODER_WARNING, ReprobeLoop } from './reprobeLoop.js';
@@ -206,6 +206,7 @@ export class AudioTranscoderModule extends GstPluginBase {
             channels,
             volume: volumePct / 100,
             tsAlignment,
+            pcmFormat: s302mFormatFor(config.pcmBitDepth),
         });
         if (!result) return null;
 

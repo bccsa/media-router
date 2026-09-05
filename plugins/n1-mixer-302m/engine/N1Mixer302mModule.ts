@@ -1,5 +1,9 @@
 import { GstPluginBase, type PipelineDescription } from '@media-router/engine';
-import { probe302mSupport, type AudioMixSource } from '@media-router/plugin-audio-302m-core';
+import {
+    probe302mSupport,
+    s302mFormatFor,
+    type AudioMixSource,
+} from '@media-router/plugin-audio-302m-core';
 import {
     activeOutputIndices,
     buildN1Pipeline,
@@ -92,6 +96,7 @@ export class N1Mixer302mModule extends GstPluginBase {
             inputs,
             outputs,
             latencyMs: Number(config.mixLatencyMs ?? 200),
+            pcmFormat: s302mFormatFor(config.pcmBitDepth),
         });
         if (!pipeline) return null;
 

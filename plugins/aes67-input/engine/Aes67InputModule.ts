@@ -18,7 +18,7 @@ import {
     type EngineServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
+import { build302mEncodeBranch, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
 import {
     aes67Discovery,
     registerAes67StreamDeviceProvider,
@@ -249,7 +249,7 @@ export class Aes67InputModule extends GstPluginBase {
             jitter,
             aes67DepayloaderElement(encoding),
             `audio/x-raw,rate=${AES67_SAMPLE_RATE}`,
-            build302mEncodeBranch(),
+            build302mEncodeBranch({ format: s302mFormatFor(config.pcmBitDepth) }),
             buildBusSink(endpoint.port),
         ].join(' ! ');
 

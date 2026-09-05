@@ -176,3 +176,23 @@ describe('decoderChainFor', () => {
         expect(decoderChainFor('unknown')).toBe('decodebin');
     });
 });
+
+describe('buildPipeline — PCM rendition word length', () => {
+    const pcm = {
+        source: { port: 40000, bufferMs: 75 },
+        outputs: [{ portId: 'out-0', port: 40008, rendition: { codec: 'pcm', bitrate: 0 } as never }],
+        channels: 2,
+        volume: 1,
+        tsAlignment: 7,
+    };
+
+    it('encodes PCM renditions as 16-bit 302M by default', () => {
+        const r = buildPipeline(pcm);
+        expect(r!.pipeline).toContain('audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m');
+    });
+
+    it('encodes 24-bit when pcmFormat=S32LE', () => {
+        const r = buildPipeline({ ...pcm, pcmFormat: 'S32LE' });
+        expect(r!.pipeline).toContain('audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m');
+    });
+});

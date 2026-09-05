@@ -11,7 +11,9 @@ import { buildBusSink, busTeeName } from '@media-router/engine';
 import {
     buildAudioMixInput,
     build302mEncodeBranch,
+    s302mFormatFor,
     type AudioMixSource,
+    type S302mFormat,
 } from '@media-router/plugin-audio-302m-core';
 
 export interface AudioMixerPipelineInputs {
@@ -22,6 +24,8 @@ export interface AudioMixerPipelineInputs {
     volume: number; // 0..1.5 gst scale
     /** audiomixer latency budget (ms) — silence-fills starved sources. */
     latencyMs: number;
+    /** 302M word length of the mix output (`pcmBitDepth`). Default 16-bit. */
+    pcmFormat?: S302mFormat;
 }
 
 export interface AudioMixerPipelineResult {
@@ -50,7 +54,8 @@ export function buildMixerPipeline(
         `${fragment} ${continuationName}.` +
         ` ! audioconvert ! volume name=vol volume=${input.volume.toFixed(2)}` +
         ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
-        ` ! ${build302mEncodeBranch()} ! ${buildBusSink(input.outputPort)}`;
+        ` ! ${build302mEncodeBranch({ format: input.pcmFormat ?? s302mFormatFor(undefined) })}` +
+        ` ! ${buildBusSink(input.outputPort)}`;
 
     return { pipeline, sinkName: busTeeName(input.outputPort) };
 }

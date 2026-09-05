@@ -15,6 +15,8 @@ import {
     build302mEncodeBranch,
     pacedMixer,
     type AudioMixSource,
+    s302mFormatFor,
+    type S302mFormat,
 } from '@media-router/plugin-audio-302m-core';
 
 export type { DynamicPort };
@@ -76,6 +78,8 @@ export interface N1PipelineInputs {
     outputs: N1Output[];
     /** Per-input mix latency budget (ms) — the wait for lagging SOURCES. */
     latencyMs: number;
+    /** 302M word length of every output (`pcmBitDepth`). Default 16-bit. */
+    pcmFormat?: S302mFormat;
 }
 
 // The output mixers bridge only intra-pipeline jitter between the input
@@ -133,6 +137,7 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
     // contributor has died free-runs at CPU speed and floods the bus (the
     // measured OOM pathology, see `buildAudioMixInput`). The input fan-in is
     // already paced inside that helper; these mixers it never sees.
+    const pcmFormat = input.pcmFormat ?? s302mFormatFor(undefined);
     for (const out of outputs) {
         const sink = buildBusSink(out.port);
         parts.push(
@@ -141,7 +146,7 @@ export function buildN1Pipeline(input: N1PipelineInputs): string | null {
                 latencyNs: OUTPUT_MIX_LATENCY_NS,
                 caps: 'audio/x-raw,rate=48000,channels=2',
                 pacerName: `omix${out.index}_pace`,
-            }) + ` ! ${build302mEncodeBranch()} ! ${sink}`,
+            }) + ` ! ${build302mEncodeBranch({ format: pcmFormat })} ! ${sink}`,
         );
     }
 
