@@ -86,7 +86,13 @@
                     "minimum": 1,
                     "maximum": 8,
                     "default": 2,
-                    "description": "Playback channels"
+                    "description": "Playback channels of the mix (1–8), placed on the device from First channel."
+                },
+                "firstChannel": {
+                    "type": "number",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "First device output channel to play on (1-based). E.g. 8 channels from 9 drives outputs 9–16."
                 },
                 "lcpVisible": {
                     "type": "boolean",

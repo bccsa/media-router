@@ -115,7 +115,7 @@
                     "minimum": 1,
                     "maximum": 2,
                     "default": 2,
-                    "description": "Channels (302M renditions are stereo-pinned)"
+                    "description": "Channels (PCM 302M renditions are encoded stereo)"
                 },
                 "sampleRate": {
                     "type": "number",

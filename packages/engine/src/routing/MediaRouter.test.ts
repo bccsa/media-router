@@ -291,6 +291,52 @@ describe('MediaRouter', () => {
         expect(all[0].streamType).toBe('audio/302m');
     });
 
+    it('getModuleBusSources carries the width a producer declares via getBusStreamChannels', async () => {
+        router.registerPorts('ain8', [
+            { id: 'audio-out', direction: 'output', streamType: 'audio/302m', label: '302M' },
+        ]);
+        router.registerPorts('n1', [
+            { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: '302M' },
+        ]);
+        router.registerPorts('aout', [
+            {
+                id: 'audio-in',
+                direction: 'input',
+                streamType: 'audio/302m',
+                label: 'In',
+                maxConnections: -1,
+            },
+        ]);
+        // ain8 declares an 8-wide stream for its port; n1 declares nothing —
+        // and a `channels` CONFIG on a producer must never be mistaken for
+        // its wire width (an AES67 input configured 8-ch still emits stereo).
+        router.setDependencies({} as any, (id: string) =>
+            id === 'ain8'
+                ? ({
+                      config: { channels: 8 },
+                      running: false,
+                      getBusStreamChannels: (portId: string) =>
+                          portId === 'audio-out' ? 8 : undefined,
+                  } as any)
+                : ({
+                      config: { channels: 8 },
+                      running: false,
+                      stop: vi.fn(),
+                      start: vi.fn(),
+                  } as any),
+        );
+        router.assignBusChannel('ain8');
+        router.assignBusChannel('n1', 'out-0');
+        await router.createConnection('ain8', 'audio-out', 'aout', 'audio-in');
+        await router.createConnection('n1', 'out-0', 'aout', 'audio-in');
+
+        const bySource = Object.fromEntries(
+            router.getModuleBusSources('aout').map((s) => [s.sourceModuleId, s]),
+        );
+        expect(bySource.ain8.sourceChannels).toBe(8);
+        expect(bySource.n1).not.toHaveProperty('sourceChannels');
+    });
+
     it('updateChannelMap accepts audio/302m edges and exposes the map via getModuleBusSources', async () => {
         router.registerPorts('atx', [
             { id: 'out-0', direction: 'output', streamType: 'audio/302m', label: 'PCM 302M' },

@@ -9,6 +9,7 @@
 export {
     buildAudioMixInput,
     build302mEncodeBranch,
+    normalize302mChannels,
     pacedMixer,
     probe302mSupport,
 } from './audio302mHelpers.js';

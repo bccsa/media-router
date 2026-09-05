@@ -60,7 +60,7 @@
                     "minimum": 1,
                     "maximum": 2,
                     "default": 2,
-                    "description": "Mix channels (302M output is stereo-pinned)"
+                    "description": "Mix channels (this mixer encodes stereo 302M)"
                 },
                 "mixLatencyMs": {
                     "type": "number",

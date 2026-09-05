@@ -33,6 +33,18 @@
                     "description": "Select audio input device",
                     "x-deviceType": "audio-source"
                 },
+                "channels": {
+                    "type": "number",
+                    "enum": [2, 4, 6, 8],
+                    "default": 2,
+                    "description": "Channels in this 302M stream. SMPTE-302M carries at most 8 — add another Audio Input (302M) for each further block of channels."
+                },
+                "firstChannel": {
+                    "type": "number",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "First device channel to capture (1-based). E.g. 8 channels from 9 captures desk inputs 9–16."
+                },
                 "volumeMax": {
                     "type": "number",
                     "enum": [100, 150, 200, 300, 500],
@@ -67,7 +79,7 @@
                     "x-widget": "slider",
                     "x-step": 10,
                     "x-unit": "ms",
-                    "description": "Capture ring buffer — part of the source's standing latency; 40-60 validated on smooth systems, raise if capture xruns appear."
+                    "description": "Requested capture quantum — part of the source's standing latency; 40-60 validated on smooth systems, raise if capture xruns appear."
                 },
                 "lcpVisible": {
                     "type": "boolean",

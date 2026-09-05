@@ -35,8 +35,9 @@ export interface TranscoderSource {
      *  `mix-matrix` on the trunk `audioconvert` — no mixer element needed
      *  for a gain map. */
     channelMap?: ChannelMapEntry[];
-    /** Channel count of the source stream (matrix input dimension).
-     *  Default 2 — the v1 302M encode branch is stereo-pinned. */
+    /** Channel count of the source stream (matrix input dimension), from the
+     *  runtime stream probe. Default 2 — 302M producers emit stereo unless
+     *  they declare otherwise. */
     sourceChannels?: number;
 }
 

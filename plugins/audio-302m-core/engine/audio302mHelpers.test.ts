@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildAudioMixInput, build302mEncodeBranch, pacedMixer } from './audio302mHelpers.js';
+import {
+    buildAudioMixInput,
+    build302mEncodeBranch,
+    normalize302mChannels,
+    pacedMixer,
+} from './audio302mHelpers.js';
 
 const SRC = { port: 40001, connectionId: 'c1' };
 const SRC2 = { port: 40002, connectionId: 'c2' };
@@ -177,8 +182,10 @@ describe('buildAudioMixInput — one source (direct branch, no mixer)', () => {
         expect(fragment).toContain(
             'tsdemux name=mixin_demux0 latency=0 ! audio/x-smpte-302m ! avdec_s302m',
         );
+        // `sourceChannels: 1` still means a stereo 302M wire (no mono layout
+        // exists) — the matrix must be 2 columns wide.
         expect(fragment).toContain(
-            'audioconvert mix-matrix="<<(float)1.0000>, <(float)1.0000>>" ! audioresample',
+            'audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)1.0000, (float)0.0000>>" ! audioresample',
         );
         expect(fragment).toContain(
             'queue leaky=0 max-size-time=250000000 max-size-buffers=0 max-size-bytes=0',
@@ -228,7 +235,10 @@ describe('buildAudioMixInput — shared branch contract', () => {
     });
 
     // The clause itself is covered in `channelMapMatrix.test.ts`; this pins
-    // that the fan-in applies it per branch.
+    // that the fan-in applies it per branch — and sizes it from the 302M wire
+    // width: a producer configured mono still EMITS stereo 302M (the format has
+    // no mono layout), so `sourceChannels: 1` must yield a 2-column matrix or
+    // audioconvert rejects the dimensions at runtime.
     it('renders a source channelMap on that branch only', () => {
         const { fragment } = buildAudioMixInput({
             sources: [
@@ -244,7 +254,7 @@ describe('buildAudioMixInput — shared branch contract', () => {
             ],
         });
         expect(fragment).toContain(
-            'audioconvert mix-matrix="<<(float)1.0000>, <(float)1.0000>>" ! audioresample',
+            'audioconvert mix-matrix="<<(float)1.0000, (float)0.0000>, <(float)1.0000, (float)0.0000>>" ! audioresample',
         );
         // The unmapped branch keeps a bare audioconvert.
         expect(fragment.match(/avdec_s302m ! audioconvert ! audioresample/g)).toHaveLength(1);
@@ -268,5 +278,49 @@ describe('build302mEncodeBranch', () => {
         expect(s).not.toContain('pulsesrc');
         expect(s).not.toContain('do-timestamp');
         expect(s).not.toContain('set-timestamps');
+    });
+
+    it('emits wider 302M on request, snapped onto the 2/4/6/8 set the encoder accepts', () => {
+        expect(build302mEncodeBranch({ channels: 8 })).toContain('rate=48000,channels=8 !');
+        expect(build302mEncodeBranch({ channels: 4 })).toContain('rate=48000,channels=4 !');
+        // 302M has no odd or >8 layouts — never hand avenc_s302m a count it rejects.
+        expect(build302mEncodeBranch({ channels: 3 })).toContain('channels=4 !');
+        expect(build302mEncodeBranch({ channels: 32 })).toContain('channels=8 !');
+    });
+});
+
+describe('normalize302mChannels', () => {
+    it('snaps onto {2,4,6,8}: up to the next even count, clamped', () => {
+        expect(normalize302mChannels(undefined)).toBe(2);
+        expect(normalize302mChannels(1)).toBe(2);
+        expect(normalize302mChannels(2)).toBe(2);
+        expect(normalize302mChannels(3)).toBe(4);
+        expect(normalize302mChannels(5)).toBe(6);
+        expect(normalize302mChannels(7)).toBe(8);
+        expect(normalize302mChannels(8)).toBe(8);
+        expect(normalize302mChannels(48)).toBe(8);
+        expect(normalize302mChannels(Number.NaN)).toBe(2);
+    });
+
+    it("sizes the per-branch mix matrix from the producer's real 302M width", () => {
+        // An 8-channel 302M source with a map picking channels 7+8 (0-based 6,7)
+        // → 2×8 matrix with those two cells lit. With the old stereo assumption
+        // the same map would have been silently dropped (src index ≥ 2).
+        const { fragment } = buildAudioMixInput({
+            sources: [
+                {
+                    ...SRC,
+                    sourceChannels: 8,
+                    channelMap: [
+                        { srcChannel: 6, dstChannel: 0 },
+                        { srcChannel: 7, dstChannel: 1 },
+                    ],
+                },
+            ],
+        });
+        const z = '(float)0.0000';
+        const row0 = [z, z, z, z, z, z, '(float)1.0000', z].join(', ');
+        const row1 = [z, z, z, z, z, z, z, '(float)1.0000'].join(', ');
+        expect(fragment).toContain(`mix-matrix="<<${row0}>, <${row1}>>"`);
     });
 });

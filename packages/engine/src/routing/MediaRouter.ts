@@ -552,6 +552,11 @@ export class MediaRouter {
         socketPath: string;
         /** Per-connection channel map (audio/pcm and audio/302m edges). */
         channelMap?: ChannelMapEntry[];
+        /** Channel count of the bus stream as DECLARED by the producer
+         *  (`PluginModule.getBusStreamChannels`) — what a consumer's channel-map
+         *  matrix needs as its input dimension. Undefined when the producer
+         *  declares nothing; the consumer applies its own default. */
+        sourceChannels?: number;
     }> {
         const out: Array<{
             port: number;
@@ -562,6 +567,7 @@ export class MediaRouter {
             streamType: StreamType;
             socketPath: string;
             channelMap?: ChannelMapEntry[];
+            sourceChannels?: number;
         }> = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
@@ -569,6 +575,9 @@ export class MediaRouter {
                 this.busChannels.get(this.channelKey(conn.sourceModuleId, conn.sourcePortId)) ??
                 this.busChannels.get(conn.sourceModuleId);
             if (port !== undefined) {
+                const sourceChannels = this.moduleGetter?.(
+                    conn.sourceModuleId,
+                )?.getBusStreamChannels?.(conn.sourcePortId);
                 out.push({
                     port,
                     connectionId: connId,
@@ -578,6 +587,7 @@ export class MediaRouter {
                     streamType: conn.streamType,
                     socketPath: this.edgeSocketPath(port, connId),
                     channelMap: conn.channelMap,
+                    ...(sourceChannels !== undefined ? { sourceChannels } : {}),
                 });
             }
         }

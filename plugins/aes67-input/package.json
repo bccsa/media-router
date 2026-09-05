@@ -65,7 +65,7 @@
                     "minimum": 1,
                     "maximum": 8,
                     "default": 2,
-                    "description": "Channels in the received stream. The 302M bus carries stereo, so more than 2 are downmixed."
+                    "description": "Channels in the received stream. This input encodes stereo 302M, so more than 2 are downmixed."
                 },
                 "payloadType": {
                     "type": "number",

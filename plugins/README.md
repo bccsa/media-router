@@ -1075,9 +1075,16 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   paced). Build every new mixer through this rather than assembling the string by hand.
   All three fan-in rules — pacing, chaining only from `continuationName`, and the
   single-source bypass — are locked in [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md).
-- `build302mEncodeBranch({ format? })` — PCM → 302M-in-TS encode tail
-  (`S32LE`/48 kHz/stereo, `avenc_s302m strict=experimental` — ffmpeg gates the encoder;
-  the bitstream is standard). Caller appends `buildBusSink(...)`.
+- `build302mEncodeBranch({ format?, channels? })` — PCM → 302M-in-TS encode tail
+  (`S32LE`/48 kHz, `avenc_s302m strict=experimental` — ffmpeg gates the encoder; the
+  bitstream is standard). Stereo by default; `channels` is snapped onto the 2/4/6/8 set
+  a 302M stream can carry — that is the FORMAT's ceiling, so a wide desk is several
+  producer modules, never one wide stream ([ADR-0014](../docs/adr/0014-302m-stream-width.md)).
+  A producer that emits anything but stereo must also declare it via
+  `getBusStreamChannels(portId)` (see below) so consumers size their channel-map
+  matrices correctly. Caller appends `buildBusSink(...)`.
+- `normalize302mChannels(n)` — the snap used above (1→2, 3→4, 5→6, 7→8, ≥9→8). Use it
+  wherever a raw `channels` setting has to become a 302M wire width.
 - `probe302mSupport()` — the one-call runtime gate for 302M features: probes
   `avenc_s302m` AND `mpegtsmux` accepting `audio/x-smpte-302m` (**gst ≥ 1.26**). Call it
   once from `static initManifest` and cache the flag (real examples:
@@ -1229,6 +1236,24 @@ getPipeWireNodeForPort(portId: string): { source?: string; sink?: string } {
 ```
 
 Real examples: [`n1-mixer`](n1-mixer/engine/N1MixerModule.ts) (per-port PipeWire nodes), [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts) and [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts) (dynamic outputs/inputs based on stream counts).
+
+### Bus stream width (`getBusStreamChannels`)
+
+A producer whose bus stream width is a runtime choice implements
+`getBusStreamChannels(portId): number | undefined` on its module. `MediaRouter.getModuleBusSources`
+hands the value to every consumer of that port as `sourceChannels`, and the 302M fan-in
+(`buildAudioMixInput`) sizes each branch's channel-map matrix from it. It describes the
+WIRE, never a config field: `audio-input-302m` returns its normalised `channels` setting;
+`aes67-input`, whose `channels` setting is the received stream while the wire stays
+stereo, declares nothing. Consumers default to stereo when nothing is declared.
+
+The playback counterpart is
+[`audio-output-302m/engine/outputPlacement.ts`](audio-output-302m/engine/outputPlacement.ts):
+`buildOutputPlacement({ device, channels, firstChannel, deviceChannels })` spreads an
+N-channel mix onto device channels `firstChannel..` as a device-wide unpositioned stream
+(`mix-matrix` + `channel-mask=0x0`), or returns `fragment: null` for the default stereo
+range so the legacy pipeline string stays byte-identical. Reuse it for any other
+`pulsesink` presentation leg that needs to land on specific outputs of a multichannel card.
 
 ### Live Input Swap (`getLiveInputSwap`)
 
