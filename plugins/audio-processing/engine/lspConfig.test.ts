@@ -112,14 +112,16 @@ describe('DEFAULTS mirrors the manifest configSchema', () => {
     });
 
     it('covers every live-tunable schema key that reaches an element', () => {
-        // Structural keys (mode, the per-stage enables, mixLatencyMs) are read
-        // directly off config with their own fallbacks and are not mirrored.
+        // Structural keys (mode, the per-stage enables, mixLatencyMs, the
+        // 302M word length) are read directly off config with their own
+        // fallbacks and are not mirrored.
         const structural = new Set([
             'mode',
             'hpfEnabled',
             'eqEnabled',
             'limiterEnabled',
             'mixLatencyMs',
+            'pcmBitDepth',
         ]);
         const missing = Object.keys(schema).filter(
             (k) =>

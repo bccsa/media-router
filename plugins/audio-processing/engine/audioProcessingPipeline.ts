@@ -21,6 +21,7 @@ import {
     buildAudioMixInput,
     build302mEncodeBranch,
     type AudioMixSource,
+    s302mFormatFor,
 } from '@media-router/plugin-audio-302m-core';
 import { eqProps } from './eqBands.js';
 import { dynProps, hpfCutoff, limiterProps, type ChainStages } from './lspProcessing.js';
@@ -114,7 +115,7 @@ export function buildProcessingPipeline(
     tail.push(
         'volume name=duckvol volume=1',
         'level name=outlevel post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',
-        build302mEncodeBranch(),
+        build302mEncodeBranch({ format: s302mFormatFor(input.config.pcmBitDepth) }),
         buildBusSink(input.outputPort),
     );
 

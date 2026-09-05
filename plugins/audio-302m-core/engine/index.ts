@@ -9,6 +9,7 @@
 export {
     buildAudioMixInput,
     build302mEncodeBranch,
+    normalize302mChannels,
     pacedMixer,
     probe302mSupport,
 } from './audio302mHelpers.js';
@@ -19,3 +20,4 @@ export type {
     PacedMixerOpts,
 } from './audio302mHelpers.js';
 export { mixMatrixClause } from './channelMapMatrix.js';
+export { DEFAULT_302M_BIT_DEPTH, s302mFormatFor, type S302mFormat } from './pcmBitDepth.js';

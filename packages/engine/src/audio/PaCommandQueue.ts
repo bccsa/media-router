@@ -23,6 +23,15 @@ export class PaCommandQueue {
     private processing = false;
     private delayMs: number;
 
+    /**
+     * Invoked after every QUEUED (mutating) command settles, success or
+     * failure, so read-side caches can drop state that the command may have
+     * changed — `AudioDeviceOps` hangs its device-listing cache here (a
+     * `load-module`/`unload-module`/`set-*-volume` changes what `pactl list`
+     * reports). Not called for `execImmediate` (read-only by contract).
+     */
+    onMutation: (() => void) | null = null;
+
     constructor(delayMs = 100) {
         this.delayMs = delayMs;
     }
@@ -84,6 +93,11 @@ export class PaCommandQueue {
                     );
                 } else {
                     item.resolve(stdout.trim());
+                }
+                try {
+                    this.onMutation?.();
+                } catch {
+                    /* a listener bug must never stall the command queue */
                 }
 
                 // Delay before next command

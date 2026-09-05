@@ -3656,11 +3656,13 @@ def _start_backlog_shedder(pipe, cfg):
 
     WHERE IT MEASURES. On the sink pad of `element`, per buffer:
 
-        lateness = now_running_time - (buffer_running_time + ts_offset)
+        lateness = now_running_time - (buffer_running_time + ts_offset + latency)
 
-    `ts_offset` is read live off the `sink` element, so it is the ROUTE's
-    playout offset D including any operator trim, and lateness is therefore the
-    excess over budget directly (`retained latency = lateness + D`). Running
+    `ts_offset` is read live off the `sink` element and `latency` is the sink's
+    negotiated pipeline latency (see `_sink_latency_ms`); their sum is the
+    sink's render deadline — the ROUTE's playout offset D including any
+    operator trim wherever ts-offset is not clamped — so lateness is the excess
+    over budget directly (`retained latency = lateness + budget`). Running
     time comes from the pad's own SEGMENT, which is why the probe watches
     downstream events too — buffer PTS alone is not a timeline.
 
@@ -3773,6 +3775,27 @@ def _start_backlog_shedder(pipe, cfg):
             return float(sink.get_property("ts-offset")) / 1e6
         except (TypeError, AttributeError, GLib.Error):
             return 0.0
+
+    def _sink_latency_ms():
+        """The sink's negotiated pipeline latency (GstBaseSink.get_latency —
+        what the LATENCY query settled on: an audiomixer's `latency`, the audio
+        ring, …). A `sync=true` sink renders at `rt + ts-offset + latency`, so
+        the budget has to be measured against that SAME deadline. Measured
+        against `rt + ts-offset` alone, a leg whose ts-offset is clamped to 0
+        (D smaller than the latencies it was meant to cancel — every mixer arm
+        at the 300 ms default D) reads its own structural latency as retained
+        backlog: field, 10.9.16.105 2026-09-05, "retained 411 ms against a 0 ms
+        budget", every buffer dropped after the 5 s hold, silence on the SSL 2
+        while the VU kept moving. Where ts-offset is NOT clamped the two terms
+        still sum to D, so unclamped legs read exactly as before. 0 until the
+        first LATENCY event (and on sinks without the API) — the old behaviour."""
+        try:
+            lat = sink.get_latency()
+        except (TypeError, AttributeError, GLib.Error):
+            return 0.0
+        if lat is None or lat == Gst.CLOCK_TIME_NONE:
+            return 0.0
+        return float(lat) / 1e6
 
     def _stall_now_ms():
         """Monotonic ms — the base GLib's own timeouts run on. Deliberately NOT
@@ -3910,7 +3933,7 @@ def _start_backlog_shedder(pipe, cfg):
         if rt == Gst.CLOCK_TIME_NONE:
             return Gst.PadProbeReturn.OK          # outside the segment
         now_rt = clock.get_time() - pipe.get_base_time()
-        budget_ms = _ts_offset_ms()
+        budget_ms = _ts_offset_ms() + _sink_latency_ms()
         st["budget_ms"] = budget_ms
         late_ms = (now_rt - rt) / 1e6 - budget_ms
         now_ms = now_rt / 1e6

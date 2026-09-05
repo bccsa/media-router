@@ -164,6 +164,17 @@ export interface PluginModule {
      */
     getLiveInputSwap?(sinkPortId: string): { element: string } | null;
     /**
+     * Channel count of the audio stream this module emits on a bus OUTPUT
+     * port, for producers whose width is a runtime choice. `MediaRouter`
+     * hands it to consumers as `sourceChannels` (`getModuleBusSources`), which
+     * size their channel-map matrices from it. Omit it (or return undefined)
+     * when the width is fixed — consumers then apply their own default. It
+     * describes the WIRE, never a config field: a producer configured for
+     * N input channels that still encodes a fixed-width stream declares
+     * nothing.
+     */
+    getBusStreamChannels?(portId: string): number | undefined;
+    /**
      * Target of the tracked `bus_reinput` RPC that executes a live input swap.
      * Defaults to the gst child process; a native (non-GStreamer) sink
      * overrides it with its own controller (ts-splitter →

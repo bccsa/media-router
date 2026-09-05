@@ -25,6 +25,16 @@
                     "default": 4,
                     "description": "Number of input/output pairs"
                 },
+                "pcmBitDepth": {
+                    "type": "number",
+                    "enum": [16, 24],
+                    "x-enumLabels": {
+                        "16": "16-bit (lower CPU)",
+                        "24": "24-bit"
+                    },
+                    "default": 16,
+                    "description": "Word length of the 302M PCM this module puts on the bus. 16-bit carries a third less data per hop (about 14% less CPU per bus hop on a Pi 4) and is transparent for anything that ends in Opus/AAC; choose 24-bit only when the PCM itself is the deliverable."
+                },
                 "mixLatencyMs": {
                     "type": "number",
                     "default": 200,

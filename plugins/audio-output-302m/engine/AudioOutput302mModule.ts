@@ -6,6 +6,7 @@ import {
 } from '@media-router/engine';
 import { buildAudioMixInput } from '@media-router/plugin-audio-302m-core';
 import { SINK_BUFFER_US, SLAVE_METHOD_SKEW, audio302mTsOffsetNs } from './audio302mTiming.js';
+import { buildOutputPlacement } from './outputPlacement.js';
 
 /**
  * Audio Output (302M) plugin.
@@ -34,8 +35,15 @@ import { SINK_BUFFER_US, SLAVE_METHOD_SKEW, audio302mTsOffsetNs } from './audio3
  * (`pulsesink device=… sync=false`): the kill-switch has to reproduce the
  * legacy behaviour exactly.
  *
+ * CHANNEL PLACEMENT. `channels` is the mix width (1–8), `firstChannel` where
+ * on the device it lands (X32 outputs 1–32 = four instances at 8 from
+ * 1/9/17/25). `buildOutputPlacement` (outputPlacement.ts, ADR-0014) spreads a
+ * non-default range onto the device's full width upstream of the sink; the
+ * sink element and its timing properties are untouched by placement.
+ *
  * - Volume/mute: gst `volume` element (single attenuation point).
- * - VU: in-pipeline `level` element (post-volume = what is being played).
+ * - VU: in-pipeline `level` element (post-volume = what is being played;
+ *   measures the N-channel mix, not the device-wide spread).
  * - Device hot-plug: base-class device watchdog stops/starts the pipeline.
  * - NEVER a default device (broadcast rule): unconfigured device = health
  *   error, no pipeline.
@@ -154,6 +162,14 @@ export class AudioOutput302mModule extends GstPluginBase {
         const audioOff = (config.audioEnabled as boolean) === false;
         const volumePct = audioOff ? 0 : ((config.volume as number) ?? 100);
         const channels = (config.channels as number) ?? 2;
+        const firstChannel = Math.max(1, Math.trunc(Number(config.firstChannel ?? 1)) || 1);
+        const deviceChannels = this.services?.pipeWire?.getDeviceInfo(device)?.channels ?? null;
+
+        const placement = buildOutputPlacement({ device, channels, firstChannel, deviceChannels });
+        if (placement.error !== undefined) {
+            this.setHealth('error', placement.error);
+            return null;
+        }
 
         const { fragment, continuationName, mixerLatencyNs, demuxes } = buildAudioMixInput({
             sources,
@@ -182,15 +198,22 @@ export class AudioOutput302mModule extends GstPluginBase {
               ` slave-method=${SLAVE_METHOD_SKEW} max-lateness=-1 buffer-time=${SINK_BUFFER_US}` +
               ` ts-offset=${tsOffsetNs}`
             : `pulsesink device=${device} sync=false`;
+        // Placement (if any) sits between the VU and the sink: the level meter
+        // reads the mix, the sink receives the device-wide spread.
         const pipeline =
             `${fragment} ${continuationName}. ! audioconvert ! audioresample` +
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
+            (placement.fragment ? ` ! ${placement.fragment}` : '') +
             ` ! ${sink}`;
 
         this.setStatusData('output', {
             device,
             sources: sources.length,
+            channels,
+            firstChannel,
+            lastChannel: firstChannel - 1 + channels,
+            ...(deviceChannels ? { deviceChannels } : {}),
             timing: contract ? 'house clock, playout offset' : 'on arrival',
             ...(contract ? { tsOffsetMs: Math.round(tsOffsetNs / 1_000_000) } : {}),
         });
