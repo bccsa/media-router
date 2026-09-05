@@ -97,6 +97,18 @@ export class TsSplitterModule extends GstPluginBase {
             classify: () => 'aac',
         });
         registerCodecClassifier({ test: (caps) => caps.startsWith('audio/x-opus'), classify: () => 'opus' });
+        // SMPTE 302M PCM — what every 302M-bus producer (audio-input-302m,
+        // audio-mixer, PCM transcoder renditions, …) emits. tsdemux exposes it
+        // as bare `audio/x-smpte-302m` (no parser exists for parsebin to plug,
+        // and the channel count lives in the 302M frame header, not the caps).
+        // Without this entry the probe reports `unknown`, the transcoder falls
+        // back to `decodebin` — which works — but its ReprobeLoop then spawns a
+        // gst-launch probe every 10 s for the life of the module (measured on a
+        // Pi 4: ~300 probes in 15 min across three transcoders, ~10–15% of a core).
+        registerCodecClassifier({
+            test: (caps) => caps.startsWith('audio/x-smpte-302m'),
+            classify: () => 's302m',
+        });
     }
 
     /** PID-based output ports come from persisted discovery (survives a dark
