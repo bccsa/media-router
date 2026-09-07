@@ -2334,7 +2334,8 @@ def handle_set_klv_payload(data):
 # Per-consumer bus fan-out (unixfd transport)
 # ---------------------------------------------------------------------------
 # A producer's bus egress is a `tee` (built by buildUdpSink); the engine's
-# BusFanoutCoordinator attaches ONE `queue leaky=2 ! unixfdsink` branch per
+# BusFanoutCoordinator attaches ONE `queue leaky=2` (time- AND byte-capped,
+# ADR-0015) `! unixfdsink` branch per
 # consumer edge at runtime. This is the isolation the shared unixfdsink lacked:
 # unixfdsink sends under its object lock with blocking sockets, so a shared
 # sink froze every sibling when one consumer stalled; a per-consumer branch
@@ -2367,6 +2368,31 @@ _bus_branches = {}      # socket_path -> dict(branch, tee, tee_src, tee_name, qu
 # cheaply detect changes with one int compare per buffer.
 _bus_topology_version = 0
 _bus_branch_seq = 0
+# Per-consumer edge queue bounds (ADR-0015). The byte ceiling is the
+# timestamp-independent backstop next to the time bound: `queue` measures its
+# time level from the stamps passing through it, so a stalled or stepped-back
+# timeline leaves a time-only leaky queue unbounded. Working hypothesis for
+# the gate01 2026-09-06 muxer growth (~2.8 GB each at program bitrate) —
+# unconfirmed on the box, see docs/TodoNotes.md. Rate mirrors
+# `TS_QUEUE_BYTES_PER_MS` in the engine's queueBounds.ts (64 Mbit/s).
+BUS_EDGE_QUEUE_MS = 500
+BUS_EDGE_QUEUE_BYTES_PER_MS = 8_000
+BUS_EDGE_QUEUE_MAX_BYTES = BUS_EDGE_QUEUE_MS * BUS_EDGE_QUEUE_BYTES_PER_MS
+
+
+def bus_edge_branch_description(socket):
+    """gst-launch description of one per-consumer fan-out branch.
+
+    `queue leaky=2` (500 ms, byte-capped) ! `unixfdsink` on the consumer's own
+    edge socket. Kept as a pure function so the shape is unit-testable — see
+    `_try_bus_attach` for why every property here is load-bearing.
+    """
+    return (
+        f"queue leaky=2 max-size-time={BUS_EDGE_QUEUE_MS * 1_000_000} max-size-buffers=0"
+        f" max-size-bytes={BUS_EDGE_QUEUE_MAX_BYTES}"
+        f" ! unixfdsink socket-path={socket} sync=false async=false"
+        " wait-for-connection=false"
+    )
 # Edge-stall watchdog (gate01 wedge, 2026-07-16): stock unixfdsink's send
 # BLOCKS forever on a connected client that stops reading (~208KB kernel
 # sndbuf ≈ 60ms of a 28Mbps stream) while holding the sink object lock —
@@ -2495,12 +2521,11 @@ def _try_bus_attach(tee_name, socket):
         # on the wire, engine librist lost=0). 500 ms absorbs the worst
         # observed hold (~253 ms) with 2x headroom; memory cost is trivial
         # (≈340 KB at 5.4 Mbps). Still leaky=2 — a genuinely stalled consumer
-        # must shed here, never back-pressure the producer.
+        # must shed here, never back-pressure the producer. The byte cap
+        # (BUS_EDGE_QUEUE_MAX_BYTES) is what still sheds when stalled stamps
+        # blind the time bound.
         branch = Gst.parse_bin_from_description(
-            "queue leaky=2 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0"
-            f" ! unixfdsink socket-path={socket} sync=false async=false"
-            " wait-for-connection=false",
-            True,
+            bus_edge_branch_description(socket), True
         )
         _bus_branch_seq += 1
         branch.set_name(f"busedge_{_bus_branch_seq}")

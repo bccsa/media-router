@@ -2,6 +2,21 @@
 
 ## Open
 
+- [ ] **gate01 muxer memory growth (2026-09-06): confirm the retention point
+  on a box.** Five mpegts-muxers on .46 (ZA-HZ-SRT02 ENG/FRA/NYA/SWA + "10020
+  -> RIST") grew to 2.8 GB / 0.6 GB each at exactly their program bitrate
+  (anonymous heap in the producer, shmem flat) while their SRT callers looped
+  on "did not reach PLAYING within 10000 ms"; the box rebooted (into slot B,
+  v2.0.0.81) before the pages could be read. Working hypothesis: a time-only
+  leaky queue whose stamps stalled (ADR-0015 adds byte caps on the bus edge,
+  bus ingress, muxer pads and srt-output so the failure is bounded either
+  way). To close: on the next recurrence read `/proc/<pid>/mem` of the growing
+  runner (no Yama on this kernel) and classify the retained bytes (TS sync
+  bytes at 188-stride = mux output vs NAL/ADTS = demuxed input), count its
+  `queueN:src` threads for stale edge branches, and correlate growth with the
+  consumer's restart log. Then convert the remaining time-only queues listed
+  in `queueBounds.ts`.
+
 - [ ] **Latch repair: field-verify on GATE01 (.46) after the next vMix
   reconnect.** 2026-09-05: every muxer on .46 mixing feed-2000 audio with
   feed-2001/2002 video shipped ~1.8 s of A/V offset to every RIST site,

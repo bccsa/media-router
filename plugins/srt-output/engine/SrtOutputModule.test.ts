@@ -55,7 +55,7 @@ describe('SrtOutputModule.buildPipeline', () => {
         expect(desc).not.toBeNull();
         expect(desc!.pipeline).toContain(
             'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock' +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
         expect(desc!.pipeline).not.toContain('udpsrc');
         // No tsparse by default (ADR-0011): bus buffers are one access unit

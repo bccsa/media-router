@@ -9,6 +9,7 @@ import {
     TS_VIDEO_PID_BASE,
     videoStreamPid,
 } from './tsHelpers.js';
+import { tsQueueByteCap } from './queueBounds.js';
 
 describe('deterministic PID scheme (D3)', () => {
     it('places video PIDs at 0x100 + index', () => {
@@ -44,6 +45,21 @@ describe('buildLeakyQueue', () => {
     });
     it('clamps absurdly large values to 5 seconds', () => {
         expect(buildLeakyQueue(99_999)).toContain('max-size-time=5000000000');
+    });
+});
+
+describe('queue builders × byte cap', () => {
+    it('apply the cap when passed, and stay off (raw-video safe) by default', () => {
+        // gate01 2026-09-06: a time-only leaky queue is unbounded once the stamps
+        // flowing through it stall — the byte bound is what still sheds.
+        expect(buildLeakyQueue(500, tsQueueByteCap(500))).toBe(
+            'queue leaky=2 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000',
+        );
+        expect(buildBackpressureQueue(500, tsQueueByteCap(500))).toBe(
+            'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000',
+        );
+        expect(buildLeakyQueue(500)).toContain('max-size-bytes=0');
+        expect(buildBackpressureQueue(500)).toContain('max-size-bytes=0');
     });
 });
 

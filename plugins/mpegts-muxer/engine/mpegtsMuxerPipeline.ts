@@ -13,6 +13,7 @@ import {
     buildLeakyQueue,
     busStallWatch,
     muxSinkPadName,
+    tsQueueByteCap,
     TS_METADATA_PID,
     videoStreamPid,
     type InputStallWatch,
@@ -365,8 +366,17 @@ export function buildPipeline(input: MuxerPipelineInputs): MuxerPipelineResult |
     // dark source's own udpsrc timeout (above) is poll-based and fires
     // regardless of downstream back-pressure.
     const depth = Math.max(100, Math.min(5000, input.queueDepthMs ?? MUX_INPUT_QUEUE_MS));
-    const inputQueue =
-        (input.queueLeaky ?? false) ? buildLeakyQueue(depth) : buildBackpressureQueue(depth);
+    // Byte cap next to the time bound (engine `queueBounds.ts`, ADR-0015):
+    // these pads carry compressed ES only, and a time bound is blind to stalled
+    // stamps. On the NON-leaky shape the cap BLOCKS at 4 MB (default depth)
+    // exactly as the time bound blocks at 500 ms whenever stamps are sane; it
+    // only ever fires when they are not, where the alternative is unbounded
+    // growth. Blocking one pad stalls the demuxer feeding it, and the input
+    // stall watch turns that into a module restart — the designed recovery.
+    const cap = tsQueueByteCap(depth);
+    const inputQueue = (input.queueLeaky ?? false)
+        ? buildLeakyQueue(depth, cap)
+        : buildBackpressureQueue(depth, cap);
     const branches = input.sources.map((s, i) => buildInputBranch(String(i), s));
 
     // Deterministic output PIDs (plan D3), assigned BEFORE the mux element is
