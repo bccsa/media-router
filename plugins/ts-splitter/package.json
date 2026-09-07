@@ -33,7 +33,7 @@
                     "maximum": 10000,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "Playout offset for every player fed from this source — how far behind the shared house clock they present. This is the ROUTE's latency budget, set once here instead of per player, so a video-player and an audio-decoder split off this source stay locked to each other. Leave EMPTY to use the engine-wide default (300 ms unless the engine sets otherwise). Raise it if playback stutters on a jittery link; lower it for the tightest latency. Applies live to every connected player, with no restart. Has no effect while the engine time-sync contract is off."
+                    "description": "Playout offset for every player fed from this source — how far behind the shared house clock they present. This is the ROUTE's latency budget, set once here instead of per player, so a video-player and an audio-decoder split off this source stay locked to each other. Leave EMPTY to use the engine-wide default (60 ms unless the engine sets otherwise). Raise it if playback stutters on a jittery link; lower it for the tightest latency. Applies live to every connected player, with no restart. Has no effect while the engine time-sync contract is off."
                 }
             }
         },

@@ -638,6 +638,7 @@ export class VideoPlayerModule extends GstPluginBase {
             available: VideoPlayerModule.decoders,
             demoted: VideoPlayerModule.activeDemotions(),
             threading: resolveCpuDecodeThreading(this.config?.cpuDecodeThreading),
+            parserBypass: this.config?.parserBypass === true,
         });
     }
 

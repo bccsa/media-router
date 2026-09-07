@@ -119,7 +119,15 @@ export function buildEncodeLeaf(opts: EncodeLeafOptions): string {
     if (opts.inputQueue === 'decoder-pool') stages.push(DECODER_POOL_QUEUE);
     if (opts.scaleStage) stages.push(opts.scaleStage);
     stages.push(buildEncoderBranch(opts.encoder));
-    stages.push(`mpegtsmux name=${opts.muxName} latency=0 alignment=7`);
+    // alignment=0: flush every TS packet of an access unit in the same push.
+    // alignment=7 kept the last partial 7-packet group of each frame back
+    // until the NEXT frame started (bus buffers were exact 1316 multiples), so
+    // every downstream tsdemux could only complete a frame one frame late —
+    // measured 41 ms at 25 fps into the mpegts-muxer, 2026-09-04. The bus
+    // egress stamper coalesces the per-AU list into one buffer either way
+    // (ADR-0011), and every datagram sink re-slices to 1316 itself, so
+    // nothing downstream depends on the 7-packet grouping.
+    stages.push(`mpegtsmux name=${opts.muxName} latency=0 alignment=0`);
     stages.push(opts.sink);
     return stages.join(' ! ');
 }

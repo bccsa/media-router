@@ -81,6 +81,12 @@
                     "x-live": true,
                     "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this player and the audio-decoder beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this player's own display chain adds (panel processing, HDMI receiver). Positive DELAYS video to meet audio that's playing late; negative advances it. Adjust live while watching until lips match. Only applies with Sync (or Clock sync) on."
                 },
+                "parserBypass": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Low-latency decode: skip the H.264/H.265 parser in front of a SOFTWARE decoder and feed it each demuxed access unit as-is. Saves one frame of latency (40 ms at 25 fps) — the parser can only close a frame when the next one starts. Has no effect on hardware (V4L2) decoders, which need the parser. Only for sources that repeat SPS/PPS before every keyframe (every Media Router encoder does); leave OFF for foreign sources. Applied at pipeline build — changing it restarts the player.",
+                    "x-liveUpdatable": false
+                },
                 "cpuDecodeThreading": {
                     "type": "string",
                     "enum": ["auto", "single"],

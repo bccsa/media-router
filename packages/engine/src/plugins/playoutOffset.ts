@@ -24,8 +24,8 @@
  * the legacy numbers (decision 10's kill-switch: `MR_TIME_SYNC_CONTRACT=0`).
  */
 
-/** Engine-wide default playout offset when nothing else says otherwise (ADR-0005 decision 4: "~300 ms"). */
-export const DEFAULT_PLAYOUT_OFFSET_MS = 300;
+/** Engine-wide default playout offset when nothing else says otherwise (ADR-0005 decision 4; lowered from the original ~300 ms to 60 ms on 2026-09-03 after measured LAN arrival jitter of -19/+14 ms p10/p90 — see the decision-4 amendment). */
+export const DEFAULT_PLAYOUT_OFFSET_MS = 60;
 
 /**
  * Upper bound for any playout offset value. A sink's `ts-offset` is a hard

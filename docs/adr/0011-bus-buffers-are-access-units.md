@@ -31,7 +31,12 @@ to 0.24 of a core, the video encoder from 0.46 to 0.26, the SRT output from
 
 ## Considered options
 
-- `mpegtsmux alignment=0`: emits one 188-byte buffer per TS packet — 7× worse.
+- `mpegtsmux alignment=0`: emits one 188-byte buffer per TS packet — 7× worse
+  WITHOUT the coalescing egress; with it the list is merged the same way, and
+  alignment=0 is now what the encode leaves use (2026-09-04): alignment=7 held
+  the last partial 7-packet group of every access unit back until the next AU
+  started, so each downstream tsdemux completed frames one frame late (41 ms
+  at 25 fps). Wire slicing to 1316 is the datagram sink's job (rule 2).
 - A large `mpegtsmux alignment` (e.g. 128 = 24 KB): holds packets across
   access units, so a 128 kbit/s audio mux emitted once per ~950 ms. Latency
   that scales inversely with bitrate is unacceptable on a bus every producer

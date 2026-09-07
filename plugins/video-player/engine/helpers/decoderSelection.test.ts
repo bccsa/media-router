@@ -162,6 +162,26 @@ describe('selectDecoder', () => {
             ).toBe('h265parse ! avdec_h265 name=vpdec thread-type=frame max-threads=3');
         });
 
+        it('parserBypass swaps h264parse for an alignment=au capssetter on the SOFTWARE rung', () => {
+            const s = selectDecoder({
+                codec: 'h264',
+                available: only('h264parse', 'avdec_h264'),
+                threading: 'single',
+                parserBypass: true,
+            });
+            expect(s.id).toBe('avdec_h264');
+            expect(s.chain).toBe(
+                `capssetter caps="video/x-h264,stream-format=byte-stream,alignment=au" ! avdec_h264 name=${VIDEO_DECODER_NAME}`,
+            );
+            expect(s.chain).not.toContain('h264parse');
+        });
+
+        it('parserBypass leaves a HARDWARE rung on its parser (V4L2 takes SPS/PPS from it)', () => {
+            const s = selectDecoder({ codec: 'h264', available: ALL, parserBypass: true });
+            expect(s.id).toBe('v4l2h264dec');
+            expect(s.chain.startsWith('h264parse ! ')).toBe(true);
+        });
+
         it('leaves the software rung bare on "single" — the one-core opt-out', () => {
             for (const [codec, chain] of [
                 ['h264', 'h264parse ! avdec_h264 name=vpdec'],

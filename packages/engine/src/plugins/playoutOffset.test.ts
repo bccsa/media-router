@@ -15,7 +15,7 @@ import {
  * Playout offset D — ADR-0005 decision 4.
  *
  * The invariants worth pinning are (a) the resolution ORDER: route head beats
- * engine config beats env beats 300 ms, (b) that the deprecated per-sink trims
+ * engine config beats env beats 60 ms, (b) that the deprecated per-sink trims
  * stack ON TOP rather than replacing anything, and (c) that with the contract
  * off the whole mechanism collapses to the trim alone, which is what the legacy
  * pipelines already emitted.
@@ -51,9 +51,9 @@ describe('parsePlayoutOffsetMs', () => {
 });
 
 describe('resolveEnginePlayoutOffsetMs', () => {
-    it('defaults to 300 ms with nothing configured', () => {
+    it('defaults to 60 ms with nothing configured', () => {
         expect(resolveEnginePlayoutOffsetMs(undefined, undefined)).toBe(DEFAULT_PLAYOUT_OFFSET_MS);
-        expect(DEFAULT_PLAYOUT_OFFSET_MS).toBe(300);
+        expect(DEFAULT_PLAYOUT_OFFSET_MS).toBe(60);
     });
 
     it('reads MR_PLAYOUT_OFFSET_MS when the config says nothing', () => {
@@ -102,7 +102,7 @@ describe('effectivePlayoutOffsetMs — contract ON', () => {
         ).toBe(300);
     });
 
-    it('falls back to 300 ms when the engine reports no default either', () => {
+    it('falls back to 60 ms when the engine reports no default either', () => {
         // Older engines and test harnesses pass no `playoutOffsetMs`; the
         // budget must still be a real number, never 0-by-accident.
         expect(effectivePlayoutOffsetMs(base)).toBe(DEFAULT_PLAYOUT_OFFSET_MS);
@@ -178,7 +178,7 @@ describe('effectivePlayoutOffsetNs', () => {
         expect(effectivePlayoutOffsetNs({ instanceId: 'm1' }, { trimMs: 40 })).toBe(40_000_000);
         expect(
             effectivePlayoutOffsetNs({ instanceId: 'm1', timeSyncContract: true }, { trimMs: 0.5 }),
-        ).toBe(300_500_000);
+        ).toBe(60_500_000);
     });
 });
 

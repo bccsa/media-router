@@ -102,8 +102,8 @@ describe('videoTsOffsetNs', () => {
         );
     });
 
-    it('falls back to 300 ms when the engine reports no default', () => {
-        expect(videoTsOffsetNs(route(undefined), {})).toBe(300_000_000);
+    it('falls back to 60 ms when the engine reports no default', () => {
+        expect(videoTsOffsetNs(route(undefined), {})).toBe(60_000_000);
     });
 
     it('lets the route head override win over the engine default', () => {
@@ -392,9 +392,7 @@ describe('planLivePipeline', () => {
         });
 
         it('is NOT armed with the contract off — the legacy leg is untouched', () => {
-            expect(
-                planLivePipeline({ ...base, decoder: explicitDec }).backlogShed,
-            ).toBeUndefined();
+            expect(planLivePipeline({ ...base, decoder: explicitDec }).backlogShed).toBeUndefined();
             expect(
                 planLivePipeline({ ...base, decoder: explicitDec, services: null }).backlogShed,
             ).toBeUndefined();
