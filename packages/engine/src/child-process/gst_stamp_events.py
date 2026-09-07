@@ -2,8 +2,9 @@
 """Engine events for the bus egress stamper — ONE builder per event for BOTH
 backends.
 
-The stamper reports three moments and one condition: it anchored, it re-anchored
-on a source discontinuity, it has a drift measurement to publish, and it saw a
+The stamper reports four moments and one condition: it anchored, its
+latch-repair window settled (and what it cost the anchor), it re-anchored on a
+source discontinuity, it has a drift measurement to publish, and it saw a
 segment its stamp cannot be mapped through. Those events reach the engine over
 the runner's event fd; this module is where their SHAPE is decided.
 
@@ -60,6 +61,22 @@ def anchor_event(tee, ev):
             "message": (f"egress {tee} stamped onto the house timeline "
                         f"(anchor {anchor_ns} ns, first PES {ref_pts} "
                         f"on pid 0x{pid:x})")}
+
+
+def settled_event(tee, ev):
+    """The `timeline_settled` engine event: the latch-repair window closed.
+
+    `repairNs` (<= 0) is what the window pulled the anchor back by — the
+    backlog a late first PES was the head of (ts_timeline.py, "latch repair").
+    0 means the first PES arrived on cadence and the anchor is exactly where
+    the first-PES latch put it; -1.8e9 is the 2026-09-05 GATE01 failure,
+    repaired.
+    """
+    return {"event": "timeline_settled", "tee": tee, "anchorNs": ev["anchorNs"],
+            "repairNs": ev["repairNs"], "windowNs": ev["windowNs"],
+            "message": (f"egress {tee} latch settled: anchor pulled back "
+                        f"{-ev['repairNs'] / 1e6:.3f} ms by early delivery in the "
+                        f"first {ev['windowNs'] / 1e9:.0f} s")}
 
 
 def reanchor_event(tee, ev):
@@ -119,6 +136,17 @@ def anchor_moment(tee, ev):
                   f"firstPes={ev['refPts90k']} on pid 0x{ev['pid']:x}")
 
 
+def settled_moment(tee, ev):
+    """Report the latch-repair window closing: engine event + runner log. The
+    log line is what a burn-in reads back on the device: a repair of 0.000 ms
+    says the first PES was on cadence; anything else is a backlog head the
+    anchor was taken off and has now been pulled back from."""
+    emit(settled_event(tee, ev))
+    log_line(tee, f"latch settled: anchor pulled back {-ev['repairNs'] / 1e6:.3f} ms "
+                  f"by early delivery in the first {ev['windowNs'] / 1e9:.0f} s "
+                  f"(anchor={ev['anchorNs']})")
+
+
 def reanchor_moment(tee, ev):
     """Report a re-anchor. IN PLACE, not a restart: preserveSourceTimeline has
     to restart to re-latch because its offsets are baked into pad offsets; here
@@ -143,6 +171,11 @@ def handle_message(src_name, kind, structure):
         why = structure.get_value("why")
         emit(segment_warning_event(tee, why))
         log_line(tee, f"{why} — stamp written unmapped")
+        return
+    if kind == "mrtsstamp-settled":
+        settled_moment(tee, {"anchorNs": structure.get_value("anchorNs"),
+                             "repairNs": structure.get_value("repairNs"),
+                             "windowNs": structure.get_value("windowNs")})
         return
     ev = {"pid": structure.get_value("pid"),
           "anchorNs": structure.get_value("anchorNs"),

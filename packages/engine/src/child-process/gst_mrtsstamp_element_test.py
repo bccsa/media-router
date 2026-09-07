@@ -196,11 +196,18 @@ def push(src, payload, pts, dts):
     return src.emit("push-buffer", buf) == Gst.FlowReturn.OK
 
 
-def start(pipe, contract=True, native=True):
+def start(pipe, contract=True, native=True, repair_latch=False):
     """What handle_start does for a contract pipeline: contract clock, then the
-    stamping backend — which is where the element gets spliced in."""
+    stamping backend — which is where the element gets spliced in.
+
+    `repair_latch` is OFF for the ladders (they are pushed as fast as the
+    pipeline takes them, which the latch-repair window reads — correctly — as
+    a reconnect backlog); the one fixture that drives the window on purpose
+    turns it on.
+    """
     runner.pipeline = pipe
     stamper.native_loaded = None if native else False
+    stamper.repair_latch = repair_latch
     if contract:
         runner._apply_contract_clock(pipe)
     stamper.enable(pipe, contract)
@@ -751,6 +758,69 @@ pipe.get_state(3 * Gst.SECOND)
 for i in range(4):
     push(src, pes_packet(0x100, FIRST_PES + i * STEP, i), i * 40 * Gst.MSECOND, 0)
 bus.wait(seen, 4)
+bus.drain(pipe, src)
+teardown()
+
+
+# ---------------------------------------------------------------------------
+print("\n--- latch repair: a reconnect backlog does not become the anchor ---")
+# The 2026-09-05 GATE01 failure through the production backend, in real time:
+# the first PES this egress sees is the head of a 1.8 s backlog (45 buffers of
+# 40 ms media pushed back to back), after which the source is on its real
+# cadence. Without the repair every steady-state stamp would sit ~1.8 s in the
+# future of its arrival for the anchor's whole life; with it the window pulls
+# the anchor back onto the source's delivery and says so.
+pipe, src = build_pipe()
+bus = Bus(pipe)
+el = pipe.get_by_name("busout_41000")
+start(pipe, repair_latch=True)
+stamp_el = pipe.get_by_name(STAMP_EL)
+check("the element's repair-latch defaults ON (the runner's producers are live)",
+      Gst.ElementFactory.make("mrtsstamp").get_property("repair-latch") is True)
+stamper.arm(el, "busout_41000")
+seen = tap_timestamps(pipe)
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+
+
+def house_now():
+    return pipe.get_pipeline_clock().get_time() - pipe.get_base_time()
+
+
+BACKLOG, CADENCE = 45, 90                         # 1.8 s flushed, then 3.6 s live
+arrivals = []
+for i in range(BACKLOG):
+    arrivals.append(house_now())
+    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i & 0x0F), 0, 0)
+for i in range(BACKLOG, BACKLOG + CADENCE):
+    time.sleep(0.04)
+    arrivals.append(house_now())
+    push(src, pes_packet(0x100, FIRST_PES + i * STEP, i & 0x0F), 0, 0)
+bus.wait(seen, BACKLOG + CADENCE, timeout_s=10.0)
+check("every buffer came through", len(seen) == BACKLOG + CADENCE)
+settled = bus.of("timeline_settled")
+# What the window should have cost: the backlog's media less the wall time
+# its flush took (the buffers of the flush are stamped with their arrival).
+flush_ns = arrivals[BACKLOG - 1] - arrivals[0]
+expected_repair = -(BACKLOG - 1) * STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN + flush_ns
+check("the window closed once and reported the backlog it pulled the anchor back by "
+      f"(got {[s.get('repairNs') for s in settled]}, expected ~{expected_repair}, "
+      f"flush took {flush_ns / 1e6:.1f} ms)",
+      len(settled) == 1 and settled[0]["tee"] == "busout_41000"
+      and abs(settled[0]["repairNs"] - expected_repair) < 50 * Gst.MSECOND
+      and settled[0]["windowNs"] == 3_000_000_000)
+# Steady state: the stamp is on the source's delivery — never later than the
+# buffer's arrival (that is what the repair removes; the 2 ms allowance is the
+# gap between this thread's clock read and the element's own), and within the
+# push loop's accumulated sleep overshoot of it.
+tail = [(arrivals[i] - seen[i][0]) for i in range(BACKLOG + 5, BACKLOG + CADENCE)]
+check("after the window every stamp is at or before its arrival, by no more than jitter",
+      all(-2 * Gst.MSECOND <= m <= 100 * Gst.MSECOND for m in tail))
+check("and the backlog itself left with monotone stamps (no floor clamp, no step)",
+      all(seen[i][0] >= seen[i - 1][0] for i in range(1, BACKLOG + CADENCE)))
+check("the repair is the ANCHOR moving, so the ladder past it is still the source's 40 ms",
+      all(seen[i][0] - seen[i - 1][0] == STEP * NS_PER_TICK_NUM // NS_PER_TICK_DEN
+          for i in range(BACKLOG + 6, BACKLOG + CADENCE)))
 bus.drain(pipe, src)
 teardown()
 

@@ -58,7 +58,11 @@ int main(int argc, char** argv) {
     // Time-sync contract (ADR-0005 decision 2), off by default: map the
     // ingested TS onto the house clock and stamp that instead of send time, so
     // consumers inherit the producer's media time rather than our arrival
-    // jitter. One latch — the ingest is one muxed stream.
+    // jitter. One latch — the ingest is one muxed stream. Latch repair is
+    // deliberately OFF (the default): this fan-out fronts the HLS player,
+    // which delivers each segment as a burst and runs AHEAD by design, and
+    // the repair would read that lead as a backlog (ts_timeline.py, "latch
+    // repair").
     std::unique_ptr<mrts::TimelineStamper> stamper;
     if (stamp_timeline) {
         // One event builder for every native producer (mrts::*_event_json), so

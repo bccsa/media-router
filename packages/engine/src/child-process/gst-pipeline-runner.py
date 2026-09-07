@@ -481,7 +481,7 @@ def on_bus_message(bus, message):
         name = structure.get_name() if structure else None
         src = message.src
         src_name = src.get_name() if src else None
-        if name in ("mrtsstamp-anchor", "mrtsstamp-reanchor",
+        if name in ("mrtsstamp-anchor", "mrtsstamp-settled", "mrtsstamp-reanchor",
                     "mrtsstamp-segment-warning"):
             # The native egress stamper reports through the bus (it has no other
             # way home). Translated here into the SAME engine events the python
@@ -1346,11 +1346,50 @@ def _clear_branch_align():
     _branch_align.clear()
 
 
-# A zero point can only be off by the reorder depth / one buffer's span of
-# media. Anything past this is not the error this feature exists to remove —
-# a misidentified anchor, a stream whose stamps aren't house-mapped — and the
-# safe answer is to leave the branch exactly as it is today and say so.
-_BRANCH_ALIGN_MAX_NS = 500_000_000
+# How far a branch may be moved, each way. These are what the MUX can absorb,
+# not a guess at how wrong a zero point can be: the 2026-09-05 GATE01 epoch
+# rejected +533 ms, +683 ms and +1024 ms corrections that were all REAL (the
+# producers' stamps really were that far from the branches) under a 500 ms
+# "plausibility" cap, and every rejected track shipped out of step with its
+# siblings. A POSITIVE correction moves the branch later: its buffers then sit
+# in the aggregator until their turn, so the bound is the branch's own input
+# queue (5 s, `queue leaky=2 max-size-time=5000000000`) less headroom. A
+# NEGATIVE one moves it earlier, which the aggregator reads as those buffers
+# arriving late, so the bound is the mux's latency fill (1.2 s,
+# mpegtsMuxerPipeline) less headroom — past it the mux would drop the track
+# rather than align it. A branch outside either is left as it is, and said
+# LOUDLY (a `warning` engine event, not just a runner log line): that track
+# WILL be out of step, and until now nothing outside the journal knew.
+_BRANCH_ALIGN_MAX_LATE_NS = 4_000_000_000
+_BRANCH_ALIGN_MAX_EARLY_NS = 1_000_000_000
+
+
+def _branch_align_verdict(off_ns):
+    """What a measured branch error gets: "apply" the pad offset, "skip" one
+    too small to be worth a timeline step, or "reject" one past what the mux
+    can absorb. Pure, so the sign convention (positive = branch behind its
+    producer's stamps = moved LATER, bounded by the input queue; negative =
+    moved EARLIER, bounded by the mux latency fill) is pinned by a test
+    rather than by a live rig."""
+    if off_ns > _BRANCH_ALIGN_MAX_LATE_NS or -off_ns > _BRANCH_ALIGN_MAX_EARLY_NS:
+        return "reject"
+    if abs(off_ns) < _BRANCH_ALIGN_MIN_NS:
+        return "skip"
+    return "apply"
+
+
+def _branch_align_rejected(demux_name, pid, off_ns):
+    """The engine-visible half of a rejection: a `warning` event, so a track
+    left out of step with its siblings is a status the module can show and
+    not only a line in a journal nobody was reading (the 2026-09-05 GATE01
+    epoch rejected three real corrections that way)."""
+    emit_event({
+        "event": "warning",
+        "message": (f"branchAlign: {demux_name} pid=0x{pid:x} sits "
+                    f"{off_ns / 1e6:+.0f} ms from its producer's stamps, "
+                    f"past what the mux can absorb — branch left as-is, "
+                    f"so this track WILL be out of step with its siblings "
+                    f"(time-sync contract, ADR-0005)")})
 # How long a branch is left alone before its error is even sampled. A tsdemux
 # RE-SLAVES to the upstream stamps for the first seconds of a stream (the
 # settling `gst_tsdemux_slave_test.py` measures), so anything read before this
@@ -1579,9 +1618,11 @@ def _install_branch_stamp_align(pipe, cfg):
             if not finish(st, pad):
                 return Gst.PadProbeReturn.OK          # a sibling settled first; it retires us
             note = ""
-            if abs(off) > _BRANCH_ALIGN_MAX_NS:
-                note = " — REJECTED (past the plausible zero-point error), branch left as-is"
-            elif abs(off) < _BRANCH_ALIGN_MIN_NS:
+            verdict = _branch_align_verdict(off)
+            if verdict == "reject":
+                note = " — REJECTED (past what the mux can absorb), branch left as-is"
+                _branch_align_rejected(st["name"], pid, off)
+            elif verdict == "skip":
                 note = " — already aligned, left untouched"
             else:
                 pad.set_offset(pad.get_offset() + off)
@@ -1894,7 +1935,7 @@ def handle_start(data):
     # and the probe must own that edge's first buffer. The probes themselves arm
     # per tee as consumers attach. Gated on the same flag as the clock, because
     # the stamp is only meaningful once base_time is pinned to 0.
-    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"))
+    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"))
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`

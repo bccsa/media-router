@@ -220,3 +220,41 @@ describe('GstPluginBase time-sync mode resolution', () => {
         });
     });
 });
+
+describe('latch repair (ADR-0005 note 2026-09-05)', () => {
+    it('is resolved from the graph on the contract path: ON below a live source', async () => {
+        const sent = await resolve(clockSyncDesc(), {
+            timeSyncContract: true,
+            instanceId: 'mpegts-muxer-1',
+            mediaRouter: {
+                getUpstreamBusProducers: () => [
+                    { pluginId: 'ts-splitter', deliveryLead: false },
+                    { pluginId: 'srt-input', deliveryLead: false },
+                ],
+            } as never,
+        });
+        expect(sent!.latchRepair).toBe(true);
+    });
+
+    it('...and OFF anywhere below a producer that declares a delivery lead (hls-player)', async () => {
+        const sent = await resolve(clockSyncDesc(), {
+            timeSyncContract: true,
+            instanceId: 'mpegts-muxer-1',
+            mediaRouter: {
+                getUpstreamBusProducers: () => [
+                    { pluginId: 'ts-splitter', deliveryLead: false },
+                    { pluginId: 'hls-player', deliveryLead: true },
+                ],
+            } as never,
+        });
+        expect(sent!.latchRepair).toBe(false);
+    });
+
+    it('is not set at all on the legacy path (nothing stamps there)', async () => {
+        const sent = await resolve(clockSyncDesc(), {
+            timeSyncContract: false,
+            clockAuthority: authority({ host: '127.0.0.1', port: 46008 }),
+        });
+        expect(sent!.latchRepair).toBeUndefined();
+    });
+});

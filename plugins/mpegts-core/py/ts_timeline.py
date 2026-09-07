@@ -273,11 +273,57 @@ class TimelineStamper:
     _TREND_GAIN_NUM, _TREND_GAIN_DEN = 1, 10     # residual-slope integrator gain
     _GIVEBACK_NS = 200_000_000          # margin we will never be seen to cost
 
-    def __init__(self, on_anchor=None, on_reanchor=None):
+    # --- latch repair (the 2026-09-05 GATE01 field failure) -----------------
+    # The anchor is latched on the FIRST PES this egress emits, on the
+    # assumption that it arrived at the source's cadence. A live network source
+    # breaks that assumption once per (re)connect: the sender flushes whatever
+    # it queued while the session was being (re)established, so the first PES
+    # is the HEAD OF A BACKLOG — late by the whole backlog — and every buffer
+    # after it arrives EARLY against an anchor taken off it. Measured on .46
+    # (2026-09-05): a vMix SRT feed re-connected with ~1.8 s queued, its stamps
+    # sat 1.8 s later than its sibling feeds' for the same picture (the feeds
+    # share one PTS base), and every mux taking audio from one feed and video
+    # from another shipped that as lipsync to every site downstream. Nothing
+    # else in this class answers it: the watch and the net answer PTS STEPS,
+    # and the slew is slope-only by design (a LEVEL is the producer's business,
+    # see above) — so the wrong level lived until the producer's next restart.
+    #
+    # The repair is the estimator's own min-filter argument, applied to the
+    # anchor while it is still fresh: delivery is one-sided noise (a buffer can
+    # be handed to us LATE, never before the source produced it), so during a
+    # short window after the anchor any buffer whose mapped stamp is LATER than
+    # its own arrival proves the anchor late by at least that much, and the
+    # anchor is pulled back to it. A RUNNING MINIMUM, applied on the spot: the
+    # backlog's buffers leave stamped with their arrival (monotone by
+    # construction, so no floor clamp and no backwards step for a consumer to
+    # swallow — the backlog is fast-forwarded, which is what a live consumer
+    # wants of a backlog), and everything after the window is on the cadence
+    # the source actually delivers at. After the window the anchor is fixed
+    # again and nothing but the slew ever moves it. `_LATCH_REPAIR_NS` is
+    # generous against a reconnect flush (seconds of queue drain at line rate
+    # for a few Mbit/s) and far inside the servo's 5 min settling, so the two
+    # never see each other.
+    #
+    # OPT-IN (`repair_latch`), because the argument only holds for a producer
+    # whose DELIVERY cadence is its MEDIA cadence: a network ingest, a splitter
+    # or muxer riding one, a capture. An HLS player delivers each segment as a
+    # burst and runs AHEAD by design; repairing its anchor onto that burst
+    # would stamp the head of every later segment late by a segment — the
+    # position-loop failure above in a new coat. The fan-out sidecars (the
+    # HLS path) leave it off; the gst runner's producers and mr-tssplit turn
+    # it on.
+    _LATCH_REPAIR_NS = 3_000_000_000    # window after an anchor the repair is open
+
+    def __init__(self, on_anchor=None, on_reanchor=None, on_settled=None,
+                 repair_latch=False):
         self.latch = TimelineLatch()
         self.anchor = None      # house time (ns) latched at the first PES
         self.ref = None         # that first PES (90 kHz), the timeline's zero
         self.reanchors = 0
+        self._repair_on = bool(repair_latch)
+        self._latch_until = None    # house time the open repair window closes at
+        self._repair_ns = 0         # what the window has pulled the anchor back by (<= 0)
+        self._on_settled = on_settled
         self._unwrapped = {}    # pid -> last PES PTS, unwrapped past 2^33 wraps
         self._watch_last = {}   # pid -> last PES PTS (raw), discontinuity watch
         self._pending = {}      # pid -> the epoch its last anomaly proposed
@@ -328,6 +374,61 @@ class TimelineStamper:
                 'marginNs': self._level if self._level is not None else 0,
                 'engageNs': self._engage_level if self._engage_level is not None else 0,
                 'samples': len(self._trend), 'window': self._TREND_SLOTS}
+
+    # --- latch repair -------------------------------------------------------
+
+    def _open_latch(self, house_now):
+        """A fresh anchor opens a repair window — the first PES, and every
+        re-anchor (a re-anchor is a fresh anchor with the same exposure: the
+        buffer it was taken off may be the head of a backlog too)."""
+        # A window still open at a re-anchor (a discontinuity inside the first
+        # 3 s) is closed and REPORTED first: its cost belongs to the anchor it
+        # repaired, and a tally of what every anchor cost must not lose it.
+        self.close_latch()
+        self._latch_until = (house_now + self._LATCH_REPAIR_NS
+                             if self._repair_on else None)
+        self._repair_ns = 0
+
+    def _repair(self, house_now, stamp):
+        """The stamp this PES buffer leaves with, and the anchor it leaves
+        behind: inside the window a stamp LATER than its own arrival pulls the
+        anchor back by the excess and leaves stamped with the arrival; the
+        first PES buffer past the window closes it and reports what the
+        window cost the anchor (`on_settled`, `repairNs` <= 0)."""
+        if self._latch_until is None:
+            return stamp
+        if house_now >= self._latch_until:
+            self.close_latch()
+            return stamp
+        if self._anom:
+            # The watch has this buffer down as anomalous — a discontinuity it
+            # has not confirmed yet. Its stamp is off the OLD timeline by the
+            # jump, not early delivery, and must not move the anchor: a +10 min
+            # PTS jump read as a backlog would pull the anchor back ten minutes
+            # one buffer before the re-anchor threw that anchor away anyway,
+            # and a single corrupt PTS (never confirmed) would move it for good.
+            return stamp
+        late = stamp - house_now
+        if late <= 0:
+            return stamp
+        self.anchor -= late
+        self._repair_ns -= late
+        return house_now
+
+    def close_latch(self):
+        """Close an open repair window NOW and report it. The window normally
+        closes itself on the first PES past it; a producer disarmed inside it
+        (last consumer edge gone, module stop) would otherwise leave that
+        anchor's cost unreported, and a burn-in tally of what every anchor
+        cost would silently skip exactly the short-lived incarnations. No-op
+        when no window is open, so a caller need not check."""
+        if self._latch_until is None:
+            return
+        self._latch_until = None
+        if self._on_settled:
+            self._on_settled({'anchorNs': self.anchor,
+                              'repairNs': self._repair_ns,
+                              'windowNs': self._LATCH_REPAIR_NS})
 
     def _observe(self, house_now, stamp):
         """Feed one buffer's arrival-vs-stamp margin into the estimator.
@@ -477,6 +578,10 @@ class TimelineStamper:
         self.latch.feed_pes(pes)                # epoch-consistent first PES per PID
         stamp = self._scan_stamp(pes, house_now)
         if stamp is not None:
+            # The latch-repair window first: while it is open, a stamp that
+            # lands after its own arrival is the anchor's error, not the
+            # buffer's, and this is where it is paid back.
+            stamp = self._repair(house_now, stamp)
             # Closed loop: measure this buffer's MAPPED time against the house
             # time it arrived at — before the monotone floor below, which is a
             # guard on what leaves rather than a statement about the mapping.
@@ -503,6 +608,9 @@ class TimelineStamper:
         # its offsets are baked into pad offsets): the anchor is two numbers, so
         # a re-anchor costs one PTS step and needs no consumer cooperation.
         # Every stream of this egress re-anchors together, so A/V pairing lives.
+        # A repair window still open is closed and REPORTED against the anchor
+        # it repaired, before that anchor is replaced.
+        self.close_latch()
         self._anom = 0
         self.reanchors += 1
         self.anchor = house_now
@@ -518,6 +626,8 @@ class TimelineStamper:
         # margin measured against an anchor that no longer exists, so carrying
         # it over would slew the fresh anchor by the dead epoch's error.
         self._reset_drift(house_now)
+        # A fresh anchor has the same exposure the first one had.
+        self._open_latch(house_now)
         # Fresh latch: the old first-PES map belongs to the epoch we just left.
         self.latch = TimelineLatch()
         # Drop the monotone floors with the anchor. A discontinuity is detected
@@ -632,6 +742,7 @@ class TimelineStamper:
                 # producer transient that starts right here.
                 self._slew_last = house_now
                 self._epoch_start = house_now
+                self._open_latch(house_now)
                 # The latch's epoch reference: the first PES it recorded, which
                 # every other PID's first value was unwrapped against.
                 self.ref = next(iter(self.latch.first_pts.values()), pts)

@@ -87,13 +87,22 @@ App::App(Options opts) : opts_(std::move(opts)) {
         // what a re-anchor reports here is field for field what the python
         // sidecar reports — the copies that used to live in each sidecar had
         // already lost `lastPts90k` and `deltaTicks`.
+        // Latch repair ON: the splitter's input is a live ingest (an srt-input
+        // or rist-input's bus), so its delivery cadence is its media cadence
+        // and a first PES that is the head of a reconnect backlog must not
+        // become the anchor (ts_timeline.py, "latch repair" — the 2026-09-05
+        // GATE01 cross-feed lipsync).
         stamper_ = std::make_unique<mrts::TimelineStamper>(
             [](const mrts::TimelineStamper::Anchored& a) {
                 emit(mrts::anchor_event_json(a));
             },
             [](const mrts::TimelineStamper::Reanchor& r) {
                 emit(mrts::reanchor_event_json(r));
-            });
+            },
+            [](const mrts::TimelineStamper::Settled& s) {
+                emit(mrts::settled_event_json(s));
+            },
+            opts_.repair_latch);
     }
     refresh_gating();   // nothing wired yet -> all outputs disabled
     input_ = std::make_unique<mrbus::BusClient>(
@@ -289,6 +298,8 @@ void App::tick(int64_t now_ns) {
 }
 
 void App::shutdown() {
+    // A stop inside the latch-repair window still reports what it cost.
+    if (stamper_) stamper_->close_latch();
     for (auto& o : outputs_) o.server->detach_all();
 }
 

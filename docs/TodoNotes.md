@@ -2,6 +2,21 @@
 
 ## Open
 
+- [ ] **Latch repair: field-verify on GATE01 (.46) after the next vMix
+  reconnect.** 2026-09-05: every muxer on .46 mixing feed-2000 audio with
+  feed-2001/2002 video shipped ~1.8 s of A/V offset to every RIST site,
+  because the 2000 feed's first PES after the 13:16 reconnect was the head of
+  a 1.8 s sender backlog and the stamper anchored on it (the three vMix feeds
+  share one PTS base; first-PES deltas matched arrival deltas within 5 ms on
+  the clean 07:57 restart, 1.8 s apart on this one). Fixed in the stamper
+  (latch-repair window, ADR-0005 note 2026-09-05) + muxer branchAlign caps;
+  resolved per route from the graph (`effectiveLatchRepair`, OFF below an
+  hls-player). Not yet run on a device: needs the native rebuild
+  (libgstmrtsstamp.so 2.3.0, mr-tssplit) and a read of `busStamp busout_x:
+  latch settled: anchor pulled back N ms` on .46 plus muxer branchAlign K
+  values agreeing across feeds. Pending from the review: a live measurement
+  of a muxer/transcoder fed by hls-player with the repair off.
+
 - [ ] **Egress stamper anchors on whatever PID's PES comes first — on the
   muxer that is the KLV carousel (0x1f0).** Every muxer start in the .108 log
   history anchored on 0x1f0 because the metadata pad flows before the media

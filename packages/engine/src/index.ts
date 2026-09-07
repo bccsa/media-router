@@ -192,6 +192,8 @@ export type {
     PlayoutOffsetServices,
     PlayoutOffsetRouteSource,
 } from './plugins/playoutOffset.js';
+export { effectiveLatchRepair } from './plugins/latchRepair.js';
+export type { LatchRepairServices, LatchRepairRouteSource } from './plugins/latchRepair.js';
 export {
     backlogShedConfig,
     BACKLOG_SHED_EVENT,

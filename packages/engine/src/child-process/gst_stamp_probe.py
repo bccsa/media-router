@@ -95,7 +95,7 @@ def _position_for(st, stamp):
 # ---------------------------------------------------------------------------
 # The probe itself
 # ---------------------------------------------------------------------------
-def install(tee, name, pipe):
+def install(tee, name, pipe, repair_latch=True):
     """Install the stamping probe on `tee`'s sink pad. Returns the stamper
     state dict, or None if the pad is not there.
 
@@ -130,12 +130,20 @@ def install(tee, name, pipe):
     def on_reanchor(ev):
         events.reanchor_moment(name, ev)
 
+    def on_settled(ev):
+        events.settled_moment(name, ev)
+
     # The contract's arithmetic, verbatim from the module every other producer
     # runs (`unixfd-fanout.py`, and `mrts::TimelineStamper` for the native
     # sidecars): per-buffer watch, epoch-consistent latch, monotone staircase,
-    # re-anchor in place. ONE egress, so ONE `stream`.
+    # re-anchor in place. ONE egress, so ONE `stream`. `repair_latch` is on for
+    # every producer the runner hosts — network ingests, muxers, transcoders,
+    # captures all deliver at their media cadence — and off only where a
+    # test drives the probe faster than real time (`gst_bus_stamper.repair_latch`).
     stamper = ts_timeline.TimelineStamper(on_anchor=on_anchor,
-                                          on_reanchor=on_reanchor)
+                                          on_reanchor=on_reanchor,
+                                          on_settled=on_settled,
+                                          repair_latch=repair_latch)
     st["stamper"] = stamper
 
     def on_buffer(_pad, info):
@@ -191,7 +199,12 @@ def install(tee, name, pipe):
 
 def remove(st):
     """Take the probe off the pad. The latch state goes with it (see
-    `gst_bus_stamper.release`)."""
+    `gst_bus_stamper.release`) — after the stamper has reported a repair
+    window this disarm is cutting short, so the anchor's cost is on record
+    even for an edge that lived a second."""
+    stamper = st.get("stamper")
+    if stamper is not None:
+        stamper.close_latch()
     try:
         if st.get("probe_id") is not None:
             st["pad"].remove_probe(st["probe_id"])

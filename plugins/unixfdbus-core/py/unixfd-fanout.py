@@ -119,6 +119,10 @@ def make_stamper():
               'message': f'--stamp-timeline: ts_timeline unavailable ({err}) — '
                          f'falling back to send-time pts'})
         return None
+    # Latch repair deliberately OFF (the default): this sidecar fronts the HLS
+    # player, which delivers each segment as a burst and runs AHEAD by design;
+    # the repair would read that lead as a backlog (ts_timeline.py, "latch
+    # repair"). Same choice as the native mr-bus-fanout.
     return ts_timeline.TimelineStamper(
         on_anchor=lambda info: emit({'event': 'timeline_restamped', **info}),
         on_reanchor=lambda info: emit({'event': 'timeline_reanchor', **info}))
