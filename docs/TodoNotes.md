@@ -2,6 +2,36 @@
 
 ## Open
 
+- [ ] **gate01 muxer memory growth (2026-09-06): confirm the retention point
+  on a box.** Five mpegts-muxers on .46 (ZA-HZ-SRT02 ENG/FRA/NYA/SWA + "10020
+  -> RIST") grew to 2.8 GB / 0.6 GB each at exactly their program bitrate
+  (anonymous heap in the producer, shmem flat) while their SRT callers looped
+  on "did not reach PLAYING within 10000 ms"; the box rebooted (into slot B,
+  v2.0.0.81) before the pages could be read. Working hypothesis: a time-only
+  leaky queue whose stamps stalled (ADR-0015 adds byte caps on the bus edge,
+  bus ingress, muxer pads and srt-output so the failure is bounded either
+  way). To close: on the next recurrence read `/proc/<pid>/mem` of the growing
+  runner (no Yama on this kernel) and classify the retained bytes (TS sync
+  bytes at 188-stride = mux output vs NAL/ADTS = demuxed input), count its
+  `queueN:src` threads for stale edge branches, and correlate growth with the
+  consumer's restart log. Then convert the remaining time-only queues listed
+  in `queueBounds.ts`.
+
+- [ ] **Latch repair: field-verify on GATE01 (.46) after the next vMix
+  reconnect.** 2026-09-05: every muxer on .46 mixing feed-2000 audio with
+  feed-2001/2002 video shipped ~1.8 s of A/V offset to every RIST site,
+  because the 2000 feed's first PES after the 13:16 reconnect was the head of
+  a 1.8 s sender backlog and the stamper anchored on it (the three vMix feeds
+  share one PTS base; first-PES deltas matched arrival deltas within 5 ms on
+  the clean 07:57 restart, 1.8 s apart on this one). Fixed in the stamper
+  (latch-repair window, ADR-0005 note 2026-09-05) + muxer branchAlign caps;
+  resolved per route from the graph (`effectiveLatchRepair`, OFF below an
+  hls-player). Not yet run on a device: needs the native rebuild
+  (libgstmrtsstamp.so 2.3.0, mr-tssplit) and a read of `busStamp busout_x:
+  latch settled: anchor pulled back N ms` on .46 plus muxer branchAlign K
+  values agreeing across feeds. Pending from the review: a live measurement
+  of a muxer/transcoder fed by hls-player with the repair off.
+
 - [ ] **Player-side tsdemux still completes each frame ~38 ms after its first
   byte lands** (dec_replica on the .103 player bus, 2026-09-04) even after the
   upstream muxes moved to `alignment=0`. Candidates: mr-tssplit's 20 ms flush
@@ -277,6 +307,8 @@
 - [x] Larger touch targets for knobs and mute
 
 ### Audio
+- [x] **302M output placement — `firstChannel` on `audio-output-302m` (2026-09-05, 10.9.16.50).** Mirror of the input fix: the output's `channels` (1–8) is the mix width and the new `firstChannel` says where on the device it lands (X32 outputs 1–32 = four instances at 8 from 1/9/17/25). Non-default ranges go through `buildOutputPlacement` (`plugins/audio-output-302m/engine/outputPlacement.ts`): `audioconvert mix-matrix` spreading the N-channel mix onto the device's full width, then `audio/x-raw,channels=W,channel-mask=(bitmask)0x0` into the UNCHANGED `pulsesink` — spike on the X32's KT-USB sink showed pipewire-pulse accepts a 32-ch unpositioned playback stream and PipeWire links `playback_AUX0..31` port-for-port (`output_1→playback_AUX0` …), so the ADR-0005 presentation leg (skew-slaved, ts-offset, backlog shedder) is untouched. Full spike matrix: pulsesink 32-ch mask0 → 32 links; pipewiresink 32-ch mask0 → 32 links; pulsesink 8-ch mask0 → 8 links (PA keeps it unpositioned/AUX-mapped); pipewiresink 8-ch mask0 → 2 links (default FL/FR… positions). Gotcha: a bare `gst-launch` with a live audiotestsrc into pulsesink/pipewiresink does NOT exit on SIGINT (EOS drain hangs) — `kill -9` it. The default mono/stereo-from-1 range deliberately keeps the legacy positioned stream: every existing profile's pipeline string is byte-identical (pinned by test). Range past the device / unknown device width (non-default range) → health error, no pipeline. Same `pactl` 32-channel cap as the input (device channels 33–48 unreachable). ADR-0014 addendum.
+- [x] **302M input captured only X32 inputs 1–2 of 32 — channel range per module (2026-09-05, 10.9.16.50).** Root cause was the stereo pin in `build302mEncodeBranch` (`channels=2`), so `pulsesrc` negotiated a 2-ch stream and PipeWire linked `capture_AUX0/1` only; the KT-USB card exposes 48 capture channels and both ALSA and PipeWire saw all of them. The 302M CEILING is 8 channels (SMPTE-302M carries 2/4/6/8 — `avenc_s302m` sink caps on gst 1.28.2 confirm), so 32 inputs are FOUR 8-channel `audio-input-302m` modules, never one stream. Fix: `channels` (2/4/6/8) + `firstChannel` (1-based) settings on the input; `build302mEncodeBranch({ channels })` (default unchanged); the producer declares its wire width through the new generic `PluginModule.getBusStreamChannels(portId)` and `MediaRouter.getModuleBusSources` relays it as `sourceChannels`, so a consumer's channel-map matrix has the right input dimension (a producer's `channels` CONFIG is deliberately NOT read — `aes67-input` takes 1–8 there yet encodes stereo; `normalize302mChannels` snaps declared widths onto the 302M set). Locked in ADR-0014. Capture moved from `pulsesrc` to `pipewiresrc` on the WHOLE device + `audioconvert mix-matrix` range pick, forced by two measured PipeWire 1.6.3 facts: pipewire-pulse cannot create an 8-ch record stream at all ("Invalid argument") and links a 4-ch one to two ports; PipeWire links by channel POSITION, so any ≤ 8-ch stream gets FL/FR/… defaults that never match a multichannel card's AUX names (two links), while a full-width `channel-mask=0x0` stream stays unpositioned and links port-for-port in index order (48/48 verified). `pipewiresrc` stamps PTS from pipeline running time like `pulsesrc` did; `srcBufferMs` now maps to a `node.latency` request. Verified bare on the box: 48-ch capture → 8×48 matrix → S32LE 8-ch → `avenc_s302m` → `mpegtsmux` streams. Known limit: a ≤ 8-channel card whose ports are AUX-named still links two channels (PipeWire position matching) — same as before this change.
 - [x] Yocto audio input failures
 - [x] Opus noise gate (dtx=false)
 - [x] Configurable inband-fec + packet loss %

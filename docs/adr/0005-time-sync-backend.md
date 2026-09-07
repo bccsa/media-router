@@ -35,6 +35,51 @@ audio-mastered net-clock daemon (`gst-net-clock.py`) cannot provide.
    the same disagreement surface again; per-consumer arrival re-stamping —
    today's model and the root cause above.
 
+   Note 2026-09-05 (the GATE01 cross-feed lipsync): the latch anchored on
+   the FIRST PES a producer emitted and trusted it to have arrived at the
+   source's cadence. A live network source breaks that once per (re)connect:
+   the sender flushes what it queued while the session was down, so the
+   first PES is that backlog's head, late by all of it, and every later
+   buffer arrives early against an anchor taken off it — for the anchor's
+   whole life, because the drift servo is slope-only by design (decision 5's
+   field lesson) and the watch and net answer PTS steps, not levels. On .46
+   a vMix SRT feed re-connected with ~1.8 s queued (the three vMix feeds
+   share one PTS base; their first-PES deltas matched their arrival deltas
+   within 5 ms on a clean restart and were 1.8 s apart on this one), and
+   every mpegts-muxer taking audio from that feed and video from a sibling
+   shipped 1.8 s of A/V offset to every RIST site downstream. The producer
+   is the right place to fix it: the muxer aligns each branch to its OWN
+   producer's stamps (correctly — it cannot know two producers share a
+   source), so a wrong anchor on one producer is by construction a
+   cross-producer offset. Fix: a **latch-repair window** in the stamper
+   (`ts_timeline.py` / `mrts::TimelineStamper`, one arithmetic): for
+   3 s after any fresh anchor (first PES and every re-anchor), a PES buffer
+   whose stamp lands later than its own arrival pulls the anchor back by the
+   excess and leaves stamped with the arrival — a running minimum, the
+   estimator's own one-sided-noise argument applied while the anchor is
+   still fresh; the backlog fast-forwards, the stamps stay monotone, no
+   consumer sees a step. The window closing is reported (`timeline_settled`,
+   `repairNs`) so a burn-in can read what every anchor cost, and a disarm
+   inside the window reports it too, so short-lived edges are in the tally.
+   **Resolved per route from the graph, not per producer**
+   (`effectiveLatchRepair`, the same route-head shape as D): the assumption
+   is a property of the SOURCE at the head of the chain, so the engine walks
+   a producer's bus inputs to their sources and turns the repair OFF when a
+   producer that declares itself delivery-lead (`PluginModule.
+   isDeliveryLeadProducer`; hls-player — its per-segment burst and 2 s lead are
+   by design; the position-loop failure of 2026-08-13 wore exactly this coat)
+   sits anywhere upstream, at any depth — an hls-player → splitter → muxer
+   chain is fielded. The answer travels as `latchRepair` on the pipeline
+   description (runner probe and `mrtsstamp` element, `repair-latch`) and as
+   `--no-latch-repair` to mr-tssplit; the HLS fan-out sidecars leave their
+   own stamper off. Alongside: the muxer's
+   `branchAlign` no longer rejects a correction over 500 ms as "implausible"
+   — every value it rejected in that epoch (+533, +683, +1024 ms) was real,
+   and each rejected track shipped out of step. The caps are now what the
+   mux can absorb (+4 s / −1 s, its input queue and latency fill), and a
+   branch left as-is raises a `warning` engine event instead of a journal
+   line nobody was reading.
+
 3. **Running-time ≡ house-clock time.** Bus-attached synced pipelines pin
    `base_time=0`, `start_time=NONE`, so running-time equals house-clock time
    in every process and stamped PTS schedule correctly everywhere. Rejected:

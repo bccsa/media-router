@@ -164,6 +164,27 @@ export interface PluginModule {
      */
     getLiveInputSwap?(sinkPortId: string): { element: string } | null;
     /**
+     * Channel count of the audio stream this module emits on a bus OUTPUT
+     * port, for producers whose width is a runtime choice. `MediaRouter`
+     * hands it to consumers as `sourceChannels` (`getModuleBusSources`), which
+     * size their channel-map matrices from it. Omit it (or return undefined)
+     * when the width is fixed — consumers then apply their own default. It
+     * describes the WIRE, never a config field: a producer configured for
+     * N input channels that still encodes a fixed-width stream declares
+     * nothing.
+     */
+    getBusStreamChannels?(portId: string): number | undefined;
+    /**
+     * Declare that this producer's delivery runs AHEAD of real time by design
+     * — a segmented or file-backed player that builds a lead (hls-player). The
+     * engine's latch-repair resolution (`effectiveLatchRepair`, ADR-0005 note
+     * 2026-09-05) turns the egress stamper's repair off for every producer
+     * downstream of one, at any depth, because for those the "delivery cadence
+     * is media cadence" assumption the repair rests on is false. Omit for a
+     * live source; the engine never names plugins itself (ADR-0007).
+     */
+    isDeliveryLeadProducer?(): boolean;
+    /**
      * Target of the tracked `bus_reinput` RPC that executes a live input swap.
      * Defaults to the gst child process; a native (non-GStreamer) sink
      * overrides it with its own controller (ts-splitter →
@@ -261,6 +282,14 @@ export interface PipelineDescription {
      * playback (there is nothing external to wait for).
      */
     timeSyncContract?: boolean;
+    /**
+     * Whether this pipeline's egress stampers may run the latch-repair window
+     * (ADR-0005 note 2026-09-05). Resolved by `GstPluginBase.applyTimeSync`
+     * from the graph via `effectiveLatchRepair` — ON unless a delivery-lead
+     * source (hls-player) sits anywhere upstream — and read by the runner only
+     * on the contract path. Plugins do not set it themselves.
+     */
+    latchRepair?: boolean;
     /**
      * Contract clock WITHOUT the timeline pinning: the runner still puts this
      * pipeline on the contract's monotonic house clock, but skips

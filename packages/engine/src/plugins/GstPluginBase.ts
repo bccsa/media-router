@@ -11,6 +11,7 @@ import type { BusAttachTarget } from '../child-process/UnixFdFanoutController.js
 import type { ManagedProcess, ManagedProcessOptions } from '../child-process/ManagedProcess.js';
 import { DeviceWatchdog } from './DeviceWatchdog.js';
 import { BACKLOG_SHED_EVENT } from './backlogShed.js';
+import { effectiveLatchRepair } from './latchRepair.js';
 import type { PluginModule, PipelineDescription, ModuleServices } from './PluginModule.js';
 
 const defaultLog = createLogger('GstPluginBase');
@@ -161,8 +162,13 @@ export abstract class GstPluginBase extends EventEmitter implements PluginModule
             // the two a module got is the first thing to establish when its
             // egress is bursting — invisible from anywhere else.
             const liveCaptureClock = desc.liveCaptureClock === true;
+            // The egress stamper's latch-repair window is a property of the
+            // SOURCE at the head of this module's bus chain (an hls-player
+            // anywhere upstream turns it off), resolved here from the graph
+            // the way the playout offset is, never hard-coded per producer.
+            desc.latchRepair = effectiveLatchRepair(this.services);
             this.log.info(
-                { clockSync: desc.clockSync === true, liveCaptureClock },
+                { clockSync: desc.clockSync === true, liveCaptureClock, latchRepair: desc.latchRepair },
                 liveCaptureClock
                     ? 'Time-sync contract: monotonic house clock, base_time=natural (live capture), producer-stamped bus PTS'
                     : 'Time-sync contract: monotonic house clock, base_time=0, producer-stamped bus PTS',

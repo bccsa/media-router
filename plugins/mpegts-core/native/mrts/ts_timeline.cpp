@@ -56,6 +56,16 @@ constexpr int64_t TREND_MIN_PPM = 10;                 // below this it is noise
 constexpr int64_t TREND_GAIN_NUM = 1, TREND_GAIN_DEN = 10;
 constexpr int64_t GIVEBACK_NS = 200'000'000LL;        // margin we will never cost
 
+// Latch repair (the 2026-09-05 GATE01 field failure) — design and rationale in
+// full in ts_timeline.py, in short: a live source's first PES after a
+// (re)connect is the head of the sender's backlog, late by all of it, and an
+// anchor taken off it leaves every later buffer EARLY by that much for the
+// anchor's whole life (1.8 s of cross-feed lipsync on .46). While this window
+// is open a stamp later than its own arrival pulls the anchor back to it — a
+// running minimum, the estimator's own one-sided-noise argument. Opt-in, for
+// producers whose delivery cadence is their media cadence.
+constexpr int64_t LATCH_REPAIR_NS = 3'000'000'000LL;
+
 // Python's `//` for a positive divisor: C++ truncates toward zero, which would
 // round a negative correction the wrong way and put the two implementations a
 // nanosecond apart per step.
@@ -181,6 +191,40 @@ TimelineStamper::Drift TimelineStamper::drift() const {
             has_engage_ ? engage_level_ : 0, (int)trend_.size(), (int)TREND_SLOTS};
 }
 
+void TimelineStamper::open_latch(int64_t house_now) {
+    // A fresh anchor opens a repair window — the first PES, and every
+    // re-anchor (the buffer a re-anchor is taken off may be a backlog's head
+    // too). A window still open at a re-anchor is closed and REPORTED first:
+    // its cost belongs to the anchor it repaired.
+    close_latch();
+    latch_open_ = repair_on_;
+    latch_until_ = house_now + LATCH_REPAIR_NS;
+    repair_ns_ = 0;
+}
+
+void TimelineStamper::close_latch() {
+    if (!latch_open_) return;
+    latch_open_ = false;
+    if (on_settled_) on_settled_({anchor_, repair_ns_, LATCH_REPAIR_NS});
+}
+
+int64_t TimelineStamper::repair(int64_t house_now, int64_t stamp) {
+    if (!latch_open_) return stamp;
+    if (house_now >= latch_until_) {
+        close_latch();
+        return stamp;
+    }
+    // The watch has this buffer down as anomalous (an unconfirmed
+    // discontinuity): its stamp is off the OLD timeline by the jump, not early
+    // delivery, and must not move the anchor — see ts_timeline.py.
+    if (anom_ != 0) return stamp;
+    int64_t late = stamp - house_now;
+    if (late <= 0) return stamp;
+    anchor_ -= late;
+    repair_ns_ -= late;
+    return house_now;
+}
+
 void TimelineStamper::observe(int64_t house_now, int64_t stamp) {
     int64_t margin = house_now - stamp;
     if (!has_epoch_start_) {
@@ -298,6 +342,9 @@ void TimelineStamper::reanchor(int pid, int64_t last_pts, int64_t pts, int64_t d
     // In place, NOT a restart: the anchor is two numbers, so a re-anchor costs
     // one PTS step and needs no cooperation from any consumer. Every stream of
     // this egress re-anchors together (one anchor), so A/V pairing survives.
+    // A repair window still open is closed and REPORTED against the anchor it
+    // repaired, before that anchor is replaced.
+    close_latch();
     anom_ = 0;
     reanchors_++;
     anchor_ = house_now;
@@ -313,6 +360,8 @@ void TimelineStamper::reanchor(int pid, int64_t last_pts, int64_t pts, int64_t d
     // margin measured against an anchor that no longer exists, so carrying it
     // over would slew the fresh anchor by the dead epoch's error.
     reset_drift(house_now, true);
+    // A fresh anchor has the same exposure the first one had.
+    open_latch(house_now);
     // Fresh latch: the old first-PES map belongs to the epoch we just left.
     latch_.clear();
     // Drop the monotone floors with the anchor. A discontinuity is detected at
@@ -408,6 +457,7 @@ bool TimelineStamper::scan_stamp(const uint8_t* data, size_t len, int64_t house_
             has_slew_last_ = true;
             epoch_start_ = house_now;
             has_epoch_start_ = true;
+            open_latch(house_now);
             // The latch's epoch reference: the first PES it recorded, which
             // every other PID's first value was unwrapped against.
             ref_ = latch_.epoch_ref(pts);
@@ -452,6 +502,9 @@ int64_t TimelineStamper::stamp(const uint8_t* data, size_t len, int64_t house_no
     latch_.feed(data, len);                            // epoch-consistent first PES per PID
     int64_t s = 0;
     if (scan_stamp(data, len, house_now, &s)) {
+        // The latch-repair window first: while it is open, a stamp that lands
+        // after its own arrival is the anchor's error, and is paid back here.
+        s = repair(house_now, s);
         // Closed loop: measure this buffer's MAPPED time against the house time
         // it arrived at — before the monotone floor below, which guards what
         // leaves rather than describing the mapping (a clamped stamp would read
@@ -492,6 +545,15 @@ std::string reanchor_event_json(const TimelineStamper::Reanchor& r) {
            ",\"deltaTicks\":" + std::to_string(r.delta_ticks) +
            ",\"anchorNs\":" + std::to_string(r.anchor_ns) +
            ",\"count\":" + std::to_string(r.count) + "}";
+}
+
+std::string settled_event_json(const TimelineStamper::Settled& s) {
+    // `repairNs` is the number an operator reads: 0 means the first PES was on
+    // cadence; -1.8e9 means the anchor was taken off the head of a 1.8 s
+    // backlog and has been pulled back onto the source's delivery.
+    return "{\"event\":\"timeline_settled\",\"anchorNs\":" + std::to_string(s.anchor_ns) +
+           ",\"repairNs\":" + std::to_string(s.repair_ns) +
+           ",\"windowNs\":" + std::to_string(s.window_ns) + "}";
 }
 
 std::string drift_stats_json(const TimelineStamper::Drift& d) {

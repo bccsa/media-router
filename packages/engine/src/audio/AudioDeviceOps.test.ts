@@ -1,10 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
     parseDeviceBlock,
     parseDeviceChannels,
     parseDeviceSampleRate,
     parseDeviceVolumes,
     PA_VOLUME_NORM,
+    AudioDeviceOps,
+    DEFAULT_DEVICE_CACHE_TTL_MS,
 } from './AudioDeviceOps.js';
 
 describe('parseDeviceChannels', () => {
@@ -133,5 +135,70 @@ describe('parseDeviceBlock', () => {
         // In the sink direction this name shouldn't appear, but if it
         // did we wouldn't filter it out — that's intentional.
         expect(parseDeviceBlock(block, 'sink')).not.toBeNull();
+    });
+});
+
+describe('AudioDeviceOps listing cache', () => {
+    const SOURCES = [
+        'Source #1',
+        '\tName: alsa_input.usb-mic',
+        '\tDescription: USB Mic',
+        '\tChannel Map: front-left,front-right',
+    ].join('\n');
+    const SINKS = [
+        'Sink #2',
+        '\tName: alsa_output.usb-dac',
+        '\tDescription: USB DAC',
+        '\tChannel Map: front-left,front-right',
+    ].join('\n');
+
+    function makeOps(cacheTtlMs?: number) {
+        let t = 1_000_000;
+        const execImmediate = vi.fn((args: string[]) => (args[1] === 'sources' ? SOURCES : SINKS));
+        const queue = { execImmediate, onMutation: null as (() => void) | null };
+        const ops = new AudioDeviceOps(queue as never, { cacheTtlMs, now: () => t });
+        return { ops, execImmediate, queue, advance: (ms: number) => (t += ms) };
+    }
+
+    it('reuses one pactl snapshot for every reader inside the TTL', () => {
+        const { ops, execImmediate } = makeOps();
+        expect(ops.hasDevice('alsa_input.usb-mic')).toBe(true);
+        expect(ops.getDeviceInfo('alsa_output.usb-dac')?.channels).toBe(2);
+        expect(ops.listDevices()).toHaveLength(2);
+        // sources + sinks, once — not once per reader.
+        expect(execImmediate).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-fetches once the TTL has elapsed (hot-plug is still seen)', () => {
+        const { ops, execImmediate, advance } = makeOps();
+        ops.listDevices();
+        advance(DEFAULT_DEVICE_CACHE_TTL_MS - 1);
+        ops.listDevices();
+        expect(execImmediate).toHaveBeenCalledTimes(2);
+        advance(1);
+        ops.listDevices();
+        expect(execImmediate).toHaveBeenCalledTimes(4);
+    });
+
+    it('drops the snapshot when a queued (mutating) pactl command settles', () => {
+        const { ops, execImmediate, queue } = makeOps();
+        ops.listDevices();
+        expect(queue.onMutation).toBeTypeOf('function');
+        queue.onMutation!();
+        ops.listDevices();
+        expect(execImmediate).toHaveBeenCalledTimes(4);
+    });
+
+    it('hands out a copy, so a caller mutating the list cannot poison later readers', () => {
+        const { ops } = makeOps();
+        ops.listDevices().length = 0;
+        expect(ops.listDevices()).toHaveLength(2);
+    });
+
+    it('caches nothing when cacheTtlMs is 0', () => {
+        const { ops, execImmediate } = makeOps(0);
+        ops.listDevices();
+        ops.listDevices();
+        expect(execImmediate).toHaveBeenCalledTimes(4);
     });
 });

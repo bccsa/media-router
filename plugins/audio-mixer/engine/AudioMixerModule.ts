@@ -5,7 +5,7 @@ import {
     type PipelineDescription,
     type ThroughputSample,
 } from '@media-router/engine';
-import { probe302mSupport } from '@media-router/plugin-audio-302m-core';
+import { probe302mSupport, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
 import { buildMixerPipeline } from './audioMixerPipeline.js';
 
 const INPUT_PORT_ID = 'audio-in';
@@ -105,6 +105,7 @@ export class AudioMixerModule extends GstPluginBase {
             channels: (config.channels as number) ?? 2,
             volume: volumePct / 100,
             latencyMs: Number(config.mixLatencyMs ?? 200),
+            pcmFormat: s302mFormatFor(config.pcmBitDepth),
         });
         if (!result) return null;
 

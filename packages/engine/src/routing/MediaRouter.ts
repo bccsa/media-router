@@ -492,6 +492,38 @@ export class MediaRouter {
     }
 
     /**
+     * Every bus producer upstream of `moduleId`, nearest first and TRANSITIVE:
+     * a muxer fed by a splitter fed by an hls-player sees all of them, each
+     * with its own `isDeliveryLeadProducer` declaration. Read by
+     * `effectiveLatchRepair` (ADR-0005 note 2026-09-05): whether a producer's
+     * delivery cadence is its media cadence is a property of the source at the
+     * head of the chain, and the chain can be any depth. Deduplicated (a
+     * diamond reports each producer once).
+     */
+    getUpstreamBusProducers(moduleId: string): Array<{ pluginId: string; deliveryLead: boolean }> {
+        const seen = new Set<string>([moduleId]);
+        const out: Array<{ pluginId: string; deliveryLead: boolean }> = [];
+        const queue = [moduleId];
+        while (queue.length > 0) {
+            const id = queue.shift() as string;
+            for (const conn of this.connections.values()) {
+                if (conn.sinkModuleId !== id || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
+                if (seen.has(conn.sourceModuleId)) continue;
+                seen.add(conn.sourceModuleId);
+                const producer = this.moduleGetter?.(conn.sourceModuleId);
+                if (producer) {
+                    out.push({
+                        pluginId: producer.pluginId,
+                        deliveryLead: producer.isDeliveryLeadProducer?.() === true,
+                    });
+                }
+                queue.push(conn.sourceModuleId);
+            }
+        }
+        return out;
+    }
+
+    /**
      * A route head's `playoutOffsetMs` was edited — re-anchor every consumer of
      * that producer, together. Without the fan-out the change would sit in the
      * producer's config until each consumer happened to rebuild, so one leg of a
@@ -552,6 +584,11 @@ export class MediaRouter {
         socketPath: string;
         /** Per-connection channel map (audio/pcm and audio/302m edges). */
         channelMap?: ChannelMapEntry[];
+        /** Channel count of the bus stream as DECLARED by the producer
+         *  (`PluginModule.getBusStreamChannels`) — what a consumer's channel-map
+         *  matrix needs as its input dimension. Undefined when the producer
+         *  declares nothing; the consumer applies its own default. */
+        sourceChannels?: number;
     }> {
         const out: Array<{
             port: number;
@@ -562,6 +599,7 @@ export class MediaRouter {
             streamType: StreamType;
             socketPath: string;
             channelMap?: ChannelMapEntry[];
+            sourceChannels?: number;
         }> = [];
         for (const [connId, conn] of this.connections) {
             if (conn.sinkModuleId !== moduleId || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
@@ -569,6 +607,9 @@ export class MediaRouter {
                 this.busChannels.get(this.channelKey(conn.sourceModuleId, conn.sourcePortId)) ??
                 this.busChannels.get(conn.sourceModuleId);
             if (port !== undefined) {
+                const sourceChannels = this.moduleGetter?.(
+                    conn.sourceModuleId,
+                )?.getBusStreamChannels?.(conn.sourcePortId);
                 out.push({
                     port,
                     connectionId: connId,
@@ -578,6 +619,7 @@ export class MediaRouter {
                     streamType: conn.streamType,
                     socketPath: this.edgeSocketPath(port, connId),
                     channelMap: conn.channelMap,
+                    ...(sourceChannels !== undefined ? { sourceChannels } : {}),
                 });
             }
         }

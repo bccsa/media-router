@@ -104,13 +104,49 @@ export function parseDeviceBlock(
     };
 }
 
+/** How long one `pactl list` snapshot is reused before it is re-fetched. */
+export const DEFAULT_DEVICE_CACHE_TTL_MS = 1000;
+
+export interface AudioDeviceOpsOptions {
+    /** Snapshot lifetime in ms — `0` disables caching. Default 1000. */
+    cacheTtlMs?: number;
+    /** Monotonic-ish clock, injectable for tests. Default `Date.now`. */
+    now?: () => number;
+}
+
 /**
  * Audio device operations: volume control and device enumeration. Volume
  * commands go through PaCommandQueue's queue for rate limiting; device
  * listing uses `execImmediate` (bypasses the queue, read-only).
+ *
+ * Listing is CACHED for `cacheTtlMs`. Every caller of `hasDevice` /
+ * `getDeviceInfo` / `listDevices` used to spawn two `pactl list` processes
+ * (sources + sinks): two device providers polling every 2 s plus one
+ * DeviceWatchdog per audio module added up to ~4 pactl spawns per second on
+ * a 5-module Pi 4 profile, ~10 % of a core across node, pipewire-pulse and
+ * wireplumber. With the cache the same callers cost at most two spawns per
+ * second, usually fewer, and hot-plug is still seen within TTL + poll period.
+ * The cache is dropped as soon as any queued (mutating) pactl command
+ * settles — see `PaCommandQueue.onMutation`.
  */
 export class AudioDeviceOps {
-    constructor(private paQueue: PaCommandQueue) {}
+    private readonly cacheTtlMs: number;
+    private readonly now: () => number;
+    private cache: { at: number; devices: AudioDevice[] } | null = null;
+
+    constructor(
+        private paQueue: PaCommandQueue,
+        opts: AudioDeviceOpsOptions = {},
+    ) {
+        this.cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_DEVICE_CACHE_TTL_MS;
+        this.now = opts.now ?? Date.now;
+        this.paQueue.onMutation = () => this.invalidateDeviceCache();
+    }
+
+    /** Forget the cached listing — the next read re-runs `pactl list`. */
+    invalidateDeviceCache(): void {
+        this.cache = null;
+    }
 
     /**
      * Set volume on a PulseAudio source device (for Audio Input).
@@ -148,6 +184,9 @@ export class AudioDeviceOps {
      * List available audio devices (sources and sinks) with full descriptions.
      */
     listDevices(): AudioDevice[] {
+        if (this.cache && this.cacheTtlMs > 0 && this.now() - this.cache.at < this.cacheTtlMs) {
+            return [...this.cache.devices];
+        }
         const devices: AudioDevice[] = [];
         const probe = (kind: 'sources' | 'sinks', direction: 'source' | 'sink') => {
             try {
@@ -162,7 +201,8 @@ export class AudioDeviceOps {
         };
         probe('sources', 'source');
         probe('sinks', 'sink');
-        return devices;
+        this.cache = { at: this.now(), devices };
+        return [...devices];
     }
 
     /**

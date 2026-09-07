@@ -216,11 +216,16 @@ function getFaceWidgetValue(widget: Record<string, unknown>): number {
 
 const hasStats = computed(() => allStatusSections.value.length > 0);
 
-// Show VU meters if the module has any audio ports (pcm or 302m PCM-in-TS)
+// Show VU meters if the module carries audio: any `audio/*` port (pcm, 302m
+// PCM-in-TS, opus, aac), or an input that `acceptsAnyTs` — that flag exists
+// for the audio-transcoder decoding a muxed TS / 302M stream, whose OUTPUTS
+// are compressed renditions typed `muxed/mpegts`. Without this clause a 302M→
+// Opus transcoder had no meter on the manager while the LCP showed it (the
+// engine streams VU for it regardless — the gating was UI-only).
 const hasAudio = computed(
     () =>
         props.data.ports?.some(
-            (p) => p.streamType === 'audio/pcm' || p.streamType === 'audio/302m',
+            (p) => p.streamType.startsWith('audio/') || p.acceptsAnyTs === true,
         ) ?? false,
 );
 // Read VU data from dedicated reactive store (updates at ~15Hz without triggering full re-render)

@@ -337,6 +337,16 @@ export class ModuleInstance extends EventEmitter {
         return this.plugin.getLiveInputSwap?.(sinkPortId) ?? null;
     }
 
+    /** Producer-declared channel count of a bus output port (see PluginModule). */
+    getBusStreamChannels(portId: string): number | undefined {
+        return this.plugin.getBusStreamChannels?.(portId);
+    }
+
+    /** Producer declares its delivery runs ahead of real time (see PluginModule). */
+    isDeliveryLeadProducer(): boolean {
+        return this.plugin.isDeliveryLeadProducer?.() === true;
+    }
+
     /** Target of the tracked `bus_reinput` live-swap RPC (gst child process,
      *  or a native sink's own controller — ts-splitter). */
     getLiveSwapTarget(): LiveSwapTarget | null {

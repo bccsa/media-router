@@ -221,3 +221,15 @@ describe('start payload', () => {
         expect(payloadFor({ pipeline: 'fakesrc ! fakesink' }).alignBranchesToStamps).toBeUndefined();
     });
 });
+
+describe('start payload (the wire to the runner)', () => {
+    // `startPayload` is an explicit field list, so a description field the
+    // runner reads only exists on the wire if it is named here — the latch
+    // repair flag was dropped exactly this way once (review, 2026-09-06).
+    it('carries latchRepair as resolved, and omits it when unresolved', () => {
+        const child = new GstChildProcess('/nonexistent/gst-runner.js') as any;
+        expect(child.startPayload({ pipeline: 'x', latchRepair: false }).latchRepair).toBe(false);
+        expect(child.startPayload({ pipeline: 'x', latchRepair: true }).latchRepair).toBe(true);
+        expect(child.startPayload({ pipeline: 'x' })).toHaveProperty('latchRepair', undefined);
+    });
+});

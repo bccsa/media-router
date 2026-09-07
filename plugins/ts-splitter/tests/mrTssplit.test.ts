@@ -467,7 +467,12 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         // constants drift apart by the wall gap between their first buffers.
         const ladder = join(dir, 'ladder.ts');
         writeFileSync(ladder, avLadder(LADDER_RUNGS));
-        const r = await rig(['--stamp-timeline', '--flush-ms', '0']);
+        // `--no-latch-repair`: this ladder is fed as fast as the splitter
+        // takes it, which the stamper's latch-repair window reads (correctly)
+        // as a reconnect backlog and pulls the anchor back from — the wire
+        // would then carry arrival time, not the ladder. The repair's own
+        // coverage is ts_timeline_test.{py,cpp}; this pins the anchor UNDER it.
+        const r = await rig(['--stamp-timeline', '--no-latch-repair', '--flush-ms', '0']);
         await r.attach(0x65);
         await r.attach(0xc9);
         const video = await r.ladderClient(0x65, LADDER_RUNGS);
@@ -523,7 +528,8 @@ describe.skipIf(!havePython || !haveBinary)('mr-tssplit end-to-end', () => {
         const PRE = 12, POST = 24;
         const ladder = join(dir, 'loop-ladder.ts');
         writeFileSync(ladder, avLoopFixture(PRE, POST));
-        const r = await rig(['--stamp-timeline', '--flush-ms', '0']);
+        // `--no-latch-repair` for the same reason as the anchor test above.
+        const r = await rig(['--stamp-timeline', '--no-latch-repair', '--flush-ms', '0']);
         await r.attach(0x65);
         await r.attach(0xc9);
         const video = await r.ladderClient(0x65, PRE + POST);

@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ensureWaylandEnv } from '@media-router/engine';
 
-// The env seeding is shared engine infrastructure now (mjpeg-monitor renders
-// too); re-exported so this module's callers keep one import site.
+// The env seeding is shared engine infrastructure now (any rendering plugin
+// uses it); re-exported so this module's callers keep one import site.
 export { ensureWaylandEnv };
 
 /**

@@ -169,6 +169,7 @@ export {
     buildBackpressureQueue,
     buildTsUdpInput,
 } from './plugins/tsHelpers.js';
+export { tsQueueByteCap } from './plugins/queueBounds.js';
 export type { TsUdpInputOpts } from './plugins/tsHelpers.js';
 export { capsStreamInfo } from './plugins/streamCapsInfo.js';
 export type { StreamCapsInfo } from './plugins/streamCapsInfo.js';
@@ -192,6 +193,8 @@ export type {
     PlayoutOffsetServices,
     PlayoutOffsetRouteSource,
 } from './plugins/playoutOffset.js';
+export { effectiveLatchRepair } from './plugins/latchRepair.js';
+export type { LatchRepairServices, LatchRepairRouteSource } from './plugins/latchRepair.js';
 export {
     backlogShedConfig,
     BACKLOG_SHED_EVENT,

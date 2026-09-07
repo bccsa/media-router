@@ -55,8 +55,29 @@ export interface AudioMixSource {
      */
     channelMap?: ChannelMapEntry[];
     /** Channel count of THIS source's 302M stream (matrix input dimension).
-     *  Default 2 — the v1 302M encode branch is stereo-pinned. */
+     *  Default 2. Normalised through `normalize302mChannels` before use, since
+     *  a 302M stream only ever carries 2/4/6/8 channels whatever the producer's
+     *  raw `channels` setting says (a mono-trunk transcoder still emits stereo
+     *  302M). `MediaRouter.getModuleBusSources` fills it from the producer's
+     *  `getBusStreamChannels` declaration — the wire width, never a config
+     *  field. */
     sourceChannels?: number;
+}
+
+/** The channel counts a SMPTE-302M stream can carry (and `avenc_s302m` accepts). */
+const S302M_CHANNEL_COUNTS = [2, 4, 6, 8] as const;
+type S302mChannels = (typeof S302M_CHANNEL_COUNTS)[number];
+
+/**
+ * Snap any channel count onto the 302M set: rounds UP to the next even count
+ * and clamps to 2..8 (1→2, 3→4, 5→6, 7→8, ≥9→8, junk→2). 302M has no other
+ * layouts — 32 desk inputs mean four 8-channel streams, not one wide one.
+ */
+export function normalize302mChannels(n: number | undefined): S302mChannels {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 2) return 2;
+    if (v >= 8) return 8;
+    return (v % 2 === 0 ? v : v + 1) as S302mChannels;
 }
 
 export interface PacedMixerOpts {
@@ -208,7 +229,7 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
         const src = buildBusSrc({ port: s.port, socketPath: s.socketPath });
         // Per-connection channel mapping on THIS branch's audioconvert.
         const matrix = s.channelMap?.length
-            ? mixMatrixClause(s.channelMap, s.sourceChannels ?? 2, channels)
+            ? mixMatrixClause(s.channelMap, normalize302mChannels(s.sourceChannels ?? 2), channels)
             : '';
         return (
             `${src} ! tsdemux name=${demuxName(i)} latency=0 ! audio/x-smpte-302m ! avdec_s302m` +
@@ -254,26 +275,31 @@ export function buildAudioMixInput(opts: AudioMixInputOpts): {
 export interface Audio302mEncodeOpts {
     /** S32LE → 24-bit 302M (default), S16LE → 16-bit. */
     format?: 'S32LE' | 'S16LE';
+    /** Channels in the 302M stream — snapped onto {2, 4, 6, 8} by
+     *  `normalize302mChannels`. Default 2 (every pre-existing caller). */
+    channels?: number;
 }
 
 /**
  * PCM → 302M-in-TS encode tail: `… ! <this> ! <udp/bus sink>`.
  *
  * `avenc_s302m` accepts only S32LE/S16LE at 48 kHz (302M is a 48 kHz
- * standard); stereo is pinned — the encoder's channel ceiling varies by
- * gst-libav build (2 on ≤1.24, re-verify on newer). Ends in its own
- * `mpegtsmux latency=0 alignment=7` (single-ES TS, SRT-aligned) — the
- * caller appends `buildBusSink(...)`.
+ * standard) and only 2/4/6/8 channels — that is the format's ceiling, not a
+ * build quirk (verified `gst-inspect-1.0 avenc_s302m` on the fleet's gst
+ * 1.28.2: `channels: { 2, 4, 6, 8 }`). Default stereo; wider streams are
+ * opt-in per caller. Ends in its own `mpegtsmux latency=0 alignment=7`
+ * (single-ES TS, SRT-aligned) — the caller appends `buildBusSink(...)`.
  */
 export function build302mEncodeBranch(opts: Audio302mEncodeOpts = {}): string {
     const format = opts.format ?? 'S32LE';
+    const channels = normalize302mChannels(opts.channels ?? 2);
     // `strict=experimental`: ffmpeg flags its s302m ENCODER experimental and
     // refuses to run at normal compliance ("Codec is experimental, but
     // settings don't allow…" — verified gate01 gst 1.28). The bitstream it
     // produces is plain standard SMPTE 302M; only the encoder is gated.
     return (
         'audioconvert ! audioresample' +
-        ` ! audio/x-raw,format=${format},rate=48000,channels=2` +
+        ` ! audio/x-raw,format=${format},rate=48000,channels=${channels}` +
         ' ! avenc_s302m strict=experimental ! mpegtsmux latency=0 alignment=7'
     );
 }

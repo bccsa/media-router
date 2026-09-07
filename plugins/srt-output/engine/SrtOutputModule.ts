@@ -3,6 +3,7 @@ import {
     buildBackpressureQueue,
     buildBusSrc,
     buildTsRechunk,
+    tsQueueByteCap,
     SrtStatPoller,
     type PipelineDescription,
     type SrtStatPollerHost,
@@ -128,7 +129,8 @@ export class SrtOutputModule extends GstPluginBase {
                 socketPath: udpSource.socketPath,
             }),
             // NON-leaky: a leaky shed on muxed TS is mid-stream corruption at the wire.
-            buildBackpressureQueue(200),
+            // Byte-capped (ADR-0015): a time-only bound is blind to stalled stamps.
+            buildBackpressureQueue(200, tsQueueByteCap(200)),
             ...repack,
             `srtsink name=sink uri="${uri}" sync=false wait-for-connection=false auto-reconnect=false`,
         ].join(' ! ');

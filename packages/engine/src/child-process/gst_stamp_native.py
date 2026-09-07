@@ -173,9 +173,11 @@ def insert_elements(pipe):
         sys.stderr.flush()
 
 
-def activate(el, name):
+def activate(el, name, repair_latch=True):
     """Arm one spliced element. Setting `active` IS the whole arm: it resets the
-    latch and takes the element out of passthrough, in that order."""
+    latch and takes the element out of passthrough, in that order. The
+    latch-repair policy is set first so the fresh latch is built with it."""
+    el.set_property("repair-latch", bool(repair_latch))
     el.set_property("active", True)
     sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "
                      f"armed on {name} (first consumer edge, native mrtsstamp)\n")

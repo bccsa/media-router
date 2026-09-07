@@ -103,3 +103,28 @@ describe('buildMixerPipeline', () => {
         expect(r.pipeline).not.toContain('set-timestamps');
     });
 });
+
+describe('buildMixerPipeline — 302M word length', () => {
+    const base = {
+        sources: [{ port: 40000, connectionId: 'c1' }],
+        outputPort: 40008,
+        channels: 2,
+        volume: 1,
+        latencyMs: 200,
+    };
+
+    it('emits 16-bit 302M by default (pcmBitDepth unset)', () => {
+        const r = buildMixerPipeline(base);
+        expect(r!.pipeline).toContain(
+            'audio/x-raw,format=S16LE,rate=48000,channels=2 ! avenc_s302m',
+        );
+        expect(r!.pipeline).not.toContain('format=S32LE');
+    });
+
+    it('emits 24-bit 302M when the module asks for S32LE', () => {
+        const r = buildMixerPipeline({ ...base, pcmFormat: 'S32LE' });
+        expect(r!.pipeline).toContain(
+            'audio/x-raw,format=S32LE,rate=48000,channels=2 ! avenc_s302m',
+        );
+    });
+});

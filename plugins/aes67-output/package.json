@@ -58,7 +58,7 @@
                     "minimum": 1,
                     "maximum": 2,
                     "default": 2,
-                    "description": "Channels to send. The 302M bus carries stereo, so this is 1 or 2."
+                    "description": "Channels to send. This output mixes its 302M sources to stereo, so this is 1 or 2."
                 },
                 "ptimeMs": {
                     "type": "number",

@@ -1028,7 +1028,7 @@ Latency-sensitive knobs (SRT `latency`, the player's `bufferMs`, the video-encod
 
 ##### Rendering to the box's compositor
 
-`ensureWaylandEnv()` (from `@media-router/engine`) seeds `XDG_RUNTIME_DIR` / `WAYLAND_DISPLAY` from the live compositor socket when the engine was launched without a session env (systemd-user). Call it before building any `waylandsink` pipeline; the video-player and mjpeg-monitor share it — never copy the function into a plugin.
+`ensureWaylandEnv()` (from `@media-router/engine`) seeds `XDG_RUNTIME_DIR` / `WAYLAND_DISPLAY` from the live compositor socket when the engine was launched without a session env (systemd-user). Call it before building any `waylandsink` pipeline; every rendering plugin shares it — never copy the function into a plugin.
 
 ##### Shared 302M audio helpers
 
@@ -1077,9 +1077,16 @@ so import them from `@media-router/plugin-audio-302m-core` and declare the depen
   paced). Build every new mixer through this rather than assembling the string by hand.
   All three fan-in rules — pacing, chaining only from `continuationName`, and the
   single-source bypass — are locked in [ADR-0008](../docs/adr/0008-302m-fan-in-contract.md).
-- `build302mEncodeBranch({ format? })` — PCM → 302M-in-TS encode tail
-  (`S32LE`/48 kHz/stereo, `avenc_s302m strict=experimental` — ffmpeg gates the encoder;
-  the bitstream is standard). Caller appends `buildBusSink(...)`.
+- `build302mEncodeBranch({ format?, channels? })` — PCM → 302M-in-TS encode tail
+  (`S32LE`/48 kHz, `avenc_s302m strict=experimental` — ffmpeg gates the encoder; the
+  bitstream is standard). Stereo by default; `channels` is snapped onto the 2/4/6/8 set
+  a 302M stream can carry — that is the FORMAT's ceiling, so a wide desk is several
+  producer modules, never one wide stream ([ADR-0014](../docs/adr/0014-302m-stream-width.md)).
+  A producer that emits anything but stereo must also declare it via
+  `getBusStreamChannels(portId)` (see below) so consumers size their channel-map
+  matrices correctly. Caller appends `buildBusSink(...)`.
+- `normalize302mChannels(n)` — the snap used above (1→2, 3→4, 5→6, 7→8, ≥9→8). Use it
+  wherever a raw `channels` setting has to become a 302M wire width.
 - `probe302mSupport()` — the one-call runtime gate for 302M features: probes
   `avenc_s302m` AND `mpegtsmux` accepting `audio/x-smpte-302m` (**gst ≥ 1.26**). Call it
   once from `static initManifest` and cache the flag (real examples:
@@ -1231,6 +1238,24 @@ getPipeWireNodeForPort(portId: string): { source?: string; sink?: string } {
 ```
 
 Real examples: [`n1-mixer`](n1-mixer/engine/N1MixerModule.ts) (per-port PipeWire nodes), [`ts-splitter`](ts-splitter/engine/TsSplitterModule.ts) and [`mpegts-muxer`](mpegts-muxer/engine/MpegTsMuxerModule.ts) (dynamic outputs/inputs based on stream counts).
+
+### Bus stream width (`getBusStreamChannels`)
+
+A producer whose bus stream width is a runtime choice implements
+`getBusStreamChannels(portId): number | undefined` on its module. `MediaRouter.getModuleBusSources`
+hands the value to every consumer of that port as `sourceChannels`, and the 302M fan-in
+(`buildAudioMixInput`) sizes each branch's channel-map matrix from it. It describes the
+WIRE, never a config field: `audio-input-302m` returns its normalised `channels` setting;
+`aes67-input`, whose `channels` setting is the received stream while the wire stays
+stereo, declares nothing. Consumers default to stereo when nothing is declared.
+
+The playback counterpart is
+[`audio-output-302m/engine/outputPlacement.ts`](audio-output-302m/engine/outputPlacement.ts):
+`buildOutputPlacement({ device, channels, firstChannel, deviceChannels })` spreads an
+N-channel mix onto device channels `firstChannel..` as a device-wide unpositioned stream
+(`mix-matrix` + `channel-mask=0x0`), or returns `fragment: null` for the default stereo
+range so the legacy pipeline string stays byte-identical. Reuse it for any other
+`pulsesink` presentation leg that needs to land on specific outputs of a multichannel card.
 
 ### Live Input Swap (`getLiveInputSwap`)
 
@@ -1669,7 +1694,7 @@ Volume is in percentage (0-500+).
 
 String-valued pipeline properties (URLs, passphrases) go through `quoteGstString(value)` from `@media-router/engine`, which double-quotes and backslash-escapes for `Gst.parse_launch`.
 
-Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime, and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
+Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime (500 ms, byte-capped — every leaky queue on the bus carries a `max-size-bytes` next to its time bound, because a time-only bound goes unbounded once the stream's timestamps stall; see `packages/engine/src/plugins/queueBounds.ts`), and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
 **Bus buffer contract (ADR-0011).** A bus buffer is one access unit of whole
 188-byte TS packets — a gst producer's egress element coalesces the mux's
@@ -1825,7 +1850,28 @@ args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
 for the consumer legs and fans a change out to them live. The consuming side
 is covered in "Playout Offset D (`playoutOffsetMs`)" above.
 
-**Where stamper events come from (debugging).** Anchor / re-anchor /
+**Latch repair (`latchRepair` / `--no-latch-repair`).** The stamper anchors on
+the first PES it sees; a live source's first PES after a (re)connect is the
+head of the sender's backlog, so for 3 s after any anchor the stamper pulls
+the anchor back onto the earliest-delivering buffer and reports what that
+cost as `timeline_settled { anchorNs, repairNs, windowNs }` (ADR-0005 note
+2026-09-05 — the GATE01 cross-feed lipsync). It rests on ONE assumption:
+delivery cadence = media cadence. That is a property of the SOURCE at the
+head of the chain, so the engine resolves it from the graph
+(`effectiveLatchRepair`, `packages/engine/src/plugins/latchRepair.ts`): ON
+unless a producer that declares `isDeliveryLeadProducer()` (hls-player) sits
+anywhere upstream. `GstPluginBase` puts the answer on the description (`latchRepair`)
+and the runner passes it to the stampers; a sidecar producer passes
+`--no-latch-repair` when it resolves false (mr-tssplit does — copy that). **If
+you write a producer whose delivery deliberately runs ahead of real time**
+(segmented, file-backed, pre-buffered), implement
+`isDeliveryLeadProducer(): boolean` returning true on your module (the engine
+names no plugin itself, ADR-0007) and leave the repair off in your own sidecar
+(`TimelineStamper(..., repair_latch=False)`, the default), or every later
+segment head will be stamped late by a segment. The native element exposes
+the same switch as `repair-latch` (read at arm).
+
+**Where stamper events come from (debugging).** Anchor / settled / re-anchor /
 segment-warning events and the periodic `timeline_drift` report (per armed
 egress, every 30 s) originate in the runner's stamping subsystem —
 `packages/engine/src/child-process/gst_bus_stamper.py` (lifecycle: contract

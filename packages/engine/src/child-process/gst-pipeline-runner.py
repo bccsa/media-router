@@ -481,7 +481,7 @@ def on_bus_message(bus, message):
         name = structure.get_name() if structure else None
         src = message.src
         src_name = src.get_name() if src else None
-        if name in ("mrtsstamp-anchor", "mrtsstamp-reanchor",
+        if name in ("mrtsstamp-anchor", "mrtsstamp-settled", "mrtsstamp-reanchor",
                     "mrtsstamp-segment-warning"):
             # The native egress stamper reports through the bus (it has no other
             # way home). Translated here into the SAME engine events the python
@@ -1379,11 +1379,50 @@ def _clear_branch_align():
     _branch_align.clear()
 
 
-# A zero point can only be off by the reorder depth / one buffer's span of
-# media. Anything past this is not the error this feature exists to remove —
-# a misidentified anchor, a stream whose stamps aren't house-mapped — and the
-# safe answer is to leave the branch exactly as it is today and say so.
-_BRANCH_ALIGN_MAX_NS = 500_000_000
+# How far a branch may be moved, each way. These are what the MUX can absorb,
+# not a guess at how wrong a zero point can be: the 2026-09-05 GATE01 epoch
+# rejected +533 ms, +683 ms and +1024 ms corrections that were all REAL (the
+# producers' stamps really were that far from the branches) under a 500 ms
+# "plausibility" cap, and every rejected track shipped out of step with its
+# siblings. A POSITIVE correction moves the branch later: its buffers then sit
+# in the aggregator until their turn, so the bound is the branch's own input
+# queue (5 s, `queue leaky=2 max-size-time=5000000000`) less headroom. A
+# NEGATIVE one moves it earlier, which the aggregator reads as those buffers
+# arriving late, so the bound is the mux's latency fill (1.2 s,
+# mpegtsMuxerPipeline) less headroom — past it the mux would drop the track
+# rather than align it. A branch outside either is left as it is, and said
+# LOUDLY (a `warning` engine event, not just a runner log line): that track
+# WILL be out of step, and until now nothing outside the journal knew.
+_BRANCH_ALIGN_MAX_LATE_NS = 4_000_000_000
+_BRANCH_ALIGN_MAX_EARLY_NS = 1_000_000_000
+
+
+def _branch_align_verdict(off_ns):
+    """What a measured branch error gets: "apply" the pad offset, "skip" one
+    too small to be worth a timeline step, or "reject" one past what the mux
+    can absorb. Pure, so the sign convention (positive = branch behind its
+    producer's stamps = moved LATER, bounded by the input queue; negative =
+    moved EARLIER, bounded by the mux latency fill) is pinned by a test
+    rather than by a live rig."""
+    if off_ns > _BRANCH_ALIGN_MAX_LATE_NS or -off_ns > _BRANCH_ALIGN_MAX_EARLY_NS:
+        return "reject"
+    if abs(off_ns) < _BRANCH_ALIGN_MIN_NS:
+        return "skip"
+    return "apply"
+
+
+def _branch_align_rejected(demux_name, pid, off_ns):
+    """The engine-visible half of a rejection: a `warning` event, so a track
+    left out of step with its siblings is a status the module can show and
+    not only a line in a journal nobody was reading (the 2026-09-05 GATE01
+    epoch rejected three real corrections that way)."""
+    emit_event({
+        "event": "warning",
+        "message": (f"branchAlign: {demux_name} pid=0x{pid:x} sits "
+                    f"{off_ns / 1e6:+.0f} ms from its producer's stamps, "
+                    f"past what the mux can absorb — branch left as-is, "
+                    f"so this track WILL be out of step with its siblings "
+                    f"(time-sync contract, ADR-0005)")})
 # How long a branch is left alone before its error is even sampled. A tsdemux
 # RE-SLAVES to the upstream stamps for the first seconds of a stream (the
 # settling `gst_tsdemux_slave_test.py` measures), so anything read before this
@@ -1612,9 +1651,11 @@ def _install_branch_stamp_align(pipe, cfg):
             if not finish(st, pad):
                 return Gst.PadProbeReturn.OK          # a sibling settled first; it retires us
             note = ""
-            if abs(off) > _BRANCH_ALIGN_MAX_NS:
-                note = " — REJECTED (past the plausible zero-point error), branch left as-is"
-            elif abs(off) < _BRANCH_ALIGN_MIN_NS:
+            verdict = _branch_align_verdict(off)
+            if verdict == "reject":
+                note = " — REJECTED (past what the mux can absorb), branch left as-is"
+                _branch_align_rejected(st["name"], pid, off)
+            elif verdict == "skip":
                 note = " — already aligned, left untouched"
             else:
                 pad.set_offset(pad.get_offset() + off)
@@ -1927,7 +1968,7 @@ def handle_start(data):
     # and the probe must own that edge's first buffer. The probes themselves arm
     # per tee as consumers attach. Gated on the same flag as the clock, because
     # the stamp is only meaningful once base_time is pinned to 0.
-    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"))
+    gst_bus_stamper.enable(pipeline, data.get("timeSyncContract"), data.get("latchRepair"))
 
     # Install stream discovery on every distinct demux element the rules
     # reference, so the owning module sees an unfiltered `stream:discovered`
@@ -2326,7 +2367,8 @@ def handle_set_klv_payload(data):
 # Per-consumer bus fan-out (unixfd transport)
 # ---------------------------------------------------------------------------
 # A producer's bus egress is a `tee` (built by buildUdpSink); the engine's
-# BusFanoutCoordinator attaches ONE `queue leaky=2 ! unixfdsink` branch per
+# BusFanoutCoordinator attaches ONE `queue leaky=2` (time- AND byte-capped,
+# ADR-0015) `! unixfdsink` branch per
 # consumer edge at runtime. This is the isolation the shared unixfdsink lacked:
 # unixfdsink sends under its object lock with blocking sockets, so a shared
 # sink froze every sibling when one consumer stalled; a per-consumer branch
@@ -2359,6 +2401,31 @@ _bus_branches = {}      # socket_path -> dict(branch, tee, tee_src, tee_name, qu
 # cheaply detect changes with one int compare per buffer.
 _bus_topology_version = 0
 _bus_branch_seq = 0
+# Per-consumer edge queue bounds (ADR-0015). The byte ceiling is the
+# timestamp-independent backstop next to the time bound: `queue` measures its
+# time level from the stamps passing through it, so a stalled or stepped-back
+# timeline leaves a time-only leaky queue unbounded. Working hypothesis for
+# the gate01 2026-09-06 muxer growth (~2.8 GB each at program bitrate) —
+# unconfirmed on the box, see docs/TodoNotes.md. Rate mirrors
+# `TS_QUEUE_BYTES_PER_MS` in the engine's queueBounds.ts (64 Mbit/s).
+BUS_EDGE_QUEUE_MS = 500
+BUS_EDGE_QUEUE_BYTES_PER_MS = 8_000
+BUS_EDGE_QUEUE_MAX_BYTES = BUS_EDGE_QUEUE_MS * BUS_EDGE_QUEUE_BYTES_PER_MS
+
+
+def bus_edge_branch_description(socket):
+    """gst-launch description of one per-consumer fan-out branch.
+
+    `queue leaky=2` (500 ms, byte-capped) ! `unixfdsink` on the consumer's own
+    edge socket. Kept as a pure function so the shape is unit-testable — see
+    `_try_bus_attach` for why every property here is load-bearing.
+    """
+    return (
+        f"queue leaky=2 max-size-time={BUS_EDGE_QUEUE_MS * 1_000_000} max-size-buffers=0"
+        f" max-size-bytes={BUS_EDGE_QUEUE_MAX_BYTES}"
+        f" ! unixfdsink socket-path={socket} sync=false async=false"
+        " wait-for-connection=false"
+    )
 # Edge-stall watchdog (gate01 wedge, 2026-07-16): stock unixfdsink's send
 # BLOCKS forever on a connected client that stops reading (~208KB kernel
 # sndbuf ≈ 60ms of a 28Mbps stream) while holding the sink object lock —
@@ -2487,12 +2554,11 @@ def _try_bus_attach(tee_name, socket):
         # on the wire, engine librist lost=0). 500 ms absorbs the worst
         # observed hold (~253 ms) with 2x headroom; memory cost is trivial
         # (≈340 KB at 5.4 Mbps). Still leaky=2 — a genuinely stalled consumer
-        # must shed here, never back-pressure the producer.
+        # must shed here, never back-pressure the producer. The byte cap
+        # (BUS_EDGE_QUEUE_MAX_BYTES) is what still sheds when stalled stamps
+        # blind the time bound.
         branch = Gst.parse_bin_from_description(
-            "queue leaky=2 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0"
-            f" ! unixfdsink socket-path={socket} sync=false async=false"
-            " wait-for-connection=false",
-            True,
+            bus_edge_branch_description(socket), True
         )
         _bus_branch_seq += 1
         branch.set_name(f"busedge_{_bus_branch_seq}")
@@ -3689,11 +3755,13 @@ def _start_backlog_shedder(pipe, cfg):
 
     WHERE IT MEASURES. On the sink pad of `element`, per buffer:
 
-        lateness = now_running_time - (buffer_running_time + ts_offset)
+        lateness = now_running_time - (buffer_running_time + ts_offset + latency)
 
-    `ts_offset` is read live off the `sink` element, so it is the ROUTE's
-    playout offset D including any operator trim, and lateness is therefore the
-    excess over budget directly (`retained latency = lateness + D`). Running
+    `ts_offset` is read live off the `sink` element and `latency` is the sink's
+    negotiated pipeline latency (see `_sink_latency_ms`); their sum is the
+    sink's render deadline — the ROUTE's playout offset D including any
+    operator trim wherever ts-offset is not clamped — so lateness is the excess
+    over budget directly (`retained latency = lateness + budget`). Running
     time comes from the pad's own SEGMENT, which is why the probe watches
     downstream events too — buffer PTS alone is not a timeline.
 
@@ -3806,6 +3874,27 @@ def _start_backlog_shedder(pipe, cfg):
             return float(sink.get_property("ts-offset")) / 1e6
         except (TypeError, AttributeError, GLib.Error):
             return 0.0
+
+    def _sink_latency_ms():
+        """The sink's negotiated pipeline latency (GstBaseSink.get_latency —
+        what the LATENCY query settled on: an audiomixer's `latency`, the audio
+        ring, …). A `sync=true` sink renders at `rt + ts-offset + latency`, so
+        the budget has to be measured against that SAME deadline. Measured
+        against `rt + ts-offset` alone, a leg whose ts-offset is clamped to 0
+        (D smaller than the latencies it was meant to cancel — every mixer arm
+        at the 300 ms default D) reads its own structural latency as retained
+        backlog: field, 10.9.16.105 2026-09-05, "retained 411 ms against a 0 ms
+        budget", every buffer dropped after the 5 s hold, silence on the SSL 2
+        while the VU kept moving. Where ts-offset is NOT clamped the two terms
+        still sum to D, so unclamped legs read exactly as before. 0 until the
+        first LATENCY event (and on sinks without the API) — the old behaviour."""
+        try:
+            lat = sink.get_latency()
+        except (TypeError, AttributeError, GLib.Error):
+            return 0.0
+        if lat is None or lat == Gst.CLOCK_TIME_NONE:
+            return 0.0
+        return float(lat) / 1e6
 
     def _stall_now_ms():
         """Monotonic ms — the base GLib's own timeouts run on. Deliberately NOT
@@ -3943,7 +4032,7 @@ def _start_backlog_shedder(pipe, cfg):
         if rt == Gst.CLOCK_TIME_NONE:
             return Gst.PadProbeReturn.OK          # outside the segment
         now_rt = clock.get_time() - pipe.get_base_time()
-        budget_ms = _ts_offset_ms()
+        budget_ms = _ts_offset_ms() + _sink_latency_ms()
         st["budget_ms"] = budget_ms
         late_ms = (now_rt - rt) / 1e6 - budget_ms
         now_ms = now_rt / 1e6

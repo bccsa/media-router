@@ -1,8 +1,0 @@
-{
-    "extends": "../tsconfig.plugin.json",
-    "compilerOptions": {
-        "outDir": "./dist",
-        "rootDir": "./engine"
-    },
-    "include": ["engine"]
-}

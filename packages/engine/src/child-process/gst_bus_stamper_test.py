@@ -86,6 +86,12 @@ Gst.init(sys.argv)
 # (`gst_mrtsstamp_element_test.py`), which also cross-checks the two
 # buffer-for-buffer.
 stamper.native_loaded = False
+# ...and to a first-PES anchor. Every ladder below is pushed as fast as the
+# pipeline takes it, which the stamper's latch-repair window reads (correctly)
+# as a reconnect backlog and pulls the anchor back from. The repair has its
+# own coverage — the arithmetic in ts_timeline_test.py, the runner path in
+# gst_mrtsstamp_element_test.py — and this suite pins the arithmetic UNDER it.
+stamper.repair_latch = False
 
 _failures = []
 NS_PER_TICK_NUM, NS_PER_TICK_DEN = 100000, 9   # 90 kHz -> ns, exact in integers

@@ -14,7 +14,7 @@ import * as path from 'path';
  * it while waiting for the compositor to come up).
  *
  * Lives in the engine because every plugin that renders needs the identical
- * contract (video-player, mjpeg-monitor); ADR-0002 bars plugin-to-plugin
+ * contract (video-player today, any future renderer); ADR-0002 bars plugin-to-plugin
  * imports and a copy per plugin drifts.
  */
 

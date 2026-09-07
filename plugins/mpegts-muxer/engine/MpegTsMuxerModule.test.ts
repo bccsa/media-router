@@ -155,7 +155,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             expect(s).toBe(
                 'unixfdsrc name=busin_0 socket-path=/tmp/mr-bus-40000-abc123.sock' +
-                    ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0' +
+                    ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000' +
                     ' ! tsdemux latency=0 name=demux_0',
             );
             expect(s).not.toContain('watchdog');
@@ -348,7 +348,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             // the inter-stream skew on every buffer; a 50 ms leaky queue shed
             // 11% of audio frames. Non-leaky 500 ms bound lost zero.
             expect(audioRule.branches[0]).toBe(
-                'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0',
+                'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000',
             );
         });
         it('threads queueDepthMs into the stability-mode bound (clamped 100–5000 ms)', () => {
@@ -382,6 +382,9 @@ describe('mpegtsMuxerPipeline helpers', () => {
             const audioRule = result!.linkOnPadAdded.find((r) => r.media === 'audio')!;
             expect(videoRule.branches[0]).toContain('queue leaky=2 max-size-time=200000000');
             expect(audioRule.branches[0]).toContain('queue leaky=2 max-size-time=200000000');
+            // The byte cap rides along on the leaky shape too (200 ms × 8000 B/ms = 1.6 MB).
+            expect(videoRule.branches[0]).toContain('max-size-bytes=1600000');
+            expect(audioRule.branches[0]).toContain('max-size-bytes=1600000');
         });
         it('emits parser-free branches (parser is picked by the runner from per-pad caps)', () => {
             const result = buildPipeline({
@@ -401,7 +404,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
             });
             const videoRule = result!.linkOnPadAdded.find((r) => r.media === 'video')!;
             expect(videoRule.branches[0]).toBe(
-                'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0',
+                'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000',
             );
         });
         describe('in-band stream info (KLV appsrc + PCR pin)', () => {
@@ -516,7 +519,7 @@ describe('mpegtsMuxerPipeline helpers', () => {
                     alignment: 7,
                 });
                 expect(result!.linkOnPadAdded[0].branches[0]).toBe(
-                    'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=0' +
+                    'queue leaky=0 max-size-time=500000000 max-size-buffers=0 max-size-bytes=4000000' +
                         ' ! taginject name=lang_320 tags=language-code=deu',
                 );
             });

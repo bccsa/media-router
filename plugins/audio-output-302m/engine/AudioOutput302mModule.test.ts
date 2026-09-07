@@ -7,6 +7,9 @@ function makeModule(
         /** Turn the engine-wide time-sync contract on, with the engine default D
          *  (ms) and an optional route-head override. */
         contract?: { playoutOffsetMs?: number; routeOverrideMs?: number };
+        /** Provide a PipeWire service whose getDeviceInfo reports this width
+         *  (null = device not enumerated). Absent = no PipeWire service at all. */
+        deviceChannels?: number | null;
     } = {},
 ) {
     const module = new AudioOutput302mModule() as any;
@@ -25,6 +28,18 @@ function makeModule(
         mediaRouter: { getModuleBusSources: vi.fn(() => sources), getRoutePlayoutOffsetMs },
         ...(opts.contract
             ? { timeSyncContract: true, playoutOffsetMs: opts.contract.playoutOffsetMs ?? 300 }
+            : {}),
+        ...(opts.deviceChannels !== undefined
+            ? {
+                  pipeWire: {
+                      hasDevice: vi.fn(() => true),
+                      getDeviceInfo: vi.fn(() =>
+                          opts.deviceChannels === null
+                              ? null
+                              : { channels: opts.deviceChannels, sampleRate: 48000 },
+                      ),
+                  },
+              }
             : {}),
     };
     module.config = {};
@@ -94,6 +109,90 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         const { module } = makeModule({ sources: 1 });
         const desc = module.buildPipeline({ device: 'alsa_output.usb-foo' });
         expect(desc!.pipeline).toContain('unixfdsrc socket-path=/tmp/mr-bus-40100-x.sock');
+    });
+
+    it('default stereo range keeps the legacy string byte-for-byte, even on a 32-channel card', () => {
+        const legacy = makeModule({ sources: 1 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        const wide = makeModule({ sources: 1, deviceChannels: 32 }).module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+        });
+        expect(wide!.pipeline).toBe(legacy!.pipeline);
+        expect(wide!.pipeline).not.toContain('mix-matrix');
+        expect(wide!.pipeline).not.toContain('channel-mask');
+    });
+
+    it('places an 8-channel mix on outputs 9–16 of a 32-channel card, upstream of an untouched sink', () => {
+        const { module } = makeModule({ sources: 1, deviceChannels: 32 });
+        const desc = module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+            channels: 8,
+            firstChannel: 9,
+        });
+        expect(desc).not.toBeNull();
+        const p: string = desc!.pipeline;
+        // The mix is 8 wide; VU reads it before the spread.
+        expect(p).toContain('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8"');
+        expect(p).toMatch(
+            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=32,channel-mask=\(bitmask\)0x0 ! pulsesink device=alsa_output\.usb-foo sync=false$/,
+        );
+        // Row 8 (device channel 9) carries mix channel 0: the first lit cell.
+        const matrix = /mix-matrix="<(.*)>"/.exec(p)![1];
+        const rows = matrix.split('>, <');
+        expect(rows).toHaveLength(32);
+        expect(rows[8].replace(/[<>]/g, '').split(', ')[0]).toBe('(float)1.0000');
+        expect(rows[0].replace(/[<>]/g, '')).not.toContain('1.0000');
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'output',
+            expect.objectContaining({
+                channels: 8,
+                firstChannel: 9,
+                lastChannel: 16,
+                deviceChannels: 32,
+            }),
+        );
+    });
+
+    it('placement leaves the contract sink and its timing properties exactly as before', () => {
+        const { module } = makeModule({
+            sources: 1,
+            deviceChannels: 32,
+            contract: { playoutOffsetMs: 300 },
+        });
+        const desc = module.buildPipeline({
+            device: 'alsa_output.usb-foo',
+            channels: 2,
+            firstChannel: 3,
+        });
+        expect(desc!.pipeline).toContain(
+            'channel-mask=(bitmask)0x0 ! pulsesink name=sink device=alsa_output.usb-foo sync=true' +
+                ' provide-clock=false slave-method=1 max-lateness=-1 buffer-time=100000 ts-offset=200000000',
+        );
+        expect(desc!.backlogShed).toMatchObject({ element: 'sink', sink: 'sink' });
+    });
+
+    it('health error (and no pipeline) when the range runs past the device', () => {
+        const { module, setHealth } = makeModule({ sources: 1, deviceChannels: 32 });
+        expect(
+            module.buildPipeline({ device: 'alsa_output.usb-foo', channels: 8, firstChannel: 45 }),
+        ).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith(
+            'error',
+            expect.stringContaining('has 32 channels — cannot play on 45–52'),
+        );
+        expect(setHealth).not.toHaveBeenCalledWith('ok');
+    });
+
+    it('health error when a non-default range is asked of a device of unknown width', () => {
+        const { module, setHealth } = makeModule({ sources: 1, deviceChannels: null });
+        expect(
+            module.buildPipeline({ device: 'alsa_output.usb-foo', channels: 8, firstChannel: 9 }),
+        ).toBeNull();
+        expect(setHealth).toHaveBeenCalledWith(
+            'error',
+            expect.stringContaining('not enumerated by PipeWire'),
+        );
     });
 
     it('contract OFF: no backlog shedder, no named sink — the legacy string is untouched', () => {

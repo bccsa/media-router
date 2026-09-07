@@ -18,7 +18,7 @@ import {
     type EngineServices,
     type PipelineDescription,
 } from '@media-router/engine';
-import { build302mEncodeBranch } from '@media-router/plugin-audio-302m-core';
+import { build302mEncodeBranch, s302mFormatFor } from '@media-router/plugin-audio-302m-core';
 import {
     aes67Discovery,
     registerAes67StreamDeviceProvider,
@@ -238,15 +238,18 @@ export class Aes67InputModule extends GstPluginBase {
             (ptpActive ? ' rfc7273-sync=true add-reference-timestamp-meta=true' : '');
 
         // NOTE: no re-timestamping anywhere in this chain (time-sync contract).
-        // The 302M encode branch is stereo-pinned by `avenc_s302m` (verified
-        // 1.28: channels [1,2]); a >2 ch stream is downmixed by audioconvert and
-        // the operator is told so rather than silently losing channels.
+        // This module encodes STEREO 302M (`build302mEncodeBranch()` default);
+        // the format itself carries up to 8 channels (ADR-0014) and widening
+        // AES67 ingest is a follow-up. A >2 ch stream is downmixed by
+        // audioconvert and the operator is told so rather than silently losing
+        // channels. Because the wire is fixed stereo whatever `channels` says,
+        // this module deliberately declares no `getBusStreamChannels`.
         const pipeline = [
             netSrc,
             jitter,
             aes67DepayloaderElement(encoding),
             `audio/x-raw,rate=${AES67_SAMPLE_RATE}`,
-            build302mEncodeBranch(),
+            build302mEncodeBranch({ format: s302mFormatFor(config.pcmBitDepth) }),
             buildBusSink(endpoint.port),
         ].join(' ! ');
 
