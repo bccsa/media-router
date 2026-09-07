@@ -30,6 +30,7 @@
  * "Nothing more" is load-bearing — see the `capssetter` note in `buildBusSink`.
  */
 import type { InputStallWatch } from './PluginModule.js';
+import { tsQueueByteCap } from './queueBounds.js';
 
 export const BUS_TS_CAPS = 'video/mpegts, systemstream=(boolean)true, packetsize=(int)188';
 
@@ -145,7 +146,7 @@ export interface BusSrcOpts {
 
 /**
  * Bus ingress for one consumer edge:
- *   unixfdsrc [! watchdog] ! queue leaky=2 (5 s)
+ *   unixfdsrc [! watchdog] ! queue leaky=2 (5 s, 40 MB byte cap — ADR-0015)
  *
  * Caps arrive over the socket from the producer, so no caps/buffer sizing
  * applies here. A dead producer surfaces as a connection error (which trips
@@ -169,7 +170,14 @@ export interface BusSrcOpts {
  * gst_object_check_uniqueness). Shedding after 5 s of stall cuts a muxed TS
  * mid-stream, but a stall that long has already lost the data — corruption on
  * one branch beats a wedged graph.
+ *
+ * The byte bound (5 s at 64 Mbit/s = 40 MB) is the timestamp-independent
+ * backstop — see `queueBounds.ts`. Everything on the bus is compressed TS or
+ * 302M, so a healthy edge never reaches it.
  */
+const BUS_INGRESS_QUEUE_MS = 5000;
+const BUS_INGRESS_QUEUE_BYTES = tsQueueByteCap(BUS_INGRESS_QUEUE_MS);
+
 export function buildBusSrc(opts: BusSrcOpts): string {
     const nameClause = opts.name ? ` name=${opts.name}` : '';
     const socket = opts.socketPath ?? busSocketPath(opts.port);
@@ -180,7 +188,8 @@ export function buildBusSrc(opts: BusSrcOpts): string {
         : '';
     return (
         `unixfdsrc${nameClause} socket-path=${socket}${watchdogClause}` +
-        ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0'
+        ` ! queue leaky=2 max-size-time=${BUS_INGRESS_QUEUE_MS * 1_000_000}` +
+        ` max-size-buffers=0 max-size-bytes=${BUS_INGRESS_QUEUE_BYTES}`
     );
 }
 

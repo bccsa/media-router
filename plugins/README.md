@@ -1692,7 +1692,7 @@ Volume is in percentage (0-500+).
 
 String-valued pipeline properties (URLs, passphrases) go through `quoteGstString(value)` from `@media-router/engine`, which double-quotes and backslash-escapes for `Gst.parse_launch`.
 
-Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime, and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
+Inter-module routing of `muxed/mpegts` (and `audio/302m`) streams uses GStreamer unixfd IPC: a producer ends in a fan-out `tee` (`buildBusSink`), the engine attaches one `queue leaky=2 ! unixfdsink` branch per consumer edge at runtime (500 ms, byte-capped — every leaky queue on the bus carries a `max-size-bytes` next to its time bound, because a time-only bound goes unbounded once the stream's timestamps stall; see `packages/engine/src/plugins/queueBounds.ts`), and each consumer reads its own edge socket (`buildBusSrc`). `MediaRouter` allocates a **bus channel** (a port number that keys every socket path and the tee name — it never binds a socket) from a generic pool used by **any** plugin that produces or consumes a bus stream — encoders, demuxers, muxers, SRT in/out, RIST in/out. The API is plugin-agnostic; nothing about it is encoder-specific.
 
 **Bus buffer contract (ADR-0011).** A bus buffer is one access unit of whole
 188-byte TS packets — a gst producer's egress element coalesces the mux's
@@ -1848,7 +1848,28 @@ args: [..., ...(this.services?.timeSyncContract ? ['--stamp-timeline'] : [])],
 for the consumer legs and fans a change out to them live. The consuming side
 is covered in "Playout Offset D (`playoutOffsetMs`)" above.
 
-**Where stamper events come from (debugging).** Anchor / re-anchor /
+**Latch repair (`latchRepair` / `--no-latch-repair`).** The stamper anchors on
+the first PES it sees; a live source's first PES after a (re)connect is the
+head of the sender's backlog, so for 3 s after any anchor the stamper pulls
+the anchor back onto the earliest-delivering buffer and reports what that
+cost as `timeline_settled { anchorNs, repairNs, windowNs }` (ADR-0005 note
+2026-09-05 — the GATE01 cross-feed lipsync). It rests on ONE assumption:
+delivery cadence = media cadence. That is a property of the SOURCE at the
+head of the chain, so the engine resolves it from the graph
+(`effectiveLatchRepair`, `packages/engine/src/plugins/latchRepair.ts`): ON
+unless a producer that declares `isDeliveryLeadProducer()` (hls-player) sits
+anywhere upstream. `GstPluginBase` puts the answer on the description (`latchRepair`)
+and the runner passes it to the stampers; a sidecar producer passes
+`--no-latch-repair` when it resolves false (mr-tssplit does — copy that). **If
+you write a producer whose delivery deliberately runs ahead of real time**
+(segmented, file-backed, pre-buffered), implement
+`isDeliveryLeadProducer(): boolean` returning true on your module (the engine
+names no plugin itself, ADR-0007) and leave the repair off in your own sidecar
+(`TimelineStamper(..., repair_latch=False)`, the default), or every later
+segment head will be stamped late by a segment. The native element exposes
+the same switch as `repair-latch` (read at arm).
+
+**Where stamper events come from (debugging).** Anchor / settled / re-anchor /
 segment-warning events and the periodic `timeline_drift` report (per armed
 egress, every 30 s) originate in the runner's stamping subsystem —
 `packages/engine/src/child-process/gst_bus_stamper.py` (lifecycle: contract

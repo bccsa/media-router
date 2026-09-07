@@ -487,6 +487,15 @@ export class GstRunner {
                 );
                 break;
 
+            case 'timeline_settled':
+                // The producer stamper's latch-repair window closed (ADR-0005
+                // note 2026-09-05): what this anchor cost, at the engine, so a
+                // burn-in can read it without the runner's own stderr.
+                console.error(
+                    `[gst-runner] latch settled on ${String(eventJson.tee)}: anchor pulled back ${(-(Number(eventJson.repairNs) || 0) / 1e6).toFixed(1)} ms in the first ${(Number(eventJson.windowNs) || 0) / 1e9} s`,
+                );
+                break;
+
             case 'warning':
                 // Non-fatal runner diagnostics (parser fallback, bus_attach
                 // retries, stale-socket cleanup). Dropping these hid real

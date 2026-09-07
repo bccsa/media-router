@@ -68,6 +68,13 @@ armed = []              # armed stampers — one per tee that HAS consumers
 elements = native.elements   # tee name -> inserted `mrtsstamp` element
 native_loaded = None    # None = not tried, True/False = load outcome
 drift_timer_id = None   # GLib source id of the periodic drift report
+# The stamper's latch-repair window (ts_timeline.py, "latch repair"): ON for
+# every producer this runner hosts — a network ingest, a muxer, a transcoder,
+# a capture all deliver at their media cadence, which is the one assumption
+# the repair rests on. Module-level so a suite that drives a pipeline FASTER
+# than real time (every synthetic ladder below reads to the window as a
+# backlog flush) can pin it off, the way `native_loaded` pins the backend.
+repair_latch = True
 
 # How often each armed egress reports its drift loop. 30 s is a compromise:
 # the loop's own estimator window is 32 s, so anything faster reports the same
@@ -167,9 +174,15 @@ def clear():
     elements.clear()
 
 
-def enable(pipe, on):
+def enable(pipe, on, repair=None):
     """Record the contract flag. Stampers arm LAZILY, per tee, on that tee's
     FIRST consumer edge (`arm`, from the runner's bus_attach path).
+
+    `repair` is the start payload's `latchRepair` — the engine's answer to
+    whether this pipeline's producers deliver at their media cadence
+    (`effectiveLatchRepair`: OFF anywhere below an hls-player). None leaves
+    the module-level `repair_latch` as it is, which is how a suite that pins
+    it off keeps its pin across `enable`.
 
     `on` is the start payload's `timeSyncContract` flag. Off → nothing is
     imported, no probe is ever installed and the dataflow is byte-identical;
@@ -193,10 +206,12 @@ def enable(pipe, on):
     throughput source for the tee), so lazy arming is unaffected: what arms
     per consumer edge is the `active` property, not the element's existence.
     """
-    global enabled, pipeline
+    global enabled, pipeline, repair_latch
     clear()
     enabled = bool(on)
     pipeline = pipe if enabled else None
+    if repair is not None:
+        repair_latch = bool(repair)
     if enabled and load_native():
         insert_elements(pipe)
 
@@ -222,10 +237,10 @@ def arm(tee, name):
 
     el = elements.get(name)
     if el is not None:
-        native.activate(el, name)
+        native.activate(el, name, repair_latch)
         st = {"tee": name, "element": el, "pad": None, "probe_id": None}
     else:
-        st = probe.install(tee, name, pipeline)
+        st = probe.install(tee, name, pipeline, repair_latch)
         if st is None:
             return None
         sys.stderr.write("[gst-runner.py] busStamp: producer-stamped timeline "

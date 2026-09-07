@@ -88,9 +88,23 @@ class TimelineStamper {
         int64_t anchor_ns, ref_pts;
     };
     using OnAnchor = std::function<void(const Anchored&)>;
+    // The latch-repair window closed (python's `on_settled`): `repair_ns` (<= 0)
+    // is what the window pulled the anchor back by — the backlog a late first
+    // PES was the head of. Reported once per anchor, on the first PES buffer
+    // past the window.
+    struct Settled {
+        int64_t anchor_ns, repair_ns, window_ns;
+    };
+    using OnSettled = std::function<void(const Settled&)>;
 
-    TimelineStamper(OnAnchor on_anchor = nullptr, OnReanchor on_reanchor = nullptr)
-        : on_anchor_(std::move(on_anchor)), on_reanchor_(std::move(on_reanchor)) {}
+    // `repair_latch` is the OPT-IN for the latch-repair window (ts_timeline.py,
+    // "latch repair"): only for a producer whose delivery cadence IS its media
+    // cadence — a network ingest, a splitter or muxer riding one, a capture.
+    // The HLS fan-out runs AHEAD by design and must leave it off.
+    TimelineStamper(OnAnchor on_anchor = nullptr, OnReanchor on_reanchor = nullptr,
+                    OnSettled on_settled = nullptr, bool repair_latch = false)
+        : on_anchor_(std::move(on_anchor)), on_reanchor_(std::move(on_reanchor)),
+          on_settled_(std::move(on_settled)), repair_on_(repair_latch) {}
 
     // Map one outgoing buffer of `stream` onto the house timeline. EVERY
     // buffer gets a valid stamp: one with no PES header at all (PSI/PCR-only
@@ -98,6 +112,11 @@ class TimelineStamper {
     // timestampless buffer leaves the time-bounded leaky queues on the bus
     // unable to measure their own level.
     int64_t stamp(const uint8_t* data, size_t len, int64_t house_now, int stream = 0);
+
+    // Close an open latch-repair window NOW and report it (python's
+    // `close_latch`): for a disarm inside the window, so a short-lived
+    // incarnation's anchor cost is not silently skipped. No-op otherwise.
+    void close_latch();
 
     bool anchored() const { return anchored_; }
     int64_t anchor_ns() const { return anchor_; }
@@ -146,6 +165,11 @@ class TimelineStamper {
     void scan_stale(int pid, int64_t pts, int64_t house_now, int stream);
     // False when the buffer carries no PES header at all (`*out` untouched).
     bool scan_stamp(const uint8_t* data, size_t len, int64_t house_now, int64_t* out);
+    // Latch repair (python's `_open_latch` / `_repair`): a fresh anchor opens
+    // the window; inside it a stamp later than its own arrival pulls the anchor
+    // back and leaves as the arrival; the first PES past it closes and reports.
+    void open_latch(int64_t house_now);
+    int64_t repair(int64_t house_now, int64_t stamp);
 
     TimelineLatch latch_;
     bool anchored_ = false;
@@ -177,8 +201,14 @@ class TimelineStamper {
     int64_t slew_last_ = 0;       // house time the last correction was applied
     bool has_slew_last_ = false;
     int64_t slew_total_ = 0;      // cumulative anchor correction, this epoch
+    // Latch repair (see ts_timeline.py for the design and the field failure).
+    bool latch_open_ = false;     // a repair window is open
+    int64_t latch_until_ = 0;     // house time it closes at
+    int64_t repair_ns_ = 0;       // what it has pulled the anchor back by (<= 0)
     OnAnchor on_anchor_;
     OnReanchor on_reanchor_;
+    OnSettled on_settled_;
+    bool repair_on_ = false;
 };
 
 // The stamper's two engine events as JSON lines — ONE definition for every
@@ -191,6 +221,7 @@ class TimelineStamper {
 // by the fan-out conformance suite (unixfdFanout.test.ts).
 std::string anchor_event_json(const TimelineStamper::Anchored& a);
 std::string reanchor_event_json(const TimelineStamper::Reanchor& r);
+std::string settled_event_json(const TimelineStamper::Settled& s);
 
 // The drift loop's state as the `timeline` object of a producer's periodic
 // stats line — key for key what python's `drift_stats()` produces, so a

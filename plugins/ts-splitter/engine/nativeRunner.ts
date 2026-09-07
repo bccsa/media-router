@@ -34,11 +34,19 @@ export function buildSpawnArgs(opts: {
      *  each output with its payload's mapped media time instead of send time,
      *  all outputs sharing one anchor. Off ⇒ argv identical to before. */
     stampTimeline?: boolean;
+    /** The stamper's latch-repair window (`effectiveLatchRepair`, ADR-0005
+     *  note 2026-09-05): OFF when a delivery-lead source (hls-player) sits
+     *  anywhere upstream. Only meaningful with `stampTimeline`; the runner's
+     *  own default is ON, so only an explicit `false` reaches argv. */
+    latchRepair?: boolean;
 }): string[] {
     const args = ['--input', opts.inputSocketPath, '--caps', BUS_TS_CAPS];
     if (opts.tsId !== undefined) args.push('--ts-id', String(opts.tsId));
     if (opts.busBatchMs !== undefined) args.push('--flush-ms', String(opts.busBatchMs));
-    if (opts.stampTimeline) args.push('--stamp-timeline');
+    if (opts.stampTimeline) {
+        args.push('--stamp-timeline');
+        if (opts.latchRepair === false) args.push('--no-latch-repair');
+    }
     for (const o of opts.outputs) {
         const stype = o.streamType !== undefined ? `:0x${o.streamType.toString(16)}` : '';
         args.push('--out', `0x${o.pid.toString(16)}:${busTeeName(o.port)}${stype}`);

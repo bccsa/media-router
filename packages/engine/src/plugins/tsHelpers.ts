@@ -4,7 +4,8 @@
  *
  * Centralises three host-machine assumptions:
  *   - which video codec → parser element name to use,
- *   - the leaky-queue shape we use after every dynamic pad,
+ *   - the bounded-queue shapes (time bound + optional byte cap, ADR-0015)
+ *     used after every dynamic pad,
  *   - the default `mpegtsmux alignment` (=7, packed UDP).
  */
 
@@ -67,8 +68,13 @@ export function muxSinkPadName(pid: number): string {
  * Format a leaky `queue` clamping its time-buffer to `bufferMs`. `leaky=2`
  * drops the oldest buffer under back-pressure rather than stalling the
  * upstream — that's the right policy for live broadcast pipelines.
+ *
+ * `maxBytes` (default 0 = unlimited) adds a byte ceiling that holds even when
+ * the time bound cannot — see `queueBounds.ts` for why, the sizing helper
+ * `tsQueueByteCap`, and which callers still run time-only. Never set it on a
+ * raw-video queue.
  */
-export function buildLeakyQueue(bufferMs: number): string {
+export function buildLeakyQueue(bufferMs: number, maxBytes = 0): string {
     // 5000 ms cap matches the demuxer's slider ceiling. The cap is only there
     // to keep a runaway caller from queuing tens of seconds of latency; for
     // HLS chains the operator legitimately wants 2-3 s of jitter buffer here
@@ -81,7 +87,7 @@ export function buildLeakyQueue(bufferMs: number): string {
     // a stall, which is exactly when shedding is wanted.
     const clamped = Math.max(20, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
-    return `queue leaky=2 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
+    return `queue leaky=2 max-size-time=${ns} max-size-buffers=0 max-size-bytes=${maxBytes}`;
 }
 
 /**
@@ -102,14 +108,17 @@ export function buildLeakyQueue(bufferMs: number): string {
  * Do NOT use this to feed a real decoder/render sink (e.g. the video-player's
  * pre-decode queue): there the consumer can legitimately fall behind and
  * dropping (leaky) is the correct bound — back-pressure would stall playout.
+ *
+ * `maxBytes` (default 0 = unlimited): byte ceiling that back-pressures even
+ * when stalled timestamps defeat the time bound (see `queueBounds.ts`).
  */
-export function buildBackpressureQueue(bufferMs: number): string {
+export function buildBackpressureQueue(bufferMs: number, maxBytes = 0): string {
     // Same 20 ms floor as buildLeakyQueue: all-zero bounds mean UNLIMITED, so
     // a stuck consumer would grow this queue without ever back-pressuring —
     // the opposite of this helper's contract.
     const clamped = Math.max(20, Math.min(5000, bufferMs));
     const ns = clamped * 1_000_000;
-    return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=0`;
+    return `queue leaky=0 max-size-time=${ns} max-size-buffers=0 max-size-bytes=${maxBytes}`;
 }
 
 /**

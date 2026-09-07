@@ -76,7 +76,7 @@
 
 /* GST_PLUGIN_DEFINE reads PACKAGE for GstPluginDesc.source. */
 #define PACKAGE "media-router"
-#define MRTSSTAMP_VERSION "2.2.0"
+#define MRTSSTAMP_VERSION "2.3.0"
 
 GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
 #define GST_CAT_DEFAULT mrtsstamp_debug
@@ -96,18 +96,53 @@ GST_DEBUG_CATEGORY_STATIC(mrtsstamp_debug);
  * posting a message runs arbitrary bus handlers, and doing that under our own
  * lock invites a deadlock with the thread setting `active`. */
 struct MrTsStampPending {
-    gboolean reanchor;
+    gint kind;                   /* MRTSSTAMP_PENDING_* below */
     gint pid;
     gint64 anchor_ns;
     gint64 ref_pts;
     gint64 last_pts;
     gint64 delta_ticks;
     gint64 count;
+    gint64 repair_ns;            /* settled: what the latch-repair window cost */
+    gint64 window_ns;
 };
+enum { MRTSSTAMP_PENDING_ANCHOR = 0, MRTSSTAMP_PENDING_REANCHOR, MRTSSTAMP_PENDING_SETTLED };
+
+/* One factory per kind, naming every field it fills: the struct is positional
+ * and three kinds share it, so a brace-init with padding zeros would let a
+ * field-order slip compile. Everything not named is value-initialised. */
+static MrTsStampPending mrtsstamp_pending_anchor(const mrts::TimelineStamper::Anchored &a) {
+    MrTsStampPending p{};
+    p.kind = MRTSSTAMP_PENDING_ANCHOR;
+    p.pid = a.pid;
+    p.anchor_ns = a.anchor_ns;
+    p.ref_pts = a.ref_pts;
+    return p;
+}
+static MrTsStampPending mrtsstamp_pending_reanchor(const mrts::TimelineStamper::Reanchor &r) {
+    MrTsStampPending p{};
+    p.kind = MRTSSTAMP_PENDING_REANCHOR;
+    p.pid = r.pid;
+    p.anchor_ns = r.anchor_ns;
+    p.ref_pts = r.pts;
+    p.last_pts = r.last_pts;
+    p.delta_ticks = r.delta_ticks;
+    p.count = (gint64)r.count;
+    return p;
+}
+static MrTsStampPending mrtsstamp_pending_settled(const mrts::TimelineStamper::Settled &s) {
+    MrTsStampPending p{};
+    p.kind = MRTSSTAMP_PENDING_SETTLED;
+    p.anchor_ns = s.anchor_ns;
+    p.repair_ns = s.repair_ns;
+    p.window_ns = s.window_ns;
+    return p;
+}
 
 enum {
     PROP_0,
     PROP_ACTIVE,
+    PROP_REPAIR_LATCH,
     PROP_COPY_COUNT,
     PROP_DRIFT,
     PROP_BYTES_TOTAL,
@@ -123,6 +158,9 @@ struct _GstMrTsStamp {
 
     GMutex lock;                 /* guards everything below */
     gboolean active;
+    /* The stamper's latch-repair window (`repair-latch`, ts_timeline.py "latch
+     * repair"). Read when a fresh stamper is built, i.e. on every arm. */
+    gboolean repair_latch;
     gboolean checked;            /* one-shot clock/segment diagnostics per arm */
     gboolean seg_warned;         /* one-shot unmappable-segment report per arm */
     guint64 copies;              /* buffers we were handed as a COPY (see above) */
@@ -162,12 +200,15 @@ static void gst_mrtsstamp_reset(GstMrTsStamp *self) {
     std::vector<MrTsStampPending> *pending = self->pending;
     self->st = new mrts::TimelineStamper(
         [pending](const mrts::TimelineStamper::Anchored &a) {
-            pending->push_back({FALSE, a.pid, a.anchor_ns, a.ref_pts, 0, 0, 0});
+            pending->push_back(mrtsstamp_pending_anchor(a));
         },
         [pending](const mrts::TimelineStamper::Reanchor &r) {
-            pending->push_back({TRUE, r.pid, r.anchor_ns, r.pts, r.last_pts,
-                                r.delta_ticks, (gint64)r.count});
-        });
+            pending->push_back(mrtsstamp_pending_reanchor(r));
+        },
+        [pending](const mrts::TimelineStamper::Settled &s) {
+            pending->push_back(mrtsstamp_pending_settled(s));
+        },
+        self->repair_latch != FALSE);
 }
 
 /* Running-time, which under the contract IS house-clock time. Written as
@@ -286,7 +327,12 @@ static void gst_mrtsstamp_post(GstMrTsStamp *self, const MrTsStampPending &p) {
      * `timeline_reanchor` engine events, so nothing downstream can tell which
      * stamper produced them. */
     GstStructure *s;
-    if (p.reanchor) {
+    if (p.kind == MRTSSTAMP_PENDING_SETTLED) {
+        s = gst_structure_new("mrtsstamp-settled",
+                              "anchorNs", G_TYPE_INT64, p.anchor_ns,
+                              "repairNs", G_TYPE_INT64, p.repair_ns,
+                              "windowNs", G_TYPE_INT64, p.window_ns, NULL);
+    } else if (p.kind == MRTSSTAMP_PENDING_REANCHOR) {
         s = gst_structure_new("mrtsstamp-reanchor",
                               "pid", G_TYPE_INT, p.pid,
                               "anchorNs", G_TYPE_INT64, p.anchor_ns,
@@ -460,14 +506,24 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
     switch (prop_id) {
         case PROP_ACTIVE: {
             gboolean want = g_value_get_boolean(value);
+            std::vector<MrTsStampPending> posts;
             g_mutex_lock(&self->lock);
             if (want != self->active) {
+                if (!want && self->st != NULL) {
+                    /* A disarm inside the latch-repair window still reports
+                     * what the window cost — otherwise a short-lived edge's
+                     * anchor would vanish from the tally. Collected here,
+                     * posted below outside the lock like every other message. */
+                    self->st->close_latch();
+                    posts.swap(*self->pending);
+                }
                 self->active = want;
                 self->checked = FALSE;
                 self->seg_warned = FALSE;
                 gst_mrtsstamp_reset(self);
             }
             g_mutex_unlock(&self->lock);
+            for (const MrTsStampPending &p : posts) gst_mrtsstamp_post(self, p);
             /* Outside the lock: basetransform takes its own object lock here.
              * Order matters — arming resets state BEFORE buffers can reach
              * transform_ip; disarming stops stamping before the state is gone
@@ -476,6 +532,15 @@ static void gst_mrtsstamp_set_property(GObject *object, guint prop_id,
             gst_base_transform_set_passthrough(GST_BASE_TRANSFORM(self), !want);
             break;
         }
+        case PROP_REPAIR_LATCH:
+            /* Takes effect at the next arm: the policy belongs to the stamper
+             * built on the `active` transition, and the runner sets it before
+             * arming. Changing it on a running latch would mean two policies
+             * for one anchor. */
+            g_mutex_lock(&self->lock);
+            self->repair_latch = g_value_get_boolean(value);
+            g_mutex_unlock(&self->lock);
+            break;
         case PROP_COALESCE:
             self->coalesce.store(g_value_get_boolean(value) ? 1 : 0, std::memory_order_relaxed);
             break;
@@ -492,6 +557,11 @@ static void gst_mrtsstamp_get_property(GObject *object, guint prop_id, GValue *v
         case PROP_ACTIVE:
             g_mutex_lock(&self->lock);
             g_value_set_boolean(value, self->active);
+            g_mutex_unlock(&self->lock);
+            break;
+        case PROP_REPAIR_LATCH:
+            g_mutex_lock(&self->lock);
+            g_value_set_boolean(value, self->repair_latch);
             g_mutex_unlock(&self->lock);
             break;
         case PROP_COALESCE:
@@ -545,6 +615,10 @@ static void gst_mrtsstamp_init(GstMrTsStamp *self) {
     self->bytes_total.store(0, std::memory_order_relaxed);
     g_mutex_init(&self->lock);
     self->active = FALSE;
+    /* ON by default: every producer the runner splices this into delivers at
+     * its media cadence (the one assumption the repair rests on). The HLS
+     * path does not go through this element at all. */
+    self->repair_latch = TRUE;
     self->checked = FALSE;
     self->seg_warned = FALSE;
     self->copies = 0;
@@ -581,6 +655,18 @@ static void gst_mrtsstamp_class_init(GstMrTsStampClass *klass) {
                              FALSE,
                              (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS
                                            | GST_PARAM_MUTABLE_PLAYING)));
+    g_object_class_install_property(
+        gobject_class, PROP_REPAIR_LATCH,
+        g_param_spec_boolean("repair-latch", "Repair latch",
+                             "Open the stamper's latch-repair window on every fresh "
+                             "anchor: for the first seconds a buffer stamped later than "
+                             "it arrived pulls the anchor back to its arrival, so a first "
+                             "PES that was the head of a reconnect backlog does not fix "
+                             "the egress that far in the future (ADR-0005, ts_timeline.py "
+                             "\"latch repair\"). Only for a producer whose delivery "
+                             "cadence is its media cadence. Read at the next arm.",
+                             TRUE,
+                             (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
     g_object_class_install_property(
         gobject_class, PROP_COPY_COUNT,
         g_param_spec_uint64("copy-count", "Copy count",

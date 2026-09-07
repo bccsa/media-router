@@ -96,6 +96,18 @@ function asArray(v: unknown): string[] {
  * restart — see `getLiveUpdatableParams()`.
  */
 export class HlsPlayerModule extends GstPluginBase {
+    /**
+     * An HLS player fetches whole segments and runs AHEAD of real time by
+     * design (a ~2 s lead, built over the first minutes). Every producer
+     * downstream of this one therefore keeps the first-PES anchor: the
+     * stamper's latch repair would read the per-segment burst as a reconnect
+     * backlog (ADR-0005 note 2026-09-05, `effectiveLatchRepair`). The fan-out
+     * sidecar this module runs leaves its own stamper's repair off too.
+     */
+    isDeliveryLeadProducer(): boolean {
+        return true;
+    }
+
     private runner: ManagedProcess | null = null;
     /** The GstUnixFd fan-out sidecar + its controller. The sidecar owns the
      *  per-consumer edge sockets, so they survive runner relaunches (URL

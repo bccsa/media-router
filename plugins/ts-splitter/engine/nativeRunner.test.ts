@@ -39,6 +39,23 @@ describe('buildSpawnArgs', () => {
         ).toEqual(off);
     });
 
+    it('adds --no-latch-repair only under the contract and only for an explicit false', () => {
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true, latchRepair: false }),
+        ).toEqual(expect.arrayContaining(['--stamp-timeline', '--no-latch-repair']));
+        // The runner's own default is ON: absent and true are both argv-silent.
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true }),
+        ).not.toContain('--no-latch-repair');
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: true, latchRepair: true }),
+        ).not.toContain('--no-latch-repair');
+        // Contract off ⇒ nothing stamps, so nothing to repair: argv untouched.
+        expect(
+            buildSpawnArgs({ inputSocketPath: '/s', outputs: [], stampTimeline: false, latchRepair: false }),
+        ).toEqual(['--input', '/s', '--caps', BUS_TS_CAPS]);
+    });
+
     it('passes busBatchMs through as --flush-ms, including 0 (batching off)', () => {
         expect(
             buildSpawnArgs({ inputSocketPath: '/s', outputs: [], busBatchMs: 5 }),

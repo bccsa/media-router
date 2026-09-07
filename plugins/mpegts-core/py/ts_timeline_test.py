@@ -495,4 +495,180 @@ check("A/V hold the source's skew through the whole slew (to within ns)",
       max(abs(o - SKEW_NS) for o in av_off) <= 1000 and avst.drift_stats()['ppm'] != 0)
 
 
+# --- latch repair (the 2026-09-05 GATE01 field failure) ---------------------
+# A live network source (re)connects and flushes what it queued while the
+# session was down: the first PES is the HEAD of that backlog, late by all of
+# it, and every buffer after it arrives early against an anchor taken off it.
+# On .46 a vMix SRT feed came back with ~1.8 s queued, its stamps sat 1.8 s
+# later than its sibling feeds' for the same picture, and every mux mixing the
+# two shipped that as lipsync. The same numbers run in the C++ port
+# (native/mrts/tests/ts_timeline_test.cpp) — pinned literal for literal.
+BACKLOG = 45                          # 1.8 s of 40 ms buffers queued at the sender
+BURST_NS = 4_000_000                  # ... flushed at one buffer per 4 ms
+# What the un-repaired anchor is wrong by: the backlog's media minus the wall
+# time its flush took. Every steady-state buffer arrives this much BEFORE the
+# stamp a first-PES anchor gives it.
+BURST_ERR_NS = BACKLOG * (STEP_NS - BURST_NS)
+
+
+def burst_house(i):
+    """House arrival of buffer `i`: the backlog lands as a burst from HOUSE,
+    then the source is on its real cadence from where the flush ended."""
+    if i < BACKLOG:
+        return HOUSE + i * BURST_NS
+    return HOUSE + BACKLOG * BURST_NS + (i - BACKLOG) * STEP_NS
+
+
+BURST_N = 200                         # 6.2 s of house: the 3 s window closes inside it
+settled = []
+rep = t.TimelineStamper(on_settled=settled.append, repair_latch=True)
+rseen = [rep.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), burst_house(i))
+         for i in range(BURST_N)]
+check("the window closes once, on the first PES past it, and reports its cost",
+      settled == [{'anchorNs': HOUSE - BURST_ERR_NS, 'repairNs': -BURST_ERR_NS,
+                   'windowNs': t.TimelineStamper._LATCH_REPAIR_NS}]
+      and BURST_ERR_NS == 1_620_000_000)
+check("the backlog leaves stamped with its arrival — fast-forwarded, never early",
+      rseen[:BACKLOG] == [burst_house(i) for i in range(BACKLOG)])
+check("and after it every stamp is ON the source's delivery cadence (margin 0)",
+      rseen[BACKLOG + 1:] == [burst_house(i) for i in range(BACKLOG + 1, BURST_N)])
+check("monotone by construction: no floor clamp, no backwards step for a consumer",
+      all(rseen[i] >= rseen[i - 1] for i in range(1, BURST_N)))
+check("the anchor is fixed once the window closes",
+      rep.anchor == HOUSE - BURST_ERR_NS and rep._latch_until is None)
+
+# The control: the SAME delivery through a default stamper is the field
+# failure — every steady-state stamp 1.62 s in the future of its arrival, for
+# the life of the anchor. Repair is opt-in, so nothing that did not ask for it
+# (the HLS fan-out, whose burst is a segment and whose lead is by design) moves.
+ctl = t.TimelineStamper()
+cseen = [ctl.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), burst_house(i))
+         for i in range(BURST_N)]
+check("a default stamper still anchors on the first PES — repair is opt-in",
+      all(cseen[i] - burst_house(i) == BURST_ERR_NS for i in range(BACKLOG, BURST_N))
+      and ctl._latch_until is None)
+
+# A source that arrives ON cadence is left exactly where the first PES put it:
+# the window only ever answers a stamp later than its arrival.
+clean_settled = []
+clean = t.TimelineStamper(on_settled=clean_settled.append, repair_latch=True)
+kseen = [clean.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), HOUSE + i * STEP_NS + j)
+         for i, j in enumerate(jitter * 20)]
+check("a source on cadence costs the window nothing (jitter is late, never early)",
+      kseen == [HOUSE + i * STEP_NS for i in range(len(kseen))]
+      and clean_settled == [{'anchorNs': HOUSE, 'repairNs': 0,
+                             'windowNs': t.TimelineStamper._LATCH_REPAIR_NS}])
+
+# A/V of ONE egress through the burst (mr-tssplit's per-PID outputs): the
+# window converges on whichever stream delivers earliest, so once it has
+# settled both legs hold the source's own skew — the audio PES that sits
+# 13.7 ms ahead of the video's for 5 ms more arrival is what sets the anchor.
+av_settled = []
+avr = t.TimelineStamper(on_settled=av_settled.append, repair_latch=True)
+rpairs = []
+for i in range(BURST_N):
+    house = burst_house(i)
+    v = avr.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), house, 0x100)
+    a = avr.stamp(pes_ts_packet(0x101, pts=FIRST + i * STEP + SKEW),
+                  house + 5_000_000, 0x101)
+    rpairs.append((v, a))
+check("A/V settle onto ONE repaired anchor and hold the source's skew after it",
+      all(a - v == SKEW_NS for v, a in rpairs[BACKLOG + 2:])
+      and av_settled[0]['repairNs'] == -(BURST_ERR_NS + SKEW_NS - 5_000_000))
+
+# A re-anchor is a fresh anchor with the same exposure, so it re-opens the
+# window; a clean post-jump cadence closes it again at no cost.
+re_settled = []
+rer = t.TimelineStamper(on_settled=re_settled.append, repair_latch=True)
+JUMP_AT = 100
+for i in range(2 * JUMP_AT):
+    pts = FIRST + i * STEP + (JUMP if i >= JUMP_AT else 0)
+    rer.stamp(pes_ts_packet(0x100, pts=pts) + pes_ts_packet(0x101, pts=pts + 90),
+              HOUSE + i * STEP_NS)
+check("a re-anchor re-opens the window and a clean cadence closes it for free",
+      rer.reanchors == 1 and [s['repairNs'] for s in re_settled] == [0, 0])
+
+# A producer disarmed INSIDE the window (last consumer edge gone, module stop)
+# still reports what the window had cost so far — the short-lived incarnation
+# is exactly the one a burn-in tally must not skip. Closing twice is a no-op.
+early_settled = []
+early = t.TimelineStamper(on_settled=early_settled.append, repair_latch=True)
+for i in range(BACKLOG + 10):                     # well inside the 3 s window
+    early.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP), burst_house(i))
+early.close_latch()
+early.close_latch()
+check("a disarm inside the window reports the repair so far, once",
+      early_settled == [{'anchorNs': HOUSE - BURST_ERR_NS, 'repairNs': -BURST_ERR_NS,
+                         'windowNs': t.TimelineStamper._LATCH_REPAIR_NS}]
+      and early._latch_until is None)
+check("closing a stamper that never opened a window is a no-op",
+      (lambda s: (s.close_latch(), True)[1])(t.TimelineStamper()))
+
+# A discontinuity INSIDE an open window: the window is closed and reported
+# before the re-anchor opens a fresh one, so the first anchor's cost is in the
+# tally and the second starts from zero.
+mid_settled = []
+mid = t.TimelineStamper(on_settled=mid_settled.append, repair_latch=True)
+MID_JUMP_AT = 60                                  # 0.78 s in: window still open
+for i in range(MID_JUMP_AT + 100):                # ...and the second one closes too
+    pts = FIRST + i * STEP + (JUMP if i >= MID_JUMP_AT else 0)
+    mid.stamp(pes_ts_packet(0x100, pts=pts) + pes_ts_packet(0x101, pts=pts + 90),
+              burst_house(i))
+check("a re-anchor inside the window reports the first anchor's cost, then starts fresh",
+      mid.reanchors == 1
+      and [s['repairNs'] for s in mid_settled] == [-BURST_ERR_NS, 0]
+      and mid_settled[0]['anchorNs'] == HOUSE - BURST_ERR_NS)
+
+# The jumped buffer itself — the one the watch has flagged but not yet
+# confirmed — is NOT early delivery: its stamp is the old timeline plus the
+# jump, and reading it as a backlog would pull the anchor back by ten minutes.
+# The same rule keeps a single corrupt PTS (never confirmed, never re-anchored)
+# from moving the anchor for good.
+fg_settled = []
+fg = t.TimelineStamper(on_settled=fg_settled.append, repair_latch=True)
+for i in range(100):
+    fg.stamp(pes_ts_packet(0x100, pts=FIRST + i * STEP + (90000 * 30 if i == 10 else 0)),
+             HOUSE + i * STEP_NS)
+check("an unconfirmed forward PTS jump inside the window never moves the anchor",
+      fg.reanchors == 0 and fg.anchor == HOUSE
+      and [s['repairNs'] for s in fg_settled] == [0])
+
+# The backlog can arrive through the RE-ANCHOR path too (the librist
+# reconnect signature seen on .103): a clean cadence, a source discontinuity,
+# and the post-jump media flushed as a burst. The fresh anchor is taken off
+# the head of that burst exactly as the first one was, and the window repairs
+# it the same way. Same numbers in the C++ port.
+RE_JUMP_AT = 100                                  # first window long closed
+RE_T0 = HOUSE + RE_JUMP_AT * STEP_NS              # arrival of the jump's first PES
+
+
+def rejump_house(i):
+    if i < RE_JUMP_AT:
+        return HOUSE + i * STEP_NS
+    k = i - RE_JUMP_AT
+    if k < BACKLOG:
+        return RE_T0 + k * BURST_NS
+    return RE_T0 + BACKLOG * BURST_NS + (k - BACKLOG) * STEP_NS
+
+
+re_settled = []
+rej = t.TimelineStamper(on_settled=re_settled.append, repair_latch=True)
+rseen2 = []
+for i in range(RE_JUMP_AT + 200):
+    pts = FIRST + i * STEP + (JUMP if i >= RE_JUMP_AT else 0)
+    rseen2.append(rej.stamp(pes_ts_packet(0x100, pts=pts), rejump_house(i)))
+# The watch confirms the jump one buffer late (same-PID coherence), so the
+# re-anchor lands on buffer RE_JUMP_AT + 1: the backlog the window can see is
+# one buffer shorter than the first-PES case.
+RE_ERR_NS = (BACKLOG - 1) * (STEP_NS - BURST_NS)
+check("a backlog flushed after a discontinuity is repaired off the re-anchor too",
+      rej.reanchors == 1
+      and [s['repairNs'] for s in re_settled] == [0, -RE_ERR_NS]
+      and RE_ERR_NS == 1_584_000_000)
+check("and after it every stamp is on the source's delivery cadence again",
+      rseen2[RE_JUMP_AT + BACKLOG + 2:] == [rejump_house(i)
+                                          for i in range(RE_JUMP_AT + BACKLOG + 2,
+                                                         RE_JUMP_AT + 200)])
+
+
 print("\nALL ts_timeline TESTS PASSED")

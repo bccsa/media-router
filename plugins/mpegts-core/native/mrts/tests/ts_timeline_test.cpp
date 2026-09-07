@@ -632,5 +632,201 @@ int main() {
                      "\"engageNs\":-2600000000,\"samples\":10,\"window\":10}");
     }
 
+    // --- latch repair (the 2026-09-05 GATE01 field failure) ----------------
+    // ts_timeline_test.py's burst fixture, literal for literal: a live source
+    // (re)connects and flushes the backlog it queued while the session was
+    // down, so the first PES is that backlog's HEAD — late by all of it — and
+    // every buffer after it arrives early against an anchor taken off it. On
+    // .46 a vMix SRT feed came back with ~1.8 s queued and every mux mixing it
+    // with a sibling feed shipped 1.8 s of lipsync downstream.
+    constexpr int BACKLOG = 45;                        // 1.8 s of 40 ms buffers queued
+    constexpr int64_t BURST_NS = 4'000'000LL;          // ... flushed at one per 4 ms
+    constexpr int64_t BURST_ERR_NS = BACKLOG * (STEP_NS - BURST_NS);   // 1.62 s
+    constexpr int BURST_N = 200;                       // 6.2 s: the 3 s window closes inside
+    auto burst_house = [](int i) {
+        return i < BACKLOG ? HOUSE + i * BURST_NS
+                           : HOUSE + BACKLOG * BURST_NS + (int64_t)(i - BACKLOG) * STEP_NS;
+    };
+    {
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        std::vector<int64_t> seen;
+        for (int i = 0; i < BURST_N; i++)
+            seen.push_back(stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)},
+                                    burst_house(i)));
+        CHECK("the window closes once, on the first PES past it, and reports its cost",
+              settled.size() == 1 && settled[0].anchor_ns == HOUSE - BURST_ERR_NS
+              && settled[0].repair_ns == -BURST_ERR_NS
+              && settled[0].window_ns == 3'000'000'000LL
+              && BURST_ERR_NS == 1'620'000'000LL);
+        bool backlog_ok = true, cadence_ok = true, monotone = true;
+        for (int i = 0; i < BACKLOG; i++) backlog_ok &= seen[i] == burst_house(i);
+        for (int i = BACKLOG + 1; i < BURST_N; i++) cadence_ok &= seen[i] == burst_house(i);
+        for (int i = 1; i < BURST_N; i++) monotone &= seen[i] >= seen[i - 1];
+        CHECK("the backlog leaves stamped with its arrival — fast-forwarded, never early",
+              backlog_ok);
+        CHECK("and after it every stamp is ON the source's delivery cadence (margin 0)",
+              cadence_ok);
+        CHECK("monotone by construction: no floor clamp, no backwards step for a consumer",
+              monotone);
+        CHECK("the anchor is fixed once the window closes",
+              st.anchor_ns() == HOUSE - BURST_ERR_NS);
+    }
+    {
+        // The control: a default stamper is the field failure, and repair is
+        // opt-in so nothing that did not ask for it (the HLS fan-out) moves.
+        TimelineStamper st;
+        bool stuck = true;
+        for (int i = 0; i < BURST_N; i++) {
+            int64_t s = stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)}, burst_house(i));
+            if (i >= BACKLOG) stuck &= s - burst_house(i) == BURST_ERR_NS;
+        }
+        CHECK("a default stamper still anchors on the first PES — repair is opt-in", stuck);
+    }
+    {
+        // A source ON cadence costs the window nothing: jitter is late, never early.
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        const int64_t jitter[6] = {0, 7'000'000, 1'000'000, 13'000'000, 2'000'000, 9'000'000};
+        bool untouched = true;
+        for (int i = 0; i < 120; i++)
+            untouched &= stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)},
+                                  HOUSE + i * STEP_NS + jitter[i % 6]) == HOUSE + i * STEP_NS;
+        CHECK("a source on cadence costs the window nothing (jitter is late, never early)",
+              untouched && settled.size() == 1 && settled[0].repair_ns == 0
+              && settled[0].anchor_ns == HOUSE);
+    }
+    {
+        // A/V of ONE egress through the burst: the window converges on the
+        // stream that delivers earliest, then both legs hold the source's skew.
+        const int64_t SKEW = 1234, SKEW_NS = pts90k_to_ns(SKEW);
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        bool skew_held = true;
+        for (int i = 0; i < BURST_N; i++) {
+            int64_t house = burst_house(i);
+            int64_t v = stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)}, house, 0x100);
+            int64_t a = stamp_of(st, {pes_packet(0x101, FIRST_PES + i * STEP + SKEW)},
+                                 house + 5'000'000, 0x101);
+            if (i >= BACKLOG + 2) skew_held &= a - v == SKEW_NS;
+        }
+        CHECK("A/V settle onto ONE repaired anchor and hold the source's skew after it",
+              skew_held && settled.size() == 1
+              && settled[0].repair_ns == -(BURST_ERR_NS + SKEW_NS - 5'000'000)
+              && settled[0].repair_ns == -1'628'711'111LL);   // python's literal
+    }
+    {
+        // A re-anchor re-opens the window; a clean post-jump cadence closes it
+        // again for free.
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        constexpr int JUMP_AT = 100;
+        constexpr int64_t JUMP = 90000LL * 600;
+        for (int i = 0; i < 2 * JUMP_AT; i++) {
+            int64_t pts = FIRST_PES + i * STEP + (i >= JUMP_AT ? JUMP : 0);
+            stamp_of(st, {pes_packet(0x100, pts), pes_packet(0x101, pts + 90)},
+                     HOUSE + i * STEP_NS);
+        }
+        CHECK("a re-anchor re-opens the window and a clean cadence closes it for free",
+              st.reanchors() == 1 && settled.size() == 2 && settled[0].repair_ns == 0
+              && settled[1].repair_ns == 0);
+    }
+    {
+        // A disarm INSIDE the window still reports the repair so far, once;
+        // closing twice, or a stamper that never opened one, is a no-op.
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        for (int i = 0; i < BACKLOG + 10; i++)
+            stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP)}, burst_house(i));
+        st.close_latch();
+        st.close_latch();
+        TimelineStamper never;
+        never.close_latch();
+        CHECK("a disarm inside the window reports the repair so far, once",
+              settled.size() == 1 && settled[0].repair_ns == -BURST_ERR_NS
+              && settled[0].anchor_ns == HOUSE - BURST_ERR_NS);
+    }
+    {
+        // A discontinuity INSIDE an open window: closed and reported first,
+        // then the fresh anchor starts from zero.
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        constexpr int MID_JUMP_AT = 60;     // 0.78 s in: window still open
+        constexpr int64_t JUMP = 90000LL * 600;
+        for (int i = 0; i < MID_JUMP_AT + 100; i++) {   // ...and the second closes too
+            int64_t pts = FIRST_PES + i * STEP + (i >= MID_JUMP_AT ? JUMP : 0);
+            stamp_of(st, {pes_packet(0x100, pts), pes_packet(0x101, pts + 90)}, burst_house(i));
+        }
+        CHECK("a re-anchor inside the window reports the first anchor's cost, then starts fresh",
+              st.reanchors() == 1 && settled.size() == 2
+              && settled[0].repair_ns == -BURST_ERR_NS && settled[1].repair_ns == 0
+              && settled[0].anchor_ns == HOUSE - BURST_ERR_NS);
+    }
+    {
+        // The jumped (flagged, unconfirmed) buffer is not early delivery, and
+        // a single corrupt PTS must never move the anchor for good.
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        for (int i = 0; i < 100; i++)
+            stamp_of(st, {pes_packet(0x100, FIRST_PES + i * STEP + (i == 10 ? 90000LL * 30 : 0))},
+                     HOUSE + i * STEP_NS);
+        CHECK("an unconfirmed forward PTS jump inside the window never moves the anchor",
+              st.reanchors() == 0 && st.anchor_ns() == HOUSE && settled.size() == 1
+              && settled[0].repair_ns == 0);
+    }
+    {
+        // The backlog through the RE-ANCHOR path (ts_timeline_test.py's
+        // rejump fixture, literal for literal): clean cadence, a source
+        // discontinuity, the post-jump media flushed as a burst.
+        constexpr int RE_JUMP_AT = 100;
+        constexpr int64_t JUMP = 90000LL * 600;
+        const int64_t RE_T0 = HOUSE + RE_JUMP_AT * STEP_NS;
+        auto rejump_house = [&](int i) {
+            if (i < RE_JUMP_AT) return HOUSE + i * STEP_NS;
+            int k = i - RE_JUMP_AT;
+            if (k < BACKLOG) return RE_T0 + k * BURST_NS;
+            return RE_T0 + BACKLOG * BURST_NS + (int64_t)(k - BACKLOG) * STEP_NS;
+        };
+        std::vector<TimelineStamper::Settled> settled;
+        TimelineStamper st(nullptr, nullptr,
+                           [&](const TimelineStamper::Settled& s) { settled.push_back(s); },
+                           true);
+        std::vector<int64_t> seen;
+        for (int i = 0; i < RE_JUMP_AT + 200; i++) {
+            int64_t pts = FIRST_PES + i * STEP + (i >= RE_JUMP_AT ? JUMP : 0);
+            seen.push_back(stamp_of(st, {pes_packet(0x100, pts)}, rejump_house(i)));
+        }
+        // The watch confirms one buffer late, so the visible backlog is one
+        // buffer shorter than the first-PES case.
+        constexpr int64_t RE_ERR_NS = (BACKLOG - 1) * (STEP_NS - BURST_NS);
+        bool cadence = true;
+        for (int i = RE_JUMP_AT + BACKLOG + 2; i < RE_JUMP_AT + 200; i++)
+            cadence &= seen[i] == rejump_house(i);
+        CHECK("a backlog flushed after a discontinuity is repaired off the re-anchor too",
+              st.reanchors() == 1 && settled.size() == 2 && settled[0].repair_ns == 0
+              && settled[1].repair_ns == -RE_ERR_NS && RE_ERR_NS == 1'584'000'000LL);
+        CHECK("and after it every stamp is on the source's delivery cadence again", cadence);
+    }
+    {
+        CHECK("the settled event carries event/anchorNs/repairNs/windowNs",
+              settled_event_json({998380000000LL, -1620000000LL, 3000000000LL})
+                  == "{\"event\":\"timeline_settled\",\"anchorNs\":998380000000,"
+                     "\"repairNs\":-1620000000,\"windowNs\":3000000000}");
+    }
+
     return test_summary("ts_timeline");
 }

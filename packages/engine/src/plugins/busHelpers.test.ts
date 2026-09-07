@@ -63,14 +63,14 @@ describe('buildBusSrc', () => {
         // its upstream producer and the stall cascades through the graph.
         expect(buildBusSrc({ name: 'busin', port: 40001 })).toBe(
             'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
 
     it('omits the name clause when no name is given', () => {
         expect(buildBusSrc({ port: 40001 })).toBe(
             'unixfdsrc socket-path=/tmp/mr-bus-40001.sock' +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
 
@@ -78,7 +78,7 @@ describe('buildBusSrc', () => {
         const edge = '/tmp/mr-bus-40001-ab12cd.sock';
         expect(buildBusSrc({ port: 40001, socketPath: edge })).toBe(
             `unixfdsrc socket-path=${edge}` +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
         // Falls back to the channel socket when no edge socket is given.
         expect(buildBusSrc({ port: 40001 })).toContain(
@@ -94,7 +94,7 @@ describe('buildBusSrc', () => {
         expect(buildBusSrc({ name: 'busin', port: 40001, stallTimeoutMs: 4000 })).toBe(
             'unixfdsrc name=busin socket-path=/tmp/mr-bus-40001.sock' +
                 ' ! watchdog name=buswd_busin timeout=4000' +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
 
@@ -113,7 +113,7 @@ describe('buildBusSrc', () => {
         expect(buildBusSrc({ name: 'busin', port: 40001, socketPath: edge, stallTimeoutMs: 5000 })).toBe(
             `unixfdsrc name=busin socket-path=${edge}` +
                 ' ! watchdog name=buswd_busin timeout=5000' +
-                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0',
+                ' ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000',
         );
     });
 });

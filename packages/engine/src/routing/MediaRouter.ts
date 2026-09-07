@@ -492,6 +492,38 @@ export class MediaRouter {
     }
 
     /**
+     * Every bus producer upstream of `moduleId`, nearest first and TRANSITIVE:
+     * a muxer fed by a splitter fed by an hls-player sees all of them, each
+     * with its own `isDeliveryLeadProducer` declaration. Read by
+     * `effectiveLatchRepair` (ADR-0005 note 2026-09-05): whether a producer's
+     * delivery cadence is its media cadence is a property of the source at the
+     * head of the chain, and the chain can be any depth. Deduplicated (a
+     * diamond reports each producer once).
+     */
+    getUpstreamBusProducers(moduleId: string): Array<{ pluginId: string; deliveryLead: boolean }> {
+        const seen = new Set<string>([moduleId]);
+        const out: Array<{ pluginId: string; deliveryLead: boolean }> = [];
+        const queue = [moduleId];
+        while (queue.length > 0) {
+            const id = queue.shift() as string;
+            for (const conn of this.connections.values()) {
+                if (conn.sinkModuleId !== id || !BUS_STREAM_TYPES.has(conn.streamType)) continue;
+                if (seen.has(conn.sourceModuleId)) continue;
+                seen.add(conn.sourceModuleId);
+                const producer = this.moduleGetter?.(conn.sourceModuleId);
+                if (producer) {
+                    out.push({
+                        pluginId: producer.pluginId,
+                        deliveryLead: producer.isDeliveryLeadProducer?.() === true,
+                    });
+                }
+                queue.push(conn.sourceModuleId);
+            }
+        }
+        return out;
+    }
+
+    /**
      * A route head's `playoutOffsetMs` was edited — re-anchor every consumer of
      * that producer, together. Without the fan-out the change would sit in the
      * producer's config until each consumer happened to rebuild, so one leg of a

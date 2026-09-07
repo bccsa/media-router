@@ -241,6 +241,9 @@ export class GstChildProcess extends EventEmitter {
             backlogShed: desc.backlogShed,
             preserveSourceTimeline: desc.preserveSourceTimeline,
             alignBranchesToStamps: desc.alignBranchesToStamps,
+            // The stamper's latch-repair policy, resolved per route by
+            // GstPluginBase (undefined = the runner's live default).
+            latchRepair: desc.latchRepair,
             inputStallWatch: desc.inputStallWatch,
         };
     }

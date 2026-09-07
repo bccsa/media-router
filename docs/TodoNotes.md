@@ -2,6 +2,36 @@
 
 ## Open
 
+- [ ] **gate01 muxer memory growth (2026-09-06): confirm the retention point
+  on a box.** Five mpegts-muxers on .46 (ZA-HZ-SRT02 ENG/FRA/NYA/SWA + "10020
+  -> RIST") grew to 2.8 GB / 0.6 GB each at exactly their program bitrate
+  (anonymous heap in the producer, shmem flat) while their SRT callers looped
+  on "did not reach PLAYING within 10000 ms"; the box rebooted (into slot B,
+  v2.0.0.81) before the pages could be read. Working hypothesis: a time-only
+  leaky queue whose stamps stalled (ADR-0015 adds byte caps on the bus edge,
+  bus ingress, muxer pads and srt-output so the failure is bounded either
+  way). To close: on the next recurrence read `/proc/<pid>/mem` of the growing
+  runner (no Yama on this kernel) and classify the retained bytes (TS sync
+  bytes at 188-stride = mux output vs NAL/ADTS = demuxed input), count its
+  `queueN:src` threads for stale edge branches, and correlate growth with the
+  consumer's restart log. Then convert the remaining time-only queues listed
+  in `queueBounds.ts`.
+
+- [ ] **Latch repair: field-verify on GATE01 (.46) after the next vMix
+  reconnect.** 2026-09-05: every muxer on .46 mixing feed-2000 audio with
+  feed-2001/2002 video shipped ~1.8 s of A/V offset to every RIST site,
+  because the 2000 feed's first PES after the 13:16 reconnect was the head of
+  a 1.8 s sender backlog and the stamper anchored on it (the three vMix feeds
+  share one PTS base; first-PES deltas matched arrival deltas within 5 ms on
+  the clean 07:57 restart, 1.8 s apart on this one). Fixed in the stamper
+  (latch-repair window, ADR-0005 note 2026-09-05) + muxer branchAlign caps;
+  resolved per route from the graph (`effectiveLatchRepair`, OFF below an
+  hls-player). Not yet run on a device: needs the native rebuild
+  (libgstmrtsstamp.so 2.3.0, mr-tssplit) and a read of `busStamp busout_x:
+  latch settled: anchor pulled back N ms` on .46 plus muxer branchAlign K
+  values agreeing across feeds. Pending from the review: a live measurement
+  of a muxer/transcoder fed by hls-player with the repair off.
+
 - [ ] **Egress stamper anchors on whatever PID's PES comes first — on the
   muxer that is the KLV carousel (0x1f0).** Every muxer start in the .108 log
   history anchored on 0x1f0 because the metadata pad flows before the media

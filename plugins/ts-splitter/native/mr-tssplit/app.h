@@ -33,6 +33,12 @@ struct Options {
     // Time-sync contract (--stamp-timeline): stamp each output buffer with its
     // payload's mapped media time instead of send time. Off = byte-identical.
     bool stamp_timeline = false;
+    // The stamper's latch-repair window (ts_timeline.py, "latch repair"). ON:
+    // the splitter's input is a live ingest, so a first PES that is the head
+    // of a reconnect backlog must not become the anchor. `--no-latch-repair`
+    // exists for the test rig, which feeds its ladders faster than real time
+    // (which the window reads — correctly — as a backlog flush).
+    bool repair_latch = true;
     // pid -> tee name (busout_<port>), from --out 0x100:busout_40001
     std::vector<std::pair<int, std::string>> outputs;
     std::vector<int> stream_types;   // parallel to outputs; -1 = unknown

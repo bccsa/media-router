@@ -63,7 +63,7 @@ describe('AudioDecoderModule.buildPipeline', () => {
         module.probeResult = { codec: 'opus' };
         const desc = module.buildPipeline({});
         expect(desc!.pipeline).toContain(
-            'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=0 ! tsdemux',
+            'unixfdsrc socket-path=/tmp/mr-bus-41000-abc123.sock ! queue leaky=2 max-size-time=5000000000 max-size-buffers=0 max-size-bytes=40000000 ! tsdemux',
         );
         expect(desc!.pipeline).not.toContain('udpsrc');
     });

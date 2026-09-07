@@ -508,6 +508,36 @@ check("the fixed alignment survives the re-draw",
 check("the offset itself was re-derived for the new draw",
       fixed2_offsets["A"] != fixed_offsets["A"])
 
+print("\n--- 4. the verdict: what the mux can absorb, each way, and said loudly ---")
+# Pure, so the sign convention is pinned here and not by a live rig: a POSITIVE
+# error moves the branch LATER (its buffers wait in the aggregator — bounded by
+# the 5 s input queue), a NEGATIVE one EARLIER (the aggregator reads them as
+# late — bounded by its 1.2 s latency fill). The 2026-09-05 GATE01 epoch had
+# +533 / +683 / +1024 ms corrections rejected as "implausible" under a flat
+# 500 ms cap; every one was real and every rejected track shipped out of step.
+V = runner._branch_align_verdict
+check("a real correction inside both bounds is applied",
+      V(533_000_000) == "apply" and V(1_024_000_000) == "apply"
+      and V(3_900_000_000) == "apply" and V(-900_000_000) == "apply")
+check("a branch too far BEHIND its stamps for the input queue is rejected",
+      V(4_100_000_000) == "reject" and V(4_000_000_001) == "reject")
+check("a branch too far AHEAD of its stamps for the mux latency is rejected",
+      V(-1_100_000_000) == "reject" and V(-1_000_000_001) == "reject")
+check("the bounds are asymmetric on purpose: +1.1 s applies, -1.1 s does not",
+      V(1_100_000_000) == "apply" and V(-1_100_000_000) == "reject")
+check("a sub-threshold error is left alone rather than stepped",
+      V(1_000_000) == "skip" and V(-1_000_000) == "skip" and V(0) == "skip")
+events = []
+saved_emit = runner.emit_event
+runner.emit_event = events.append
+runner._branch_align_rejected("demux_1", 0x100, -95_656_057_391)
+runner.emit_event = saved_emit
+check("a rejection is an engine-visible `warning` naming the branch, pid and error",
+      len(events) == 1 and events[0]["event"] == "warning"
+      and "demux_1" in events[0]["message"] and "pid=0x100" in events[0]["message"]
+      and "-95656 ms" in events[0]["message"]
+      and "out of step" in events[0]["message"])
+
 print()
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")
