@@ -135,7 +135,7 @@ describe('AudioOutput302mModule.buildPipeline', () => {
         // The mix is 8 wide; VU reads it before the spread.
         expect(p).toContain('capsfilter name=mixin_out caps="audio/x-raw,rate=48000,channels=8"');
         expect(p).toMatch(
-            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=32,channel-mask=\(bitmask\)0x0 ! pulsesink device=alsa_output\.usb-foo sync=false$/,
+            /level post-messages=true[^!]*! audioconvert mix-matrix="<.*>" ! audio\/x-raw,channels=32,channel-mask=\(bitmask\)0x0 ! pulsesink device=alsa_output\.usb-foo sync=false stream-properties="[^"]*"$/,
         );
         // Row 8 (device channel 9) carries mix channel 0: the first lit cell.
         const matrix = /mix-matrix="<(.*)>"/.exec(p)![1];

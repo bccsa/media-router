@@ -1,6 +1,7 @@
 import {
     GstPluginBase,
     findLadspaElement,
+    pulsePinnedStreamProps,
     type PipelineDescription,
 } from '@media-router/engine';
 
@@ -226,7 +227,7 @@ export class AudioDynamicsModule extends GstPluginBase {
         const instanceId = this.services?.instanceId ?? '';
         const outSink =
             `pulsesink device=MR_PW_${instanceId}_out sync=false slave-method=0 ` +
-            `processing-deadline=100000000 buffer-time=50000 max-lateness=200000000`;
+            `processing-deadline=100000000 buffer-time=50000 max-lateness=200000000 ${pulsePinnedStreamProps()}`;
 
         if (this.mode === 'ducker') return this.buildDuckerPipeline(config, instanceId, outSink);
         return this.buildLadspaPipeline(config, instanceId, outSink);
@@ -243,12 +244,12 @@ export class AudioDynamicsModule extends GstPluginBase {
     ): PipelineDescription {
         const parts = [
             // Program path: onPluginEvent rides `duckvol`; `outlevel` feeds the VU meter
-            `pulsesrc device=MR_PW_${instanceId}_prog.monitor ! audioconvert ! ` +
+            `pulsesrc device=MR_PW_${instanceId}_prog.monitor ${pulsePinnedStreamProps()} ! audioconvert ! ` +
                 `volume name=duckvol ! ` +
                 `level name=outlevel post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000 ! ` +
                 outSink,
             // Sidechain detector: fast level readings key the envelope (reported, not VU)
-            `pulsesrc device=MR_PW_${instanceId}_sc.monitor ! audioconvert ! ` +
+            `pulsesrc device=MR_PW_${instanceId}_sc.monitor ${pulsePinnedStreamProps()} ! audioconvert ! ` +
                 `level name=sclevel post-messages=true interval=15000000 ! fakesink sync=false`,
         ];
         return {
@@ -277,8 +278,8 @@ export class AudioDynamicsModule extends GstPluginBase {
 
         const stereoCaps = 'audio/x-raw,format=F32LE,channels=2,rate=48000';
         const parts = [
-            `pulsesrc device=MR_PW_${instanceId}_prog.monitor ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=dp`,
-            `pulsesrc device=MR_PW_${instanceId}_sc.monitor ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=ds`,
+            `pulsesrc device=MR_PW_${instanceId}_prog.monitor ${pulsePinnedStreamProps()} ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=dp`,
+            `pulsesrc device=MR_PW_${instanceId}_sc.monitor ${pulsePinnedStreamProps()} ! ${stereoCaps},channel-mask=(bitmask)0x3 ! deinterleave name=ds`,
             [
                 'interleave name=il',
                 'audioconvert',

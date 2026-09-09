@@ -205,6 +205,7 @@ export {
 } from './plugins/backlogShed.js';
 export type { BacklogShedOptions, BacklogShedServices } from './plugins/backlogShed.js';
 export { GstPluginBase } from './plugins/GstPluginBase.js';
+export { pulsePinnedStreamProps, PULSE_PINNED_STREAM_PROPS } from './plugins/pulseStreamProps.js';
 export { DeviceWatchdog } from './plugins/DeviceWatchdog.js';
 export type { DeviceWatchdogOptions, DeviceWatchdogPipeWire } from './plugins/DeviceWatchdog.js';
 export { PaCommandQueue } from './audio/PaCommandQueue.js';

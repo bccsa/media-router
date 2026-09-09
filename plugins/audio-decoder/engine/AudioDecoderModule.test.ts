@@ -192,6 +192,13 @@ describe('AudioDecoderModule.buildPipeline', () => {
         expect(module.buildPipeline({ slaveMethod: 0 })!.pipeline).not.toContain('slave-method=1');
     });
 
+    it('pins the playback stream to its own null-sink (#736) on the legacy and the contract sink', () => {
+        const legacy = makeModule().module.buildPipeline({});
+        expect(legacy!.pipeline).toMatch(
+            /pulsesink device=MR_PW_dec-1 [^!]*stream-properties="props,node.dont-fallback=\(string\)true,node.linger=\(string\)true"/,
+        );
+    });
+
     it('targets the module-instance null-sink as the pulsesink device', () => {
         const { module } = makeModule();
         module.probeResult = { codec: 'opus' };

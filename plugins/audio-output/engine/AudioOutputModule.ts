@@ -4,6 +4,7 @@ import {
     resolveDeviceFormat,
     tryResolveDeviceFormat,
     registerPipeWireDeviceProvider,
+    pulsePinnedStreamProps,
     type PipelineDescription,
     type EngineServices,
     type ModuleServices,
@@ -196,7 +197,7 @@ export class AudioOutputModule extends GstPluginBase {
         // these two sources is guaranteed to be set by the time we get here.
         const channels = (config.channels as number | undefined) ?? this.detectedChannels!;
         const pipeline = [
-            `pulsesrc device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000`,
+            `pulsesrc device=${this.deviceName}.monitor buffer-time=20000 latency-time=10000 ${pulsePinnedStreamProps()}`,
             'audioconvert',
             `audio/x-raw,channels=${channels}`,
             'level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000',

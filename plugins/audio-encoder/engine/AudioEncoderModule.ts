@@ -5,6 +5,7 @@ import {
     buildBusSink,
     busTeeName,
     gstInspectMaxChannels,
+    pulsePinnedStreamProps,
     type PipelineDescription,
     type ModuleServices,
     type ThroughputSample,
@@ -143,7 +144,7 @@ export class AudioEncoderModule extends GstPluginBase {
         // lower only during a measured tuning pass (overrun/crackle risk).
         const srcBufferUs =
             Math.max(40, Math.min(1000, Number(config.srcBufferMs ?? 200))) * 1000;
-        const source = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=${srcBufferUs}`;
+        const source = `pulsesrc device=${this.pwNodeName}.monitor buffer-time=${srcBufferUs} ${pulsePinnedStreamProps()}`;
         const format = `audioconvert ! audioresample ! audio/x-raw,rate=${sampleRate},channels=${channels}`;
         const vol = `volume name=vol volume=${gstVolume}`;
         const level =

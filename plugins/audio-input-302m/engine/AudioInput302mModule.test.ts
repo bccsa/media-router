@@ -60,6 +60,10 @@ describe('AudioInput302mModule.buildPipeline', () => {
         expect(desc!.pipeline).toContain('pipewiresrc target-object=alsa_input.usb-mic');
         expect(desc!.pipeline).not.toContain('pulsesrc');
         expect(desc!.pipeline).toContain('node.latency=(string)2880/48000');
+        // #736: pinned to its device — never re-linked to the default source.
+        expect(desc!.pipeline).toContain(
+            'stream-properties="props,node.dont-fallback=(string)true,node.linger=(string)true,node.latency=(string)2880/48000"',
+        );
         // Device width unknown (no PipeWire service) → plain stereo request.
         expect(desc!.pipeline).toContain(
             '! audio/x-raw,channels=2 ! audioconvert ! volume name=vol volume=1.00',
