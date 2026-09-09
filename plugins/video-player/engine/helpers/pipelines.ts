@@ -91,15 +91,6 @@ export interface SinkSelectionEnv {
  */
 export interface SinkOpts {
     /**
-     * GStreamer QoS — when `true`, sinks send QoS events upstream telling the
-     * decoder to drop frames if it's late. Useful for live (SRT/RIST) where
-     * keeping up with the clock matters more than presenting every frame. For
-     * HLS / paced sources where you want every frame, set `false` so the
-     * decoder isn't pressured to skip frames mid-GOP. Default `true` matches
-     * GStreamer's own default — existing instances keep their current behaviour.
-     */
-    qos?: boolean;
-    /**
      * Honour buffer PTS on the sink. When `true` the sink waits to present each
      * frame at its PTS against the pipeline clock — required when the upstream
      * feed has accurate timestamps (HLS via tsparse) and you want playback
@@ -122,8 +113,21 @@ export interface SinkOpts {
 }
 
 export function buildSink(display: string, env: SinkSelectionEnv, opts: SinkOpts = {}): string {
-    const qosClause = ` qos=${opts.qos ?? true}`;
     const sync = opts.sync ?? false;
+    // QoS is NEVER on with a paced sink. A `sync=true` sink answers every late
+    // frame with a QoS event, and GstVideoDecoder turns that into a deadline of
+    // `timestamp + 2 × lateness`: every decoded frame before it is dropped. A
+    // stream that runs consistently late — a producer stamp anchor a few hundred
+    // ms early, a delivery path that slowed after start — is then not "late but
+    // smooth" but ONE frame per 2 × lateness, and past ~250 ms nothing reaches
+    // the display at all while the pipeline stays PLAYING (10.9.16.103,
+    // 2026-09-08: 50 fps in, no renderWatch update for 9151 s). `max-lateness`
+    // below already bounds how late a frame may still render; the decoder must
+    // not be asked to drop on top of it. There is no setting for this any more
+    // (the old `qos` option's `?? true` default is what silently overrode the
+    // intent); the unpaced sink keeps GStreamer's own default, where QoS is
+    // moot — with no clock nothing is ever late.
+    const qosClause = sync ? ' qos=false' : ' qos=true';
     // Pair `max-lateness` with `sync=true` between two failure modes:
     //   - basesink default (20 ms) is tight enough that software-decoded 1080p
     //     on Pi 5 (per-frame decode 30-50 ms, IDR frames 60-80 ms) loses every
@@ -323,19 +327,8 @@ export function buildLivePipeline(
      */
     bufferMs = 200,
     /**
-     * Retained from when this flag gated `tsparse` re-anchoring: it was set
-     * (true) in `clockSync` mode to share the audio-decoder's timeline and
-     * cleared otherwise. Both paced modes now ride the source PTS
-     * unconditionally (see the tsInput comment below — re-anchoring bursts GOPs
-     * on this fleet's muxes), so it no longer changes the tsparse recipe. Kept
-     * as the 5th positional arg for the `clockSync` caller; `clockSync` itself
-     * (see the description's `clockSync` flag in `planLivePipeline`) is what
-     * still attaches the shared clock.
-     */
-    preserveSourcePts = false,
-    /**
      * True when the sink honours buffer PTS (`sync=true` — the module's `sync`
-     * config or `clockSync`). A clock-paced sink presents each frame at its
+     * config). A clock-paced sink presents each frame at its
      * buffer PTS; pacing brings `tsparse` back into the chain for TS packet
      * alignment and the vp_ts probe tee — but NOT to re-anchor timestamps
      * (`set-timestamps=false`; it rides the source PTS, see the tsInput comment
@@ -369,10 +362,10 @@ export function buildLivePipeline(
     // chain's single most expensive element (0.11 core at 1080p50; tsdemux
     // eats the raw bus buffers directly at +0.06).
     //
-    // CLOCK-PACED (`sinkPaced` — the `sync` config or `clockSync`): tsparse
-    // RETURNS, but only for TS packet alignment and the vp_ts probe tee —
-    // NEVER to re-anchor (`set-timestamps=false`). The sink rides the SOURCE
-    // PTS (PES PTS via tsdemux), which is what clockSync mode has always done.
+    // CLOCK-PACED (`sinkPaced` — the `sync` config): tsparse RETURNS, but only
+    // for TS packet alignment and the vp_ts probe tee — NEVER to re-anchor
+    // (`set-timestamps=false`). The sink rides the SOURCE PTS (PES PTS via
+    // tsdemux).
     //
     // WHY NOT set-timestamps=true (field-measured on the Pi 4 fleet,
     // 10.9.16.107/.108, 2026-08-09): tsparse's set-timestamps mode interpolates

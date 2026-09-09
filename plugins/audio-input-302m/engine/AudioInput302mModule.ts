@@ -41,6 +41,18 @@ import {
  * So: full width in, matrix out. Selecting 8 of 48 costs one small matrix
  * multiply; a stereo device is captured as-is with no matrix.
  *
+ * Narrow devices. 302M has no mono width, but PipeWire's UCM split exposes
+ * some interfaces as 1-channel sources (an SSL 2's Mic1/Mic2, field 2026-09-08),
+ * so a range that runs PAST the device is honoured rather than refused:
+ *   - ONE device channel into the stereo pair → dual-mono: the same channel on
+ *     both 302M channels (`dualMono` in status). A mono mic belongs in both
+ *     ears / centred in a stereo mix, not in the left channel only (the first
+ *     cut did that; the booth heard Mic 2 on one side).
+ *   - anything wider → the matrix feeds the device channels it has and leaves
+ *     the remaining 302M channels at zero (`silentChannels` in status).
+ * Only a range that starts beyond the device is an error — there is nothing
+ * to capture at all.
+ *
  * - Volume/mute: gst `volume` element. VU: in-pipeline `level`.
  * - Device hot-plug: base-class watchdog stops/starts the pipeline.
  * - NEVER a default device: unconfigured = health error, no pipeline.
@@ -127,6 +139,7 @@ export class AudioInput302mModule extends GstPluginBase {
             srcBufferMs: Number(config.srcBufferMs ?? 60),
         });
         if (!capture) return null;
+        const { silentChannels, dualMono } = capture;
 
         const endpoint = router.assignBusChannel(instanceId);
         if (!endpoint) {
@@ -139,7 +152,7 @@ export class AudioInput302mModule extends GstPluginBase {
         const sink = buildBusSink(endpoint.port);
 
         const pipeline =
-            `${capture}` +
+            `${capture.clause}` +
             ` ! volume name=vol volume=${(volumePct / 100).toFixed(2)}` +
             ' ! level post-messages=true peak-falloff=120 peak-ttl=50000000 interval=100000000' +
             ` ! ${build302mEncodeBranch({ channels })} ! ${sink}`;
@@ -150,6 +163,8 @@ export class AudioInput302mModule extends GstPluginBase {
             firstChannel,
             lastChannel: firstChannel - 1 + channels,
             ...(deviceChannels ? { deviceChannels } : {}),
+            ...(silentChannels > 0 ? { silentChannels } : {}),
+            ...(dualMono ? { dualMono: true } : {}),
         });
         this.setStatusData('bus', { channel: endpoint.port });
         this.setHealth('ok');
@@ -162,9 +177,12 @@ export class AudioInput302mModule extends GstPluginBase {
 
     /**
      * `pipewiresrc` on the device → `channels`-wide raw audio holding device
-     * channels `firstChannel..firstChannel+channels-1`. Null (with the health
-     * error set) when the range cannot be honoured. See the class comment for
-     * why the full device width is captured and then matrixed.
+     * channels `firstChannel..firstChannel+channels-1`. A single available
+     * channel into a stereo stream is duplicated (`dualMono`); otherwise
+     * channels past the device's width come out silent (`silentChannels`
+     * says how many). Null (with the health error set) when nothing in the
+     * range exists on the device. See the class comment for why the full
+     * device width is captured and then matrixed.
      */
     private buildCapture(o: {
         device: string;
@@ -174,7 +192,7 @@ export class AudioInput302mModule extends GstPluginBase {
         /** Device width as PipeWire reports it; null when not enumerated. */
         deviceChannels: number | null;
         srcBufferMs: number;
-    }): string | null {
+    }): { clause: string; silentChannels: number; dualMono: boolean } | null {
         const { device, channels, firstChannel, deviceChannels } = o;
         const lastChannel = firstChannel - 1 + channels;
         // Requested graph quantum — the capture-side standing latency knob
@@ -185,10 +203,10 @@ export class AudioInput302mModule extends GstPluginBase {
             ` stream-properties="props,node.latency=(string)${quantum}/48000"`;
 
         if (deviceChannels && deviceChannels > 0) {
-            if (lastChannel > deviceChannels) {
+            if (firstChannel > deviceChannels) {
                 this.setHealth(
                     'error',
-                    `Audio device "${device}" has ${deviceChannels} channels — ` +
+                    `Audio device "${device}" has ${deviceChannels} channel${deviceChannels === 1 ? '' : 's'} — ` +
                         `cannot capture ${firstChannel}–${lastChannel}`,
                 );
                 return null;
@@ -196,14 +214,28 @@ export class AudioInput302mModule extends GstPluginBase {
             // Whole device, unpositioned → PipeWire links every port in index order.
             const wide = `audio/x-raw,channels=${deviceChannels},channel-mask=(bitmask)0x0`;
             if (firstChannel === 1 && channels === deviceChannels) {
-                return `${src} ! ${wide} ! audioconvert`;
+                return { clause: `${src} ! ${wide} ! audioconvert`, silentChannels: 0, dualMono: false };
             }
-            const pick: ChannelMapEntry[] = Array.from({ length: channels }, (_, i) => ({
-                srcChannel: firstChannel - 1 + i,
-                dstChannel: i,
-            }));
+            const available = Math.min(channels, deviceChannels - firstChannel + 1);
+            // One channel into the stereo pair → dual-mono (see class comment).
+            const dualMono = available === 1 && channels === 2;
+            // Otherwise only the device channels that exist get a matrix row;
+            // the rest of the 302M stream stays all-zero.
+            const pick: ChannelMapEntry[] = dualMono
+                ? [
+                      { srcChannel: firstChannel - 1, dstChannel: 0 },
+                      { srcChannel: firstChannel - 1, dstChannel: 1 },
+                  ]
+                : Array.from({ length: available }, (_, i) => ({
+                      srcChannel: firstChannel - 1 + i,
+                      dstChannel: i,
+                  }));
             const matrix = mixMatrixClause(pick, deviceChannels, channels);
-            return `${src} ! ${wide} ! audioconvert${matrix} ! audio/x-raw,channels=${channels}`;
+            return {
+                clause: `${src} ! ${wide} ! audioconvert${matrix} ! audio/x-raw,channels=${channels}`,
+                silentChannels: dualMono ? 0 : channels - available,
+                dualMono,
+            };
         }
 
         // Device width unknown — PipeWire has not enumerated it (unplugged,
@@ -211,7 +243,7 @@ export class AudioInput302mModule extends GstPluginBase {
         // what a positioned FL/FR stream always yields, so the default range
         // still comes up; anything wider needs the width.
         if (firstChannel === 1 && channels === 2) {
-            return `${src} ! audio/x-raw,channels=2 ! audioconvert`;
+            return { clause: `${src} ! audio/x-raw,channels=2 ! audioconvert`, silentChannels: 0, dualMono: false };
         }
         this.setHealth(
             'error',

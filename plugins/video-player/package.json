@@ -55,20 +55,10 @@
                     "x-unit": "ms",
                     "description": "Pre-decode buffer. Keep low (200) for live SRT/RIST; raise (e.g. 1500) for HLS so the decoder has lookahead until the next I-frame after a mid-stream join. Adds end-to-end latency."
                 },
-                "qos": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Sink QoS. When ON (default), the sink can ask the decoder to drop frames if it falls behind — right for live SRT/RIST where keeping up matters more than completeness. Turn OFF for HLS so every decoded frame is presented; pairs with a larger bufferMs."
-                },
                 "sync": {
                     "type": "boolean",
                     "default": true,
                     "description": "Smooth playback vs lowest latency. ON (default): each frame is presented at its timestamp, giving smooth, evenly-paced playback — network and decode jitter is absorbed by letting early frames wait a few tens of ms (median added latency is ~zero). OFF: every frame is shown the instant it is ready — the lowest possible latency, at the cost of visible judder under jitter. Turn OFF for ultra-low-latency chains, or as the robust fallback for degraded sources with broken PCR timing, which can stall under paced playback."
-                },
-                "clockSync": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "EXPERIMENTAL — known issue: freezes on the first frame (source-epoch vs shared-clock mismatch, see docs/TodoNotes-video-hw-decode.md). Intended purpose: lock to the shared engine clock so video stays in lipsync with an audio-decoder fed from the same source, when one stream is split into separate video + audio playout (pairs with lipSyncMs; requires the matching audio-decoder). Leave OFF until the epoch latch is wired in — the default Honour-buffer-PTS pacing covers everything except cross-pipeline lipsync."
                 },
                 "lipSyncMs": {
                     "type": "number",
@@ -79,13 +69,7 @@
                     "x-step": 50,
                     "x-unit": "ms",
                     "x-live": true,
-                    "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this player and the audio-decoder beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this player's own display chain adds (panel processing, HDMI receiver). Positive DELAYS video to meet audio that's playing late; negative advances it. Adjust live while watching until lips match. Only applies with Sync (or Clock sync) on."
-                },
-                "parserBypass": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Low-latency decode: skip the H.264/H.265 parser in front of a SOFTWARE decoder and feed it each demuxed access unit as-is. Saves one frame of latency (40 ms at 25 fps) — the parser can only close a frame when the next one starts. Has no effect on hardware (V4L2) decoders, which need the parser. Only for sources that repeat SPS/PPS before every keyframe (every Media Router encoder does); leave OFF for foreign sources. Applied at pipeline build — changing it restarts the player.",
-                    "x-liveUpdatable": false
+                    "description": "DEPRECATED as a sync control — set the route's Playout offset on the source module instead, which moves this player and the audio-decoder beside it together. What remains here is a TRIM: a small correction ADDED on top of the route offset for skew this player's own display chain adds (panel processing, HDMI receiver). Positive DELAYS video to meet audio that's playing late; negative advances it. Adjust live while watching until lips match. Only applies with Sync on."
                 },
                 "cpuDecodeThreading": {
                     "type": "string",

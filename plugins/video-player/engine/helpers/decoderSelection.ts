@@ -186,15 +186,6 @@ export interface DecoderSelectionInput {
      * the single-core pipeline this ladder exists to avoid.
      */
     threading?: CpuDecodeThreading;
-    /**
-     * `parserBypass` setting. On a SOFTWARE rung, replace `h26xparse` with a
-     * capssetter that declares `alignment=au` on tsdemux's output: tsdemux
-     * already emits one whole PES = one access unit per buffer, and the parser
-     * only adds one frame of latency (40 ms at 25 fps, measured 2026-09-04)
-     * waiting for the next AU to close the current one. Hardware rungs keep
-     * their parser — the V4L2 decoders take SPS/PPS from it. Default false.
-     */
-    parserBypass?: boolean;
 }
 
 export interface DecoderSelection {
@@ -277,13 +268,9 @@ export function selectDecoder(input: DecoderSelectionInput): DecoderSelection {
     for (const rung of ladder) {
         if (demoted?.has(rung.id)) continue;
         if (!rung.requires.every((el) => input.available[el] === true)) continue;
-        const framing =
-            input.parserBypass && !rung.hardware
-                ? `capssetter caps="${caps},stream-format=byte-stream,alignment=au"`
-                : rung.parser;
         return {
             id: rung.id,
-            chain: `${framing} ! ${decoderElement(rung, threading)}`,
+            chain: `${rung.parser} ! ${decoderElement(rung, threading)}`,
             caps: `capsfilter caps="${caps}"`,
             hardware: rung.hardware,
             explicit: true,

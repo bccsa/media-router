@@ -103,6 +103,14 @@ App::App(Options opts) : opts_(std::move(opts)) {
                 emit(mrts::settled_event_json(s));
             },
             opts_.repair_latch);
+        // The timeline conditioner rides the same live-cadence opt-in as the
+        // latch repair: the splitter's input is a live ingest, so a source
+        // clock step (vMix CBR's pacer reset) is taken out of the PES/PCR
+        // bytes before the core splits them — every output, and every consumer
+        // downstream, sees one continuous timeline. Reported per step.
+        stamper_->set_on_conditioned([](const mrts::TimelineStamper::Conditioned& c) {
+            emit(mrts::conditioned_event_json(c));
+        });
     }
     refresh_gating();   // nothing wired yet -> all outputs disabled
     input_ = std::make_unique<mrbus::BusClient>(
@@ -121,6 +129,14 @@ void App::on_input_buffer(const uint8_t* data, size_t len) {
     // audio would take seconds to fill a size batch). Packet order within an
     // output is preserved; PSI stays ahead of the ES packets it precedes.
     const int64_t now = mrbus::mono_ns();
+    if (stamper_ && opts_.repair_latch) {
+        // Condition a private copy (the bus hands us its buffer read-only):
+        // one memcpy of ≤24 KB per input buffer, well under the fan-out cost
+        // this splitter already pays per output.
+        cond_buf_.assign(data, data + len);
+        stamper_->condition(cond_buf_.data(), len, now);
+        data = cond_buf_.data();
+    }
     for (const auto& b : core_->feed(data, len)) {
         for (auto& o : outputs_) {
             if (o.pid == b.pid) {

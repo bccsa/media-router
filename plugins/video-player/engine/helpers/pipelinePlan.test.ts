@@ -49,12 +49,23 @@ function plan(
 }
 
 describe('planSink', () => {
-    it('defaults to a QoS-on, clock-paced KMS sink pinned to the connector id', () => {
+    it('defaults to a clock-paced, QoS-off KMS sink pinned to the connector id', () => {
         const sink = plan({});
         expect(sink.sinkElement).toContain('kmssink name=sink connector-id=32');
         expect(sink.sinkElement).toContain('sync=true max-lateness=1000000000');
-        expect(sink.sinkElement).toContain('qos=true');
-        expect(sink).toMatchObject({ clockSync: false, sinkPaced: true });
+        // A paced sink never carries QoS: the decoder would drop every frame of
+        // a consistently late stream (the 2026-09-08 .103 freeze).
+        expect(sink.sinkElement).toContain('qos=false');
+        expect(sink).toMatchObject({ sinkPaced: true });
+    });
+
+    it('ignores the retired qos / clockSync keys an old profile may still carry', () => {
+        // Removed 2026-09-08: neither is a setting any more. A paced sink is
+        // always qos=false; pacing follows `sync` alone.
+        expect(plan({ qos: true }).sinkElement).toContain('qos=false');
+        expect(plan({ sync: false, qos: false }).sinkElement).toContain('qos=true');
+        expect(plan({ sync: false, clockSync: true }).sinkPaced).toBe(false);
+        expect(plan({ sync: false, clockSync: true }).sinkElement).toContain('sync=false');
     });
 
     it('sync=false drops the pacing (and with it the tsparse chain)', () => {
@@ -63,20 +74,11 @@ describe('planSink', () => {
         expect(sink.sinkPaced).toBe(false);
     });
 
-    it('clockSync forces pacing on even when sync is off', () => {
-        const sink = plan({ sync: false, clockSync: true });
-        expect(sink).toMatchObject({ clockSync: true, sinkPaced: true });
-        expect(sink.sinkElement).toContain('sync=true');
-    });
-
     it('converts lipSyncMs to a nanosecond ts-offset on the named sink', () => {
         // Contract off (no services): the trim is the whole offset, unchanged.
         expect(plan({ lipSyncMs: 40 }).sinkElement).toContain('ts-offset=40000000');
     });
 
-    it('passes qos=false through for paced HLS chains', () => {
-        expect(plan({ qos: false }).sinkElement).toContain('qos=false');
-    });
 });
 
 /**
@@ -250,7 +252,6 @@ describe('planLivePipeline', () => {
         decoder: DECODEBIN_SELECTION,
         bufferMs: undefined as unknown,
         cpuDecodeThreading: undefined as unknown,
-        clockSync: false,
         sinkPaced: true,
     };
 
@@ -287,11 +288,6 @@ describe('planLivePipeline', () => {
         expect(planLivePipeline({ ...base, bufferMs: 1500 }).pipeline).toContain(
             'max-size-time=1500000000',
         );
-    });
-
-    it('only sets clockSync on the description when it is on', () => {
-        expect(planLivePipeline(base).clockSync).toBeUndefined();
-        expect(planLivePipeline({ ...base, clockSync: true }).clockSync).toBe(true);
     });
 
     it('places the explicit decoder chain and its pad-steering caps', () => {

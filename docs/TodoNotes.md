@@ -333,6 +333,17 @@
   + video-player `parserBypass` (software rungs only), all default off: skips
   the injected h26xparse and declares `alignment=au` instead — one frame less
   latency per hop (41 ms at 25 fps measured). 2026-09-04.
+- [x] video-player settings trimmed: `qos`, `clockSync` and `parserBypass`
+  REMOVED from the video-player module (2026-09-08, at the operator's request —
+  "remove qos, clockSync, and parserBypass"). `qos` is now always OFF on a
+  paced (`sync=true`) sink and always ON on the legacy `sync=false` sink, the
+  only correct values under the time-sync contract, so the toggle only ever
+  mis-set it (the paced-sink QoS freeze). `clockSync` is superseded by the
+  engine-wide contract flag (ADR-0005) and `parserBypass` never earned its keep
+  on the player's own decode leg. The runner `parser: 'none'` pad-link rule and
+  the mpegts-muxer `videoParserBypass` above are UNAFFECTED — only the
+  video-player's three per-module settings are gone. Old profiles carrying the
+  keys are safe (ajv non-strict, no `additionalProperties`; covered by a test).
 - [x] Encode leaves mux with `alignment=0`; `alignment=7` held the last partial
   1316-byte group of every access unit back until the next AU started (bus
   buffers were exact 1316 multiples), so every downstream tsdemux completed a

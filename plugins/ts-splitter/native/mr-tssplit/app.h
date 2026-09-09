@@ -103,6 +103,7 @@ class App {
     // output would inherit the interleave's leading PID's time (and, with a
     // legacy upstream, its arrival jitter) instead of its own PES.
     std::unique_ptr<mrts::TimelineStamper> stamper_;
+    std::vector<uint8_t> cond_buf_;      // conditioned copy of the input buffer
 
     std::vector<Output> outputs_;
     std::map<std::string, size_t> edge_owner_;   // edge socket -> outputs_ index

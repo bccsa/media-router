@@ -30,9 +30,11 @@ it would mean splitting the C++ side identically to keep that parity readable,
 so the cost is paid twice and the parity surface that guards against timeline
 bugs multiplies. Keep it one file per language.
 """
-from ts_psi import iter_packets, read_pes_pts, ts_pid
+from ts_psi import (PKT, SYNC, iter_packets, payload_offset, read_pcr, read_pes_pts,
+                    ts_pid)
 
 PTS_WRAP = 1 << 33
+PCR_MODULO = 300 << 33     # full 27 MHz PCR wrap (33-bit base × 300)
 
 # 90 kHz ticks -> nanoseconds, exact in integers: ns = pts * 1e9 / 90e3.
 _NS_NUM = 100000
@@ -194,6 +196,142 @@ class TimelineStamper:
     _STALE_NS = 5_000_000_000
     _STALE_HOLD_NS = 1_000_000_000
 
+    # The LATE-LEVEL tier of the same net (the 2026-09-08 .103 freeze). The
+    # 5 s net above answers a mapping that is grossly wrong; this answers the
+    # one that is wrong by a few hundred ms, which is every bit as fatal to a
+    # paced consumer: its playout budget D is 60-300 ms, so a stream whose
+    # stamps sit 300 ms before its own arrival is late on EVERY frame — the
+    # video sink renders late until max-lateness and the audio sink resyncs
+    # its ring — and nothing else here ever corrects it. Not the watch (the
+    # PES cadence is legal), not the 5 s net (300 ms is not 5 s), not the
+    # slew (slope-only BY DESIGN — see below — and a level has no slope), not
+    # the latch repair (its window is 3 s). Measured on .103: an srt-input
+    # whose margin sat at +244 ms five minutes after its anchor and crept to
+    # +337 ms over the night; with the sink's QoS on, that froze the picture
+    # for 2.5 h with the pipeline PLAYING.
+    #
+    # ONE-SIDED, and that is what squares it with the no-setpoint rule. The
+    # slew must not touch a level because a NEGATIVE margin — a delivery lead,
+    # the HLS player's 2 s — is healthy and the producer's business. A POSITIVE
+    # level is not anyone's business: a buffer that arrives after the time its
+    # stamp says it plays at is unpresentable at D=0 by definition, and if
+    # even the best-delivered buffer of the egress does that for `_LATE_HOLD_NS`
+    # straight, the ANCHOR is early — delivery is one-sided noise, so the
+    # minimum margin IS the mapping error (the latch repair's own argument,
+    # applied at any age rather than in the first 3 s). Re-anchoring later
+    # costs the route that much latency once; not re-anchoring costs it every
+    # frame for ever.
+    #
+    # What it measures: each PES buffer's OWN mapped time against its arrival
+    # (what `_observe` already measures) — never the floor's age, so a sparse
+    # PID (a 1 Hz KLV carousel is 1 s "late" by the floor's reckoning, every
+    # time) cannot trip it — and the MINIMUM across every stream of the egress
+    # over the hold, so one late leg (a muxer's audio arriving 300 ms behind
+    # its video is that leg's encoder latency, not a mapping error) never
+    # moves the anchor its siblings share. `_LATE_NS` sits above live ingest
+    # jitter (SRT at 100 ms latency, splitter flush 20 ms) and below the
+    # smallest D in service; `_LATE_HOLD_NS` is what makes it a level and not
+    # a stall: the min over 10 s of a healthy egress is its best buffer, and
+    # a healthy egress delivers at least one buffer on time in 10 s.
+    _LATE_NS = 100_000_000
+    _LATE_HOLD_NS = 10_000_000_000
+
+    # The EARLY side of the same tier, OPT-IN with `repair_latch` — the #737
+    # rewind (2026-09-07) and the .103 RIST-reconnect case (2026-09-06). A
+    # source that steps its PTS BACK by 1-5 s re-anchors (the watch's backward
+    # bound is 1 s); when it later steps FORWARD by the same amount the watch
+    # accepts that as coherent (forward bound 5 s), and every buffer from then
+    # on is stamped that far AHEAD of its arrival for the life of the anchor:
+    # measured on .103, stamps 1.05 s early per rewind episode, cumulative,
+    # and −1.5..−3 s after a librist blip. A paced consumer holds early
+    # frames, but only as deep as its queues (the player's ES queue is 1 s) —
+    # past that it sheds every GOP and the picture runs at 1 fps, and
+    # restarting the consumer cannot help because the stamps are the
+    # producer's. The latch repair answers exactly this shape, but only in the
+    # first 3 s of an anchor.
+    #
+    # Why OPT-IN when the late side is not: an EARLY level is legitimate for a
+    # producer that runs ahead by design — the HLS fan-out's 2 s delivery lead,
+    # the no-setpoint rule above — so this side holds only for producers whose
+    # delivery cadence IS their media cadence, the same set that turns
+    # `repair_latch` on (a network ingest, a splitter or muxer riding one, a
+    # capture). For those, a buffer that arrives more than `_EARLY_NS` before
+    # its own mapped time, and stays that early for the hold, is the anchor's
+    # error. Measured as the MAXIMUM margin over the hold (the least-early
+    # buffer — delivery is one-sided noise, a late straggler is never evidence
+    # of an early anchor), so the level removed is the one every buffer shares.
+    # `_EARLY_NS` sits under the consumers' queue depth (1 s), where the lead
+    # stops being absorbable, and well above any live-ingest jitter.
+    _EARLY_NS = 800_000_000
+    _EARLY_HOLD_NS = 10_000_000_000
+
+    # --- timeline conditioner (`condition`) — the vMix CBR pacer resets -------
+    # A muxer that paces its output (vMix in CBR mode) periodically RESETS its
+    # pacing timeline: measured 2026-09-08 on .103, every 80-100 s the audio
+    # PES steps back ~1.1 s and gains a DTS, the video follows a second later,
+    # then PTS and PCR both leap forward ~1.1 s. Not one packet is lost and the
+    # pictures are continuous — only the numbers moved. Downstream that costs a
+    # GOP or three every time: the stamper re-anchors (twice, audio then
+    # video), tsdemux flags a DISCONT, the keyframe gate reads it as data loss
+    # and drops to the next IDR. Three of the four mechanisms in this class
+    # answer the STAMPS; none can help, because the step is written in the PES
+    # bytes tsdemux reads. So this one rewrites the bytes.
+    #
+    # THE RULE, per PID, PES by PES: a PTS delta beyond `_COND_STEP_NS` that the
+    # buffer's ARRIVAL did not match is a clock step, and the PID's running
+    # offset absorbs the difference so the written cadence follows arrival. The
+    # arrival test is what keeps three ordinary things out of it:
+    #   a delivery STALL — PTS delta one frame, arrival a second late — is not a
+    #     step (moving the timeline there would have made everything a second
+    #     late for good);
+    #   a genuine GAP — the source dropped 2 s of pictures, PTS and arrival both
+    #     moved 2 s — is content, and stays a gap;
+    #   B-frame reorder and network jitter live well inside 300 ms.
+    # Past `_COND_MAX_NS` it is a source restart, left to the watch as before.
+    # The PCR is conditioned by the same rule with its own offset, so each
+    # clock follows arrival and their mutual relation is preserved. A DTS that
+    # lands after its own written PTS (vMix's marker) is clamped to it.
+    #
+    # LIVE-CADENCE PRODUCERS ONLY — callers gate it on `repair_latch`, for the
+    # same reason that flag exists: an HLS fan-out's arrival is a burst per
+    # segment, and every segment boundary would read as a clock step.
+    # Reported per absorbed step (`on_conditioned`), so the source fault stays
+    # visible in the journal while the picture no longer pays for it.
+    _COND_STEP_NS = 300_000_000
+    _COND_MAX_NS = 10_000_000_000
+    # The CORRECTION is sized by the clock's own cadence — the median of its
+    # recent in-cadence deltas — not by arrival: a step that lands on a 94 KB
+    # I-frame (350 ms of wire time at 2 Mbit/s, measured on the .103 capture)
+    # would otherwise be over-corrected by that frame's transmission time and
+    # leave a residual step behind. Arrival only CLASSIFIES the event.
+    _COND_RECENT = 8
+    # PCR REGENERATION. A consumer's tsdemux places every buffer at
+    # `stamp + (PTS − PCR)`, so the wire's PTS − PCR must be CONSTANT for the
+    # producer's stamps to mean anything downstream. vMix's pacer clock (the
+    # PCR) stops, resets and lags while its frame clock (the PTS) runs on:
+    # measured on .103 (2026-09-08 11:05) PTS 12.6 s ahead of PCR, every frame
+    # 12 s early at the player, the ES queue shedding 50 of 52 buffers a
+    # second; and at 11:20 the PCR froze for 1.5 s then leapt 1.8 s. Patching
+    # such a clock step by step (a first cut re-based it every 250 ms through
+    # the freeze) is a losing game, so it is not patched but REPLACED: every
+    # PCR packet is rewritten as the reference PID's conditioned PTS minus
+    # `_COND_PCR_LEAD_NS`, in media time (flat between frames). The
+    # regenerated clock therefore runs with the pictures —
+    # which is what the splitter's re-injected PCR already did for every
+    # non-PCR output — and the source's PCR can do what it likes. The first
+    # regenerated value, and any genuine gap in the PTS timeline (the source
+    # dropped pictures), carry the discontinuity indicator; a monotone guard
+    # keeps it from ever stepping back. One event per new deviation of the
+    # source's PCR from ours, so the source fault stays visible.
+    _COND_PCR_LEAD_NS = 250_000_000
+    # The PTS the regenerated PCR trails is the LOWEST recent written PTS of any
+    # stream — an audio PID can lag the video's by hundreds of ms (270 ms on the
+    # .103 capture) and must not be placed before it is delivered — bounded to
+    # at most `_COND_PCR_FLOOR_NS` below the reference PID's, so a sparse
+    # metadata PID (a KLV carousel seconds behind) cannot drag it.
+    _COND_PCR_RECENT_NS = 500_000_000
+    _COND_PCR_FLOOR_NS = 1_000_000_000
+
     # --- drift slewing (ADR-0005 decision 5's drift term) -------------------
     # The stamp is `anchor + (PES - ref)`: media time from the SOURCE's clock,
     # pinned to OUR clock once. Two crystals are never the same — 10-50 ppm
@@ -315,7 +453,7 @@ class TimelineStamper:
     _LATCH_REPAIR_NS = 3_000_000_000    # window after an anchor the repair is open
 
     def __init__(self, on_anchor=None, on_reanchor=None, on_settled=None,
-                 repair_latch=False):
+                 repair_latch=False, on_conditioned=None):
         self.latch = TimelineLatch()
         self.anchor = None      # house time (ns) latched at the first PES
         self.ref = None         # that first PES (90 kHz), the timeline's zero
@@ -329,6 +467,31 @@ class TimelineStamper:
         self._pending = {}      # pid -> the epoch its last anomaly proposed
         self._floors = {}       # stream -> last stamp emitted
         self._stale_since = {}  # stream -> house time its lag first went out of bound
+        self._late_since = None # house time the egress-wide margin went past _LATE_NS
+        self._late_min = 0      # the smallest margin seen since (the level)
+        self._early_since = None  # house time the margin went below -_EARLY_NS
+        self._early_max = 0     # the largest (least early) margin since (the level)
+        self._on_conditioned = on_conditioned
+        self._cond_pes = {}     # pid -> [last raw PTS, last house, offset ticks]
+        self._cond_ref_pid = None    # the PCR's source: the PID carrying the PCR (first PES PID until seen)
+        self._cond_pcr_pid = None
+        # TIMING PID: under conditioning, the PID carrying the PCR is the egress's
+        # timing reference — the anchor is taken on ITS first PES, and the latch
+        # repair, the drift servo and the late/early tiers judge ITS buffers
+        # only; every other PID rides the same anchor. A source whose audio PES
+        # run 1.7 s ahead of its video (vMix, .103 2026-09-08 12:03) otherwise
+        # has each mechanism "correcting" the anchor for one stream and
+        # breaking it for the other. None = any PID (legacy).
+        self._timing_pid = None
+        self._anchor_pid = None      # the PID the anchor was taken on
+        self._timing_rebase_pending = False   # timing PID learned after the anchor: re-base on its next PES
+        self._cond_ref_wpts = None   # its last WRITTEN PTS, and the house time it arrived
+        self._cond_ref_house = None
+        self._cond_seen = {}         # pid -> (last wpts, house): the PCR floor's candidates
+        self._cond_last_wpcr = None  # last WRITTEN PCR (27 MHz): the monotone guard
+        self._cond_last_wpcr_house = None   # arrival of the last written PCR
+        self._cond_pcr_regen = False
+        self._cond_pcr_reported = None   # last reported raw→written PCR offset
         self._anom = 0
         self._on_anchor = on_anchor
         self._on_reanchor = on_reanchor
@@ -566,29 +729,46 @@ class TimelineStamper:
         # views rather than 188-byte copies.
         pes = list(iter_pes(memoryview(data) if not isinstance(data, memoryview)
                             else data))
+        if self._timing_rebase_pending and self.anchor is not None:
+            # The anchor was taken on a PID that is not the PCR carrier (its PES
+            # arrived first); the carrier's first PES re-bases the epoch onto it.
+            for pid, pts in pes:
+                if pid == self._timing_pid:
+                    self._timing_rebase_pending = False
+                    self._reanchor(pid, pts, pts, 0, house_now)
+                    self._anchor_pid = pid
+                    break
+        timing_pes = [x for x in pes if self._timing_pid is None or x[0] == self._timing_pid]
         if self.anchor is not None:
             self._scan_watch(pes, house_now)    # may re-anchor before we stamp
             self._scan_stale(pes, house_now, stream)      # ... and so may the net
-            if pes:
+            if timing_pes:
                 # ... and if neither did, the drift slew nudges the anchor the
                 # few ns this buffer's share of the correction is worth. After
                 # the two above, so a re-anchor's fresh baseline is never slewed
-                # by the epoch it just replaced.
+                # by the epoch it just replaced. Timing PID only.
                 self._slew(house_now)
         self.latch.feed_pes(pes)                # epoch-consistent first PES per PID
         stamp = self._scan_stamp(pes, house_now)
-        if stamp is not None:
+        # Only the timing PID's buffers may judge the anchor (`_timing_pid`):
+        # every mechanism below reads arrival against THIS stamp, and another
+        # PID's PES can legitimately sit seconds off the timing PID's.
+        if stamp is not None and timing_pes:
             # The latch-repair window first: while it is open, a stamp that
             # lands after its own arrival is the anchor's error, not the
             # buffer's, and this is where it is paid back.
             stamp = self._repair(house_now, stamp)
+            # The late/early tier of the net (`_LATE_NS`): this buffer's own
+            # mapped time against its arrival over the hold. It re-anchors ON
+            # this buffer, which then leaves stamped with its arrival —
+            # restamped on the fresh epoch, exactly as the first PES of any
+            # epoch does.
+            if self._scan_late(timing_pes, house_now, stamp):
+                self.latch.feed_pes(pes)
+                stamp = self._scan_stamp(pes, house_now)
             # Closed loop: measure this buffer's MAPPED time against the house
             # time it arrived at — before the monotone floor below, which is a
             # guard on what leaves rather than a statement about the mapping.
-            # (A clamped stamp would read as a source falling behind; the
-            # staleness net owns that mode, and it reads the floor.) PES-less
-            # buffers are not measured at all: they repeat the staircase, so
-            # their margin is the previous stamp's age.
             self._observe(house_now, stamp)
         if stamp is None:
             # A stream whose FIRST buffer carries no PES (a PSI-only flush on a
@@ -622,6 +802,8 @@ class TimelineStamper:
         self._watch_last.clear()
         self._pending.clear()
         self._stale_since.clear()
+        self._late_since = None
+        self._early_since = None
         # The drift estimate belongs to the old mapping too: its baseline was a
         # margin measured against an anchor that no longer exists, so carrying
         # it over would slew the fresh anchor by the dead epoch's error.
@@ -682,6 +864,14 @@ class TimelineStamper:
         # across an anomaly, so a PID that was merely glitched comes back
         # coherent against it and drops its proposal.
         for pid, pts in pes:
+            # Only the timing PID may move the shared anchor once the PCR
+            # carrier is known — a multiplexed egress carries PIDs on unrelated
+            # timelines (a KLV/metadata PID hours off the media), and letting
+            # one trip the watch re-anchored the whole egress onto it (.103,
+            # 2026-09-08 13:27). Unknown timing PID (a single-PID SPTS egress,
+            # no PCR) keeps watching every PID: the 2026-08-13 freeze fix.
+            if self._timing_pid is not None and pid != self._timing_pid:
+                continue
             lastp = self._watch_last.get(pid)
             if lastp is None:
                 self._watch_last[pid] = pts
@@ -726,6 +916,209 @@ class TimelineStamper:
         self._reanchor(pid, self._watch_last.get(pid, pts), pts,
                        -(lag * _NS_DEN // _NS_NUM), house_now)
 
+    def _scan_late(self, pes, house_now, stamp):
+        """The level tier: re-anchor when even the BEST-delivered buffer of
+        the egress has arrived more than `_LATE_NS` after its own mapped time
+        for `_LATE_HOLD_NS` straight (late side), or — live-cadence producers
+        only — when even the LEAST-early buffer has arrived more than
+        `_EARLY_NS` before it for `_EARLY_HOLD_NS` (early side). Returns True
+        when it did, so the caller restamps this buffer on the fresh epoch.
+        See `_LATE_NS` / `_EARLY_NS`.
+        """
+        margin = house_now - stamp
+        pid, pts = pes[0]
+        # The LATE side: media behind house.
+        if margin <= self._LATE_NS:
+            self._late_since = None           # one on-time buffer: it is jitter
+        else:
+            if self._late_since is None:
+                self._late_since = house_now
+                self._late_min = margin
+            elif margin < self._late_min:
+                self._late_min = margin
+            if house_now - self._late_since >= self._LATE_HOLD_NS:
+                # `deltaTicks` carries the LEVEL that forced this (negative —
+                # media behind house), the same convention as the 5 s net's lag.
+                self._reanchor(pid, self._watch_last.get(pid, pts), pts,
+                               -(self._late_min * _NS_DEN // _NS_NUM), house_now)
+                return True
+        # The EARLY side: media ahead of house — live-cadence producers only.
+        if not self._repair_on or margin >= -self._EARLY_NS:
+            self._early_since = None          # one on-time buffer: it is jitter
+        else:
+            if self._early_since is None:
+                self._early_since = house_now
+                self._early_max = margin
+            elif margin > self._early_max:
+                self._early_max = margin
+            if house_now - self._early_since >= self._EARLY_HOLD_NS:
+                # Positive `deltaTicks`: media ahead of house, by the level.
+                self._reanchor(pid, self._watch_last.get(pid, pts), pts,
+                               (-self._early_max) * _NS_DEN // _NS_NUM, house_now)
+                return True
+        return False
+
+    def condition(self, data: bytearray, house_now: int) -> int:
+        """Rewrite PES PTS/DTS and PCR fields IN `data` so a source clock step
+        never reaches a consumer as a discontinuity — see `_COND_STEP_NS`.
+        Call BEFORE `stamp` on the same bytes. Returns the steps absorbed.
+        """
+        absorbed = 0
+        for off in range(0, len(data) - PKT + 1, PKT):
+            if data[off] != SYNC:
+                continue
+            pkt = data[off:off + PKT]
+            pid = ts_pid(pkt)
+            pcr = read_pcr(pkt)
+            if pcr is not None:
+                self._cond_pcr_pid = pid
+                if self._timing_pid != pid:
+                    self._timing_pid = pid
+                    # Learned after the anchor was taken on another PID: re-base
+                    # onto the timing PID's next PES (reported as a re-anchor).
+                    self._timing_rebase_pending = (self.anchor is not None
+                                                   and self._anchor_pid != pid)
+                if self._cond_ref_pid is not None:
+                    # wpts − lead, in MEDIA time: flat between frames, never
+                    # advanced by arrival (a big I-frame's wire time is not media
+                    # time; interpolating by it stepped the PCR on the .103 capture).
+                    w = (self._cond_pcr_floor_pts(house_now) * 300
+                         - self._COND_PCR_LEAD_NS * 27 // 1000) % PCR_MODULO
+                    di = not self._cond_pcr_regen            # first regenerated value
+                    if self._cond_pcr_regen:                 # guard among regenerated values only
+                        dw = self._fold(w - self._cond_last_wpcr, PCR_MODULO)
+                        if dw < 0:
+                            w = self._cond_last_wpcr              # monotone guard
+                        elif abs(dw * 1000 // 27 - (house_now - self._cond_last_wpcr_house)) \
+                                > self._COND_MAX_NS:
+                            # The clock moved by more than the conditioner's bound
+                            # past the time that passed: a source restart, which
+                            # reaches the wire as written. NOT a delivery burst —
+                            # SRT hands us hundreds of ms in one go, and a demuxer
+                            # told to reset on each of those re-armed the keyframe
+                            # gate every GOP (.103, 2026-09-08 12:23).
+                            di = True
+                    if di:
+                        data[off + 5] |= 0x80                    # signalled discontinuity
+                    self._write_pcr(data, off, w)
+                    self._cond_pcr_regen = True
+                    self._cond_last_wpcr = w
+                    self._cond_last_wpcr_house = house_now
+                    # One event per new deviation of the source's PCR from ours.
+                    o = self._fold(w - pcr, PCR_MODULO)
+                    if (self._cond_pcr_reported is None
+                            or abs(o - self._cond_pcr_reported) * 1000 // 27 > self._COND_STEP_NS):
+                        step = o if self._cond_pcr_reported is None else o - self._cond_pcr_reported
+                        self._cond_pcr_reported = o
+                        absorbed += 1
+                        if self._on_conditioned:
+                            self._on_conditioned({'pid': pid, 'clock': 'pcr',
+                                                  'stepTicks': step // 300, 'offsetTicks': o // 300,
+                                                  'houseNs': house_now})
+                else:
+                    self._cond_last_wpcr = pcr                   # raw, until a PTS exists
+            if not (pkt[1] & 0x40):
+                continue
+            pts = read_pes_pts(pkt)
+            if pts is None:
+                continue
+            poff = payload_offset(pkt)
+            c = self._cond_pes.get(pid)
+            if c is None:
+                c = self._cond_pes[pid] = [pts, house_now, 0, []]
+            else:
+                d_ns = pts90k_to_ns(self._fold(pts - c[0], PTS_WRAP))
+                a_ns = house_now - c[1]
+                if (abs(d_ns) > self._COND_STEP_NS and abs(d_ns) <= self._COND_MAX_NS
+                        and abs(d_ns - a_ns) > self._COND_STEP_NS):
+                    step = self._cond_step_ns(c, d_ns) * _NS_DEN // _NS_NUM
+                    c[2] -= step
+                    absorbed += 1
+                    if self._on_conditioned:
+                        self._on_conditioned({'pid': pid, 'clock': 'pts', 'stepTicks': step,
+                                              'offsetTicks': c[2], 'houseNs': house_now})
+                elif abs(d_ns) <= self._COND_STEP_NS:
+                    self._cond_remember(c, d_ns)
+                c[0], c[1] = pts, house_now
+            wpts = (pts + c[2]) % PTS_WRAP
+            # The reference PID is the one carrying the PCR (its PTS is what the
+            # PCR must trail — an audio PID's PTS can lead the video's by over a
+            # second, and a PCR derived from it puts every video frame that far
+            # late: .103, 2026-09-08 11:41). Until a PES on the PCR PID is seen,
+            # the first PES PID stands in.
+            if self._cond_ref_pid is None or (pid == self._cond_pcr_pid and self._cond_ref_pid != pid):
+                self._cond_ref_pid = pid
+                self._cond_pcr_regen = False      # a new reference is a new PCR epoch: flagged, unguarded
+            if pid == self._cond_ref_pid:
+                self._cond_ref_wpts, self._cond_ref_house = wpts, house_now
+            self._cond_seen[pid] = (wpts, house_now)
+            if not c[2]:
+                continue
+            self._write_ts_field(data, off + poff + 9, wpts)
+            if pkt[poff + 7] & 0x40 and poff + 19 <= PKT:
+                q = pkt[poff + 14:poff + 19]
+                dts = (((q[0] >> 1) & 0x07) << 30) | (q[1] << 22) | ((q[2] >> 1) << 15) \
+                    | (q[3] << 7) | (q[4] >> 1)
+                wdts = (dts + c[2]) % PTS_WRAP
+                # A DTS after its own PTS is not a timeline (vMix writes one
+                # while its pacer resets): decode no later than presentation.
+                if self._fold(wdts - wpts, PTS_WRAP) > 0:
+                    wdts = wpts
+                self._write_ts_field(data, off + poff + 14, wdts)
+        return absorbed
+
+    def _cond_pcr_floor_pts(self, house_now):
+        """The PTS the regenerated PCR trails: see `_COND_PCR_RECENT_NS`."""
+        floor = self._cond_ref_wpts
+        for pid, (wpts, seen) in self._cond_seen.items():
+            if pid == self._cond_ref_pid or house_now - seen > self._COND_PCR_RECENT_NS:
+                continue
+            d = self._fold(wpts - self._cond_ref_wpts, PTS_WRAP)
+            if d < 0 and pts90k_to_ns(-d) <= self._COND_PCR_FLOOR_NS \
+                    and self._fold(wpts - floor, PTS_WRAP) < 0:
+                floor = wpts
+        return floor
+
+    @classmethod
+    def _cond_remember(cls, c, d_ns):
+        if len(c[3]) >= cls._COND_RECENT:
+            del c[3][0]
+        c[3].append(d_ns)
+
+    @staticmethod
+    def _cond_step_ns(c, d_ns):
+        """The step to absorb: the raw delta less the clock's nominal interval
+        (median of its recent in-cadence deltas). C++ `cond_step_ns`."""
+        if not c[3]:
+            return d_ns
+        return d_ns - sorted(c[3])[len(c[3]) // 2]
+
+    @staticmethod
+    def _fold(d, modulo):
+        """Signed, wrap-folded difference on a counter of the given modulus."""
+        d %= modulo
+        return d - modulo if d > modulo // 2 else d
+
+    @staticmethod
+    def _write_ts_field(data, at, v):
+        """Rewrite the 33-bit value of a 5-byte PES timestamp field in place,
+        keeping its 4-bit prefix and marker bits exactly as the mux wrote them."""
+        data[at] = (data[at] & 0xF0) | (((v >> 30) & 0x07) << 1) | 0x01
+        data[at + 1] = (v >> 22) & 0xFF
+        data[at + 2] = (((v >> 15) & 0x7F) << 1) | 0x01
+        data[at + 3] = (v >> 7) & 0xFF
+        data[at + 4] = ((v & 0x7F) << 1) | 0x01
+
+    @staticmethod
+    def _write_pcr(data, off, pcr27):
+        base, ext = pcr27 // 300, pcr27 % 300
+        data[off + 6] = (base >> 25) & 0xFF
+        data[off + 7] = (base >> 17) & 0xFF
+        data[off + 8] = (base >> 9) & 0xFF
+        data[off + 9] = (base >> 1) & 0xFF
+        data[off + 10] = ((base & 1) << 7) | 0x7E | ((ext >> 8) & 1)
+        data[off + 11] = ext & 0xFF
+
     def _scan_stamp(self, pes, house_now):
         """Stamp for this buffer, or None when it carries no PES header.
 
@@ -734,9 +1127,18 @@ class TimelineStamper:
         stamp forward by the mux's interleave depth.
         """
         stamp = None
+        have_timing = False
         for pid, pts in pes:
+            is_timing = self._timing_pid is None or pid == self._timing_pid
             if self.anchor is None:
+                self._anchor_pid = pid
                 self.anchor = house_now
+                # The timing PID may already be known (its PCR was conditioned in
+                # this very buffer) while the first PES in it is another PID's:
+                # re-base onto the carrier's next PES, exactly as when the PCR
+                # is learned later (`condition`).
+                self._timing_rebase_pending = (self._timing_pid is not None
+                                               and pid != self._timing_pid)
                 # The drift servo's t0: its settling period is measured from
                 # the anchor, because what it must not measure through is the
                 # producer transient that starts right here.
@@ -757,6 +1159,9 @@ class TimelineStamper:
                 prev = self.latch.first_pts.get(pid, self.ref)
             u = unwrap_near(pts, prev)
             self._unwrapped[pid] = u
-            if stamp is None:
+            # The FIRST PES in the buffer — except that the timing PID's first
+            # PES wins over any other PID's.
+            if stamp is None or (is_timing and not have_timing):
                 stamp = self.anchor + pts90k_to_ns(u - self.ref)
+                have_timing = is_timing
         return stamp

@@ -32,16 +32,8 @@ import type { RenderTargetReady } from './renderTarget.js';
 /** Sink element plus the two clock decisions derived from the module config. */
 export interface SinkPlan {
     sinkElement: string;
-    /**
-     * Cross-pipeline A/V sync (opt-in): lock to the engine's shared clock so
-     * video stays with an audio-decoder fed from the same source. Forces the
-     * sink to sync=true and preserves source PTS (see buildLivePipeline);
-     * `clockSync` in the returned description makes GstPluginBase resolve and
-     * attach the shared clock. Off → today's behaviour.
-     */
-    clockSync: boolean;
-    /** Clock-paced sink (sync config or clockSync) → tsparse returns to the
-     *  chain for clock-anchored timestamps. */
+    /** Clock-paced sink (the `sync` config, default on) → tsparse returns to
+     *  the chain for TS alignment; the sink rides the source PTS. */
     sinkPaced: boolean;
 }
 
@@ -57,17 +49,14 @@ export function planSink(
      */
     tsOffsetNs: number,
 ): SinkPlan {
-    const clockSync = (config.clockSync as boolean | undefined) === true;
-    const sinkPaced = clockSync || ((config.sync as boolean | undefined) ?? true);
+    const sinkPaced = (config.sync as boolean | undefined) ?? true;
     return {
         sinkElement: buildSink(target.active.name, target.sinkEnv, {
-            qos: (config.qos as boolean | undefined) ?? true,
             sync: sinkPaced,
             // Positive offset delays video to meet late audio (audio path has
             // more buffering latency). Live-updatable via the named `sink`.
             tsOffsetNs,
         }),
-        clockSync,
         sinkPaced,
     };
 }
@@ -197,7 +186,6 @@ export interface LivePlanInput {
     bufferMs: unknown;
     /** Raw `cpuDecodeThreading` config value; normalised here. */
     cpuDecodeThreading: unknown;
-    clockSync: boolean;
     sinkPaced: boolean;
     /**
      * Module services, read ONLY for the time-sync contract gate — the backlog
@@ -235,7 +223,6 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
             input.udpSource,
             input.waylandFullscreen,
             Number(input.bufferMs ?? 200),
-            input.clockSync,
             input.sinkPaced,
             input.decoder,
         ),
@@ -281,7 +268,6 @@ export function planLivePipeline(input: LivePlanInput): PipelineDescription {
         // the TS probe names the codec and the rebuild moves to a gated
         // explicit rung.
         ...(input.decoder.explicit ? { keyframeGate: { decoder: VIDEO_DECODER_NAME } } : {}),
-        ...(input.clockSync ? { clockSync: true } : {}),
         // Anchor the demuxer's running time to the producer's house stamps
         // (ADR-0005 Stage 3c — the correction the mpegts-muxer applies to its
         // inputs). A tsdemux keeps the zero-point error of the one bus buffer

@@ -919,6 +919,35 @@ check("and the whole run stays within a frame or two of the stamp",
 
 
 print()
+print("\n--- the conditioner absorbs a source PTS step (timeline_conditioned carries houseNs) ---")
+pipe, src = build_pipe()
+bus = Bus(pipe)
+start(pipe, repair_latch=True)          # the conditioner rides the same live-cadence opt-in
+stamper.arm(pipe.get_by_name("busout_41000"), "busout_41000")
+pipe.set_state(Gst.State.PLAYING)
+pipe.get_state(3 * Gst.SECOND)
+# A steady cadence to teach the conditioner the media rate, then a ~1 s BACKWARD
+# PES PTS step whose arrival did not move — a source clock reset (vMix CBR, .103).
+# The conditioner rewrites the bytes so the stamper's watch never sees a step.
+for i in range(12):
+    back = 90000 if i >= 8 else 0        # 1 s back from buffer 8
+    pes_pts = FIRST_PES + i * STEP - back
+    push(src, pes_packet(0x100, pes_pts, i), i * 40 * Gst.MSECOND, 0)
+    bus.pump(0.003)
+bus.drain(pipe, src)
+teardown()
+conditioned = bus.of("timeline_conditioned")
+check("a source PTS step raised a timeline_conditioned event", len(conditioned) >= 1)
+check("the conditioned event carries the probe's field names verbatim, houseNs included "
+      "(the field the native message path used to drop)",
+      bool(conditioned)
+      and set(conditioned[0]) == {"event", "tee", "pid", "clock",
+                                  "stepTicks", "offsetTicks", "houseNs"}
+      and conditioned[0]["pid"] == 0x100
+      and conditioned[0]["clock"] in ("pts", "pcr")
+      and isinstance(conditioned[0]["houseNs"], int)
+      and conditioned[0]["houseNs"] > 0)
+
 if _failures:
     print(f"{len(_failures)} FAILED: {', '.join(_failures)}")
     sys.exit(1)

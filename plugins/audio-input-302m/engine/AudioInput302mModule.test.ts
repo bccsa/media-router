@@ -141,13 +141,73 @@ describe('AudioInput302mModule.buildPipeline', () => {
         );
     });
 
-    it('health error when the range runs past the device', () => {
-        const { module, setHealth } = makeModule({ deviceChannels: 48 });
-        expect(module.buildPipeline({ device: DEV, channels: 8, firstChannel: 45 })).toBeNull();
+    it('a mono source (UCM-split SSL 2 Mic1) is sent dual-mono into the stereo 302M pair', () => {
+        const { module, setHealth } = makeModule({ deviceChannels: 1 });
+        const desc = module.buildPipeline({
+            device: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic1__source',
+        });
+        expect(desc).not.toBeNull();
+        const p: string = desc!.pipeline;
+        expect(p).toContain(
+            '! audio/x-raw,channels=1,channel-mask=(bitmask)0x0 ! audioconvert mix-matrix=',
+        );
+        expect(p).toContain('! audio/x-raw,channels=2 ! volume name=vol');
+        expect(p).toContain('rate=48000,channels=2 ! avenc_s302m');
+        // Same channel on both sides — a mono mic is centred, not left-only.
+        expect(matrixRows(p)).toEqual([[1], [1]]);
+        expect(setHealth).toHaveBeenLastCalledWith('ok');
+        expect(module.setStatusData).toHaveBeenCalledWith('input', {
+            device: 'alsa_input.usb-Solid_State_Logic_SSL_2-00.HiFi__Mic1__source',
+            channels: 2,
+            firstChannel: 1,
+            lastChannel: 2,
+            deviceChannels: 1,
+            dualMono: true,
+        });
+    });
+
+    it('the last channel of a wide desk into a stereo stream is dual-mono too', () => {
+        const { module } = makeModule({ deviceChannels: 48 });
+        const desc = module.buildPipeline({ device: DEV, channels: 2, firstChannel: 48 });
+        const rows = matrixRows(desc!.pipeline);
+        expect(rows).toHaveLength(2);
+        expect(rows[0].indexOf(1)).toBe(47);
+        expect(rows[1].indexOf(1)).toBe(47);
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'input',
+            expect.objectContaining({ dualMono: true }),
+        );
+    });
+
+    it('a range running past the device captures what exists and pads the rest with silence', () => {
+        const { module } = makeModule({ deviceChannels: 48 });
+        const desc = module.buildPipeline({ device: DEV, channels: 8, firstChannel: 45 });
+        expect(desc).not.toBeNull();
+        const rows = matrixRows(desc!.pipeline);
+        expect(rows).toHaveLength(8);
+        for (const [dst, row] of rows.entries()) {
+            expect(row).toHaveLength(48);
+            if (dst < 4) {
+                expect(row.indexOf(1)).toBe(44 + dst);
+                expect(row.filter((v) => v !== 0)).toEqual([1]);
+            } else {
+                expect(row.every((v) => v === 0)).toBe(true);
+            }
+        }
+        expect(module.setStatusData).toHaveBeenCalledWith(
+            'input',
+            expect.objectContaining({ deviceChannels: 48, silentChannels: 4 }),
+        );
+    });
+
+    it('health error when the range starts beyond the device', () => {
+        const { module, setHealth } = makeModule({ deviceChannels: 2 });
+        expect(module.buildPipeline({ device: DEV, channels: 2, firstChannel: 3 })).toBeNull();
         expect(setHealth).toHaveBeenCalledWith(
             'error',
-            expect.stringContaining('has 48 channels — cannot capture 45–52'),
+            expect.stringContaining('has 2 channels — cannot capture 3–4'),
         );
+        expect(module.setStatusData).not.toHaveBeenCalledWith('input', expect.anything());
     });
 
     it('health error when a non-default range is asked of a device of unknown width', () => {
@@ -161,7 +221,7 @@ describe('AudioInput302mModule.buildPipeline', () => {
 
     it('does not allocate a bus channel when the capture cannot be built', () => {
         const { module } = makeModule({ deviceChannels: 4 });
-        expect(module.buildPipeline({ device: DEV, channels: 8 })).toBeNull();
+        expect(module.buildPipeline({ device: DEV, channels: 2, firstChannel: 5 })).toBeNull();
         expect(module.services.mediaRouter.assignBusChannel).not.toHaveBeenCalled();
     });
 

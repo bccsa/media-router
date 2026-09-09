@@ -482,7 +482,8 @@ def on_bus_message(bus, message):
         src = message.src
         src_name = src.get_name() if src else None
         if name in ("mrtsstamp-anchor", "mrtsstamp-settled", "mrtsstamp-reanchor",
-                    "mrtsstamp-segment-warning"):
+                    "mrtsstamp-conditioned", "mrtsstamp-segment-warning",
+                    "mrtsstamp-map-failed"):
             # The native egress stamper reports through the bus (it has no other
             # way home). Translated here into the SAME engine events the python
             # probe emits — identical field names, identical message text — so
@@ -2408,15 +2409,28 @@ _bus_branch_seq = 0
 # the gate01 2026-09-06 muxer growth (~2.8 GB each at program bitrate) —
 # unconfirmed on the box, see docs/TodoNotes.md. Rate mirrors
 # `TS_QUEUE_BYTES_PER_MS` in the engine's queueBounds.ts (64 Mbit/s).
-BUS_EDGE_QUEUE_MS = 500
+# The TIME bound is 5 s, not the 500 ms the byte cap is sized for: `queue`
+# reads its time level off the stamps passing through it, so a forward stamp
+# step of more than the bound — every producer re-anchor that moves the
+# timeline later (a late-level correction, a source restart) — reads as a full
+# queue for one buffer and the leak drops it: one dropped bus buffer per
+# re-anchor, a CC break on every PID in it, DISCONT, and the consumer's
+# keyframe gate paying a GOP (.103, 2026-09-08 13:02-13:15: one CC break per
+# re-anchor, measured on the bus with the wire clean). 5 s is past any step
+# the stamper corrects in place (its conditioner absorbs up to 10 s and marks
+# a larger one a restart); a stalled consumer still sheds here, at 5 s of its
+# stream or the byte cap, whichever comes first, and never back-pressures the
+# producer.
+BUS_EDGE_QUEUE_MS = 5_000
+BUS_EDGE_QUEUE_BYTES_MS = 500
 BUS_EDGE_QUEUE_BYTES_PER_MS = 8_000
-BUS_EDGE_QUEUE_MAX_BYTES = BUS_EDGE_QUEUE_MS * BUS_EDGE_QUEUE_BYTES_PER_MS
+BUS_EDGE_QUEUE_MAX_BYTES = BUS_EDGE_QUEUE_BYTES_MS * BUS_EDGE_QUEUE_BYTES_PER_MS
 
 
 def bus_edge_branch_description(socket):
     """gst-launch description of one per-consumer fan-out branch.
 
-    `queue leaky=2` (500 ms, byte-capped) ! `unixfdsink` on the consumer's own
+    `queue leaky=2` (5 s, byte-capped at 500 ms of 64 Mbit/s) ! `unixfdsink` on the consumer's own
     edge socket. Kept as a pure function so the shape is unit-testable — see
     `_try_bus_attach` for why every property here is load-bearing.
     """
@@ -3738,6 +3752,43 @@ BACKLOG_SHED_STALE_MS = 4_000
 BACKLOG_SHED_KEYFRAME_WARN_MS = 3_000
 
 
+def _upstream_queued_ms(pad):
+    """How much data (ms of stamp time) sits in the `queue`s UPSTREAM of `pad`
+    right now — the shed policy's `queued_ms`, the one number that separates a
+    retained backlog (parked in those queues, returned by dropping) from a late
+    timeline (queues empty, dropping returns nothing; see backlog_shed.py).
+
+    Walks the linked chain sink-pad by sink-pad from `pad` to the source,
+    summing `current-level-time` of every queue/queue2 on the way: for the
+    video leg that is the ES queue, the jitter queues and the demuxer's input
+    queue. Bins are crossed at their ghost pads only (nothing inside a bin
+    is counted — no paced leg has one upstream today). Bounded, so a cycle or
+    a pathological graph can never spin the streaming thread.
+    """
+    total_ns = 0
+    hops = 0
+    while pad is not None and hops < 64:
+        hops += 1
+        peer = pad.get_peer()
+        if peer is None:
+            break
+        el = peer.get_parent_element()
+        if el is None:
+            break
+        factory = el.get_factory()
+        fname = factory.get_name() if factory is not None else ""
+        if fname in ("queue", "queue2"):
+            try:
+                level = el.get_property("current-level-time")
+            except (TypeError, GLib.Error):
+                level = 0
+            if level and level != Gst.CLOCK_TIME_NONE:
+                total_ns += int(level)
+        sinks = el.sinkpads
+        pad = sinks[0] if sinks else None
+    return total_ns / 1e6
+
+
 def _start_backlog_shedder(pipe, cfg):
     """Give a clock-paced leg its retained backlog back (`backlogShed` config).
 
@@ -4071,7 +4122,20 @@ def _start_backlog_shedder(pipe, cfg):
             st["dropped"] += 1
             return Gst.PadProbeReturn.DROP
 
-        verdict = policy.observe(late_ms, now_ms)
+        # `queued_ms` is a callable: the queue walk runs only once a hold has
+        # matured (at most once per `hold_ms`), never per buffer.
+        verdict = policy.observe(late_ms, now_ms,
+                                 queued_ms=lambda: _upstream_queued_ms(pad))
+        if verdict == "timeline":
+            _log(f"retained {late_ms + budget_ms:.0f} ms against a {budget_ms:.0f} ms "
+                 f"budget for {policy.hold_ms:.0f} ms, but the queues upstream are "
+                 "empty — the timeline is late, not backlogged; nothing to shed "
+                 "(the producer's stamper owns this)")
+            emit_plugin_event("backlog_shed",
+                              {"element": name, "outcome": "timeline",
+                               "budgetMs": round(budget_ms, 1),
+                               "excessBeforeMs": round(late_ms, 1)})
+            return Gst.PadProbeReturn.OK
         if verdict == "implausible":
             _log(f"lateness {late_ms:.0f} ms is past the sanity ceiling — treating "
                  "it as a timeline mismatch, NOT a backlog (nothing shed)")

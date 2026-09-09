@@ -121,6 +121,7 @@ describe('buildN1Pipeline', () => {
             expect(pipeline).toContain(
                 `audiomixer name=omix${o} force-live=true` +
                     ' latency=50000000 min-upstream-latency=50000000' +
+                    ' start-time-selection=first' +
                     ' ! audio/x-raw,rate=48000,channels=2' +
                     ` ! identity name=omix${o}_pace sync=true` +
                     ' ! audioconvert ! audioresample',

@@ -1055,3 +1055,93 @@ failure decision 1 exists to remove.
   (−1040 ms retained was logged at 09:49:51 the same day); it is a transient, not
   the steady offset (59 ms). Measure with a second fan-out client tap, never from
   a single renderWatch line.
+
+## Implementation notes (Stage 3f — the source-timeline conditioner; the .103 vMix CBR scramble)
+
+**Amends Decision 2.** Decision 2 said a producer *re-anchors* on a source
+discontinuity. That is correct but coarse: a re-anchor moves the whole egress,
+costs a monotone-floor reset, and — over a lossy relay leg — fires so often the
+timeline never settles. A vMix H.265 CBR feed relayed through GATE01 to the
+booth Pi (`play/scc/fra`, #737, 2026-09-08) rewound its PES/PCR ~1 s then leapt
+~1 s forward every 80–130 s, and the receiver either froze for 20 s at a time or
+re-anchored on a 10 s cycle with the error growing past 3 s. The wire was clean
+(SRT loss ≈ 0); every fault was on our side of ingest. So the producer now also
+**conditions** the wire, ahead of the stamper, on the same live-cadence opt-in
+as latch-repair (`repair-latch` / `latchRepair`; OFF by default, ON only for a
+network-ingest producer whose delivery cadence is its media cadence — a plain
+capture or file producer's bytes are never touched):
+
+- **It REWRITES the wire.** `TimelineStamper::condition` (both twins, called
+  before `stamp` on the same bytes) rewrites PES PTS/DTS and **regenerates the
+  PCR** from the conditioned PTS, so a source clock step is taken out of the
+  bytes before any consumer's `tsdemux` reads it as a discontinuity. This is
+  the surprising, hard-to-reverse part this ADR exists to record: a consumer
+  that expected the *source's* PCR on the wire no longer sees it. A step within
+  the conditioner's bound (`COND_STEP_NS` 300 ms … `COND_MAX_NS` 10 s) is
+  absorbed and reported (`timeline_conditioned`, per-PID cumulative offset);
+  a larger jump is left to the discontinuity watch as a genuine restart. A DTS
+  after its own PTS (vMix writes one while its pacer resets) is clamped to the
+  PTS.
+
+- **It elects a TIMING PID.** The PID carrying the PCR is the timeline's
+  reference; only it may move the shared anchor (the discontinuity watch, the
+  late/early tiers, the drift slew all gate on it), because a muxed egress
+  carries PIDs on unrelated clocks — a KLV/metadata PID stamps its own clock
+  ~24 h off the media, and letting one trip the watch re-anchored the whole
+  egress onto it (+77 s, on every reconnect). Until a PCR is seen the timing
+  PID is unknown and the watch still watches every PID — a single-PID SPTS
+  egress with no PCR (mr-tssplit outputs) keeps the 2026-08-13 freeze fix. The
+  late/early tier re-anchors on the PES it STAMPED FROM (`scan_stamp`'s
+  `out_pts`), never the buffer's first PES of another PID: with audio
+  interleaved ahead of video, referencing the audio put every video stamp the
+  A/V skew behind house and re-matured the 10 s hold forever.
+
+- **Rounding is FLOORED in both twins.** Every ns↔tick conversion in the
+  conditioner uses floor division (`floor_div` / python `//`), because a
+  backward step is the common case and C++ truncation toward zero would round
+  it one tick off python and put the two implementations' wire bytes apart.
+  Pinned by a parity fixture in both suites (`ts_timeline_test.{py,cpp}`, the
+  −90000/−89999 case).
+
+- **The event is identical on every path.** `timeline_conditioned` carries
+  `{tee, pid, clock, stepTicks, offsetTicks, houseNs}` whether it came from the
+  python probe, the native `mrtsstamp` element message, or mr-tssplit's JSON —
+  the native element message and its runner translation carry `houseNs` too
+  (`gst_stamp_events.conditioned_event`), against Decision 2's identical-field
+  promise. A buffer that will not map (READWRITE can fail where READ did not)
+  now raises a once-latched `mrtsstamp-map-failed` warning instead of shipping
+  source timing in silence.
+
+**Two consumer-side guards landed with it, both gated by the contract (they run
+only where the shedder is armed):**
+
+- **The backlog shedder refuses a shed with nothing queued.** The 20 s black
+  screens were the shedder dropping a GOP-plus while the video was over budget
+  but the leg's queues were EMPTY — a late TIMELINE (the producer stamping
+  behind real time for the seconds before it re-anchors), not a retained
+  backlog. Dropping returns nothing there. `BacklogShedPolicy.observe` now takes
+  `queued_ms` (a lazy upstream-queue walk, evaluated only once a hold matures)
+  and reports `"timeline"` instead of shedding when < tolerance is queued.
+
+- **The bus edge queue's TIME bound is 5 s, not 500 ms** (`BUS_EDGE_QUEUE_MS`).
+  A producer re-anchor steps the stamp timeline forward; a 500 ms time-bounded
+  leaky edge queue read that step as a full queue and leaked one buffer, a CC
+  break on every PID per re-anchor. See ADR-0015 for the byte cap that stays at
+  500 ms beside it.
+
+## Implementation notes (Stage 3g — the 302M mixer output timeline: `start-time-selection=first`)
+
+**Amends Decisions 1 and 3 for the aggregation point.** Under `base_time=0`
+(Decision 3) an `audiomixer`'s default `start-time-selection=zero` starts its
+OUTPUT segment at running time 0 — which is BOOT — while its live inputs arrive
+stamped at the house clock (the box's uptime ahead), so the mixer must emit that
+whole uptime as silence before it reaches a sample it can pass, and until it
+does the input pads hold, the branch queue fills and the leaky bus queue drains
+the feed on the floor. Measured on 10.9.16.111 (2026-09-08): a 938 s gap still
+silent at +204 s after an engine restart; a producer arm's egress stamps a
+constant −900 s behind house once it caught up. Every 302M aggregation point
+(`pacedMixer`, so the input fan-in and the n1-mixer feature mixers both) now
+sets `start-time-selection=first`, anchoring the output at the first input
+buffer's running time — `force-live` picks the current running time on a dark
+start — so same-timeline inputs are consumed from the first buffer and the
+stamps read the house clock. Full measurement in `audio302mHelpers.ts`.
